@@ -1,0 +1,784 @@
+//! Parse `#[ontology(...)]` annotations from schema source files using `syn`.
+//!
+//! This module reads `.rs` files from the schema directory, finds structs with
+//! `#[derive(OntologyEntity)]` and `#[ontology(entity, ...)]`, and extracts
+//! [`EntityDef`] metadata from them.
+
+use std::fs;
+use std::path::Path;
+
+use syn::{Attribute, DeriveInput, Expr, Field, Fields, Lit, Meta, Type};
+
+use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+
+/// Parse all schema files in the given directory, returning entity definitions
+/// for structs annotated with `#[ontology(entity, ...)]`.
+pub fn parse_schema_dir(dir: &Path) -> Result<Vec<EntityDef>, String> {
+    let mut entities = Vec::new();
+
+    let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read schema directory {}: {e}", dir.display()))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+
+            let parsed = parse_schema_source(&content, &path)?;
+            entities.extend(parsed);
+        }
+    }
+
+    Ok(entities)
+}
+
+/// Parse a single source file, returning any entity definitions found.
+pub fn parse_schema_source(source: &str, path: &Path) -> Result<Vec<EntityDef>, String> {
+    let syntax = syn::parse_file(source).map_err(|e| format!("Failed to parse {}: {e}", path.display()))?;
+
+    let mut entities = Vec::new();
+
+    for item in &syntax.items {
+        if let syn::Item::Struct(item_struct) = item {
+            let derive_input: DeriveInput = syn::parse2(quote::quote! { #item_struct })
+                .map_err(|e| format!("Failed to parse struct in {}: {e}", path.display()))?;
+
+            if has_ontology_entity_derive(&derive_input)
+                && let Some(entity) = parse_entity_struct(&derive_input, path)?
+            {
+                entities.push(entity);
+            }
+        }
+    }
+
+    Ok(entities)
+}
+
+/// Check if a struct has `#[derive(OntologyEntity)]`.
+fn has_ontology_entity_derive(input: &DeriveInput) -> bool {
+    input.attrs.iter().any(|attr| {
+        if !attr.path().is_ident("derive") {
+            return false;
+        }
+        let Ok(nested) =
+            attr.parse_args_with(syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated)
+        else {
+            return false;
+        };
+        nested.iter().any(|p| p.is_ident("OntologyEntity"))
+    })
+}
+
+/// Convert a CamelCase name to snake_case.
+fn to_snake_case(name: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(ch.to_lowercase().next().unwrap());
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Parse a struct with `#[ontology(entity, ...)]` into an `EntityDef`.
+fn parse_entity_struct(input: &DeriveInput, path: &Path) -> Result<Option<EntityDef>, String> {
+    let struct_attrs = parse_struct_ontology_attrs(&input.attrs);
+    let Some(struct_attrs) = struct_attrs else {
+        return Ok(None); // No #[ontology(entity, ...)] on this struct
+    };
+
+    let fields = match &input.data {
+        syn::Data::Struct(data) => match &data.fields {
+            Fields::Named(named) => &named.named,
+            _ => {
+                return Err(format!("Struct {} in {} must have named fields", input.ident, path.display()));
+            }
+        },
+        _ => return Ok(None),
+    };
+
+    let mut field_defs = Vec::new();
+    for field in fields {
+        field_defs.push(parse_field(field)?);
+    }
+
+    let name = input.ident.to_string();
+    let default_snake = to_snake_case(&name);
+
+    let directory = struct_attrs.directory.unwrap_or_else(|| default_snake.clone());
+    let table = struct_attrs.table.unwrap_or_else(|| default_snake.clone());
+    let type_name = struct_attrs.type_name.unwrap_or_else(|| default_snake.clone());
+    let prefix = struct_attrs.prefix.unwrap_or_else(|| default_snake.clone());
+
+    Ok(Some(EntityDef { name, directory, table, type_name, prefix, fields: field_defs }))
+}
+
+/// Parsed struct-level `#[ontology(...)]` attributes.
+struct StructOntologyAttrs {
+    directory: Option<String>,
+    table: Option<String>,
+    type_name: Option<String>,
+    prefix: Option<String>,
+}
+
+/// Parse the `#[ontology(entity, ...)]` attribute.
+fn parse_struct_ontology_attrs(attrs: &[Attribute]) -> Option<StructOntologyAttrs> {
+    for attr in attrs {
+        if !attr.path().is_ident("ontology") {
+            continue;
+        }
+
+        let Ok(nested) = attr.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+        else {
+            continue;
+        };
+
+        let mut is_entity = false;
+        let mut directory = None;
+        let mut table = None;
+        let mut type_name = None;
+        let mut prefix = None;
+
+        for meta in &nested {
+            match meta {
+                Meta::Path(p) if p.is_ident("entity") => {
+                    is_entity = true;
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("directory") => {
+                    directory = expr_to_string(&nv.value);
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("table") => {
+                    table = expr_to_string(&nv.value);
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("type_name") => {
+                    type_name = expr_to_string(&nv.value);
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("prefix") => {
+                    prefix = expr_to_string(&nv.value);
+                }
+                _ => {}
+            }
+        }
+
+        if is_entity {
+            return Some(StructOntologyAttrs { directory, table, type_name, prefix });
+        }
+    }
+
+    None
+}
+
+/// Parse a single struct field into a `FieldDef`.
+fn parse_field(field: &Field) -> Result<FieldDef, String> {
+    let name = field.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
+
+    let field_type = classify_type(&field.ty);
+    let ontology_attrs = parse_field_ontology_attrs(&field.attrs);
+    let serde_default = has_serde_default(&field.attrs);
+
+    Ok(FieldDef {
+        name,
+        field_type,
+        role: ontology_attrs.role,
+        serde_default,
+        multiline_list: ontology_attrs.multiline_list,
+        default_value: ontology_attrs.default_value,
+    })
+}
+
+/// Parsed field-level `#[ontology(...)]` attributes.
+struct FieldOntologyAttrs {
+    role: FieldRole,
+    multiline_list: bool,
+    default_value: Option<String>,
+}
+
+/// Parse all `#[ontology(...)]` field-level attributes, collecting role and rendering hints.
+fn parse_field_ontology_attrs(attrs: &[Attribute]) -> FieldOntologyAttrs {
+    let mut result = FieldOntologyAttrs { role: FieldRole::Plain, multiline_list: false, default_value: None };
+
+    for attr in attrs {
+        if !attr.path().is_ident("ontology") {
+            continue;
+        }
+
+        let Ok(nested) = attr.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+        else {
+            continue;
+        };
+
+        for meta in &nested {
+            match meta {
+                Meta::Path(p) if p.is_ident("id") => result.role = FieldRole::Id,
+                Meta::Path(p) if p.is_ident("body") => result.role = FieldRole::Body,
+                Meta::Path(p) if p.is_ident("enum_field") => result.role = FieldRole::EnumField,
+                Meta::Path(p) if p.is_ident("skip") => result.role = FieldRole::Skip,
+                Meta::Path(p) if p.is_ident("multiline_list") => result.multiline_list = true,
+                Meta::List(list) if list.path.is_ident("relation") => {
+                    if let Some(info) = parse_relation_meta(list) {
+                        result.role = FieldRole::Relation(info);
+                    }
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("default_value") => {
+                    result.default_value = expr_to_string(&nv.value);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    result
+}
+
+/// Parse `#[ontology(relation(kind, target = "...", ...))]` into a `RelationInfo`.
+///
+/// The relation kind must be explicitly specified:
+/// - `belongs_to` — FK column on this table (many-to-one)
+/// - `has_many` — reverse of a belongs_to on the target (requires `foreign_key`)
+/// - `many_to_many` — junction table (optionally override with `junction`)
+fn parse_relation_meta(list: &syn::MetaList) -> Option<RelationInfo> {
+    let Ok(nested) = list.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated) else {
+        return None;
+    };
+
+    let mut kind_name = None;
+    let mut target = None;
+    let mut junction = None;
+    let mut foreign_key = None;
+
+    for meta in &nested {
+        match meta {
+            Meta::Path(p) => {
+                // First bare identifier is the relation kind
+                if kind_name.is_none() {
+                    kind_name = Some(p.get_ident()?.to_string());
+                }
+            }
+            Meta::NameValue(nv) if nv.path.is_ident("target") => {
+                target = expr_to_string(&nv.value);
+            }
+            Meta::NameValue(nv) if nv.path.is_ident("junction") => {
+                junction = expr_to_string(&nv.value);
+            }
+            Meta::NameValue(nv) if nv.path.is_ident("foreign_key") => {
+                foreign_key = expr_to_string(&nv.value);
+            }
+            _ => {}
+        }
+    }
+
+    let target = target?;
+    let kind_str = kind_name?;
+
+    let kind = match kind_str.as_str() {
+        "belongs_to" => RelationKind::BelongsTo,
+        "has_many" => RelationKind::HasMany,
+        "many_to_many" => RelationKind::ManyToMany,
+        other => {
+            // Unknown relation kind — treat as error at parse time
+            panic!("Unknown relation kind '{}'. Expected belongs_to, has_many, or many_to_many", other);
+        }
+    };
+
+    Some(RelationInfo { kind, target, junction, foreign_key })
+}
+
+/// Check if a field has `#[serde(default)]`.
+fn has_serde_default(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("serde") {
+            return false;
+        }
+        let Ok(nested) = attr.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+        else {
+            return false;
+        };
+        nested.iter().any(|m| matches!(m, Meta::Path(p) if p.is_ident("default")))
+    })
+}
+
+/// Classify a Rust type into our simplified `FieldType`.
+fn classify_type(ty: &Type) -> FieldType {
+    match ty {
+        Type::Path(type_path) => {
+            let segments: Vec<_> = type_path.path.segments.iter().map(|s| s.ident.to_string()).collect();
+
+            let last_segment = type_path.path.segments.last();
+
+            match segments.last().map(String::as_str) {
+                Some("String") if segments.len() == 1 => FieldType::String,
+                Some("i32") if segments.len() == 1 => FieldType::I32,
+                Some("Option") => {
+                    let inner = extract_generic_arg(last_segment);
+                    match inner.as_deref() {
+                        Some("String") => FieldType::OptionString,
+                        Some("i32") => FieldType::OptionI32,
+                        Some(other) => FieldType::OptionEnum(other.to_string()),
+                        None => FieldType::Other(quote::quote!(#ty).to_string()),
+                    }
+                }
+                Some("Vec") => {
+                    let inner = extract_generic_arg(last_segment);
+                    match inner.as_deref() {
+                        Some("String") => FieldType::VecString,
+                        Some(other) => FieldType::VecStruct(other.to_string()),
+                        None => FieldType::Other(quote::quote!(#ty).to_string()),
+                    }
+                }
+                _ => FieldType::Other(quote::quote!(#ty).to_string()),
+            }
+        }
+        _ => FieldType::Other(quote::quote!(#ty).to_string()),
+    }
+}
+
+/// Extract the single generic type argument from a path segment (e.g., `Option<String>` -> `"String"`).
+fn extract_generic_arg(segment: Option<&syn::PathSegment>) -> Option<String> {
+    let segment = segment?;
+    match &segment.arguments {
+        syn::PathArguments::AngleBracketed(args) => {
+            let first = args.args.first()?;
+            match first {
+                syn::GenericArgument::Type(Type::Path(tp)) => Some(tp.path.segments.last()?.ident.to_string()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract a string literal from an expression (e.g., `"nodes"` -> `Some("nodes")`).
+fn expr_to_string(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Lit(lit) => match &lit.lit {
+            Lit::Str(s) => Some(s.value()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_node_schema() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+            use serde::{Deserialize, Serialize};
+
+            #[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+            #[ontology(entity, directory = "nodes", table = "nodes")]
+            pub struct Node {
+                #[ontology(id)]
+                pub id: String,
+
+                pub name: String,
+
+                #[ontology(enum_field)]
+                pub kind: Option<NodeKind>,
+
+                #[serde(default)]
+                #[ontology(relation(belongs_to, target = "Node"))]
+                pub parent_id: Option<String>,
+
+                #[serde(default)]
+                #[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
+                pub contains: Vec<String>,
+
+                pub owner: Option<String>,
+
+                #[serde(default)]
+                pub tags: Vec<String>,
+
+                #[serde(default)]
+                #[ontology(body)]
+                pub body: String,
+
+                #[serde(default)]
+                #[ontology(relation(many_to_many, target = "Requirement"))]
+                pub fulfills: Vec<String>,
+            }
+        "#;
+
+        let path = Path::new("test_node.rs");
+        let entities = parse_schema_source(source, path).unwrap();
+        assert_eq!(entities.len(), 1);
+
+        let node = &entities[0];
+        assert_eq!(node.name, "Node");
+        assert_eq!(node.directory, "nodes");
+        assert_eq!(node.table, "nodes");
+        assert_eq!(node.type_name, "node");
+        assert_eq!(node.prefix, "node");
+
+        // id field
+        let id = node.id_field().unwrap();
+        assert_eq!(id.name, "id");
+        assert_eq!(id.field_type, FieldType::String);
+        assert_eq!(id.role, FieldRole::Id);
+
+        // name field (plain)
+        let name_field = &node.fields[1];
+        assert_eq!(name_field.name, "name");
+        assert_eq!(name_field.field_type, FieldType::String);
+        assert_eq!(name_field.role, FieldRole::Plain);
+
+        // kind field (enum)
+        let kind = &node.fields[2];
+        assert_eq!(kind.name, "kind");
+        assert_eq!(kind.field_type, FieldType::OptionEnum("NodeKind".to_string()));
+        assert_eq!(kind.role, FieldRole::EnumField);
+
+        // parent_id (belongs_to)
+        let parent = &node.fields[3];
+        assert_eq!(parent.name, "parent_id");
+        assert_eq!(parent.field_type, FieldType::OptionString);
+        assert!(parent.serde_default);
+        match &parent.role {
+            FieldRole::Relation(info) => {
+                assert_eq!(info.kind, RelationKind::BelongsTo);
+                assert_eq!(info.target, "Node");
+            }
+            other => panic!("Expected Relation, got {other:?}"),
+        }
+
+        // contains (has_many — reverse of parent_id, no junction table)
+        let contains = &node.fields[4];
+        assert_eq!(contains.name, "contains");
+        assert_eq!(contains.field_type, FieldType::VecString);
+        match &contains.role {
+            FieldRole::Relation(info) => {
+                assert_eq!(info.kind, RelationKind::HasMany);
+                assert_eq!(info.target, "Node");
+                assert_eq!(info.foreign_key, Some("parent_id".to_string()));
+            }
+            other => panic!("Expected Relation, got {other:?}"),
+        }
+
+        // owner (plain optional)
+        let owner = &node.fields[5];
+        assert_eq!(owner.name, "owner");
+        assert_eq!(owner.field_type, FieldType::OptionString);
+        assert_eq!(owner.role, FieldRole::Plain);
+
+        // tags (plain vec, not a relation)
+        let tags = &node.fields[6];
+        assert_eq!(tags.name, "tags");
+        assert_eq!(tags.field_type, FieldType::VecString);
+        assert_eq!(tags.role, FieldRole::Plain);
+        assert!(tags.serde_default);
+
+        // body
+        let body = node.body_field().unwrap();
+        assert_eq!(body.name, "body");
+        assert_eq!(body.role, FieldRole::Body);
+
+        // fulfills (many_to_many -> Requirement)
+        let fulfills = &node.fields[8];
+        assert_eq!(fulfills.name, "fulfills");
+        match &fulfills.role {
+            FieldRole::Relation(info) => {
+                assert_eq!(info.kind, RelationKind::ManyToMany);
+                assert_eq!(info.target, "Requirement");
+            }
+            other => panic!("Expected Relation, got {other:?}"),
+        }
+
+        // junction_relations — only fulfills (many_to_many)
+        let junctions: Vec<_> = node.junction_relations().collect();
+        assert_eq!(junctions.len(), 1);
+        assert_eq!(junctions[0].0.name, "fulfills");
+
+        // has_many_relations — only contains
+        let has_many: Vec<_> = node.has_many_relations().collect();
+        assert_eq!(has_many.len(), 1);
+        assert_eq!(has_many[0].0.name, "contains");
+
+        // belongs_to_relations
+        let belongs_to: Vec<_> = node.belongs_to_relations().collect();
+        assert_eq!(belongs_to.len(), 1); // parent_id
+    }
+
+    #[test]
+    fn parse_inferred_defaults() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Agent {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        assert_eq!(entities.len(), 1);
+        let agent = &entities[0];
+        assert_eq!(agent.directory, "agent");
+        assert_eq!(agent.table, "agent");
+        assert_eq!(agent.type_name, "agent");
+        assert_eq!(agent.prefix, "agent");
+    }
+
+    #[test]
+    fn parse_inferred_with_overrides() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, table = "work_sessions", prefix = "session")]
+            pub struct WorkSession {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        let ws = &entities[0];
+        assert_eq!(ws.directory, "work_session"); // inferred from name
+        assert_eq!(ws.table, "work_sessions"); // overridden
+        assert_eq!(ws.type_name, "work_session"); // inferred
+        assert_eq!(ws.prefix, "session"); // overridden
+    }
+
+    #[test]
+    fn parse_type_name_override() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, directory = "sessions", table = "work_sessions", type_name = "work_session")]
+            pub struct WorkSession {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        assert_eq!(entities[0].type_name, "work_session");
+    }
+
+    #[test]
+    fn parse_skip_field() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, directory = "specs", table = "specifications")]
+            pub struct Specification {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(skip)]
+                pub acceptance_criteria: Vec<AcceptanceCriterion>,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        let spec = &entities[0];
+        let ac = &spec.fields[1];
+        assert_eq!(ac.name, "acceptance_criteria");
+        assert_eq!(ac.role, FieldRole::Skip);
+    }
+
+    #[test]
+    fn struct_without_ontology_entity_is_skipped() {
+        let source = r#"
+            #[derive(Debug, Clone)]
+            pub struct NotAnEntity {
+                pub id: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        assert!(entities.is_empty());
+    }
+
+    #[test]
+    fn parse_junction_override() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, directory = "nodes", table = "nodes")]
+            pub struct Node {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(relation(many_to_many, target = "Requirement", junction = "node_fulfills_req"))]
+                pub fulfills: Vec<String>,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        let fulfills = &entities[0].fields[1];
+        match &fulfills.role {
+            FieldRole::Relation(info) => {
+                assert_eq!(info.kind, RelationKind::ManyToMany);
+                assert_eq!(info.junction, Some("node_fulfills_req".to_string()));
+            }
+            other => panic!("Expected Relation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_has_many_with_foreign_key() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Node {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
+                pub contains: Vec<String>,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        let contains = &entities[0].fields[1];
+        match &contains.role {
+            FieldRole::Relation(info) => {
+                assert_eq!(info.kind, RelationKind::HasMany);
+                assert_eq!(info.target, "Node");
+                assert_eq!(info.foreign_key, Some("parent_id".to_string()));
+            }
+            other => panic!("Expected Relation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_snake_case_works() {
+        assert_eq!(to_snake_case("Node"), "node");
+        assert_eq!(to_snake_case("WorkSession"), "work_session");
+        assert_eq!(to_snake_case("Agent"), "agent");
+        assert_eq!(to_snake_case("Evidence"), "evidence");
+    }
+
+    /// Parse the actual schema directory and verify all 10 entities are found
+    /// with correct metadata.
+    #[test]
+    fn parse_all_real_schemas() {
+        let schema_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
+
+        if !schema_dir.exists() {
+            // Skip in CI or standalone builds where the full repo isn't available
+            eprintln!("Skipping parse_all_real_schemas: schema dir not found at {}", schema_dir.display());
+            return;
+        }
+
+        let entities = parse_schema_dir(&schema_dir).expect("failed to parse schema dir");
+        let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
+
+        // All 12 entities must be present
+        let expected = [
+            "Node",
+            "UnitOfWork",
+            "WorkflowTemplate",
+            "StepResult",
+            "Test",
+            "Role",
+            "Requirement",
+            "Specification",
+            "Agent",
+            "WorkExecution",
+            "Contract",
+            "Evidence",
+        ];
+        for name in &expected {
+            assert!(names.contains(name), "Missing entity: {name}. Found: {names:?}");
+        }
+        assert_eq!(
+            entities.len(),
+            expected.len(),
+            "Expected exactly {} entities, found {}: {:?}",
+            expected.len(),
+            entities.len(),
+            names
+        );
+
+        // Spot-check key properties
+        let find = |name: &str| entities.iter().find(|e| e.name == name).unwrap();
+
+        // Node
+        let node = find("Node");
+        assert_eq!(node.directory, "node");
+        assert_eq!(node.table, "nodes");
+        assert!(node.id_field().is_some());
+        assert!(node.body_field().is_some());
+        assert_eq!(node.id_field().unwrap().field_type, FieldType::String);
+        // has_many (contains) + belongs_to (parent_id) + many_to_many (fulfills)
+        assert_eq!(node.belongs_to_relations().count(), 1, "Node should have 1 belongs_to");
+        assert_eq!(node.has_many_relations().count(), 1, "Node should have 1 has_many");
+        assert_eq!(node.junction_relations().count(), 1, "Node should have 1 many_to_many");
+
+        // Contract — 4 belongs_to (scope, from, to, spec) + 1 many_to_many (fulfills)
+        let contract = find("Contract");
+        assert_eq!(contract.directory, "contract");
+        assert_eq!(contract.belongs_to_relations().count(), 4, "Contract should have 4 belongs_to");
+        assert_eq!(contract.junction_relations().count(), 1, "Contract should have 1 many_to_many");
+
+        // Evidence — 1 belongs_to (relates_to), String PK
+        let evidence = find("Evidence");
+        assert_eq!(evidence.id_field().unwrap().field_type, FieldType::String);
+        assert_eq!(evidence.belongs_to_relations().count(), 1);
+
+        // WorkExecution — 2 belongs_to (unit_of_work_id, workflow_template_id)
+        let we = find("WorkExecution");
+        assert_eq!(we.table, "work_executions");
+        assert_eq!(we.belongs_to_relations().count(), 2);
+
+        // Requirement — 2 belongs_to (parent, superseded_by) + 1 many_to_many (depends_on)
+        let req = find("Requirement");
+        assert_eq!(req.belongs_to_relations().count(), 2);
+        assert_eq!(req.junction_relations().count(), 1);
+
+        // Specification — 2 many_to_many (fulfills, depends_on)
+        let spec = find("Specification");
+        assert_eq!(spec.junction_relations().count(), 2);
+
+        // UnitOfWork — 2 belongs_to (workflow_template_id, parent_id) + 2 many_to_many (depends_on, constraints)
+        let uow = find("UnitOfWork");
+        assert_eq!(uow.directory, "unit_of_work");
+        assert_eq!(uow.table, "units_of_work");
+        assert_eq!(uow.belongs_to_relations().count(), 2);
+        assert_eq!(uow.junction_relations().count(), 2);
+
+        // StepResult — 2 belongs_to (work_execution_id, agent_id)
+        let sr = find("StepResult");
+        assert_eq!(sr.directory, "step_result");
+        assert_eq!(sr.table, "step_results");
+        assert_eq!(sr.belongs_to_relations().count(), 2);
+
+        // Agent — no relations
+        let agent = find("Agent");
+        assert_eq!(agent.relation_fields().count(), 0);
+    }
+}

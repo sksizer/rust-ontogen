@@ -1,0 +1,254 @@
+//! Intermediate Representation types that flow between generators.
+//!
+//! Each generator produces a typed output struct. Downstream generators accept
+//! these as `Option<&Output>` parameters — enrichment, not requirements.
+//! All merge layers normalize generated + scanned sources into the **same types**.
+
+use std::path::PathBuf;
+
+// ── Source discriminator (shared across all layers) ─────────────────
+
+/// Where did this method/module originate?
+/// Used by downstream generators to emit correct import paths.
+#[derive(Debug, Clone)]
+pub enum Source {
+    /// Generated from EntityDef by a codegen layer.
+    Generated { module_path: String },
+    /// Scanned from a hand-written source file.
+    Scanned { module_path: String, file_path: PathBuf },
+}
+
+// ── Schema output ───────────────────────────────────────────────────
+
+/// Output from `parse_schema`. The starting point for the pipeline.
+/// Re-exports `EntityDef` from the schema module.
+pub struct SchemaOutput {
+    pub entities: Vec<crate::schema::EntityDef>,
+}
+
+// ── Persistence output ──────────────────────────────────────────────
+
+/// SeaORM-specific output. Produced by `gen_seaorm`.
+pub struct SeaOrmOutput {
+    /// Table names and column mappings per entity.
+    pub entity_tables: Vec<EntityTableMeta>,
+    /// Junction table metadata for many-to-many relations.
+    pub junction_tables: Vec<JunctionMeta>,
+    /// Which from_model/to_active_model conversions were generated.
+    pub conversion_fns: Vec<ConversionMeta>,
+}
+
+/// Metadata about a generated SeaORM entity table.
+#[derive(Debug, Clone)]
+pub struct EntityTableMeta {
+    pub entity_name: String,
+    pub table_name: String,
+    pub module_path: String,
+    pub columns: Vec<ColumnMeta>,
+}
+
+/// A single column in a SeaORM entity.
+#[derive(Debug, Clone)]
+pub struct ColumnMeta {
+    pub name: String,
+    pub column_type: String,
+    pub is_primary_key: bool,
+}
+
+/// Metadata about a junction table for many-to-many relations.
+#[derive(Debug, Clone)]
+pub struct JunctionMeta {
+    pub table_name: String,
+    pub source_entity: String,
+    pub target_entity: String,
+    pub source_fk: String,
+    pub target_fk: String,
+}
+
+/// Metadata about generated from_model/to_active_model conversions.
+#[derive(Debug, Clone)]
+pub struct ConversionMeta {
+    pub entity_name: String,
+    pub module_path: String,
+}
+
+// ── Store output ────────────────────────────────────────────────────
+
+/// Store layer output. Methods from both generated and scanned sources,
+/// normalized into the same `StoreMethodMeta` type.
+pub struct StoreOutput {
+    /// Generated + scanned store methods, same type.
+    pub methods: Vec<StoreMethodMeta>,
+    /// Scaffolded hook file paths and function names.
+    pub scaffolded_hooks: Vec<ScaffoldMeta>,
+    /// Per-entity broadcast channels (when enabled).
+    pub change_channels: Vec<ChannelMeta>,
+}
+
+/// A store method — same type whether generated from schema or scanned from custom/.
+/// `entity_name` is the grouping key that drives REST resource routing
+/// (e.g., "Widget" → api/v1/widgets/ with standard REST verbs).
+///
+/// Entity association for scanned methods:
+/// - Generated: entity_name is known from the EntityDef being iterated
+/// - Scanned CRUD: naming convention — `create_widget` → entity "Widget".
+///   Override with `#[ontology(entity = "Widget")]` when convention doesn't fit.
+/// - Scanned Custom: entity_name from `#[ontology(entity = "Node")]` annotation
+///   or `""` if the method isn't entity-scoped.
+#[derive(Debug, Clone)]
+pub struct StoreMethodMeta {
+    /// Entity this method belongs to (e.g., "Node", "Widget").
+    pub entity_name: String,
+    /// Method name (e.g., "create_node", "bulk_reparent_nodes").
+    pub name: String,
+    /// Whether this is a CRUD operation or a custom method.
+    pub kind: StoreMethodKind,
+    /// Method parameters.
+    pub params: Vec<ParamMeta>,
+    /// Return type as a string.
+    pub return_type: String,
+    /// Where this method came from.
+    pub source: Source,
+}
+
+/// Discriminates CRUD from custom store methods.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreMethodKind {
+    /// A standard CRUD operation.
+    Crud(CrudOp),
+    /// Anything scanned that doesn't match the CRUD pattern.
+    Custom,
+}
+
+/// The five standard CRUD operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrudOp {
+    List,
+    Get,
+    Create,
+    Update,
+    Delete,
+}
+
+/// Metadata about a scaffolded hook file.
+#[derive(Debug, Clone)]
+pub struct ScaffoldMeta {
+    pub entity_name: String,
+    pub file_path: PathBuf,
+    pub functions: Vec<String>,
+}
+
+/// Metadata about a per-entity change channel.
+#[derive(Debug, Clone)]
+pub struct ChannelMeta {
+    pub entity_name: String,
+    pub subscribe_method: String,
+    pub event_type: String,
+}
+
+// ── API output ──────────────────────────────────────────────────────
+
+/// API layer output. Modules from both generated and scanned sources,
+/// normalized into the same `ApiModule` type.
+pub struct ApiOutput {
+    /// Generated + scanned API modules, same type.
+    pub modules: Vec<ApiModule>,
+}
+
+/// An API module — may contain functions from both generated and scanned sources.
+#[derive(Debug, Clone)]
+pub struct ApiModule {
+    /// Module name (e.g., "node").
+    pub name: String,
+    /// All functions in this module (mixed sources, same type).
+    pub fns: Vec<ApiFnMeta>,
+    /// Whether functions use AppState or Store as their first parameter.
+    pub state_type: StateKind,
+}
+
+/// An API function — same type whether generated or scanned.
+#[derive(Debug, Clone)]
+pub struct ApiFnMeta {
+    /// Function name (e.g., "create", "archive").
+    pub name: String,
+    /// Doc comment (used for MCP tool descriptions, OpenAPI docs, etc.).
+    pub doc: String,
+    /// Function parameters.
+    pub params: Vec<ParamMeta>,
+    /// Return type as a string.
+    pub return_type: String,
+    /// Where this function came from.
+    pub source: Source,
+    /// Classified operation for HTTP verb routing.
+    pub classified_op: OpKind,
+}
+
+/// Whether a function operates on a project-scoped Store or the global AppState.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateKind {
+    AppState,
+    Store,
+}
+
+/// Classified operation type — drives HTTP method and route structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpKind {
+    List,
+    GetById,
+    Create,
+    Update,
+    Delete,
+    /// Custom read (GET with non-standard params).
+    CustomGet,
+    /// Custom write (POST with non-standard params).
+    CustomPost,
+    /// SSE event stream.
+    EventStream,
+}
+
+// ── Server output ───────────────────────────────────────────────────
+
+/// Server transport output. Describes the concrete endpoints generated
+/// so client generators can mirror them exactly.
+pub struct ServersOutput {
+    /// HTTP routes generated.
+    pub http_routes: Vec<HttpRouteMeta>,
+    /// Tauri IPC commands generated.
+    pub ipc_commands: Vec<IpcCommandMeta>,
+    /// MCP tool definitions generated.
+    pub mcp_tools: Vec<McpToolMeta>,
+}
+
+/// Metadata about a generated HTTP route.
+#[derive(Debug, Clone)]
+pub struct HttpRouteMeta {
+    pub method: String,
+    pub path: String,
+    pub handler_name: String,
+    pub module_name: String,
+}
+
+/// Metadata about a generated Tauri IPC command.
+#[derive(Debug, Clone)]
+pub struct IpcCommandMeta {
+    pub command_name: String,
+    pub params: Vec<ParamMeta>,
+    pub return_type: String,
+}
+
+/// Metadata about a generated MCP tool.
+#[derive(Debug, Clone)]
+pub struct McpToolMeta {
+    pub tool_name: String,
+    pub description: String,
+    pub params_schema: String,
+}
+
+// ── Shared types ────────────────────────────────────────────────────
+
+/// A function/method parameter.
+#[derive(Debug, Clone)]
+pub struct ParamMeta {
+    pub name: String,
+    pub param_type: String,
+}
