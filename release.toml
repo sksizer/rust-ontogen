@@ -1,0 +1,14 @@
+allow-branch = ["main"]
+consolidate-commits = true
+pre-release-commit-message = "chore: release v{{version}}"
+publish = false
+push = true
+sign-commit = false
+sign-tag = false
+tag = true
+tag-message = "Release v{{version}}"
+tag-prefix = "v"
+
+# Uses the latest git tag as baseline. On first release (no tags), semver-checks
+# is skipped since there is no baseline to compare against.
+pre-release-hook = ["bash", "-c", "if git describe --tags --abbrev=0 >/dev/null 2>&1; then cargo semver-checks --baseline-rev \"$(git describe --tags --abbrev=0)\"; else echo 'semver-checks: no previous tag found, skipping'; fi"]
