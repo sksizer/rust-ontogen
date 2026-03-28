@@ -366,36 +366,15 @@ fn junction_table_name(source_module: &str, field_name: &str, info: &crate::sche
 }
 
 /// Convert `CamelCase` to `snake_case`.
+///
+/// Delegates to `ontogen_core::naming::to_snake_case`.
 pub fn to_snake_case(name: &str) -> String {
-    let mut result = String::new();
-    for (i, ch) in name.chars().enumerate() {
-        if ch.is_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(ch.to_lowercase().next().unwrap());
-        } else {
-            result.push(ch);
-        }
-    }
-    result
+    ontogen_core::naming::to_snake_case(name)
 }
 
 /// Convert `snake_case` to `PascalCase`.
 fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(c) => {
-                    let mut s = c.to_uppercase().collect::<String>();
-                    s.push_str(chars.as_str());
-                    s
-                }
-                None => String::new(),
-            }
-        })
-        .collect()
+    ontogen_core::naming::to_pascal_case(s)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

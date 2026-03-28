@@ -1,0 +1,58 @@
+//! Build-time utilities shared across codegen layers.
+
+use std::collections::HashSet;
+use std::path::Path;
+
+/// Run `rustfmt` on a generated Rust file.
+/// Silently ignores failures (e.g., if rustfmt is not installed).
+pub fn rustfmt(path: &Path) {
+    let _ = std::process::Command::new("rustfmt").arg("--edition").arg("2024").arg(path).status();
+}
+
+/// Run `prettier` on generated TypeScript files.
+/// Silently ignores failures.
+pub fn prettier(paths: &[&Path]) {
+    if paths.is_empty() {
+        return;
+    }
+    let mut cmd = std::process::Command::new("npx");
+    cmd.arg("prettier").arg("--write");
+    for p in paths {
+        cmd.arg(p);
+    }
+    let _ = cmd.status();
+}
+
+/// Remove `.rs` files from `dir` that are not in `expected`.
+///
+/// Call this at the start of each generator to clean up files left behind
+/// by entity renames or deletions.  `expected` should contain bare filenames
+/// like `"node.rs"`, `"mod.rs"`, etc.  Files whose names are not in the set
+/// are deleted.  Non-`.rs` files and subdirectories are left alone.
+pub fn clean_generated_dir(dir: &Path, expected: &HashSet<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !expected.contains(&name) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// Emit `cargo:rerun-if-changed` directives for all `.rs` files in a directory.
+pub fn emit_rerun_directives(dir: &Path) {
+    println!("cargo:rerun-if-changed={}", dir.display());
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "rs") {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+    }
+}

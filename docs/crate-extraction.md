@@ -1,0 +1,77 @@
+# Crate Extraction Progress
+
+Tracking the incremental extraction of `ontogen` into a workspace of focused crates.
+
+## Completed
+
+- [x] **Create `ontogen-core` crate** -- shared types and utilities used across all codegen layers
+  - [x] `model.rs` -- `EntityDef`, `FieldDef`, `FieldRole`, `FieldType`, `RelationInfo`, `RelationKind`
+  - [x] `ir.rs` -- all intermediate representation types (`SchemaOutput`, `SeaOrmOutput`, `StoreOutput`, `ApiOutput`, `ServersOutput`, and their inner types)
+  - [x] `naming.rs` -- `to_snake_case`, `to_pascal_case`, `pluralize`, junction table naming helpers
+  - [x] `utils.rs` -- `rustfmt`, `prettier`, `clean_generated_dir`, `emit_rerun_directives`
+  - [x] `CodegenError` enum
+- [x] **Deduplicate `to_snake_case`** -- was defined identically in `persistence/seaorm/gen_entity.rs` and `store/helpers.rs`; both now delegate to `ontogen_core::naming::to_snake_case`
+- [x] **Deduplicate `to_pascal_case`** -- was defined independently in `persistence/seaorm/gen_entity.rs` and `servers/types.rs`; gen_entity now delegates to `ontogen_core::naming::to_pascal_case` (servers/types keeps its own since it depends on its local `capitalize` function and has slightly different usage patterns)
+- [x] **Workspace setup** -- root `Cargo.toml` defines workspace with `ontogen`, `ontogen-core`, `ontogen-macros`
+- [x] **Re-export wrappers** -- `src/schema/model.rs`, `src/ir.rs`, `src/store/helpers.rs` now re-export from `ontogen_core` so all existing internal imports (`crate::schema::model::*`, `crate::ir::*`, `crate::store::helpers::*`) continue to work with zero churn
+- [x] **All 113 tests pass** (4 in ontogen-core, 109 in ontogen)
+
+## Current Workspace Structure
+
+```
+ontogen/                    (workspace root)
+├── Cargo.toml              (workspace + ontogen package)
+├── src/                    (ontogen -- full pipeline facade)
+├── ontogen-core/           (shared types, IR, naming, utilities)
+│   └── src/
+│       ├── lib.rs          (CodegenError + re-exports)
+│       ├── model.rs        (EntityDef, FieldDef, etc.)
+│       ├── ir.rs           (all *Output and *Meta types)
+│       ├── naming.rs       (to_snake_case, pluralize, junction helpers)
+│       └── utils.rs        (rustfmt, prettier, clean_generated_dir)
+└── ontogen-macros/         (proc-macro for #[derive(OntologyEntity)])
+```
+
+## Future Extraction Phases
+
+These are not urgent. The current single-crate-plus-core design is fine for initial OSS release. Extract layers when consumers need partial functionality.
+
+### Phase 2: Extract `ontogen-schema`
+- [ ] Move `src/schema/parse.rs` to its own crate
+- [ ] Dependencies: `ontogen-core`, `syn`
+- [ ] Enables: consumers who only need schema parsing without any code generation
+
+### Phase 3: Extract `ontogen-persistence`
+- [ ] Move `src/persistence/` (seaorm, markdown, dto) to its own crate
+- [ ] Dependencies: `ontogen-core`
+- [ ] Enables: consumers who want SeaORM entities or DTOs without store/API/server generation
+
+### Phase 4: Extract `ontogen-store`
+- [ ] Move `src/store/` to its own crate
+- [ ] Dependencies: `ontogen-core`
+- [ ] Enables: consumers who want CRUD store generation without API or transport layers
+
+### Phase 5: Extract `ontogen-api`
+- [ ] Move `src/api/` to its own crate
+- [ ] Requires resolving the `api -> servers::parse::scan_api_dir` dependency (move scanning to core or api)
+- [ ] Dependencies: `ontogen-core`, `syn`
+
+### Phase 6: Extract `ontogen-servers`
+- [ ] Move `src/servers/` to its own crate
+- [ ] Dependencies: `ontogen-core`, `syn`, `quote`
+- [ ] Largest module (~4200 lines), most independently useful
+- [ ] `NamingConfig` stays in servers (server-specific semantics like `derive_action`)
+
+### Phase 7: Facade crate
+- [ ] `ontogen` becomes a thin re-export crate that depends on all layer crates
+- [ ] Zero breaking change for full-pipeline consumers
+
+## Design Decisions
+
+**Why `ontogen-core` first?** It's the foundation everything depends on. Extracting it first means every future layer extraction only needs to depend on `ontogen-core`, not on each other. The dependency DAG becomes a clean star topology.
+
+**Why re-export wrappers instead of updating all imports?** Avoids touching every file in the codebase. The wrappers (`src/schema/model.rs`, `src/ir.rs`, `src/store/helpers.rs`) are one-liners that re-export from `ontogen_core`. Internal code using `crate::schema::model::EntityDef` still works. When layers are eventually extracted into their own crates, they'll import `ontogen_core` directly and these wrappers will be removed.
+
+**Why not move `NamingConfig` to core?** The `NamingConfig` in `servers/types.rs` has server-specific methods (`derive_action`, `plural_label`) and different method signatures (returns `&str` vs `String`). It belongs with the server layer, not the shared foundation.
+
+**Why not move config types to core?** `ServersConfig` references `servers::NamingConfig` and `servers::RoutePrefix`. Moving it to core would create a circular dependency. Config types stay in the facade crate until the layers are fully extracted.

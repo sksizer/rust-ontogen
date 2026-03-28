@@ -29,37 +29,27 @@
 
 pub mod api;
 pub mod clients;
-pub mod ir;
 pub mod persistence;
 pub mod schema;
 pub mod servers;
 pub mod store;
 
+// Re-export ontogen-core as the canonical source for shared types.
+// Internal modules should import from `ontogen_core` directly.
+// External consumers can use `ontogen::` for everything.
+pub use ontogen_core::ir;
+pub use ontogen_core::model;
+pub use ontogen_core::naming;
+pub use ontogen_core::utils;
+
 // Re-export key types for ergonomic use in build.rs
-pub use ir::*;
-pub use schema::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+pub use ontogen_core::CodegenError;
+pub use ontogen_core::ir::*;
+pub use ontogen_core::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+pub use ontogen_core::naming::{pluralize, to_pascal_case, to_snake_case};
+pub use ontogen_core::utils::{clean_generated_dir, emit_rerun_directives, prettier, rustfmt};
 
-use std::path::{Path, PathBuf};
-
-/// Run `rustfmt` on a generated Rust file.
-/// Silently ignores failures (e.g., if rustfmt is not installed).
-pub fn rustfmt(path: &Path) {
-    let _ = std::process::Command::new("rustfmt").arg("--edition").arg("2024").arg(path).status();
-}
-
-/// Run `prettier` on generated TypeScript files.
-/// Silently ignores failures.
-pub fn prettier(paths: &[&Path]) {
-    if paths.is_empty() {
-        return;
-    }
-    let mut cmd = std::process::Command::new("npx");
-    cmd.arg("prettier").arg("--write");
-    for p in paths {
-        cmd.arg(p);
-    }
-    let _ = cmd.status();
-}
+use std::path::PathBuf;
 
 // ── Top-level generator functions ───────────────────────────────────
 //
@@ -190,8 +180,6 @@ pub struct ApiConfig {
 }
 
 /// Configuration for server transport generation.
-///
-/// Configuration for server transport generation.
 pub struct ServersConfig {
     /// Directory to scan for API source files (when not using ApiOutput).
     pub api_dir: PathBuf,
@@ -225,68 +213,4 @@ pub struct ServersConfig {
 pub struct ClientsConfig {
     /// Which client generators to run.
     pub generators: Vec<clients::ClientGeneratorConfig>,
-}
-
-// ── Error type ──────────────────────────────────────────────────────
-
-/// Codegen error with layer context.
-#[derive(Debug)]
-pub enum CodegenError {
-    Schema(String),
-    Persistence(String),
-    Store(String),
-    Api(String),
-    Server(String),
-    Client(String),
-}
-
-impl std::fmt::Display for CodegenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Schema(e) => write!(f, "schema codegen error: {e}"),
-            Self::Persistence(e) => write!(f, "persistence codegen error: {e}"),
-            Self::Store(e) => write!(f, "store codegen error: {e}"),
-            Self::Api(e) => write!(f, "api codegen error: {e}"),
-            Self::Server(e) => write!(f, "server codegen error: {e}"),
-            Self::Client(e) => write!(f, "client codegen error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for CodegenError {}
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-/// Remove `.rs` files from `dir` that are not in `expected`.
-///
-/// Call this at the start of each generator to clean up files left behind
-/// by entity renames or deletions.  `expected` should contain bare filenames
-/// like `"node.rs"`, `"mod.rs"`, etc.  Files whose names are not in the set
-/// are deleted.  Non-`.rs` files and subdirectories are left alone.
-pub fn clean_generated_dir(dir: &Path, expected: &std::collections::HashSet<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !expected.contains(&name) {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-    }
-}
-
-/// Emit `cargo:rerun-if-changed` directives for all `.rs` files in a directory.
-fn emit_rerun_directives(dir: &Path) {
-    println!("cargo:rerun-if-changed={}", dir.display());
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "rs") {
-                println!("cargo:rerun-if-changed={}", path.display());
-            }
-        }
-    }
 }
