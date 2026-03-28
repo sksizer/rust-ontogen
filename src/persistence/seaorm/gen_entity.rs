@@ -1,3 +1,4 @@
+// TODO: review — banner strings updated, to_snake_case/to_pascal_case now delegate to ontogen-core
 //! Generate SeaORM entity modules from parsed ontology entity definitions.
 //!
 //! Generates:

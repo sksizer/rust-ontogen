@@ -1,3 +1,4 @@
+// TODO: review — doc comment updated from old crate reference
 //! Client library generators — TypeScript, CLI, admin registry.
 //!
 //! These generators consume `ServersOutput` to mirror server endpoints exactly.

@@ -1,3 +1,4 @@
+// TODO: review — banner strings updated from old crate names
 #![allow(clippy::format_push_string)]
 
 //! Generate admin entity registry (TypeScript) from API modules.

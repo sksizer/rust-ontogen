@@ -1,3 +1,4 @@
+// TODO: review — doc comments updated, removed old crate references
 //! Server transport generators — HTTP (Axum), IPC (Tauri), MCP.
 //!
 //! Also includes client generators (TypeScript, admin registry) which will

@@ -1,3 +1,4 @@
+// TODO: review — banner strings updated from old crate names
 #![allow(clippy::too_many_lines, clippy::format_push_string)]
 
 //! Generate MCP (Model Context Protocol) tool registry from API modules.

@@ -1,3 +1,4 @@
+<!-- TODO: review — references updated from old crate/app names -->
 # Proposal: MCP-to-CLI Generator
 
 ## Status: Draft

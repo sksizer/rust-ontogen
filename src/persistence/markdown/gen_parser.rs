@@ -1,3 +1,4 @@
+// TODO: review — banner strings updated from old crate names
 //! Generate markdown parser dispatch code from parsed ontology entity definitions.
 //!
 //! Generates:
