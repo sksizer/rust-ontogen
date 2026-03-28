@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicepage/nicepage/master/tauri-conf-schema.json",
+  "productName": "Iron Log",
+  "version": "0.1.0",
+  "identifier": "com.example.iron-log",
+  "build": {
+    "frontendDist": "../src-nuxt/.output/public",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "cd ../src-nuxt && pnpm dev",
+    "beforeBuildCommand": "cd ../src-nuxt && pnpm generate"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Iron Log",
+        "width": 900,
+        "height": 700
+      }
+    ]
+  }
+}

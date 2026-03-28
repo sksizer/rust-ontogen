@@ -1,0 +1,19 @@
+{
+  "name": "iron-log-frontend",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.2",
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "nuxt": "^4.3.1",
+    "vue": "^3.5.29"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate"
+  }
+}

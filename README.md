@@ -91,11 +91,34 @@ and transport handlers. Add a new entity to your schema and rebuild -- everythin
 - **Client generation** for TypeScript and admin registries
 - **Markdown I/O** with parser dispatch, writers, and filesystem operations
 
+## Example Project
+
+See [`examples/iron-log/`](examples/iron-log/) for a complete working example -- a weight-lifting tracker that
+demonstrates the full pipeline from schema entities through to a compiled Tauri app with generated TypeScript client.
+
+```bash
+cd examples/iron-log/src-tauri
+cargo build
+```
+
+This generates 39 files across all layers from just 4 schema entity files.
+
 ## Documentation
 
 - [Walkthrough](docs/walkthrough.md) -- end-to-end pipeline tutorial with concrete examples
 - [Architecture Proposal](docs/proposal.md) -- design rationale and decision log
 - [CLI Generator Proposal](docs/cli-generator.md) -- planned MCP-to-CLI client generator
+
+## Known Issues
+
+- **`gen_clients` is a no-op.** Client generation (TypeScript transport, HTTP client, admin registry) is handled
+  inline by `servers::generate_transport()`. To generate clients, include `GeneratorConfig::Client(...)` entries in
+  the `servers::Config.generators` vec and call `servers::generate_transport()` directly. The `gen_clients` public
+  API exists for forward compatibility but is not yet wired. See `src/clients/mod.rs` for details.
+
+- **`strip_wikilink` stubs required.** Generated store code for `belongs_to` and `many_to_many` fields imports
+  `crate::persistence::fs_markdown::parser::ontology::{strip_wikilink, strip_wikilink_opt, strip_wikilinks_vec}`.
+  Projects without markdown persistence must provide stub implementations. See the iron-log example for a reference.
 
 ## Project Status
 

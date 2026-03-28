@@ -21,8 +21,17 @@ pub enum ClientGeneratorConfig {
 
 /// Generate client libraries from server transport metadata.
 ///
-/// Currently a passthrough; client generation is handled inline by the servers module.
-/// Future versions will consume `ServersOutput` for structured endpoint metadata.
+/// **Known issue:** This function is currently a no-op. Client generation (TypeScript
+/// transport, HTTP client, admin registry) is handled inline by `servers::generate_transport()`,
+/// which dispatches both `GeneratorConfig::Server` and `GeneratorConfig::Client` variants.
+///
+/// To generate clients today, use `servers::generate_transport()` directly with a `Config`
+/// that includes `GeneratorConfig::Client(...)` entries. The `gen_clients` public API and
+/// `ClientsConfig` type exist for forward compatibility but are not yet wired.
+///
+/// Fix: either wire this function to call transport generators using `ServersOutput` metadata,
+/// or extend `ServersConfig.generators` to accept client variants so the full pipeline works
+/// through `gen_servers`.
 pub fn generate(
     _servers: &ServersOutput,
     _api: Option<&ApiOutput>,
