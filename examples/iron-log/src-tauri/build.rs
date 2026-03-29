@@ -73,6 +73,9 @@ fn main() {
                 output: "../src-nuxt/app/generated/transport.ts".into(),
                 bindings_path: "../src-nuxt/app/generated/types.ts".into(),
             }),
+            GeneratorConfig::Client(ClientGenerator::AdminRegistry {
+                output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
+            }),
         ],
         rustfmt_edition: "2024".to_string(),
         sse_route_overrides: Default::default(),
@@ -80,6 +83,7 @@ fn main() {
         route_prefix: None,
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
+        schema_entities: schema.entities.clone(),
     };
 
     ontogen::servers::generate_transport(&config).expect("Failed to generate transports");

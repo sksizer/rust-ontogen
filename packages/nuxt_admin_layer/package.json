@@ -1,0 +1,33 @@
+{
+  "name": "@ontogen/admin-layer",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./nuxt.config.ts",
+  "files": [
+    "app/**",
+    "generated/**",
+    "nuxt.config.ts",
+    "admin-fields.ts"
+  ],
+  "peerDependencies": {
+    "nuxt": "^4.0.0",
+    "@nuxt/icon": "^1.0.0 || ^2.0.0",
+    "dompurify": "^3.0.0",
+    "marked": "^15.0.0 || ^16.0.0 || ^17.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@nuxt/icon": {
+      "optional": true
+    },
+    "dompurify": {
+      "optional": true
+    },
+    "marked": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "nuxt": "^4.0.0",
+    "vue": "^3.5.0"
+  }
+}

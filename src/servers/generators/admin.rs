@@ -2,9 +2,15 @@
 #![allow(clippy::format_push_string)]
 
 //! Generate admin entity registry (TypeScript) from API modules.
+//!
+//! When schema entity definitions are available, also generates per-field
+//! metadata (type, label, role, relation targets, display hints) so the
+//! admin UI layer can render forms and tables without hand-maintained field files.
 
 use std::fs;
 use std::path::Path;
+
+use ontogen_core::model::{EntityDef, FieldRole, FieldType, RelationKind};
 
 use crate::servers::config::Config;
 use crate::servers::generators::ipc::ts_command_name;
@@ -32,8 +38,35 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
         })
         .collect();
 
+    // ── Type definitions ──
+
     out.push_str(
         "\
+export type FieldType =
+  | 'string'
+  | 'text'
+  | 'number'
+  | 'boolean'
+  | 'enum'
+  | 'string-array'
+  | 'relation'
+  | 'relation-array'
+
+export interface AdminFieldDef {
+  key: string
+  label: string
+  type: FieldType
+  required?: boolean
+  enumValues?: string[]
+  relationTo?: string
+  showInTable?: boolean
+  showInDetail?: boolean
+  showInForm?: boolean
+  isId?: boolean
+  isBody?: boolean
+  readOnly?: boolean
+}
+
 export interface AdminEntityConfig {
   /** Module key, e.g. 'node' */
   key: string
@@ -61,10 +94,14 @@ export interface AdminEntityConfig {
   createInputType: string
   /** TypeScript update input type name from bindings */
   updateInputType: string
+  /** Per-field metadata for admin UI rendering */
+  fields: AdminFieldDef[]
 }
 
 ",
     );
+
+    // ── Entity configs ──
 
     out.push_str("export const adminEntities: AdminEntityConfig[] = [\n");
 
@@ -89,6 +126,9 @@ export interface AdminEntityConfig {
         let label = config.naming.label(module);
         let plural_label = config.naming.plural_label(module);
 
+        // Generate field definitions if schema data is available
+        let fields_js = generate_fields_for_entity(module, &config.schema_entities);
+
         out.push_str(&format!(
             "\
   {{
@@ -105,6 +145,7 @@ export interface AdminEntityConfig {
     returnType: '{return_type}',
     createInputType: '{create_input}',
     updateInputType: '{update_input}',
+    fields: [{fields_js}],
   }},\n",
             list_method = snake_to_camel(&ts_command_name(module, list_fn, config)),
             get_method = snake_to_camel(&get_method),
@@ -120,6 +161,8 @@ export interface AdminEntityConfig {
 
     out.push_str("];\n\n");
 
+    // ── Lookup maps ──
+
     out.push_str(
         "\
 export const adminEntityMap: Record<string, AdminEntityConfig> = Object.fromEntries(
@@ -127,6 +170,15 @@ export const adminEntityMap: Record<string, AdminEntityConfig> = Object.fromEntr
 );\n\n\
 export const adminEntityByPlural: Record<string, AdminEntityConfig> = Object.fromEntries(
   adminEntities.map((e) => [e.plural, e]),
+);\n\n",
+    );
+
+    // ── Field definitions map (convenience for direct field access by entity key) ──
+
+    out.push_str(
+        "\
+export const adminFieldDefs: Record<string, AdminFieldDef[]> = Object.fromEntries(
+  adminEntities.map((e) => [e.key, e.fields]),
 );\n",
     );
 
@@ -134,4 +186,124 @@ export const adminEntityByPlural: Record<string, AdminEntityConfig> = Object.fro
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
     fs::write(output, out).expect("Failed to write admin registry");
+}
+
+/// Generate TypeScript field definition array for a single entity.
+///
+/// Matches the entity by converting the API module name (snake_case) to
+/// PascalCase and finding the corresponding `EntityDef`.
+fn generate_fields_for_entity(module_name: &str, entities: &[EntityDef]) -> String {
+    let pascal = ontogen_core::naming::to_pascal_case(module_name);
+    let entity = entities.iter().find(|e| e.name == pascal);
+
+    let entity = match entity {
+        Some(e) => e,
+        None => return String::new(), // No schema data — empty fields array
+    };
+
+    let mut fields = Vec::new();
+    let field_count = entity.fields.len();
+
+    for (i, field) in entity.fields.iter().enumerate() {
+        if field.role == FieldRole::Skip {
+            continue;
+        }
+
+        let key = &field.name;
+        let label = field_label(key);
+        let (field_type, relation_to) = classify_admin_field(field);
+        let is_id = field.role == FieldRole::Id;
+        let is_body = field.role == FieldRole::Body;
+        let is_required = is_id || matches!(field.field_type, FieldType::String | FieldType::I32);
+        let is_read_only = key == "source_file" || key == "created_at" || key == "last_opened_at";
+
+        // Display hints: sensible defaults
+        let show_in_table = is_id
+            || is_prominent_field(key)
+            || matches!(field.role, FieldRole::EnumField | FieldRole::Relation(_)) && i < 6; // Show first few fields in table
+        let show_in_detail = !is_body; // Body rendered separately
+        let show_in_form = !is_read_only && !is_body || is_body; // Body shown in form too
+
+        let mut props = Vec::new();
+        props.push(format!("key: '{key}'"));
+        props.push(format!("label: '{label}'"));
+        props.push(format!("type: '{field_type}'"));
+
+        if is_required {
+            props.push("required: true".to_string());
+        }
+        if let Some(ref target) = relation_to {
+            props.push(format!("relationTo: '{target}'"));
+        }
+        if show_in_table {
+            props.push("showInTable: true".to_string());
+        }
+        if show_in_detail {
+            props.push("showInDetail: true".to_string());
+        }
+        if show_in_form && !is_read_only {
+            props.push("showInForm: true".to_string());
+        }
+        if is_id {
+            props.push("isId: true".to_string());
+        }
+        if is_body {
+            props.push("isBody: true".to_string());
+        }
+        if is_read_only {
+            props.push("readOnly: true".to_string());
+        }
+
+        let trailing = if i < field_count - 1 { "," } else { "" };
+        fields.push(format!("\n      {{ {} }}{}", props.join(", "), trailing));
+    }
+
+    fields.join("")
+}
+
+/// Map a FieldDef to an admin field type string and optional relation target.
+fn classify_admin_field(field: &ontogen_core::model::FieldDef) -> (&'static str, Option<String>) {
+    match (&field.role, &field.field_type) {
+        (FieldRole::Id, FieldType::I32 | FieldType::OptionI32) => ("number", None),
+        (FieldRole::Id, _) => ("string", None),
+        (FieldRole::Body, _) => ("text", None),
+        (FieldRole::EnumField, _) => ("enum", None),
+        (FieldRole::Relation(info), _) => {
+            let target = ontogen_core::naming::to_snake_case(&info.target);
+            match info.kind {
+                RelationKind::BelongsTo => ("relation", Some(target)),
+                RelationKind::HasMany | RelationKind::ManyToMany => ("relation-array", Some(target)),
+            }
+        }
+        (_, FieldType::String) => ("string", None),
+        (_, FieldType::OptionString) => ("string", None),
+        (_, FieldType::OptionEnum(_)) => ("enum", None),
+        (_, FieldType::VecString) => ("string-array", None),
+        (_, FieldType::VecStruct(_)) => ("string-array", None),
+        (_, FieldType::I32) => ("number", None),
+        (_, FieldType::OptionI32) => ("number", None),
+        (_, FieldType::Other(_)) => ("string", None),
+    }
+}
+
+/// Generate a human-readable label from a snake_case field name.
+fn field_label(name: &str) -> String {
+    name.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(c) => {
+                    let upper: String = c.to_uppercase().collect();
+                    format!("{}{}", upper, chars.collect::<String>())
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether a field name is "prominent" enough to show in the table view by default.
+fn is_prominent_field(name: &str) -> bool {
+    matches!(name, "name" | "title" | "status" | "state" | "kind" | "date" | "priority" | "path")
 }

@@ -62,6 +62,11 @@ pub struct Config {
 
     /// Import path for the store type (e.g., `"crate::store::Store"`).
     pub store_import: Option<String>,
+
+    /// Schema entity definitions, used by the admin registry generator to emit
+    /// per-field metadata (type, role, relation targets, display hints).
+    /// When empty, the admin generator emits entity-level config only (no fields).
+    pub schema_entities: Vec<ontogen_core::model::EntityDef>,
 }
 
 impl Default for Config {
@@ -80,6 +85,7 @@ impl Default for Config {
             route_prefix: None,
             store_type: None,
             store_import: None,
+            schema_entities: Vec::new(),
         }
     }
 }
