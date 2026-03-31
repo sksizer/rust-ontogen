@@ -1,0 +1,47 @@
+[tools]
+node = { version = "lts", postinstall = "npm install"}
+pnpm = "latest"
+rust = { version = "1.93.0", postinstall = "cargo install tauri-cli --version '^2.10.0' --locked" }
+
+[env]
+TAURI_DEV_PORT = "{{ exec(command='scripts/dev-port.sh --service nuxt') | trim }}"
+STORYBOOK_PORT = "{{ exec(command='scripts/dev-port.sh --service storybook') | trim }}"
+MCP_PORT = "{{ exec(command='scripts/dev-port.sh --service mcp') | trim }}"
+HTTP_PORT = "{{ exec(command='scripts/dev-port.sh --service http') | trim }}"
+
+[tasks.setup]
+description = "Setup the development environment"
+run = [
+    "pnpm project:init"
+]
+
+[tasks.dev]
+description = "Run the Tauri development server"
+run = "pnpm tauri dev"
+
+[tasks.build]
+description = "Build the Tauri application"
+run = "pnpm tauri build"
+
+[tasks.test_all]
+description = "Run all tests, checks, and clippy"
+run = [
+    "cd src-tauri && cargo test --workspace --verbose",
+    "cd src-tauri && cargo check --workspace --all-targets",
+    "cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings"
+]
+
+[tasks.clean_all]
+description = "Clean all dev and build artifacts"
+run = [
+    "pnpm run clean"
+]
+
+[hooks]
+enter = [
+    "echo 'Entering Tauri/Nuxt development environment'",
+    "echo \"  Nuxt (TAURI_DEV_PORT): $TAURI_DEV_PORT\"",
+    "echo \"  Storybook (STORYBOOK_PORT): $STORYBOOK_PORT\"",
+    "echo \"  MCP (MCP_PORT): $MCP_PORT\"",
+    "echo \"  HTTP (HTTP_PORT): $HTTP_PORT\"",
+]

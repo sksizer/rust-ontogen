@@ -1,0 +1,31 @@
+commit-msg:
+  commands:
+    commitlint:
+      run: pnpm commitlint --edit {1}
+
+pre-commit:
+  parallel: true
+  commands:
+    eslint:
+      root: src-nuxt/
+      glob: '*.{js,ts,vue,mjs}'
+      run: pnpm eslint {staged_files}
+    clippy:
+      root: src-tauri/
+      glob: '*.rs'
+      run: cargo clippy -- -D warnings
+    rustfmt:
+      root: src-tauri/
+      glob: '*.rs'
+      run: cargo fmt -- --check
+    oxlint:
+      root: src-nuxt/
+      glob: '*.{js,ts,vue,mjs}'
+      run: pnpm oxlint {staged_files}
+    prettier:
+      root: src-nuxt/
+      glob: '*.{js,ts,vue,css,json,md,yml,yaml,mjs}'
+      run: pnpm prettier --check {staged_files}
+    typecheck:
+      root: src-nuxt/
+      run: pnpm typecheck
