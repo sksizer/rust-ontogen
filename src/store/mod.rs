@@ -61,8 +61,7 @@ pub fn generate(
         let code = generate_entity_store(entity);
 
         let path = output_dir.join(format!("{snake}.rs"));
-        fs::write(&path, &code).map_err(|e| CodegenError::Store(format!("Failed to write {}: {e}", path.display())))?;
-        crate::rustfmt(&path);
+        crate::write_and_format(&path, &code).map_err(|e| CodegenError::Store(format!("Failed to write {}: {e}", path.display())))?;
 
         // Collect method metadata for downstream consumers
         let methods = collect_method_meta(entity);
@@ -74,8 +73,7 @@ pub fn generate(
     mod_names.sort();
     let mod_rs = generate_mod_rs(&mod_names);
     let path = output_dir.join("mod.rs");
-    fs::write(&path, &mod_rs).map_err(|e| CodegenError::Store(format!("Failed to write {}: {e}", path.display())))?;
-    crate::rustfmt(&path);
+    crate::write_and_format(&path, &mod_rs).map_err(|e| CodegenError::Store(format!("Failed to write {}: {e}", path.display())))?;
 
     // Scaffold hook files (only creates files that don't exist yet)
     let mut scaffolded_hooks = Vec::new();

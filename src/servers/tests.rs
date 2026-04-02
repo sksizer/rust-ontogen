@@ -967,7 +967,7 @@ fn test_e2e_generate_transport_with_real_api() {
 
     // Verify module names include known entities
     let module_names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
-    for expected in &["node", "agent", "role"] {
+    for expected in &["capability", "agent", "role"] {
         assert!(
             module_names.contains(expected),
             "Expected module '{}' in parsed modules: {:?}",

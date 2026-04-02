@@ -31,8 +31,7 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
 
     // Write helpers module
     let helpers_path = output_dir.join("helpers.rs");
-    fs::write(&helpers_path, HELPERS_CODE).map_err(|e| format!("Failed to write {}: {e}", helpers_path.display()))?;
-    crate::rustfmt(&helpers_path);
+    crate::write_and_format(&helpers_path, HELPERS_CODE).map_err(|e| format!("Failed to write {}: {e}", helpers_path.display()))?;
 
     let mut mod_names = vec!["helpers".to_string()];
 
@@ -40,8 +39,7 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
         let mod_name = to_snake_case(&entity.name);
         let code = generate_writer_code(entity);
         let path = output_dir.join(format!("{mod_name}.rs"));
-        fs::write(&path, &code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-        crate::rustfmt(&path);
+        crate::write_and_format(&path, &code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
         mod_names.push(mod_name);
     }
 
@@ -52,8 +50,7 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
     mod_names.sort();
     let mod_rs = generate_mod_rs(&mod_names, &entity_render_names);
     let path = output_dir.join("mod.rs");
-    fs::write(&path, &mod_rs).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-    crate::rustfmt(&path);
+    crate::write_and_format(&path, &mod_rs).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
 
     Ok(())
 }
@@ -411,6 +408,7 @@ fn generate_mod_rs(mod_names: &[String], entity_render_names: &[String]) -> Stri
     }
     code.push_str("pub mod dirs;\n");
     code.push_str("pub mod fs_ops;\n");
+    code.push_str("pub mod parser_dispatch;\n");
 
     // Re-export all render functions (flat, for backward compat)
     code.push('\n');
@@ -694,10 +692,10 @@ mod tests {
         // Spot checks for specific entities
         let find = |name: &str| entities.iter().find(|e| e.name == name).unwrap();
 
-        // Node: parent_id hidden, contains rendered
-        let node_code = generate_writer_code(find("Node"));
-        assert!(!node_code.contains("parent_id:"), "Node.parent_id should be hidden");
-        assert!(node_code.contains("entity.contains"), "Node.contains should be rendered");
+        // Capability: parent_id hidden, contains rendered
+        let cap_code = generate_writer_code(find("Capability"));
+        assert!(!cap_code.contains("parent_id:"), "Capability.parent_id should be hidden");
+        assert!(cap_code.contains("entity.contains"), "Capability.contains should be rendered");
 
         // Contract: field names used as YAML keys
         let contract_code = generate_writer_code(find("Contract"));

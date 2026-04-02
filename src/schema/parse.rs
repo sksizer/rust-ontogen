@@ -697,20 +697,25 @@ mod tests {
         let entities = parse_schema_dir(&schema_dir).expect("failed to parse schema dir");
         let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
 
-        // All 12 entities must be present
+        // All 17 entities must be present
         let expected = [
-            "Node",
+            "Product",
+            "Problem",
+            "Goal",
+            "Capability",
+            "Relation",
+            "Contract",
+            "Constraint",
+            "Evidence",
+            "Specification",
+            "Requirement",
+            "AcceptanceCriterion",
             "UnitOfWork",
             "WorkflowTemplate",
             "StepResult",
-            "Test",
-            "Role",
-            "Requirement",
-            "Specification",
             "Agent",
+            "Role",
             "WorkExecution",
-            "Contract",
-            "Evidence",
         ];
         for name in &expected {
             assert!(names.contains(name), "Missing entity: {name}. Found: {names:?}");
@@ -727,42 +732,73 @@ mod tests {
         // Spot-check key properties
         let find = |name: &str| entities.iter().find(|e| e.name == name).unwrap();
 
-        // Node
-        let node = find("Node");
-        assert_eq!(node.directory, "node");
-        assert_eq!(node.table, "nodes");
-        assert!(node.id_field().is_some());
-        assert!(node.body_field().is_some());
-        assert_eq!(node.id_field().unwrap().field_type, FieldType::String);
-        // has_many (contains) + belongs_to (parent_id) + many_to_many (fulfills)
-        assert_eq!(node.belongs_to_relations().count(), 1, "Node should have 1 belongs_to");
-        assert_eq!(node.has_many_relations().count(), 1, "Node should have 1 has_many");
-        assert_eq!(node.junction_relations().count(), 1, "Node should have 1 many_to_many");
+        // Capability (renamed from Node)
+        let cap = find("Capability");
+        assert_eq!(cap.directory, "capability");
+        assert_eq!(cap.table, "capabilities");
+        assert!(cap.id_field().is_some());
+        assert!(cap.body_field().is_some());
+        assert_eq!(cap.id_field().unwrap().field_type, FieldType::String);
+        // has_many (contains) + belongs_to (parent_id) + many_to_many (goal_ids)
+        assert_eq!(cap.belongs_to_relations().count(), 1, "Capability should have 1 belongs_to");
+        assert_eq!(cap.has_many_relations().count(), 1, "Capability should have 1 has_many");
+        assert_eq!(cap.junction_relations().count(), 1, "Capability should have 1 many_to_many");
 
-        // Contract — 4 belongs_to (scope, from, to, spec) + 1 many_to_many (fulfills)
+        // Contract — 4 belongs_to (scope, from_id, to_id, spec) + 1 many_to_many (fulfills)
         let contract = find("Contract");
         assert_eq!(contract.directory, "contract");
         assert_eq!(contract.belongs_to_relations().count(), 4, "Contract should have 4 belongs_to");
         assert_eq!(contract.junction_relations().count(), 1, "Contract should have 1 many_to_many");
 
-        // Evidence — 1 belongs_to (relates_to), String PK
+        // Evidence — no relations (polymorphic ref not annotated yet)
         let evidence = find("Evidence");
         assert_eq!(evidence.id_field().unwrap().field_type, FieldType::String);
-        assert_eq!(evidence.belongs_to_relations().count(), 1);
+        assert_eq!(evidence.belongs_to_relations().count(), 0);
+
+        // Relation — 2 belongs_to (from_id, to_id)
+        let rel = find("Relation");
+        assert_eq!(rel.directory, "relation");
+        assert_eq!(rel.table, "relations");
+        assert_eq!(rel.belongs_to_relations().count(), 2, "Relation should have 2 belongs_to");
+
+        // Requirement — 3 belongs_to (specification_id, parent_id, superseded_by) + 1 many_to_many (depends_on)
+        let req = find("Requirement");
+        assert_eq!(req.belongs_to_relations().count(), 3);
+        assert_eq!(req.junction_relations().count(), 1);
+
+        // Specification — 2 many_to_many (capability_ids, depends_on)
+        let spec = find("Specification");
+        assert_eq!(spec.junction_relations().count(), 2);
+
+        // Constraint — 1 many_to_many (scope_ids)
+        let cst = find("Constraint");
+        assert_eq!(cst.directory, "constraint");
+        assert_eq!(cst.table, "constraints");
+        assert_eq!(cst.junction_relations().count(), 1);
+
+        // AcceptanceCriterion — 1 belongs_to (requirement_id)
+        let ac = find("AcceptanceCriterion");
+        assert_eq!(ac.directory, "acceptance_criterion");
+        assert_eq!(ac.table, "acceptance_criteria");
+        assert_eq!(ac.belongs_to_relations().count(), 1);
+
+        // Product — no relations
+        let product = find("Product");
+        assert_eq!(product.directory, "product");
+        assert_eq!(product.relation_fields().count(), 0);
+
+        // Problem — 1 belongs_to (product_id)
+        let problem = find("Problem");
+        assert_eq!(problem.belongs_to_relations().count(), 1);
+
+        // Goal — 1 belongs_to (problem_id)
+        let goal = find("Goal");
+        assert_eq!(goal.belongs_to_relations().count(), 1);
 
         // WorkExecution — 2 belongs_to (unit_of_work_id, workflow_template_id)
         let we = find("WorkExecution");
         assert_eq!(we.table, "work_executions");
         assert_eq!(we.belongs_to_relations().count(), 2);
-
-        // Requirement — 2 belongs_to (parent, superseded_by) + 1 many_to_many (depends_on)
-        let req = find("Requirement");
-        assert_eq!(req.belongs_to_relations().count(), 2);
-        assert_eq!(req.junction_relations().count(), 1);
-
-        // Specification — 2 many_to_many (fulfills, depends_on)
-        let spec = find("Specification");
-        assert_eq!(spec.junction_relations().count(), 2);
 
         // UnitOfWork — 2 belongs_to (workflow_template_id, parent_id) + 2 many_to_many (depends_on, constraints)
         let uow = find("UnitOfWork");

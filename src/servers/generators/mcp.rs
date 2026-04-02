@@ -401,7 +401,7 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
-    fs::write(output, out).expect("Failed to write MCP generated file");
+    crate::write_and_format(output, out).expect("Failed to write MCP generated file");
 }
 
 fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Config) {

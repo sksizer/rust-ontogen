@@ -59,7 +59,7 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
     error.value = null
     try {
       const method = config.value.listMethod as keyof typeof transport
-      const fn = transport[method] as (projectId?: string) => Promise<EntityRecord[]>
+      const fn = transport[method] as unknown as (projectId?: string) => Promise<EntityRecord[]>
       items.value = await fn(pid())
     } catch (e) {
       error.value = String(e)
@@ -74,7 +74,7 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
     error.value = null
     try {
       const method = config.value.getMethod as keyof typeof transport
-      const fn = transport[method] as (id: string, projectId?: string) => Promise<EntityRecord>
+      const fn = transport[method] as unknown as (id: string, projectId?: string) => Promise<EntityRecord>
       currentItem.value = await fn(id, pid())
     } catch (e) {
       error.value = String(e)
@@ -86,7 +86,7 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
   async function createEntity(input: EntityRecord) {
     if (!config.value) throw new Error('No entity config')
     const method = config.value.createMethod as keyof typeof transport
-    const fn = transport[method] as (
+    const fn = transport[method] as unknown as (
       input: EntityRecord,
       projectId?: string,
     ) => Promise<EntityRecord>
@@ -96,7 +96,7 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
   async function updateEntity(id: string, input: EntityRecord) {
     if (!config.value) throw new Error('No entity config')
     const method = config.value.updateMethod as keyof typeof transport
-    const fn = transport[method] as (
+    const fn = transport[method] as unknown as (
       id: string,
       input: EntityRecord,
       projectId?: string,
@@ -107,7 +107,7 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
   async function deleteEntity(id: string) {
     if (!config.value) throw new Error('No entity config')
     const method = config.value.deleteMethod as keyof typeof transport
-    const fn = transport[method] as (id: string, projectId?: string) => Promise<unknown>
+    const fn = transport[method] as unknown as (id: string, projectId?: string) => Promise<unknown>
     await fn(id, pid())
   }
 

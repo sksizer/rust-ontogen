@@ -53,22 +53,19 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
     // Write entity files
     for (mod_name, code) in &entity_outputs {
         let path = output_dir.join(format!("{mod_name}.rs"));
-        fs::write(&path, code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-        crate::rustfmt(&path);
+        crate::write_and_format(&path, code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
     }
 
     // Write junction files
     for (mod_name, code) in &junction_outputs {
         let path = output_dir.join(format!("{mod_name}.rs"));
-        fs::write(&path, code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-        crate::rustfmt(&path);
+        crate::write_and_format(&path, code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
     }
 
     // Write mod.rs
     let mod_rs = generate_mod_rs(&entity_outputs, &junction_outputs);
     let path = output_dir.join("mod.rs");
-    fs::write(&path, mod_rs).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-    crate::rustfmt(&path);
+    crate::write_and_format(&path, mod_rs).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
 
     Ok(())
 }
@@ -771,16 +768,17 @@ mod tests {
             }
         }
 
-        // Expected 7 junction tables
-        assert_eq!(junctions.len(), 7, "expected 7 junction tables");
-
         let junction_names: Vec<&str> = junctions.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(junction_names.contains(&"node_fulfills"));
+
+        // Expected 8 junction tables
+        assert_eq!(junctions.len(), 8, "expected 8 junction tables, got: {:?}", junction_names);
+        assert!(junction_names.contains(&"capability_goal_ids"));
+        assert!(junction_names.contains(&"specification_capability_ids"));
+        assert!(junction_names.contains(&"specification_depends_on"));
+        assert!(junction_names.contains(&"requirement_depends_on"));
+        assert!(junction_names.contains(&"contract_fulfills"));
+        assert!(junction_names.contains(&"constraint_scope_ids"));
         assert!(junction_names.contains(&"unit_of_work_depends_on"));
         assert!(junction_names.contains(&"unit_of_work_constraints"));
-        assert!(junction_names.contains(&"requirement_depends_on"));
-        assert!(junction_names.contains(&"specification_fulfills"));
-        assert!(junction_names.contains(&"specification_depends_on"));
-        assert!(junction_names.contains(&"contract_fulfills"));
     }
 }

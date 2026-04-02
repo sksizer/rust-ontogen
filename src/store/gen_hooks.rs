@@ -41,8 +41,7 @@ pub fn scaffold_hooks(entities: &[EntityDef], hooks_dir: &Path) -> Result<Vec<St
     // Generate/update mod.rs to declare all hook modules
     let mod_rs = generate_hooks_mod_rs(entities, hooks_dir);
     let mod_path = hooks_dir.join("mod.rs");
-    fs::write(&mod_path, &mod_rs).map_err(|e| format!("Failed to write {}: {e}", mod_path.display()))?;
-    crate::rustfmt(&mod_path);
+    crate::write_and_format(&mod_path, &mod_rs).map_err(|e| format!("Failed to write {}: {e}", mod_path.display()))?;
 
     Ok(created)
 }

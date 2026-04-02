@@ -112,9 +112,9 @@ mod tests {
         assert!(content.contains("use crate::store::hooks::role as hooks;"), "Missing hooks import");
     }
 
-    /// Test that Node (complex entity with junctions) generates junction sync code.
+    /// Test that Capability (complex entity with junctions) generates junction sync code.
     #[test]
-    fn node_has_junction_sync() {
+    fn capability_has_junction_sync() {
         let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
 
         if !schema_dir.exists() {
@@ -122,19 +122,19 @@ mod tests {
         }
 
         let entities = parse_schema_dir(&schema_dir).expect("parse failed");
-        let node = entities.iter().find(|e| e.name == "Node").expect("Node entity not found");
+        let cap = entities.iter().find(|e| e.name == "Capability").expect("Capability entity not found");
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = StoreConfig { output_dir: tmp.path().to_path_buf(), hooks_dir: None };
 
-        store::generate(&[node.clone()], None, &config).expect("gen_store failed");
+        store::generate(&[cap.clone()], None, &config).expect("gen_store failed");
 
-        let content = std::fs::read_to_string(tmp.path().join("node.rs")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("capability.rs")).unwrap();
 
-        assert!(content.contains("populate_node_relations"), "Missing populate_node_relations");
+        assert!(content.contains("populate_capability_relations"), "Missing populate_capability_relations");
         assert!(content.contains("sync_junction"), "Missing sync_junction call");
-        assert!(content.contains("node_fulfills"), "Missing node_fulfills junction table");
-        assert!(content.contains("set_node_parent"), "Missing set_node_parent helper");
-        assert!(content.contains("fulfills_changed"), "Missing conditional junction sync tracking");
+        assert!(content.contains("capability_goal_ids"), "Missing capability_goal_ids junction table");
+        assert!(content.contains("set_capability_parent"), "Missing set_capability_parent helper");
+        assert!(content.contains("goal_ids_changed"), "Missing conditional junction sync tracking");
     }
 }

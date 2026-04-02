@@ -58,8 +58,7 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path, skip: &[String]) -> R
         let mod_name = to_snake_case(&entity.name);
         let code = generate_conversion_code(entity);
         let path = output_dir.join(format!("{mod_name}.rs"));
-        fs::write(&path, &code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-        crate::rustfmt(&path);
+        crate::write_and_format(&path, &code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
         if !skip.contains(&entity.name) {
             mod_names.push(mod_name);
         }
@@ -69,8 +68,7 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path, skip: &[String]) -> R
     mod_names.sort();
     let mod_rs = generate_mod_rs(&mod_names);
     let path = output_dir.join("mod.rs");
-    fs::write(&path, &mod_rs).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-    crate::rustfmt(&path);
+    crate::write_and_format(&path, &mod_rs).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
 
     Ok(())
 }
@@ -645,7 +643,7 @@ mod tests {
             .collect();
 
         assert!(files.contains(&"mod.rs".to_string()));
-        assert!(files.contains(&"node.rs".to_string()));
+        assert!(files.contains(&"capability.rs".to_string()));
         assert!(files.contains(&"unit_of_work.rs".to_string()));
         assert!(files.contains(&"requirement.rs".to_string()));
         assert!(files.contains(&"specification.rs".to_string()));
@@ -655,17 +653,14 @@ mod tests {
         assert!(files.contains(&"evidence.rs".to_string()));
 
         // Verify has_many/many_to_many fields are Vec::new() in from_model but absent from to_active_model
-        let node_code = std::fs::read_to_string(dir.join("node.rs")).unwrap();
-        assert!(
-            node_code.contains("contains: Vec::new(),"),
-            "has_many field should be empty-initialized in from_model"
-        );
-        let to_active = node_code.split("to_active_model").nth(1).unwrap();
+        let cap_code = std::fs::read_to_string(dir.join("capability.rs")).unwrap();
+        assert!(cap_code.contains("contains: Vec::new(),"), "has_many field should be empty-initialized in from_model");
+        let to_active = cap_code.split("to_active_model").nth(1).unwrap();
         assert!(!to_active.contains("contains:"), "has_many field should not be in to_active_model");
-        assert!(!to_active.contains("fulfills:"), "many_to_many field should not be in to_active_model");
-        assert!(node_code.contains("parent_id:"), "belongs_to field should appear");
-        assert!(!node_code.contains("wikilinks"), "wikilinks should not be in conversion");
-        assert!(!node_code.contains("source_file"), "source_file should not be in conversion");
+        assert!(!to_active.contains("goal_ids:"), "many_to_many field should not be in to_active_model");
+        assert!(cap_code.contains("parent_id:"), "belongs_to field should appear");
+        assert!(!cap_code.contains("wikilinks"), "wikilinks should not be in conversion");
+        assert!(!cap_code.contains("source_file"), "source_file should not be in conversion");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

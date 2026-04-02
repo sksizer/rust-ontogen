@@ -4,6 +4,62 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+/// Write content to a file only if the content has changed.
+///
+/// This prevents unnecessary file-system modifications that trigger
+/// file-watchers (e.g. Tauri dev) and cause infinite rebuild loops.
+pub fn write_if_changed(path: &Path, content: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let content = content.as_ref();
+    if path.exists() {
+        if let Ok(existing) = std::fs::read(path) {
+            if existing == content {
+                return Ok(());
+            }
+        }
+    }
+    std::fs::write(path, content)
+}
+
+/// Write content to a file and run `rustfmt`, but only if the formatted
+/// result differs from what's already on disk.
+///
+/// This avoids touching file mtimes when nothing changed, preventing
+/// infinite rebuild loops with file-watchers (e.g. Tauri dev).
+pub fn write_and_format(path: &Path, content: impl AsRef<str>) -> std::io::Result<()> {
+    let formatted = rustfmt_string(content.as_ref());
+    write_if_changed(path, formatted)
+}
+
+/// Run `rustfmt` on a string in memory, returning the formatted result.
+/// Falls back to the original string if rustfmt is not available.
+fn rustfmt_string(input: &str) -> String {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = match Command::new("rustfmt")
+        .arg("--edition")
+        .arg("2024")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return input.to_string(),
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.as_bytes());
+    }
+
+    match child.wait_with_output() {
+        Ok(output) if output.status.success() => {
+            String::from_utf8(output.stdout).unwrap_or_else(|_| input.to_string())
+        }
+        _ => input.to_string(),
+    }
+}
+
 /// Run `rustfmt` on a generated Rust file.
 /// Silently ignores failures (e.g., if rustfmt is not installed).
 pub fn rustfmt(path: &Path) {

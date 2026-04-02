@@ -3,63 +3,24 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.28.2",
-  "scripts": {
-    "clean": "rm -Rf nuxt_modules .node_modules .nuxt dist package-lock.json pnpm-lock.yaml yarn.lock",
-    "build": "nuxt build",
-    "dev": "nuxt dev",
-    "generate": "nuxt generate",
-    "preview": "nuxt preview",
-    "postinstall": "nuxt prepare",
-    "test": "vitest run",
-    "lint": "eslint . && oxlint .",
-    "typecheck": "nuxi typecheck",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "storybook": "storybook dev -p ${STORYBOOK_PORT:-1421}",
-    "storybook:build": "storybook build -o storybook-static"
-  },
   "dependencies": {
-    "@nuxt/eslint": "^1.15.2",
-    "@nuxt/fonts": "^0.14.0",
-    "@nuxt/icon": "^2.2.1",
-    "@nuxt/scripts": "^0.13.2",
-    "@nuxt/test-utils": "^4.0.0",
-    "@nuxt/ui": "^4.4.0",
     "@ontogen/admin-layer": "workspace:*",
+    "@nuxt/icon": "^2.2.1",
+    "@nuxt/ui": "^4.4.0",
     "@pinia/nuxt": "^0.11.3",
     "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/plugin-opener": "^2.5.3",
-    "@unhead/vue": "^2.1.9",
     "dompurify": "^3.3.2",
-    "eslint": "^9.39.2",
     "marked": "^17.0.2",
     "nuxt": "^4.3.1",
     "pinia": "^3.0.4",
-    "tailwindcss": "^4.2.1",
-    "vue": "^3.5.29",
-    "vue-router": "^4.6.4"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "@parcel/watcher",
-      "esbuild",
-      "unrs-resolver",
-      "vue-demi"
-    ]
+    "vue": "^3.5.29"
   },
   "devDependencies": {
-    "@storybook/addon-a11y": "^10.2.13",
-    "@storybook/vue3": "^10.2.13",
-    "@storybook/vue3-vite": "^10.2.13",
-    "@tailwindcss/vite": "^4.2.1",
-    "@types/node": "^25.5.0",
-    "@vitejs/plugin-vue": "^6.0.4",
-    "eslint-config-prettier": "^10.1.8",
-    "oxlint": "^1.50.0",
-    "prettier": "^3.8.1",
-    "storybook": "^10.2.13",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate"
   }
 }

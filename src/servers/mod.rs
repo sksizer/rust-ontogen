@@ -115,20 +115,12 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
         }
     }
 
-    // Format generated Rust files
-    for generator in &config.generators {
-        let output = match generator {
-            config::GeneratorConfig::Server(
-                config::ServerGenerator::HttpAxum { output }
-                | config::ServerGenerator::Mcp { output }
-                | config::ServerGenerator::TauriIpc { output },
-            ) => output,
-            config::GeneratorConfig::Client(_) => continue,
-        };
-        crate::rustfmt(output);
-    }
+    // Note: Rust server generators use write_and_format() internally,
+    // so no separate rustfmt pass is needed.
 
     // Format generated TypeScript files
+    // Note: prettier is still needed since TS generators use write_if_changed
+    // without formatting. Prettier checks mtimes internally and is safe.
     let ts_files: Vec<&std::path::Path> = config
         .generators
         .iter()

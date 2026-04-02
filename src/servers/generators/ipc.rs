@@ -357,7 +357,7 @@ pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
-    fs::write(output, out).expect("Failed to write IPC generated file");
+    crate::write_and_format(output, out).expect("Failed to write IPC generated file");
 }
 
 fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, config: &Config) {

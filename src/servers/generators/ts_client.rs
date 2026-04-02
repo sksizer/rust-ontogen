@@ -188,7 +188,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
-    fs::write(output, out).expect("Failed to write TS HTTP client");
+    crate::write_if_changed(output, out).expect("Failed to write TS HTTP client");
 }
 
 fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config: &Config) {

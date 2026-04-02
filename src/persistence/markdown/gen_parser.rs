@@ -28,8 +28,7 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
 
     let code = generate_parser_dispatch(entities);
     let path = output_dir.join("parser_dispatch.rs");
-    fs::write(&path, &code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-    crate::rustfmt(&path);
+    crate::write_and_format(&path, &code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
 
     // Append parser_dispatch module to mod.rs (created by gen_writer)
     let mod_path = output_dir.join("mod.rs");
@@ -37,7 +36,7 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
     if !existing.contains("parser_dispatch") {
         let mut updated = existing;
         updated.push_str("\npub mod parser_dispatch;\n");
-        fs::write(&mod_path, &updated).map_err(|e| format!("Failed to update {}: {e}", mod_path.display()))?;
+        crate::write_if_changed(&mod_path, &updated).map_err(|e| format!("Failed to update {}: {e}", mod_path.display()))?;
     }
 
     Ok(())

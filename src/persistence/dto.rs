@@ -37,8 +37,7 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
         let mod_name = to_snake_case(&entity.name);
         let code = generate_dto_code(entity);
         let path = output_dir.join(format!("{mod_name}.rs"));
-        fs::write(&path, &code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-        crate::rustfmt(&path);
+        crate::write_and_format(&path, &code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
         mod_names.push(mod_name);
     }
 
@@ -46,8 +45,7 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
     mod_names.sort();
     let mod_rs = generate_mod_rs(&mod_names);
     let path = output_dir.join("mod.rs");
-    fs::write(&path, &mod_rs).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-    crate::rustfmt(&path);
+    crate::write_and_format(&path, &mod_rs).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
 
     Ok(())
 }
