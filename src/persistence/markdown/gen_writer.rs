@@ -31,7 +31,8 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
 
     // Write helpers module
     let helpers_path = output_dir.join("helpers.rs");
-    crate::write_and_format(&helpers_path, HELPERS_CODE).map_err(|e| format!("Failed to write {}: {e}", helpers_path.display()))?;
+    crate::write_and_format(&helpers_path, HELPERS_CODE)
+        .map_err(|e| format!("Failed to write {}: {e}", helpers_path.display()))?;
 
     let mut mod_names = vec!["helpers".to_string()];
 
