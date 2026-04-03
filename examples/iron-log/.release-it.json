@@ -1,0 +1,26 @@
+{
+  "git": {
+    "commitMessage": "chore: release v${version}",
+    "tagName": "v${version}"
+  },
+  "github": {
+    "release": false
+  },
+  "npm": {
+    "publish": false
+  },
+  "hooks": {
+    "after:bump": "cd src-tauri && cargo generate-lockfile"
+  },
+  "plugins": {
+    "@release-it/bumper": {
+      "out": [
+        {
+          "file": "src-tauri/Cargo.toml",
+          "type": "text/toml",
+          "path": "package.version"
+        }
+      ]
+    }
+  }
+}

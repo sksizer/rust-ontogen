@@ -222,7 +222,7 @@ fn generate_fields_for_entity(module_name: &str, entities: &[EntityDef]) -> Stri
             || is_prominent_field(key)
             || matches!(field.role, FieldRole::EnumField | FieldRole::Relation(_)) && i < 6; // Show first few fields in table
         let show_in_detail = !is_body; // Body rendered separately
-        let show_in_form = !is_read_only && !is_body || is_body; // Body shown in form too
+        let show_in_form = !is_read_only || is_body; // Body shown in form too
 
         let mut props = Vec::new();
         props.push(format!("key: '{key}'"));

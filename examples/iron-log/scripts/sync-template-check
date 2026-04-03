@@ -1,0 +1,142 @@
+#!/bin/bash
+# sync-template-check
+#
+# Compares project tooling against the upstream template repo
+# (https://github.com/sksizer/template-tauri-nuxt) and reports drift.
+#
+# Usage:
+#   pnpm run template:check          # show diffs
+#   pnpm run template:check -- -v    # verbose: show full file contents side-by-side
+
+set -euo pipefail
+
+TEMPLATE_REPO="sksizer/template-tauri-nuxt"
+TEMPLATE_BRANCH="main"
+VERBOSE=false
+
+for arg in "$@"; do
+  case "$arg" in
+    -v|--verbose) VERBOSE=true ;;
+  esac
+done
+
+# Files to compare (template path : local path)
+TOOLING_FILES=(
+  "package.json"
+  ".github/workflows/ci.yml"
+  ".github/workflows/build-check.yml"
+  ".github/workflows/release.yml"
+  ".github/dependabot.yml"
+  ".release-it.json"
+  "mise.toml"
+  "lefthook.yml"
+  "commitlint.config.ts"
+  ".prettierrc"
+  ".prettierignore"
+  ".editorconfig"
+  "oxlint.json"
+  "Makefile"
+  "scripts/backend-format-check"
+  "scripts/backend-lint"
+  "scripts/backend-test"
+  "src-nuxt/nuxt.config.ts"
+  "src-nuxt/eslint.config.mjs"
+)
+
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+echo "Fetching template from github.com/$TEMPLATE_REPO ..."
+git clone --quiet --depth 1 --branch "$TEMPLATE_BRANCH" \
+  "https://github.com/$TEMPLATE_REPO.git" "$TMPDIR/template" 2>/dev/null
+
+DRIFT_COUNT=0
+
+diff_file() {
+  local file="$1"
+  local template_path="$TMPDIR/template/$file"
+  local local_path="$file"
+
+  if [ ! -f "$template_path" ]; then
+    return
+  fi
+
+  if [ ! -f "$local_path" ]; then
+    echo "  MISSING: $file (exists in template but not locally)"
+    DRIFT_COUNT=$((DRIFT_COUNT + 1))
+    return
+  fi
+
+  if ! diff -q "$template_path" "$local_path" > /dev/null 2>&1; then
+    echo "  CHANGED: $file"
+    DRIFT_COUNT=$((DRIFT_COUNT + 1))
+    if $VERBOSE; then
+      diff --color=auto -u "$template_path" "$local_path" \
+        --label "template/$file" --label "local/$file" || true
+      echo ""
+    fi
+  fi
+}
+
+echo ""
+echo "=== Tooling File Comparison ==="
+echo ""
+
+for file in "${TOOLING_FILES[@]}"; do
+  diff_file "$file"
+done
+
+echo ""
+echo "=== Package Version Comparison (src-nuxt/package.json) ==="
+echo ""
+
+if command -v node > /dev/null 2>&1; then
+  node -e "
+    const tmpl = require('$TMPDIR/template/src-nuxt/package.json');
+    const local = require('./src-nuxt/package.json');
+
+    const allDeps = { ...tmpl.dependencies, ...tmpl.devDependencies };
+    const localDeps = { ...local.dependencies, ...local.devDependencies };
+
+    let drifted = false;
+    for (const [pkg, ver] of Object.entries(allDeps)) {
+      if (localDeps[pkg] && localDeps[pkg] !== ver) {
+        console.log('  VERSION DRIFT: ' + pkg + '  template=' + ver + '  local=' + localDeps[pkg]);
+        drifted = true;
+      }
+    }
+    if (!drifted) console.log('  All shared package versions match.');
+  " 2>/dev/null || echo "  (could not compare — node not available)"
+fi
+
+echo ""
+echo "=== New Files in Template (not in project) ==="
+echo ""
+
+NEW_COUNT=0
+while IFS= read -r -d '' file; do
+  rel="${file#$TMPDIR/template/}"
+  case "$rel" in
+    .git/*|node_modules/*|src-tauri/src/*|src-nuxt/app/*|README.md|docs/*) continue ;;
+  esac
+  if [ ! -f "$rel" ]; then
+    echo "  NEW: $rel"
+    NEW_COUNT=$((NEW_COUNT + 1))
+  fi
+done < <(find "$TMPDIR/template" -type f -print0 2>/dev/null)
+
+if [ "$NEW_COUNT" -eq 0 ]; then
+  echo "  None."
+fi
+
+echo ""
+echo "=== Summary ==="
+echo "  Files with drift: $DRIFT_COUNT"
+echo "  New in template:  $NEW_COUNT"
+if [ "$DRIFT_COUNT" -eq 0 ] && [ "$NEW_COUNT" -eq 0 ]; then
+  echo "  Project tooling is up to date with the template."
+else
+  echo ""
+  echo "  To update, run:  claude 'bring project tooling up to date with the template at https://github.com/$TEMPLATE_REPO'"
+  echo "  Or run with -v for detailed diffs:  pnpm run template:check -- -v"
+fi
