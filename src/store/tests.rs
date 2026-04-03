@@ -4,9 +4,7 @@
 mod tests {
     use std::path::PathBuf;
 
-    use crate::StoreConfig;
-    use crate::schema::parse::parse_schema_dir;
-    use crate::store;
+    use crate::{StoreConfig, schema::parse::parse_schema_dir, store};
 
     /// Test that gen_store produces valid code for all real entities.
     /// This reads the actual schema files and generates store code to a temp dir.

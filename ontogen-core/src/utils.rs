@@ -10,12 +10,11 @@ use std::path::Path;
 /// file-watchers (e.g. Tauri dev) and cause infinite rebuild loops.
 pub fn write_if_changed(path: &Path, content: impl AsRef<[u8]>) -> std::io::Result<()> {
     let content = content.as_ref();
-    if path.exists() {
-        if let Ok(existing) = std::fs::read(path) {
-            if existing == content {
-                return Ok(());
-            }
-        }
+    if path.exists()
+        && let Ok(existing) = std::fs::read(path)
+        && existing == content
+    {
+        return Ok(());
     }
     std::fs::write(path, content)
 }
@@ -53,9 +52,7 @@ fn rustfmt_string(input: &str) -> String {
     }
 
     match child.wait_with_output() {
-        Ok(output) if output.status.success() => {
-            String::from_utf8(output.stdout).unwrap_or_else(|_| input.to_string())
-        }
+        Ok(output) if output.status.success() => String::from_utf8(output.stdout).unwrap_or_else(|_| input.to_string()),
         _ => input.to_string(),
     }
 }
