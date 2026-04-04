@@ -1,38 +1,19 @@
 import { ref, computed, watch, isRef, type Ref } from 'vue'
-import type { AdminFieldDef } from '../../admin-fields'
+import type { AdminFieldDef, AdminEntityConfig } from '@ontogen/admin-types'
 
 type EntityRecord = Record<string, unknown>
 
 /**
- * Contract: the consuming app must provide these auto-imported composables:
+ * Contract: the consuming app must provide this auto-imported composable:
  *
- *   useTransport()        — returns a Transport object with CRUD methods
- *   useAdminProjectId()   — returns Ref<string | undefined> for multi-tenancy
- *   useAdminRegistry()    — returns { adminEntityByPlural, adminFieldDefs }
+ *   useTransport() — returns a Transport object with CRUD methods
  *
- * These are resolved via Nuxt auto-imports at runtime.
+ * The admin registry is provided automatically by the layer's Nuxt module
+ * via the #admin-registry alias pointing to app/admin/generated/admin-registry.ts.
  */
 
-export interface AdminEntityConfig {
-  key: string
-  plural: string
-  label: string
-  pluralLabel: string
-  idType: 'string'
-  listMethod: string
-  getMethod: string
-  createMethod: string
-  updateMethod: string
-  deleteMethod: string
-  returnType: string
-  createInputType: string
-  updateInputType: string
-}
-
 export function useAdminEntity(pluralOrKey: string | Ref<string>) {
-  // These are auto-imported from the consuming app
   const transport = useTransport()
-  const projectId = useAdminProjectId()
   const { adminEntityByPlural, adminFieldDefs } = useAdminRegistry()
 
   const resolvedKey = computed(() => (isRef(pluralOrKey) ? pluralOrKey.value : pluralOrKey))
@@ -51,16 +32,14 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
     return adminFieldDefs[config.value.key] ?? []
   })
 
-  const pid = () => projectId.value
-
   async function fetchList() {
     if (!config.value) return
     loading.value = true
     error.value = null
     try {
       const method = config.value.listMethod as keyof typeof transport
-      const fn = transport[method] as unknown as (projectId?: string) => Promise<EntityRecord[]>
-      items.value = await fn(pid())
+      const fn = transport[method] as (...args: unknown[]) => Promise<EntityRecord[]>
+      items.value = await fn()
     } catch (e) {
       error.value = String(e)
     } finally {
@@ -74,8 +53,8 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
     error.value = null
     try {
       const method = config.value.getMethod as keyof typeof transport
-      const fn = transport[method] as unknown as (id: string, projectId?: string) => Promise<EntityRecord>
-      currentItem.value = await fn(id, pid())
+      const fn = transport[method] as (...args: unknown[]) => Promise<EntityRecord>
+      currentItem.value = await fn(id)
     } catch (e) {
       error.value = String(e)
     } finally {
@@ -86,32 +65,25 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
   async function createEntity(input: EntityRecord) {
     if (!config.value) throw new Error('No entity config')
     const method = config.value.createMethod as keyof typeof transport
-    const fn = transport[method] as unknown as (
-      input: EntityRecord,
-      projectId?: string,
-    ) => Promise<EntityRecord>
-    return await fn(input, pid())
+    const fn = transport[method] as (...args: unknown[]) => Promise<EntityRecord>
+    return await fn(input)
   }
 
   async function updateEntity(id: string, input: EntityRecord) {
     if (!config.value) throw new Error('No entity config')
     const method = config.value.updateMethod as keyof typeof transport
-    const fn = transport[method] as unknown as (
-      id: string,
-      input: EntityRecord,
-      projectId?: string,
-    ) => Promise<EntityRecord>
-    return await fn(id, input, pid())
+    const fn = transport[method] as (...args: unknown[]) => Promise<EntityRecord>
+    return await fn(id, input)
   }
 
   async function deleteEntity(id: string) {
     if (!config.value) throw new Error('No entity config')
     const method = config.value.deleteMethod as keyof typeof transport
-    const fn = transport[method] as unknown as (id: string, projectId?: string) => Promise<unknown>
-    await fn(id, pid())
+    const fn = transport[method] as (...args: unknown[]) => Promise<unknown>
+    await fn(id)
   }
 
-  // Re-fetch when the entity type changes (BUG-012)
+  // Re-fetch when the entity type changes
   if (isRef(pluralOrKey)) {
     watch(resolvedKey, () => {
       items.value = []
@@ -128,7 +100,7 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
 
   function getDisplayValue(item: EntityRecord): string {
     if (!config.value) return ''
-    for (const key of ['name', 'title', 'id', 'contract_id']) {
+    for (const key of ['name', 'title', 'id']) {
       if (item[key] != null && String(item[key]).length > 0) {
         return String(item[key])
       }

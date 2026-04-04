@@ -1,0 +1,11 @@
+{
+  "name": "@ontogen/admin-types",
+  "version": "0.1.0",
+  "description": "Framework-agnostic type definitions for the ontogen admin registry",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  }
+}

@@ -823,8 +823,8 @@ fn test_admin_registry_generator() {
     crate::servers::generators::admin::generate(&output, &modules, &config);
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // Interface definition
-    assert!(content.contains("export interface AdminEntityConfig"));
+    // Type import (definitions moved to @ontogen/admin-types)
+    assert!(content.contains("import type { AdminFieldDef, AdminEntityConfig }"));
 
     // Registry array
     assert!(content.contains("export const adminEntities: AdminEntityConfig[]"));

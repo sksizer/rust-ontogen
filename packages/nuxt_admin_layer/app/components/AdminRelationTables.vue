@@ -20,12 +20,9 @@ interface InverseRelation {
   loading: boolean
 }
 
-// Auto-imported from consuming app
 const transport = useTransport()
-const projectId = useAdminProjectId()
 const { adminEntityMap, adminFieldDefs } = useAdminRegistry()
 
-const pid = () => projectId.value
 const inverseRelations = ref<InverseRelation[]>([])
 
 onMounted(async () => {
@@ -64,8 +61,8 @@ onMounted(async () => {
         const config = adminEntityMap[rel.sourceEntityKey]
         if (!config) return
         const method = config.listMethod as keyof typeof transport
-        const fn = transport[method] as (projectId?: string) => Promise<EntityRecord[]>
-        const allItems = await fn(pid())
+        const fn = transport[method] as (...args: unknown[]) => Promise<EntityRecord[]>
+        const allItems = await fn()
         // Filter to items that reference our entity
         rel.items = allItems.filter((item) => {
           const val = item[rel.sourceFieldKey]
