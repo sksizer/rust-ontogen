@@ -181,6 +181,10 @@ fn field_to_update_type(field: &FieldDef) -> String {
         FieldType::VecStruct(inner) => format!("Option<Vec<crate::schema::{inner}>>"),
         FieldType::I32 => "Option<i32>".to_string(),
         FieldType::OptionI32 => "Option<Option<i32>>".to_string(),
+        FieldType::I64 => "Option<i64>".to_string(),
+        FieldType::OptionI64 => "Option<Option<i64>>".to_string(),
+        FieldType::Bool => "Option<bool>".to_string(),
+        FieldType::OptionBool => "Option<Option<bool>>".to_string(),
         FieldType::Other(ty) => format!("Option<{}>", qualify_type(ty)),
     }
 }

@@ -151,6 +151,10 @@ fn field_to_create_type(field: &FieldDef) -> String {
         FieldType::OptionString => "Option<String>".to_string(),
         FieldType::I32 => "i32".to_string(),
         FieldType::OptionI32 => "Option<i32>".to_string(),
+        FieldType::I64 => "i64".to_string(),
+        FieldType::OptionI64 => "Option<i64>".to_string(),
+        FieldType::Bool => "bool".to_string(),
+        FieldType::OptionBool => "Option<bool>".to_string(),
         FieldType::VecString => "Vec<String>".to_string(),
         FieldType::VecStruct(t) => format!("Vec<crate::schema::{t}>"),
         FieldType::OptionEnum(t) => format!("Option<{}>", qualify_type(t)),
@@ -177,6 +181,8 @@ fn generate_serde_default_attr(field: &FieldDef) -> String {
                     field.field_type,
                     FieldType::OptionString
                         | FieldType::OptionI32
+                        | FieldType::OptionI64
+                        | FieldType::OptionBool
                         | FieldType::OptionEnum(_)
                         | FieldType::VecString
                         | FieldType::VecStruct(_)

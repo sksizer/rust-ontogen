@@ -354,10 +354,10 @@ fn generate_plain_render(field: &FieldDef, fm_key: &str) -> String {
     // Add custom code in a wrapper function to handle this field."#
             )
         }
-        FieldType::I32 => {
+        FieldType::I32 | FieldType::I64 | FieldType::Bool => {
             format!(r#"    fm.push_str(&format!("{fm_key}: {{}}\n", entity.{field_name}));"#)
         }
-        FieldType::OptionI32 => {
+        FieldType::OptionI32 | FieldType::OptionI64 | FieldType::OptionBool => {
             format!(
                 r#"    if let Some(val) = entity.{field_name} {{
         fm.push_str(&format!("{fm_key}: {{}}\n", val));
