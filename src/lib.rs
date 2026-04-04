@@ -48,7 +48,10 @@ pub use ontogen_core::CodegenError;
 pub use ontogen_core::ir::*;
 pub use ontogen_core::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
 pub use ontogen_core::naming::{pluralize, to_pascal_case, to_snake_case};
-pub use ontogen_core::utils::{clean_generated_dir, emit_rerun_directives, emit_rerun_directives_excluding, rustfmt, write_and_format, write_and_format_ts, write_if_changed};
+pub use ontogen_core::utils::{
+    clean_generated_dir, emit_rerun_directives, emit_rerun_directives_excluding, rustfmt, write_and_format,
+    write_and_format_ts, write_if_changed,
+};
 
 use std::path::PathBuf;
 

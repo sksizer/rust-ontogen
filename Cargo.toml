@@ -14,7 +14,7 @@ keywords = ["codegen", "orm", "code-generation", "build-script"]
 categories = ["development-tools::build-utils"]
 
 [dependencies]
-ontogen-core = { path = "ontogen-core" }
+ontogen-core = { path = "ontogen-core", version = "=0.1.0" }
 syn = { version = "2", features = ["full", "parsing"] }
 quote = "1"
 

@@ -36,7 +36,8 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
     if !existing.contains("parser_dispatch") {
         let mut updated = existing;
         updated.push_str("\npub mod parser_dispatch;\n");
-        crate::write_if_changed(&mod_path, &updated).map_err(|e| format!("Failed to update {}: {e}", mod_path.display()))?;
+        crate::write_if_changed(&mod_path, &updated)
+            .map_err(|e| format!("Failed to update {}: {e}", mod_path.display()))?;
     }
 
     Ok(())

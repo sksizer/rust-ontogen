@@ -29,7 +29,8 @@ pub fn write_if_changed(path: &Path, content: impl AsRef<[u8]>) -> std::io::Resu
 /// Returns `CodegenError::ExternalTool` if `rustfmt` is not installed.
 pub fn write_and_format(path: &Path, content: impl AsRef<str>) -> Result<(), CodegenError> {
     let formatted = rustfmt_string(content.as_ref())?;
-    write_if_changed(path, formatted).map_err(|e| CodegenError::Persistence(format!("Failed to write {}: {e}", path.display())))
+    write_if_changed(path, formatted)
+        .map_err(|e| CodegenError::Persistence(format!("Failed to write {}: {e}", path.display())))
 }
 
 /// Run `rustfmt` on a string in memory, returning the formatted result.
@@ -61,7 +62,10 @@ fn rustfmt_string(input: &str) -> Result<String, CodegenError> {
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            println!("cargo:warning=ontogen: rustfmt exited with {}, falling back to unformatted output: {stderr}", output.status);
+            println!(
+                "cargo:warning=ontogen: rustfmt exited with {}, falling back to unformatted output: {stderr}",
+                output.status
+            );
             Ok(input.to_string())
         }
         Err(e) => {
@@ -85,19 +89,36 @@ pub fn rustfmt(path: &Path) {
 ///
 /// Returns `CodegenError::ExternalTool` if `npx` / `prettier` is not installed.
 pub fn write_and_format_ts(path: &Path, content: impl AsRef<str>) -> Result<(), CodegenError> {
-    let formatted = prettier_string(content.as_ref())?;
-    write_if_changed(path, formatted).map_err(|e| CodegenError::Client(format!("Failed to write {}: {e}", path.display())))
+    // Canonicalize the path so prettier can resolve `.prettierrc` from the
+    // output file's directory, not the CWD (which is typically `src-tauri/`).
+    let resolved = if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+        match std::fs::canonicalize(parent) {
+            Ok(abs_parent) => abs_parent.join(path.file_name().unwrap_or_default()),
+            Err(_) => path.to_path_buf(),
+        }
+    } else {
+        path.to_path_buf()
+    };
+    let formatted = prettier_string(content.as_ref(), &resolved)?;
+    write_if_changed(path, formatted)
+        .map_err(|e| CodegenError::Client(format!("Failed to write {}: {e}", path.display())))
 }
 
 /// Run `prettier` on a string in memory, returning the formatted result.
 ///
+/// `virtual_path` tells prettier where the file will live so it can
+/// resolve the nearest `.prettierrc` config automatically.
+///
 /// Returns `CodegenError::ExternalTool` if `npx` cannot be spawned.
-fn prettier_string(input: &str) -> Result<String, CodegenError> {
+fn prettier_string(input: &str, virtual_path: &Path) -> Result<String, CodegenError> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
     let mut child = Command::new("npx")
-        .args(["prettier", "--parser", "typescript", "--single-quote"])
+        .arg("prettier")
+        .arg("--stdin-filepath")
+        .arg(virtual_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -117,7 +138,10 @@ fn prettier_string(input: &str) -> Result<String, CodegenError> {
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            println!("cargo:warning=ontogen: prettier exited with {}, falling back to unformatted output: {stderr}", output.status);
+            println!(
+                "cargo:warning=ontogen: prettier exited with {}, falling back to unformatted output: {stderr}",
+                output.status
+            );
             Ok(input.to_string())
         }
         Err(e) => {

@@ -808,6 +808,9 @@ fn test_ts_transport_generator_crud_module() {
 #[test]
 fn test_admin_registry_generator() {
     let tmp = tempfile::tempdir().unwrap();
+    // Prettier resolves config from the output file's directory; drop a
+    // .prettierrc so it uses single quotes (matching the project convention).
+    std::fs::write(tmp.path().join(".prettierrc"), r#"{ "singleQuote": true }"#).unwrap();
     let output = tmp.path().join("admin-registry.ts");
     let config = test_config(tmp.path().to_path_buf());
 

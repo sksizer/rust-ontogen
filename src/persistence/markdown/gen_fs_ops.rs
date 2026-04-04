@@ -20,12 +20,14 @@ pub fn generate(entities: &[EntityDef], output_dir: &Path) -> Result<(), String>
     // Generate dirs.rs
     let dirs_code = generate_dirs(entities);
     let dirs_path = output_dir.join("dirs.rs");
-    crate::write_and_format(&dirs_path, &dirs_code).map_err(|e| format!("Failed to write {}: {e}", dirs_path.display()))?;
+    crate::write_and_format(&dirs_path, &dirs_code)
+        .map_err(|e| format!("Failed to write {}: {e}", dirs_path.display()))?;
 
     // Generate fs_ops.rs
     let fs_ops_code = generate_fs_ops(entities);
     let fs_ops_path = output_dir.join("fs_ops.rs");
-    crate::write_and_format(&fs_ops_path, &fs_ops_code).map_err(|e| format!("Failed to write {}: {e}", fs_ops_path.display()))?;
+    crate::write_and_format(&fs_ops_path, &fs_ops_code)
+        .map_err(|e| format!("Failed to write {}: {e}", fs_ops_path.display()))?;
 
     Ok(())
 }

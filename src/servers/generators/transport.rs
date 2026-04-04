@@ -124,7 +124,11 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
     // IPC imports — must be at top level for lint compliance
     out.push_str("import { invoke } from '@tauri-apps/api/core';\n");
-    out.push_str("import { listen } from '@tauri-apps/api/event';\n\n");
+    let has_events = modules.iter().any(|m| !m.events.is_empty());
+    if has_events {
+        out.push_str("import { listen } from '@tauri-apps/api/event';\n");
+    }
+    out.push('\n');
 
     for t in &missing {
         out.push_str(&format!(
