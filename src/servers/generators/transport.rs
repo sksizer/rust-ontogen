@@ -148,7 +148,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
-    crate::write_if_changed(output, out).expect("Failed to write transport generated file");
+    crate::write_and_format_ts(output, out).expect("Failed to write transport generated file");
 }
 
 /// Generate the `Transport` interface.

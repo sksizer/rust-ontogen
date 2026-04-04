@@ -1,60 +1,82 @@
 use ontogen::servers::config::{ClientGenerator, Config, GeneratorConfig, ServerGenerator};
 use ontogen::servers::types::NamingConfig;
+use ontogen::CodegenError;
+
+/// Unwrap a codegen result, emitting a cargo:warning before panicking on error.
+fn unwrap_codegen<T>(result: Result<T, CodegenError>, stage: &str) -> T {
+    result.unwrap_or_else(|e| {
+        e.emit_cargo_warning();
+        panic!("{stage}: {e}");
+    })
+}
 
 fn main() {
+    // ── Rerun directives ────────────────────────────────────────────────
+    println!("cargo:rerun-if-changed=build.rs");
+    ontogen::emit_rerun_directives(&std::path::PathBuf::from("src/schema"));
+    ontogen::emit_rerun_directives_excluding(&std::path::PathBuf::from("src/api/v1"), &["generated"]);
+
     // ── Stage 1: Parse schema ────────────────────────────────────────────
-    let schema = ontogen::parse_schema(&ontogen::SchemaConfig {
-        schema_dir: "src/schema".into(),
-    })
-    .expect("Failed to parse schema");
+    let schema = unwrap_codegen(
+        ontogen::parse_schema(&ontogen::SchemaConfig {
+            schema_dir: "src/schema".into(),
+        }),
+        "Stage 1: parse schema",
+    );
 
     // ── Stage 2: Generate SeaORM entities ────────────────────────────────
-    let seaorm = ontogen::gen_seaorm(
-        &schema.entities,
-        &ontogen::SeaOrmConfig {
-            entity_output: "src/persistence/db/entities/generated".into(),
-            conversion_output: "src/persistence/db/conversions/generated".into(),
-            skip_conversions: vec![],
-        },
-    )
-    .expect("Failed to generate SeaORM entities");
+    let seaorm = unwrap_codegen(
+        ontogen::gen_seaorm(
+            &schema.entities,
+            &ontogen::SeaOrmConfig {
+                entity_output: "src/persistence/db/entities/generated".into(),
+                conversion_output: "src/persistence/db/conversions/generated".into(),
+                skip_conversions: vec![],
+            },
+        ),
+        "Stage 2: generate SeaORM entities",
+    );
 
     // ── Stage 3: Generate DTOs ───────────────────────────────────────────
-    ontogen::gen_dtos(
-        &schema.entities,
-        &ontogen::DtoConfig {
-            output_dir: "src/schema/dto".into(),
-        },
-    )
-    .expect("Failed to generate DTOs");
+    unwrap_codegen(
+        ontogen::gen_dtos(
+            &schema.entities,
+            &ontogen::DtoConfig {
+                output_dir: "src/schema/dto".into(),
+            },
+        ),
+        "Stage 3: generate DTOs",
+    );
 
     // ── Stage 4: Generate Store layer ────────────────────────────────────
-    ontogen::gen_store(
-        &schema.entities,
-        Some(&seaorm),
-        &ontogen::StoreConfig {
-            output_dir: "src/store/generated".into(),
-            hooks_dir: Some("src/store/hooks".into()),
-        },
-    )
-    .expect("Failed to generate store");
+    unwrap_codegen(
+        ontogen::gen_store(
+            &schema.entities,
+            Some(&seaorm),
+            &ontogen::StoreConfig {
+                output_dir: "src/store/generated".into(),
+                hooks_dir: Some("src/store/hooks".into()),
+            },
+        ),
+        "Stage 4: generate store",
+    );
 
     // ── Stage 5: Generate API layer ──────────────────────────────────────
-    ontogen::gen_api(
-        &schema.entities,
-        &ontogen::ApiConfig {
-            output_dir: "src/api/v1/generated".into(),
-            exclude: vec![],
-            scan_dirs: vec![],
-            state_type: "AppState".to_string(),
-            store_type: Some("Store".to_string()),
-        },
-    )
-    .expect("Failed to generate API");
+    unwrap_codegen(
+        ontogen::gen_api(
+            &schema.entities,
+            &ontogen::ApiConfig {
+                output_dir: "src/api/v1/generated".into(),
+                exclude: vec![],
+                scan_dirs: vec![],
+                state_type: "AppState".to_string(),
+                store_type: Some("Store".to_string()),
+            },
+        ),
+        "Stage 5: generate API",
+    );
 
     // ── Stage 6: Generate servers + clients ──────────────────────────────
-    // Note: gen_clients is currently a no-op. Client generation is handled
-    // inline by servers::generate_transport. See ontogen/src/clients/mod.rs.
     let config = Config {
         api_dir: "src/api/v1".into(),
         state_type: "AppState".to_string(),
@@ -86,7 +108,8 @@ fn main() {
         schema_entities: schema.entities.clone(),
     };
 
-    ontogen::servers::generate_transport(&config).expect("Failed to generate transports");
+    ontogen::servers::generate_transport(&config)
+        .expect("Stage 6: failed to generate transports");
 
     tauri_build::build();
 }

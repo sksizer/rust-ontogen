@@ -19,7 +19,7 @@ pub mod utils;
 pub use ir::*;
 pub use model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
 pub use naming::{pluralize, to_pascal_case, to_snake_case};
-pub use utils::{clean_generated_dir, emit_rerun_directives, prettier, rustfmt};
+pub use utils::{clean_generated_dir, emit_rerun_directives, rustfmt};
 
 // ── Error type ──────────────────────────────────────────────────────
 
@@ -32,6 +32,11 @@ pub enum CodegenError {
     Api(String),
     Server(String),
     Client(String),
+    /// An external tool required by the codegen pipeline is missing or failed.
+    ExternalTool {
+        tool: &'static str,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for CodegenError {
@@ -43,8 +48,21 @@ impl std::fmt::Display for CodegenError {
             Self::Api(e) => write!(f, "api codegen error: {e}"),
             Self::Server(e) => write!(f, "server codegen error: {e}"),
             Self::Client(e) => write!(f, "client codegen error: {e}"),
+            Self::ExternalTool { tool, detail } => {
+                write!(f, "external tool `{tool}` unavailable: {detail}")
+            }
         }
     }
 }
 
 impl std::error::Error for CodegenError {}
+
+impl CodegenError {
+    /// Emit a `cargo:warning` so the error is visible in build output,
+    /// then return self for the caller to propagate.
+    pub fn emit_cargo_warning(&self) -> &Self {
+        // cargo:warning lines are displayed prominently during `cargo build`
+        println!("cargo:warning=ontogen: {self}");
+        self
+    }
+}

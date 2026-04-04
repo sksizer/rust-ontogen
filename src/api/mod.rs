@@ -60,7 +60,7 @@ pub fn generate(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput,
         let code = gen_crud::generate_crud_module(entity);
 
         let path = output_dir.join(format!("{snake}.rs"));
-        crate::write_and_format(&path, &code).map_err(|e| CodegenError::Api(format!("Failed to write {}: {e}", path.display())))?;
+        crate::write_and_format(&path, &code)?;
 
         let module = collect_generated_module_meta(entity);
         modules.push(module);
@@ -71,7 +71,7 @@ pub fn generate(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput,
     mod_names.sort();
     let mod_rs = generate_mod_rs(&mod_names);
     let path = output_dir.join("mod.rs");
-    crate::write_and_format(&path, &mod_rs).map_err(|e| CodegenError::Api(format!("Failed to write {}: {e}", path.display())))?;
+    crate::write_and_format(&path, &mod_rs)?;
 
     // Source 2: Scan hand-written API directories and merge
     for scan_dir in &config.scan_dirs {

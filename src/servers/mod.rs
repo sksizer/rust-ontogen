@@ -116,28 +116,9 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
     }
 
     // Note: Rust server generators use write_and_format() internally,
-    // so no separate rustfmt pass is needed.
-
-    // Format generated TypeScript files
-    // Note: prettier is still needed since TS generators use write_if_changed
-    // without formatting. Prettier checks mtimes internally and is safe.
-    let ts_files: Vec<&std::path::Path> = config
-        .generators
-        .iter()
-        .filter_map(|g| match g {
-            config::GeneratorConfig::Client(
-                config::ClientGenerator::HttpTs { output, .. }
-                | config::ClientGenerator::HttpTauriIpcSplit { output, .. }
-                | config::ClientGenerator::AdminRegistry { output },
-            ) => Some(output.as_path()),
-            config::GeneratorConfig::Server(_) => None,
-        })
-        .collect();
-
-    crate::prettier(&ts_files);
-
-    // Emit cargo:rerun-if-changed
-    crate::emit_rerun_directives(&config.api_dir);
+    // and TS generators now use write_and_format_ts(), so no separate
+    // formatting pass is needed. All formatting happens in memory before
+    // write_if_changed, preventing unnecessary mtime changes.
 
     Ok(modules)
 }
