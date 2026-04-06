@@ -66,13 +66,38 @@ compose_prompt() {
 
 PROMPT="$(compose_prompt)"
 
+# --- Open a URL in the default browser (best-effort, never fails the script)
+open_url() {
+    local url="$1"
+    case "$(uname -s)" in
+        Darwin)  open "$url" ;;
+        Linux)   xdg-open "$url" ;;
+        MINGW*|MSYS*|CYGWIN*) cmd.exe /c start "$url" ;;
+    esac 2>/dev/null || true
+}
+
+# --- Allowed tools ----------------------------------------------------------
+# Read/Edit/Write for file changes, Bash for just commands and git, WebFetch for fetching upstream
+ALLOWED_TOOLS="Read Edit Write Bash WebFetch"
+
 # --- Execute or dry-run -----------------------------------------------------
 if [[ "$EXECUTE" == true ]]; then
     echo "Using runner: ${RUNNER}"
     echo "Target: ${TARGET_DIR}"
     echo "Prompt length: ${#PROMPT} chars"
+    echo "Allowed tools: ${ALLOWED_TOOLS}"
     echo "---"
-    echo "${PROMPT}" | ${RUNNER} @anthropic-ai/claude-code --print --project-dir "$TARGET_DIR"
+    cd "$TARGET_DIR"
+    OUTPUT="$(echo "${PROMPT}" | ${RUNNER} @anthropic-ai/claude-code --print \
+        --allowed-tools ${ALLOWED_TOOLS})"
+    echo "$OUTPUT"
+
+    # Try to extract a PR URL from the output and open it
+    PR_URL="$(echo "$OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1 || true)"
+    if [[ -n "$PR_URL" ]]; then
+        echo "Opening PR: ${PR_URL}"
+        open_url "$PR_URL"
+    fi
 else
     echo "=== DRY RUN ==="
     echo ""
@@ -81,6 +106,11 @@ else
     echo "Runner: ${RUNNER}"
     echo "Target: ${TARGET_DIR}"
     echo "Prompt length: ${#PROMPT} chars"
+    echo "Allowed tools: ${ALLOWED_TOOLS}"
+    echo ""
+    echo "Would run:"
+    echo "  cd ${TARGET_DIR}"
+    echo "  echo \"\${PROMPT}\" | ${RUNNER} @anthropic-ai/claude-code --print --allowed-tools ${ALLOWED_TOOLS}"
     echo ""
     echo "Pass --execute to run this against Claude Code."
 fi
