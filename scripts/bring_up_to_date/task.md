@@ -1,5 +1,7 @@
 Fetch the latest state of the upstream template repository and compare it against this project.
 
+If the project is already up to date and there are no meaningful changes to apply, do nothing and exit. Do not create a branch, commit, or PR.
+
 Apply any new or changed files from the template, respecting project-specific overrides.
 
 After making changes, run code quality checks:
