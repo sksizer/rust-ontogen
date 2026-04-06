@@ -669,6 +669,44 @@ fn test_http_generator_events() {
 }
 
 #[test]
+fn test_http_generator_store_module_no_prefix() {
+    // Store-based modules without route_prefix should generate unscoped handlers
+    // that construct a Store via state.store().await.
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("http_generated.rs");
+    let config = test_config(tmp.path().to_path_buf()); // no route_prefix
+
+    let modules = vec![make_crud_module("node", true)];
+    crate::servers::generators::http::generate(&output, &modules, &config);
+
+    let content = std::fs::read_to_string(&output).unwrap();
+
+    // Should generate unscoped handlers (not scoped)
+    assert!(content.contains("list_nodes"), "should generate list handler");
+    assert!(content.contains("get_node_by_id"), "should generate get handler");
+    assert!(content.contains("create_node_handler"), "should generate create handler");
+    assert!(content.contains("update_node_handler"), "should generate update handler");
+    assert!(content.contains("delete_node_handler"), "should generate delete handler");
+
+    // Should construct store from state
+    assert!(content.contains("state.store().await"), "should construct store from state");
+
+    // Should pass store (already &Store) directly to service functions
+    assert!(content.contains("node::list(store)"), "should pass store to list");
+    assert!(content.contains("node::get_by_id(store, &id)"), "should pass store to get_by_id");
+    assert!(content.contains("node::create(store, input)"), "should pass store to create");
+    assert!(content.contains("node::update(store, &id, input)"), "should pass store to update");
+    assert!(content.contains("node::delete(store, &id)"), "should pass store to delete");
+
+    // Should have CRUD routes
+    assert!(content.contains("/api/nodes"), "should have list route");
+    assert!(content.contains("/api/nodes/:id"), "should have detail route");
+
+    // Should NOT have scoped routes (no route_prefix)
+    assert!(!content.contains("_scoped"), "should not have scoped handlers");
+}
+
+#[test]
 fn test_http_generator_custom_functions() {
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("http_generated.rs");
@@ -707,7 +745,7 @@ fn test_ipc_generator_crud_module() {
 
     // Tauri attributes
     assert!(content.contains("#[tauri::command]"));
-    assert!(content.contains("#[specta::specta]"));
+    assert!(!content.contains("#[specta::specta]"), "specta annotation should not be generated");
 
     // Store construction for store-based modules
     assert!(content.contains("state.store_for("));

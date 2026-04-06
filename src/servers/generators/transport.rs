@@ -15,7 +15,7 @@ use crate::servers::classify::{OpKind, classify_op, is_read_operation};
 use crate::servers::config::Config;
 use crate::servers::generators::ipc::ts_command_name;
 use crate::servers::parse::{ApiModule, Param};
-use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel};
+use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 
 /// Returns `", projectId?: string"` when route_prefix is configured, else `""`.
 fn ts_trailing_prefix_param(config: &Config) -> String {
@@ -201,7 +201,8 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                 OpKind::DeleteById => {
                     out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<null>;\n", camel));
                 }
-                OpKind::CustomGet | OpKind::CustomPost => {
+                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }
+                | OpKind::CustomGet | OpKind::CustomPost => {
                     let mut params = build_ts_params(f, config);
                     if !pp_only.is_empty() {
                         params.push(pp_only.clone());
@@ -385,6 +386,9 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                         camel,
                     ));
                 }
+                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+                    generate_http_custom_method(out, module, f, config);
+                }
                 OpKind::CustomGet | OpKind::CustomPost => {
                     generate_http_custom_method(out, module, f, config);
                 }
@@ -555,6 +559,9 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                          \x20   }},\n",
                         camel,
                     ));
+                }
+                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+                    generate_ipc_custom_method(out, f, &cmd_name, config);
                 }
                 OpKind::CustomGet | OpKind::CustomPost => {
                     generate_ipc_custom_method(out, f, &cmd_name, config);
@@ -827,7 +834,7 @@ fn build_ts_params(f: &crate::servers::parse::ApiFn, config: &Config) -> Vec<Str
     let _ = config; // used for naming in the caller
     let mut ts_params = Vec::new();
     for p in &path_params {
-        let ts_ty = if p.ty == "i32" { "number" } else { "string" };
+        let ts_ty = rust_type_to_ts(&strip_ref(&p.ty));
         ts_params.push(format!("{}: {}", snake_to_camel(&p.name), ts_ty));
     }
     for qp in &query_params {
@@ -838,7 +845,7 @@ fn build_ts_params(f: &crate::servers::parse::ApiFn, config: &Config) -> Vec<Str
         ts_params.push(format!("input: {}", input_type));
     }
     for bf in &body_fields {
-        let ts_ty = if bf.ty == "i32" { "number" } else { "string" };
+        let ts_ty = rust_type_to_ts(&strip_ref(&bf.ty));
         ts_params.push(format!("{}: {}", snake_to_camel(&bf.name), ts_ty));
     }
     ts_params

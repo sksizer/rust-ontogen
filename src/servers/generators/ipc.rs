@@ -75,6 +75,10 @@ fn ipc_command_name(module: &str, op: &OpKind, config: &Config) -> String {
         OpKind::Create => format!("create_{}", singular),
         OpKind::UpdateById => format!("update_{}", singular),
         OpKind::DeleteById => format!("delete_{}", singular),
+        OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+            // Junction ops use the raw function name as the command name
+            String::new()
+        }
         OpKind::CustomGet | OpKind::CustomPost => String::new(),
     }
 }
@@ -83,7 +87,8 @@ fn ipc_command_name(module: &str, op: &OpKind, config: &Config) -> String {
 pub fn ts_command_name(module: &str, f: &ApiFn, config: &Config) -> String {
     let op = classify_op(f);
     match op {
-        OpKind::CustomGet | OpKind::CustomPost => f.name.clone(),
+        OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }
+        | OpKind::CustomGet | OpKind::CustomPost => format!("{}_{}", module, f.name),
         _ => ipc_command_name(module, &op, config),
     }
 }
@@ -119,7 +124,7 @@ use tauri::State;
             collect_type_import(&f.return_type, &mut type_imports);
             for p in &f.params {
                 let ty = extract_input_type(&p.ty);
-                if ty.contains("Input") {
+                if ty.contains("Input") || ty.contains("Query") {
                     collect_type_import(&ty, &mut type_imports);
                 }
             }
@@ -183,21 +188,36 @@ use tauri::State;
             let (fn_pp_line, fn_pp_body, first_arg) = if f.first_param_is_store {
                 (pp_line.clone(), store_construct.clone(), "store")
             } else {
-                (pp_line.clone(), pp_validate.clone(), "state")
+                (pp_line.clone(), pp_validate.clone(), "&state")
             };
 
             match op {
                 OpKind::List => {
                     let cmd_name = ipc_command_name(module, &op, config);
                     let await_str = if is_async { ".await" } else { "" };
+                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
+                    let plain_params: Vec<_> = f.params.iter()
+                        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input"))
+                        .collect();
+                    let mut param_lines = String::new();
+                    let mut extra_args = String::new();
+                    if let Some(qp) = query_param {
+                        let qt = extract_input_type(&qp.ty);
+                        param_lines.push_str(&format!("    query: {},\n", qt));
+                        extra_args.push_str(", query");
+                    }
+                    for pp in &plain_params {
+                        let owned_ty = param_to_owned_type(&pp.ty);
+                        param_lines.push_str(&format!("    {}: {},\n", pp.name, owned_ty));
+                        extra_args.push_str(&format!(", &{}", pp.name));
+                    }
                     out.push_str(&format!(
                         "\
 #[tauri::command]
-#[specta::specta]
 pub async fn {cmd_name}(
-{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
+{param_lines}{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
-{fn_pp_body}    {svc}::list({first_arg}){await_str}
+{fn_pp_body}    {svc}::list({first_arg}{extra_args}){await_str}
         .map_err(|e| e.to_string())
 }}
 
@@ -213,7 +233,6 @@ pub async fn {cmd_name}(
                         out.push_str(&format!(
                             "\
 #[tauri::command]
-#[specta::specta]
 pub async fn {cmd_name}(
     id: String,
 {fn_pp_line}    state: State<'_, Arc<{state_type}>>,
@@ -229,7 +248,6 @@ pub async fn {cmd_name}(
                         out.push_str(&format!(
                             "\
 #[tauri::command]
-#[specta::specta]
 pub async fn {cmd_name}(
     id: String,
 {fn_pp_line}    state: State<'_, Arc<{state_type}>>,
@@ -247,16 +265,15 @@ pub async fn {cmd_name}(
                 OpKind::Create => {
                     let cmd_name = ipc_command_name(module, &op, config);
                     let input_type = extract_input_type(&f.params[0].ty);
+                    let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
                         "\
 #[tauri::command]
-#[specta::specta]
 pub async fn {cmd_name}(
     input: {input_type},
 {fn_pp_line}    state: State<'_, Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
-{fn_pp_body}    {svc}::create({first_arg}, input)
-        .await
+{fn_pp_body}    {svc}::create({first_arg}, input){await_str}
         .map_err(|e| e.to_string())
 }}
 
@@ -268,17 +285,16 @@ pub async fn {cmd_name}(
                 OpKind::UpdateById => {
                     let cmd_name = ipc_command_name(module, &op, config);
                     let input_type = extract_input_type(&f.params[1].ty);
+                    let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
                         "\
 #[tauri::command]
-#[specta::specta]
 pub async fn {cmd_name}(
     id: String,
     input: {input_type},
 {fn_pp_line}    state: State<'_, Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
-{fn_pp_body}    {svc}::update({first_arg}, &id, input)
-        .await
+{fn_pp_body}    {svc}::update({first_arg}, &id, input){await_str}
         .map_err(|e| e.to_string())
 }}
 
@@ -289,16 +305,15 @@ pub async fn {cmd_name}(
 
                 OpKind::DeleteById => {
                     let cmd_name = ipc_command_name(module, &op, config);
+                    let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
                         "\
 #[tauri::command]
-#[specta::specta]
 pub async fn {cmd_name}(
     id: String,
 {fn_pp_line}    state: State<'_, Arc<{state_type}>>,
 ) -> Result<(), String> {{
-{fn_pp_body}    {svc}::delete({first_arg}, &id)
-        .await
+{fn_pp_body}    {svc}::delete({first_arg}, &id){await_str}
         .map_err(|e| e.to_string())
 }}
 
@@ -307,8 +322,14 @@ pub async fn {cmd_name}(
                     command_names.push(cmd_name);
                 }
 
+                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+                    let cmd_name = format!("{}_{}", module, f.name);
+                    generate_generic_ipc_handler(&mut out, module, f, config);
+                    command_names.push(cmd_name);
+                }
+
                 OpKind::CustomGet | OpKind::CustomPost => {
-                    let cmd_name = f.name.clone();
+                    let cmd_name = format!("{}_{}", module, f.name);
                     generate_generic_ipc_handler(&mut out, module, f, config);
                     command_names.push(cmd_name);
                 }
@@ -361,6 +382,17 @@ pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
         out.push_str("}\n");
     }
 
+    // Generate ipc_handler() wrapper with tauri::generate_handler!
+    out.push_str(
+        "/// Generated IPC handler. Wire this into `tauri::Builder::invoke_handler()`.\n\
+         pub fn ipc_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {\n\
+         \x20   tauri::generate_handler![\n",
+    );
+    for name in &command_names {
+        out.push_str(&format!("        {},\n", name));
+    }
+    out.push_str("    ]\n}\n");
+
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
@@ -379,11 +411,12 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
     let (fn_pp_body, first_arg) = if f.first_param_is_store {
         (store_construction_line(config), "store")
     } else {
-        (prefix_validation_line(config), "state")
+        (prefix_validation_line(config), "&state")
     };
 
     // Store-based custom handlers are always async (store construction is async)
-    out.push_str(&format!("#[tauri::command]\n#[specta::specta]\npub async fn {}(\n", fn_name));
+    let cmd_fn_name = format!("{}_{}", module, fn_name);
+    out.push_str(&format!("#[tauri::command]\npub async fn {}(\n", cmd_fn_name));
 
     for p in &f.params {
         let owned_ty = param_to_owned_type(&p.ty);
@@ -399,7 +432,14 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
     for p in &f.params {
         if p.ty.starts_with("Option<") {
             out.push_str(&format!(", {}.as_deref()", p.name));
-        } else if p.ty.contains("Input") || p.ty == "i32" {
+        } else if p.ty.contains("Input")
+            || matches!(
+                p.ty.as_str(),
+                "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
+                    | "u8" | "u16" | "u32" | "u64" | "u128"
+                    | "f32" | "f64"
+            )
+        {
             out.push_str(&format!(", {}", p.name));
         } else {
             out.push_str(&format!(", &{}", p.name));

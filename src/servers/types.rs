@@ -64,6 +64,16 @@ pub fn collect_type_import(ty: &str, imports: &mut Vec<String>) {
         // Entity-qualified: e.g. relation::Model — handled via entity import
         return;
     }
+    // Skip Rust primitives — they don't need importing.
+    if matches!(
+        inner.as_str(),
+        "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
+            | "u8" | "u16" | "u32" | "u64" | "u128"
+            | "f32" | "f64"
+            | "String" | "str" | "&str"
+    ) {
+        return;
+    }
     if !imports.contains(&inner) {
         imports.push(inner);
     }
@@ -168,6 +178,12 @@ pub fn collect_ts_import(ts_type: &str, imports: &mut Vec<String>) {
 /// Naming configuration for modules — handles pluralization and URL singularization.
 #[derive(Debug, Clone, Default)]
 pub struct NamingConfig {
+    /// When true, derive singular/plural from the module filename heuristically:
+    /// names ending in 's' are treated as already plural (singular = strip trailing 's'),
+    /// names not ending in 's' are treated as singular (plural = append 's').
+    /// This matches the convention where `agents.rs` → singular "agent", plural "agents",
+    /// but `skill.rs` → singular "skill", plural "skills".
+    pub auto_pluralize: bool,
     /// Overrides for module → plural form (e.g., "evidence" → "evidence").
     pub plural_overrides: HashMap<String, String>,
     /// Overrides for module → URL singular form (e.g., "work_session" → "session").
@@ -184,15 +200,36 @@ impl NamingConfig {
         if let Some(override_val) = self.plural_overrides.get(module) {
             return override_val.clone();
         }
-        format!("{}s", module)
+        if self.auto_pluralize {
+            if module.ends_with('s') {
+                // Already plural (e.g., "agents" → "agents")
+                module.to_string()
+            } else {
+                // Singular, need to pluralize (e.g., "skill" → "skills")
+                format!("{}s", module)
+            }
+        } else {
+            format!("{}s", module)
+        }
     }
 
     /// Get the URL singular form of a module name.
-    pub fn url_singular<'a>(&'a self, module: &'a str) -> &'a str {
+    pub fn url_singular(&self, module: &str) -> String {
         if let Some(override_val) = self.singular_overrides.get(module) {
-            return override_val.as_str();
+            return override_val.clone();
         }
-        module
+        if self.auto_pluralize && module.ends_with('s') {
+            // Derive singular by stripping trailing 's' (e.g., "agents" → "agent")
+            module.strip_suffix('s').unwrap_or(module).to_string()
+        } else {
+            module.to_string()
+        }
+    }
+
+    /// Get the plural form for URL paths (kebab-case).
+    /// e.g., "agents" → "agents", "skill_files" → "skill-files".
+    pub fn url_plural(&self, module: &str) -> String {
+        self.module_plural(module).replace('_', "-")
     }
 
     /// Get the human-readable label for a module.
