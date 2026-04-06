@@ -2,7 +2,7 @@ https://github.com/sksizer/rust-cmd-spec/
 https://github.com/sksizer/rust-dir-aspect/
 https://github.com/sksizer/rust-evented-worker/
 https://github.com/sksizer/rust-fluent-git/
-https://github.com/sksizer/rust-mcp-proxy/
 https://github.com/sksizer/rust-ontogen/
 https://github.com/sksizer/rust-path-opener/
 https://github.com/sksizer/rust-serde-command/
+git@github.com:sksizer/rust-mcp-proxy.git

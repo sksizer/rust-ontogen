@@ -1,7 +1,7 @@
 //! Build-time utilities shared across codegen layers.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf, Component};
+use std::path::{Component, Path, PathBuf};
 
 use crate::CodegenError;
 
@@ -252,11 +252,7 @@ pub fn relative_path(base: &Path, target: &Path) -> PathBuf {
     let target_components: Vec<_> = target.components().collect();
 
     // Find common prefix length
-    let common = base_components
-        .iter()
-        .zip(target_components.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
+    let common = base_components.iter().zip(target_components.iter()).take_while(|(a, b)| a == b).count();
 
     let mut result = PathBuf::new();
 

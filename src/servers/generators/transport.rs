@@ -213,8 +213,11 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                 OpKind::DeleteById => {
                     out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<null>;\n", camel));
                 }
-                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }
-                | OpKind::CustomGet | OpKind::CustomPost => {
+                OpKind::JunctionList { .. }
+                | OpKind::JunctionAdd { .. }
+                | OpKind::JunctionRemove { .. }
+                | OpKind::CustomGet
+                | OpKind::CustomPost => {
                     let mut params = build_ts_params(f, config);
                     if !pp_only.is_empty() {
                         params.push(pp_only.clone());
