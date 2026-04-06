@@ -745,7 +745,7 @@ fn test_ipc_generator_crud_module() {
 
     // Tauri attributes
     assert!(content.contains("#[tauri::command]"));
-    assert!(content.contains("#[specta::specta]"));
+    assert!(!content.contains("#[specta::specta]"), "specta annotation should not be generated");
 
     // Store construction for store-based modules
     assert!(content.contains("state.store_for("));

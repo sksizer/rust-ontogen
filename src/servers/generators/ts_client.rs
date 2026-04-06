@@ -176,6 +176,9 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
                          \x20 }},\n\n",
                     ));
                 }
+                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+                    generate_generic_ts_handler(&mut out, module, f, config);
+                }
                 OpKind::CustomGet | OpKind::CustomPost => {
                     generate_generic_ts_handler(&mut out, module, f, config);
                 }

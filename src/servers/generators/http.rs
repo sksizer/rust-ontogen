@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
             collect_type_import(&f.return_type, &mut type_imports);
             for p in &f.params {
                 let ty = extract_input_type(&p.ty);
-                if ty.contains("Input") {
+                if ty.contains("Input") || ty.contains("Query") {
                     collect_type_import(&ty, &mut type_imports);
                 }
             }
@@ -126,10 +126,12 @@ fn err(msg: String) -> ApiError {
 
     // Generate handlers and collect routes
     let mut route_entries: Vec<String> = Vec::new();
+    let mut junction_routes: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
 
     for m in modules {
         let module = &m.name;
         let plural = config.naming.module_plural(module);
+        let url_plural = config.naming.url_plural(module);
         let url_sing = config.naming.url_singular(module);
 
         if m.functions.is_empty() {
@@ -175,13 +177,31 @@ fn err(msg: String) -> ApiError {
                     let handler_name = format!("list_{}", plural);
                     let await_str = if is_async { "\n        .await" } else { "" };
                     let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.into()))" };
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
+                    // Check for a query parameter struct (e.g., ListAgentsQuery)
+                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
+                    // Check for plain string params (e.g., skill_id: &str) — scoped list filters
+                    let plain_params: Vec<_> = f.params.iter()
+                        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input"))
+                        .collect();
+
+                    let mut extra_extractors = String::new();
+                    let mut extra_args = String::new();
+                    if let Some(qp) = query_param {
+                        let qt = extract_input_type(&qp.ty);
+                        extra_extractors.push_str(&format!("\n    Query(query): Query<{}>,", qt));
+                        extra_args.push_str(", query");
+                    }
+                    for pp in &plain_params {
+                        extra_extractors.push_str(&format!("\n    Query({name}): Query<String>,", name = pp.name));
+                        extra_args.push_str(&format!(", &{}", pp.name));
+                    }
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
+    State(state): State<Arc<{state_type}>>,{extra_extractors}
 ) -> Result<Json<{ret_type}>, ApiError> {{
-{store_let}    {svc}::list({first_arg}){await_str}
+{store_let}    {svc}::list({first_arg}{extra_args}){await_str}
         .map(Json)
         {err_map}
 }}
@@ -194,7 +214,7 @@ async fn {handler_name}(
                     let handler_name = format!("get_{}_by_id", url_sing);
                     let await_str = if is_async { "\n        .await" } else { "" };
                     let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.into()))" };
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -213,16 +233,18 @@ async fn {handler_name}(
                 OpKind::Create => {
                     let handler_name = format!("create_{}_handler", url_sing);
                     let input_type = extract_input_type(&f.params[0].ty);
+                    let await_str = if is_async { "\n        .await" } else { "" };
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
     State(state): State<Arc<{state_type}>>,
     Json(input): Json<{input_type}>,
 ) -> Result<(StatusCode, Json<{ret_type}>), ApiError> {{
-{store_let}    {svc}::create({first_arg}, input)
-        .await
+{store_let}    {svc}::create({first_arg}, input){await_str}
         .map(|entity| (StatusCode::CREATED, Json(entity)))
-        .map_err(|e| err(e.to_string()))
+        {err_map}
 }}
 
 "
@@ -232,6 +254,9 @@ async fn {handler_name}(
                 OpKind::UpdateById => {
                     let handler_name = format!("update_{}_handler", url_sing);
                     let input_type = extract_input_type(&f.params[1].ty);
+                    let await_str = if is_async { "\n        .await" } else { "" };
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -239,10 +264,9 @@ async fn {handler_name}(
     Path(id): Path<String>,
     Json(input): Json<{input_type}>,
 ) -> Result<Json<{ret_type}>, ApiError> {{
-{store_let}    {svc}::update({first_arg}, &id, input)
-        .await
+{store_let}    {svc}::update({first_arg}, &id, input){await_str}
         .map(Json)
-        .map_err(|e| err(e.to_string()))
+        {err_map}
 }}
 
 "
@@ -251,20 +275,93 @@ async fn {handler_name}(
 
                 OpKind::DeleteById => {
                     let handler_name = format!("delete_{}_handler", url_sing);
+                    let await_str = if is_async { "\n        .await" } else { "" };
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
     State(state): State<Arc<{state_type}>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {{
-{store_let}    {svc}::delete({first_arg}, &id)
-        .await
+{store_let}    {svc}::delete({first_arg}, &id){await_str}
         .map(|_| StatusCode::NO_CONTENT)
-        .map_err(|e| err(e.to_string()))
+        {err_map}
 }}
 
 "
                     ));
+                }
+
+                OpKind::JunctionList { ref child_segment } => {
+                    let handler_name = format!("list_{}_{}", url_sing, child_segment.replace('-', "_"));
+                    let await_str = if is_async { "\n        .await" } else { "" };
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
+                    out.push_str(&format!(
+                        "\
+async fn {handler_name}(
+    State(state): State<Arc<{state_type}>>,
+    Path(parent_id): Path<String>,
+) -> Result<Json<{ret_type}>, ApiError> {{
+{store_let}    {svc}::{fn_name}({first_arg}, &parent_id){await_str}
+        .map(Json)
+        {err_map}
+}}
+
+"
+                    ));
+                    // Collect for merging — will be combined with JunctionAdd on the same path
+                    junction_routes
+                        .entry(format!("/api/{url_plural}/:parent_id/{child_segment}"))
+                        .or_insert_with(Vec::new)
+                        .push(format!("get({handler_name})"));
+                }
+
+                OpKind::JunctionAdd { ref child_segment } => {
+                    let handler_name = format!("{}_add_{}", url_sing, child_segment.replace('-', "_"));
+                    let child_id_param = if f.params.len() >= 2 { &f.params[1].name } else { "child_id" };
+                    out.push_str(&format!(
+                        "\
+async fn {handler_name}(
+    State(state): State<Arc<{state_type}>>,
+    Path(parent_id): Path<String>,
+    Json(body): Json<std::collections::HashMap<String, String>>,
+) -> Result<StatusCode, ApiError> {{
+{store_let}    let child_id = body.get(\"{child_id_param}\")
+        .ok_or_else(|| err(\"{child_id_param} required\".to_string()))?;
+    {svc}::{fn_name}({first_arg}, &parent_id, child_id)
+        .map_err(|e| err(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}}
+
+"
+                    ));
+                    junction_routes
+                        .entry(format!("/api/{url_plural}/:parent_id/{child_segment}"))
+                        .or_insert_with(Vec::new)
+                        .push(format!("post({handler_name})"));
+                }
+
+                OpKind::JunctionRemove { ref child_segment } => {
+                    let handler_name = format!("{}_remove_{}", url_sing, child_segment.replace('-', "_"));
+                    out.push_str(&format!(
+                        "\
+async fn {handler_name}(
+    State(state): State<Arc<{state_type}>>,
+    Path((parent_id, child_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {{
+{store_let}    {svc}::{fn_name}({first_arg}, &parent_id, &child_id)
+        .map_err(|e| err(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}}
+
+"
+                    ));
+                    junction_routes
+                        .entry(format!("/api/{url_plural}/:parent_id/{child_segment}/:child_id"))
+                        .or_insert_with(Vec::new)
+                        .push(format!("delete({handler_name})"));
                 }
 
                 OpKind::CustomGet | OpKind::CustomPost => {
@@ -277,10 +374,10 @@ async fn {handler_name}(
         if has_list && has_create {
             let list_fn = format!("list_{}", plural);
             let create_fn = format!("create_{}_handler", url_sing);
-            route_entries.push(format!("        .route(\"/api/{plural}\", get({list_fn}).post({create_fn}))"));
+            route_entries.push(format!("        .route(\"/api/{url_plural}\", get({list_fn}).post({create_fn}))"));
         } else if has_list {
             let list_fn = format!("list_{}", plural);
-            route_entries.push(format!("        .route(\"/api/{plural}\", get({list_fn}))"));
+            route_entries.push(format!("        .route(\"/api/{url_plural}\", get({list_fn}))"));
         }
 
         if has_get_by_id || has_update || has_delete {
@@ -294,8 +391,13 @@ async fn {handler_name}(
             if has_delete {
                 methods.push(format!("delete(delete_{}_handler)", url_sing));
             }
-            route_entries.push(format!("        .route(\"/api/{plural}/:id\", {})", methods.join(".")));
+            route_entries.push(format!("        .route(\"/api/{url_plural}/:id\", {})", methods.join(".")));
         }
+    }
+
+    // Flush junction routes — merge methods on the same path
+    for (path, methods) in &junction_routes {
+        route_entries.push(format!("        .route(\"{}\", {})", path, methods.join(".")));
     }
 
     // Generate SSE handlers for event functions
@@ -365,7 +467,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     let ret_type = &f.return_type;
     let is_get = is_read_operation(fn_name);
     let action = config.naming.derive_action(module, fn_name);
-    let plural = config.naming.module_plural(module);
+    let url_plural = config.naming.url_plural(module);
     let returns_unit = f.return_type == "()" || ret_type == "()";
     let await_str = if is_async { "\n        .await" } else { "" };
     let state_type = &config.state_type;
@@ -386,7 +488,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     };
 
     // Build route path
-    let mut route_path = format!("/api/{}", plural);
+    let mut route_path = format!("/api/{}", url_plural);
     if !action.is_empty() {
         route_path.push_str(&format!("/{}", action));
     }
@@ -394,12 +496,12 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
         route_path.push_str(&format!("/:{}", p.name));
     }
 
-    let handler_name = fn_name.clone();
+    let handler_name = format!("{}_{}", module, fn_name);
     let method = if is_get { "get" } else { "post" };
 
     // Generate query struct if needed
     if !query_params.is_empty() {
-        let struct_name = format!("{}Query", to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for qp in &query_params {
             out.push_str(&format!("    {}: {},\n", qp.name, param_to_owned_type(&qp.ty)));
@@ -409,7 +511,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
 
     // Generate body struct if needed (for POST with plain params)
     if !body_fields.is_empty() {
-        let struct_name = format!("{}Body", to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for bf in &body_fields {
             out.push_str(&format!("    {}: {},\n", bf.name, param_to_owned_type(&bf.ty)));
@@ -423,17 +525,23 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     // Path params
     if path_params.len() == 1 {
         let p = path_params[0];
-        let path_type = if p.ty == "i32" { "i32" } else { "String" };
+        let path_type = match p.ty.as_str() {
+            "i32" => "i32", "i64" => "i64", "u32" => "u32", "u64" => "u64",
+            _ => "String",
+        };
         out.push_str(&format!("    Path({}): Path<{}>,\n", p.name, path_type));
     } else if path_params.len() > 1 {
-        let types: Vec<&str> = path_params.iter().map(|p| if p.ty == "i32" { "i32" } else { "String" }).collect();
+        let types: Vec<&str> = path_params.iter().map(|p| match p.ty.as_str() {
+            "i32" => "i32", "i64" => "i64", "u32" => "u32", "u64" => "u64",
+            _ => "String",
+        }).collect();
         let names: Vec<&str> = path_params.iter().map(|p| p.name.as_str()).collect();
         out.push_str(&format!("    Path(({}),): Path<({},)>,\n", names.join(", "), types.join(", ")));
     }
 
     // Query params
     if !query_params.is_empty() {
-        let struct_name = format!("{}Query", to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("    Query(q): Query<{}>,\n", struct_name));
     }
 
@@ -443,7 +551,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
         out.push_str(&format!("    Json(input): Json<{}>,\n", input_type));
     }
     if !body_fields.is_empty() {
-        let struct_name = format!("{}Body", to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("    Json(body): Json<{}>,\n", struct_name));
     }
 
@@ -466,7 +574,12 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     // Function call
     out.push_str(&format!("    {}::{}({first_arg}", svc, fn_name));
     for p in &path_params {
-        if p.ty == "i32" {
+        if matches!(
+            p.ty.as_str(),
+            "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
+                | "u8" | "u16" | "u32" | "u64" | "u128"
+                | "f32" | "f64"
+        ) {
             out.push_str(&format!(", {}", p.name));
         } else {
             out.push_str(&format!(", &{}", p.name));
@@ -479,7 +592,12 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
         out.push_str(", input");
     }
     for bf in &body_fields {
-        if bf.ty == "i32" {
+        if matches!(
+            bf.ty.as_str(),
+            "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
+                | "u8" | "u16" | "u32" | "u64" | "u128"
+                | "f32" | "f64"
+        ) {
             out.push_str(&format!(", body.{}", bf.name));
         } else {
             out.push_str(&format!(", &body.{}", bf.name));
@@ -526,8 +644,9 @@ fn generate_scoped_handlers(
     for m in modules {
         let module = &m.name;
         let plural = config.naming.module_plural(module);
+        let url_plural = config.naming.url_plural(module);
         let url_sing = config.naming.url_singular(module);
-        let scoped_base = format!("/api/{}/{}", prefix.segments, plural);
+        let scoped_base = format!("/api/{}/{}", prefix.segments, url_plural);
 
         if m.functions.is_empty() {
             continue;
@@ -560,15 +679,22 @@ fn generate_scoped_handlers(
                     let handler_name = format!("list_{}_scoped", plural);
                     let await_str = if is_async { "\n        .await" } else { "" };
                     let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.into()))" };
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
+                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
+                    let (query_extractor, query_arg) = if let Some(qp) = query_param {
+                        let qt = extract_input_type(&qp.ty);
+                        (format!("\n    Query(query): Query<{}>,", qt), format!(", query"))
+                    } else {
+                        (String::new(), String::new())
+                    };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
     State(state): State<Arc<{state_type}>>,
-    Path({pp_name}): Path<{pp_type}>,
+    Path({pp_name}): Path<{pp_type}>,{query_extractor}
 ) -> Result<Json<{ret_type}>, ApiError> {{
 {store_let}
-    {svc}::list(&store){await_str}
+    {svc}::list(&store{query_arg}){await_str}
         .map(Json)
         {err_map}
 }}
@@ -581,7 +707,7 @@ async fn {handler_name}(
                     let handler_name = format!("get_{}_by_id_scoped", url_sing);
                     let await_str = if is_async { "\n        .await" } else { "" };
                     let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.into()))" };
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -601,6 +727,7 @@ async fn {handler_name}(
                 OpKind::Create => {
                     let handler_name = format!("create_{}_handler_scoped", url_sing);
                     let input_type = extract_input_type(&f.params[0].ty);
+                    let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -609,10 +736,9 @@ async fn {handler_name}(
     Json(input): Json<{input_type}>,
 ) -> Result<(StatusCode, Json<{ret_type}>), ApiError> {{
 {store_let}
-    {svc}::create(&store, input)
-        .await
+    {svc}::create(&store, input){await_str}
         .map(|entity| (StatusCode::CREATED, Json(entity)))
-        .map_err(|e| err(e.into()))
+        .map_err(|e| err(e.to_string()))
 }}
 
 "
@@ -622,6 +748,7 @@ async fn {handler_name}(
                 OpKind::UpdateById => {
                     let handler_name = format!("update_{}_handler_scoped", url_sing);
                     let input_type = extract_input_type(&f.params[1].ty);
+                    let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -630,10 +757,9 @@ async fn {handler_name}(
     Json(input): Json<{input_type}>,
 ) -> Result<Json<{ret_type}>, ApiError> {{
 {store_let}
-    {svc}::update(&store, &id, input)
-        .await
+    {svc}::update(&store, &id, input){await_str}
         .map(Json)
-        .map_err(|e| err(e.into()))
+        .map_err(|e| err(e.to_string()))
 }}
 
 "
@@ -642,6 +768,7 @@ async fn {handler_name}(
 
                 OpKind::DeleteById => {
                     let handler_name = format!("delete_{}_handler_scoped", url_sing);
+                    let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -649,14 +776,23 @@ async fn {handler_name}(
     Path(({pp_name}, id)): Path<({pp_type}, String)>,
 ) -> Result<StatusCode, ApiError> {{
 {store_let}
-    {svc}::delete(&store, &id)
-        .await
+    {svc}::delete(&store, &id){await_str}
         .map(|_| StatusCode::NO_CONTENT)
-        .map_err(|e| err(e.into()))
+        .map_err(|e| err(e.to_string()))
 }}
 
 "
                     ));
+                }
+
+                OpKind::JunctionList { ref child_segment }
+                | OpKind::JunctionAdd { ref child_segment }
+                | OpKind::JunctionRemove { ref child_segment } => {
+                    // For scoped handlers, junction routes get the project prefix
+                    // but otherwise behave identically to unscoped junctions.
+                    // Delegate to generic scoped handler for now.
+                    let _ = child_segment;
+                    generate_generic_http_handler_scoped(out, routes, module, f, config, prefix);
                 }
 
                 OpKind::CustomGet | OpKind::CustomPost => {
@@ -747,7 +883,7 @@ fn generate_generic_http_handler_scoped(
     let ret_type = &f.return_type;
     let is_get = is_read_operation(fn_name);
     let action = config.naming.derive_action(module, fn_name);
-    let plural = config.naming.module_plural(module);
+    let url_plural = config.naming.url_plural(module);
     let returns_unit = f.return_type == "()" || ret_type == "()";
     let await_str = if is_async { "\n        .await" } else { "" };
     let state_type = &config.state_type;
@@ -772,7 +908,7 @@ fn generate_generic_http_handler_scoped(
     };
 
     // Build scoped route path
-    let mut route_path = format!("/api/{}/{}", prefix.segments, plural);
+    let mut route_path = format!("/api/{}/{}", prefix.segments, url_plural);
     if !action.is_empty() {
         route_path.push_str(&format!("/{}", action));
     }
@@ -786,7 +922,7 @@ fn generate_generic_http_handler_scoped(
     // Generate query/body struct definitions if needed (for store-based modules
     // these are not generated by the unscoped handler since it's skipped)
     if !query_params.is_empty() {
-        let struct_name = format!("{}Query", to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for qp in &query_params {
             out.push_str(&format!("    {}: {},\n", qp.name, param_to_owned_type(&qp.ty)));
@@ -794,7 +930,7 @@ fn generate_generic_http_handler_scoped(
         out.push_str("}\n\n");
     }
     if !body_fields.is_empty() {
-        let struct_name = format!("{}Body", to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for bf in &body_fields {
             out.push_str(&format!("    {}: {},\n", bf.name, param_to_owned_type(&bf.ty)));
@@ -824,7 +960,7 @@ fn generate_generic_http_handler_scoped(
 
     // Query params
     if !query_params.is_empty() {
-        let struct_name = format!("{}Query", to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("    Query(q): Query<{}>,\n", struct_name));
     }
 
@@ -834,7 +970,7 @@ fn generate_generic_http_handler_scoped(
         out.push_str(&format!("    Json(input): Json<{}>,\n", input_type));
     }
     if !body_fields.is_empty() {
-        let struct_name = format!("{}Body", to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("    Json(body): Json<{}>,\n", struct_name));
     }
 
@@ -856,7 +992,12 @@ fn generate_generic_http_handler_scoped(
     let first_arg = if f.first_param_is_store { "&store" } else { "&state" };
     out.push_str(&format!("    {}::{}({first_arg}", svc, fn_name));
     for p in &path_params {
-        if p.ty == "i32" {
+        if matches!(
+            p.ty.as_str(),
+            "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
+                | "u8" | "u16" | "u32" | "u64" | "u128"
+                | "f32" | "f64"
+        ) {
             out.push_str(&format!(", {}", p.name));
         } else {
             out.push_str(&format!(", &{}", p.name));

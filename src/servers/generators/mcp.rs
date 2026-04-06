@@ -92,7 +92,7 @@ use serde_json::{json, Value};
         for f in &m.functions {
             for p in &f.params {
                 let ty = extract_input_type(&p.ty);
-                if ty.contains("Input") {
+                if ty.contains("Input") || ty.contains("Query") {
                     collect_type_import(&ty, &mut type_imports);
                 }
             }
@@ -229,14 +229,15 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
     for m in modules {
         for f in &m.functions {
             let op = classify_op(f);
-            if !matches!(op, OpKind::CustomGet | OpKind::CustomPost) {
+            if !matches!(op, OpKind::CustomGet | OpKind::CustomPost
+                | OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }) {
                 continue;
             }
             let has_body_struct = f.params.iter().any(|p| p.ty.contains("Input"));
             if has_body_struct || f.params.is_empty() {
                 continue;
             }
-            let struct_name = format!("{}Input", to_pascal_case(&f.name));
+            let struct_name = format!("{}{}Input", to_pascal_case(&m.name), to_pascal_case(&f.name));
             out.push_str(&format!("#[derive(Deserialize, JsonSchema)]\npub struct {} {{\n", struct_name));
             for p in &f.params {
                 out.push_str(&format!("    pub {}: {},\n", p.name, param_to_owned_type(&p.ty)));
@@ -270,9 +271,25 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
                 OpKind::List => {
                     let tool_name = format!("get_{}", plural);
                     let await_str = if is_async { ".await" } else { "" };
-                    let schema_fn = wrap_schema("schema_for::<EmptyInput>", config);
                     let (prefix, first_arg) =
                         if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
+                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
+                    let plain_params: Vec<_> = f.params.iter()
+                        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input"))
+                        .collect();
+                    let mut schema_fn = wrap_schema("schema_for::<EmptyInput>", config);
+                    let mut extraction = String::new();
+                    let mut extra_args = String::new();
+                    if let Some(qp) = query_param {
+                        let qt = extract_input_type(&qp.ty);
+                        schema_fn = wrap_schema(&format!("schema_for::<{qt}>"), config);
+                        extraction.push_str(&format!("                    let query: {qt} = serde_json::from_value(args.clone()).unwrap_or_default();\n"));
+                        extra_args.push_str(", query");
+                    }
+                    for pp in &plain_params {
+                        extraction.push_str(&format!("                    let {} = required_str(args, \"{}\")?;\n", pp.name, pp.name));
+                        extra_args.push_str(&format!(", {}", pp.name));
+                    }
                     out.push_str(&format!(
                         "\
         McpToolDef {{
@@ -281,7 +298,7 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
             schema_fn: {schema_fn},
             handler: |state, args| {{
                 Box::pin(async move {{
-{prefix}                    let items = {svc}::list({first_arg}){await_str}.map_err(|e| e.to_string())?;
+{prefix}{extraction}                    let items = {svc}::list({first_arg}{extra_args}){await_str}.map_err(|e| e.to_string())?;
                     serde_json::to_value(items).map_err(|e| format!(\"Serialize error: {{e}}\"))
                 }})
             }},
@@ -318,6 +335,7 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
                 OpKind::Create => {
                     let tool_name = format!("create_{}", singular);
                     let input_type = extract_input_type(&f.params[0].ty);
+                    let await_str = if is_async { ".await" } else { "" };
                     let schema_fn = wrap_schema(&format!("schema_for::<{input_type}>"), config);
                     let (prefix, first_arg) =
                         if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
@@ -331,7 +349,7 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
                 Box::pin(async move {{
 {prefix}                    let input: {input_type} = serde_json::from_value(args.clone())
                         .map_err(|e| format!(\"Invalid input: {{e}}\"))?;
-                    {svc}::create({first_arg}, input).await.map_err(|e| e.to_string())?;
+                    {svc}::create({first_arg}, input){await_str}.map_err(|e| e.to_string())?;
                     Ok(json!({{\"success\": true}}))
                 }})
             }},
@@ -343,6 +361,7 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
                 OpKind::UpdateById => {
                     let tool_name = format!("update_{}", singular);
                     let input_type = extract_input_type(&f.params[1].ty);
+                    let await_str = if is_async { ".await" } else { "" };
                     let (prefix, first_arg) =
                         if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
                     let schema_fn = wrap_schema(&format!("schema_for_with_str_id::<{input_type}>"), config);
@@ -357,7 +376,7 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
 {prefix}                    let id = required_str(args, \"id\")?.to_string();
                     let input: {input_type} = serde_json::from_value(args.clone())
                         .map_err(|e| format!(\"Invalid input: {{e}}\"))?;
-                    {svc}::update({first_arg}, &id, input).await.map_err(|e| e.to_string())?;
+                    {svc}::update({first_arg}, &id, input){await_str}.map_err(|e| e.to_string())?;
                     Ok(json!({{\"success\": true}}))
                 }})
             }},
@@ -368,6 +387,7 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
 
                 OpKind::DeleteById => {
                     let tool_name = format!("delete_{}", singular);
+                    let await_str = if is_async { ".await" } else { "" };
                     let (prefix, first_arg) =
                         if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
                     let schema_fn = wrap_schema("schema_for::<GetByIdInput>", config);
@@ -380,13 +400,17 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
             handler: |state, args| {{
                 Box::pin(async move {{
 {prefix}                    let id = required_str(args, \"id\")?.to_string();
-                    {svc}::delete({first_arg}, &id).await.map_err(|e| e.to_string())?;
+                    {svc}::delete({first_arg}, &id){await_str}.map_err(|e| e.to_string())?;
                     Ok(json!({{\"success\": true}}))
                 }})
             }},
         }},
 "
                     ));
+                }
+
+                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+                    generate_generic_mcp_tool(&mut out, svc, f, config);
                 }
 
                 OpKind::CustomGet | OpKind::CustomPost => {
@@ -396,7 +420,54 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
         }
     }
 
-    out.push_str("    ]\n}\n");
+    out.push_str("    ]\n}\n\n");
+
+    // Generate simple tool_definitions() that returns static schema data
+    out.push_str(&format!(
+        "\
+/// Simple tool definition with pre-computed schema (for MCP protocol responses).
+pub struct SimpleToolDef {{
+    pub name: &'static str,
+    pub description: &'static str,
+    pub input_schema: Value,
+}}
+
+/// Return tool definitions with pre-computed input schemas.
+/// Use this for building MCP `tools/list` responses.
+pub fn tool_definitions() -> Vec<SimpleToolDef> {{
+    generated_tool_registry()
+        .into_iter()
+        .map(|t| SimpleToolDef {{
+            name: t.name,
+            description: t.description,
+            input_schema: (t.schema_fn)(),
+        }})
+        .collect()
+}}
+
+/// Dispatch a tool call by name, executing the matching handler synchronously.
+///
+/// This creates a minimal tokio runtime to drive the async handler.
+/// Suitable for MCP servers that process requests synchronously.
+pub fn handle_tool_call(
+    state: &{state_type},
+    tool_name: &str,
+    args: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {{
+    let registry = generated_tool_registry();
+    let tool = registry
+        .iter()
+        .find(|t| t.name == tool_name)
+        .ok_or_else(|| format!(\"Unknown tool: {{tool_name}}\"))?;
+    let args_value = Value::Object(args.clone());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!(\"Runtime error: {{e}}\"))?;
+    rt.block_on((tool.handler)(state, &args_value))
+}}
+"
+    ));
 
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).expect("Failed to create output directory");
@@ -497,7 +568,7 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
             ));
         }
     } else {
-        let struct_name = format!("{}Input", to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Input", to_pascal_case(svc), to_pascal_case(fn_name));
         let schema_fn = wrap_schema(&format!("schema_for::<{struct_name}>"), config);
 
         let mut extraction = String::new();
@@ -512,6 +583,12 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
             } else if p.ty == "i32" {
                 extraction.push_str(&format!(
                     "                    let {} = args.get(\"{}\").and_then(|v| v.as_i64()).ok_or(\"Missing {}\")? as i32;\n",
+                    p.name, p.name, p.name
+                ));
+                call_args.push_str(&format!(", {}", p.name));
+            } else if p.ty == "i64" {
+                extraction.push_str(&format!(
+                    "                    let {} = args.get(\"{}\").and_then(|v| v.as_i64()).ok_or(\"Missing {}\")?;\n",
                     p.name, p.name, p.name
                 ));
                 call_args.push_str(&format!(", {}", p.name));
