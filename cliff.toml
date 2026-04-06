@@ -1,0 +1,58 @@
+# git-cliff configuration
+# https://git-cliff.org/docs/configuration
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/),
+and this project adheres to [Semantic Versioning](https://semver.org/).
+
+"""
+body = """
+{%- macro remote_url() -%}
+  https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}
+{%- endmacro -%}
+
+{% if version -%}
+    ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+    ## [Unreleased]
+{% endif -%}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | striptags | trim }}
+    {% for commit in commits %}
+        - {{ commit.message | split(pat="\n") | first | trim }}\
+    {% endfor %}
+{% endfor %}\n
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+commit_parsers = [
+    { message = "^feat", group = "Added" },
+    { message = "^fix", group = "Fixed" },
+    { message = "^refactor", group = "Changed" },
+    { message = "^perf", group = "Changed" },
+    { message = "^revert", group = "Removed" },
+    { message = "^security", group = "Security" },
+    # Skip these commit types
+    { message = "^chore", skip = true },
+    { message = "^ci", skip = true },
+    { message = "^docs", skip = true },
+    { message = "^style", skip = true },
+    { message = "^ai", skip = true },
+    { message = "^test", skip = true },
+    { message = "^build", skip = true },
+]
+protect_breaking_commits = false
+filter_commits = false
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"

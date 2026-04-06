@@ -44,6 +44,10 @@ test:
 #                                   RELEASE                                    #
 # ---------------------------------------------------------------------------- #
 
+# Generate changelog from conventional commits
+changelog:
+    git-cliff --output CHANGELOG.md
+
 # Check for semver violations against the latest git tag
 semver-check:
     cargo semver-checks --baseline-rev "$(git describe --tags --abbrev=0)"
@@ -55,3 +59,12 @@ release-dry-run level="patch":
 # Perform a release (patch, minor, or major)
 release level="patch":
     cargo release {{level}} --execute
+
+# ---------------------------------------------------------------------------- #
+#                                  TEMPLATE                                    #
+# ---------------------------------------------------------------------------- #
+
+# Bring repo up to date with upstream template (dry-run by default; --execute to run, optional target dir)
+bring-up-to-date *args:
+    bash scripts/bring_up_to_date.sh {{args}}
+alias butd := bring-up-to-date

@@ -1,3 +1,15 @@
+allow-branch = ["main"]
+consolidate-commits = true
+pre-release-commit-message = "chore: release v{{version}}"
+publish = false
+push = true
+sign-commit = false
+sign-tag = false
+tag = true
+tag-message = "Release v{{version}}"
 tag-prefix = ""
 tag-name = "v{{version}}"
-pre-release-commit-message = "chore: release v{{version}}"
+
+# 1. Generate changelog for the new version and stage it for the release commit
+# 2. Run semver-checks against the latest tag (skipped if no prior tags exist)
+pre-release-hook = ["bash", "-c", "git-cliff --tag \"v${NEW_VERSION}\" --output CHANGELOG.md && git add CHANGELOG.md && if git describe --tags --abbrev=0 >/dev/null 2>&1; then cargo semver-checks --baseline-rev \"$(git describe --tags --abbrev=0)\"; else echo 'semver-checks: no previous tag found, skipping'; fi"]
