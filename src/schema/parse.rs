@@ -312,11 +312,15 @@ fn classify_type(ty: &Type) -> FieldType {
             match segments.last().map(String::as_str) {
                 Some("String") if segments.len() == 1 => FieldType::String,
                 Some("i32") if segments.len() == 1 => FieldType::I32,
+                Some("i64" | "u64") if segments.len() == 1 => FieldType::I64,
+                Some("bool") if segments.len() == 1 => FieldType::Bool,
                 Some("Option") => {
                     let inner = extract_generic_arg(last_segment);
                     match inner.as_deref() {
                         Some("String") => FieldType::OptionString,
                         Some("i32") => FieldType::OptionI32,
+                        Some("i64" | "u64") => FieldType::OptionI64,
+                        Some("bool") => FieldType::OptionBool,
                         Some(other) => FieldType::OptionEnum(other.to_string()),
                         None => FieldType::Other(quote::quote!(#ty).to_string()),
                     }

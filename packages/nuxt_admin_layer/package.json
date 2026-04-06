@@ -5,10 +5,15 @@
   "main": "./nuxt.config.ts",
   "files": [
     "app/**",
+    "modules/**",
     "generated/**",
     "nuxt.config.ts",
     "admin-fields.ts"
   ],
+  "dependencies": {
+    "@ontogen/admin-types": "file:../admin-types",
+    "pathe": "^2.0.0"
+  },
   "peerDependencies": {
     "nuxt": "^4.0.0",
     "@nuxt/icon": "^1.0.0 || ^2.0.0",

@@ -33,16 +33,46 @@ pub fn write_and_format(path: &Path, content: impl AsRef<str>) -> Result<(), Cod
         .map_err(|e| CodegenError::Persistence(format!("Failed to write {}: {e}", path.display())))
 }
 
+/// Detect the Rust edition from the consuming crate's `Cargo.toml`.
+///
+/// Reads `CARGO_MANIFEST_DIR` (set by Cargo during `build.rs` execution)
+/// and extracts the `edition` field. Falls back to `"2021"` if unavailable.
+fn detect_edition() -> String {
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let cargo_toml = std::path::Path::new(&manifest_dir).join("Cargo.toml");
+        if let Ok(content) = std::fs::read_to_string(cargo_toml) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("edition") {
+                    let rest = rest.trim().strip_prefix('=').unwrap_or(rest).trim();
+                    let rest = rest.trim_matches('"').trim_matches('\'');
+                    if rest.len() == 4 && rest.chars().all(|c| c.is_ascii_digit()) {
+                        return rest.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "2021".to_string()
+}
+
 /// Run `rustfmt` on a string in memory, returning the formatted result.
+///
+/// Auto-detects the Rust edition from `CARGO_MANIFEST_DIR/Cargo.toml` so
+/// the formatting (especially import sorting) matches what `cargo fmt`
+/// produces in the consuming crate. Edition 2024 uses case-sensitive
+/// ASCII sort; edition 2021 uses case-insensitive sort.
 ///
 /// Returns `CodegenError::ExternalTool` if `rustfmt` cannot be spawned.
 fn rustfmt_string(input: &str) -> Result<String, CodegenError> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
+    let edition = detect_edition();
+
     let mut child = Command::new("rustfmt")
         .arg("--edition")
-        .arg("2024")
+        .arg(&edition)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

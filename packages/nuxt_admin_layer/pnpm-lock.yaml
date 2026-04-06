@@ -11,12 +11,18 @@ importers:
       '@nuxt/icon':
         specifier: ^1.0.0 || ^2.0.0
         version: 2.2.1(magicast@0.5.2)(vite@7.3.1(jiti@2.6.1)(terser@5.46.1)(yaml@2.8.3))(vue@3.5.31(typescript@6.0.2))
+      '@ontogen/admin-types':
+        specifier: file:../admin-types
+        version: file:../admin-types
       dompurify:
         specifier: ^3.0.0
         version: 3.3.3
       marked:
         specifier: ^15.0.0 || ^16.0.0 || ^17.0.0
         version: 17.0.5
+      pathe:
+        specifier: ^2.0.0
+        version: 2.0.3
     devDependencies:
       nuxt:
         specifier: ^4.0.0
@@ -500,6 +506,9 @@ packages:
         optional: true
       rollup-plugin-visualizer:
         optional: true
+
+  '@ontogen/admin-types@file:../admin-types':
+    resolution: {directory: ../admin-types, type: directory}
 
   '@oxc-minify/binding-android-arm-eabi@0.117.0':
     resolution: {integrity: sha512-5Hf2KsGRjxp3HnPU/mse7cQJa5tWfMFUPZQcgSMVsv2JZnGFFOIDzA0Oja2KDD+VPJqMpEJKc2dCHAGZgJxsGg==}
@@ -3974,6 +3983,8 @@ snapshots:
       - vti
       - vue-tsc
       - yaml
+
+  '@ontogen/admin-types@file:../admin-types': {}
 
   '@oxc-minify/binding-android-arm-eabi@0.117.0':
     optional: true

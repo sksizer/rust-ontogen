@@ -1,30 +1,25 @@
-import type { AdminEntityConfig } from './useAdminEntity'
-import { adminFieldDefs as layerFieldDefs, type AdminFieldDef } from '../../admin-fields'
+import type { AdminEntityConfig, AdminFieldDef } from '@ontogen/admin-types'
 
-/**
- * Provides admin entity registry and field definitions.
- *
- * This composable is designed to be overridden by the consuming app.
- * The consuming app should provide its own useAdminRegistry() that returns
- * entity configs from the generated admin-registry.ts and field definitions
- * from admin-fields.ts (generated or hand-maintained).
- *
- * This base implementation returns empty defaults. The consuming app MUST
- * override this by providing its own useAdminRegistry composable that
- * populates the data from generated files.
- */
+// #admin-registry is a virtual alias set by the layer's Nuxt module.
+// It resolves to the consuming app's app/admin/generated/admin-registry.ts at build time.
+// @ts-ignore — alias is only resolvable during Nuxt build, not standalone tsc
+import {
+  adminEntities,
+  adminEntityMap,
+  adminEntityByPlural,
+  adminFieldDefs,
+} from '#admin-registry'
+
 export function useAdminRegistry(): {
   adminEntities: AdminEntityConfig[]
   adminEntityMap: Record<string, AdminEntityConfig>
   adminEntityByPlural: Record<string, AdminEntityConfig>
   adminFieldDefs: Record<string, AdminFieldDef[]>
 } {
-  // This will be overridden by the consuming app's auto-imported version.
-  // If not overridden, returns empty defaults (no entities shown).
   return {
-    adminEntities: [],
-    adminEntityMap: {},
-    adminEntityByPlural: {},
-    adminFieldDefs: layerFieldDefs,
+    adminEntities,
+    adminEntityMap,
+    adminEntityByPlural,
+    adminFieldDefs,
   }
 }

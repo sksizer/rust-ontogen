@@ -1,22 +1,19 @@
 <script setup lang="ts">
 definePageMeta({ layout: 'admin' })
 
-// Auto-imported from consuming app
 const { adminEntities } = useAdminRegistry()
 const transport = useTransport()
-const projectId = useAdminProjectId()
 
 const counts = ref<Record<string, number>>({})
 const loading = ref(true)
 
 onMounted(async () => {
   try {
-    // Fetch counts by listing each entity type
     const results = await Promise.allSettled(
       adminEntities.map(async (entity) => {
         const method = entity.listMethod as keyof typeof transport
-        const fn = transport[method] as (projectId?: string) => Promise<unknown[]>
-        const items = await fn(projectId.value)
+        const fn = transport[method] as (...args: unknown[]) => Promise<unknown[]>
+        const items = await fn()
         return { key: entity.plural, count: items.length }
       }),
     )

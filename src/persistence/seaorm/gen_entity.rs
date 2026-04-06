@@ -225,7 +225,7 @@ fn generate_model_column(field: &FieldDef) -> Option<String> {
     // PK attribute
     if field.role == FieldRole::Id {
         match &field.field_type {
-            FieldType::I32 => out.push_str("    #[sea_orm(primary_key)]\n"),
+            FieldType::I32 | FieldType::I64 => out.push_str("    #[sea_orm(primary_key)]\n"),
             _ => out.push_str("    #[sea_orm(primary_key, auto_increment = false)]\n"),
         }
     }
@@ -248,6 +248,7 @@ fn field_db_type(field: &FieldDef) -> &'static str {
     if field.role == FieldRole::Id {
         return match &field.field_type {
             FieldType::I32 => "i32",
+            FieldType::I64 => "i64",
             _ => "String", // String or OptionString → required String PK
         };
     }
@@ -257,6 +258,10 @@ fn field_db_type(field: &FieldDef) -> &'static str {
         FieldType::OptionString => "Option<String>",
         FieldType::I32 => "i32",
         FieldType::OptionI32 => "Option<i32>",
+        FieldType::I64 => "i64",
+        FieldType::OptionI64 => "Option<i64>",
+        FieldType::Bool => "bool",
+        FieldType::OptionBool => "Option<bool>",
         FieldType::VecString | FieldType::VecStruct(_) => "String", // JSON
         // Primitive numeric option types map to DB integer columns
         FieldType::OptionEnum(t) if is_integer_primitive(t) => "Option<i32>",

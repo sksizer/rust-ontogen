@@ -33,6 +33,7 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
+
 use serde::{Deserialize, Serialize};
 
 ",
@@ -57,27 +58,34 @@ use serde::{Deserialize, Serialize};
         }
     }
 
-    out.push_str(&format!("use {}::{{\n", config.service_import_path));
-    for m in &service_imports {
-        out.push_str(&format!("    {},\n", m));
-    }
-    out.push_str("};\n");
+    // Emit use statements in sorted order (matches rustfmt alphabetical sort)
+    let mut use_stmts = Vec::new();
+
+    use_stmts.push(format!(
+        "use {}::{{\n{}}};\n",
+        config.service_import_path,
+        service_imports.iter().map(|m| format!("    {},\n", m)).collect::<String>()
+    ));
 
     type_imports.sort();
     type_imports.dedup();
     if !type_imports.is_empty() {
-        out.push_str(&format!("use {}::{{\n", config.types_import_path));
-        for t in &type_imports {
-            out.push_str(&format!("    {},\n", t));
-        }
-        out.push_str("};\n");
+        use_stmts.push(format!(
+            "use {}::{{\n{}}};\n",
+            config.types_import_path,
+            type_imports.iter().map(|t| format!("    {},\n", t)).collect::<String>()
+        ));
     }
 
-    out.push_str(&format!("use {};\n", config.state_import));
+    use_stmts.push(format!("use {};\n", config.state_import));
 
-    // Add Store import if store_type is configured
     if let Some(ref store_import) = config.store_import {
-        out.push_str(&format!("use {};\n", store_import));
+        use_stmts.push(format!("use {};\n", store_import));
+    }
+
+    use_stmts.sort();
+    for stmt in &use_stmts {
+        out.push_str(stmt);
     }
 
     // Add SSE-specific imports if any module has events

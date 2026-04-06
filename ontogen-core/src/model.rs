@@ -73,6 +73,14 @@ pub enum FieldType {
     I32,
     /// `Option<i32>`
     OptionI32,
+    /// `i64` (also used for `u64` — SQLite has no unsigned integers)
+    I64,
+    /// `Option<i64>` (also used for `Option<u64>`)
+    OptionI64,
+    /// `bool`
+    Bool,
+    /// `Option<bool>`
+    OptionBool,
     /// Any other type we don't specifically handle.
     Other(String),
 }

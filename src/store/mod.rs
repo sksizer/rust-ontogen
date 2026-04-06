@@ -118,15 +118,12 @@ fn generate_entity_store(entity: &EntityDef) -> String {
         code.push_str("use sea_orm::{ColumnTrait, QueryFilter};\n");
     }
 
-    code.push_str("use crate::persistence::db::entities::");
-    code.push_str(&snake);
-    code.push_str(";\n");
-    code.push_str("use crate::schema::{AppError, ChangeOp, EntityKind};\n");
+    // Imports (sorted alphabetically for rustfmt compliance)
+    code.push_str(&format!("use crate::persistence::db::entities::{snake};\n"));
     code.push_str(&format!("use crate::schema::{};\n", entity.name));
-    code.push_str("\nuse crate::store::Store;\n");
-
-    // Import the hooks module for this entity
-    code.push_str(&format!("use crate::store::hooks::{snake} as hooks;\n\n"));
+    code.push_str("use crate::schema::{AppError, ChangeOp, EntityKind};\n\n");
+    code.push_str(&format!("use crate::store::hooks::{snake} as hooks;\n"));
+    code.push_str("use crate::store::Store;\n\n");
 
     // Update struct + apply + From impls
     gen_update::generate_update_struct(&mut code, entity);
