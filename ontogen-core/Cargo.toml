@@ -6,3 +6,6 @@ edition = "2024"
 description = "Shared types, IR definitions, and utilities for the ontogen code generation pipeline"
 license = "MIT"
 repository = "https://github.com/sksizer/rust-ontogen"
+
+[dependencies]
+cruet = "1.0"

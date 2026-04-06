@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `cruet` integration for Rails-style English pluralization/singularization
+  - Replaces naive "strip trailing s" heuristic
+  - Handles irregular words correctly (e.g., "dependencies" → "dependency")
+  - `NamingConfig` override maps take precedence over cruet
+
+### Changed
+
+- Entity-first naming convention across all generators (`agent_list`, `agent_get_by_id`, `skill_publish`)
+  - Consistent `command_name()` function used by HTTP, IPC, MCP, and TypeScript generators
+  - Eliminates duplicate method names when multiple entities share similar operations
+- `NamingConfig` now uses `cruet::to_plural()` and `cruet::to_singular()` as defaults
+  - Added `url_plural()` for kebab-case URL path segments
+  - Added `label()` and `plural_label()` with override support
+- TypeScript transport generator uses entity-first method names and dynamic import paths
+
 ## [0.1.0] - 2026-03-25
 
 ### Added

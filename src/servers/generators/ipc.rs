@@ -64,36 +64,15 @@ fn store_construction_line(config: &Config) -> String {
     }
 }
 
-/// IPC command name for a given module and operation.
-fn ipc_command_name(module: &str, op: &OpKind, config: &Config) -> String {
-    let singular = module; // IPC keeps full module name
-    let by_id_singular = config.naming.url_singular(module);
-    let plural = config.naming.module_plural(module);
-    match op {
-        OpKind::List => format!("get_{}", plural),
-        OpKind::GetById => format!("get_{}_by_id", by_id_singular),
-        OpKind::Create => format!("create_{}", singular),
-        OpKind::UpdateById => format!("update_{}", singular),
-        OpKind::DeleteById => format!("delete_{}", singular),
-        OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-            // Junction ops use the raw function name as the command name
-            String::new()
-        }
-        OpKind::CustomGet | OpKind::CustomPost => String::new(),
-    }
-}
-
-/// Get the IPC/TS command name for a function.
-pub fn ts_command_name(module: &str, f: &ApiFn, config: &Config) -> String {
-    let op = classify_op(f);
-    match op {
-        OpKind::JunctionList { .. }
-        | OpKind::JunctionAdd { .. }
-        | OpKind::JunctionRemove { .. }
-        | OpKind::CustomGet
-        | OpKind::CustomPost => format!("{}_{}", module, f.name),
-        _ => ipc_command_name(module, &op, config),
-    }
+/// Derive the IPC/TS command name for any function.
+///
+/// Uses entity-first naming with singular entity prefix:
+///   CRUD:     `{entity}_list`, `{entity}_get_by_id`, `{entity}_create`, etc.
+///   Junction: `{entity}_add_role`, `{entity}_list_skills`, etc.
+///   Custom:   `{entity}_publish`, `{entity}_refresh`, etc.
+pub fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
+    let entity = config.naming.url_singular(module);
+    format!("{}_{}", entity, f.name)
 }
 
 /// Generate IPC command handlers and write to the output file.
@@ -196,11 +175,12 @@ use tauri::State;
 
             match op {
                 OpKind::List => {
-                    let cmd_name = ipc_command_name(module, &op, config);
+                    let cmd_name = command_name(module, f, config);
                     let await_str = if is_async { ".await" } else { "" };
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let plain_params: Vec<_> =
-                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
+                    let plain_params: Vec<_> = f.params.iter()
+                        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input"))
+                        .collect();
                     let mut param_lines = String::new();
                     let mut extra_args = String::new();
                     if let Some(qp) = query_param {
@@ -229,7 +209,7 @@ pub async fn {cmd_name}(
                 }
 
                 OpKind::GetById => {
-                    let cmd_name = ipc_command_name(module, &op, config);
+                    let cmd_name = command_name(module, f, config);
                     let fn_name = &f.name;
                     if is_async {
                         out.push_str(&format!(
@@ -265,7 +245,7 @@ pub async fn {cmd_name}(
                 }
 
                 OpKind::Create => {
-                    let cmd_name = ipc_command_name(module, &op, config);
+                    let cmd_name = command_name(module, f, config);
                     let input_type = extract_input_type(&f.params[0].ty);
                     let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
@@ -285,7 +265,7 @@ pub async fn {cmd_name}(
                 }
 
                 OpKind::UpdateById => {
-                    let cmd_name = ipc_command_name(module, &op, config);
+                    let cmd_name = command_name(module, f, config);
                     let input_type = extract_input_type(&f.params[1].ty);
                     let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
@@ -306,7 +286,7 @@ pub async fn {cmd_name}(
                 }
 
                 OpKind::DeleteById => {
-                    let cmd_name = ipc_command_name(module, &op, config);
+                    let cmd_name = command_name(module, f, config);
                     let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
                         "\
@@ -437,7 +417,9 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
         } else if p.ty.contains("Input")
             || matches!(
                 p.ty.as_str(),
-                "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
+                "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
+                    | "u8" | "u16" | "u32" | "u64" | "u128"
+                    | "f32" | "f64"
             )
         {
             out.push_str(&format!(", {}", p.name));

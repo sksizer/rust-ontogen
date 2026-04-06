@@ -13,7 +13,7 @@ use std::path::Path;
 use ontogen_core::model::{EntityDef, FieldRole, FieldType, RelationKind};
 
 use crate::servers::config::Config;
-use crate::servers::generators::ipc::ts_command_name;
+use crate::servers::generators::ipc::command_name;
 use crate::servers::parse::ApiModule;
 use crate::servers::types::{extract_input_type, inner_type, rust_type_to_ts, snake_to_camel};
 
@@ -49,7 +49,8 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
 
         let id_type = "string";
 
-        let get_method = format!("get_{}_by_id", config.naming.url_singular(module));
+        let get_fn = m.functions.iter().find(|f| f.name == "get_by_id").unwrap();
+        let get_method = command_name(module, get_fn, config);
 
         let list_fn = m.functions.iter().find(|f| f.name == "list").unwrap();
         let return_type_raw = inner_type(&list_fn.return_type);
@@ -85,11 +86,11 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
     updateInputType: '{update_input}',
     fields: [{fields_js}],
   }},\n",
-            list_method = snake_to_camel(&ts_command_name(module, list_fn, config)),
+            list_method = snake_to_camel(&command_name(module, list_fn, config)),
             get_method = snake_to_camel(&get_method),
-            create_method = snake_to_camel(&ts_command_name(module, create_fn, config)),
-            update_method = snake_to_camel(&ts_command_name(module, update_fn, config)),
-            delete_method = snake_to_camel(&ts_command_name(
+            create_method = snake_to_camel(&command_name(module, create_fn, config)),
+            update_method = snake_to_camel(&command_name(module, update_fn, config)),
+            delete_method = snake_to_camel(&command_name(
                 module,
                 m.functions.iter().find(|f| f.name == "delete").unwrap(),
                 config,

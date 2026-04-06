@@ -643,8 +643,8 @@ fn test_http_generator_state_module() {
 
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // State-based modules get unscoped routes
-    assert!(content.contains("list_projects"));
+    // State-based modules get unscoped routes (entity-first handler names)
+    assert!(content.contains("project_list"));
     assert!(content.contains("/api/projects"));
     assert!(content.contains("project::list(&state)"), "should pass &state directly");
 }
@@ -681,12 +681,12 @@ fn test_http_generator_store_module_no_prefix() {
 
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // Should generate unscoped handlers (not scoped)
-    assert!(content.contains("list_nodes"), "should generate list handler");
-    assert!(content.contains("get_node_by_id"), "should generate get handler");
-    assert!(content.contains("create_node_handler"), "should generate create handler");
-    assert!(content.contains("update_node_handler"), "should generate update handler");
-    assert!(content.contains("delete_node_handler"), "should generate delete handler");
+    // Should generate unscoped handlers (not scoped, entity-first names)
+    assert!(content.contains("node_list"), "should generate list handler");
+    assert!(content.contains("node_get_by_id"), "should generate get handler");
+    assert!(content.contains("node_create"), "should generate create handler");
+    assert!(content.contains("node_update"), "should generate update handler");
+    assert!(content.contains("node_delete"), "should generate delete handler");
 
     // Should construct store from state
     assert!(content.contains("state.store().await"), "should construct store from state");
@@ -736,12 +736,12 @@ fn test_ipc_generator_crud_module() {
 
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // IPC command names
-    assert!(content.contains("pub async fn get_nodes("), "list → get_nodes");
-    assert!(content.contains("pub async fn get_node_by_id("));
-    assert!(content.contains("pub async fn create_node("));
-    assert!(content.contains("pub async fn update_node("));
-    assert!(content.contains("pub async fn delete_node("));
+    // IPC command names (entity-first: {entity}_{fn})
+    assert!(content.contains("pub async fn node_list("), "list → node_list");
+    assert!(content.contains("pub async fn node_get_by_id("));
+    assert!(content.contains("pub async fn node_create("));
+    assert!(content.contains("pub async fn node_update("));
+    assert!(content.contains("pub async fn node_delete("));
 
     // Tauri attributes
     assert!(content.contains("#[tauri::command]"));
@@ -769,12 +769,12 @@ fn test_mcp_generator_crud_module() {
 
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // MCP tool names
-    assert!(content.contains(r#"name: "get_nodes""#));
-    assert!(content.contains(r#"name: "get_node_by_id""#));
-    assert!(content.contains(r#"name: "create_node""#));
-    assert!(content.contains(r#"name: "update_node""#));
-    assert!(content.contains(r#"name: "delete_node""#));
+    // MCP tool names (entity-first: {entity}_{fn})
+    assert!(content.contains(r#"name: "node_list""#));
+    assert!(content.contains(r#"name: "node_get_by_id""#));
+    assert!(content.contains(r#"name: "node_create""#));
+    assert!(content.contains(r#"name: "node_update""#));
+    assert!(content.contains(r#"name: "node_delete""#));
 
     // Registry function
     assert!(content.contains("pub fn generated_tool_registry()"));
@@ -815,13 +815,13 @@ fn test_ts_transport_generator_crud_module() {
     crate::servers::generators::transport::generate(&output, &bindings, &modules, &config);
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // Transport interface
+    // Transport interface (entity-first camelCase method names)
     assert!(content.contains("export interface Transport"));
-    assert!(content.contains("getNodes("));
-    assert!(content.contains("getNodeById("));
-    assert!(content.contains("createNode("));
-    assert!(content.contains("updateNode("));
-    assert!(content.contains("deleteNode("));
+    assert!(content.contains("nodeList("));
+    assert!(content.contains("nodeGetById("));
+    assert!(content.contains("nodeCreate("));
+    assert!(content.contains("nodeUpdate("));
+    assert!(content.contains("nodeDelete("));
 
     // HTTP transport
     assert!(content.contains("export function createHttpTransport(): Transport"));
@@ -880,12 +880,12 @@ fn test_admin_registry_generator() {
     assert!(content.contains("label: 'Node'"));
     assert!(content.contains("pluralLabel: 'Nodes'"));
 
-    // Transport method names (camelCase)
-    assert!(content.contains("listMethod: 'getNodes'"));
-    assert!(content.contains("getMethod: 'getNodeById'"));
-    assert!(content.contains("createMethod: 'createNode'"));
-    assert!(content.contains("updateMethod: 'updateNode'"));
-    assert!(content.contains("deleteMethod: 'deleteNode'"));
+    // Transport method names (entity-first camelCase)
+    assert!(content.contains("listMethod: 'nodeList'"));
+    assert!(content.contains("getMethod: 'nodeGetById'"));
+    assert!(content.contains("createMethod: 'nodeCreate'"));
+    assert!(content.contains("updateMethod: 'nodeUpdate'"));
+    assert!(content.contains("deleteMethod: 'nodeDelete'"));
 
     // Type references
     assert!(content.contains("returnType: 'Node'"));

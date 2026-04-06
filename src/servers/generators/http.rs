@@ -130,7 +130,6 @@ fn err(msg: String) -> ApiError {
 
     for m in modules {
         let module = &m.name;
-        let plural = config.naming.module_plural(module);
         let url_plural = config.naming.url_plural(module);
         let url_sing = config.naming.url_singular(module);
 
@@ -171,17 +170,19 @@ fn err(msg: String) -> ApiError {
             let fn_name = &f.name;
             let is_async = f.is_async;
             let ret_type = &f.return_type;
+            let handler_name = crate::servers::generators::ipc::command_name(module, f, config);
 
             match op {
                 OpKind::List => {
-                    let handler_name = format!("list_{}", plural);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map = ".map_err(|e| err(e.to_string()))";
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     // Check for a query parameter struct (e.g., ListAgentsQuery)
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
                     // Check for plain string params (e.g., skill_id: &str) — scoped list filters
-                    let plain_params: Vec<_> =
-                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
+                    let plain_params: Vec<_> = f.params.iter()
+                        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input"))
+                        .collect();
 
                     let mut extra_extractors = String::new();
                     let mut extra_args = String::new();
@@ -209,9 +210,9 @@ async fn {handler_name}(
                 }
 
                 OpKind::GetById => {
-                    let handler_name = format!("get_{}_by_id", url_sing);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map = ".map_err(|e| err(e.to_string()))";
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -228,10 +229,10 @@ async fn {handler_name}(
                 }
 
                 OpKind::Create => {
-                    let handler_name = format!("create_{}_handler", url_sing);
                     let input_type = extract_input_type(&f.params[0].ty);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map = ".map_err(|e| err(e.to_string()))";
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -248,10 +249,10 @@ async fn {handler_name}(
                 }
 
                 OpKind::UpdateById => {
-                    let handler_name = format!("update_{}_handler", url_sing);
                     let input_type = extract_input_type(&f.params[1].ty);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map = ".map_err(|e| err(e.to_string()))";
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -269,9 +270,9 @@ async fn {handler_name}(
                 }
 
                 OpKind::DeleteById => {
-                    let handler_name = format!("delete_{}_handler", url_sing);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map = ".map_err(|e| err(e.to_string()))";
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -288,9 +289,9 @@ async fn {handler_name}(
                 }
 
                 OpKind::JunctionList { ref child_segment } => {
-                    let handler_name = format!("list_{}_{}", url_sing, child_segment.replace('-', "_"));
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map = ".map_err(|e| err(e.to_string()))";
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -307,12 +308,11 @@ async fn {handler_name}(
                     // Collect for merging — will be combined with JunctionAdd on the same path
                     junction_routes
                         .entry(format!("/api/{url_plural}/:parent_id/{child_segment}"))
-                        .or_default()
+                        .or_insert_with(Vec::new)
                         .push(format!("get({handler_name})"));
                 }
 
                 OpKind::JunctionAdd { ref child_segment } => {
-                    let handler_name = format!("{}_add_{}", url_sing, child_segment.replace('-', "_"));
                     let child_id_param = if f.params.len() >= 2 { &f.params[1].name } else { "child_id" };
                     out.push_str(&format!(
                         "\
@@ -332,12 +332,11 @@ async fn {handler_name}(
                     ));
                     junction_routes
                         .entry(format!("/api/{url_plural}/:parent_id/{child_segment}"))
-                        .or_default()
+                        .or_insert_with(Vec::new)
                         .push(format!("post({handler_name})"));
                 }
 
                 OpKind::JunctionRemove { ref child_segment } => {
-                    let handler_name = format!("{}_remove_{}", url_sing, child_segment.replace('-', "_"));
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -353,7 +352,7 @@ async fn {handler_name}(
                     ));
                     junction_routes
                         .entry(format!("/api/{url_plural}/:parent_id/{child_segment}/:child_id"))
-                        .or_default()
+                        .or_insert_with(Vec::new)
                         .push(format!("delete({handler_name})"));
                 }
 
@@ -365,24 +364,24 @@ async fn {handler_name}(
 
         // Add standard CRUD routes for this module
         if has_list && has_create {
-            let list_fn = format!("list_{}", plural);
-            let create_fn = format!("create_{}_handler", url_sing);
+            let list_fn = format!("{}_list", url_sing);
+            let create_fn = format!("{}_create", url_sing);
             route_entries.push(format!("        .route(\"/api/{url_plural}\", get({list_fn}).post({create_fn}))"));
         } else if has_list {
-            let list_fn = format!("list_{}", plural);
+            let list_fn = format!("{}_list", url_sing);
             route_entries.push(format!("        .route(\"/api/{url_plural}\", get({list_fn}))"));
         }
 
         if has_get_by_id || has_update || has_delete {
             let mut methods = Vec::new();
             if has_get_by_id {
-                methods.push(format!("get(get_{}_by_id)", url_sing));
+                methods.push(format!("get({}_get_by_id)", url_sing));
             }
             if has_update {
-                methods.push(format!("put(update_{}_handler)", url_sing));
+                methods.push(format!("put({}_update)", url_sing));
             }
             if has_delete {
-                methods.push(format!("delete(delete_{}_handler)", url_sing));
+                methods.push(format!("delete({}_delete)", url_sing));
             }
             route_entries.push(format!("        .route(\"/api/{url_plural}/:id\", {})", methods.join(".")));
         }
@@ -489,7 +488,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
         route_path.push_str(&format!("/:{}", p.name));
     }
 
-    let handler_name = format!("{}_{}", module, fn_name);
+    let handler_name = crate::servers::generators::ipc::command_name(module, f, config);
     let method = if is_get { "get" } else { "post" };
 
     // Generate query struct if needed
@@ -519,24 +518,15 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     if path_params.len() == 1 {
         let p = path_params[0];
         let path_type = match p.ty.as_str() {
-            "i32" => "i32",
-            "i64" => "i64",
-            "u32" => "u32",
-            "u64" => "u64",
+            "i32" => "i32", "i64" => "i64", "u32" => "u32", "u64" => "u64",
             _ => "String",
         };
         out.push_str(&format!("    Path({}): Path<{}>,\n", p.name, path_type));
     } else if path_params.len() > 1 {
-        let types: Vec<&str> = path_params
-            .iter()
-            .map(|p| match p.ty.as_str() {
-                "i32" => "i32",
-                "i64" => "i64",
-                "u32" => "u32",
-                "u64" => "u64",
-                _ => "String",
-            })
-            .collect();
+        let types: Vec<&str> = path_params.iter().map(|p| match p.ty.as_str() {
+            "i32" => "i32", "i64" => "i64", "u32" => "u32", "u64" => "u64",
+            _ => "String",
+        }).collect();
         let names: Vec<&str> = path_params.iter().map(|p| p.name.as_str()).collect();
         out.push_str(&format!("    Path(({}),): Path<({},)>,\n", names.join(", "), types.join(", ")));
     }
@@ -578,7 +568,9 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     for p in &path_params {
         if matches!(
             p.ty.as_str(),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
+            "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
+                | "u8" | "u16" | "u32" | "u64" | "u128"
+                | "f32" | "f64"
         ) {
             out.push_str(&format!(", {}", p.name));
         } else {
@@ -594,7 +586,9 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     for bf in &body_fields {
         if matches!(
             bf.ty.as_str(),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
+            "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
+                | "u8" | "u16" | "u32" | "u64" | "u128"
+                | "f32" | "f64"
         ) {
             out.push_str(&format!(", body.{}", bf.name));
         } else {
@@ -676,11 +670,12 @@ fn generate_scoped_handlers(
                 OpKind::List => {
                     let handler_name = format!("list_{}_scoped", plural);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map = ".map_err(|e| err(e.to_string()))";
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
                     let (query_extractor, query_arg) = if let Some(qp) = query_param {
                         let qt = extract_input_type(&qp.ty);
-                        (format!("\n    Query(query): Query<{}>,", qt), ", query".to_string())
+                        (format!("\n    Query(query): Query<{}>,", qt), format!(", query"))
                     } else {
                         (String::new(), String::new())
                     };
@@ -703,7 +698,8 @@ async fn {handler_name}(
                 OpKind::GetById => {
                     let handler_name = format!("get_{}_by_id_scoped", url_sing);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map = ".map_err(|e| err(e.to_string()))";
+                    let err_map =
+                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -990,7 +986,9 @@ fn generate_generic_http_handler_scoped(
     for p in &path_params {
         if matches!(
             p.ty.as_str(),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
+            "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
+                | "u8" | "u16" | "u32" | "u64" | "u128"
+                | "f32" | "f64"
         ) {
             out.push_str(&format!(", {}", p.name));
         } else {

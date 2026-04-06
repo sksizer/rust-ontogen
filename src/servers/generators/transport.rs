@@ -13,7 +13,7 @@ use std::path::Path;
 
 use crate::servers::classify::{OpKind, classify_op, is_read_operation};
 use crate::servers::config::Config;
-use crate::servers::generators::ipc::ts_command_name;
+use crate::servers::generators::ipc::command_name;
 use crate::servers::parse::{ApiModule, Param};
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 
@@ -96,7 +96,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
             continue;
         }
         for f in &m.functions {
-            let cmd_name = ts_command_name(&m.name, f, config);
+            let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
@@ -181,7 +181,7 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
         }
 
         for f in &m.functions {
-            let cmd_name = ts_command_name(&m.name, f, config);
+            let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
@@ -213,11 +213,8 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                 OpKind::DeleteById => {
                     out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<null>;\n", camel));
                 }
-                OpKind::JunctionList { .. }
-                | OpKind::JunctionAdd { .. }
-                | OpKind::JunctionRemove { .. }
-                | OpKind::CustomGet
-                | OpKind::CustomPost => {
+                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }
+                | OpKind::CustomGet | OpKind::CustomPost => {
                     let mut params = build_ts_params(f, config);
                     if !pp_only.is_empty() {
                         params.push(pp_only.clone());
@@ -342,7 +339,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
 
         for f in &m.functions {
             let op = classify_op(f);
-            let cmd_name = ts_command_name(module, f, config);
+            let cmd_name = command_name(module, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
@@ -510,7 +507,7 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
 
         for f in &m.functions {
             let op = classify_op(f);
-            let cmd_name = ts_command_name(module, f, config);
+            let cmd_name = command_name(module, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
@@ -613,7 +610,8 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
 /// Generate a custom HTTP method (GET or POST with various param shapes).
 fn generate_http_custom_method(out: &mut String, module: &str, f: &crate::servers::parse::ApiFn, config: &Config) {
     let fn_name = &f.name;
-    let camel = snake_to_camel(fn_name);
+    let cmd_name = command_name(module, f, config);
+    let camel = snake_to_camel(&cmd_name);
     let ts_ret = rust_type_to_ts(&f.return_type);
     let is_get = is_read_operation(fn_name);
     let action = config.naming.derive_action(module, fn_name);
@@ -759,7 +757,7 @@ fn generate_http_custom_method(out: &mut String, module: &str, f: &crate::server
 
 /// Generate a custom IPC method.
 fn generate_ipc_custom_method(out: &mut String, f: &crate::servers::parse::ApiFn, cmd_name: &str, config: &Config) {
-    let camel = snake_to_camel(&f.name);
+    let camel = snake_to_camel(cmd_name);
     let ts_ret = rust_type_to_ts(&f.return_type);
     let returns_unit = f.return_type == "()";
     let ret_str = if returns_unit { "null".to_string() } else { ts_ret.clone() };
