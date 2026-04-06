@@ -69,7 +69,7 @@ bring-up-to-date *args:
     bash scripts/bring_up_to_date.sh {{args}}
 alias butd := bring-up-to-date
 
-# Bring all projects in sks_projects.sh up to date in parallel (dry-run by default; --execute to run)
+# Bring all projects in downstream.txt up to date in parallel (dry-run by default; --execute to run)
 bring-up-to-date-all *args:
     bash scripts/bring_up_to_date_all.sh {{args}}
 alias butda := bring-up-to-date-all
