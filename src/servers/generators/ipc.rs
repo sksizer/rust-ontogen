@@ -87,8 +87,11 @@ fn ipc_command_name(module: &str, op: &OpKind, config: &Config) -> String {
 pub fn ts_command_name(module: &str, f: &ApiFn, config: &Config) -> String {
     let op = classify_op(f);
     match op {
-        OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }
-        | OpKind::CustomGet | OpKind::CustomPost => format!("{}_{}", module, f.name),
+        OpKind::JunctionList { .. }
+        | OpKind::JunctionAdd { .. }
+        | OpKind::JunctionRemove { .. }
+        | OpKind::CustomGet
+        | OpKind::CustomPost => format!("{}_{}", module, f.name),
         _ => ipc_command_name(module, &op, config),
     }
 }
@@ -196,9 +199,8 @@ use tauri::State;
                     let cmd_name = ipc_command_name(module, &op, config);
                     let await_str = if is_async { ".await" } else { "" };
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let plain_params: Vec<_> = f.params.iter()
-                        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input"))
-                        .collect();
+                    let plain_params: Vec<_> =
+                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
                     let mut param_lines = String::new();
                     let mut extra_args = String::new();
                     if let Some(qp) = query_param {
@@ -435,9 +437,7 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
         } else if p.ty.contains("Input")
             || matches!(
                 p.ty.as_str(),
-                "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
-                    | "u8" | "u16" | "u32" | "u64" | "u128"
-                    | "f32" | "f64"
+                "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
             )
         {
             out.push_str(&format!(", {}", p.name));

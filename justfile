@@ -73,3 +73,13 @@ alias butd := bring-up-to-date
 bring-up-to-date-all *args:
     bash scripts/bring_up_to_date_all.sh {{args}}
 alias butda := bring-up-to-date-all
+
+# Update cargo dependencies, run checks, and open a PR (dry-run by default; --execute to run, optional target dir)
+cargo-update *args:
+    bash scripts/cargo_update.sh {{args}}
+alias cu := cargo-update
+
+# Update cargo dependencies in all downstream projects in parallel (dry-run by default; --execute to run)
+cargo-update-all *args:
+    bash scripts/cargo_update_all.sh {{args}}
+alias cua := cargo-update-all

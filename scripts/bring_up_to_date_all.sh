@@ -26,7 +26,7 @@ while IFS= read -r dir; do
     fi
 
     echo "Starting: ${dir}"
-    bash "$BRING_UP" "${ARGS[@]}" "$dir" &
+    bash "$BRING_UP" ${ARGS[@]+"${ARGS[@]}"} "$dir" &
     PIDS+=($!)
     DIRS+=("$dir")
 done < "$PROJECTS_FILE"

@@ -229,8 +229,14 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
     for m in modules {
         for f in &m.functions {
             let op = classify_op(f);
-            if !matches!(op, OpKind::CustomGet | OpKind::CustomPost
-                | OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }) {
+            if !matches!(
+                op,
+                OpKind::CustomGet
+                    | OpKind::CustomPost
+                    | OpKind::JunctionList { .. }
+                    | OpKind::JunctionAdd { .. }
+                    | OpKind::JunctionRemove { .. }
+            ) {
                 continue;
             }
             let has_body_struct = f.params.iter().any(|p| p.ty.contains("Input"));
@@ -274,9 +280,8 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
                     let (prefix, first_arg) =
                         if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let plain_params: Vec<_> = f.params.iter()
-                        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input"))
-                        .collect();
+                    let plain_params: Vec<_> =
+                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
                     let mut schema_fn = wrap_schema("schema_for::<EmptyInput>", config);
                     let mut extraction = String::new();
                     let mut extra_args = String::new();
@@ -287,7 +292,10 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
                         extra_args.push_str(", query");
                     }
                     for pp in &plain_params {
-                        extraction.push_str(&format!("                    let {} = required_str(args, \"{}\")?;\n", pp.name, pp.name));
+                        extraction.push_str(&format!(
+                            "                    let {} = required_str(args, \"{}\")?;\n",
+                            pp.name, pp.name
+                        ));
                         extra_args.push_str(&format!(", {}", pp.name));
                     }
                     out.push_str(&format!(
