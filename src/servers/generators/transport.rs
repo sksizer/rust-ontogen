@@ -79,6 +79,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         .lines()
         .filter_map(|line| {
             line.strip_prefix("export type ")
+                .or_else(|| line.strip_prefix("export interface "))
                 .and_then(|rest| rest.split(|c: char| !c.is_alphanumeric() && c != '_').next().map(|s| s.to_string()))
         })
         .collect();
@@ -114,12 +115,23 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
     let (available, missing): (Vec<_>, Vec<_>) = import_types.iter().partition(|t| exported_types.contains(t));
 
+    // Compute relative import path from output file to bindings file
+    let bindings_import_path = {
+        let output_dir = output.parent().unwrap_or(Path::new("."));
+        let bindings_abs = fs::canonicalize(bindings_path).unwrap_or_else(|_| bindings_path.to_path_buf());
+        let output_abs = fs::canonicalize(output_dir).unwrap_or_else(|_| output_dir.to_path_buf());
+        let rel = crate::utils::relative_path(&output_abs, &bindings_abs);
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        let rel_str = rel_str.strip_suffix(".ts").unwrap_or(&rel_str);
+        if rel_str.starts_with('.') { rel_str.to_string() } else { format!("./{}", rel_str) }
+    };
+
     if !available.is_empty() {
         out.push_str("import type {\n");
         for t in &available {
             out.push_str(&format!("  {},\n", t));
         }
-        out.push_str("} from '../types/bindings';\n\n");
+        out.push_str(&format!("}} from '{}';\n\n", bindings_import_path));
     }
 
     // IPC imports — must be at top level for lint compliance
@@ -201,11 +213,8 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                 OpKind::DeleteById => {
                     out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<null>;\n", camel));
                 }
-                OpKind::JunctionList { .. }
-                | OpKind::JunctionAdd { .. }
-                | OpKind::JunctionRemove { .. }
-                | OpKind::CustomGet
-                | OpKind::CustomPost => {
+                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }
+                | OpKind::CustomGet | OpKind::CustomPost => {
                     let mut params = build_ts_params(f, config);
                     if !pp_only.is_empty() {
                         params.push(pp_only.clone());

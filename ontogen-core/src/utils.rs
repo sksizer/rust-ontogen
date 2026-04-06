@@ -1,7 +1,7 @@
 //! Build-time utilities shared across codegen layers.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf, Component};
 
 use crate::CodegenError;
 
@@ -242,4 +242,35 @@ pub fn emit_rerun_directives_excluding(dir: &Path, exclude_dirs: &[&str]) {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
+}
+
+/// Compute a relative path from `base` directory to `target` file.
+///
+/// Both paths should be absolute. Returns a relative path like `../generated/api-types`.
+pub fn relative_path(base: &Path, target: &Path) -> PathBuf {
+    let base_components: Vec<_> = base.components().collect();
+    let target_components: Vec<_> = target.components().collect();
+
+    // Find common prefix length
+    let common = base_components
+        .iter()
+        .zip(target_components.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut result = PathBuf::new();
+
+    // Go up from base to common ancestor
+    for _ in common..base_components.len() {
+        result.push("..");
+    }
+
+    // Go down to target from common ancestor
+    for component in &target_components[common..] {
+        if let Component::Normal(s) = component {
+            result.push(s);
+        }
+    }
+
+    result
 }

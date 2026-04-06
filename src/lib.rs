@@ -199,6 +199,8 @@ pub struct ServersConfig {
     pub naming: servers::NamingConfig,
     /// Which server generators to run.
     pub generators: Vec<servers::ServerGeneratorConfig>,
+    /// Which client generators to run (TypeScript transports, admin registry, etc.).
+    pub client_generators: Vec<servers::config::ClientGenerator>,
     /// Rustfmt edition for formatting generated Rust.
     pub rustfmt_edition: String,
     /// SSE route overrides.

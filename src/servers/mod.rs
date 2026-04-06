@@ -56,6 +56,7 @@ pub fn generate(
                     config::GeneratorConfig::Server(config::ServerGenerator::Mcp { output: output.clone() })
                 }
             })
+            .chain(config.client_generators.iter().map(|g| config::GeneratorConfig::Client(g.clone())))
             .collect(),
         rustfmt_edition: config.rustfmt_edition.clone(),
         sse_route_overrides: config.sse_route_overrides.clone(),
