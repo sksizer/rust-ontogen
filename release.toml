@@ -1,5 +1,4 @@
 allow-branch = ["main"]
-consolidate-commits = true
 pre-release-commit-message = "chore: release v{{version}}"
 publish = false
 push = true

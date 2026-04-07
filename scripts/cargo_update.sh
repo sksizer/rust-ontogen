@@ -4,6 +4,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPT_DIR="${SCRIPT_DIR}/cargo_update"
 
+# --- Colors (disabled when not a tty or NO_COLOR is set) --------------------
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+    C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
+    C_BLUE=$'\033[34m'; C_MAGENTA=$'\033[35m'; C_CYAN=$'\033[36m'
+else
+    C_RESET=; C_BOLD=; C_DIM=; C_RED=; C_GREEN=; C_YELLOW=; C_BLUE=; C_MAGENTA=; C_CYAN=
+fi
+
+# REPO_LABEL can be set by the caller (e.g. cargo_update_all.sh) to prefix logs
+LABEL="${REPO_LABEL:-cargo_update}"
+log()   { echo "${C_CYAN}[${LABEL}]${C_RESET} $*"; }
+info()  { echo "${C_BLUE}[${LABEL}]${C_RESET} $*"; }
+warn()  { echo "${C_YELLOW}[${LABEL}]${C_RESET} $*" >&2; }
+error() { echo "${C_RED}[${LABEL}] ERROR:${C_RESET} $*" >&2; }
+
 # --- Locate a JS package runner (pnpm dlx preferred, npx fallback) ----------
 find_runner() {
     if command -v pnpm &>/dev/null; then
@@ -11,7 +27,7 @@ find_runner() {
     elif command -v npx &>/dev/null; then
         echo "npx"
     else
-        echo "Error: neither pnpm nor npx found. Install one of them first." >&2
+        error "neither pnpm nor npx found. Install one of them first."
         exit 1
     fi
 }
@@ -72,36 +88,42 @@ open_url() {
 ALLOWED_TOOLS="Read Edit Write Bash"
 
 # --- Execute or dry-run -----------------------------------------------------
+print_config() {
+    info "Runner:        ${C_BOLD}${RUNNER}${C_RESET}"
+    info "Target:        ${C_BOLD}${TARGET_DIR}${C_RESET}"
+    info "Prompt length: ${C_BOLD}${#PROMPT}${C_RESET} chars"
+    info "Allowed tools: ${C_DIM}${ALLOWED_TOOLS}${C_RESET}"
+}
+
 if [[ "$EXECUTE" == true ]]; then
-    echo "Using runner: ${RUNNER}"
-    echo "Target: ${TARGET_DIR}"
-    echo "Prompt length: ${#PROMPT} chars"
-    echo "Allowed tools: ${ALLOWED_TOOLS}"
-    echo "---"
+    log "${C_GREEN}${C_BOLD}▶ EXECUTE${C_RESET} updating ${C_MAGENTA}${LABEL}${C_RESET}"
+    print_config
+    log "${C_DIM}──── claude output ────${C_RESET}"
     cd "$TARGET_DIR"
     OUTPUT="$(echo "${PROMPT}" | ${RUNNER} @anthropic-ai/claude-code --print \
         --allowed-tools ${ALLOWED_TOOLS})"
     echo "$OUTPUT"
+    log "${C_DIM}──── end output ────${C_RESET}"
 
     # Try to extract a PR URL from the output and open it
     PR_URL="$(echo "$OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1 || true)"
     if [[ -n "$PR_URL" ]]; then
-        echo "Opening PR: ${PR_URL}"
+        log "${C_GREEN}✔ PR for ${C_MAGENTA}${LABEL}${C_GREEN}:${C_RESET} ${C_BOLD}${PR_URL}${C_RESET}"
+        log "Opening in browser…"
         open_url "$PR_URL"
+    else
+        log "${C_YELLOW}No PR URL detected in output for ${LABEL}${C_RESET}"
     fi
 else
-    echo "=== DRY RUN ==="
-    echo ""
+    log "${C_YELLOW}${C_BOLD}=== DRY RUN ===${C_RESET} (${C_MAGENTA}${LABEL}${C_RESET})"
+    echo
     echo "${PROMPT}"
-    echo "---"
-    echo "Runner: ${RUNNER}"
-    echo "Target: ${TARGET_DIR}"
-    echo "Prompt length: ${#PROMPT} chars"
-    echo "Allowed tools: ${ALLOWED_TOOLS}"
-    echo ""
-    echo "Would run:"
-    echo "  cd ${TARGET_DIR}"
-    echo "  echo \"\${PROMPT}\" | ${RUNNER} @anthropic-ai/claude-code --print --allowed-tools ${ALLOWED_TOOLS}"
-    echo ""
-    echo "Pass --execute to run this against Claude Code."
+    log "${C_DIM}────────────────${C_RESET}"
+    print_config
+    echo
+    log "Would run:"
+    echo "  ${C_DIM}cd ${TARGET_DIR}${C_RESET}"
+    echo "  ${C_DIM}echo \"\${PROMPT}\" | ${RUNNER} @anthropic-ai/claude-code --print --allowed-tools ${ALLOWED_TOOLS}${C_RESET}"
+    echo
+    log "Pass ${C_BOLD}--execute${C_RESET} to run this against Claude Code."
 fi
