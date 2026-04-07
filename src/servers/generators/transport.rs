@@ -13,7 +13,7 @@ use std::path::Path;
 
 use crate::servers::classify::{OpKind, classify_op, is_read_operation};
 use crate::servers::config::Config;
-use crate::servers::generators::ipc::ts_command_name;
+use crate::servers::generators::ipc::command_name;
 use crate::servers::parse::{ApiModule, Param};
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 
@@ -96,7 +96,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
             continue;
         }
         for f in &m.functions {
-            let cmd_name = ts_command_name(&m.name, f, config);
+            let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
@@ -149,6 +149,18 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         ));
     }
 
+    // ── PaginatedResult<T> (when pagination is enabled) ──
+    if config.pagination.is_some() {
+        out.push_str(
+            "export interface PaginatedResult<T> {\n\
+             \x20 items: T[];\n\
+             \x20 total: number;\n\
+             \x20 limit: number;\n\
+             \x20 offset: number;\n\
+             }\n\n",
+        );
+    }
+
     // ── Transport Interface ──
     generate_transport_interface(&mut out, modules, config);
 
@@ -181,7 +193,7 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
         }
 
         for f in &m.functions {
-            let cmd_name = ts_command_name(&m.name, f, config);
+            let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
@@ -194,7 +206,41 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
 
             match op {
                 OpKind::List => {
-                    out.push_str(&format!("  {}({pp_only}): Promise<{}>;\n", camel, ret_str));
+                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
+                    let plain_params: Vec<&Param> =
+                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
+                    // Pagination only applies when the list function returns Vec<T>;
+                    // custom result types are passed through unchanged.
+                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+
+                    let mut params = Vec::new();
+                    // Plain params first (e.g., workflowId: string)
+                    for pp in &plain_params {
+                        let ts_ty = rust_type_to_ts(&strip_ref(&pp.ty));
+                        params.push(format!("{}: {}", snake_to_camel(&pp.name), ts_ty));
+                    }
+                    // Typed query struct (optional)
+                    if let Some(qp) = query_param {
+                        let qt = rust_type_to_ts(&extract_input_type(&qp.ty));
+                        params.push(format!("query?: {}", qt));
+                    }
+                    // Pagination params
+                    if paginated {
+                        params.push("limit?: number".to_string());
+                        params.push("offset?: number".to_string());
+                    }
+                    // Route prefix param
+                    if !pp_only.is_empty() {
+                        params.push(pp_only.clone());
+                    }
+                    let params_str = params.join(", ");
+                    let return_type = if paginated {
+                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str);
+                        format!("PaginatedResult<{}>", item_type)
+                    } else {
+                        ret_str.to_string()
+                    };
+                    out.push_str(&format!("  {}({}): Promise<{}>;\n", camel, params_str, return_type));
                 }
                 OpKind::GetById => {
                     out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<{}>;\n", camel, ret_str));
@@ -213,11 +259,31 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                 OpKind::DeleteById => {
                     out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<null>;\n", camel));
                 }
-                OpKind::JunctionList { .. }
-                | OpKind::JunctionAdd { .. }
-                | OpKind::JunctionRemove { .. }
-                | OpKind::CustomGet
-                | OpKind::CustomPost => {
+                OpKind::JunctionList { .. } => {
+                    // JunctionList follows the same pagination rules as List:
+                    // when config.pagination is set and the return is Vec<T>,
+                    // the method returns PaginatedResult<T> and accepts
+                    // limit/offset. Without this the interface and HTTP/IPC
+                    // implementations get out of sync.
+                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+                    let mut params = build_ts_params(f, config);
+                    if paginated {
+                        params.push("limit?: number".to_string());
+                        params.push("offset?: number".to_string());
+                    }
+                    if !pp_only.is_empty() {
+                        params.push(pp_only.clone());
+                    }
+                    let params_str = params.join(", ");
+                    let return_type = if paginated {
+                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str);
+                        format!("PaginatedResult<{}>", item_type)
+                    } else {
+                        ret_str.to_string()
+                    };
+                    out.push_str(&format!("  {}({}): Promise<{}>;\n", camel, params_str, return_type));
+                }
+                OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } | OpKind::CustomGet | OpKind::CustomPost => {
                     let mut params = build_ts_params(f, config);
                     if !pp_only.is_empty() {
                         params.push(pp_only.clone());
@@ -287,6 +353,20 @@ fn generate_http_helpers(out: &mut String, config: &Config) {
          \x20   const errBody = await res.json().catch(() => ({ error: res.statusText }));\n\
          \x20   throw new Error(errBody.error ?? res.statusText);\n\
          \x20 }\n\
+         }\n\n\
+         function toQueryString(params: Record<string, unknown>): string {\n\
+         \x20 const parts: string[] = [];\n\
+         \x20 for (const [key, value] of Object.entries(params)) {\n\
+         \x20   if (value == null) continue;\n\
+         \x20   if (Array.isArray(value)) {\n\
+         \x20     for (const v of value) {\n\
+         \x20       parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(v))}`);\n\
+         \x20     }\n\
+         \x20   } else {\n\
+         \x20     parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);\n\
+         \x20   }\n\
+         \x20 }\n\
+         \x20 return parts.length > 0 ? `?${parts.join('&')}` : '';\n\
          }\n\n",
     );
 
@@ -338,11 +418,13 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
             continue;
         }
         let module = &m.name;
-        let plural = config.naming.module_plural(module);
+        // Use kebab-case URL plural to match the routes registered by http.rs
+        // (e.g., `destination-skills`, not `destination_skills`).
+        let plural = config.naming.url_plural(module);
 
         for f in &m.functions {
             let op = classify_op(f);
-            let cmd_name = ts_command_name(module, f, config);
+            let cmd_name = command_name(module, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
@@ -354,13 +436,91 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
 
             match op {
                 OpKind::List => {
-                    let path_expr = sp(&format!("/{plural}"));
-                    out.push_str(&format!(
-                        "    async {}({pp_only}): Promise<{}> {{\n\
-                         \x20     return httpGet({path_expr});\n\
-                         \x20   }},\n",
-                        camel, ret_str,
-                    ));
+                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
+                    let plain_params: Vec<&Param> =
+                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
+                    // Pagination only applies when the list function returns Vec<T>;
+                    // custom result types are passed through unchanged.
+                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+
+                    let mut params = Vec::new();
+                    for pp in &plain_params {
+                        let ts_ty = rust_type_to_ts(&strip_ref(&pp.ty));
+                        params.push(format!("{}: {}", snake_to_camel(&pp.name), ts_ty));
+                    }
+                    if let Some(qp) = query_param {
+                        let qt = rust_type_to_ts(&extract_input_type(&qp.ty));
+                        params.push(format!("query?: {}", qt));
+                    }
+                    if paginated {
+                        params.push("limit?: number".to_string());
+                        params.push("offset?: number".to_string());
+                    }
+                    if !pp_only.is_empty() {
+                        params.push(pp_only.clone());
+                    }
+                    let params_str = params.join(", ");
+
+                    let return_type = if paginated {
+                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str.as_str());
+                        format!("PaginatedResult<{}>", item_type)
+                    } else {
+                        ret_str.clone()
+                    };
+
+                    if query_param.is_some() && plain_params.is_empty() {
+                        // Typed query struct: serialize as query string
+                        let qs_arg = if paginated {
+                            "toQueryString({ ...query, limit, offset })"
+                        } else {
+                            "toQueryString(query ?? {})"
+                        };
+                        let path_expr = sp_template(&format!("/{plural}${{{qs_arg}}}"));
+                        out.push_str(&format!(
+                            "    async {}({}): Promise<{}> {{\n\
+                             \x20     return httpGet({path_expr});\n\
+                             \x20   }},\n",
+                            camel, params_str, return_type,
+                        ));
+                    } else if !plain_params.is_empty() {
+                        // Scoped params as query string (e.g., ?workflow_id=xxx)
+                        let mut query_parts = Vec::new();
+                        for pp in &plain_params {
+                            let camel_name = snake_to_camel(&pp.name);
+                            query_parts.push(format!("{}=${{encodeURIComponent({})}}", pp.name, camel_name));
+                        }
+                        let qs = query_parts.join("&");
+                        let path_expr = if paginated {
+                            sp_template(&format!("/{plural}?{qs}&${{toQueryString({{ limit, offset }}).slice(1)}}"))
+                        } else {
+                            sp_template(&format!("/{plural}?{qs}"))
+                        };
+                        out.push_str(&format!(
+                            "    async {}({}): Promise<{}> {{\n\
+                             \x20     return httpGet({path_expr});\n\
+                             \x20   }},\n",
+                            camel, params_str, return_type,
+                        ));
+                    } else {
+                        // No params (or pagination-only params)
+                        if paginated {
+                            let path_expr = sp_template(&format!("/{plural}${{toQueryString({{ limit, offset }})}}"));
+                            out.push_str(&format!(
+                                "    async {}({}): Promise<{}> {{\n\
+                                 \x20     return httpGet({path_expr});\n\
+                                 \x20   }},\n",
+                                camel, params_str, return_type,
+                            ));
+                        } else {
+                            let path_expr = sp(&format!("/{plural}"));
+                            out.push_str(&format!(
+                                "    async {}({}): Promise<{}> {{\n\
+                                 \x20     return httpGet({path_expr});\n\
+                                 \x20   }},\n",
+                                camel, params_str, return_type,
+                            ));
+                        }
+                    }
                 }
                 OpKind::GetById => {
                     let path_expr = sp_template(&format!("/{plural}/${{encodeURIComponent(id)}}"));
@@ -401,8 +561,81 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                         camel,
                     ));
                 }
-                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-                    generate_http_custom_method(out, module, f, config);
+                OpKind::JunctionList { ref child_segment } => {
+                    // Junction list: `GET /<plural>/<parent_id>/<child_segment>`.
+                    // The parent_id is the first (and only non-pagination) plain param.
+                    let parent_param = f.params.first().map(|p| snake_to_camel(&p.name)).unwrap_or_default();
+                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+                    let return_type = if paginated {
+                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str.as_str());
+                        format!("PaginatedResult<{}>", item_type)
+                    } else {
+                        ret_str.clone()
+                    };
+                    let mut params = vec![format!("{parent_param}: string")];
+                    if paginated {
+                        params.push("limit?: number".to_string());
+                        params.push("offset?: number".to_string());
+                    }
+                    if !pp_only.is_empty() {
+                        params.push(pp_only.clone());
+                    }
+                    let params_str = params.join(", ");
+                    let path_expr = if paginated {
+                        sp_template(&format!(
+                            "/{plural}/${{encodeURIComponent({parent_param})}}/{child_segment}${{toQueryString({{ limit, offset }})}}"
+                        ))
+                    } else {
+                        sp_template(&format!("/{plural}/${{encodeURIComponent({parent_param})}}/{child_segment}"))
+                    };
+                    out.push_str(&format!(
+                        "    async {camel}({params_str}): Promise<{return_type}> {{\n\
+                         \x20     return httpGet({path_expr});\n\
+                         \x20   }},\n",
+                    ));
+                }
+                OpKind::JunctionAdd { ref child_segment } => {
+                    // Junction add: `POST /<plural>/<parent_id>/<child_segment>` with
+                    // body `{ <child_id_field>: <childId> }`. The Rust handler
+                    // extracts `child_id` from the body using the service
+                    // function's second parameter name.
+                    let parent_param = f.params.first().map(|p| snake_to_camel(&p.name)).unwrap_or_default();
+                    let child_id_field =
+                        f.params.get(1).map(|p| p.name.clone()).unwrap_or_else(|| "child_id".to_string());
+                    let child_param = snake_to_camel(&child_id_field);
+                    let mut params = vec![format!("{parent_param}: string"), format!("{child_param}: string")];
+                    if !pp_only.is_empty() {
+                        params.push(pp_only.clone());
+                    }
+                    let params_str = params.join(", ");
+                    let path_expr =
+                        sp_template(&format!("/{plural}/${{encodeURIComponent({parent_param})}}/{child_segment}"));
+                    out.push_str(&format!(
+                        "    async {camel}({params_str}): Promise<null> {{\n\
+                         \x20     await httpPost({path_expr}, {{ {child_id_field}: {child_param} }});\n\
+                         \x20     return null;\n\
+                         \x20   }},\n",
+                    ));
+                }
+                OpKind::JunctionRemove { ref child_segment } => {
+                    // Junction remove: `DELETE /<plural>/<parent_id>/<child_segment>/<child_id>`
+                    let parent_param = f.params.first().map(|p| snake_to_camel(&p.name)).unwrap_or_default();
+                    let child_param =
+                        f.params.get(1).map(|p| snake_to_camel(&p.name)).unwrap_or_else(|| "childId".to_string());
+                    let mut params = vec![format!("{parent_param}: string"), format!("{child_param}: string")];
+                    if !pp_only.is_empty() {
+                        params.push(pp_only.clone());
+                    }
+                    let params_str = params.join(", ");
+                    let path_expr = sp_template(&format!(
+                        "/{plural}/${{encodeURIComponent({parent_param})}}/{child_segment}/${{encodeURIComponent({child_param})}}"
+                    ));
+                    out.push_str(&format!(
+                        "    async {camel}({params_str}): Promise<null> {{\n\
+                         \x20     await httpDelete({path_expr});\n\
+                         \x20     return null;\n\
+                         \x20   }},\n",
+                    ));
                 }
                 OpKind::CustomGet | OpKind::CustomPost => {
                     generate_http_custom_method(out, module, f, config);
@@ -510,7 +743,7 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
 
         for f in &m.functions {
             let op = classify_op(f);
-            let cmd_name = ts_command_name(module, f, config);
+            let cmd_name = command_name(module, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
@@ -524,19 +757,68 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
 
             match op {
                 OpKind::List => {
-                    if ipc_arg_only.is_empty() {
+                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
+                    let plain_params: Vec<&Param> =
+                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
+                    // Pagination only applies when the list function returns Vec<T>;
+                    // custom result types are passed through unchanged.
+                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+
+                    let mut params = Vec::new();
+                    for pp in &plain_params {
+                        let ts_ty = rust_type_to_ts(&strip_ref(&pp.ty));
+                        params.push(format!("{}: {}", snake_to_camel(&pp.name), ts_ty));
+                    }
+                    if let Some(qp) = query_param {
+                        let qt = rust_type_to_ts(&extract_input_type(&qp.ty));
+                        params.push(format!("query?: {}", qt));
+                    }
+                    if paginated {
+                        params.push("limit?: number".to_string());
+                        params.push("offset?: number".to_string());
+                    }
+                    if !pp_only.is_empty() {
+                        params.push(pp_only.clone());
+                    }
+                    let params_str = params.join(", ");
+
+                    let return_type = if paginated {
+                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str.as_str());
+                        format!("PaginatedResult<{}>", item_type)
+                    } else {
+                        ret_str.clone()
+                    };
+
+                    // Build invoke args
+                    let mut invoke_args = Vec::new();
+                    for pp in &plain_params {
+                        invoke_args.push(snake_to_camel(&pp.name));
+                    }
+                    if query_param.is_some() {
+                        invoke_args.push("query: query ?? {}".to_string());
+                    }
+                    if paginated {
+                        invoke_args.push("limit: limit ?? null".to_string());
+                        invoke_args.push("offset: offset ?? null".to_string());
+                    }
+                    if !ipc_arg_only.is_empty() {
+                        invoke_args.push(ipc_arg_only.clone());
+                    }
+
+                    if invoke_args.is_empty() {
                         out.push_str(&format!(
-                            "    async {}(): Promise<{}> {{\n\
+                            "    async {}({}): Promise<{}> {{\n\
                              \x20     return invoke('{invoke_name}');\n\
                              \x20   }},\n",
-                            camel, ret_str,
+                            camel, params_str, return_type,
                         ));
                     } else {
+                        let args_str = invoke_args.join(", ");
                         out.push_str(&format!(
-                            "    async {}({pp_only}): Promise<{}> {{\n\
-                             \x20     return invoke('{invoke_name}', {{ {ipc_arg_only} }});\n\
+                            "    async {}({}): Promise<{}> {{\n\
+                             \x20     return invoke('{invoke_name}', {{ {} }});\n\
                              \x20   }},\n",
-                            camel, ret_str,
+                            camel, params_str, return_type, args_str,
                         ));
                     }
                 }
@@ -575,7 +857,44 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                         camel,
                     ));
                 }
-                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+                OpKind::JunctionList { .. } => {
+                    // JunctionList IPC mirrors the HTTP paginated variant:
+                    // when pagination is enabled and the return is Vec<T>,
+                    // accept limit/offset and invoke with those args; the
+                    // Rust handler returns PaginatedResult<T>.
+                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+                    let return_type = if paginated {
+                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str.as_str());
+                        format!("PaginatedResult<{}>", item_type)
+                    } else {
+                        ret_str.clone()
+                    };
+                    let parent_param = f.params.first().map(|p| snake_to_camel(&p.name)).unwrap_or_default();
+                    let mut params = vec![format!("{parent_param}: string")];
+                    let mut invoke_args = vec![parent_param.clone()];
+                    if paginated {
+                        params.push("limit?: number".to_string());
+                        params.push("offset?: number".to_string());
+                        invoke_args.push("limit: limit ?? null".to_string());
+                        invoke_args.push("offset: offset ?? null".to_string());
+                    }
+                    if !pp_only.is_empty() {
+                        params.push(pp_only.clone());
+                    }
+                    if !ipc_arg_only.is_empty() {
+                        invoke_args.push(ipc_arg_only.clone());
+                    }
+                    let params_str = params.join(", ");
+                    let args_str = invoke_args.join(", ");
+                    out.push_str(&format!(
+                        "    async {camel}({params_str}): Promise<{return_type}> {{\n\
+                         \x20     return invoke('{invoke_name}', {{ {args_str} }});\n\
+                         \x20   }},\n",
+                    ));
+                }
+                OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+                    // JunctionAdd/Remove have exactly 2 string params, no pagination.
+                    // The generic custom IPC path produces correct output.
                     generate_ipc_custom_method(out, f, &cmd_name, config);
                 }
                 OpKind::CustomGet | OpKind::CustomPost => {
@@ -613,11 +932,13 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
 /// Generate a custom HTTP method (GET or POST with various param shapes).
 fn generate_http_custom_method(out: &mut String, module: &str, f: &crate::servers::parse::ApiFn, config: &Config) {
     let fn_name = &f.name;
-    let camel = snake_to_camel(fn_name);
+    let cmd_name = command_name(module, f, config);
+    let camel = snake_to_camel(&cmd_name);
     let ts_ret = rust_type_to_ts(&f.return_type);
     let is_get = is_read_operation(fn_name);
     let action = config.naming.derive_action(module, fn_name);
-    let plural = config.naming.module_plural(module);
+    // Use kebab-case URL plural to match http.rs route registration.
+    let plural = config.naming.url_plural(module);
     let returns_unit = f.return_type == "()";
     let has_prefix = config.route_prefix.is_some();
     let pp_camel = config.route_prefix.as_ref().map(|p| snake_to_camel(&p.params[0].name)).unwrap_or_default();
@@ -759,7 +1080,7 @@ fn generate_http_custom_method(out: &mut String, module: &str, f: &crate::server
 
 /// Generate a custom IPC method.
 fn generate_ipc_custom_method(out: &mut String, f: &crate::servers::parse::ApiFn, cmd_name: &str, config: &Config) {
-    let camel = snake_to_camel(&f.name);
+    let camel = snake_to_camel(cmd_name);
     let ts_ret = rust_type_to_ts(&f.return_type);
     let returns_unit = f.return_type == "()";
     let ret_str = if returns_unit { "null".to_string() } else { ts_ret.clone() };

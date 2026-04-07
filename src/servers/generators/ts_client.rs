@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::servers::classify::{OpKind, classify_op, is_read_operation};
 use crate::servers::config::Config;
-use crate::servers::generators::ipc::ts_command_name;
+use crate::servers::generators::ipc::command_name;
 use crate::servers::parse::{ApiFn, ApiModule, Param};
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel};
 
@@ -39,7 +39,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
             continue;
         }
         for f in &m.functions {
-            let cmd_name = ts_command_name(&m.name, f, config);
+            let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
@@ -129,7 +129,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
         for f in &m.functions {
             let op = classify_op(f);
-            let cmd_name = ts_command_name(module, f, config);
+            let cmd_name = command_name(module, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }

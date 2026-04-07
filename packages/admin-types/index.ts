@@ -49,5 +49,11 @@ export interface AdminEntityConfig {
   returnType: string
   createInputType: string
   updateInputType: string
+  /** Whether the list endpoint returns paginated results */
+  paginated?: boolean
+  /** Default page size for paginated list queries */
+  defaultLimit?: number
+  /** Maximum allowed page size for paginated list queries */
+  maxLimit?: number
   fields: AdminFieldDef[]
 }

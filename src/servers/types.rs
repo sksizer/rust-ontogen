@@ -188,17 +188,14 @@ pub fn collect_ts_import(ts_type: &str, imports: &mut Vec<String>) {
 }
 
 /// Naming configuration for modules — handles pluralization and URL singularization.
+///
+/// Uses `cruet` for Rails-style inflection (handles irregular words like
+/// "dependencies" → "dependency"). Override maps take precedence over cruet.
 #[derive(Debug, Clone, Default)]
 pub struct NamingConfig {
-    /// When true, derive singular/plural from the module filename heuristically:
-    /// names ending in 's' are treated as already plural (singular = strip trailing 's'),
-    /// names not ending in 's' are treated as singular (plural = append 's').
-    /// This matches the convention where `agents.rs` → singular "agent", plural "agents",
-    /// but `skill.rs` → singular "skill", plural "skills".
-    pub auto_pluralize: bool,
     /// Overrides for module → plural form (e.g., "evidence" → "evidence").
     pub plural_overrides: HashMap<String, String>,
-    /// Overrides for module → URL singular form (e.g., "work_session" → "session").
+    /// Overrides for module → singular form (e.g., "work_sessions" → "session").
     pub singular_overrides: HashMap<String, String>,
     /// Overrides for module → human label (e.g., "work_session" → "Work Session").
     pub label_overrides: HashMap<String, String>,
@@ -208,34 +205,23 @@ pub struct NamingConfig {
 
 impl NamingConfig {
     /// Get the plural form of a module name.
+    ///
+    /// Checks `plural_overrides` first, then uses `cruet::to_plural`.
     pub fn module_plural(&self, module: &str) -> String {
         if let Some(override_val) = self.plural_overrides.get(module) {
             return override_val.clone();
         }
-        if self.auto_pluralize {
-            if module.ends_with('s') {
-                // Already plural (e.g., "agents" → "agents")
-                module.to_string()
-            } else {
-                // Singular, need to pluralize (e.g., "skill" → "skills")
-                format!("{}s", module)
-            }
-        } else {
-            format!("{}s", module)
-        }
+        cruet::to_plural(module)
     }
 
-    /// Get the URL singular form of a module name.
+    /// Get the singular form of a module name.
+    ///
+    /// Checks `singular_overrides` first, then uses `cruet::to_singular`.
     pub fn url_singular(&self, module: &str) -> String {
         if let Some(override_val) = self.singular_overrides.get(module) {
             return override_val.clone();
         }
-        if self.auto_pluralize && module.ends_with('s') {
-            // Derive singular by stripping trailing 's' (e.g., "agents" → "agent")
-            module.strip_suffix('s').unwrap_or(module).to_string()
-        } else {
-            module.to_string()
-        }
+        cruet::to_singular(module)
     }
 
     /// Get the plural form for URL paths (kebab-case).
@@ -258,7 +244,7 @@ impl NamingConfig {
             return override_val.clone();
         }
         let label = self.label(module);
-        format!("{}s", label)
+        cruet::to_plural(&label)
     }
 
     /// Derive the URL action segment for a custom function.

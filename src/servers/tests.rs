@@ -34,6 +34,7 @@ fn test_config(api_dir: PathBuf) -> Config {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         schema_entities: Vec::new(),
+        pagination: None,
     }
 }
 
@@ -137,6 +138,76 @@ fn make_event_module() -> ApiModule {
         name: "events".to_string(),
         functions: vec![],
         events: vec![EventFn { name: "graph_updated".to_string() }, EventFn { name: "entity_changed".to_string() }],
+    }
+}
+
+/// Build a multi-word module with junction + custom operations, for testing
+/// that HTTP routes, IPC command names, and TS transport calls stay in sync.
+///
+/// Models the real `destination_skills` module: a two-word module with
+/// junction ops (add_skill/remove_skill/list_skills/list_destinations) plus
+/// a custom post (`publish`).
+fn make_junction_module() -> ApiModule {
+    ApiModule {
+        name: "destination_skills".to_string(),
+        functions: vec![
+            // Junction add: add_skill(destination_id, skill_id)
+            ApiFn {
+                name: "add_skill".to_string(),
+                is_async: false,
+                doc: "Link a skill to a destination.".to_string(),
+                params: vec![
+                    Param { name: "destination_id".to_string(), ty: "&str".to_string() },
+                    Param { name: "skill_id".to_string(), ty: "&str".to_string() },
+                ],
+                return_type: "()".to_string(),
+                first_param_is_store: false,
+            },
+            // Junction remove: remove_skill(destination_id, skill_id)
+            ApiFn {
+                name: "remove_skill".to_string(),
+                is_async: false,
+                doc: "Unlink a skill from a destination.".to_string(),
+                params: vec![
+                    Param { name: "destination_id".to_string(), ty: "&str".to_string() },
+                    Param { name: "skill_id".to_string(), ty: "&str".to_string() },
+                ],
+                return_type: "()".to_string(),
+                first_param_is_store: false,
+            },
+            // Junction list (children-of-parent): list_skills(destination_id)
+            ApiFn {
+                name: "list_skills".to_string(),
+                is_async: false,
+                doc: "List skills linked to a destination.".to_string(),
+                params: vec![Param { name: "destination_id".to_string(), ty: "&str".to_string() }],
+                return_type: "Vec<Skill>".to_string(),
+                first_param_is_store: false,
+            },
+            // Junction list (reverse): list_destinations(skill_id)
+            ApiFn {
+                name: "list_destinations".to_string(),
+                is_async: false,
+                doc: "List destinations linked to a skill.".to_string(),
+                params: vec![Param { name: "skill_id".to_string(), ty: "&str".to_string() }],
+                return_type: "Vec<DestinationSkill>".to_string(),
+                first_param_is_store: false,
+            },
+            // Custom post: publish(destination_id, skill_id, version)
+            ApiFn {
+                name: "publish".to_string(),
+                is_async: false,
+                doc: "Publish a skill to a destination.".to_string(),
+                params: vec![
+                    Param { name: "destination_id".to_string(), ty: "&str".to_string() },
+                    Param { name: "skill_id".to_string(), ty: "&str".to_string() },
+                    Param { name: "version".to_string(), ty: "i64".to_string() },
+                ],
+                return_type: "PublishResult".to_string(),
+                first_param_is_store: false,
+            },
+        ],
+        events: vec![],
     }
 }
 
@@ -643,8 +714,8 @@ fn test_http_generator_state_module() {
 
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // State-based modules get unscoped routes
-    assert!(content.contains("list_projects"));
+    // State-based modules get unscoped routes (entity-first handler names)
+    assert!(content.contains("project_list"));
     assert!(content.contains("/api/projects"));
     assert!(content.contains("project::list(&state)"), "should pass &state directly");
 }
@@ -681,12 +752,12 @@ fn test_http_generator_store_module_no_prefix() {
 
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // Should generate unscoped handlers (not scoped)
-    assert!(content.contains("list_nodes"), "should generate list handler");
-    assert!(content.contains("get_node_by_id"), "should generate get handler");
-    assert!(content.contains("create_node_handler"), "should generate create handler");
-    assert!(content.contains("update_node_handler"), "should generate update handler");
-    assert!(content.contains("delete_node_handler"), "should generate delete handler");
+    // Should generate unscoped handlers (not scoped, entity-first names)
+    assert!(content.contains("node_list"), "should generate list handler");
+    assert!(content.contains("node_get_by_id"), "should generate get handler");
+    assert!(content.contains("node_create"), "should generate create handler");
+    assert!(content.contains("node_update"), "should generate update handler");
+    assert!(content.contains("node_delete"), "should generate delete handler");
 
     // Should construct store from state
     assert!(content.contains("state.store().await"), "should construct store from state");
@@ -736,12 +807,12 @@ fn test_ipc_generator_crud_module() {
 
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // IPC command names
-    assert!(content.contains("pub async fn get_nodes("), "list → get_nodes");
-    assert!(content.contains("pub async fn get_node_by_id("));
-    assert!(content.contains("pub async fn create_node("));
-    assert!(content.contains("pub async fn update_node("));
-    assert!(content.contains("pub async fn delete_node("));
+    // IPC command names (entity-first: {entity}_{fn})
+    assert!(content.contains("pub async fn node_list("), "list → node_list");
+    assert!(content.contains("pub async fn node_get_by_id("));
+    assert!(content.contains("pub async fn node_create("));
+    assert!(content.contains("pub async fn node_update("));
+    assert!(content.contains("pub async fn node_delete("));
 
     // Tauri attributes
     assert!(content.contains("#[tauri::command]"));
@@ -769,12 +840,12 @@ fn test_mcp_generator_crud_module() {
 
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // MCP tool names
-    assert!(content.contains(r#"name: "get_nodes""#));
-    assert!(content.contains(r#"name: "get_node_by_id""#));
-    assert!(content.contains(r#"name: "create_node""#));
-    assert!(content.contains(r#"name: "update_node""#));
-    assert!(content.contains(r#"name: "delete_node""#));
+    // MCP tool names (entity-first: {entity}_{fn})
+    assert!(content.contains(r#"name: "node_list""#));
+    assert!(content.contains(r#"name: "node_get_by_id""#));
+    assert!(content.contains(r#"name: "node_create""#));
+    assert!(content.contains(r#"name: "node_update""#));
+    assert!(content.contains(r#"name: "node_delete""#));
 
     // Registry function
     assert!(content.contains("pub fn generated_tool_registry()"));
@@ -815,13 +886,13 @@ fn test_ts_transport_generator_crud_module() {
     crate::servers::generators::transport::generate(&output, &bindings, &modules, &config);
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // Transport interface
+    // Transport interface (entity-first camelCase method names)
     assert!(content.contains("export interface Transport"));
-    assert!(content.contains("getNodes("));
-    assert!(content.contains("getNodeById("));
-    assert!(content.contains("createNode("));
-    assert!(content.contains("updateNode("));
-    assert!(content.contains("deleteNode("));
+    assert!(content.contains("nodeList("));
+    assert!(content.contains("nodeGetById("));
+    assert!(content.contains("nodeCreate("));
+    assert!(content.contains("nodeUpdate("));
+    assert!(content.contains("nodeDelete("));
 
     // HTTP transport
     assert!(content.contains("export function createHttpTransport(): Transport"));
@@ -880,12 +951,12 @@ fn test_admin_registry_generator() {
     assert!(content.contains("label: 'Node'"));
     assert!(content.contains("pluralLabel: 'Nodes'"));
 
-    // Transport method names (camelCase)
-    assert!(content.contains("listMethod: 'getNodes'"));
-    assert!(content.contains("getMethod: 'getNodeById'"));
-    assert!(content.contains("createMethod: 'createNode'"));
-    assert!(content.contains("updateMethod: 'updateNode'"));
-    assert!(content.contains("deleteMethod: 'deleteNode'"));
+    // Transport method names (entity-first camelCase)
+    assert!(content.contains("listMethod: 'nodeList'"));
+    assert!(content.contains("getMethod: 'nodeGetById'"));
+    assert!(content.contains("createMethod: 'nodeCreate'"));
+    assert!(content.contains("updateMethod: 'nodeUpdate'"));
+    assert!(content.contains("deleteMethod: 'nodeDelete'"));
 
     // Type references
     assert!(content.contains("returnType: 'Node'"));
@@ -895,6 +966,287 @@ fn test_admin_registry_generator() {
     // Lookup maps
     assert!(content.contains("export const adminEntityMap"));
     assert!(content.contains("export const adminEntityByPlural"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Junction cross-transport integration tests
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// These tests guard the contract that HTTP routes, IPC command names, and TS
+// transport call sites stay in sync for junction and custom operations on
+// multi-word modules. Historically these drifted because ipc.rs used a plural
+// module prefix (`destination_skills_add_skill`) while http.rs and transport.rs
+// used the singular entity-first form (`destination_skill_add_skill`), causing
+// Tauri invoke calls to fail with "unknown command".
+//
+// Each test generates a single output and asserts on substring presence.
+// `test_junction_cross_transport_consistency` then ties them together by
+// asserting the same identifier appears across ipc.rs, transport.rs (IPC
+// branch), and the Rust HTTP route for http.rs.
+
+#[test]
+fn test_ipc_generator_junction_module() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("ipc_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+
+    let modules = vec![make_junction_module()];
+    crate::servers::generators::ipc::generate(&output, &modules, &config);
+
+    let content = std::fs::read_to_string(&output).unwrap();
+
+    // Junction functions must use the singular entity-first form
+    // (`destination_skill_*`), matching what `command_name()` produces.
+    // They must NOT use the plural module name prefix
+    // (`destination_skills_*`) that the TS IPC transport will not invoke.
+    assert!(
+        content.contains("pub async fn destination_skill_add_skill("),
+        "JunctionAdd should use singular entity prefix: destination_skill_add_skill"
+    );
+    assert!(
+        content.contains("pub async fn destination_skill_remove_skill("),
+        "JunctionRemove should use singular entity prefix: destination_skill_remove_skill"
+    );
+    assert!(
+        content.contains("pub async fn destination_skill_list_skills("),
+        "JunctionList (forward) should use singular entity prefix: destination_skill_list_skills"
+    );
+    assert!(
+        content.contains("pub async fn destination_skill_list_destinations("),
+        "JunctionList (reverse) should use singular entity prefix: destination_skill_list_destinations"
+    );
+    assert!(
+        content.contains("pub async fn destination_skill_publish("),
+        "CustomPost should use singular entity prefix: destination_skill_publish"
+    );
+
+    // Negative: no plural module-prefixed forms should leak through.
+    assert!(
+        !content.contains("destination_skills_add_skill"),
+        "regression: plural-prefixed junction name leaked into IPC output"
+    );
+    assert!(
+        !content.contains("destination_skills_publish"),
+        "regression: plural-prefixed custom method name leaked into IPC output"
+    );
+
+    // The generate_handlers! registration block must list the same names so
+    // Tauri can dispatch the invoke calls.
+    assert!(content.contains("destination_skill_add_skill,"));
+    assert!(content.contains("destination_skill_remove_skill,"));
+    assert!(content.contains("destination_skill_publish,"));
+}
+
+#[test]
+fn test_http_generator_junction_module() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("http_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+
+    let modules = vec![make_junction_module()];
+    crate::servers::generators::http::generate(&output, &modules, &config);
+
+    let content = std::fs::read_to_string(&output).unwrap();
+
+    // Junction routes must use the kebab-case URL plural (`destination-skills`)
+    // and the child segment (`skills` / `destinations`), NOT the snake_case
+    // module name or action-style URLs (`/destination_skills/add-skill`).
+    assert!(
+        content.contains("/api/destination-skills/:parent_id/skills"),
+        "junction URL should use kebab-case plural and child segment"
+    );
+    assert!(
+        content.contains("/api/destination-skills/:parent_id/destinations"),
+        "reverse junction list URL should use kebab-case plural and reverse child segment"
+    );
+    assert!(
+        content.contains("/api/destination-skills/:parent_id/skills/:child_id"),
+        "junction remove URL should include child_id path segment"
+    );
+
+    // Handler functions should use singular entity prefix.
+    assert!(content.contains("async fn destination_skill_add_skill("));
+    assert!(content.contains("async fn destination_skill_list_skills("));
+
+    // Regression guards — no old-style custom URLs.
+    assert!(
+        !content.contains("/api/destination_skills/add-skill"),
+        "regression: old action-style custom URL leaked into HTTP routes"
+    );
+    assert!(
+        !content.contains("/api/destination_skills/"),
+        "regression: snake_case plural leaked into HTTP routes (should be kebab-case)"
+    );
+}
+
+#[test]
+fn test_ts_transport_junction_module() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("generated.ts");
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(
+        &bindings,
+        "export type Skill = { id: string };\n\
+         export type DestinationSkill = { destination_id: string; skill_id: string };\n\
+         export type PublishResult = { ok: boolean };\n",
+    )
+    .unwrap();
+
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_junction_module()];
+
+    crate::servers::generators::transport::generate(&output, &bindings, &modules, &config);
+    let content = std::fs::read_to_string(&output).unwrap();
+    // Prettier reformats the output, so assertions use individual tokens
+    // rather than full signatures. The `normalized` view collapses all
+    // whitespace runs to single spaces so we can match across line wraps.
+    let normalized: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // Transport interface method names (entity-first camelCase).
+    // Post-prettier the params may wrap across lines, so match on the name
+    // followed by the first param in the normalized view.
+    assert!(normalized.contains("destinationSkillAddSkill( destinationId: string,"));
+    assert!(normalized.contains("destinationSkillRemoveSkill( destinationId: string,"));
+    assert!(content.contains("destinationSkillListSkills(destinationId: string)"));
+    assert!(
+        normalized.contains("destinationSkillListDestinations( skillId: string,")
+            || content.contains("destinationSkillListDestinations(skillId: string)")
+    );
+
+    // HTTP transport must use junction URL pattern matching http.rs, NOT the
+    // old action-style URLs. Prettier may quote with either ' or " depending
+    // on its config, so test the core path template.
+    assert!(
+        content.contains("/destination-skills/${encodeURIComponent(destinationId)}/skills`"),
+        "HTTP junction add should POST to /destination-skills/:id/skills (kebab-case plural, encoded parent)"
+    );
+    assert!(
+        content.contains("skill_id: skillId"),
+        "HTTP junction add body should match http.rs expected field name (snake_case)"
+    );
+    assert!(
+        content.contains(
+            "/destination-skills/${encodeURIComponent(destinationId)}/skills/${encodeURIComponent(skillId)}`"
+        ),
+        "HTTP junction remove should DELETE the nested child URL"
+    );
+    assert!(
+        content.contains("/destination-skills/${encodeURIComponent(skillId)}/destinations`"),
+        "HTTP junction list (reverse) should GET /destination-skills/:id/destinations"
+    );
+
+    // IPC transport must invoke the singular entity-first command names that
+    // ipc.rs actually registers. Prettier may use either ' or " quotes, so
+    // accept both.
+    for cmd in [
+        "destination_skill_add_skill",
+        "destination_skill_remove_skill",
+        "destination_skill_list_skills",
+        "destination_skill_list_destinations",
+        "destination_skill_publish",
+    ] {
+        let single = format!("invoke('{}'", cmd);
+        let double = format!("invoke(\"{}\"", cmd);
+        assert!(
+            content.contains(&single) || content.contains(&double),
+            "TS transport missing invoke({}) — ipc.rs would never be reached",
+            cmd
+        );
+    }
+
+    // Regression guards — no plural-prefixed invoke names or snake_case URLs.
+    assert!(
+        !content.contains("invoke('destination_skills_add_skill'")
+            && !content.contains("invoke(\"destination_skills_add_skill\""),
+        "regression: plural-prefixed invoke name leaked into TS IPC transport"
+    );
+    assert!(
+        !content.contains("`/destination_skills/"),
+        "regression: snake_case plural leaked into TS HTTP transport URL"
+    );
+    assert!(
+        !content.contains("'/destination_skills/add-skill'") && !content.contains("\"/destination_skills/add-skill\""),
+        "regression: old action-style custom URL leaked into TS HTTP transport"
+    );
+}
+
+#[test]
+fn test_junction_cross_transport_consistency() {
+    // Tie the three generators together: for every junction/custom method on
+    // the junction module, the IPC command name registered in ipc.rs must
+    // exactly match the `invoke('...')` call emitted by transport.rs, and
+    // the HTTP route must match the URL fetched by transport.rs.
+    //
+    // This is the test that would have caught the destination_skills bug
+    // at build time.
+
+    let tmp = tempfile::tempdir().unwrap();
+    let ipc_out = tmp.path().join("ipc.rs");
+    let http_out = tmp.path().join("http.rs");
+    let ts_out = tmp.path().join("generated.ts");
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(
+        &bindings,
+        "export type Skill = { id: string };\n\
+         export type DestinationSkill = { destination_id: string; skill_id: string };\n\
+         export type PublishResult = { ok: boolean };\n",
+    )
+    .unwrap();
+
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_junction_module()];
+
+    crate::servers::generators::ipc::generate(&ipc_out, &modules, &config);
+    crate::servers::generators::http::generate(&http_out, &modules, &config);
+    crate::servers::generators::transport::generate(&ts_out, &bindings, &modules, &config);
+
+    let ipc = std::fs::read_to_string(&ipc_out).unwrap();
+    let http = std::fs::read_to_string(&http_out).unwrap();
+    let ts = std::fs::read_to_string(&ts_out).unwrap();
+
+    // Every IPC invoke in the TS transport must correspond to a registered
+    // Rust `#[tauri::command]` function with the same name.
+    let expected_ipc_commands = [
+        "destination_skill_add_skill",
+        "destination_skill_remove_skill",
+        "destination_skill_list_skills",
+        "destination_skill_list_destinations",
+        "destination_skill_publish",
+    ];
+    for cmd in &expected_ipc_commands {
+        let rust_decl = format!("pub async fn {}(", cmd);
+        assert!(
+            ipc.contains(&rust_decl),
+            "IPC output missing Rust handler `{}` — TS transport would fail to invoke",
+            cmd
+        );
+        // Prettier may quote invoke arg with either ' or " — accept either.
+        let ts_single = format!("invoke('{}'", cmd);
+        let ts_double = format!("invoke(\"{}\"", cmd);
+        assert!(
+            ts.contains(&ts_single) || ts.contains(&ts_double),
+            "TS transport missing invoke({}) — IPC handler would never be called",
+            cmd
+        );
+    }
+
+    // The HTTP junction routes registered in http.rs must be the same URLs
+    // the TS HTTP transport calls against (modulo the `/api` prefix which
+    // http.rs adds but the TS helper BASE constant prepends on the TS side).
+    let expected_http_junctions = [
+        (
+            "/api/destination-skills/:parent_id/skills",
+            "/destination-skills/${encodeURIComponent(destinationId)}/skills",
+        ),
+        (
+            "/api/destination-skills/:parent_id/destinations",
+            "/destination-skills/${encodeURIComponent(skillId)}/destinations",
+        ),
+    ];
+    for (rust_route, ts_url) in &expected_http_junctions {
+        assert!(http.contains(rust_route), "HTTP output missing route `{}`", rust_route);
+        assert!(ts.contains(ts_url), "TS HTTP transport missing URL `{}`", ts_url);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -963,6 +1315,7 @@ fn test_e2e_generate_transport_with_real_api() {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         schema_entities: Vec::new(),
+        pagination: None,
     };
 
     let modules = crate::servers::generate_transport(&config).expect("generate_transport failed");

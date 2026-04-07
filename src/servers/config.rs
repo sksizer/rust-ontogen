@@ -67,6 +67,21 @@ pub struct Config {
     /// per-field metadata (type, role, relation targets, display hints).
     /// When empty, the admin generator emits entity-level config only (no fields).
     pub schema_entities: Vec<ontogen_core::model::EntityDef>,
+
+    /// Optional pagination support for list operations.
+    ///
+    /// When set, all `OpKind::List` handlers add `limit`/`offset` query params
+    /// and wrap return values in `PaginatedResult<T>`.
+    pub pagination: Option<PaginationConfig>,
+}
+
+/// Configuration for pagination support across all list endpoints.
+#[derive(Debug, Clone)]
+pub struct PaginationConfig {
+    /// Default page size when `limit` is not specified.
+    pub default_limit: u32,
+    /// Maximum allowed page size. Requests above this are clamped.
+    pub max_limit: u32,
 }
 
 impl Default for Config {
@@ -86,6 +101,7 @@ impl Default for Config {
             store_type: None,
             store_import: None,
             schema_entities: Vec::new(),
+            pagination: None,
         }
     }
 }
