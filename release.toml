@@ -6,9 +6,9 @@ push = true
 sign-commit = false
 sign-tag = false
 tag = true
-tag-message = "Release v{{version}}"
-tag-prefix = ""
+tag-message = "Release {{tag_name}}"
 tag-name = "v{{version}}"
+tag-prefix = ""
 
 # 1. Generate changelog for the new version and stage it for the release commit
 # 2. Run semver-checks against the latest tag (skipped if no prior tags exist)
