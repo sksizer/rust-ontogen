@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOWNSTREAM_FILE="${SCRIPT_DIR}/downstream.txt"
 CARGO_UPDATE="${SCRIPT_DIR}/cargo_update.sh"
 
+# shellcheck source=lib/pr_prompt.sh
+source "${SCRIPT_DIR}/lib/pr_prompt.sh"
+# Children must not prompt — only this driver does, once, at the end.
+export PR_PROMPT_SUPPRESS=1
+
 # --- Colors (disabled when not a tty or NO_COLOR is set) --------------------
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     C_RESET=$'\033[0m'
@@ -104,6 +109,19 @@ if [[ $FAILED -eq 0 ]]; then
 else
     log "${C_YELLOW}$((${#PIDS[@]} - FAILED))/${#PIDS[@]} succeeded, ${C_RED}${FAILED} failed${C_RESET}"
 fi
+
+# Collect PR URLs from every per-repo log so we can prompt once at the end.
+PR_URLS=()
+for i in "${!PIDS[@]}"; do
+    LOG_FILE="${WORK_DIR}/${REPO_NAMES[$i]}.log"
+    [[ -f "$LOG_FILE" ]] || continue
+    URL="$(pr_prompt_extract_url "$(cat "$LOG_FILE")")"
+    [[ -n "$URL" ]] && PR_URLS+=("$URL")
+done
+
+# Unset suppression so the prompt actually fires for THIS (top-level) script.
+unset PR_PROMPT_SUPPRESS
+pr_prompt_finalize "${PR_URLS[@]}"
 
 # Clean up clones
 log "Cleaning up: ${C_DIM}${WORK_DIR}${C_RESET}"

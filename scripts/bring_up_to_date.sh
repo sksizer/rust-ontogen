@@ -66,15 +66,9 @@ compose_prompt() {
 
 PROMPT="$(compose_prompt)"
 
-# --- Open a URL in the default browser (best-effort, never fails the script)
-open_url() {
-    local url="$1"
-    case "$(uname -s)" in
-        Darwin)  open "$url" ;;
-        Linux)   xdg-open "$url" ;;
-        MINGW*|MSYS*|CYGWIN*) cmd.exe /c start "$url" ;;
-    esac 2>/dev/null || true
-}
+# --- Shared PR prompt helpers ----------------------------------------------
+# shellcheck source=lib/pr_prompt.sh
+source "${SCRIPT_DIR}/lib/pr_prompt.sh"
 
 # --- Allowed tools ----------------------------------------------------------
 # Read/Edit/Write for file changes, Bash for just commands and git, WebFetch for fetching upstream
@@ -92,11 +86,9 @@ if [[ "$EXECUTE" == true ]]; then
         --allowed-tools ${ALLOWED_TOOLS})"
     echo "$OUTPUT"
 
-    # Try to extract a PR URL from the output and open it
-    PR_URL="$(echo "$OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1 || true)"
+    PR_URL="$(pr_prompt_extract_url "$OUTPUT")"
     if [[ -n "$PR_URL" ]]; then
-        echo "Opening PR: ${PR_URL}"
-        open_url "$PR_URL"
+        pr_prompt_finalize "$PR_URL"
     fi
 else
     echo "=== DRY RUN ==="

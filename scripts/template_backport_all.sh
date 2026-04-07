@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOWNSTREAM_FILE="${SCRIPT_DIR}/downstream.txt"
 TEMPLATE_BACKPORT="${SCRIPT_DIR}/template_backport.sh"
 
+# shellcheck source=lib/pr_prompt.sh
+source "${SCRIPT_DIR}/lib/pr_prompt.sh"
+# Children must not prompt — only this driver does, once, at the end.
+export PR_PROMPT_SUPPRESS=1
+
 if [[ ! -f "$DOWNSTREAM_FILE" ]]; then
     echo "Error: ${DOWNSTREAM_FILE} not found" >&2
     exit 1
@@ -57,4 +62,15 @@ echo
 echo "---"
 echo "Finished: $((${#PIDS[@]} - FAILED))/${#PIDS[@]} succeeded"
 echo "Work dir left at: ${WORK_DIR}"
+
+# Collect PR URLs from each per-repo log and prompt once at the end.
+PR_URLS=()
+for LOG_FILE in "${LOG_FILES[@]}"; do
+    [[ -f "$LOG_FILE" ]] || continue
+    URL="$(pr_prompt_extract_url "$(cat "$LOG_FILE")")"
+    [[ -n "$URL" ]] && PR_URLS+=("$URL")
+done
+unset PR_PROMPT_SUPPRESS
+pr_prompt_finalize "${PR_URLS[@]}"
+
 exit $FAILED
