@@ -350,7 +350,7 @@ pub async fn {cmd_name}(
                 }
 
                 OpKind::JunctionList { .. } => {
-                    let cmd_name = format!("{}_{}", module, f.name);
+                    let cmd_name = command_name(module, f, config);
                     if config.pagination.is_some() && ret_type.starts_with("Vec<") {
                         generate_paginated_ipc_handler(&mut out, module, f, config);
                     } else {
@@ -360,13 +360,13 @@ pub async fn {cmd_name}(
                 }
 
                 OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-                    let cmd_name = format!("{}_{}", module, f.name);
+                    let cmd_name = command_name(module, f, config);
                     generate_generic_ipc_handler(&mut out, module, f, config);
                     command_names.push(cmd_name);
                 }
 
                 OpKind::CustomGet | OpKind::CustomPost => {
-                    let cmd_name = format!("{}_{}", module, f.name);
+                    let cmd_name = command_name(module, f, config);
                     generate_generic_ipc_handler(&mut out, module, f, config);
                     command_names.push(cmd_name);
                 }
@@ -452,7 +452,7 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
     };
 
     // Store-based custom handlers are always async (store construction is async)
-    let cmd_fn_name = format!("{}_{}", module, fn_name);
+    let cmd_fn_name = command_name(module, f, config);
     out.push_str(&format!("#[tauri::command]\npub async fn {}(\n", cmd_fn_name));
 
     for p in &f.params {
@@ -508,7 +508,7 @@ fn generate_paginated_ipc_handler(out: &mut String, module: &str, f: &ApiFn, con
         (prefix_validation_line(config), "&state")
     };
 
-    let cmd_fn_name = format!("{}_{}", module, fn_name);
+    let cmd_fn_name = command_name(module, f, config);
     out.push_str(&format!("#[tauri::command]\npub async fn {}(\n", cmd_fn_name));
 
     for p in &f.params {
