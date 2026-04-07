@@ -34,6 +34,7 @@ fn test_config(api_dir: PathBuf) -> Config {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         schema_entities: Vec::new(),
+        pagination: None,
     }
 }
 
@@ -963,6 +964,7 @@ fn test_e2e_generate_transport_with_real_api() {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         schema_entities: Vec::new(),
+        pagination: None,
     };
 
     let modules = crate::servers::generate_transport(&config).expect("generate_transport failed");

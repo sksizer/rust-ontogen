@@ -52,30 +52,24 @@ pub fn classify_op(func: &ApiFn) -> OpKind {
             let name = &func.name;
 
             // Junction: add_{child}(parent_id, child_id) — exactly 2 string params
-            if let Some(rest) = name.strip_prefix("add_") {
-                if func.params.len() == 2 {
-                    return OpKind::JunctionAdd {
-                        child_segment: junction_child_segment(rest, false),
-                    };
-                }
+            if let Some(rest) = name.strip_prefix("add_")
+                && func.params.len() == 2
+            {
+                return OpKind::JunctionAdd { child_segment: junction_child_segment(rest, false) };
             }
 
             // Junction: remove_{child}(parent_id, child_id) — exactly 2 string params
-            if let Some(rest) = name.strip_prefix("remove_") {
-                if func.params.len() == 2 {
-                    return OpKind::JunctionRemove {
-                        child_segment: junction_child_segment(rest, false),
-                    };
-                }
+            if let Some(rest) = name.strip_prefix("remove_")
+                && func.params.len() == 2
+            {
+                return OpKind::JunctionRemove { child_segment: junction_child_segment(rest, false) };
             }
 
             // Junction: list_{children}(parent_id) — exactly 1 param, not "list" itself
-            if let Some(rest) = name.strip_prefix("list_") {
-                if func.params.len() == 1 {
-                    return OpKind::JunctionList {
-                        child_segment: junction_child_segment(rest, true),
-                    };
-                }
+            if let Some(rest) = name.strip_prefix("list_")
+                && func.params.len() == 1
+            {
+                return OpKind::JunctionList { child_segment: junction_child_segment(rest, true) };
             }
 
             if name.starts_with("get_") || func.params.is_empty() { OpKind::CustomGet } else { OpKind::CustomPost }

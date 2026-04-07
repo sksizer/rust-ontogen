@@ -17,6 +17,26 @@ fn wrap_schema(base: &str, config: &Config) -> String {
     if config.route_prefix.is_some() { format!("|| with_project_id_schema({}())", base) } else { base.to_string() }
 }
 
+/// Wraps a schema_fn reference with project_id and pagination injection for list ops.
+/// Adds `with_pagination_schema` around the result when pagination is configured.
+fn wrap_schema_for_list(base: &str, config: &Config) -> String {
+    let inner = wrap_schema(base, config);
+    if config.pagination.is_some() {
+        // If wrap_schema already produced a closure, compose with it
+        if inner.starts_with("||") {
+            // inner is like "|| with_project_id_schema(schema_for::<T>())"
+            // We need: "|| with_pagination_schema(with_project_id_schema(schema_for::<T>()))"
+            let body = inner.trim_start_matches("|| ").trim();
+            format!("|| with_pagination_schema({})", body)
+        } else {
+            // inner is like "schema_for::<EmptyInput>"
+            format!("|| with_pagination_schema({}())", inner)
+        }
+    } else {
+        inner
+    }
+}
+
 /// Returns handler prefix code that extracts and validates project_id from MCP args.
 fn mcp_handler_prefix(config: &Config) -> String {
     match &config.route_prefix {
@@ -225,12 +245,44 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
         ));
     }
 
+    // Add pagination schema helper when pagination is configured
+    if config.pagination.is_some() {
+        out.push_str(
+            "\
+/// Inject `limit` and `offset` pagination properties into a JSON schema.
+fn with_pagination_schema(mut schema: Value) -> Value {
+    if let Some(obj) = schema.as_object_mut() {
+        let props = obj.entry(\"properties\").or_insert_with(|| json!({}));
+        if let Some(props_obj) = props.as_object_mut() {
+            props_obj.insert(\"limit\".to_string(), json!({
+                \"type\": \"integer\",
+                \"description\": \"Maximum number of items to return\"
+            }));
+            props_obj.insert(\"offset\".to_string(), json!({
+                \"type\": \"integer\",
+                \"description\": \"Number of items to skip\"
+            }));
+        }
+    }
+    schema
+}
+
+",
+        );
+    }
+
     // Generate input structs for custom functions with plain params
     for m in modules {
         for f in &m.functions {
             let op = classify_op(f);
-            if !matches!(op, OpKind::CustomGet | OpKind::CustomPost
-                | OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }) {
+            if !matches!(
+                op,
+                OpKind::CustomGet
+                    | OpKind::CustomPost
+                    | OpKind::JunctionList { .. }
+                    | OpKind::JunctionAdd { .. }
+                    | OpKind::JunctionRemove { .. }
+            ) {
                 continue;
             }
             let has_body_struct = f.params.iter().any(|p| p.ty.contains("Input"));
@@ -271,28 +323,66 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
                 OpKind::List => {
                     // tool_name computed above
                     let await_str = if is_async { ".await" } else { "" };
+                    let ret_type = &f.return_type;
+                    // Pagination only applies when the list function returns Vec<T>;
+                    // custom result types (e.g., CodingAgentListResult) are passed through unchanged.
+                    let paginate = config.pagination.is_some() && ret_type.starts_with("Vec<");
                     let (prefix, first_arg) =
                         if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let plain_params: Vec<_> = f.params.iter()
-                        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input"))
-                        .collect();
-                    let mut schema_fn = wrap_schema("schema_for::<EmptyInput>", config);
+                    let plain_params: Vec<_> =
+                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
+                    let schema_wrap = if paginate { wrap_schema_for_list } else { wrap_schema };
+                    let mut schema_fn = schema_wrap("schema_for::<EmptyInput>", config);
                     let mut extraction = String::new();
                     let mut extra_args = String::new();
                     if let Some(qp) = query_param {
                         let qt = extract_input_type(&qp.ty);
-                        schema_fn = wrap_schema(&format!("schema_for::<{qt}>"), config);
+                        schema_fn = schema_wrap(&format!("schema_for::<{qt}>"), config);
                         extraction.push_str(&format!("                    let query: {qt} = serde_json::from_value(args.clone()).unwrap_or_default();\n"));
                         extra_args.push_str(", query");
                     }
                     for pp in &plain_params {
-                        extraction.push_str(&format!("                    let {} = required_str(args, \"{}\")?;\n", pp.name, pp.name));
+                        extraction.push_str(&format!(
+                            "                    let {} = required_str(args, \"{}\")?;\n",
+                            pp.name, pp.name
+                        ));
                         extra_args.push_str(&format!(", {}", pp.name));
                     }
-                    let args_param = if extraction.is_empty() { "_args" } else { "args" };
-                    out.push_str(&format!(
-                        "\
+                    if let Some(ref pg) = config.pagination
+                        && paginate
+                    {
+                        let default_limit = pg.default_limit;
+                        let max_limit = pg.max_limit;
+                        // Pagination always needs args access
+                        out.push_str(&format!(
+                            "\
+        McpToolDef {{
+            name: \"{tool_name}\",
+            description: \"{desc}\",
+            schema_fn: {schema_fn},
+            handler: |state, args| {{
+                Box::pin(async move {{
+{prefix}{extraction}                    let all_items = {svc}::list({first_arg}{extra_args}){await_str}.map_err(|e| e.to_string())?;
+                    let total = all_items.len();
+                    let limit = args.get(\"limit\").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or({default_limit}_usize).min({max_limit}_usize);
+                    let offset = args.get(\"offset\").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+                    let items: Vec<_> = all_items.into_iter().skip(offset).take(limit).collect();
+                    Ok(json!({{
+                        \"items\": serde_json::to_value(&items).map_err(|e| format!(\"Serialize error: {{e}}\"))?,
+                        \"total\": total,
+                        \"limit\": limit,
+                        \"offset\": offset
+                    }}))
+                }})
+            }},
+        }},
+"
+                        ));
+                    } else {
+                        let args_param = if extraction.is_empty() { "_args" } else { "args" };
+                        out.push_str(&format!(
+                            "\
         McpToolDef {{
             name: \"{tool_name}\",
             description: \"{desc}\",
@@ -305,7 +395,8 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
             }},
         }},
 "
-                    ));
+                        ));
+                    }
                 }
 
                 OpKind::GetById => {
@@ -410,12 +501,16 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
                     ));
                 }
 
-                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-                    generate_generic_mcp_tool(&mut out, svc, f, config);
+                OpKind::JunctionList { .. } => {
+                    generate_generic_mcp_tool(&mut out, svc, f, config, true);
+                }
+
+                OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+                    generate_generic_mcp_tool(&mut out, svc, f, config, false);
                 }
 
                 OpKind::CustomGet | OpKind::CustomPost => {
-                    generate_generic_mcp_tool(&mut out, svc, f, config);
+                    generate_generic_mcp_tool(&mut out, svc, f, config, false);
                 }
             }
         }
@@ -476,24 +571,31 @@ pub fn handle_tool_call(
     crate::write_and_format(output, out).expect("Failed to write MCP generated file");
 }
 
-fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Config) {
+fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Config, is_list_op: bool) {
     let fn_name = &f.name;
     let desc = if f.doc.is_empty() { fn_name.clone() } else { f.doc.clone() };
     let is_async = f.is_async;
     let await_str = if is_async { ".await" } else { "" };
     let tool_name = crate::servers::generators::ipc::command_name(svc, f, config);
     let returns_unit = f.return_type == "()";
+    // Pagination only applies to list operations that return Vec<T>;
+    // custom result types are passed through unchanged.
+    let paginate = is_list_op && config.pagination.is_some() && f.return_type.starts_with("Vec<");
     let (hp, first_arg) = if f.first_param_is_store {
         (mcp_store_construction(config), "&store")
     } else {
         (mcp_handler_prefix(config), "state")
     };
 
+    // Use list-aware schema wrapper only when pagination will actually be applied
+    // (adds pagination props to the schema).
+    let wrap = if paginate { wrap_schema_for_list } else { wrap_schema };
+
     let has_body_struct = f.params.iter().any(|p| p.ty.contains("Input"));
     let has_params = !f.params.is_empty();
 
     if !has_params {
-        let schema_fn = wrap_schema("schema_for::<EmptyInput>", config);
+        let schema_fn = wrap("schema_for::<EmptyInput>", config);
         if returns_unit {
             out.push_str(&format!(
                 "\
@@ -505,6 +607,34 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
                 Box::pin(async move {{
 {hp}                    {svc}::{fn_name}({first_arg}){await_str}.map_err(|e| e.to_string())?;
                     Ok(json!({{\"success\": true}}))
+                }})
+            }},
+        }},
+"
+            ));
+        } else if paginate {
+            let pg = config.pagination.as_ref().unwrap();
+            let default_limit = pg.default_limit;
+            let max_limit = pg.max_limit;
+            out.push_str(&format!(
+                "\
+        McpToolDef {{
+            name: \"{tool_name}\",
+            description: \"{desc}\",
+            schema_fn: {schema_fn},
+            handler: |state, args| {{
+                Box::pin(async move {{
+{hp}                    let all_items = {svc}::{fn_name}({first_arg}){await_str}.map_err(|e| e.to_string())?;
+                    let total = all_items.len();
+                    let limit = args.get(\"limit\").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or({default_limit}_usize).min({max_limit}_usize);
+                    let offset = args.get(\"offset\").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+                    let items: Vec<_> = all_items.into_iter().skip(offset).take(limit).collect();
+                    Ok(json!({{
+                        \"items\": serde_json::to_value(&items).map_err(|e| format!(\"Serialize error: {{e}}\"))?,
+                        \"total\": total,
+                        \"limit\": limit,
+                        \"offset\": offset
+                    }}))
                 }})
             }},
         }},
@@ -530,7 +660,7 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
     } else if has_body_struct {
         let input_param = f.params.iter().find(|p| p.ty.contains("Input")).unwrap();
         let input_type = extract_input_type(&input_param.ty);
-        let schema_fn = wrap_schema(&format!("schema_for::<{input_type}>"), config);
+        let schema_fn = wrap(&format!("schema_for::<{input_type}>"), config);
         if returns_unit {
             out.push_str(&format!(
                 "\
@@ -570,7 +700,7 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
         }
     } else {
         let struct_name = format!("{}{}Input", to_pascal_case(svc), to_pascal_case(fn_name));
-        let schema_fn = wrap_schema(&format!("schema_for::<{struct_name}>"), config);
+        let schema_fn = wrap(&format!("schema_for::<{struct_name}>"), config);
 
         let mut extraction = String::new();
         let mut call_args = String::new();
@@ -611,6 +741,34 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
                 Box::pin(async move {{
 {hp}{extraction}                    {svc}::{fn_name}({first_arg}{call_args}){await_str}.map_err(|e| e.to_string())?;
                     Ok(json!({{\"success\": true}}))
+                }})
+            }},
+        }},
+"
+            ));
+        } else if paginate {
+            let pg = config.pagination.as_ref().unwrap();
+            let default_limit = pg.default_limit;
+            let max_limit = pg.max_limit;
+            out.push_str(&format!(
+                "\
+        McpToolDef {{
+            name: \"{tool_name}\",
+            description: \"{desc}\",
+            schema_fn: {schema_fn},
+            handler: |state, args| {{
+                Box::pin(async move {{
+{hp}{extraction}                    let all_items = {svc}::{fn_name}({first_arg}{call_args}){await_str}.map_err(|e| e.to_string())?;
+                    let total = all_items.len();
+                    let limit = args.get(\"limit\").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or({default_limit}_usize).min({max_limit}_usize);
+                    let offset = args.get(\"offset\").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+                    let items: Vec<_> = all_items.into_iter().skip(offset).take(limit).collect();
+                    Ok(json!({{
+                        \"items\": serde_json::to_value(&items).map_err(|e| format!(\"Serialize error: {{e}}\"))?,
+                        \"total\": total,
+                        \"limit\": limit,
+                        \"offset\": offset
+                    }}))
                 }})
             }},
         }},

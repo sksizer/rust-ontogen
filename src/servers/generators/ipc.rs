@@ -9,7 +9,9 @@ use std::path::Path;
 use crate::servers::classify::{OpKind, classify_op};
 use crate::servers::config::Config;
 use crate::servers::parse::{ApiFn, ApiModule};
-use crate::servers::types::{capitalize, collect_type_import, event_name, extract_input_type, param_to_owned_type};
+use crate::servers::types::{
+    capitalize, collect_type_import, event_name, extract_input_type, inner_type, param_to_owned_type,
+};
 
 /// Returns the generated prefix param line for IPC commands (e.g., `project_id: Option<String>,`).
 /// Empty string if no route_prefix configured.
@@ -145,6 +147,23 @@ use tauri::State;
 
     out.push('\n');
 
+    if config.pagination.is_some() {
+        out.push_str(
+            "\
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub struct PaginatedResult<T: Serialize> {
+    pub items: Vec<T>,
+    pub total: u64,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+",
+        );
+    }
+
     let pp_line = prefix_param_line(config);
     let pp_validate = prefix_validation_line(config);
     let store_construct = store_construction_line(config);
@@ -178,9 +197,8 @@ use tauri::State;
                     let cmd_name = command_name(module, f, config);
                     let await_str = if is_async { ".await" } else { "" };
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let plain_params: Vec<_> = f.params.iter()
-                        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input"))
-                        .collect();
+                    let plain_params: Vec<_> =
+                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
                     let mut param_lines = String::new();
                     let mut extra_args = String::new();
                     if let Some(qp) = query_param {
@@ -193,8 +211,34 @@ use tauri::State;
                         param_lines.push_str(&format!("    {}: {},\n", pp.name, owned_ty));
                         extra_args.push_str(&format!(", &{}", pp.name));
                     }
-                    out.push_str(&format!(
-                        "\
+                    if let Some(pg) = &config.pagination
+                        && ret_type.starts_with("Vec<")
+                    {
+                        let item_type = inner_type(ret_type);
+                        let default_limit = pg.default_limit;
+                        let max_limit = pg.max_limit;
+                        param_lines.push_str("    limit: Option<u32>,\n");
+                        param_lines.push_str("    offset: Option<u32>,\n");
+                        out.push_str(&format!(
+                            "\
+#[tauri::command]
+pub async fn {cmd_name}(
+{param_lines}{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
+) -> Result<PaginatedResult<{item_type}>, String> {{
+{fn_pp_body}    let all_items = {svc}::list({first_arg}{extra_args}){await_str}
+        .map_err(|e| e.to_string())?;
+    let total = all_items.len() as u64;
+    let limit = limit.unwrap_or({default_limit}).min({max_limit});
+    let offset = offset.unwrap_or(0);
+    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();
+    Ok(PaginatedResult {{ items, total, limit, offset }})
+}}
+
+"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "\
 #[tauri::command]
 pub async fn {cmd_name}(
 {param_lines}{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
@@ -204,7 +248,8 @@ pub async fn {cmd_name}(
 }}
 
 "
-                    ));
+                        ));
+                    }
                     command_names.push(cmd_name);
                 }
 
@@ -304,7 +349,17 @@ pub async fn {cmd_name}(
                     command_names.push(cmd_name);
                 }
 
-                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+                OpKind::JunctionList { .. } => {
+                    let cmd_name = format!("{}_{}", module, f.name);
+                    if config.pagination.is_some() && ret_type.starts_with("Vec<") {
+                        generate_paginated_ipc_handler(&mut out, module, f, config);
+                    } else {
+                        generate_generic_ipc_handler(&mut out, module, f, config);
+                    }
+                    command_names.push(cmd_name);
+                }
+
+                OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
                     let cmd_name = format!("{}_{}", module, f.name);
                     generate_generic_ipc_handler(&mut out, module, f, config);
                     command_names.push(cmd_name);
@@ -417,9 +472,7 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
         } else if p.ty.contains("Input")
             || matches!(
                 p.ty.as_str(),
-                "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
-                    | "u8" | "u16" | "u32" | "u64" | "u128"
-                    | "f32" | "f64"
+                "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
             )
         {
             out.push_str(&format!(", {}", p.name));
@@ -430,5 +483,68 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
     out.push(')');
     out.push_str(await_str);
     out.push_str("\n        .map_err(|e| e.to_string())\n");
+    out.push_str("}\n\n");
+}
+
+/// Generate a paginated IPC handler for JunctionList operations.
+///
+/// Wraps the service call result in `PaginatedResult<T>` with limit/offset params.
+fn generate_paginated_ipc_handler(out: &mut String, module: &str, f: &ApiFn, config: &Config) {
+    let pg = config.pagination.as_ref().expect("pagination config required");
+    let fn_name = &f.name;
+    let svc = module;
+    let is_async = f.is_async;
+    let ret_type = &f.return_type;
+    let item_type = inner_type(ret_type);
+    let await_str = if is_async { ".await" } else { "" };
+    let state_type = &config.state_type;
+    let pp_line = prefix_param_line(config);
+    let default_limit = pg.default_limit;
+    let max_limit = pg.max_limit;
+
+    let (fn_pp_body, first_arg) = if f.first_param_is_store {
+        (store_construction_line(config), "store")
+    } else {
+        (prefix_validation_line(config), "&state")
+    };
+
+    let cmd_fn_name = format!("{}_{}", module, fn_name);
+    out.push_str(&format!("#[tauri::command]\npub async fn {}(\n", cmd_fn_name));
+
+    for p in &f.params {
+        let owned_ty = param_to_owned_type(&p.ty);
+        out.push_str(&format!("    {}: {},\n", p.name, owned_ty));
+    }
+
+    out.push_str("    limit: Option<u32>,\n");
+    out.push_str("    offset: Option<u32>,\n");
+    out.push_str(&pp_line);
+    out.push_str(&format!("    state: State<'_, Arc<{state_type}>>,\n"));
+    out.push_str(&format!(") -> Result<PaginatedResult<{}>, String> {{\n", item_type));
+    out.push_str(&fn_pp_body);
+
+    out.push_str(&format!("    let all_items = {}::{}({first_arg}", svc, fn_name));
+    for p in &f.params {
+        if p.ty.starts_with("Option<") {
+            out.push_str(&format!(", {}.as_deref()", p.name));
+        } else if p.ty.contains("Input")
+            || matches!(
+                p.ty.as_str(),
+                "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
+            )
+        {
+            out.push_str(&format!(", {}", p.name));
+        } else {
+            out.push_str(&format!(", &{}", p.name));
+        }
+    }
+    out.push(')');
+    out.push_str(await_str);
+    out.push_str("\n        .map_err(|e| e.to_string())?;\n");
+    out.push_str("    let total = all_items.len() as u64;\n");
+    out.push_str(&format!("    let limit = limit.unwrap_or({default_limit}).min({max_limit});\n"));
+    out.push_str("    let offset = offset.unwrap_or(0);\n");
+    out.push_str("    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();\n");
+    out.push_str("    Ok(PaginatedResult { items, total, limit, offset })\n");
     out.push_str("}\n\n");
 }

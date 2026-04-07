@@ -67,10 +67,22 @@ pub fn collect_type_import(ty: &str, imports: &mut Vec<String>) {
     // Skip Rust primitives — they don't need importing.
     if matches!(
         inner.as_str(),
-        "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
-            | "u8" | "u16" | "u32" | "u64" | "u128"
-            | "f32" | "f64"
-            | "String" | "str" | "&str"
+        "bool"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "f32"
+            | "f64"
+            | "String"
+            | "str"
+            | "&str"
     ) {
         return;
     }

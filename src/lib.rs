@@ -213,6 +213,8 @@ pub struct ServersConfig {
     pub store_type: Option<String>,
     /// Import path for the Store type.
     pub store_import: Option<String>,
+    /// Optional pagination for list operations.
+    pub pagination: Option<servers::PaginationConfig>,
 }
 
 /// Configuration for client generation.

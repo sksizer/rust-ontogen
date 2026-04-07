@@ -10,7 +10,7 @@ use crate::servers::classify::{OpKind, classify_op, is_read_operation};
 use crate::servers::config::Config;
 use crate::servers::parse::{ApiFn, ApiModule};
 use crate::servers::types::{
-    capitalize, collect_type_import, event_name, extract_input_type, param_to_owned_type, to_pascal_case,
+    capitalize, collect_type_import, event_name, extract_input_type, inner_type, param_to_owned_type, to_pascal_case,
 };
 
 /// Generate HTTP route handlers and write to the output file.
@@ -124,6 +124,28 @@ fn err(msg: String) -> ApiError {
 ",
     );
 
+    // Emit pagination support types when enabled
+    if config.pagination.is_some() {
+        out.push_str(
+            "\
+#[derive(Serialize)]
+pub struct PaginatedResult<T: Serialize> {
+    pub items: Vec<T>,
+    pub total: u64,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+#[derive(Deserialize)]
+pub struct PaginationParams {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+",
+        );
+    }
+
     // Generate handlers and collect routes
     let mut route_entries: Vec<String> = Vec::new();
     let mut junction_routes: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
@@ -175,14 +197,12 @@ fn err(msg: String) -> ApiError {
             match op {
                 OpKind::List => {
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
+                    let err_map = ".map_err(|e| err(e.to_string()))";
                     // Check for a query parameter struct (e.g., ListAgentsQuery)
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
                     // Check for plain string params (e.g., skill_id: &str) — scoped list filters
-                    let plain_params: Vec<_> = f.params.iter()
-                        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input"))
-                        .collect();
+                    let plain_params: Vec<_> =
+                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
 
                     let mut extra_extractors = String::new();
                     let mut extra_args = String::new();
@@ -195,8 +215,33 @@ fn err(msg: String) -> ApiError {
                         extra_extractors.push_str(&format!("\n    Query({name}): Query<String>,", name = pp.name));
                         extra_args.push_str(&format!(", &{}", pp.name));
                     }
-                    out.push_str(&format!(
-                        "\
+
+                    if let Some(pg) = &config.pagination
+                        && ret_type.starts_with("Vec<")
+                    {
+                        let item_type = inner_type(ret_type);
+                        let default_limit = pg.default_limit;
+                        let max_limit = pg.max_limit;
+                        extra_extractors.push_str("\n    Query(pagination): Query<PaginationParams>,");
+                        out.push_str(&format!(
+                            "\
+async fn {handler_name}(
+    State(state): State<Arc<{state_type}>>,{extra_extractors}
+) -> Result<Json<PaginatedResult<{item_type}>>, ApiError> {{
+{store_let}    let all_items = {svc}::list({first_arg}{extra_args}){await_str}
+        {err_map}?;
+    let total = all_items.len() as u64;
+    let limit = pagination.limit.unwrap_or({default_limit}).min({max_limit});
+    let offset = pagination.offset.unwrap_or(0);
+    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();
+    Ok(Json(PaginatedResult {{ items, total, limit, offset }}))
+}}
+
+"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "\
 async fn {handler_name}(
     State(state): State<Arc<{state_type}>>,{extra_extractors}
 ) -> Result<Json<{ret_type}>, ApiError> {{
@@ -206,13 +251,13 @@ async fn {handler_name}(
 }}
 
 "
-                    ));
+                        ));
+                    }
                 }
 
                 OpKind::GetById => {
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
+                    let err_map = ".map_err(|e| err(e.to_string()))";
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -231,8 +276,7 @@ async fn {handler_name}(
                 OpKind::Create => {
                     let input_type = extract_input_type(&f.params[0].ty);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
+                    let err_map = ".map_err(|e| err(e.to_string()))";
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -251,8 +295,7 @@ async fn {handler_name}(
                 OpKind::UpdateById => {
                     let input_type = extract_input_type(&f.params[1].ty);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
+                    let err_map = ".map_err(|e| err(e.to_string()))";
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -271,8 +314,7 @@ async fn {handler_name}(
 
                 OpKind::DeleteById => {
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
+                    let err_map = ".map_err(|e| err(e.to_string()))";
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -290,10 +332,35 @@ async fn {handler_name}(
 
                 OpKind::JunctionList { ref child_segment } => {
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
-                    out.push_str(&format!(
-                        "\
+                    let err_map = ".map_err(|e| err(e.to_string()))";
+
+                    if let Some(pg) = &config.pagination
+                        && ret_type.starts_with("Vec<")
+                    {
+                        let item_type = inner_type(ret_type);
+                        let default_limit = pg.default_limit;
+                        let max_limit = pg.max_limit;
+                        out.push_str(&format!(
+                            "\
+async fn {handler_name}(
+    State(state): State<Arc<{state_type}>>,
+    Path(parent_id): Path<String>,
+    Query(pagination): Query<PaginationParams>,
+) -> Result<Json<PaginatedResult<{item_type}>>, ApiError> {{
+{store_let}    let all_items = {svc}::{fn_name}({first_arg}, &parent_id){await_str}
+        {err_map}?;
+    let total = all_items.len() as u64;
+    let limit = pagination.limit.unwrap_or({default_limit}).min({max_limit});
+    let offset = pagination.offset.unwrap_or(0);
+    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();
+    Ok(Json(PaginatedResult {{ items, total, limit, offset }}))
+}}
+
+"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "\
 async fn {handler_name}(
     State(state): State<Arc<{state_type}>>,
     Path(parent_id): Path<String>,
@@ -304,11 +371,12 @@ async fn {handler_name}(
 }}
 
 "
-                    ));
+                        ));
+                    }
                     // Collect for merging — will be combined with JunctionAdd on the same path
                     junction_routes
                         .entry(format!("/api/{url_plural}/:parent_id/{child_segment}"))
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(format!("get({handler_name})"));
                 }
 
@@ -332,7 +400,7 @@ async fn {handler_name}(
                     ));
                     junction_routes
                         .entry(format!("/api/{url_plural}/:parent_id/{child_segment}"))
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(format!("post({handler_name})"));
                 }
 
@@ -352,7 +420,7 @@ async fn {handler_name}(
                     ));
                     junction_routes
                         .entry(format!("/api/{url_plural}/:parent_id/{child_segment}/:child_id"))
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(format!("delete({handler_name})"));
                 }
 
@@ -518,15 +586,24 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     if path_params.len() == 1 {
         let p = path_params[0];
         let path_type = match p.ty.as_str() {
-            "i32" => "i32", "i64" => "i64", "u32" => "u32", "u64" => "u64",
+            "i32" => "i32",
+            "i64" => "i64",
+            "u32" => "u32",
+            "u64" => "u64",
             _ => "String",
         };
         out.push_str(&format!("    Path({}): Path<{}>,\n", p.name, path_type));
     } else if path_params.len() > 1 {
-        let types: Vec<&str> = path_params.iter().map(|p| match p.ty.as_str() {
-            "i32" => "i32", "i64" => "i64", "u32" => "u32", "u64" => "u64",
-            _ => "String",
-        }).collect();
+        let types: Vec<&str> = path_params
+            .iter()
+            .map(|p| match p.ty.as_str() {
+                "i32" => "i32",
+                "i64" => "i64",
+                "u32" => "u32",
+                "u64" => "u64",
+                _ => "String",
+            })
+            .collect();
         let names: Vec<&str> = path_params.iter().map(|p| p.name.as_str()).collect();
         out.push_str(&format!("    Path(({}),): Path<({},)>,\n", names.join(", "), types.join(", ")));
     }
@@ -568,9 +645,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     for p in &path_params {
         if matches!(
             p.ty.as_str(),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
-                | "u8" | "u16" | "u32" | "u64" | "u128"
-                | "f32" | "f64"
+            "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
         ) {
             out.push_str(&format!(", {}", p.name));
         } else {
@@ -586,9 +661,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     for bf in &body_fields {
         if matches!(
             bf.ty.as_str(),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
-                | "u8" | "u16" | "u32" | "u64" | "u128"
-                | "f32" | "f64"
+            "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
         ) {
             out.push_str(&format!(", body.{}", bf.name));
         } else {
@@ -670,20 +743,48 @@ fn generate_scoped_handlers(
                 OpKind::List => {
                     let handler_name = format!("list_{}_scoped", plural);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
+                    let err_map = ".map_err(|e| err(e.to_string()))";
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let (query_extractor, query_arg) = if let Some(qp) = query_param {
+                    let mut extra_extractors = String::new();
+                    let query_arg = if let Some(qp) = query_param {
                         let qt = extract_input_type(&qp.ty);
-                        (format!("\n    Query(query): Query<{}>,", qt), format!(", query"))
+                        extra_extractors.push_str(&format!("\n    Query(query): Query<{}>,", qt));
+                        ", query".to_string()
                     } else {
-                        (String::new(), String::new())
+                        String::new()
                     };
-                    out.push_str(&format!(
-                        "\
+
+                    if let Some(pg) = &config.pagination
+                        && ret_type.starts_with("Vec<")
+                    {
+                        let item_type = inner_type(ret_type);
+                        let default_limit = pg.default_limit;
+                        let max_limit = pg.max_limit;
+                        extra_extractors.push_str("\n    Query(pagination): Query<PaginationParams>,");
+                        out.push_str(&format!(
+                            "\
 async fn {handler_name}(
     State(state): State<Arc<{state_type}>>,
-    Path({pp_name}): Path<{pp_type}>,{query_extractor}
+    Path({pp_name}): Path<{pp_type}>,{extra_extractors}
+) -> Result<Json<PaginatedResult<{item_type}>>, ApiError> {{
+{store_let}
+    let all_items = {svc}::list(&store{query_arg}){await_str}
+        {err_map}?;
+    let total = all_items.len() as u64;
+    let limit = pagination.limit.unwrap_or({default_limit}).min({max_limit});
+    let offset = pagination.offset.unwrap_or(0);
+    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();
+    Ok(Json(PaginatedResult {{ items, total, limit, offset }}))
+}}
+
+"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "\
+async fn {handler_name}(
+    State(state): State<Arc<{state_type}>>,
+    Path({pp_name}): Path<{pp_type}>,{extra_extractors}
 ) -> Result<Json<{ret_type}>, ApiError> {{
 {store_let}
     {svc}::list(&store{query_arg}){await_str}
@@ -692,14 +793,14 @@ async fn {handler_name}(
 }}
 
 "
-                    ));
+                        ));
+                    }
                 }
 
                 OpKind::GetById => {
                     let handler_name = format!("get_{}_by_id_scoped", url_sing);
                     let await_str = if is_async { "\n        .await" } else { "" };
-                    let err_map =
-                        if is_async { ".map_err(|e| err(e.to_string()))" } else { ".map_err(|e| err(e.to_string()))" };
+                    let err_map = ".map_err(|e| err(e.to_string()))";
                     out.push_str(&format!(
                         "\
 async fn {handler_name}(
@@ -986,9 +1087,7 @@ fn generate_generic_http_handler_scoped(
     for p in &path_params {
         if matches!(
             p.ty.as_str(),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "i128"
-                | "u8" | "u16" | "u32" | "u64" | "u128"
-                | "f32" | "f64"
+            "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
         ) {
             out.push_str(&format!(", {}", p.name));
         } else {

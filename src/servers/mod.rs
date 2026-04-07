@@ -13,7 +13,9 @@ mod tests;
 pub mod types;
 
 // Re-export key types at the servers module level
-pub use config::{ClientGenerator, Config, GeneratorConfig, PrefixParam, RoutePrefix, ServerGenerator};
+pub use config::{
+    ClientGenerator, Config, GeneratorConfig, PaginationConfig, PrefixParam, RoutePrefix, ServerGenerator,
+};
 pub use parse::{ApiFn, ApiModule, EventFn, Param};
 pub use types::NamingConfig;
 
@@ -65,6 +67,7 @@ pub fn generate(
         store_type: config.store_type.clone(),
         store_import: config.store_import.clone(),
         schema_entities: Vec::new(),
+        pagination: config.pagination.clone(),
     };
 
     // Run the transport generation pipeline

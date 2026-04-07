@@ -8,7 +8,10 @@ const entityPlural = computed(() => route.params.entity as string)
 const { adminEntityByPlural } = useAdminRegistry()
 const entityConfig = computed(() => adminEntityByPlural[entityPlural.value])
 
-const { items, loading, error, fields, fetchList, getEntityId } = useAdminEntity(entityPlural)
+const {
+  items, loading, error, fields, fetchList, getEntityId,
+  page, totalPages, total, limit, nextPage, prevPage, goToPage,
+} = useAdminEntity(entityPlural)
 
 const tableFields = computed(() => fields.value.filter((f) => f.showInTable))
 
@@ -82,7 +85,17 @@ function navigateToCreate() {
         </tbody>
       </table>
 
-      <div v-if="items.length > 0" class="mt-3 text-xs text-(--ui-text-muted)">
+      <AdminPagination
+        v-if="entityConfig?.paginated && items.length > 0"
+        :page="page"
+        :total-pages="totalPages"
+        :total="total"
+        :limit="limit"
+        @prev="prevPage"
+        @next="nextPage"
+        @go-to="goToPage"
+      />
+      <div v-else-if="items.length > 0" class="mt-3 text-xs text-(--ui-text-muted)">
         {{ items.length }} {{ items.length === 1 ? 'item' : 'items' }}
       </div>
     </div>
