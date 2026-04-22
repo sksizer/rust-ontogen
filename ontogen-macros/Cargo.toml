@@ -2,7 +2,11 @@
 name = "ontogen-macros"
 version = "0.1.0"
 edition = "2024"
-publish = false
+description = "Proc-macro attributes for ontogen entity annotation (#[derive(OntologyEntity)])"
+license = "MIT"
+repository = "https://github.com/sksizer/rust-ontogen"
+keywords = ["codegen", "ontology", "proc-macro"]
+categories = ["development-tools::build-utils"]
 
 [lib]
 proc-macro = true

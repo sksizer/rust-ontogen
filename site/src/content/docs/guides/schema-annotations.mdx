@@ -1,0 +1,318 @@
+---
+title: Schema Annotations
+description: Complete guide to all #[ontology(...)] annotations available on structs and fields.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Every piece of generated code traces back to an `#[ontology(...)]` annotation on a struct or field. This page covers every annotation, what it does, how it interacts with serde attributes, and the role of the `ontogen-macros` crate in making it all work.
+
+## How Annotations Are Processed
+
+There are two crates involved, and understanding the split is important:
+
+**`ontogen-macros`** is a proc-macro crate. It registers `ontology` as a legal attribute namespace via a no-op derive:
+
+```rust
+#[proc_macro_derive(OntologyEntity, attributes(ontology))]
+pub fn derive_ontology_entity(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
+```
+
+This crate does nothing beyond making the compiler accept `#[ontology(...)]` without errors. No interpretation. No code generation.
+
+**`build.rs`** does the real work. It uses `syn` to parse your schema source files, walks the AST, and extracts `EntityDef` metadata from the annotations. This is where `#[ontology(entity)]` gets noticed, where `#[ontology(relation(belongs_to, target = "Node"))]` gets decomposed into a `RelationInfo`, and where field types get classified into `FieldType` variants.
+
+<Aside type="caution">
+If you add a new annotation keyword to your struct but the parser in `build.rs` doesn't know about it, the attribute will compile fine (thanks to `ontogen-macros`) but will be silently ignored. No error, no warning. Check that your annotations match the supported keywords listed on this page.
+</Aside>
+
+## Struct-Level Annotations
+
+These go on the struct itself, inside `#[ontology(...)]`.
+
+### `entity` (required)
+
+Marks this struct as an Ontogen entity. Without this keyword, the parser skips the struct entirely.
+
+```rust
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Task { ... }
+```
+
+### `directory = "..."`
+
+Sets the subdirectory for markdown I/O. Used by `gen_markdown_io` to determine where to read and write entity files.
+
+```rust
+#[ontology(entity, directory = "tasks")]
+```
+
+Default: `to_snake_case(StructName)`. For `WorkSession`, that's `work_session`.
+
+### `table = "..."`
+
+Sets the database table name. Appears in the generated SeaORM entity as `#[sea_orm(table_name = "...")]`.
+
+```rust
+#[ontology(entity, table = "acceptance_criteria")]
+pub struct AcceptanceCriterion { ... }
+```
+
+Default: `to_snake_case(StructName)`. For `AcceptanceCriterion`, that's `acceptance_criterion`.
+
+You'll commonly override this for proper pluralization since the automatic default doesn't pluralize.
+
+### `type_name = "..."`
+
+The YAML frontmatter `type:` value for markdown files.
+
+```rust
+#[ontology(entity, type_name = "work_session")]
+```
+
+Default: `to_snake_case(StructName)`.
+
+### `prefix = "..."`
+
+ID prefix for generating new entity identifiers.
+
+```rust
+#[ontology(entity, prefix = "req")]
+pub struct Requirement { ... }
+// IDs look like: req_01HXYZ...
+```
+
+Default: `to_snake_case(StructName)`.
+
+### Combining Attributes
+
+All struct-level attributes can be combined freely. You only need to specify what differs from the defaults:
+
+```rust
+#[ontology(entity, table = "capabilities", prefix = "cap")]
+pub struct Capability { ... }
+// directory = "capability" (inferred)
+// type_name = "capability" (inferred)
+// table = "capabilities" (overridden)
+// prefix = "cap" (overridden)
+```
+
+## Field-Level Annotations
+
+These go on individual fields, also inside `#[ontology(...)]`.
+
+### `id`
+
+Marks the primary key field. Exactly one field per entity should have this.
+
+```rust
+#[ontology(id)]
+pub id: String,
+```
+
+The field type determines the generated SeaORM column:
+- `String` generates `#[sea_orm(primary_key, auto_increment = false)]` -- a string PK
+- `i32` or `i64` generates `#[sea_orm(primary_key)]` -- auto-incrementing integer PK
+
+### `body`
+
+Marks the markdown body field. In the markdown I/O layer, this field holds everything below the YAML frontmatter separator. Not stored as a frontmatter key.
+
+```rust
+#[serde(default)]
+#[ontology(body)]
+pub body: String,
+```
+
+In the SeaORM layer, the body is stored as a regular `String` column. The distinction only matters for markdown parsing and writing.
+
+### `enum_field`
+
+Tells generators that this field is a Rust enum stored as a string in the database. Affects how `from_model()` and `to_active_model()` convert between database strings and Rust enum variants.
+
+```rust
+#[ontology(enum_field)]
+pub status: Option<TaskStatus>,
+```
+
+The generated conversion code uses serde for the roundtrip:
+
+```rust
+// from_model() — DB string to Rust enum
+status: model.status.as_deref()
+    .and_then(|s| serde_json::from_str::<crate::schema::TaskStatus>(
+        &format!("\"{s}\"")
+    ).ok()),
+
+// to_active_model() — Rust enum to DB string
+status: Set(self.status.as_ref().map(enum_to_string)),
+```
+
+Works with both `Option<EnumType>` and required enum types (like `FieldType::Other("RequirementStatus")`).
+
+### `skip`
+
+Excludes a field from most code generation. The field still gets a database column and appears in `from_model()`/`to_active_model()` conversions, but is excluded from DTO generation, markdown writers, and the Update struct.
+
+```rust
+#[ontology(skip)]
+pub acceptance_criteria: Vec<AcceptanceCriterion>,
+```
+
+Use this for fields that have special handling. For example, a `Vec<AcceptanceCriterion>` that gets stored as JSON in the database but needs custom serialization logic in the store layer.
+
+### `multiline_list`
+
+A rendering hint for the markdown writer. When set, `Vec<String>` fields render as YAML block sequences (one item per line) instead of inline `[a, b, c]`.
+
+```rust
+#[ontology(multiline_list)]
+#[serde(default)]
+pub steps: Vec<String>,
+```
+
+Renders as:
+
+```yaml
+steps:
+  - First step
+  - Second step
+  - Third step
+```
+
+Instead of:
+
+```yaml
+steps: [First step, Second step, Third step]
+```
+
+### `default_value = "..."`
+
+Another rendering hint for the markdown writer. When the field's value matches the default, the writer omits it from the YAML frontmatter entirely.
+
+```rust
+#[ontology(default_value = "active")]
+#[serde(default)]
+pub status: String,
+```
+
+If `status` is `"active"`, the writer skips it. Any other value gets written normally.
+
+### `relation(...)`
+
+Defines a relationship to another entity. This is the most complex annotation and has its own sub-syntax. See the [Relationships guide](/guides/relationships/) for the full treatment.
+
+Quick summary of the three kinds:
+
+```rust
+// belongs_to — FK column on this table
+#[ontology(relation(belongs_to, target = "Node"))]
+pub parent_id: Option<String>,
+
+// has_many — reverse side of a belongs_to
+#[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
+pub contains: Vec<String>,
+
+// many_to_many — junction table
+#[ontology(relation(many_to_many, target = "Requirement"))]
+pub fulfills: Vec<String>,
+```
+
+## Combining `#[ontology]` with `#[serde]`
+
+The parser specifically looks for `#[serde(default)]` on fields and records it in the `FieldDef.serde_default` flag. This affects markdown I/O behavior:
+
+```rust
+#[serde(default)]
+#[ontology(relation(many_to_many, target = "Tag"))]
+pub tags: Vec<String>,
+```
+
+The `#[serde(default)]` attribute serves two purposes:
+1. It makes deserialization work when the field is absent from YAML frontmatter
+2. The parser records it so the markdown writer knows the field can be safely omitted when empty
+
+Other serde attributes (`#[serde(rename = "...")]`, `#[serde(skip)]`, etc.) are not parsed by Ontogen. They're invisible to `build.rs` but still affect serde's behavior at runtime as you'd expect.
+
+<Aside>
+You can stack `#[serde(...)]` and `#[ontology(...)]` on the same field in any order. They are independent attribute namespaces.
+</Aside>
+
+## Complete Annotation Reference
+
+### Struct-Level
+
+| Annotation | Required | Default | Description |
+|---|---|---|---|
+| `entity` | Yes | -- | Marks struct as an Ontogen entity |
+| `directory = "..."` | No | `to_snake_case(Name)` | Markdown I/O subdirectory |
+| `table = "..."` | No | `to_snake_case(Name)` | SeaORM table name |
+| `type_name = "..."` | No | `to_snake_case(Name)` | YAML frontmatter `type:` value |
+| `prefix = "..."` | No | `to_snake_case(Name)` | ID generation prefix |
+
+### Field-Level
+
+| Annotation | Field Types | Effect |
+|---|---|---|
+| `id` | `String`, `i32`, `i64` | Marks primary key. Generates `#[sea_orm(primary_key)]`. |
+| `body` | `String` | Marks markdown body content. Not in YAML frontmatter. |
+| `enum_field` | `Option<Enum>`, `Enum` | Enables serde-based string conversion in DB layer. |
+| `skip` | Any | Keeps DB column but excludes from DTOs, writers, Update struct. |
+| `multiline_list` | `Vec<String>` | Renders YAML as block sequence instead of inline. |
+| `default_value = "..."` | `String` | Omits field from markdown when value matches default. |
+| `relation(belongs_to, ...)` | `Option<String>`, `String` | FK column on this table pointing to target entity. |
+| `relation(has_many, ...)` | `Vec<String>` | Reverse side of a belongs_to. Requires `foreign_key`. |
+| `relation(many_to_many, ...)` | `Vec<String>` | Junction table relation. Optional `junction` override. |
+
+### Relation Sub-Attributes
+
+| Attribute | Used With | Required | Description |
+|---|---|---|---|
+| `target = "Entity"` | All relation kinds | Yes | Target entity name (PascalCase struct name) |
+| `foreign_key = "field"` | `has_many` | Yes | FK column name on the target table |
+| `junction = "table_name"` | `many_to_many` | No | Override junction table name (default: `{entity}_{field}`) |
+
+## Practical Example: All Annotations in One Entity
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, directory = "specs", table = "specifications", prefix = "spec")]
+pub struct Specification {
+    #[ontology(id)]
+    pub id: String,
+
+    pub name: String,
+
+    #[ontology(enum_field)]
+    pub status: Option<SpecStatus>,
+
+    #[serde(default)]
+    #[ontology(relation(belongs_to, target = "Specification"))]
+    pub parent_id: Option<String>,
+
+    #[serde(default)]
+    #[ontology(relation(many_to_many, target = "Capability"))]
+    pub capability_ids: Vec<String>,
+
+    #[serde(default)]
+    #[ontology(relation(many_to_many, target = "Specification"))]
+    pub depends_on: Vec<String>,
+
+    #[serde(default)]
+    #[ontology(multiline_list)]
+    pub requirements: Vec<String>,
+
+    #[ontology(skip)]
+    pub acceptance_criteria: Vec<AcceptanceCriterion>,
+
+    #[ontology(default_value = "")]
+    #[serde(default)]
+    #[ontology(body)]
+    pub body: String,
+}
+```
+
+This single struct uses every annotation category: struct-level overrides, ID, body, enum, relations (belongs_to and two many_to_many), multiline rendering, skip, and default_value.
