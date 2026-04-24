@@ -1,0 +1,206 @@
+---
+title: Custom API Endpoints
+description: How to add hand-written API endpoints alongside generated CRUD operations.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Generated CRUD covers the standard five operations: list, get, create, update, delete. But real applications need more -- bulk operations, filtered queries, aggregations, business logic endpoints. Ontogen handles this by scanning your hand-written API modules and merging them into the same pipeline as generated code.
+
+The result: your custom endpoints show up in Axum routes, Tauri IPC commands, and MCP tools automatically. No extra wiring.
+
+## How it works
+
+`gen_api()` does two things:
+
+1. Generates CRUD modules from entity definitions (written to `generated/`).
+2. Scans directories you specify for hand-written modules (parsed with `syn`).
+
+Both types are normalized into the same `ApiModule` / `ApiFnMeta` types. Downstream generators (servers, clients) see no difference between generated and custom endpoints.
+
+The scan happens at build time. When you add a new `.rs` file to a scan directory, the next `cargo build` picks it up.
+
+## Recipe: Add a custom endpoint
+
+<Steps>
+
+1. ### Create the module file
+
+   Put your custom endpoint in the API directory alongside the `generated/` subdirectory. For example, if your generated CRUD for workouts lives at `src/api/v1/generated/workout.rs`, create a custom module at `src/api/v1/workout_stats.rs`:
+
+   ```rust
+   // src/api/v1/workout_stats.rs
+
+   use crate::schema::{AppError, Workout};
+   use crate::store::Store;
+
+   /// Get the total number of workouts in the last 30 days
+   pub async fn recent_count(store: &Store) -> Result<i64, AppError> {
+       store.count_recent_workouts(30).await
+   }
+
+   /// Get the heaviest workout set across all exercises
+   pub async fn personal_best(
+       store: &Store,
+       exercise_id: &str,
+   ) -> Result<Option<Workout>, AppError> {
+       store.get_personal_best(exercise_id).await
+   }
+   ```
+
+   Two things matter here:
+
+   - **First parameter type**: the scanner checks whether the first parameter is your `AppState` type or your `Store` type (as configured in `ApiConfig`). This determines scoping -- `Store`-scoped functions get entity routes, `AppState`-scoped functions get app-level routes.
+   - **Doc comments**: the `///` comments become the `doc` field in `ApiFnMeta`. MCP tools use this as the tool description. Future OpenAPI generation will use it too. Write useful descriptions.
+
+2. ### Register in `mod.rs`
+
+   Add the module to your API directory's `mod.rs`:
+
+   ```rust
+   // src/api/v1/mod.rs
+   pub mod generated;
+   pub mod workout_stats;  // your custom module
+   ```
+
+3. ### Configure scan directories
+
+   Make sure your `ApiConfig` includes the directory to scan:
+
+   ```rust
+   let api = gen_api(&schema.entities, &ApiConfig {
+       output_dir: "src/api/v1/generated".into(),
+       exclude: vec![],
+       scan_dirs: vec!["src/api/v1".into()],  // scans for hand-written modules
+       state_type: "AppState".to_string(),
+       store_type: Some("Store".to_string()),
+   })?;
+   ```
+
+   The scanner reads every `.rs` file in `src/api/v1/` (excluding the `generated/` subdirectory) and extracts function signatures.
+
+4. ### Build
+
+   ```bash
+   cargo build
+   ```
+
+   The scanner parses your new file, extracts `recent_count` and `personal_best`, classifies them, and includes them in `ApiOutput`. Downstream generators produce handlers for them.
+
+5. ### Check the generated transports
+
+   After the build, look at your generated transport files. Your custom functions should appear alongside the CRUD handlers.
+
+   **HTTP routes**: `recent_count` becomes a `GET` endpoint (because it has no body parameter -- classified as `CustomGet`). `personal_best` also becomes `GET` because it only takes simple parameters.
+
+   **IPC commands**: both functions get `#[tauri::command]` wrappers.
+
+   **MCP tools**: both get tool definitions with your doc comments as descriptions.
+
+</Steps>
+
+## Function classification rules
+
+The scanner classifies each function into an `OpKind` that drives HTTP verb and route structure. Here's how it decides:
+
+| Function pattern | `OpKind` | HTTP | Route example |
+|------------------|----------|------|---------------|
+| Named `list` | `List` | `GET` | `/api/workouts` |
+| Named `get_by_id` | `GetById` | `GET` | `/api/workouts/:id` |
+| Named `create` | `Create` | `POST` | `/api/workouts` |
+| Named `update` | `Update` | `PUT` | `/api/workouts/:id` |
+| Named `delete` | `Delete` | `DELETE` | `/api/workouts/:id` |
+| Starts with `get_` or has only simple params | `CustomGet` | `GET` | `/api/workout-stats/recent-count` |
+| Takes a complex input type | `CustomPost` | `POST` | `/api/workout-stats/personal-best` |
+| Returns a stream type | `EventStream` | `GET` (SSE) | `/api/events/workout-updated` |
+
+For custom functions, the module name becomes part of the route path. The function name is kebab-cased for the URL segment.
+
+## Organizing custom endpoints
+
+There's no enforced file structure -- the scanner just reads `.rs` files from your scan directories. But here are patterns that work well:
+
+**Per-entity custom operations**: put them in a file named after the entity (not in `generated/`):
+
+```
+src/api/v1/
+  generated/          # ontogen writes here
+    workout.rs        # list, get_by_id, create, update, delete
+  workout.rs          # your custom workout operations (archive, duplicate)
+  mod.rs
+```
+
+**Cross-entity operations**: use a descriptive module name:
+
+```
+src/api/v1/
+  generated/
+  reports.rs          # functions that query across multiple entities
+  import_export.rs    # bulk import/export operations
+  mod.rs
+```
+
+**Domain-specific modules**: group by business function:
+
+```
+src/api/v1/
+  generated/
+  training_plans.rs   # training plan operations
+  progress.rs         # progress tracking queries
+  mod.rs
+```
+
+<Aside type="tip">
+The scanner skips `mod.rs` and `generated/` subdirectories automatically. Everything else in your scan directory is fair game.
+</Aside>
+
+## Writing scannable functions
+
+For the scanner to pick up your function correctly, follow these conventions:
+
+**First parameter must be the state or store type:**
+
+```rust
+// Store-scoped (entity operations)
+pub async fn archive(store: &Store, id: &str) -> Result<(), AppError> { ... }
+
+// AppState-scoped (app-level operations)
+pub async fn health_check(state: &AppState) -> Result<String, AppError> { ... }
+```
+
+**Return type must be `Result<T, AppError>`** (or whatever your error type is):
+
+```rust
+pub async fn count(store: &Store) -> Result<i64, AppError> { ... }
+```
+
+**Parameters after the state/store are extracted as route params or query params:**
+
+```rust
+// `id` becomes a path parameter: GET /api/workouts/:id/sets
+pub async fn get_sets(store: &Store, id: &str) -> Result<Vec<WorkoutSet>, AppError> { ... }
+
+// `input` becomes a JSON body: POST /api/workouts/import
+pub async fn import(store: &Store, input: ImportWorkoutsInput) -> Result<Vec<Workout>, AppError> { ... }
+```
+
+**Use doc comments for descriptions:**
+
+```rust
+/// Archive a workout. Archived workouts are hidden from the default list
+/// but can be restored later.
+pub async fn archive(store: &Store, id: &str) -> Result<(), AppError> { ... }
+```
+
+## Rerun directives
+
+Don't forget to set up `cargo:rerun-if-changed` for your custom API directory. In your `build.rs`:
+
+```rust
+ontogen::emit_rerun_directives_excluding(
+    &PathBuf::from("src/api/v1"),
+    &["generated"],
+);
+```
+
+This watches all files in `src/api/v1/` except the `generated/` subdirectory. When you edit a custom endpoint, Cargo re-runs the build script and the scanner picks up your changes.
