@@ -101,7 +101,7 @@ mod tests {
         assert!(content.contains("pub async fn delete(store: &Store, id: &str)"));
 
         // Store delegation
-        assert!(content.contains("store.list_agents()"));
+        assert!(content.contains("store.list_agents(None, None)"));
         assert!(content.contains("store.get_agent(id)"));
         assert!(content.contains("store.create_agent(agent)"));
         assert!(content.contains("store.update_agent(id, updates)"));
