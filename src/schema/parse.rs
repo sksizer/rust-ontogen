@@ -7,7 +7,9 @@
 use std::fs;
 use std::path::Path;
 
-use syn::{Attribute, DeriveInput, Expr, Field, Fields, Lit, Meta, Type};
+use syn::{Attribute, Expr, Field, Fields, ItemStruct, Lit, Meta, Type};
+
+use ontogen_core::naming::to_snake_case;
 
 use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
 
@@ -38,15 +40,11 @@ pub fn parse_schema_source(source: &str, path: &Path) -> Result<Vec<EntityDef>, 
     let mut entities = Vec::new();
 
     for item in &syntax.items {
-        if let syn::Item::Struct(item_struct) = item {
-            let derive_input: DeriveInput = syn::parse2(quote::quote! { #item_struct })
-                .map_err(|e| format!("Failed to parse struct in {}: {e}", path.display()))?;
-
-            if has_ontology_entity_derive(&derive_input)
-                && let Some(entity) = parse_entity_struct(&derive_input, path)?
-            {
-                entities.push(entity);
-            }
+        if let syn::Item::Struct(item_struct) = item
+            && has_ontology_entity_derive(&item_struct.attrs)
+            && let Some(entity) = parse_entity_struct(item_struct, path)?
+        {
+            entities.push(entity);
         }
     }
 
@@ -54,8 +52,8 @@ pub fn parse_schema_source(source: &str, path: &Path) -> Result<Vec<EntityDef>, 
 }
 
 /// Check if a struct has `#[derive(OntologyEntity)]`.
-fn has_ontology_entity_derive(input: &DeriveInput) -> bool {
-    input.attrs.iter().any(|attr| {
+fn has_ontology_entity_derive(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
         if !attr.path().is_ident("derive") {
             return false;
         }
@@ -68,38 +66,19 @@ fn has_ontology_entity_derive(input: &DeriveInput) -> bool {
     })
 }
 
-/// Convert a CamelCase name to snake_case.
-fn to_snake_case(name: &str) -> String {
-    let mut result = String::new();
-    for (i, ch) in name.chars().enumerate() {
-        if ch.is_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(ch.to_lowercase().next().unwrap());
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
 /// Parse a struct with `#[ontology(entity, ...)]` into an `EntityDef`.
-fn parse_entity_struct(input: &DeriveInput, path: &Path) -> Result<Option<EntityDef>, String> {
+fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityDef>, String> {
     let name = input.ident.to_string();
     let struct_attrs = parse_struct_ontology_attrs(&name, &input.attrs);
     let Some(struct_attrs) = struct_attrs else {
         return Ok(None); // No #[ontology(entity, ...)] on this struct
     };
 
-    let fields = match &input.data {
-        syn::Data::Struct(data) => match &data.fields {
-            Fields::Named(named) => &named.named,
-            _ => {
-                return Err(format!("Struct {} in {} must have named fields", input.ident, path.display()));
-            }
-        },
-        _ => return Ok(None),
+    let fields = match &input.fields {
+        Fields::Named(named) => &named.named,
+        _ => {
+            return Err(format!("Struct {} in {} must have named fields", input.ident, path.display()));
+        }
     };
 
     let mut field_defs = Vec::new();
@@ -113,7 +92,36 @@ fn parse_entity_struct(input: &DeriveInput, path: &Path) -> Result<Option<Entity
     let type_name = struct_attrs.type_name.unwrap_or_else(|| default_snake.clone());
     let prefix = struct_attrs.prefix.unwrap_or_else(|| default_snake.clone());
 
+    validate_identifier("directory", &directory).map_err(|e| format!("entity `{name}`: {e}"))?;
+    validate_identifier("table", &table).map_err(|e| format!("entity `{name}`: {e}"))?;
+    validate_identifier("type_name", &type_name).map_err(|e| format!("entity `{name}`: {e}"))?;
+    validate_identifier("prefix", &prefix).map_err(|e| format!("entity `{name}`: {e}"))?;
+
     Ok(Some(EntityDef { name, directory, table, type_name, prefix, fields: field_defs }))
+}
+
+/// Validate that a user-supplied identifier conforms to `[A-Za-z_][A-Za-z0-9_]*`.
+///
+/// Applied to `table`, `directory`, `type_name`, and `prefix` values that flow
+/// into generated code (including SQL), to reject empty strings and inputs
+/// containing characters outside the standard identifier alphabet.
+fn validate_identifier(field: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("invalid {field}=``: must not be empty"));
+    }
+    let mut chars = value.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(format!(
+            "invalid {field}=`{value}`: must match [A-Za-z_][A-Za-z0-9_]* (must start with letter or underscore)"
+        ));
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!(
+            "invalid {field}=`{value}`: must match [A-Za-z_][A-Za-z0-9_]* (only letters, digits, or underscore allowed)"
+        ));
+    }
+    Ok(())
 }
 
 /// Parsed struct-level `#[ontology(...)]` attributes.
@@ -179,7 +187,7 @@ fn parse_field(field: &Field) -> Result<FieldDef, String> {
     let name = field.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
 
     let field_type = classify_type(&field.ty);
-    let ontology_attrs = parse_field_ontology_attrs(&name, &field.attrs);
+    let ontology_attrs = parse_field_ontology_attrs(&name, &field.attrs).map_err(|e| format!("field `{name}`: {e}"))?;
     let serde_default = has_serde_default(&field.attrs);
 
     Ok(FieldDef {
@@ -200,7 +208,7 @@ struct FieldOntologyAttrs {
 }
 
 /// Parse all `#[ontology(...)]` field-level attributes, collecting role and rendering hints.
-fn parse_field_ontology_attrs(field_name: &str, attrs: &[Attribute]) -> FieldOntologyAttrs {
+fn parse_field_ontology_attrs(field_name: &str, attrs: &[Attribute]) -> Result<FieldOntologyAttrs, String> {
     let mut result = FieldOntologyAttrs { role: FieldRole::Plain, multiline_list: false, default_value: None };
 
     for attr in attrs {
@@ -224,7 +232,7 @@ fn parse_field_ontology_attrs(field_name: &str, attrs: &[Attribute]) -> FieldOnt
                 Meta::Path(p) if p.is_ident("skip") => result.role = FieldRole::Skip,
                 Meta::Path(p) if p.is_ident("multiline_list") => result.multiline_list = true,
                 Meta::List(list) if list.path.is_ident("relation") => {
-                    if let Some(info) = parse_relation_meta(field_name, list) {
+                    if let Some(info) = parse_relation_meta(list)? {
                         result.role = FieldRole::Relation(info);
                     }
                 }
@@ -236,7 +244,7 @@ fn parse_field_ontology_attrs(field_name: &str, attrs: &[Attribute]) -> FieldOnt
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Parse `#[ontology(relation(kind, target = "...", ...))]` into a `RelationInfo`.
@@ -245,10 +253,9 @@ fn parse_field_ontology_attrs(field_name: &str, attrs: &[Attribute]) -> FieldOnt
 /// - `belongs_to` — FK column on this table (many-to-one)
 /// - `has_many` — reverse of a belongs_to on the target (requires `foreign_key`)
 /// - `many_to_many` — junction table (optionally override with `junction`)
-fn parse_relation_meta(field_name: &str, list: &syn::MetaList) -> Option<RelationInfo> {
+fn parse_relation_meta(list: &syn::MetaList) -> Result<Option<RelationInfo>, String> {
     let Ok(nested) = list.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated) else {
-        println!("cargo:warning=ontogen: malformed relation(...) on field `{field_name}` — attribute will be ignored");
-        return None;
+        return Ok(None);
     };
 
     let mut kind_name = None;
@@ -260,7 +267,9 @@ fn parse_relation_meta(field_name: &str, list: &syn::MetaList) -> Option<Relatio
         match meta {
             Meta::Path(p) if kind_name.is_none() => {
                 // First bare identifier is the relation kind
-                kind_name = Some(p.get_ident()?.to_string());
+                if let Some(ident) = p.get_ident() {
+                    kind_name = Some(ident.to_string());
+                }
             }
             Meta::NameValue(nv) if nv.path.is_ident("target") => {
                 target = expr_to_string(&nv.value);
@@ -275,20 +284,23 @@ fn parse_relation_meta(field_name: &str, list: &syn::MetaList) -> Option<Relatio
         }
     }
 
-    let target = target?;
-    let kind_str = kind_name?;
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    let Some(kind_str) = kind_name else {
+        return Ok(None);
+    };
 
     let kind = match kind_str.as_str() {
         "belongs_to" => RelationKind::BelongsTo,
         "has_many" => RelationKind::HasMany,
         "many_to_many" => RelationKind::ManyToMany,
         other => {
-            // Unknown relation kind — treat as error at parse time
-            panic!("Unknown relation kind '{}'. Expected belongs_to, has_many, or many_to_many", other);
+            return Err(format!("Unknown relation kind '{other}'. Expected belongs_to, has_many, or many_to_many"));
         }
     };
 
-    Some(RelationInfo { kind, target, junction, foreign_key })
+    Ok(Some(RelationInfo { kind, target, junction, foreign_key }))
 }
 
 /// Check if a field has `#[serde(default)]`.
@@ -511,6 +523,30 @@ mod tests {
         // belongs_to_relations
         let belongs_to: Vec<_> = node.belongs_to_relations().collect();
         assert_eq!(belongs_to.len(), 1); // parent_id
+    }
+
+    #[test]
+    fn parse_unknown_relation_kind_returns_error() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Node {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(relation(unknown_kind, target = "Node"))]
+                pub parent_id: Option<String>,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let err = parse_schema_source(source, Path::new("test.rs")).unwrap_err();
+        assert!(err.contains("Unknown relation kind"), "expected error to mention 'Unknown relation kind', got: {err}");
+        assert!(err.contains("unknown_kind"), "expected error to mention the bad kind, got: {err}");
     }
 
     #[test]
@@ -907,5 +943,80 @@ mod tests {
         // Agent — no relations
         let agent = find("Agent");
         assert_eq!(agent.relation_fields().count(), 0);
+    }
+
+    #[test]
+    fn rejects_sql_injection_in_table() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, table = "users'; DROP TABLE users; --")]
+            pub struct Node {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let err = parse_schema_source(source, Path::new("test.rs")).expect_err("expected validation error");
+        assert!(err.contains("invalid"), "error should mention `invalid`: {err}");
+        assert!(err.contains("table"), "error should mention field name `table`: {err}");
+        assert!(err.contains("Node"), "error should mention entity name `Node`: {err}");
+    }
+
+    #[test]
+    fn rejects_invalid_directory() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, directory = "1bad-dir")]
+            pub struct Thing {
+                #[ontology(id)]
+                pub id: String,
+            }
+        "#;
+
+        let err = parse_schema_source(source, Path::new("test.rs")).expect_err("expected validation error");
+        assert!(err.contains("invalid"));
+        assert!(err.contains("directory"));
+    }
+
+    #[test]
+    fn rejects_empty_prefix() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, prefix = "")]
+            pub struct Thing {
+                #[ontology(id)]
+                pub id: String,
+            }
+        "#;
+
+        let err = parse_schema_source(source, Path::new("test.rs")).expect_err("expected validation error");
+        assert!(err.contains("prefix"));
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn validate_identifier_accepts_good_values() {
+        assert!(validate_identifier("table", "users").is_ok());
+        assert!(validate_identifier("table", "work_sessions").is_ok());
+        assert!(validate_identifier("prefix", "_leading_underscore").is_ok());
+        assert!(validate_identifier("type_name", "Node42").is_ok());
+    }
+
+    #[test]
+    fn validate_identifier_rejects_bad_values() {
+        assert!(validate_identifier("table", "").is_err());
+        assert!(validate_identifier("table", "1leading_digit").is_err());
+        assert!(validate_identifier("table", "has-dash").is_err());
+        assert!(validate_identifier("table", "has space").is_err());
+        assert!(validate_identifier("table", "users'; DROP TABLE users; --").is_err());
     }
 }

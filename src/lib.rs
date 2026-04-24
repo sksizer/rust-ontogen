@@ -21,19 +21,20 @@
 //!     ├── gen_dtos        → ()
 //!     └── gen_store       → StoreOutput
 //!         └── gen_api     → ApiOutput
-//!             └── gen_servers → ServersOutput
-//!                 └── gen_clients → ()
+//!             └── gen_servers → ServersOutput  (also emits TypeScript clients)
 //! ```
 //!
 //! Each generator is a standalone function. Upstream outputs are `Option` parameters —
 //! enrichment, not requirements. Generators can run independently or be chained.
 
 pub mod api;
-pub mod clients;
 pub mod persistence;
 pub mod schema;
 pub mod servers;
 pub mod store;
+
+#[cfg(test)]
+mod snapshots;
 
 // Re-export ontogen-core as the canonical source for shared types.
 // Internal modules should import from `ontogen_core` directly.
@@ -120,15 +121,6 @@ pub fn gen_servers(
     servers::generate(api, scan_dirs, config)
 }
 
-/// Generate client libraries from server transport metadata.
-pub fn gen_clients(
-    servers: &ServersOutput,
-    api: Option<&ApiOutput>,
-    config: &ClientsConfig,
-) -> Result<(), CodegenError> {
-    clients::generate(servers, api, config)
-}
-
 // ── Configuration types ─────────────────────────────────────────────
 
 /// Configuration for schema parsing.
@@ -168,6 +160,9 @@ pub struct StoreConfig {
     /// When `None`, hook scaffolding is skipped (generated CRUD still calls hooks —
     /// the consuming crate must provide its own hook modules).
     pub hooks_dir: Option<PathBuf>,
+    /// Import path for the schema module in generated code (e.g., `"crate::schema"`).
+    /// Defaults to `"crate::schema"`.
+    pub schema_module_path: String,
 }
 
 /// Configuration for API layer generation.
@@ -184,6 +179,9 @@ pub struct ApiConfig {
     pub state_type: String,
     /// The Store type name for scanning (e.g., `"Store"`).
     pub store_type: Option<String>,
+    /// Import path for the schema module in generated code (e.g., `"crate::schema"`).
+    /// Defaults to `"crate::schema"`.
+    pub schema_module_path: String,
 }
 
 /// Configuration for server transport generation.
@@ -218,12 +216,6 @@ pub struct ServersConfig {
     pub store_import: Option<String>,
     /// Optional pagination for list operations.
     pub pagination: Option<servers::PaginationConfig>,
-}
-
-/// Configuration for client generation.
-pub struct ClientsConfig {
-    /// Which client generators to run.
-    pub generators: Vec<clients::ClientGeneratorConfig>,
 }
 
 /// Configuration for installing the admin layer into a Nuxt app.
