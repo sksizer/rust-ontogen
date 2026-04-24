@@ -1,0 +1,276 @@
+---
+title: Configuration
+description: Reference for all configuration types used by Ontogen generators.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Each generator function takes a config struct that controls its output paths and behavior. All config types are plain Rust structs with public fields -- no builder pattern, no defaults you need to worry about.
+
+## `SchemaConfig`
+
+Used by [`parse_schema()`](/reference/public-api/#parse_schema).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_dir` | `PathBuf` | Path to the directory containing your schema `.rs` files. Typically `"src/schema"`. |
+
+```rust
+SchemaConfig {
+    schema_dir: "src/schema".into(),
+}
+```
+
+All `.rs` files in this directory are scanned for structs with `#[derive(OntologyEntity)]`. Subdirectories are not traversed.
+
+---
+
+## `SeaOrmConfig`
+
+Used by [`gen_seaorm()`](/reference/public-api/#gen_seaorm).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entity_output` | `PathBuf` | Output directory for generated SeaORM entity modules. Each entity gets its own file, plus a `mod.rs`. |
+| `conversion_output` | `PathBuf` | Output directory for generated `from_model()` / `to_active_model()` conversion code. |
+| `skip_conversions` | `Vec<String>` | Entity names to skip when generating conversions. Use this if you write custom conversion logic for specific entities. |
+
+```rust
+SeaOrmConfig {
+    entity_output: "src/persistence/db/entities/generated".into(),
+    conversion_output: "src/persistence/db/conversions/generated".into(),
+    skip_conversions: vec![],
+}
+```
+
+<Aside type="tip">
+The `entity_output` and `conversion_output` directories are cleaned on each build. Stale files from renamed or deleted entities are removed automatically. Never put hand-written code in these directories.
+</Aside>
+
+---
+
+## `MarkdownIoConfig`
+
+Used by [`gen_markdown_io()`](/reference/public-api/#gen_markdown_io).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `output_dir` | `PathBuf` | Output directory for generated parser, writer, and filesystem operation modules. |
+
+```rust
+MarkdownIoConfig {
+    output_dir: "src/persistence/markdown".into(),
+}
+```
+
+---
+
+## `DtoConfig`
+
+Used by [`gen_dtos()`](/reference/public-api/#gen_dtos).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `output_dir` | `PathBuf` | Output directory for generated `CreateEntityInput` and `UpdateEntityInput` structs. |
+
+```rust
+DtoConfig {
+    output_dir: "src/schema/dto".into(),
+}
+```
+
+Generated DTOs include `Deserialize`, `JsonSchema`, and `specta::Type` derives for use across transport layers.
+
+---
+
+## `StoreConfig`
+
+Used by [`gen_store()`](/reference/public-api/#gen_store).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `output_dir` | `PathBuf` | Output directory for generated CRUD method modules. Each entity gets its own file. |
+| `hooks_dir` | `Option<PathBuf>` | Directory for scaffolded hook files. When `Some`, hook files are created once per entity and never overwritten. When `None`, hook scaffolding is skipped entirely. |
+
+```rust
+StoreConfig {
+    output_dir: "src/store/generated".into(),
+    hooks_dir: Some("src/store/hooks".into()),
+}
+```
+
+When `hooks_dir` is `None`, the generated CRUD code still compiles -- but it expects your consuming crate to provide hook modules at the expected import paths. This is useful when you want full control over hook file organization.
+
+<Aside type="note">
+Hook files are scaffolded once and never touched again. If you delete a hook file, the next build will recreate it with empty function bodies. If you rename an entity, the old hook file stays (remove it manually) and a new one is scaffolded.
+</Aside>
+
+---
+
+## `ApiConfig`
+
+Used by [`gen_api()`](/reference/public-api/#gen_api).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `output_dir` | `PathBuf` | Output directory for generated CRUD API modules. |
+| `exclude` | `Vec<String>` | Entity names to skip. These entities won't get generated API modules. |
+| `scan_dirs` | `Vec<PathBuf>` | Directories to scan for hand-written API modules. Scanned functions are merged with generated CRUD into a unified `ApiOutput`. When empty, only generated modules are included. |
+| `state_type` | `String` | The `AppState` type name. Used when scanning hand-written modules to identify functions that take the global state. |
+| `store_type` | `Option<String>` | The `Store` type name. Functions whose first parameter matches this are treated as entity-scoped (they operate on a specific store instance rather than the global state). |
+
+```rust
+ApiConfig {
+    output_dir: "src/api/v1/generated".into(),
+    exclude: vec![],
+    scan_dirs: vec!["src/api/v1".into()],
+    state_type: "AppState".to_string(),
+    store_type: Some("Store".to_string()),
+}
+```
+
+### How scanning works
+
+When `scan_dirs` is non-empty, `gen_api` parses every `.rs` file in those directories (excluding `generated/` subdirectories) with `syn`. It extracts:
+
+- Function name and doc comment
+- Parameter names and types
+- Return type
+- The first parameter type to determine if it's `AppState`-scoped or `Store`-scoped
+
+Scanned functions are classified by their name pattern and parameter shape into `OpKind` values (List, GetById, Create, Update, Delete, CustomGet, CustomPost, EventStream). This classification drives HTTP verb and route selection in the server transport generators.
+
+---
+
+## `ServersConfig`
+
+Used by [`gen_servers()`](/reference/public-api/#gen_servers).
+
+This is the largest config type because it controls multiple transport generators simultaneously.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `api_dir` | `PathBuf` | Directory to scan for API source files when not using `ApiOutput`. |
+| `state_type` | `String` | The `AppState` type name for route handlers (e.g., `"AppState"`). |
+| `service_import_path` | `String` | Import path for service modules from the consuming crate (e.g., `"crate::api::v1"`). |
+| `types_import_path` | `String` | Import path for schema types (e.g., `"crate::schema"`). |
+| `state_import` | `String` | Import path for the state type (e.g., `"crate::AppState"`). |
+| `naming` | `NamingConfig` | Naming overrides for pluralization, singularization, and labels. |
+| `generators` | `Vec<ServerGeneratorConfig>` | Which server generators to run and their output paths. |
+| `client_generators` | `Vec<ClientGenerator>` | Which client generators to run (TypeScript transports, admin registry). |
+| `rustfmt_edition` | `String` | Rust edition for formatting generated Rust code (e.g., `"2021"`, `"2024"`). |
+| `sse_route_overrides` | `HashMap<String, String>` | Map from event function name to custom SSE route path. |
+| `ts_skip_commands` | `Vec<String>` | IPC command names to skip in TypeScript client generation. |
+| `route_prefix` | `Option<RoutePrefix>` | Optional route prefix for project-scoped routes. |
+| `store_type` | `Option<String>` | Store type for entity-scoped functions. |
+| `store_import` | `Option<String>` | Import path for the Store type. |
+| `pagination` | `Option<PaginationConfig>` | Pagination support for list operations. |
+
+### `NamingConfig`
+
+Controls how entity names are transformed for URLs, labels, and module names.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `plural_overrides` | `HashMap<String, String>` | Module name to plural form (e.g., `"evidence"` to `"evidence"`). |
+| `singular_overrides` | `HashMap<String, String>` | Module name to singular form. |
+| `label_overrides` | `HashMap<String, String>` | Module name to human label (e.g., `"work_session"` to `"Work Session"`). |
+| `plural_label_overrides` | `HashMap<String, String>` | Module name to human plural label. |
+
+Uses `cruet` for Rails-style inflection by default. Override maps take precedence.
+
+### `ServerGeneratorConfig` / `ServerGenerator`
+
+```rust
+pub enum ServerGenerator {
+    HttpAxum { output: PathBuf },
+    TauriIpc { output: PathBuf },
+    Mcp { output: PathBuf },
+}
+```
+
+| Variant | Output | Description |
+|---------|--------|-------------|
+| `HttpAxum` | Rust file | Axum route handlers with `entity_routes()` router constructor. |
+| `TauriIpc` | Rust file | `#[tauri::command]` handlers with `State` extraction and `specta` annotations. |
+| `Mcp` | Rust file | MCP tool definitions with JSON Schema parameters. |
+
+### `ClientGenerator`
+
+```rust
+pub enum ClientGenerator {
+    HttpTauriIpcSplit { output: PathBuf, bindings_path: PathBuf },
+    HttpTs { output: PathBuf, bindings_path: PathBuf },
+    AdminRegistry { output: PathBuf },
+}
+```
+
+| Variant | Output | Description |
+|---------|--------|-------------|
+| `HttpTauriIpcSplit` | TypeScript file | Unified client that uses HTTP in browsers and Tauri IPC in desktop apps. |
+| `HttpTs` | TypeScript file | HTTP-only TypeScript client. |
+| `AdminRegistry` | TypeScript file | Entity metadata for admin UI components. |
+
+### `RoutePrefix`
+
+Optional prefix for project-scoped routes (e.g., `/api/projects/:project_id/nodes`).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `segments` | `String` | Path segments to insert (e.g., `"projects/:project_id"`). |
+| `state_accessor` | `String` | State method for validation (e.g., `"store_for"` produces `state.store_for(&project_id)?`). |
+| `params` | `Vec<PrefixParam>` | Parameters extracted from segments. |
+
+### `PrefixParam`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `String` | Parameter name (e.g., `"project_id"`). |
+| `rust_type` | `String` | Rust type (e.g., `"uuid::Uuid"`). |
+| `ts_type` | `String` | TypeScript type (e.g., `"string"`). |
+
+### `PaginationConfig`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `default_limit` | `u32` | Default page size when `limit` is not specified in the request. |
+| `max_limit` | `u32` | Maximum allowed page size. Requests above this are clamped. |
+
+---
+
+## `ClientsConfig`
+
+Used by [`gen_clients()`](/reference/public-api/#gen_clients).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `generators` | `Vec<ClientGeneratorConfig>` | Which client generators to run. Uses the same `ClientGenerator` variants described in `ServersConfig`. |
+
+```rust
+ClientsConfig {
+    generators: vec![
+        ClientGeneratorConfig::HttpTauriIpcSplit {
+            output: "../src-nuxt/app/generated/transport.ts".into(),
+            bindings_path: "../src-nuxt/app/generated/types.ts".into(),
+        },
+    ],
+}
+```
+
+---
+
+## `AdminLayerConfig`
+
+Used by [`install_admin_layer()`](/reference/public-api/#install_admin_layer).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `nuxt_config` | `PathBuf` | Path to the Nuxt app's `nuxt.config.ts`. |
+| `layer_path` | `String` | Relative path from the nuxt config to the admin layer package. |
+
+```rust
+AdminLayerConfig {
+    nuxt_config: "../src-nuxt/nuxt.config.ts".into(),
+    layer_path: "../crates/ontogen/packages/nuxt_admin_layer".to_string(),
+}
+```

@@ -46,6 +46,9 @@ pub use ontogen_core::model;
 pub use ontogen_core::naming;
 pub use ontogen_core::utils;
 
+// Re-export the derive macro so users only need `ontogen` in their Cargo.toml.
+pub use ontogen_macros::OntologyEntity;
+
 // Re-export key types for ergonomic use in build.rs
 pub use ontogen_core::CodegenError;
 pub use ontogen_core::ir::*;

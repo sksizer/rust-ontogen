@@ -335,16 +335,16 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str) {
     code.push_str("        child_id: &str,\n");
     code.push_str("        parent_id: Option<&str>,\n");
     code.push_str("    ) -> Result<(), AppError> {\n");
-    code.push_str("        use sea_orm::ConnectionTrait;\n");
-    code.push_str("        let parent_val = parent_id.map_or_else(\n");
-    code.push_str("            || \"NULL\".to_string(),\n");
-    code.push_str("            |p| format!(\"'{}'\", p.replace('\\'', \"''\")),\n");
-    code.push_str("        );\n");
-    code.push_str("        let stmt = sea_orm::Statement::from_string(\n");
+    code.push_str("        use sea_orm::{ConnectionTrait, Value};\n");
+    code.push_str("        let stmt = sea_orm::Statement::from_sql_and_values(\n");
     code.push_str("            sea_orm::DatabaseBackend::Sqlite,\n");
-    code.push_str(&format!(
-        "            format!(\n                \"UPDATE {table} SET {fk} = {{parent_val}} WHERE id = '{{}}'\",\n                child_id.replace('\\'', \"''\")\n            ),\n"
-    ));
+    code.push_str(&format!("            \"UPDATE {table} SET {fk} = ? WHERE id = ?\",\n"));
+    code.push_str("            [\n");
+    code.push_str("                parent_id\n");
+    code.push_str("                    .map(|p| Value::from(p.to_string()))\n");
+    code.push_str("                    .unwrap_or(Value::String(None)),\n");
+    code.push_str("                Value::from(child_id.to_string()),\n");
+    code.push_str("            ],\n");
     code.push_str("        );\n");
     code.push_str("        self.db()\n");
     code.push_str("            .execute_raw(stmt)\n");

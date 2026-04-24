@@ -197,6 +197,7 @@ dependencies = [
  "cruet",
  "insta",
  "ontogen-core",
+ "ontogen-macros",
  "quote",
  "syn",
  "tempfile",

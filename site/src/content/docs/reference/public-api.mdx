@@ -1,0 +1,352 @@
+---
+title: Public API
+description: Complete reference for all public functions in the ontogen crate.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every generator in Ontogen is a standalone function. You call them from `build.rs`, pass configuration, and get back a typed result. No builder pattern, no framework context, no trait implementations.
+
+The functions are listed here in pipeline order -- each one's output can feed the next.
+
+## `parse_schema`
+
+```rust
+pub fn parse_schema(config: &SchemaConfig) -> Result<SchemaOutput, CodegenError>
+```
+
+Reads `.rs` files from your schema directory, finds structs annotated with `#[derive(OntologyEntity)]` and `#[ontology(entity, ...)]`, and parses them into `EntityDef` metadata using `syn`.
+
+This is always the starting point. Every other generator needs the entity list that comes out of this.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `config` | `&SchemaConfig` | Points to the directory containing your schema `.rs` files. |
+
+**Returns:** `SchemaOutput` containing `entities: Vec<EntityDef>`.
+
+**Side effects:** Emits `cargo:rerun-if-changed` directives for every `.rs` file in the schema directory. When you edit an entity, Cargo re-runs `build.rs` automatically.
+
+```rust
+let schema = parse_schema(&SchemaConfig {
+    schema_dir: "src/schema".into(),
+})?;
+// schema.entities is now available for all downstream generators
+```
+
+---
+
+## `gen_seaorm`
+
+```rust
+pub fn gen_seaorm(
+    entities: &[EntityDef],
+    config: &SeaOrmConfig,
+) -> Result<SeaOrmOutput, CodegenError>
+```
+
+Generates SeaORM persistence code from your entity definitions:
+
+- **Entity modules** -- table models with typed columns and `#[sea_orm(...)]` attributes.
+- **Relation enums** -- `BelongsTo`, `HasMany`, and `Related` implementations for cross-entity navigation.
+- **Junction tables** -- full SeaORM entities for many-to-many relationships.
+- **Conversion functions** -- `from_model()` and `to_active_model()` methods on your schema types.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `entities` | `&[EntityDef]` | Entity definitions from `parse_schema`. |
+| `config` | `&SeaOrmConfig` | Output paths for entities and conversions. |
+
+**Returns:** `SeaOrmOutput` with metadata about generated tables, junction tables, and conversion functions. Downstream generators (especially `gen_store`) use this to produce exact table and column references rather than guessing from conventions.
+
+```rust
+let seaorm = gen_seaorm(&schema.entities, &SeaOrmConfig {
+    entity_output: "src/persistence/db/entities/generated".into(),
+    conversion_output: "src/persistence/db/conversions/generated".into(),
+    skip_conversions: vec![],
+})?;
+```
+
+---
+
+## `gen_markdown_io`
+
+```rust
+pub fn gen_markdown_io(
+    entities: &[EntityDef],
+    config: &MarkdownIoConfig,
+) -> Result<(), CodegenError>
+```
+
+Generates Markdown I/O code for content-as-code workflows:
+
+- **Parser dispatch** -- reads a Markdown file, extracts YAML frontmatter, and deserializes it into your schema type.
+- **Writers** -- serialize your schema type back to Markdown with YAML frontmatter.
+- **Filesystem operations** -- read/write entities as Markdown files on disk, with directory-based organization.
+
+This generator is a sibling of `gen_seaorm` -- it consumes `SchemaOutput` independently and produces no output struct. Use it when your entities live in Markdown files (wikis, knowledge bases, content repos) rather than (or in addition to) a database.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `entities` | `&[EntityDef]` | Entity definitions from `parse_schema`. |
+| `config` | `&MarkdownIoConfig` | Output directory for generated code. |
+
+**Returns:** `()`. This generator only writes files; it produces no IR for downstream consumption.
+
+```rust
+gen_markdown_io(&schema.entities, &MarkdownIoConfig {
+    output_dir: "src/persistence/markdown".into(),
+})?;
+```
+
+---
+
+## `gen_dtos`
+
+```rust
+pub fn gen_dtos(
+    entities: &[EntityDef],
+    config: &DtoConfig,
+) -> Result<(), CodegenError>
+```
+
+Generates `CreateEntityInput` and `UpdateEntityInput` structs -- the input types for create and update operations.
+
+For each entity, you get:
+- `CreateEntityInput` -- all fields except `id` (if auto-generated). Required fields are required; optional fields are `Option`.
+- `UpdateEntityInput` -- all non-ID fields wrapped in `Option`. Only provided fields are applied on update.
+
+<Aside type="tip">
+`gen_store` calls DTO generation internally. You only need `gen_dtos` standalone if you want input types without a full store layer -- for example, if you're building a custom persistence backend.
+</Aside>
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `entities` | `&[EntityDef]` | Entity definitions from `parse_schema`. |
+| `config` | `&DtoConfig` | Output directory for generated DTO files. |
+
+**Returns:** `()`. Writes files only.
+
+```rust
+gen_dtos(&schema.entities, &DtoConfig {
+    output_dir: "src/schema/dto".into(),
+})?;
+```
+
+---
+
+## `gen_store`
+
+```rust
+pub fn gen_store(
+    entities: &[EntityDef],
+    seaorm: Option<&SeaOrmOutput>,
+    config: &StoreConfig,
+) -> Result<StoreOutput, CodegenError>
+```
+
+Generates the CRUD store layer:
+
+- **CRUD methods** -- `list_*()`, `get_*()`, `create_*()`, `update_*()`, `delete_*()` as `impl Store` blocks.
+- **`EntityUpdate` structs** -- partial update types with `apply()` methods that patch only provided fields.
+- **`From` implementations** -- conversions from DTOs to entity types and update types.
+- **Relation population** -- `populate_*_relations()` helpers that load junction table data after fetching.
+- **Lifecycle hook call sites** -- generated CRUD methods call `hooks::before_create()`, `hooks::after_update()`, etc. at the right points.
+- **Hook scaffolding** -- creates `hooks/entity_name.rs` files once per entity, with empty hook function bodies you fill in. These files are never overwritten.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `entities` | `&[EntityDef]` | Entity definitions from `parse_schema`. |
+| `seaorm` | `Option<&SeaOrmOutput>` | When provided, uses exact table/column names. When `None`, falls back to naming conventions. |
+| `config` | `&StoreConfig` | Output directory and optional hooks directory. |
+
+**Returns:** `StoreOutput` with metadata about generated methods, scaffolded hooks, and change channels.
+
+```rust
+let store = gen_store(&schema.entities, Some(&seaorm), &StoreConfig {
+    output_dir: "src/store/generated".into(),
+    hooks_dir: Some("src/store/hooks".into()),
+})?;
+```
+
+<Aside type="note">
+The `seaorm` parameter is `Option` by design. When you provide it, the store generator uses structured metadata for exact table names, column names, and junction table references. When you skip it, it derives these from entity naming conventions. Either way works -- the structured metadata just makes the output more precise.
+</Aside>
+
+---
+
+## `gen_api`
+
+```rust
+pub fn gen_api(
+    entities: &[EntityDef],
+    config: &ApiConfig,
+) -> Result<ApiOutput, CodegenError>
+```
+
+Generates the API forwarding layer and scans for hand-written endpoints:
+
+- **Generated CRUD modules** -- per-entity modules with `list()`, `get_by_id()`, `create()`, `update()`, `delete()` functions that forward to store methods.
+- **Scanned custom modules** -- parses hand-written `.rs` files in `scan_dirs` using `syn`, extracting function signatures and doc comments.
+- **Unified API surface** -- merges generated and scanned functions into a single `ApiOutput`. Downstream generators see no difference between generated and custom endpoints.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `entities` | `&[EntityDef]` | Entity definitions from `parse_schema`. |
+| `config` | `&ApiConfig` | Output directory, exclusions, scan directories, and state type names. |
+
+**Returns:** `ApiOutput` with all API modules (generated + scanned). Each module contains function metadata with signatures, doc comments, source origin, and classified operation kind.
+
+```rust
+let api = gen_api(&schema.entities, &ApiConfig {
+    output_dir: "src/api/v1/generated".into(),
+    exclude: vec![],
+    scan_dirs: vec!["src/api/v1".into()],
+    state_type: "AppState".to_string(),
+    store_type: Some("Store".to_string()),
+})?;
+```
+
+---
+
+## `gen_servers`
+
+```rust
+pub fn gen_servers(
+    api: Option<&ApiOutput>,
+    scan_dirs: &[PathBuf],
+    config: &ServersConfig,
+) -> Result<ServersOutput, CodegenError>
+```
+
+Generates transport-specific server handlers from the unified API surface:
+
+- **Axum HTTP handlers** -- route functions with `GET`/`POST`/`PUT`/`DELETE` methods, path extraction, JSON request/response bodies, and error mapping. Includes an `entity_routes()` function returning a configured `Router`.
+- **Tauri IPC commands** -- `#[tauri::command]` functions with `State` extraction and `specta` type annotations for TypeScript binding generation.
+- **MCP tool definitions** -- tool name, description (from doc comments), and JSON Schema parameter definitions for the Model Context Protocol.
+
+Each transport reads the same `ApiOutput` and produces handlers appropriate for its protocol. The `OpKind` classification drives HTTP verb selection, route structure, and parameter handling.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api` | `Option<&ApiOutput>` | Structured API metadata. When `None`, falls back to scanning source files with `syn`. |
+| `scan_dirs` | `&[PathBuf]` | Additional directories to scan when `api` is `None`. |
+| `config` | `&ServersConfig` | Transport configuration -- which generators to run, import paths, naming, route prefixes, etc. |
+
+**Returns:** `ServersOutput` describing all generated HTTP routes, IPC commands, and MCP tools. Client generators use this to mirror the server surface exactly.
+
+```rust
+let servers = gen_servers(Some(&api), &[], &ServersConfig {
+    api_dir: "src/api/v1".into(),
+    state_type: "AppState".to_string(),
+    service_import_path: "crate::api::v1".to_string(),
+    types_import_path: "crate::schema".to_string(),
+    state_import: "crate::AppState".to_string(),
+    naming: NamingConfig::default(),
+    generators: vec![
+        ServerGeneratorConfig::HttpAxum {
+            output: "src/api/transport/http/generated.rs".into(),
+        },
+        ServerGeneratorConfig::TauriIpc {
+            output: "src/api/transport/ipc/generated.rs".into(),
+        },
+    ],
+    // ... other config fields
+})?;
+```
+
+---
+
+## `gen_clients`
+
+```rust
+pub fn gen_clients(
+    servers: &ServersOutput,
+    api: Option<&ApiOutput>,
+    config: &ClientsConfig,
+) -> Result<(), CodegenError>
+```
+
+Generates client-side code that mirrors the server transport surface:
+
+- **HTTP + Tauri IPC split transport** -- a TypeScript module that provides the same function signatures regardless of whether the app is running as a web app (HTTP) or a Tauri desktop app (IPC). The right backend is selected at runtime.
+- **HTTP-only TypeScript client** -- for web-only deployments.
+- **Admin registry** -- TypeScript metadata about each entity (fields, types, relations) for building admin UIs.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `servers` | `&ServersOutput` | Server transport metadata -- routes, commands, tools. |
+| `api` | `Option<&ApiOutput>` | API metadata for richer type information in clients. |
+| `config` | `&ClientsConfig` | Which client generators to run. |
+
+**Returns:** `()`. Writes TypeScript files only.
+
+```rust
+gen_clients(&servers, Some(&api), &ClientsConfig {
+    generators: vec![
+        ClientGeneratorConfig::HttpTauriIpcSplit {
+            output: "../src-nuxt/app/generated/transport.ts".into(),
+            bindings_path: "../src-nuxt/app/generated/types.ts".into(),
+        },
+        ClientGeneratorConfig::AdminRegistry {
+            output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
+        },
+    ],
+})?;
+```
+
+---
+
+## `install_admin_layer`
+
+```rust
+pub fn install_admin_layer(config: &AdminLayerConfig) -> Result<(), CodegenError>
+```
+
+A utility function (not a generator) that patches a Nuxt `nuxt.config.ts` to include the Ontogen admin layer. Idempotent -- safe to call on every build.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `config` | `&AdminLayerConfig` | Path to `nuxt.config.ts` and the relative path to the admin layer package. |
+
+```rust
+install_admin_layer(&AdminLayerConfig {
+    nuxt_config: "../src-nuxt/nuxt.config.ts".into(),
+    layer_path: "../crates/ontogen/packages/nuxt_admin_layer".to_string(),
+})?;
+```
+
+---
+
+## Error handling
+
+All generators return `Result<T, CodegenError>`. In `build.rs`, you typically handle errors with a helper that emits a `cargo:warning` before panicking:
+
+```rust
+fn unwrap_codegen<T>(result: Result<T, CodegenError>, stage: &str) -> T {
+    result.unwrap_or_else(|e| {
+        e.emit_cargo_warning();
+        panic!("{stage}: {e}");
+    })
+}
+```
+
+`CodegenError::emit_cargo_warning()` prints the error as a `cargo:warning=ontogen:` line so it appears clearly in your build output rather than buried in a backtrace.
