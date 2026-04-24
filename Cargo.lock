@@ -175,9 +175,6 @@ dependencies = [
 [[package]]
 name = "ontogen-core"
 version = "0.1.0"
-dependencies = [
- "cruet",
-]
 
 [[package]]
 name = "ontogen-macros"
