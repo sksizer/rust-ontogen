@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::Path;
 
-use syn::{Attribute, DeriveInput, Expr, Field, Fields, Lit, Meta, Type};
+use syn::{Attribute, Expr, Field, Fields, ItemStruct, Lit, Meta, Type};
 
 use ontogen_core::naming::to_snake_case;
 
@@ -40,15 +40,11 @@ pub fn parse_schema_source(source: &str, path: &Path) -> Result<Vec<EntityDef>, 
     let mut entities = Vec::new();
 
     for item in &syntax.items {
-        if let syn::Item::Struct(item_struct) = item {
-            let derive_input: DeriveInput = syn::parse2(quote::quote! { #item_struct })
-                .map_err(|e| format!("Failed to parse struct in {}: {e}", path.display()))?;
-
-            if has_ontology_entity_derive(&derive_input)
-                && let Some(entity) = parse_entity_struct(&derive_input, path)?
-            {
-                entities.push(entity);
-            }
+        if let syn::Item::Struct(item_struct) = item
+            && has_ontology_entity_derive(&item_struct.attrs)
+            && let Some(entity) = parse_entity_struct(item_struct, path)?
+        {
+            entities.push(entity);
         }
     }
 
@@ -56,8 +52,8 @@ pub fn parse_schema_source(source: &str, path: &Path) -> Result<Vec<EntityDef>, 
 }
 
 /// Check if a struct has `#[derive(OntologyEntity)]`.
-fn has_ontology_entity_derive(input: &DeriveInput) -> bool {
-    input.attrs.iter().any(|attr| {
+fn has_ontology_entity_derive(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
         if !attr.path().is_ident("derive") {
             return false;
         }
@@ -71,20 +67,17 @@ fn has_ontology_entity_derive(input: &DeriveInput) -> bool {
 }
 
 /// Parse a struct with `#[ontology(entity, ...)]` into an `EntityDef`.
-fn parse_entity_struct(input: &DeriveInput, path: &Path) -> Result<Option<EntityDef>, String> {
+fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityDef>, String> {
     let struct_attrs = parse_struct_ontology_attrs(&input.attrs);
     let Some(struct_attrs) = struct_attrs else {
         return Ok(None); // No #[ontology(entity, ...)] on this struct
     };
 
-    let fields = match &input.data {
-        syn::Data::Struct(data) => match &data.fields {
-            Fields::Named(named) => &named.named,
-            _ => {
-                return Err(format!("Struct {} in {} must have named fields", input.ident, path.display()));
-            }
-        },
-        _ => return Ok(None),
+    let fields = match &input.fields {
+        Fields::Named(named) => &named.named,
+        _ => {
+            return Err(format!("Struct {} in {} must have named fields", input.ident, path.display()));
+        }
     };
 
     let mut field_defs = Vec::new();
