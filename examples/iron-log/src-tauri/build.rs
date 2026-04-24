@@ -108,6 +108,7 @@ fn main() {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         schema_entities: schema.entities.clone(),
+        pagination: None,
     };
 
     ontogen::servers::generate_transport(&config)
