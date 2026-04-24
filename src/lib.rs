@@ -33,6 +33,9 @@ pub mod schema;
 pub mod servers;
 pub mod store;
 
+#[cfg(test)]
+mod snapshots;
+
 // Re-export ontogen-core as the canonical source for shared types.
 // Internal modules should import from `ontogen_core` directly.
 // External consumers can use `ontogen::` for everything.
