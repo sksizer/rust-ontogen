@@ -2,6 +2,8 @@
 name = "ontogen-macros"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+publish = false
 description = "Proc-macro attributes for ontogen entity annotation (#[derive(OntologyEntity)])"
 license = "MIT"
 repository = "https://github.com/sksizer/rust-ontogen"
