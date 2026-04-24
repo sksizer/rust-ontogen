@@ -9,6 +9,8 @@ use std::path::Path;
 
 use syn::{Attribute, DeriveInput, Expr, Field, Fields, Lit, Meta, Type};
 
+use ontogen_core::naming::to_snake_case;
+
 use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
 
 /// Parse all schema files in the given directory, returning entity definitions
@@ -66,22 +68,6 @@ fn has_ontology_entity_derive(input: &DeriveInput) -> bool {
         };
         nested.iter().any(|p| p.is_ident("OntologyEntity"))
     })
-}
-
-/// Convert a CamelCase name to snake_case.
-fn to_snake_case(name: &str) -> String {
-    let mut result = String::new();
-    for (i, ch) in name.chars().enumerate() {
-        if ch.is_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(ch.to_lowercase().next().unwrap());
-        } else {
-            result.push(ch);
-        }
-    }
-    result
 }
 
 /// Parse a struct with `#[ontology(entity, ...)]` into an `EntityDef`.
