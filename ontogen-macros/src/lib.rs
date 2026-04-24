@@ -3,6 +3,8 @@
 //! All actual interpretation of these attributes happens in `build.rs` via `syn`.
 //! This crate never contains logic — it just passes the annotated item through unchanged.
 
+#![forbid(unsafe_code)]
+
 use proc_macro::TokenStream;
 
 /// Derive macro that does nothing except make `#[ontology(...)]` attributes
