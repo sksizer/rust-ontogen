@@ -1,0 +1,512 @@
+---
+title: Your First Entity
+description: Define a complete entity with relationships and see everything Ontogen generates from it.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The [Quick Start](/getting-started/quick-start/) showed a standalone Task with no relationships. Real data models have foreign keys, one-to-many associations, and many-to-many junction tables. Let's build those out and run the full pipeline.
+
+## The data model
+
+We'll extend the Quick Start with three entities: an **Agent** that can be assigned to tasks, a **Requirement** that tasks can fulfill, and the **Task** itself connecting them.
+
+### Agent -- a simple entity
+
+```rust
+// src/schema/agent.rs
+use ontogen_macros::OntologyEntity;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, table = "agents")]
+pub struct Agent {
+    #[ontology(id)]
+    pub id: String,
+
+    pub name: String,
+
+    #[serde(default)]
+    pub email: Option<String>,
+
+    #[serde(default)]
+    #[ontology(body)]
+    pub body: String,
+}
+```
+
+The `#[ontology(body)]` field has a special role: it represents long-form content that lives outside the database row. In the Markdown I/O generator, this becomes the markdown body below the YAML frontmatter. In the SeaORM generator, it's a regular text column. You can have at most one body field per entity.
+
+### Requirement -- another simple entity
+
+```rust
+// src/schema/requirement.rs
+use ontogen_macros::OntologyEntity;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, table = "requirements")]
+pub struct Requirement {
+    #[ontology(id)]
+    pub id: String,
+
+    pub title: String,
+
+    #[ontology(enum_field)]
+    pub priority: Option<Priority>,
+
+    #[serde(default)]
+    #[ontology(body)]
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Priority {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+```
+
+### Task -- with relationships
+
+Now the interesting part. The Task entity has a `belongs_to` relationship to Agent and a `many_to_many` relationship to Requirement:
+
+```rust
+// src/schema/task.rs
+use ontogen_macros::OntologyEntity;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, table = "tasks")]
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,
+
+    pub name: String,
+
+    #[serde(default)]
+    pub description: Option<String>,
+
+    #[ontology(enum_field)]
+    pub status: Option<TaskStatus>,
+
+    #[serde(default)]
+    #[ontology(relation(belongs_to, target = "Agent"))]
+    pub assignee_id: Option<String>,
+
+    #[serde(default)]
+    #[ontology(relation(many_to_many, target = "Requirement"))]
+    pub fulfills: Vec<String>,
+
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TaskStatus {
+    Todo,
+    InProgress,
+    Done,
+}
+```
+
+And update the schema module:
+
+```rust
+// src/schema/mod.rs
+mod agent;
+mod requirement;
+mod task;
+
+pub use agent::Agent;
+pub use requirement::{Requirement, Priority};
+pub use task::{Task, TaskStatus};
+```
+
+## Annotation reference
+
+Here's what each annotation does:
+
+### Struct-level: `#[ontology(entity, ...)]`
+
+The `entity` keyword is required. Everything else is optional:
+
+| Attribute   | Default                     | Purpose                                          |
+|-------------|------------------------------|--------------------------------------------------|
+| `table`     | snake_case of struct name    | SeaORM table name                               |
+| `directory` | snake_case of struct name    | Subdirectory for markdown files                  |
+| `prefix`    | snake_case of struct name    | ID prefix for generated IDs                     |
+| `type_name` | snake_case of struct name    | The `type:` value in markdown frontmatter YAML   |
+
+Most of the time the defaults are fine. Override when your table name is plural (`tasks` vs `task`) or when you need a custom prefix.
+
+### Field-level annotations
+
+| Annotation                                              | Field type            | Meaning                                                                     |
+|---------------------------------------------------------|-----------------------|-----------------------------------------------------------------------------|
+| `#[ontology(id)]`                                       | `String`              | Primary key. Every entity needs exactly one.                               |
+| `#[ontology(body)]`                                     | `String`              | Long-form content. At most one per entity.                                 |
+| `#[ontology(enum_field)]`                               | `Option<YourEnum>`    | Stored as text in DB, converted via `to_string()`/`parse()`.              |
+| `#[ontology(relation(belongs_to, target = "Entity"))]`  | `Option<String>` or `String` | Foreign key column pointing to the target entity.                   |
+| `#[ontology(relation(has_many, target = "E", foreign_key = "fk"))]` | `Vec<String>` | Reverse of a `belongs_to` on the target. No junction table needed.    |
+| `#[ontology(relation(many_to_many, target = "Entity"))]` | `Vec<String>`       | Junction table auto-generated. Override with `junction = "table_name"`.   |
+| `#[ontology(skip)]`                                     | any                   | Excluded from all codegen. Use for fields you manage manually.             |
+| _(no annotation)_                                       | any                   | Plain data field. `Vec<String>` stored as JSON, others as columns.         |
+
+The `#[serde(default)]` attribute isn't an Ontogen annotation, but Ontogen reads it. Fields with `serde(default)` get appropriate default handling in the generated conversion and DTO code.
+
+## The full pipeline
+
+Let's wire up every generator. Here's the complete `build.rs`:
+
+```rust
+// build.rs
+use ontogen::CodegenError;
+
+fn unwrap_codegen<T>(result: Result<T, CodegenError>, stage: &str) -> T {
+    result.unwrap_or_else(|e| {
+        e.emit_cargo_warning();
+        panic!("{stage}: {e}");
+    })
+}
+
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+
+    // Stage 1: Parse schema
+    let schema = unwrap_codegen(
+        ontogen::parse_schema(&ontogen::SchemaConfig {
+            schema_dir: "src/schema".into(),
+        }),
+        "parse schema",
+    );
+
+    // Stage 2: Generate SeaORM entities + conversions
+    let seaorm = unwrap_codegen(
+        ontogen::gen_seaorm(
+            &schema.entities,
+            &ontogen::SeaOrmConfig {
+                entity_output: "src/persistence/db/entities/generated".into(),
+                conversion_output: "src/persistence/db/conversions/generated".into(),
+                skip_conversions: vec![],
+            },
+        ),
+        "generate SeaORM entities",
+    );
+
+    // Stage 3: Generate Store layer (CRUD + hooks)
+    let _store = unwrap_codegen(
+        ontogen::gen_store(
+            &schema.entities,
+            Some(&seaorm),
+            &ontogen::StoreConfig {
+                output_dir: "src/store/generated".into(),
+                hooks_dir: Some("src/store/hooks".into()),
+            },
+        ),
+        "generate store",
+    );
+
+    // Stage 4: Generate API layer
+    let api = unwrap_codegen(
+        ontogen::gen_api(
+            &schema.entities,
+            &ontogen::ApiConfig {
+                output_dir: "src/api/v1/generated".into(),
+                exclude: vec![],
+                scan_dirs: vec![],
+                state_type: "AppState".to_string(),
+                store_type: Some("Store".to_string()),
+            },
+        ),
+        "generate API",
+    );
+
+    // Stage 5: Generate server transports
+    let _servers = unwrap_codegen(
+        ontogen::gen_servers(
+            Some(&api),
+            &[],
+            &ontogen::ServersConfig {
+                api_dir: "src/api/v1".into(),
+                state_type: "AppState".to_string(),
+                service_import_path: "crate::api::v1".to_string(),
+                types_import_path: "crate::schema".to_string(),
+                state_import: "crate::AppState".to_string(),
+                naming: Default::default(),
+                generators: vec![],  // add HttpAxum, TauriIpc, etc. here
+                client_generators: vec![],
+                rustfmt_edition: "2021".to_string(),
+                sse_route_overrides: Default::default(),
+                ts_skip_commands: vec![],
+                route_prefix: None,
+                store_type: Some("Store".to_string()),
+                store_import: Some("crate::store::Store".to_string()),
+                pagination: None,
+            },
+        ),
+        "generate servers",
+    );
+}
+```
+
+<Aside type="tip">
+  Each stage's return value feeds into the next. `SchemaOutput` goes into `gen_seaorm` and `gen_store`. `SeaOrmOutput` enriches `gen_store` with exact table metadata. `ApiOutput` tells `gen_servers` what endpoints exist. The generators are independent functions -- you can call them in any order, or skip stages entirely -- but passing upstream outputs makes downstream generators smarter.
+</Aside>
+
+## What gets generated
+
+Run `cargo build` and look at what appeared. Here's a walkthrough of what each stage produces for our Task entity.
+
+### SeaORM entity (Stage 2)
+
+The `task.rs` entity gets a relation enum that reflects the `belongs_to` and `many_to_many` annotations:
+
+```rust
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::agent::Entity",
+        from = "Column::AssigneeId",
+        to = "super::agent::Column::Id"
+    )]
+    Agent,
+    #[sea_orm(has_many = "super::task_fulfills.Entity")]
+    FulfillsLink,
+}
+```
+
+For the `many_to_many` relation on `fulfills`, Ontogen generates a junction table entity at `task_fulfills.rs` (or `task_requirements.rs` -- the exact name is derived from the entity and field names):
+
+```rust
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+#[sea_orm(table_name = "task_fulfills")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i32,
+    pub task_id: String,
+    pub requirement_id: String,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(belongs_to = "super::task::Entity", from = "Column::TaskId", to = "super::task::Column::Id")]
+    Task,
+    #[sea_orm(belongs_to = "super::requirement::Entity", from = "Column::RequirementId", to = "super::requirement::Column::Id")]
+    Requirement,
+}
+```
+
+The conversion layer generates `from_model` that initializes the `fulfills` vec as empty (populated later by the store), and `to_active_model` that skips relationship fields since they live in junction tables, not columns.
+
+<Aside type="note">
+  If you need to control the junction table name, use `junction = "my_table_name"` in the relation annotation:
+  ```rust
+  #[ontology(relation(many_to_many, target = "Requirement", junction = "task_reqs"))]
+  pub fulfills: Vec<String>,
+  ```
+</Aside>
+
+### Store methods (Stage 3)
+
+The generated `create_task` method handles junction table sync automatically:
+
+```rust
+pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
+    hooks::before_create(self, &mut task).await?;
+
+    let id = task.id.clone();
+    let fulfills = task.fulfills.clone();
+    let active = task.to_active_model();
+
+    active.insert(self.db()).await
+        .map_err(|e| AppError::DbError(e.to_string()))?;
+
+    // Sync the many-to-many junction table
+    self.sync_junction(
+        "task_fulfills", "task_id", "requirement_id", &id, &fulfills
+    ).await?;
+
+    let created = self.get_task(&id).await?;
+    hooks::after_create(self, &created).await?;
+    Ok(created)
+}
+```
+
+The `update_task` method only syncs junction tables when the relation field actually changed:
+
+```rust
+pub async fn update_task(&self, id: &str, updates: TaskUpdate) -> Result<Task, AppError> {
+    // ... fetch existing, call before_update hook ...
+
+    let fulfills_changed = updates.fulfills.is_some();
+    updates.apply(&mut current);
+
+    let active = current.to_active_model();
+    active.update(self.db()).await
+        .map_err(|e| AppError::DbError(e.to_string()))?;
+
+    if fulfills_changed {
+        self.sync_junction(
+            "task_fulfills", "task_id", "requirement_id", id, &current.fulfills
+        ).await?;
+    }
+
+    // ... call after_update hook, return result ...
+}
+```
+
+And `populate_task_relations` loads junction IDs back when reading:
+
+```rust
+pub(crate) async fn populate_task_relations(
+    &self,
+    task: &mut Task,
+) -> Result<(), AppError> {
+    task.fulfills = self.load_junction_ids(
+        "task_fulfills", "task_id", "requirement_id", &task.id
+    ).await?;
+    Ok(())
+}
+```
+
+Every `list_tasks` and `get_task` call runs `populate_task_relations` so you always get the full entity back, relations included.
+
+### API layer (Stage 4)
+
+The API layer generates thin forwarding functions:
+
+```rust
+//! Generated by ontogen. DO NOT EDIT.
+
+/// List all tasks
+pub async fn list(store: &Store) -> Result<Vec<Task>, AppError> {
+    store.list_tasks().await
+}
+
+/// Get a single task by ID
+pub async fn get_by_id(store: &Store, id: &str) -> Result<Task, AppError> {
+    store.get_task(id).await
+}
+
+/// Create a new task
+pub async fn create(store: &Store, input: CreateTaskInput) -> Result<Task, AppError> {
+    let task: Task = input.into();
+    store.create_task(task).await
+}
+
+/// Update an existing task
+pub async fn update(store: &Store, id: &str, input: UpdateTaskInput) -> Result<Task, AppError> {
+    let updates: TaskUpdate = input.into();
+    store.update_task(id, updates).await
+}
+
+/// Delete a task by ID
+pub async fn delete(store: &Store, id: &str) -> Result<(), AppError> {
+    store.delete_task(id).await
+}
+```
+
+These look trivial -- and they are. The API layer exists so that server transports (HTTP, IPC, MCP) have a uniform interface to call. Generated API modules sit in `src/api/v1/generated/`. You can add hand-written modules alongside them in `src/api/v1/` for custom endpoints. When you set `scan_dirs` in `ApiConfig`, Ontogen scans those directories and merges your custom modules into the `ApiOutput` alongside the generated ones. Downstream generators treat both identically.
+
+### Server transports (Stage 5)
+
+To generate actual HTTP handlers, add a server generator to the `generators` vec in your `ServersConfig`. For example, Axum HTTP:
+
+```rust
+use ontogen::servers::ServerGeneratorConfig;
+
+// In your ServersConfig:
+generators: vec![
+    ServerGeneratorConfig::HttpAxum {
+        output: "src/api/transport/http/generated.rs".into(),
+    },
+],
+```
+
+This produces Axum route handlers with proper routing:
+
+```rust
+pub fn entity_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/tasks", get(list_tasks).post(create_task))
+        .route("/tasks/:id", get(get_task).put(update_task).delete(delete_task))
+        .route("/agents", get(list_agents).post(create_agent))
+        .route("/agents/:id", get(get_agent).put(update_agent).delete(delete_agent))
+        .route("/requirements", get(list_requirements).post(create_requirement))
+        .route("/requirements/:id", get(get_requirement).put(update_requirement).delete(delete_requirement))
+}
+```
+
+Each handler extracts path params, deserializes request bodies, calls the API function, and returns JSON responses with proper error mapping. One function, `entity_routes()`, that you mount in your Axum router and you're done.
+
+## The generated file tree
+
+After running the full pipeline with three entities, your project has gained:
+
+```
+src/
+  persistence/db/entities/generated/
+    mod.rs
+    agent.rs
+    requirement.rs
+    task.rs
+    task_fulfills.rs          # junction table
+  persistence/db/conversions/generated/
+    mod.rs
+    agent.rs
+    requirement.rs
+    task.rs
+  store/generated/
+    mod.rs
+    agent.rs
+    requirement.rs
+    task.rs
+  store/hooks/
+    mod.rs
+    agent.rs                  # scaffolded, yours to edit
+    requirement.rs            # scaffolded, yours to edit
+    task.rs                   # scaffolded, yours to edit
+  api/v1/generated/
+    mod.rs
+    agent.rs
+    requirement.rs
+    task.rs
+```
+
+Three entity definitions produced 18 generated files, plus 3 hook files you own. Add a fourth entity and it's another 6 generated files and 1 hook file, with zero changes to any existing code.
+
+## Customizing the junction table name
+
+By default, Ontogen derives junction table names from the entity name and field name. If you need a specific name (for compatibility with an existing database, for example), use the `junction` attribute:
+
+```rust
+#[ontology(relation(many_to_many, target = "Requirement", junction = "task_reqs"))]
+pub fulfills: Vec<String>,
+```
+
+## Skipping fields
+
+Sometimes a struct field shouldn't participate in codegen at all. Maybe it's computed at runtime, or it's a nested struct you manage yourself:
+
+```rust
+#[ontology(skip)]
+pub computed_score: f64,
+
+#[ontology(skip)]
+pub acceptance_criteria: Vec<AcceptanceCriterion>,
+```
+
+Skipped fields are excluded from SeaORM entities, conversions, DTOs, store methods, and everything else. They exist only in your schema struct.
+
+## Where to go from here
+
+You've seen the full pipeline in action. From here, pick the guide that matches what you need:
+
+- **[Relationships](/guides/relationships/)** -- deep dive into `belongs_to`, `has_many`, `many_to_many`, self-referential relations, and junction table customization.
+- **[Lifecycle Hooks](/guides/lifecycle-hooks/)** -- add validation, timestamps, notifications, and side effects to your CRUD operations.
+- **[Server Transports](/guides/server-transports/)** -- generate Axum HTTP, Tauri IPC, and MCP tool handlers from your API surface.
+- **[Client Generation](/guides/client-generation/)** -- generate typed TypeScript client functions that match your server endpoints.
+- **[Markdown I/O](/guides/markdown-io/)** -- read and write entities as Markdown files with YAML frontmatter for content-as-code workflows.
+- **[Build Script Setup](/guides/build-script-setup/)** -- advanced `build.rs` patterns: conditional generators, rerun directives, formatting, and error handling.
