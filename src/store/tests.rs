@@ -21,7 +21,11 @@ mod tests {
         assert!(!entities.is_empty(), "Expected at least one entity from real schemas");
 
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config = StoreConfig { output_dir: tmp.path().to_path_buf(), hooks_dir: None };
+        let config = StoreConfig {
+            output_dir: tmp.path().to_path_buf(),
+            hooks_dir: None,
+            schema_module_path: "crate::schema".to_string(),
+        };
 
         let result = store::generate(&entities, None, &config);
         assert!(result.is_ok(), "gen_store failed: {:?}", result.err());
@@ -77,7 +81,11 @@ mod tests {
         let role = entities.iter().find(|e| e.name == "Role").expect("Role entity not found");
 
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config = StoreConfig { output_dir: tmp.path().to_path_buf(), hooks_dir: None };
+        let config = StoreConfig {
+            output_dir: tmp.path().to_path_buf(),
+            hooks_dir: None,
+            schema_module_path: "crate::schema".to_string(),
+        };
 
         store::generate(&[role.clone()], None, &config).expect("gen_store failed");
 
@@ -110,6 +118,44 @@ mod tests {
         assert!(content.contains("use crate::store::hooks::role as hooks;"), "Missing hooks import");
     }
 
+    /// Test that a non-default `schema_module_path` flows into generated store code.
+    #[test]
+    fn custom_schema_module_path_is_respected() {
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
+
+        if !schema_dir.exists() {
+            return;
+        }
+
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        let role = entities.iter().find(|e| e.name == "Role").expect("Role entity not found");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let hooks = tmp.path().join("hooks");
+        let config = StoreConfig {
+            output_dir: tmp.path().to_path_buf(),
+            hooks_dir: Some(hooks.clone()),
+            schema_module_path: "my_crate::domain".to_string(),
+        };
+
+        store::generate(&[role.clone()], None, &config).expect("gen_store failed");
+
+        let content = std::fs::read_to_string(tmp.path().join("role.rs")).unwrap();
+        assert!(content.contains("use my_crate::domain::Role;"), "Expected custom schema path import, got:\n{content}");
+        assert!(
+            content.contains("use my_crate::domain::{AppError, ChangeOp, EntityKind};"),
+            "Expected custom schema path for AppError/ChangeOp/EntityKind, got:\n{content}"
+        );
+        assert!(!content.contains("use crate::schema::Role;"), "Default schema path should not appear");
+
+        // Hook file should also use the custom path
+        let hook_content = std::fs::read_to_string(hooks.join("role.rs")).unwrap();
+        assert!(
+            hook_content.contains("use my_crate::domain::{Role, AppError};"),
+            "Expected custom schema path in hook file, got:\n{hook_content}"
+        );
+    }
+
     /// Test that Capability (complex entity with junctions) generates junction sync code.
     #[test]
     fn capability_has_junction_sync() {
@@ -123,7 +169,11 @@ mod tests {
         let cap = entities.iter().find(|e| e.name == "Capability").expect("Capability entity not found");
 
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config = StoreConfig { output_dir: tmp.path().to_path_buf(), hooks_dir: None };
+        let config = StoreConfig {
+            output_dir: tmp.path().to_path_buf(),
+            hooks_dir: None,
+            schema_module_path: "crate::schema".to_string(),
+        };
 
         store::generate(&[cap.clone()], None, &config).expect("gen_store failed");
 
