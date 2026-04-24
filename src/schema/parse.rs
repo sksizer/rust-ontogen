@@ -177,7 +177,7 @@ fn parse_field(field: &Field) -> Result<FieldDef, String> {
     let name = field.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
 
     let field_type = classify_type(&field.ty);
-    let ontology_attrs = parse_field_ontology_attrs(&field.attrs);
+    let ontology_attrs = parse_field_ontology_attrs(&field.attrs).map_err(|e| format!("field `{name}`: {e}"))?;
     let serde_default = has_serde_default(&field.attrs);
 
     Ok(FieldDef {
@@ -198,7 +198,7 @@ struct FieldOntologyAttrs {
 }
 
 /// Parse all `#[ontology(...)]` field-level attributes, collecting role and rendering hints.
-fn parse_field_ontology_attrs(attrs: &[Attribute]) -> FieldOntologyAttrs {
+fn parse_field_ontology_attrs(attrs: &[Attribute]) -> Result<FieldOntologyAttrs, String> {
     let mut result = FieldOntologyAttrs { role: FieldRole::Plain, multiline_list: false, default_value: None };
 
     for attr in attrs {
@@ -219,7 +219,7 @@ fn parse_field_ontology_attrs(attrs: &[Attribute]) -> FieldOntologyAttrs {
                 Meta::Path(p) if p.is_ident("skip") => result.role = FieldRole::Skip,
                 Meta::Path(p) if p.is_ident("multiline_list") => result.multiline_list = true,
                 Meta::List(list) if list.path.is_ident("relation") => {
-                    if let Some(info) = parse_relation_meta(list) {
+                    if let Some(info) = parse_relation_meta(list)? {
                         result.role = FieldRole::Relation(info);
                     }
                 }
@@ -231,7 +231,7 @@ fn parse_field_ontology_attrs(attrs: &[Attribute]) -> FieldOntologyAttrs {
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Parse `#[ontology(relation(kind, target = "...", ...))]` into a `RelationInfo`.
@@ -240,9 +240,9 @@ fn parse_field_ontology_attrs(attrs: &[Attribute]) -> FieldOntologyAttrs {
 /// - `belongs_to` — FK column on this table (many-to-one)
 /// - `has_many` — reverse of a belongs_to on the target (requires `foreign_key`)
 /// - `many_to_many` — junction table (optionally override with `junction`)
-fn parse_relation_meta(list: &syn::MetaList) -> Option<RelationInfo> {
+fn parse_relation_meta(list: &syn::MetaList) -> Result<Option<RelationInfo>, String> {
     let Ok(nested) = list.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated) else {
-        return None;
+        return Ok(None);
     };
 
     let mut kind_name = None;
@@ -254,7 +254,9 @@ fn parse_relation_meta(list: &syn::MetaList) -> Option<RelationInfo> {
         match meta {
             Meta::Path(p) if kind_name.is_none() => {
                 // First bare identifier is the relation kind
-                kind_name = Some(p.get_ident()?.to_string());
+                if let Some(ident) = p.get_ident() {
+                    kind_name = Some(ident.to_string());
+                }
             }
             Meta::NameValue(nv) if nv.path.is_ident("target") => {
                 target = expr_to_string(&nv.value);
@@ -269,20 +271,23 @@ fn parse_relation_meta(list: &syn::MetaList) -> Option<RelationInfo> {
         }
     }
 
-    let target = target?;
-    let kind_str = kind_name?;
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    let Some(kind_str) = kind_name else {
+        return Ok(None);
+    };
 
     let kind = match kind_str.as_str() {
         "belongs_to" => RelationKind::BelongsTo,
         "has_many" => RelationKind::HasMany,
         "many_to_many" => RelationKind::ManyToMany,
         other => {
-            // Unknown relation kind — treat as error at parse time
-            panic!("Unknown relation kind '{}'. Expected belongs_to, has_many, or many_to_many", other);
+            return Err(format!("Unknown relation kind '{other}'. Expected belongs_to, has_many, or many_to_many"));
         }
     };
 
-    Some(RelationInfo { kind, target, junction, foreign_key })
+    Ok(Some(RelationInfo { kind, target, junction, foreign_key }))
 }
 
 /// Check if a field has `#[serde(default)]`.
@@ -505,6 +510,30 @@ mod tests {
         // belongs_to_relations
         let belongs_to: Vec<_> = node.belongs_to_relations().collect();
         assert_eq!(belongs_to.len(), 1); // parent_id
+    }
+
+    #[test]
+    fn parse_unknown_relation_kind_returns_error() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Node {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(relation(unknown_kind, target = "Node"))]
+                pub parent_id: Option<String>,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let err = parse_schema_source(source, Path::new("test.rs")).unwrap_err();
+        assert!(err.contains("Unknown relation kind"), "expected error to mention 'Unknown relation kind', got: {err}");
+        assert!(err.contains("unknown_kind"), "expected error to mention the bad kind, got: {err}");
     }
 
     #[test]
