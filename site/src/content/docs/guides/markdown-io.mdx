@@ -1,0 +1,313 @@
+---
+title: Markdown I/O
+description: Reading and writing entities as Markdown files with YAML frontmatter.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+`gen_markdown_io` generates code for reading and writing your entities as Markdown files with YAML frontmatter. This is the foundation for content-as-code workflows: your data lives in version-controlled Markdown files that humans and tools can both edit, while your application treats them as typed entities.
+
+## The content-as-code concept
+
+Instead of a database being the sole source of truth, your entities exist as Markdown files in a directory tree:
+
+```
+.ontological/
+  tasks/
+    task-implement-auth.md
+    task-fix-sidebar.md
+  agents/
+    agent-backend-dev.md
+    agent-frontend-dev.md
+```
+
+Each file has YAML frontmatter for structured fields and a Markdown body for free-form content:
+
+```markdown
+---
+type: task
+id: task-implement-auth
+name: Implement authentication
+status: in_progress
+assignee_id: "[[agent-backend-dev]]"
+fulfills: ["[[req-security-001]]", "[[req-auth-flow]]"]
+---
+This task covers the OAuth2 implementation, including:
+
+- Token exchange flow
+- Refresh token rotation
+- Session management
+```
+
+Ontogen generates the code that reads these files into typed structs and writes structs back to files. You get bidirectional serialization with proper type handling, wikilink processing, and file management.
+
+## What gen_markdown_io generates
+
+The generator produces three categories of code in a single output directory:
+
+### 1. Writers
+
+For each entity, a `render_{entity}(entity: &Entity) -> String` function that serializes the entity to a YAML-frontmatter Markdown string.
+
+```rust
+// Generated: render_task(entity: &crate::schema::Task) -> String
+let markdown = render_task(&my_task);
+// Returns "---\ntype: task\nid: task-001\nname: ...\n---\nBody text here\n"
+```
+
+Writers handle:
+- **Type headers** -- every file starts with `type: {type_name}` in the frontmatter.
+- **ID fields** -- rendered as plain values.
+- **String fields** -- YAML-safe scalar quoting when the value contains special characters.
+- **Optional fields** -- skipped when `None`.
+- **Enum fields** -- converted to string representation via your conversion module.
+- **Relation fields** -- wrapped in wikilink syntax: `"[[agent-backend-dev]]"`.
+- **Vec fields** -- rendered as YAML inline sequences or block sequences depending on the `multiline_list` annotation.
+
+### 2. Parser dispatch
+
+A type-probing parser that reads YAML frontmatter, detects the entity type from the `type` field, and deserializes into the correct struct.
+
+```rust
+// Generated types
+pub enum OntologyElement {
+    Task(Task),
+    Agent(Agent),
+    Requirement(Requirement),
+    // one variant per entity
+}
+
+pub struct ParseResult {
+    pub tasks: Vec<Parsed<Task>>,
+    pub agents: Vec<Parsed<Agent>>,
+    pub requirements: Vec<Parsed<Requirement>>,
+    pub warnings: Vec<ParseWarning>,
+}
+```
+
+The `deserialize_frontmatter` function probes the `type` field first, then deserializes the full YAML into the matching struct:
+
+```rust
+pub fn deserialize_frontmatter(yaml: &str, file: &Path) -> Result<OntologyElement, ParseError> {
+    // 1. Read just the "type" field
+    let probe: TypeProbe = serde_yaml_ng::from_str(yaml)?;
+    // 2. Dispatch to the correct deserializer
+    match probe.ontology_type.as_str() {
+        "task" => {
+            let v: Task = serde_yaml_ng::from_str(yaml)?;
+            Ok(OntologyElement::Task(v))
+        }
+        "agent" => { /* ... */ }
+        other => Err(ParseError::UnknownType { /* ... */ }),
+    }
+}
+```
+
+### 3. Filesystem operations
+
+Per-entity path helpers and write functions:
+
+```rust
+/// Compute the markdown output path for a Task entity.
+pub fn task_path(project_root: &Path, id: &str) -> PathBuf {
+    project_root
+        .join(".ontological")
+        .join("tasks")
+        .join(format!("{id}.md"))
+}
+
+/// Write a Task entity to its markdown file.
+pub fn write_task(project_root: &Path, entity: &Task) -> io::Result<()> {
+    let path = task_path(project_root, &entity.id);
+    let content = render_task(entity);
+    write_file(&path, &content)
+}
+```
+
+It also generates a `dirs.rs` with constants for every entity's directory name and an `ALL_ENTITY_DIRS` constant for the parser to iterate:
+
+```rust
+pub const ONTOLOGICAL_DIR: &str = ".ontological";
+pub const TASK_DIR: &str = "tasks";
+pub const AGENT_DIR: &str = "agents";
+
+pub const ALL_ENTITY_DIRS: &[&str] = &[
+    AGENT_DIR,
+    TASK_DIR,
+];
+```
+
+## How entities map to Markdown files
+
+The mapping follows clear rules:
+
+- **The `directory` attribute** on your entity definition determines which subdirectory the files live in. A `Task` with `directory = "tasks"` writes to `.ontological/tasks/`.
+- **The `type_name` attribute** is written as the `type:` field in frontmatter. The parser uses this to dispatch to the correct deserializer.
+- **Regular fields** become YAML key-value pairs in the frontmatter.
+- **The body field** (marked with `FieldRole::Body`) becomes the Markdown content after the `---` closing delimiter.
+- **Optional fields** that are `None` are omitted from the frontmatter entirely.
+
+```rust
+#[derive(OntologyEntity)]
+#[ontology(entity, table = "tasks", directory = "tasks", prefix = "task")]
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,           // frontmatter: id: task-001
+
+    pub name: String,          // frontmatter: name: Implement auth
+
+    #[ontology(enum_field)]
+    pub status: Option<TaskStatus>,  // frontmatter: status: in_progress (or omitted)
+
+    #[ontology(relation(belongs_to, target = "Agent"))]
+    pub assignee_id: Option<String>,  // frontmatter: assignee_id: "[[agent-001]]"
+
+    // The body field becomes the Markdown content below the frontmatter
+    pub body: String,
+}
+```
+
+## The multiline_list annotation
+
+By default, `Vec<String>` fields render as YAML inline sequences:
+
+```yaml
+tags: [rust, codegen, build-tools]
+fulfills: ["[[req-001]]", "[[req-002]]"]
+```
+
+When a field has the `multiline_list` annotation, it renders as a YAML block sequence instead:
+
+```yaml
+depends_on:
+  - "[[task-setup-db]]"
+  - "[[task-define-schema]]"
+  - "[[task-implement-migrations]]"
+```
+
+This is useful for fields that tend to have many items or long values where inline rendering becomes hard to read. Set it on your struct field:
+
+```rust
+#[ontology(multiline_list)]
+pub depends_on: Vec<String>,
+```
+
+Both formats parse identically -- the annotation only affects writing.
+
+## The default_value annotation
+
+Fields with a `default_value` annotation are omitted from the frontmatter when their current value matches the default:
+
+```rust
+#[ontology(default_value = "active")]
+pub disposition: String,
+```
+
+If `disposition` is `"active"`, the writer skips it. If it's `"archived"`, it appears in the frontmatter. This keeps files clean by not cluttering them with default values.
+
+## Wikilink handling
+
+Relation fields use Obsidian-style wikilink syntax in Markdown files. A `belongs_to` relation to an agent renders as:
+
+```yaml
+assignee_id: "[[agent-backend-dev]]"
+```
+
+A `many_to_many` or `has_many` relation renders as a list of wikilinks:
+
+```yaml
+fulfills: ["[[req-security-001]]", "[[req-auth-flow]]"]
+```
+
+The generated writer wraps relation IDs in `[[...]]` and quotes them for YAML safety. The generated parser strips the wikilink syntax when deserializing, so your struct receives clean IDs.
+
+### The strip_wikilink requirement
+
+The generated parser dispatch calls wikilink-stripping functions on every relation field:
+
+```rust
+// In the generated push_parsed function:
+entity.assignee_id = strip_wikilink_opt(entity.assignee_id.take());
+entity.fulfills = strip_wikilinks_vec(std::mem::take(&mut entity.fulfills));
+```
+
+These functions (`strip_wikilink`, `strip_wikilink_opt`, `strip_wikilinks_vec`) must be provided by your application in a `parser::ontology` module. They're imported as:
+
+```rust
+use super::super::parser::ontology::{strip_wikilink, strip_wikilink_opt, strip_wikilinks_vec};
+```
+
+<Aside type="caution">
+  The wikilink stripping functions are **not** generated by Ontogen. You need to provide them in your crate's persistence module. The typical implementation is straightforward -- strip `[[` and `]]` from strings -- but the generator expects them at a specific import path.
+</Aside>
+
+Here's a minimal implementation:
+
+```rust
+// src/persistence/fs_markdown/parser/ontology.rs
+
+pub fn strip_wikilink(s: &str) -> String {
+    s.trim_start_matches("[[").trim_end_matches("]]").to_string()
+}
+
+pub fn strip_wikilink_opt(s: Option<String>) -> Option<String> {
+    s.map(|v| strip_wikilink(&v))
+}
+
+pub fn strip_wikilinks_vec(v: Vec<String>) -> Vec<String> {
+    v.into_iter().map(|s| strip_wikilink(&s)).collect()
+}
+```
+
+## ID prefix validation
+
+The generated parser checks that each entity's ID starts with the expected prefix. A `Task` with `prefix = "task"` expects IDs like `task-implement-auth`. If an ID doesn't match, a `ParseWarning` is added to `ParseResult.warnings` rather than failing the parse:
+
+```rust
+if !entity.id.starts_with("task-") {
+    result.warnings.push(ParseWarning {
+        file: path.to_path_buf(),
+        message: format!(
+            "ID '{}' does not follow the 'task-' prefix convention",
+            entity.id
+        ),
+    });
+}
+```
+
+This is a soft validation -- files still parse successfully. It helps catch misplaced files or typos without breaking the entire parse pipeline.
+
+## Configuration
+
+`gen_markdown_io` has a minimal config:
+
+```rust
+ontogen::gen_markdown_io(
+    &schema.entities,
+    &ontogen::MarkdownIoConfig {
+        output_dir: "src/persistence/fs_markdown/writers".into(),
+    },
+)?;
+```
+
+The `output_dir` receives all generated files: per-entity writer modules, `helpers.rs` (YAML escaping utilities), `dirs.rs`, `fs_ops.rs`, and `parser_dispatch.rs`.
+
+## Generated file organization
+
+```
+src/persistence/fs_markdown/writers/  (output_dir)
+  mod.rs                # re-exports all render functions
+  helpers.rs            # yaml_safe_scalar, yaml_inline_list, wikilink, append_body
+  dirs.rs               # directory constants (TASK_DIR, AGENT_DIR, etc.)
+  fs_ops.rs             # task_path(), write_task(), etc.
+  parser_dispatch.rs    # OntologyElement, ParseResult, deserialize_frontmatter
+  task.rs               # render_task()
+  agent.rs              # render_agent()
+```
+
+All files are regenerated on every build. The module structure is flat -- all render functions are re-exported from `mod.rs` for convenient glob imports:
+
+```rust
+use crate::persistence::fs_markdown::writers::renders::*;
+// Now you can call render_task(), render_agent(), etc. directly
+```

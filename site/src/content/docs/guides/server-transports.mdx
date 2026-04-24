@@ -1,0 +1,301 @@
+---
+title: Server Transports
+description: Generating HTTP handlers, Tauri IPC commands, and MCP tools from your API surface.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+`gen_servers` takes your API surface -- the merged `ApiOutput` from `gen_api` -- and generates server-side handler code for up to three transport targets. Each transport produces the same operations with the same behavior, just adapted to its protocol.
+
+## The three transports
+
+| Transport | Protocol | Output | Use case |
+|-----------|----------|--------|----------|
+| **HTTP/Axum** | REST over HTTP | Axum route handlers + router function | Web APIs, external integrations |
+| **Tauri IPC** | Inter-process communication | Tauri `#[command]` handlers + `ipc_handler()` | Desktop apps with Tauri |
+| **MCP** | Model Context Protocol | Tool definitions + `handle_tool_call()` | AI assistant integrations |
+
+You enable each transport independently through `ServerGeneratorConfig` variants. Most projects use one or two; having all three is for applications that serve web clients, desktop clients, and AI tools from the same codebase.
+
+## ServersConfig
+
+```rust
+let servers_output = ontogen::gen_servers(
+    Some(&api_output),
+    &["src/api/v1".into()],
+    &ontogen::ServersConfig {
+        api_dir: "src/api/v1".into(),
+        state_type: "AppState".to_string(),
+        service_import_path: "crate::api::v1".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        state_import: "crate::AppState".to_string(),
+        naming: ontogen::servers::NamingConfig::default(),
+        generators: vec![
+            ontogen::servers::ServerGeneratorConfig::HttpAxum {
+                output: "src/api/transport/http/generated.rs".into(),
+            },
+            ontogen::servers::ServerGeneratorConfig::TauriIpc {
+                output: "src/api/transport/ipc/generated.rs".into(),
+            },
+            ontogen::servers::ServerGeneratorConfig::Mcp {
+                output: "src/api/transport/mcp/generated.rs".into(),
+            },
+        ],
+        client_generators: vec![],
+        rustfmt_edition: "2021".to_string(),
+        sse_route_overrides: Default::default(),
+        ts_skip_commands: vec![],
+        route_prefix: None,
+        store_type: Some("Store".to_string()),
+        store_import: Some("crate::store::Store".to_string()),
+        pagination: None,
+    },
+)?;
+```
+
+Let's walk through the important fields:
+
+| Field | Purpose |
+|-------|---------|
+| `api_dir` | Directory to scan for API source files |
+| `state_type` | Your AppState type name, used in handler signatures |
+| `service_import_path` | Rust import path for API modules (e.g., `crate::api::v1`) |
+| `types_import_path` | Import path for schema/DTO types |
+| `state_import` | Full import path for the state type |
+| `naming` | Pluralization and URL naming overrides |
+| `generators` | Which transports to generate |
+| `store_type` | Store type name for entity-scoped functions |
+| `store_import` | Full import path for the Store type |
+
+## HTTP/Axum generation
+
+The HTTP generator produces Axum route handlers with proper HTTP methods, paths, and request/response types.
+
+### Route mapping
+
+Each `OpKind` maps to a specific HTTP method and path pattern:
+
+| Operation | Method | Route pattern | Example |
+|-----------|--------|---------------|---------|
+| `List` | GET | `/api/{entities}` | `GET /api/tasks` |
+| `GetById` | GET | `/api/{entities}/:id` | `GET /api/tasks/:id` |
+| `Create` | POST | `/api/{entities}` | `POST /api/tasks` |
+| `Update` | PUT | `/api/{entities}/:id` | `PUT /api/tasks/:id` |
+| `Delete` | DELETE | `/api/{entities}/:id` | `DELETE /api/tasks/:id` |
+| `CustomGet` | GET | `/api/{entities}/{action}` | `GET /api/tasks/overdue` |
+| `CustomPost` | POST | `/api/{entities}/{action}` | `POST /api/tasks/close-by-project` |
+| `JunctionList` | GET | `/api/{parents}/:id/{children}` | `GET /api/agents/:id/roles` |
+| `JunctionAdd` | POST | `/api/{parents}/:id/{children}` | `POST /api/agents/:id/roles` |
+| `JunctionRemove` | DELETE | `/api/{parents}/:id/{children}/:child_id` | `DELETE /api/agents/:id/roles/:child_id` |
+| `EventStream` | GET | `/api/events/{name}` | `GET /api/events/task-updates` |
+
+Entity names in URLs are pluralized and kebab-cased automatically: `work_session` becomes `work-sessions`, `unit_of_work` becomes `units-of-work`.
+
+### Generated handler example
+
+Here's what a generated list handler looks like:
+
+```rust
+async fn task_list(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<Task>>, ApiError> {
+    let store = state.store().await.map_err(|e| err(e.to_string()))?;
+    task::list(store)
+        .await
+        .map(Json)
+        .map_err(|e| err(e.to_string()))
+}
+```
+
+The generator also produces a `router()` function that wires all handlers to their routes:
+
+```rust
+pub fn router() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/api/tasks", get(task_list).post(task_create))
+        .route("/api/tasks/:id", get(task_get_by_id).put(task_update).delete(task_delete))
+        // ... more routes
+}
+```
+
+### Pagination support
+
+When you set `pagination` in your config, all `List` operations get `limit` and `offset` query parameters:
+
+```rust
+pagination: Some(ontogen::servers::PaginationConfig {
+    default_limit: 50,
+    max_limit: 200,
+}),
+```
+
+List handlers then return `PaginatedResult<T>` instead of `Vec<T>`:
+
+```rust
+#[derive(Serialize)]
+pub struct PaginatedResult<T: Serialize> {
+    pub items: Vec<T>,
+    pub total: u64,
+    pub limit: u32,
+    pub offset: u32,
+}
+```
+
+The pagination wraps the service call result -- it fetches all items, then applies limit/offset in memory. The `total` field reflects the unfiltered count so clients can calculate page counts.
+
+## Tauri IPC generation
+
+The IPC generator produces `#[tauri::command]` handlers for desktop applications. Each command follows an entity-first naming convention:
+
+| API function | IPC command name |
+|-------------|------------------|
+| `task::list` | `task_list` |
+| `task::get_by_id` | `task_get_by_id` |
+| `task::create` | `task_create` |
+| `agent::add_role` | `agent_add_role` |
+| `task::get_overdue` | `task_get_overdue` |
+
+```rust
+#[tauri::command]
+pub async fn task_list(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<Task>, String> {
+    let store = state.store().await.map_err(|e| e.to_string())?;
+    task::list(store).await
+        .map_err(|e| e.to_string())
+}
+```
+
+The generator also produces an `ipc_handler()` function that wraps all commands into a `tauri::generate_handler!` macro call:
+
+```rust
+pub fn ipc_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        task_list,
+        task_get_by_id,
+        task_create,
+        task_update,
+        task_delete,
+        // ... all commands
+    ]
+}
+```
+
+Wire this into your Tauri builder:
+
+```rust
+tauri::Builder::default()
+    .invoke_handler(generated::ipc_handler())
+    .run(tauri::generate_context!())
+```
+
+### Event forwarding
+
+For modules with event stream functions, the IPC generator produces a `start_event_forwarding` function that bridges your event bus to Tauri's event system:
+
+```rust
+pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &AppState) {
+    // For each event stream, spawns a task that receives from the broadcast
+    // channel and emits Tauri events to the frontend
+}
+```
+
+## MCP generation
+
+The MCP (Model Context Protocol) generator produces tool definitions for AI assistants. Each API function becomes an MCP tool with a JSON Schema input definition, a description, and an async handler.
+
+```rust
+pub struct McpToolDef {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub schema_fn: fn() -> Value,
+    pub handler: HandlerFn,
+}
+```
+
+The generated registry provides three entry points:
+
+- `generated_tool_registry()` -- returns `Vec<McpToolDef>` with live handlers for tool execution.
+- `tool_definitions()` -- returns `Vec<SimpleToolDef>` with pre-computed schemas, suitable for `tools/list` responses.
+- `handle_tool_call(state, tool_name, args)` -- dispatches a tool call by name. Creates a minimal tokio runtime for sync MCP servers.
+
+MCP tool names follow the same entity-first convention as IPC commands: `task_list`, `task_create`, `agent_add_role`.
+
+<Aside type="note">
+  Event streams are not exposed as MCP tools. MCP is request-response only, so there's no equivalent to SSE or Tauri events.
+</Aside>
+
+## The naming system
+
+URL paths and command names are derived from module names using the `cruet` crate for Rails-style inflection. The `NamingConfig` lets you override the defaults when the inflector gets it wrong.
+
+```rust
+naming: ontogen::servers::NamingConfig {
+    plural_overrides: HashMap::from([
+        ("evidence".to_string(), "evidence".to_string()),  // uncountable
+    ]),
+    singular_overrides: HashMap::from([
+        ("work_sessions".to_string(), "session".to_string()),
+    ]),
+    label_overrides: Default::default(),
+    plural_label_overrides: Default::default(),
+},
+```
+
+The naming system provides several derived forms:
+
+| Method | Input | Output | Used for |
+|--------|-------|--------|----------|
+| `url_plural` | `"work_session"` | `"work-sessions"` | HTTP route paths |
+| `url_singular` | `"work_sessions"` | `"session"` | IPC command prefixes |
+| `module_plural` | `"evidence"` | `"evidence"` | Rust code references |
+| `label` | `"work_session"` | `"Work Session"` | Admin UI labels |
+| `plural_label` | `"evidence"` | `"Evidence"` | Admin UI plural labels |
+
+For custom functions, `derive_action` strips the module name from the function name and converts to kebab-case: `get_overdue_tasks` on the `task` module becomes the action segment `overdue`.
+
+## SSE route overrides
+
+By default, event stream functions get routes under `/api/events/{kebab-name}`. You can override individual routes:
+
+```rust
+sse_route_overrides: HashMap::from([
+    ("graph_updated".to_string(), "/api/events/graph".to_string()),
+]),
+```
+
+## Route prefix for project scoping
+
+When your app manages multiple projects, you can prepend a project scope to all entity routes:
+
+```rust
+route_prefix: Some(ontogen::servers::RoutePrefix {
+    segments: "projects/:project_id".to_string(),
+    state_accessor: "store_for".to_string(),
+    params: vec![
+        ontogen::servers::PrefixParam {
+            name: "project_id".to_string(),
+            rust_type: "uuid::Uuid".to_string(),
+            ts_type: "string".to_string(),
+        },
+    ],
+}),
+```
+
+This generates scoped routes like `/api/projects/:project_id/tasks` alongside the entity handlers. The `state_accessor` method is called to construct a project-scoped Store from the extracted path parameter.
+
+## Generated file locations
+
+Each transport writes to a single file specified in its config:
+
+```
+src/api/transport/
+  http/
+    generated.rs      # Axum routes + router()
+  ipc/
+    generated.rs      # Tauri commands + ipc_handler()
+  mcp/
+    generated.rs      # MCP tools + tool_definitions() + handle_tool_call()
+```
+
+All three files are regenerated on every build. Don't edit them.
