@@ -31,7 +31,7 @@ pub fn generate_crud_module(entity: &EntityDef) -> String {
     // list
     code.push_str(&format!("/// List all {plural}\n"));
     code.push_str(&format!("pub async fn list(store: &Store) -> Result<Vec<{name}>, AppError> {{\n"));
-    code.push_str(&format!("    store.list_{plural}().await\n"));
+    code.push_str(&format!("    store.list_{plural}(None, None).await\n"));
     code.push_str("}\n\n");
 
     // get_by_id

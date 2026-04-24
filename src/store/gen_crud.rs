@@ -44,8 +44,17 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let snake = to_snake_case(name);
     let plural = pluralize(&snake);
 
-    code.push_str(&format!("    pub async fn list_{plural}(&self) -> Result<Vec<{name}>, AppError> {{\n"));
-    code.push_str(&format!("        let models = {snake}::Entity::find()\n"));
+    code.push_str(&format!(
+        "    pub async fn list_{plural}(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
+    ));
+    code.push_str(&format!("        let mut query = {snake}::Entity::find();\n"));
+    code.push_str("        if let Some(l) = limit {\n");
+    code.push_str("            query = query.limit(l);\n");
+    code.push_str("        }\n");
+    code.push_str("        if let Some(o) = offset {\n");
+    code.push_str("            query = query.offset(o);\n");
+    code.push_str("        }\n");
+    code.push_str("        let models = query\n");
     code.push_str("            .all(self.db())\n");
     code.push_str("            .await\n");
     code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?;\n\n");
@@ -483,6 +492,22 @@ mod tests {
         // Create should sync junctions
         assert!(code.contains("let fulfills = node.fulfills.clone()"));
         assert!(code.contains("let contains = node.contains.clone()"));
+    }
+
+    #[test]
+    fn test_list_has_pagination_params() {
+        let entity = make_role_entity();
+        let mut code = String::new();
+        generate_crud_impl(&mut code, &entity);
+
+        // Generated list_* must accept optional limit / offset for SQL-level pagination
+        assert!(
+            code.contains("fn list_roles(&self, limit: Option<u64>, offset: Option<u64>)"),
+            "list_roles should have pagination params, got:\n{code}"
+        );
+        // And wire them into the SeaORM query
+        assert!(code.contains("query = query.limit(l);"), "missing .limit() call");
+        assert!(code.contains("query = query.offset(o);"), "missing .offset() call");
     }
 
     #[test]
