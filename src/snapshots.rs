@@ -124,7 +124,11 @@ fn generate_dto_file(entity: &EntityDef) -> String {
 /// Call `store::generate` into a tempdir and return the generated file for `entity`.
 fn generate_store_file(entity: &EntityDef) -> String {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let config = StoreConfig { output_dir: tmp.path().to_path_buf(), hooks_dir: None };
+    let config = StoreConfig {
+        output_dir: tmp.path().to_path_buf(),
+        hooks_dir: None,
+        schema_module_path: "crate::schema".to_string(),
+    };
     crate::gen_store(std::slice::from_ref(entity), None, &config).expect("gen_store failed");
 
     let snake = to_snake_case(&entity.name);
