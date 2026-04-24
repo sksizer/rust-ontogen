@@ -3,6 +3,7 @@
 name = "ontogen-core"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Shared types, IR definitions, and utilities for the ontogen code generation pipeline"
 license = "MIT"
 repository = "https://github.com/sksizer/rust-ontogen"
