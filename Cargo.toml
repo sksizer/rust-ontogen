@@ -7,6 +7,7 @@ resolver = "3"
 name = "ontogen"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Build-time code generator for ontology-driven applications: schema → persistence → store → API → servers → clients"
 license = "MIT"
 repository = "https://github.com/sksizer/rust-ontogen"
@@ -21,4 +22,5 @@ syn = { version = "2", features = ["full", "parsing"] }
 quote = "1"
 
 [dev-dependencies]
+insta = { version = "1", features = ["yaml"] }
 tempfile = "3"
