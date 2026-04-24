@@ -1,0 +1,377 @@
+---
+title: The Pipeline
+description: How intermediate representations flow between Ontogen's generators and what each stage produces.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The generators in Ontogen don't communicate through files, shared state, or configuration. They communicate through typed intermediate representations -- plain Rust structs that describe what was generated and what it means. Each IR is the output of one stage and the optional input to the next.
+
+This page walks through every IR type in the pipeline, what it contains, and how downstream generators use it.
+
+## The IR Chain
+
+```text
+SchemaOutput ──► SeaOrmOutput ──► StoreOutput ──► ApiOutput ──► ServersOutput
+  entities       entity_tables     methods         modules       http_routes
+                 junction_tables   scaffolded_hooks              ipc_commands
+                 conversion_fns    change_channels               mcp_tools
+```
+
+Each struct is defined in `ontogen_core::ir`. They're plain data -- no methods that trigger side effects, no lazy evaluation, no framework coupling. You can inspect them, serialize them, or build your own generators that consume them.
+
+## SchemaOutput
+
+The starting point. Everything begins here.
+
+```rust
+pub struct SchemaOutput {
+    pub entities: Vec<EntityDef>,
+}
+```
+
+`EntityDef` is the parsed representation of an annotated struct. It captures the struct name, table name, directory, ID prefix, and all fields with their types and roles.
+
+```rust
+pub struct EntityDef {
+    pub name: String,          // "Task"
+    pub directory: String,     // "tasks"
+    pub table: String,         // "tasks"
+    pub type_name: String,     // "task"
+    pub prefix: String,        // "task"
+    pub fields: Vec<FieldDef>,
+}
+```
+
+Each field carries a `FieldRole` that tells generators how to handle it:
+
+- `Id` -- the primary key field
+- `Body` -- Markdown body content, not part of frontmatter
+- `EnumField` -- an enum stored as a string in the database
+- `Relation(RelationInfo)` -- a cross-reference to another entity (belongs_to, has_many, or many_to_many)
+- `Plain` -- a regular data field
+- `Skip` -- excluded from codegen entirely
+
+The schema parser uses `syn` to read your source files and extract this metadata from `#[ontology(...)]` annotations. No separate schema file, no DSL. Your Rust structs are the schema.
+
+## SeaOrmOutput
+
+Produced by `gen_seaorm`. Describes the database structures that were generated.
+
+```rust
+pub struct SeaOrmOutput {
+    pub entity_tables: Vec<EntityTableMeta>,
+    pub junction_tables: Vec<JunctionMeta>,
+    pub conversion_fns: Vec<ConversionMeta>,
+}
+```
+
+**`entity_tables`** maps each entity to its table name, module path, and columns:
+
+```rust
+pub struct EntityTableMeta {
+    pub entity_name: String,   // "Task"
+    pub table_name: String,    // "tasks"
+    pub module_path: String,   // "crate::persistence::db::entities::task"
+    pub columns: Vec<ColumnMeta>,
+}
+```
+
+**`junction_tables`** tracks many-to-many join tables:
+
+```rust
+pub struct JunctionMeta {
+    pub table_name: String,    // "task_fulfills"
+    pub source_entity: String, // "Task"
+    pub target_entity: String, // "Requirement"
+    pub source_fk: String,     // "task_id"
+    pub target_fk: String,     // "requirement_id"
+}
+```
+
+**`conversion_fns`** records which `from_model`/`to_active_model` conversions exist, so downstream generators know they can convert between domain types and database models.
+
+When `gen_store` receives `Some(&SeaOrmOutput)`, it uses the exact table and column names from this metadata. When it receives `None`, it infers them from naming conventions. The output exists so that store generation can be precise rather than guessing.
+
+## StoreOutput
+
+Produced by `gen_store`. Describes the CRUD methods, hooks, and change channels that were generated.
+
+```rust
+pub struct StoreOutput {
+    pub methods: Vec<StoreMethodMeta>,
+    pub scaffolded_hooks: Vec<ScaffoldMeta>,
+    pub change_channels: Vec<ChannelMeta>,
+}
+```
+
+**`methods`** is the interesting part. Each entry describes a store method -- its name, which entity it belongs to, its CRUD kind, and crucially, its `Source`:
+
+```rust
+pub struct StoreMethodMeta {
+    pub entity_name: String,    // "Task"
+    pub name: String,           // "create_task"
+    pub kind: StoreMethodKind,  // Crud(Create)
+    pub params: Vec<ParamMeta>,
+    pub return_type: String,
+    pub source: Source,
+}
+```
+
+The `kind` field distinguishes standard CRUD operations from custom methods:
+
+```rust
+pub enum StoreMethodKind {
+    Crud(CrudOp),  // List, Get, Create, Update, Delete
+    Custom,        // anything scanned that doesn't match CRUD
+}
+```
+
+**`scaffolded_hooks`** records which hook files were newly created this build. Hooks are scaffolded once per entity with no-op functions (`before_create`, `after_create`, `before_update`, `after_update`, `before_delete`, `after_delete`). If the file already exists, it's left untouched.
+
+**`change_channels`** describes per-entity broadcast channels for reactive updates (when enabled).
+
+## ApiOutput
+
+Produced by `gen_api`. This is where things get interesting, because the API layer merges two sources of code.
+
+```rust
+pub struct ApiOutput {
+    pub modules: Vec<ApiModule>,
+}
+```
+
+An `ApiModule` represents one API module (typically one per entity, but custom modules can exist for non-entity endpoints):
+
+```rust
+pub struct ApiModule {
+    pub name: String,              // "task"
+    pub fns: Vec<ApiFnMeta>,
+    pub state_type: StateKind,     // AppState or Store
+}
+```
+
+Each function in the module carries its source, parameters, return type, and classified operation:
+
+```rust
+pub struct ApiFnMeta {
+    pub name: String,              // "create"
+    pub doc: String,               // "Create a new task"
+    pub params: Vec<ParamMeta>,
+    pub return_type: String,
+    pub source: Source,
+    pub classified_op: OpKind,     // Create, List, GetById, Update, Delete, CustomGet, CustomPost, EventStream
+}
+```
+
+### The Source Enum
+
+This is a key design element. Every method and function in the IR carries a `Source` tag:
+
+```rust
+pub enum Source {
+    Generated { module_path: String },
+    Scanned { module_path: String, file_path: PathBuf },
+}
+```
+
+**`Generated`** means Ontogen wrote this code. The `module_path` points into a `generated/` subdirectory (e.g., `crate::api::v1::generated::task`).
+
+**`Scanned`** means a human wrote this code. The `module_path` points to the hand-written module (e.g., `crate::api::v1::task`), and `file_path` records where the source file lives on disk.
+
+Why does this matter? Because downstream generators need to emit correct `use` statements. When `gen_servers` generates an HTTP handler for `task::create`, it needs to know whether to import from `crate::api::v1::generated::task` or `crate::api::v1::task`. The `Source` tells it exactly.
+
+### The Merge
+
+The API generator does something no other generator does: it merges two sources of truth.
+
+1. It generates CRUD forwarding functions for each entity and writes them to `generated/`.
+2. It scans `config.scan_dirs` for hand-written API modules.
+3. It merges them into a single `Vec<ApiModule>`.
+
+The merge rules are simple:
+- If a generated module and a scanned module have the same name (e.g., both called `task`), the scanned functions are folded into the generated module. Duplicates by function name are skipped -- generated wins.
+- If a scanned module has no generated counterpart (e.g., a `reports` module), it's added as a new entry.
+
+After the merge, `ApiOutput.modules` contains everything. Downstream generators don't need to know or care which functions were generated and which were hand-written -- they're all `ApiFnMeta` with the right `Source` tag.
+
+### Operation Classification
+
+Each function is classified into an `OpKind`:
+
+```rust
+pub enum OpKind {
+    List,          // GET /tasks
+    GetById,       // GET /tasks/:id
+    Create,        // POST /tasks
+    Update,        // PUT /tasks/:id
+    Delete,        // DELETE /tasks/:id
+    CustomGet,     // GET with non-standard params
+    CustomPost,    // POST with non-standard params
+    EventStream,   // SSE endpoint
+}
+```
+
+The HTTP generator uses this to pick the right HTTP method and route pattern. The IPC generator uses it to name commands. The MCP generator uses it to set tool descriptions. One classification, three transports.
+
+## ServersOutput
+
+Produced by `gen_servers`. Describes the concrete transport endpoints that were generated.
+
+```rust
+pub struct ServersOutput {
+    pub http_routes: Vec<HttpRouteMeta>,
+    pub ipc_commands: Vec<IpcCommandMeta>,
+    pub mcp_tools: Vec<McpToolMeta>,
+}
+```
+
+Each transport gets its own metadata type:
+
+```rust
+pub struct HttpRouteMeta {
+    pub method: String,       // "GET"
+    pub path: String,         // "/api/tasks/:id"
+    pub handler_name: String, // "get_task_by_id"
+    pub module_name: String,  // "task"
+}
+
+pub struct IpcCommandMeta {
+    pub command_name: String,    // "get_task"
+    pub params: Vec<ParamMeta>,
+    pub return_type: String,
+}
+
+pub struct McpToolMeta {
+    pub tool_name: String,       // "get_task"
+    pub description: String,     // "Get a single task by ID"
+    pub params_schema: String,   // JSON Schema
+}
+```
+
+`gen_clients` consumes this to generate TypeScript code that mirrors the server's API exactly. The client generator knows every route path, every command name, every parameter type -- because it's all in the IR.
+
+## Tracing an Entity Through the Pipeline
+
+Let's trace a `Task` entity from schema definition through every IR to an HTTP handler.
+
+**Step 1: Schema** -- You write a struct:
+
+```rust
+#[derive(OntologyEntity)]
+#[ontology(entity, table = "tasks", directory = "tasks", prefix = "task")]
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    #[ontology(enum_field)]
+    pub status: Option<TaskStatus>,
+    #[ontology(relation(belongs_to, target = "Agent"))]
+    pub assignee_id: Option<String>,
+    #[ontology(relation(many_to_many, target = "Requirement"))]
+    pub fulfills: Vec<String>,
+}
+```
+
+**Step 2: SchemaOutput** -- `parse_schema` produces:
+
+```text
+EntityDef {
+    name: "Task",
+    table: "tasks",
+    directory: "tasks",
+    prefix: "task",
+    fields: [
+        FieldDef { name: "id", role: Id, field_type: String },
+        FieldDef { name: "name", role: Plain, field_type: String },
+        FieldDef { name: "description", role: Plain, field_type: OptionString },
+        FieldDef { name: "status", role: EnumField, field_type: OptionEnum("TaskStatus") },
+        FieldDef { name: "assignee_id", role: Relation(BelongsTo → Agent), field_type: OptionString },
+        FieldDef { name: "fulfills", role: Relation(ManyToMany → Requirement), field_type: VecString },
+    ]
+}
+```
+
+**Step 3: SeaOrmOutput** -- `gen_seaorm` writes SeaORM entity files and records:
+
+```text
+EntityTableMeta { entity_name: "Task", table_name: "tasks", columns: [id, name, description, status, assignee_id] }
+JunctionMeta { table_name: "task_fulfills", source_entity: "Task", target_entity: "Requirement" }
+ConversionMeta { entity_name: "Task", module_path: "crate::persistence::db::conversion" }
+```
+
+**Step 4: StoreOutput** -- `gen_store` writes CRUD methods and records:
+
+```text
+StoreMethodMeta { name: "list_tasks", kind: Crud(List), source: Generated }
+StoreMethodMeta { name: "get_task", kind: Crud(Get), source: Generated }
+StoreMethodMeta { name: "create_task", kind: Crud(Create), source: Generated }
+StoreMethodMeta { name: "update_task", kind: Crud(Update), source: Generated }
+StoreMethodMeta { name: "delete_task", kind: Crud(Delete), source: Generated }
+ScaffoldMeta { entity_name: "Task", functions: [before_create, after_create, ...] }
+```
+
+**Step 5: ApiOutput** -- `gen_api` writes forwarding functions, scans for hand-written endpoints, and merges:
+
+```text
+ApiModule {
+    name: "task",
+    fns: [
+        ApiFnMeta { name: "list", op: List, source: Generated("crate::api::v1::generated::task") },
+        ApiFnMeta { name: "get_by_id", op: GetById, source: Generated(...) },
+        ApiFnMeta { name: "create", op: Create, source: Generated(...) },
+        ApiFnMeta { name: "update", op: Update, source: Generated(...) },
+        ApiFnMeta { name: "delete", op: Delete, source: Generated(...) },
+        ApiFnMeta { name: "assign", op: CustomPost, source: Scanned("crate::api::v1::task") },
+    ]
+}
+```
+
+Notice the `assign` function at the end -- that came from a hand-written `src/api/v1/task.rs` file. It was scanned, classified as `CustomPost`, and folded into the same module alongside the generated CRUD functions.
+
+**Step 6: ServersOutput** -- `gen_servers` reads the ApiOutput and generates:
+
+```text
+HttpRouteMeta { method: "GET",    path: "/api/tasks",     handler: "list_tasks" }
+HttpRouteMeta { method: "GET",    path: "/api/tasks/:id", handler: "get_task_by_id" }
+HttpRouteMeta { method: "POST",   path: "/api/tasks",     handler: "create_task" }
+HttpRouteMeta { method: "PUT",    path: "/api/tasks/:id", handler: "update_task" }
+HttpRouteMeta { method: "DELETE", path: "/api/tasks/:id", handler: "delete_task" }
+HttpRouteMeta { method: "POST",   path: "/api/tasks/assign", handler: "assign_task" }
+IpcCommandMeta { command_name: "list_tasks", ... }
+IpcCommandMeta { command_name: "assign_task", ... }
+McpToolMeta { tool_name: "list_tasks", description: "List all tasks", ... }
+```
+
+One struct definition. Six pipeline stages. HTTP routes, IPC commands, MCP tools, and TypeScript clients -- all consistent, all derived from the same source.
+
+## Optional Chaining
+
+The signature of `gen_store` tells the story:
+
+```rust
+pub fn gen_store(
+    entities: &[EntityDef],
+    seaorm: Option<&SeaOrmOutput>,
+    config: &StoreConfig,
+) -> Result<StoreOutput, CodegenError>
+```
+
+That `Option<&SeaOrmOutput>` is the optional chaining pattern. If you ran `gen_seaorm` first, pass its output. If you didn't, pass `None`. The store generator adapts.
+
+Similarly, `gen_servers` takes `Option<&ApiOutput>`. When it's `Some`, the server generator uses the structured metadata. When it's `None`, it falls back to scanning source files with `syn` to discover API functions directly.
+
+This means the pipeline is a directed acyclic graph, not a rigid sequence. You can enter at any point and skip stages you don't need.
+
+<Aside type="note">
+The optional chaining pattern is what makes partial adoption work. If you just want SeaORM entities and a store layer, you never need to configure the API or server generators. The pipeline doesn't force you through stages you don't use.
+</Aside>
+
+## No Templates
+
+Ontogen doesn't use template files. There's no `.hbs`, no `.tera`, no string interpolation into template strings.
+
+All code generation happens through direct string building in Rust functions. The generators construct source code strings programmatically, then pass them through `rustfmt` (for Rust) or `prettier` (for TypeScript) before writing. The `write_if_changed` utility ensures files are only written when their content actually differs from what's on disk.
+
+This approach has trade-offs. Generated code is harder to preview than a template. But it means generators have full access to Rust's type system and control flow while constructing output -- conditional blocks, loops over fields, pattern matching on field types. The output is always syntactically correct because it's built structurally, not by filling blanks in a template.

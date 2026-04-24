@@ -1,0 +1,234 @@
+---
+title: Adding a New Entity
+description: Step-by-step recipe for adding a new entity to an existing Ontogen project.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+You have an Ontogen project with a working `build.rs` pipeline. Now you need a new entity. This recipe walks through the process from schema file to working CRUD with hooks.
+
+We'll add an `Exercise` entity to a fitness tracking app -- something with a couple of plain fields, an optional field, and no relations (we'll keep it simple).
+
+<Steps>
+
+1. ### Create the schema file
+
+   Create `src/schema/exercise.rs`:
+
+   ```rust
+   use ontogen_macros::OntologyEntity;
+   use serde::{Deserialize, Serialize};
+
+   #[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+   #[ontology(entity, table = "exercises")]
+   pub struct Exercise {
+       #[ontology(id)]
+       pub id: String,
+
+       pub name: String,
+
+       /// "chest" | "back" | "legs" | "shoulders" | "arms" | "core"
+       pub muscle_group: String,
+
+       /// "barbell" | "dumbbell" | "machine" | "bodyweight" | "cable"
+       pub equipment: String,
+
+       #[serde(default)]
+       pub notes: Option<String>,
+   }
+   ```
+
+   The key pieces:
+   - `#[derive(OntologyEntity)]` makes `#[ontology(...)]` attributes legal.
+   - `#[ontology(entity, table = "exercises")]` registers this as an entity with a specific table name.
+   - `#[ontology(id)]` marks the primary key.
+   - `#[serde(default)]` on optional fields means they deserialize as `None` when absent.
+
+2. ### Register it in `mod.rs`
+
+   Add the new module and re-export in `src/schema/mod.rs`:
+
+   ```rust
+   mod exercise;
+   pub use exercise::Exercise;
+   ```
+
+   If you're using generated DTOs, also add the re-exports (these files don't exist yet -- they'll be generated in the next step):
+
+   ```rust
+   pub use dto::exercise::{CreateExerciseInput, UpdateExerciseInput};
+   ```
+
+3. ### Build
+
+   Run `cargo build`. Ontogen detects the new schema file and generates code for your entity through every pipeline stage you've configured.
+
+   ```bash
+   cargo build
+   ```
+
+   Watch the build output. If something's wrong, you'll see `cargo:warning=ontogen:` lines with specific error messages.
+
+4. ### Verify generated files
+
+   After the build, check what was generated. Depending on your pipeline configuration, you should see new files in several `generated/` directories:
+
+   **SeaORM entity** (if `gen_seaorm` is configured):
+   ```
+   src/persistence/db/entities/generated/exercise.rs
+   ```
+   Contains the `Model` struct with `#[sea_orm(...)]` attributes, a `Relation` enum, and `ActiveModelBehavior`.
+
+   **Conversions** (if `gen_seaorm` is configured):
+   ```
+   src/persistence/db/conversions/generated/exercise.rs
+   ```
+   Contains `Exercise::from_model()` and `Exercise::to_active_model()`.
+
+   **DTOs** (if `gen_dtos` or `gen_store` is configured):
+   ```
+   src/schema/dto/exercise.rs
+   ```
+   Contains `CreateExerciseInput` and `UpdateExerciseInput`.
+
+   **Store CRUD** (if `gen_store` is configured):
+   ```
+   src/store/generated/exercise.rs
+   ```
+   Contains `list_exercises()`, `get_exercise()`, `create_exercise()`, `update_exercise()`, `delete_exercise()`, and an `ExerciseUpdate` struct.
+
+   **Hooks** (if `gen_store` with `hooks_dir` is configured):
+   ```
+   src/store/hooks/exercise.rs
+   ```
+   Contains empty `before_create`, `after_create`, `before_update`, `after_update`, `before_delete`, `after_delete` functions.
+
+   **API module** (if `gen_api` is configured):
+   ```
+   src/api/v1/generated/exercise.rs
+   ```
+   Contains `list()`, `get_by_id()`, `create()`, `update()`, `delete()` forwarding functions.
+
+   **Transports** (if `gen_servers` is configured):
+   The generated transport files (`http/generated.rs`, `ipc/generated.rs`) are updated to include handlers for the new entity.
+
+5. ### Add the error variant
+
+   Generated store code uses an `AppError` enum with entity-specific `NotFound` variants. You need to add one for the new entity. In your `AppError` definition (typically in `src/schema/mod.rs`):
+
+   ```rust
+   #[derive(Debug, thiserror::Error)]
+   pub enum AppError {
+       // ... existing variants ...
+       #[error("Exercise not found: {0}")]
+       ExerciseNotFound(String),
+   }
+   ```
+
+   The generated store code references `AppError::ExerciseNotFound`, so this must match.
+
+6. ### Add hook logic (optional)
+
+   Open the scaffolded hook file at `src/store/hooks/exercise.rs`. It has empty function bodies:
+
+   ```rust
+   pub async fn before_create(
+       _store: &Store,
+       _exercise: &mut Exercise,
+   ) -> Result<(), AppError> {
+       Ok(())
+   }
+   ```
+
+   Fill in whatever validation or side effects you need. For example, normalizing the muscle group to lowercase:
+
+   ```rust
+   pub async fn before_create(
+       _store: &Store,
+       exercise: &mut Exercise,
+   ) -> Result<(), AppError> {
+       exercise.muscle_group = exercise.muscle_group.to_lowercase();
+       Ok(())
+   }
+   ```
+
+   Remember: hook files are never overwritten by the generator. They're yours.
+
+7. ### Create the database table
+
+   Ontogen generates Rust code, not SQL migrations. You need to create the table yourself. Using SeaORM migrations, or just raw SQL for development:
+
+   ```sql
+   CREATE TABLE exercises (
+       id TEXT PRIMARY KEY,
+       name TEXT NOT NULL,
+       muscle_group TEXT NOT NULL,
+       equipment TEXT NOT NULL,
+       notes TEXT
+   );
+   ```
+
+   The column types should match the [field type mappings](/reference/field-types/).
+
+8. ### Test
+
+   Build again to make sure everything compiles:
+
+   ```bash
+   cargo build
+   ```
+
+   If you have integration tests, the new CRUD methods are available on your `Store`:
+
+   ```rust
+   let exercise = Exercise {
+       id: "ex-bench-press".to_string(),
+       name: "Bench Press".to_string(),
+       muscle_group: "chest".to_string(),
+       equipment: "barbell".to_string(),
+       notes: None,
+   };
+   let created = store.create_exercise(exercise).await?;
+   assert_eq!(created.name, "Bench Press");
+   ```
+
+</Steps>
+
+## Adding relations later
+
+If you later need to add a relation to an existing entity (say, exercises have tags), edit the schema file and add the relation annotation:
+
+```rust
+#[serde(default)]
+#[ontology(relation(many_to_many, target = "Tag"))]
+pub tags: Vec<String>,
+```
+
+Rebuild, and the generated code updates everywhere:
+- A new `exercise_tags` junction table entity appears.
+- Store CRUD gains `sync_junction()` calls in create/update and `populate_exercise_relations()` for reads.
+- DTOs include the `tags` field.
+- Transports pass the tags through.
+
+You'll need to create the junction table in your database:
+
+```sql
+CREATE TABLE exercise_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    exercise_id TEXT NOT NULL REFERENCES exercises(id),
+    tag_id TEXT NOT NULL REFERENCES tags(id)
+);
+```
+
+## Checklist
+
+When you add a new entity, make sure you've done all of these:
+
+- [ ] Created `src/schema/entity_name.rs` with `#[derive(OntologyEntity)]`
+- [ ] Added `mod entity_name;` and `pub use` in `src/schema/mod.rs`
+- [ ] Added DTO re-exports in `src/schema/mod.rs` (if using DTOs)
+- [ ] Added `AppError::EntityNameNotFound` variant
+- [ ] Added `EntityKind::EntityName` variant (if using change events)
+- [ ] Created the database table (migration or raw SQL)
+- [ ] Built successfully with `cargo build`
+- [ ] Filled in hook logic as needed

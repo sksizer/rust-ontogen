@@ -1,0 +1,154 @@
+---
+title: Ontogen
+description: Build-time code generation for ontology-driven Rust applications. Define your entities once — get your full stack generated.
+template: splash
+hero:
+  tagline: Define your entities once as annotated Rust structs. Ontogen generates your persistence layer, CRUD store, API endpoints, server transports, and typed client libraries — all at build time, all from a single source of truth.
+  actions:
+    - text: Get Started
+      link: /getting-started/installation/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/sksizer/rust-ontogen
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## The Problem
+
+You've defined your data model. Now you need a database entity. And a conversion layer. And CRUD methods. And an API module. And HTTP handlers. And IPC commands. And a TypeScript client. And an admin UI registry.
+
+For every single entity.
+
+That's hundreds of lines of code that look almost identical across your codebase — the kind of boilerplate where the 95th copy-paste is where bugs hide.
+
+## The Pipeline
+
+Ontogen is a build-time code generator that runs in your `build.rs`. You write one annotated struct per entity, and a layered pipeline of independent generators produces everything downstream.
+
+```
+Schema/*.rs  ──►  parse_schema()  ──►  SchemaOutput
+                        │
+           ┌────────────┼────────────┐
+           ▼            ▼            ▼
+     gen_seaorm   gen_markdown_io  gen_dtos       independent
+           │                                      generators
+           ▼  SeaOrmOutput
+     gen_store()  ──►  StoreOutput
+           │
+           ▼
+     gen_api()  ──►  ApiOutput
+           │
+           ▼
+     gen_servers()  ──►  ServersOutput
+           │
+           ▼
+     gen_clients()  ──►  TypeScript, admin registry
+```
+
+Each generator is standalone. You can run the full pipeline or pick individual stages. Upstream outputs enrich downstream generators but are never required.
+
+## What You Write
+
+```rust
+#[derive(OntologyEntity)]
+#[ontology(entity, table = "tasks", directory = "tasks", prefix = "task")]
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,
+
+    pub name: String,
+    pub description: Option<String>,
+
+    #[ontology(enum_field)]
+    pub status: Option<TaskStatus>,
+
+    #[ontology(relation(belongs_to, target = "Agent"))]
+    pub assignee_id: Option<String>,
+
+    #[ontology(relation(many_to_many, target = "Requirement"))]
+    pub fulfills: Vec<String>,
+}
+```
+
+## What You Get
+
+From that single struct definition, one `cargo build` generates:
+
+<CardGrid>
+  <Card title="SeaORM Entities" icon="seti:db">
+    Table models with typed columns, relation enums, and junction tables for many-to-many relationships. Plus `from_model()` and `to_active_model()` conversions.
+  </Card>
+  <Card title="CRUD Store" icon="seti:folder">
+    `list()`, `get()`, `create()`, `update()`, `delete()` methods with relation population, junction sync, and lifecycle hook call sites. Update structs with `apply()` methods.
+  </Card>
+  <Card title="API Layer" icon="seti:json">
+    Forwarding functions that bridge your store to your transport layer. Generated modules merge seamlessly with hand-written custom endpoints.
+  </Card>
+  <Card title="Server Transports" icon="rocket">
+    Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions — all generated from the same API surface with consistent naming.
+  </Card>
+  <Card title="TypeScript Clients" icon="seti:typescript">
+    Typed client functions for HTTP and Tauri IPC, split transport layers that pick the right backend at runtime, and admin UI registry with per-field metadata.
+  </Card>
+  <Card title="Markdown I/O" icon="seti:markdown">
+    YAML-frontmatter parsers, Markdown writers, and filesystem operations for content-as-code workflows. Read and write entities as Markdown files.
+  </Card>
+</CardGrid>
+
+<div class="stats-strip">
+  <div class="stat">
+    <span class="number">6</span>
+    <span class="label">Pipeline stages</span>
+  </div>
+  <div class="stat">
+    <span class="number">39</span>
+    <span class="label">Files from 4 entities</span>
+  </div>
+  <div class="stat">
+    <span class="number">~95%</span>
+    <span class="label">Less hand-written boilerplate</span>
+  </div>
+  <div class="stat">
+    <span class="number">3</span>
+    <span class="label">Server transports</span>
+  </div>
+</div>
+
+## Key Design Decisions
+
+**Independent generators, not a monolith.** Each generator is a standalone function. `gen_seaorm` doesn't know about `gen_api`. You can use just the persistence layer and skip everything else, or run the full pipeline. This isn't a framework that owns your architecture — it's a toolbox.
+
+**Generated and custom code coexist.** Generated code lands in `generated/` subdirectories. Your hand-written modules live alongside them. The API layer scans both and merges them into a unified intermediate representation. Downstream generators see no difference between generated and custom endpoints.
+
+**Typed IRs between stages.** Each generator returns a plain Rust struct — `SchemaOutput`, `SeaOrmOutput`, `StoreOutput`, `ApiOutput`, `ServersOutput`. No magic, no framework types. Just data that the next stage can use to make smarter decisions.
+
+**Lifecycle hooks you own.** Hook files are scaffolded once per entity and never overwritten. You fill in `before_create`, `after_update`, `before_delete` — the generated store calls them at the right time. Your business logic stays in files you control.
+
+## Get Started
+
+<CardGrid>
+  <LinkCard
+    title="Installation"
+    description="Add Ontogen to your Cargo.toml and set up your first build script."
+    href="/getting-started/installation/"
+  />
+  <LinkCard
+    title="Quick Start"
+    description="From zero to generated code in five minutes."
+    href="/getting-started/quick-start/"
+  />
+  <LinkCard
+    title="Architecture"
+    description="Understand the pipeline design and how IR flows between generators."
+    href="/concepts/architecture/"
+  />
+  <LinkCard
+    title="Iron Log Example"
+    description="Walk through a complete working application built with Ontogen."
+    href="/examples/iron-log/"
+  />
+</CardGrid>
