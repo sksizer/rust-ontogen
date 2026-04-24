@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
+  <defs>
+    <linearGradient id="grad-dark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6b9bff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#4f7df5;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Layered pipeline symbol: stacked chevrons -->
+  <path d="M8 10 L20 18 L32 10" stroke="url(#grad-dark)" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8 18 L20 26 L32 18" stroke="url(#grad-dark)" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>
+  <path d="M8 26 L20 34 L32 26" stroke="url(#grad-dark)" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.4"/>
+</svg>
