@@ -1,0 +1,22 @@
+[workspace]
+# Use the existing git-cliff config for changelogs
+changelog_config = "cliff.toml"
+# Open one consolidated release PR for all crates in the workspace
+pr_name = "chore: release"
+# Run semver-checks before publishing
+semver_check = true
+# Create a single GitHub release per release PR (groups all crates)
+git_release_enable = true
+# Publish to crates.io when the release PR is merged
+publish = true
+# Verify the package builds before publishing
+publish_allow_dirty = false
+
+[[package]]
+name = "ontogen-core"
+
+[[package]]
+name = "ontogen-macros"
+
+[[package]]
+name = "ontogen"

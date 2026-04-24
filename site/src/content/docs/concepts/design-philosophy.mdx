@@ -1,0 +1,199 @@
+---
+title: Design Philosophy
+description: The principles and trade-offs behind Ontogen's approach to code generation.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every code generator makes opinionated choices about where to draw lines. This page explains the principles behind Ontogen's design, what trade-offs those create, and where the boundaries are.
+
+## Why Build-Time Generation
+
+Rust has three places you could do code generation: runtime reflection, procedural macros, and build scripts. Ontogen uses build scripts. Here's why.
+
+**Runtime reflection** barely exists in Rust. There's no `getClass()` or `reflect.TypeOf()`. You can do limited things with `std::any::TypeId`, but you can't iterate over a struct's fields at runtime. This is by design -- Rust trades runtime introspection for zero-cost abstractions. So runtime reflection is out.
+
+**Procedural macros** (`proc_macro_derive`, `proc_macro_attribute`) are powerful and widely used. Serde, SQLx, and Clap all rely on them. But proc macros operate on a single item at a time. They see one struct, one enum, one function. Ontogen needs to see *all* entities simultaneously -- to generate junction tables between entities, to build a unified API module that references multiple entity types, to create router configuration that knows about every endpoint. A proc macro on `Task` can't see `Agent`. A build script can.
+
+**Build scripts** (`build.rs`) run before compilation, have access to the filesystem, and can read multiple source files. They output files that get compiled alongside hand-written code. The downside is that the generated code must exist as actual `.rs` files on disk -- you can see them, you can `git diff` them, and your IDE indexes them like any other code. For Ontogen, that's a feature.
+
+<Aside type="tip">
+Ontogen does use a proc macro -- `#[derive(OntologyEntity)]` -- but only as an annotation marker. The derive macro itself is a no-op that just makes structs implement a marker trait. The real work happens in `build.rs`, which uses `syn` to parse the annotations from source files.
+</Aside>
+
+## Single Source of Truth
+
+One annotated struct. Everything else derived.
+
+```rust
+#[derive(OntologyEntity)]
+#[ontology(entity, table = "tasks", directory = "tasks", prefix = "task")]
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,
+    pub name: String,
+    #[ontology(relation(belongs_to, target = "Agent"))]
+    pub assignee_id: Option<String>,
+}
+```
+
+From this, Ontogen generates:
+- A SeaORM entity with typed columns and relation enums
+- Junction tables for many-to-many relationships
+- `from_model()` and `to_active_model()` conversions
+- `CreateTaskInput` and `UpdateTaskInput` DTOs
+- `TaskUpdate` struct with an `apply()` method
+- CRUD store methods with lifecycle hook calls
+- API forwarding functions
+- HTTP route handlers (`GET /api/tasks`, `POST /api/tasks`, etc.)
+- Tauri IPC commands
+- MCP tool definitions
+- TypeScript client functions
+- Admin UI registry with per-field metadata
+- Markdown parser and writer (if markdown_io is enabled)
+
+The struct is the schema. Change it, rebuild, and everything regenerates consistently. No manual synchronization across layers.
+
+## Independent Generators, Not a Monolith
+
+Ontogen could have been one giant function: `generate_everything(schema_dir, output_dir)`. That would be simpler to implement and arguably easier to use for the common case.
+
+Instead, each generator is a separate function with explicit inputs and outputs. This costs some verbosity in `build.rs` -- you write a function call per stage, threading outputs through. But it buys three things:
+
+**Partial adoption.** You can use `gen_seaorm` without `gen_store`. You can use `gen_store` without `gen_api`. If you only need persistence layer generation, you don't need to configure server transports.
+
+**Testability.** Each generator can be tested in isolation with mock inputs. The test suite for `gen_api` doesn't need a database or a running server -- it just needs `EntityDef` structs.
+
+**Composition.** You can insert custom logic between stages. After `gen_store` produces `StoreOutput`, you could filter or transform it before passing it to `gen_api`. After `gen_api` produces `ApiOutput`, you could add synthetic modules. The pipeline is data, not control flow.
+
+## Merge, Don't Replace
+
+Plenty of code generators work by owning everything they touch. You define a schema, the generator spits out code, and if you want to customize it, you modify configuration flags or write plugins.
+
+Ontogen takes a different approach. Generated code and hand-written code coexist in the same module namespace, and the pipeline merges them.
+
+Here's how it works in the API layer. Suppose you have a `Task` entity:
+
+```text
+src/api/v1/
+├── generated/
+│   └── task.rs       ← gen_api wrote this (list, get_by_id, create, update, delete)
+├── task.rs           ← you wrote this (assign, bulk_archive, get_stats)
+└── reports.rs        ← you wrote this (entirely custom, no entity)
+```
+
+When `gen_api` runs, it:
+1. Generates CRUD forwarding functions into `generated/task.rs`
+2. Scans `src/api/v1/` for hand-written modules
+3. Finds `task.rs` (same name as a generated module) and `reports.rs` (no generated counterpart)
+4. Merges `task.rs` functions into the `task` module's metadata
+5. Adds `reports` as a new module
+
+The resulting `ApiOutput` contains one `task` module with both generated and hand-written functions, plus a `reports` module with only hand-written functions. Downstream generators (HTTP routes, IPC commands, MCP tools) see all of them and generate handlers for all of them.
+
+The `Source` enum tracks provenance so import paths resolve correctly. But from the perspective of `gen_servers`, a generated `list` function and a hand-written `assign` function are the same thing -- both are `ApiFnMeta` with params, return types, and operation classification.
+
+## Scaffolded-Once Lifecycle Hooks
+
+When `gen_store` encounters a new entity, it scaffolds a hook file:
+
+```rust
+// store/hooks/task.rs
+// Scaffolded by ontogen. This file is yours to edit.
+// It is NEVER overwritten by the generator.
+
+pub async fn before_create(_store: &Store, _task: &mut Task) -> Result<(), AppError> {
+    Ok(())
+}
+
+pub async fn after_create(_store: &Store, _task: &Task) -> Result<(), AppError> {
+    Ok(())
+}
+
+// ... before_update, after_update, before_delete, after_delete
+```
+
+The generated CRUD methods call these hooks at the right moments. The hook file starts as no-ops. You fill in whatever logic you need -- validation, status transitions, side effects, notifications.
+
+The key word is "scaffolded." The file is created once. If it already exists, the generator leaves it alone. Your edits are permanent.
+
+Why not traits? A trait like `impl Hookable for Task` would be type-safe and discoverable. But it would also be rigid -- every entity needs the same hook signatures, and adding a new hook kind means changing the trait definition, which breaks all existing implementations. With plain functions, each entity's hooks are independent. You can add helper functions, import whatever you need, and the signatures are documented by the scaffold but not enforced by the compiler.
+
+Why not callbacks registered at runtime? Because build-time generation means the hook call sites are baked into the generated store methods. There's no registration, no dispatch table, no runtime cost. The generated `create_task` method literally contains `hooks::task::before_create(store, &mut entity).await?;` -- a direct function call.
+
+## Write-If-Changed
+
+Every file write in Ontogen goes through `write_if_changed`:
+
+```rust
+pub fn write_if_changed(path: &Path, content: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if path.exists() && std::fs::read(path)? == content.as_ref() {
+        return Ok(());
+    }
+    std::fs::write(path, content)
+}
+```
+
+Simple idea: read the existing file, compare, skip the write if nothing changed. This prevents unnecessary mtime updates on files whose content is identical.
+
+Why does this matter? File watchers. Tauri's development server watches `src/` for changes and triggers hot reloads. If `build.rs` writes 30 generated files on every build, and those files haven't actually changed, you get 30 file-change events that trigger 30 unnecessary recompiles. With `write_if_changed`, a no-op rebuild touches zero files and triggers zero watchers.
+
+For Rust files, Ontogen formats in memory via `rustfmt` before comparing. For TypeScript files, it formats via `prettier`. The formatted output is compared against what's on disk, so formatting differences don't cause spurious writes either.
+
+## Entity-First Naming
+
+Ontogen uses Rails-style inflection for all generated names. A `Task` entity gets:
+
+| Context | Name |
+|---------|------|
+| Store method | `list_tasks`, `get_task`, `create_task` |
+| API module | `task` |
+| HTTP routes | `/api/tasks`, `/api/tasks/:id` |
+| IPC commands | `list_tasks`, `create_task` |
+| MCP tools | `list_tasks`, `get_task` |
+| TypeScript functions | `listTasks()`, `getTask()` |
+| DB table | `tasks` (from `#[ontology(table = "tasks")]`) |
+| Generated file | `task.rs` |
+| Hook file | `hooks/task.rs` |
+
+The naming module handles pluralization (`task` -> `tasks`, `capability` -> `capabilities`, `evidence` -> `evidences`), snake_case/PascalCase conversion, and junction table name derivation.
+
+This consistency matters because it creates predictability. If you know the entity name, you know the API path. If you know the API path, you know the IPC command. Naming is never a surprise.
+
+<Aside type="note">
+The pluralization is English-only and handles common patterns (words ending in s, sh, ch, x get "-es"; words ending in consonant+y get "-ies"). It doesn't handle irregular plurals like "person" -> "people". For edge cases, use the `table` and `directory` overrides in the `#[ontology(...)]` annotation.
+</Aside>
+
+## Trade-Offs and Limitations
+
+Ontogen is not the right tool for every project. Here's where it falls short, honestly.
+
+**Schema changes require rebuilds.** Since generation happens at build time, any change to an annotated struct triggers a full `build.rs` run. The `cargo:rerun-if-changed` directives limit this to actual schema file changes, and `write_if_changed` prevents cascading recompilation when output is unchanged. But if you rename a field, everything regenerates and recompiles. For small-to-medium projects, this is seconds. For larger projects, it adds up.
+
+**Generated code can be harder to debug.** When a stack trace points into `store/generated/task.rs`, you're reading code that no human wrote. The generated code is formatted and readable, but it's still generated -- there's a mental indirection between "what I wrote" (the schema struct) and "what's running" (the generated CRUD). IDE go-to-definition works fine, but understanding *why* the generated code looks a certain way means understanding the generator.
+
+**SeaORM-specific for persistence.** The persistence layer currently generates SeaORM entities only. If you use Diesel, SQLx, or something else, `gen_seaorm` won't help you. The store layer and everything above it are less coupled to SeaORM, but the generated CRUD methods do assume SeaORM query patterns. Supporting other ORMs is possible (the generator architecture is extensible), but it's not built yet.
+
+**The strip_wikilink stub.** The Markdown I/O generator currently expects a `strip_wikilinks` function to exist in the consuming crate for stripping `[[wikilink]]` syntax from frontmatter values. This is a holdover from the original use case and will be replaced with a configurable option. For now, you need to provide a stub if you use `gen_markdown_io`.
+
+**String-based code generation.** Ontogen builds source code as strings, not ASTs. The `quote!` macro from `proc_macro2` is used in some places, but most generators construct strings directly. This means typos in generated code are caught by `rustc` at compile time, not by the generator at generation time. The `rustfmt` pass catches syntax errors early, but semantic errors in generated code surface during compilation.
+
+## What "Ontology" Means Here
+
+The name "Ontogen" combines "ontology" and "generation." But Ontogen is not an implementation of W3C OWL, RDF, or RDFS. It doesn't do description logic or knowledge graph inference.
+
+In Ontogen's context, "ontology" means something simpler: a formal data model with typed entities, named relationships between them, and explicit cardinality. Your annotated structs define entities. The `#[ontology(relation(...))]` annotations define relationships. The `belongs_to`, `has_many`, and `many_to_many` cardinalities are declared, not inferred.
+
+This is closer to what a database schema or an ER diagram captures -- the structure of your domain. The word "ontology" reflects the ambition that these definitions serve as the single authoritative description of your domain model, from which all implementation layers are derived.
+
+## Where It's Headed
+
+Ontogen's architecture is designed to support generators that don't exist yet.
+
+The IR chain is extensible. New generators can consume existing outputs without modifying upstream generators. A hypothetical `gen_graphql` could read `ApiOutput` the same way `gen_servers` does. A `gen_openapi` could produce OpenAPI specs from `ApiOutput` and `ServersOutput`.
+
+The `Source` enum and merge pattern mean new code sources can be integrated. Today there are two: `Generated` and `Scanned`. A future `Imported` variant could represent types brought in from external schema files or protobuf definitions.
+
+The per-entity `EntityDef` model is designed to grow. New field roles, new relation kinds, and new annotation attributes can be added without breaking existing generators -- they simply ignore annotations they don't recognize.
+
+The goal is not to generate *all* the code. It's to generate the boring parts so you can focus on the interesting parts.

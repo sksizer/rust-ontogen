@@ -1,0 +1,227 @@
+---
+title: Lifecycle Hooks
+description: Using scaffolded hook files to add business logic to generated CRUD operations.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Every generated CRUD method calls lifecycle hook functions at well-defined points. These hooks are where your business logic lives -- validation, side effects, notifications, audit logging, whatever your domain requires.
+
+## How hooks work
+
+When `gen_store` runs, it does two things for each entity:
+
+1. **Generates CRUD methods** in `store/generated/{entity}.rs` that call hook functions at the appropriate points.
+2. **Scaffolds hook files** in `store/hooks/{entity}.rs` with no-op implementations of every hook function.
+
+The generated CRUD code calls your hooks unconditionally. The scaffolded files start as pass-through stubs. You fill in the logic.
+
+```rust
+// Generated code in store/generated/task.rs (DO NOT EDIT)
+pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
+    hooks::before_create(self, &mut task).await?;
+
+    let id = task.id.clone();
+    let active = task.to_active_model();
+    active.insert(self.db()).await
+        .map_err(|e| AppError::DbError(e.to_string()))?;
+
+    let created = self.get_task(&id).await?;
+    self.emit_change(ChangeOp::Created, EntityKind::Task, id);
+
+    hooks::after_create(self, &created).await?;
+    Ok(created)
+}
+```
+
+Notice the pattern: `before_create` runs before the database insert and receives a mutable reference. `after_create` runs after the insert succeeds and receives an immutable reference to the created entity.
+
+## The scaffolding model
+
+Hook files follow a strict rule: **scaffolded once, never overwritten**.
+
+The first time you run `cargo build` after adding a new entity, Ontogen creates `store/hooks/{entity}.rs` with stub implementations. Every subsequent build leaves that file alone. The `mod.rs` in the hooks directory *is* regenerated to track which entities exist, but your hook files are permanent.
+
+This means you can freely edit hook files without worrying about builds wiping out your changes. It also means you need to manually add hook functions if you add new hook signatures in the future -- but that hasn't happened yet.
+
+<Aside type="caution">
+  If you delete a hook file, the next build will scaffold a fresh one with no-op stubs. Your custom logic will be gone. Treat hook files the same as any hand-written source.
+</Aside>
+
+## Hook function signatures
+
+Every entity gets six hook functions. Here's what the scaffolded file looks like for a `Task` entity:
+
+```rust
+//! Lifecycle hooks for Task.
+//!
+//! This file was scaffolded by ontogen. It is yours to edit.
+//! Fill in hook bodies with custom logic (validation, side effects, etc.).
+//! This file is NEVER overwritten by the generator.
+
+#![allow(unused_variables, clippy::unnecessary_wraps, clippy::unused_async)]
+
+use crate::schema::{Task, AppError};
+use crate::store::Store;
+use crate::store::generated::task::TaskUpdate;
+
+/// Called before a task is inserted. Modify the entity or return Err to reject.
+pub async fn before_create(_store: &Store, _task: &mut Task) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Called after a task is successfully created.
+pub async fn after_create(_store: &Store, _task: &Task) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Called before a task is updated. Receives current state and pending changes.
+pub async fn before_update(
+    _store: &Store,
+    _current: &Task,
+    _updates: &TaskUpdate,
+) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Called after a task is successfully updated.
+pub async fn after_update(_store: &Store, _task: &Task) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Called before a task is deleted.
+pub async fn before_delete(_store: &Store, _id: &str) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Called after a task is successfully deleted.
+pub async fn after_delete(_store: &Store, _id: &str) -> Result<(), AppError> {
+    Ok(())
+}
+```
+
+Every hook is `async` and returns `Result<(), AppError>`. Returning `Err` from any hook aborts the operation and propagates the error to the caller.
+
+## What each hook receives
+
+The arguments vary by hook type:
+
+| Hook | Arguments | Mutable? | Use case |
+|------|-----------|----------|----------|
+| `before_create` | `&Store`, `&mut Entity` | Yes | Validate, set defaults, generate IDs |
+| `after_create` | `&Store`, `&Entity` | No | Send notifications, trigger workflows |
+| `before_update` | `&Store`, `&Entity`, `&EntityUpdate` | No | Validate transitions, check permissions |
+| `after_update` | `&Store`, `&Entity` | No | Sync downstream data, emit events |
+| `before_delete` | `&Store`, `&str` (id) | No | Check for dependents, archive first |
+| `after_delete` | `&Store`, `&str` (id) | No | Clean up related data, notify |
+
+The `before_create` hook is special: it receives a mutable reference to the entity, so you can modify it before it hits the database. The `before_update` hook receives both the current state and the pending `EntityUpdate` struct, so you can compare old and new values.
+
+## Example: validating data in before_create
+
+Suppose tasks must have a name, and the ID should follow a `task-` prefix convention:
+
+```rust
+pub async fn before_create(_store: &Store, task: &mut Task) -> Result<(), AppError> {
+    if task.name.trim().is_empty() {
+        return Err(AppError::ValidationError(
+            "Task name cannot be empty".to_string(),
+        ));
+    }
+
+    // Ensure the ID follows the prefix convention
+    if !task.id.starts_with("task-") {
+        task.id = format!("task-{}", task.id);
+    }
+
+    Ok(())
+}
+```
+
+Because `before_create` takes `&mut Task`, you can fix up the entity in-place. The generated code uses the modified version for the database insert.
+
+## Example: enforcing state transitions in before_update
+
+Some status changes should be one-way. The `before_update` hook receives both the current entity and the pending `TaskUpdate`, so you can enforce transition rules:
+
+```rust
+pub async fn before_update(
+    _store: &Store,
+    current: &Task,
+    updates: &TaskUpdate,
+) -> Result<(), AppError> {
+    // Don't allow re-opening completed tasks
+    if let Some(ref new_status) = updates.status {
+        if current.status == Some(TaskStatus::Completed)
+            && *new_status != TaskStatus::Completed
+        {
+            return Err(AppError::ValidationError(
+                "Cannot re-open a completed task".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+```
+
+The `TaskUpdate` struct wraps every field in `Option`. A `None` value means "no change" -- the update only touches fields that are `Some`.
+
+## Example: cascading side effects in after_create
+
+After creating a task, you might want to update a parent project's `updated_at` timestamp or send a notification:
+
+```rust
+pub async fn after_create(store: &Store, task: &Task) -> Result<(), AppError> {
+    // Update the parent project's modification timestamp
+    if let Some(ref project_id) = task.project_id {
+        let updates = ProjectUpdate {
+            updated_at: Some(chrono::Utc::now().to_rfc3339()),
+            ..Default::default()
+        };
+        store.update_project(project_id, updates).await?;
+    }
+
+    Ok(())
+}
+```
+
+Notice that hooks receive a `&Store` reference, so you can call other generated CRUD methods. This is how you implement cross-entity business logic without modifying generated code.
+
+## The hooks_dir config option
+
+Hook scaffolding is controlled by the `StoreConfig::hooks_dir` field:
+
+```rust
+let store_output = ontogen::gen_store(
+    &schema.entities,
+    Some(&seaorm),
+    &ontogen::StoreConfig {
+        output_dir: "src/store/generated".into(),
+        hooks_dir: Some("src/store/hooks".into()),
+    },
+)?;
+```
+
+When `hooks_dir` is `Some`, hook files are scaffolded for every entity. When `None`, scaffolding is skipped entirely -- but the generated CRUD code still calls `hooks::before_create`, `hooks::after_create`, etc. You're responsible for providing those modules yourself.
+
+<Aside type="tip">
+  Setting `hooks_dir: None` is useful when you want to provide hook implementations from a different part of your crate, or when you want full control over the module structure. The generated store expects `crate::store::hooks::{entity}` to exist either way.
+</Aside>
+
+## File organization
+
+After running the store generator with hooks enabled, you'll have:
+
+```
+src/store/
+  mod.rs              # your hand-written Store struct definition
+  generated/          # regenerated every build (DO NOT EDIT)
+    mod.rs
+    task.rs           # CRUD methods + TaskUpdate struct
+  hooks/              # scaffolded once, yours to edit
+    mod.rs            # regenerated to declare modules
+    task.rs           # your lifecycle hook implementations
+```
+
+The `hooks/mod.rs` is the one file in the hooks directory that *does* get regenerated. It only contains `pub mod` declarations -- one per entity -- so the generated store code can import hooks correctly. Your actual hook logic in `hooks/task.rs` is never touched.
