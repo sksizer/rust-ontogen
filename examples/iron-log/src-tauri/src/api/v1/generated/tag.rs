@@ -8,7 +8,7 @@ use crate::store::tag::TagUpdate;
 
 /// List all tags
 pub async fn list(store: &Store) -> Result<Vec<Tag>, AppError> {
-    store.list_tags().await
+    store.list_tags(None, None).await
 }
 
 /// Get a single tag by ID

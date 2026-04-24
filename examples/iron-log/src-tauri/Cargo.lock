@@ -664,6 +664,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "cruet"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28049cb85be0d073a0e90983c15b50d730f59292985cd17bfab0ce090f158c31"
+dependencies = [
+ "regex",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2583,7 +2592,9 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "ontogen"
 version = "0.1.0"
 dependencies = [
+ "cruet",
  "ontogen-core",
+ "ontogen-macros",
  "quote",
  "syn 2.0.117",
 ]
