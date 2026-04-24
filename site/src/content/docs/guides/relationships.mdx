@@ -1,0 +1,426 @@
+---
+title: Relationships
+description: Defining belongs_to, has_many, and many_to_many relationships between entities.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Relationships connect entities. Ontogen supports three kinds -- `belongs_to`, `has_many`, and `many_to_many` -- and each one affects every stage of the pipeline differently. This guide covers what each relationship generates, how to annotate them, and how they interact across entities.
+
+## The Three Relationship Kinds
+
+| Kind | Direction | Storage | Schema Type |
+|---|---|---|---|
+| `belongs_to` | This entity points to target | FK column on this table | `Option<String>` or `String` |
+| `has_many` | Target entity points back here | FK column on target table | `Vec<String>` |
+| `many_to_many` | Both entities linked through junction | Separate junction table | `Vec<String>` |
+
+## belongs_to
+
+A `belongs_to` is the simplest relationship. It means "this entity has a foreign key column pointing to another entity."
+
+```rust
+#[serde(default)]
+#[ontology(relation(belongs_to, target = "Workout"))]
+pub workout_id: String,
+```
+
+### What gets generated
+
+**SeaORM entity** -- the FK column appears as a regular column, plus a `Relation` enum variant:
+
+```rust
+// In the entity Model struct
+pub workout_id: String,
+
+// In the Relation enum
+#[sea_orm(
+    belongs_to = "super::workout::Entity",
+    from = "Column::WorkoutId",
+    to = "super::workout::Column::Id"
+)]
+WorkoutId,
+```
+
+**Conversion layer** -- the FK is treated like a regular field in `from_model()` and `to_active_model()`:
+
+```rust
+// from_model
+workout_id: model.workout_id.clone(),
+
+// to_active_model
+workout_id: Set(self.workout_id.clone()),
+```
+
+**Store layer** -- no special handling. The FK is just a field value. No population step needed.
+
+### Self-referential belongs_to
+
+When an entity points to itself (like a tree structure), the generated code references `Entity` directly instead of `super::other::Entity`:
+
+```rust
+#[ontology(relation(belongs_to, target = "Node"))]
+pub parent_id: Option<String>,
+```
+
+Generates:
+
+```rust
+#[sea_orm(
+    belongs_to = "Entity",        // self-reference
+    from = "Column::ParentId",
+    to = "Column::Id"             // Column::Id, not super::node::Column::Id
+)]
+ParentId,
+```
+
+### Required vs Optional
+
+The field type controls nullability:
+
+```rust
+// Required FK -- the entity MUST reference a target
+#[ontology(relation(belongs_to, target = "Workout"))]
+pub workout_id: String,
+
+// Optional FK -- the reference can be NULL
+#[ontology(relation(belongs_to, target = "Node"))]
+pub parent_id: Option<String>,
+```
+
+A required `String` FK generates a `NOT NULL` column. An `Option<String>` FK generates a nullable column.
+
+## has_many
+
+A `has_many` is the reverse side of a `belongs_to`. It represents "other entities have a FK column pointing to this entity." The relationship doesn't add a column to this table -- it reads from the other table.
+
+```rust
+#[serde(default)]
+#[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
+pub contains: Vec<String>,
+```
+
+The `foreign_key` parameter is required and must name the FK column on the target entity.
+
+### What gets generated
+
+**SeaORM entity** -- no column is generated. `has_many` fields are not stored on this table.
+
+**Conversion layer** -- initialized as empty in `from_model()`, excluded from `to_active_model()`:
+
+```rust
+// from_model
+contains: Vec::new(),   // populated later by Store
+
+// to_active_model -- field not present
+```
+
+**Store layer** -- populated via a query against the target table:
+
+```rust
+// Inside populate_node_relations()
+node.contains = {
+    use crate::persistence::db::entities::node;
+    let children = node::Entity::find()
+        .filter(node::Column::ParentId.eq(&node.id))
+        .all(self.db())
+        .await
+        .map_err(|e| crate::schema::AppError::DbError(e.to_string()))?;
+    children.into_iter().map(|m| m.id).collect()
+};
+```
+
+On create and update, the store sets the FK on child entities:
+
+```rust
+// In create_node()
+for child_id in &contains {
+    self.set_node_parent(child_id, Some(&id)).await?;
+}
+```
+
+The `set_node_parent` helper executes a raw SQL `UPDATE` to set the FK column on the target table.
+
+## many_to_many
+
+A `many_to_many` relationship requires a junction (association) table. Neither entity has a FK column -- the junction table has two FK columns, one for each side.
+
+```rust
+#[serde(default)]
+#[ontology(relation(many_to_many, target = "Requirement"))]
+pub fulfills: Vec<String>,
+```
+
+### What gets generated
+
+**SeaORM entity** -- no column on the main entity, but a `has_many` link to the junction table, plus a `Related` impl for the target entity:
+
+```rust
+// Relation enum variant
+#[sea_orm(has_many = "super::node_fulfills::Entity")]
+FulfillsLink,
+
+// Related impl for traversing through junction
+impl Related<super::requirement::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::node_fulfills::Relation::Requirement.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(super::node_fulfills::Relation::Node.def().rev())
+    }
+}
+```
+
+**Junction table entity** -- a complete SeaORM entity is generated:
+
+```rust
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+#[sea_orm(table_name = "node_fulfills")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i32,              // auto-increment PK
+    pub node_id: String,      // FK to source entity
+    pub requirement_id: String, // FK to target entity
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::node::Entity",
+        from = "Column::NodeId",
+        to = "super::node::Column::Id"
+    )]
+    Node,
+    #[sea_orm(
+        belongs_to = "super::requirement::Entity",
+        from = "Column::RequirementId",
+        to = "super::requirement::Column::Id"
+    )]
+    Requirement,
+}
+```
+
+**Conversion layer** -- initialized as empty in `from_model()`, excluded from `to_active_model()`:
+
+```rust
+fulfills: Vec::new(),    // populated later by Store
+```
+
+**Store layer** -- populated via `load_junction_ids` and synced via `sync_junction`:
+
+```rust
+// In populate_node_relations()
+node.fulfills = self
+    .load_junction_ids("node_fulfills", "node_id", "requirement_id", &node.id)
+    .await?;
+
+// In create_node()
+self.sync_junction("node_fulfills", "node_id", "requirement_id", &id, &fulfills).await?;
+
+// In update_node() (only if the field changed)
+if fulfills_changed {
+    self.sync_junction("node_fulfills", "node_id", "requirement_id", id, &current.fulfills).await?;
+}
+```
+
+### Junction Table Naming
+
+By default, the junction table name is `{source_snake}_{field_name}`:
+
+| Source Entity | Field Name | Junction Table |
+|---|---|---|
+| `Node` | `fulfills` | `node_fulfills` |
+| `Specification` | `capability_ids` | `specification_capability_ids` |
+| `Workout` | `tags` | `workout_tags` |
+
+You can override this:
+
+```rust
+#[ontology(relation(many_to_many, target = "Requirement", junction = "node_fulfills_req"))]
+pub fulfills: Vec<String>,
+```
+
+### Junction Column Naming
+
+The junction table always has three columns:
+
+- `id` -- auto-increment integer primary key
+- `{source_snake}_id` -- FK to the source entity
+- `{target_snake}_id` -- FK to the target entity
+
+For the `node` -> `fulfills` -> `requirement` example:
+
+```
+node_fulfills
+├── id: i32 (PK, auto-increment)
+├── node_id: String (FK → nodes.id)
+└── requirement_id: String (FK → requirements.id)
+```
+
+### Self-Referential many_to_many
+
+When both sides of the relationship point to the same entity, the column names change to avoid ambiguity:
+
+```rust
+// Task depends on other Tasks
+#[ontology(relation(many_to_many, target = "Task"))]
+pub depends_on: Vec<String>,
+```
+
+Generates:
+
+```rust
+#[sea_orm(table_name = "task_depends_on")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i32,
+    pub task_id: String,     // source
+    pub target_id: String,   // NOT "task_id" again -- disambiguated
+}
+```
+
+The variants in the Relation enum also change:
+
+```rust
+pub enum Relation {
+    Source, // instead of Task
+    Target, // instead of Task
+}
+```
+
+## How Relationships Affect Each Pipeline Stage
+
+| Stage | belongs_to | has_many | many_to_many |
+|---|---|---|---|
+| **SeaORM Entity** | FK column + `belongs_to` variant | No column | No column + `has_many` to junction + `Related` impl |
+| **Junction Table** | -- | -- | Full entity generated |
+| **from_model()** | Cloned from model | `Vec::new()` | `Vec::new()` |
+| **to_active_model()** | `Set(value)` | Excluded | Excluded |
+| **Store: create** | Direct insert | Set FK on children | `sync_junction()` |
+| **Store: update** | Direct update | Conditional FK update | Conditional `sync_junction()` |
+| **Store: list/get** | Direct read | `populate_relations()` | `populate_relations()` |
+| **Update struct** | `Option<Option<String>>` or `Option<String>` | `Option<Vec<String>>` | `Option<Vec<String>>` |
+
+## Complete Three-Entity Example
+
+Here's a real-world pattern showing all three relationship types between `Workout`, `WorkoutSet`, and `Tag`:
+
+```rust
+// workout.rs
+#[derive(OntologyEntity)]
+#[ontology(entity, table = "workouts")]
+pub struct Workout {
+    #[ontology(id)]
+    pub id: String,
+
+    pub date: String,
+
+    // many_to_many: workouts have tags (junction: workout_tags)
+    #[serde(default)]
+    #[ontology(relation(many_to_many, target = "Tag"))]
+    pub tags: Vec<String>,
+}
+
+// workout_set.rs
+#[derive(OntologyEntity)]
+#[ontology(entity, table = "workout_sets")]
+pub struct WorkoutSet {
+    #[ontology(id)]
+    pub id: String,
+
+    // belongs_to: each set belongs to a workout
+    #[ontology(relation(belongs_to, target = "Workout"))]
+    pub workout_id: String,
+
+    // belongs_to: each set uses an exercise
+    #[ontology(relation(belongs_to, target = "Exercise"))]
+    pub exercise_id: String,
+
+    pub reps: i32,
+    pub weight_grams: i32,
+}
+
+// tag.rs
+#[derive(OntologyEntity)]
+#[ontology(entity, table = "tags")]
+pub struct Tag {
+    #[ontology(id)]
+    pub id: String,
+
+    pub name: String,
+}
+```
+
+From these three structs, Ontogen generates:
+
+- `workout.rs` entity: columns for `id` and `date`, a `has_many` link to `workout_tags` junction, and a `Related<Tag>` impl
+- `workout_set.rs` entity: columns for all fields including `workout_id` and `exercise_id` FK columns, `belongs_to` variants for both
+- `workout_tags.rs` junction entity: `id`, `workout_id`, `tag_id` columns with relations to both `workout` and `tag`
+- `tag.rs` entity: columns for `id` and `name`, no relations on this side
+
+The store layer generates:
+- `list_workouts()`/`get_workout()` calls `populate_workout_relations()` which loads `tags` via `load_junction_ids("workout_tags", ...)`
+- `create_workout()` calls `sync_junction("workout_tags", ...)` to insert junction rows
+- `update_workout()` conditionally re-syncs if `tags` was included in the update
+- `WorkoutSet` CRUD has no extra relation handling -- `belongs_to` fields are just regular columns
+
+<Aside type="tip">
+You don't need to define the reverse side of every relationship. If `WorkoutSet` has `belongs_to` pointing to `Workout`, Ontogen doesn't require `Workout` to have a `has_many` back. Each side is independently declared. Add `has_many` only when you need the parent to know about its children at query time.
+</Aside>
+
+## Common Patterns
+
+### Tree Structure (Self-Referential)
+
+```rust
+#[ontology(entity, table = "nodes")]
+pub struct Node {
+    #[ontology(id)]
+    pub id: String,
+
+    #[serde(default)]
+    #[ontology(relation(belongs_to, target = "Node"))]
+    pub parent_id: Option<String>,
+
+    #[serde(default)]
+    #[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
+    pub contains: Vec<String>,
+}
+```
+
+### Multiple FK to Same Target
+
+```rust
+#[ontology(entity, table = "contracts")]
+pub struct Contract {
+    #[ontology(id)]
+    pub id: String,
+
+    #[ontology(relation(belongs_to, target = "Node"))]
+    pub scope: Option<String>,
+
+    #[ontology(relation(belongs_to, target = "Node"))]
+    pub from_id: Option<String>,
+
+    #[ontology(relation(belongs_to, target = "Node"))]
+    pub to_id: Option<String>,
+}
+```
+
+Each `belongs_to` generates its own `Relation` enum variant (`Scope`, `FromId`, `ToId`), all pointing to `super::node::Entity`.
+
+### Dependencies (Self-Referential many_to_many)
+
+```rust
+#[ontology(entity, table = "requirements")]
+pub struct Requirement {
+    #[ontology(id)]
+    pub id: String,
+
+    #[serde(default)]
+    #[ontology(relation(many_to_many, target = "Requirement"))]
+    pub depends_on: Vec<String>,
+}
+```
+
+The junction table `requirement_depends_on` uses `requirement_id` and `target_id` (disambiguated because source and target are the same entity).
