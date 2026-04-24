@@ -114,7 +114,36 @@ fn parse_entity_struct(input: &DeriveInput, path: &Path) -> Result<Option<Entity
     let type_name = struct_attrs.type_name.unwrap_or_else(|| default_snake.clone());
     let prefix = struct_attrs.prefix.unwrap_or_else(|| default_snake.clone());
 
+    validate_identifier("directory", &directory).map_err(|e| format!("entity `{name}`: {e}"))?;
+    validate_identifier("table", &table).map_err(|e| format!("entity `{name}`: {e}"))?;
+    validate_identifier("type_name", &type_name).map_err(|e| format!("entity `{name}`: {e}"))?;
+    validate_identifier("prefix", &prefix).map_err(|e| format!("entity `{name}`: {e}"))?;
+
     Ok(Some(EntityDef { name, directory, table, type_name, prefix, fields: field_defs }))
+}
+
+/// Validate that a user-supplied identifier conforms to `[A-Za-z_][A-Za-z0-9_]*`.
+///
+/// Applied to `table`, `directory`, `type_name`, and `prefix` values that flow
+/// into generated code (including SQL), to reject empty strings and inputs
+/// containing characters outside the standard identifier alphabet.
+fn validate_identifier(field: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("invalid {field}=``: must not be empty"));
+    }
+    let mut chars = value.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(format!(
+            "invalid {field}=`{value}`: must match [A-Za-z_][A-Za-z0-9_]* (must start with letter or underscore)"
+        ));
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!(
+            "invalid {field}=`{value}`: must match [A-Za-z_][A-Za-z0-9_]* (only letters, digits, or underscore allowed)"
+        ));
+    }
+    Ok(())
 }
 
 /// Parsed struct-level `#[ontology(...)]` attributes.
@@ -847,5 +876,80 @@ mod tests {
         // Agent — no relations
         let agent = find("Agent");
         assert_eq!(agent.relation_fields().count(), 0);
+    }
+
+    #[test]
+    fn rejects_sql_injection_in_table() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, table = "users'; DROP TABLE users; --")]
+            pub struct Node {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let err = parse_schema_source(source, Path::new("test.rs")).expect_err("expected validation error");
+        assert!(err.contains("invalid"), "error should mention `invalid`: {err}");
+        assert!(err.contains("table"), "error should mention field name `table`: {err}");
+        assert!(err.contains("Node"), "error should mention entity name `Node`: {err}");
+    }
+
+    #[test]
+    fn rejects_invalid_directory() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, directory = "1bad-dir")]
+            pub struct Thing {
+                #[ontology(id)]
+                pub id: String,
+            }
+        "#;
+
+        let err = parse_schema_source(source, Path::new("test.rs")).expect_err("expected validation error");
+        assert!(err.contains("invalid"));
+        assert!(err.contains("directory"));
+    }
+
+    #[test]
+    fn rejects_empty_prefix() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, prefix = "")]
+            pub struct Thing {
+                #[ontology(id)]
+                pub id: String,
+            }
+        "#;
+
+        let err = parse_schema_source(source, Path::new("test.rs")).expect_err("expected validation error");
+        assert!(err.contains("prefix"));
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn validate_identifier_accepts_good_values() {
+        assert!(validate_identifier("table", "users").is_ok());
+        assert!(validate_identifier("table", "work_sessions").is_ok());
+        assert!(validate_identifier("prefix", "_leading_underscore").is_ok());
+        assert!(validate_identifier("type_name", "Node42").is_ok());
+    }
+
+    #[test]
+    fn validate_identifier_rejects_bad_values() {
+        assert!(validate_identifier("table", "").is_err());
+        assert!(validate_identifier("table", "1leading_digit").is_err());
+        assert!(validate_identifier("table", "has-dash").is_err());
+        assert!(validate_identifier("table", "has space").is_err());
+        assert!(validate_identifier("table", "users'; DROP TABLE users; --").is_err());
     }
 }
