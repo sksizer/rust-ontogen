@@ -8,7 +8,7 @@ use crate::store::exercise::ExerciseUpdate;
 
 /// List all exercises
 pub async fn list(store: &Store) -> Result<Vec<Exercise>, AppError> {
-    store.list_exercises().await
+    store.list_exercises(None, None).await
 }
 
 /// Get a single exercise by ID

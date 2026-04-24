@@ -8,7 +8,7 @@ use crate::store::workout_set::WorkoutSetUpdate;
 
 /// List all workout_sets
 pub async fn list(store: &Store) -> Result<Vec<WorkoutSet>, AppError> {
-    store.list_workout_sets().await
+    store.list_workout_sets(None, None).await
 }
 
 /// Get a single workout_set by ID
