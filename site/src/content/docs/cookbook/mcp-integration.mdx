@@ -1,0 +1,185 @@
+---
+title: MCP Integration
+description: Exposing your entities as Model Context Protocol tools for AI assistants.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+The Model Context Protocol (MCP) is a standard for exposing tools and data sources to AI assistants like Claude. When you configure Ontogen's MCP server generator, your entity CRUD operations become MCP tools that an AI assistant can call -- listing, creating, updating, and deleting your domain objects through natural language.
+
+This recipe shows you how to generate MCP tool definitions from your Ontogen entity pipeline.
+
+## What MCP tools look like
+
+An MCP tool has three things: a name, a description, and a JSON Schema for its parameters. Ontogen generates all three from your entity definitions and API metadata.
+
+For a `Workout` entity, you'd get tools like:
+
+| Tool name | Description | Parameters |
+|-----------|-------------|------------|
+| `list_workouts` | List all workouts | (none) |
+| `get_workout` | Get a single workout by ID | `{ "id": "string" }` |
+| `create_workout` | Create a new workout | `{ "id": "string", "name": "string?", "date": "string", ... }` |
+| `update_workout` | Update an existing workout | `{ "id": "string", "name": "string?", ... }` |
+| `delete_workout` | Delete a workout by ID | `{ "id": "string" }` |
+
+The descriptions come from your API function doc comments. The parameter schemas come from your entity field types and DTOs.
+
+## Recipe: Generate MCP tools
+
+<Steps>
+
+1. ### Add the MCP generator to your server config
+
+   In your `build.rs`, add `ServerGenerator::Mcp` to the generators list:
+
+   ```rust
+   use ontogen::servers::config::{GeneratorConfig, ServerGenerator};
+
+   // Inside your Config or ServersConfig:
+   generators: vec![
+       GeneratorConfig::Server(ServerGenerator::HttpAxum {
+           output: "src/api/transport/http/generated.rs".into(),
+       }),
+       // Add MCP alongside your other transports
+       GeneratorConfig::Server(ServerGenerator::Mcp {
+           output: "src/api/transport/mcp/generated.rs".into(),
+       }),
+   ],
+   ```
+
+   The MCP generator reads the same `ApiOutput` as the HTTP and IPC generators. You don't need any additional configuration for MCP-specific behavior.
+
+2. ### Create the transport module
+
+   Create the directory and module file for the generated MCP code:
+
+   ```
+   src/api/transport/mcp/
+     mod.rs
+     generated.rs    # will be written by the generator
+   ```
+
+   In `src/api/transport/mcp/mod.rs`:
+
+   ```rust
+   pub mod generated;
+   ```
+
+   And register it in your transport module tree.
+
+3. ### Build
+
+   ```bash
+   cargo build
+   ```
+
+   The generator produces `src/api/transport/mcp/generated.rs` with tool definitions for every entity in your API surface.
+
+4. ### Serve the MCP tools
+
+   The generated code gives you tool definitions (names, descriptions, parameter schemas). You need to serve them via an MCP-compatible transport -- typically stdio for local tools or HTTP with SSE for remote tools.
+
+   Here's a minimal example using the generated tool registry:
+
+   ```rust
+   use crate::api::transport::mcp::generated;
+
+   // Register tools with your MCP server implementation
+   let tools = generated::tool_definitions();
+   // Each tool has: name, description, parameters_schema (JSON Schema string)
+
+   for tool in &tools {
+       mcp_server.register_tool(
+           &tool.name,
+           &tool.description,
+           &tool.parameters_schema,
+           |params| {
+               // Route to the appropriate API function based on tool name
+               // The generated code provides a dispatch function for this
+           },
+       );
+   }
+   ```
+
+   The exact integration depends on which MCP server library you use. The generated code provides the tool metadata -- you wire it into your server framework.
+
+5. ### Write good doc comments
+
+   MCP tool descriptions come directly from the `///` doc comments on your API functions. The generated CRUD functions have default descriptions like "List all workouts" and "Create a new workout".
+
+   For custom endpoints, your doc comments become the tool descriptions that AI assistants see:
+
+   ```rust
+   /// Search workouts by date range. Returns workouts between
+   /// the start and end dates (inclusive). Dates are ISO8601 format.
+   pub async fn search_by_date(
+       store: &Store,
+       start: &str,
+       end: &str,
+   ) -> Result<Vec<Workout>, AppError> { ... }
+   ```
+
+   This becomes an MCP tool with the full description available to the AI for deciding when and how to call it.
+
+</Steps>
+
+## How parameter schemas are generated
+
+The MCP generator converts Rust types to JSON Schema:
+
+| Rust type | JSON Schema |
+|-----------|-------------|
+| `String`, `&str` | `{ "type": "string" }` |
+| `i32`, `i64` | `{ "type": "integer" }` |
+| `bool` | `{ "type": "boolean" }` |
+| `Option<T>` | Schema for `T`, not required |
+| `Vec<T>` | `{ "type": "array", "items": <schema for T> }` |
+| `CreateEntityInput` | Object schema with all fields from the DTO |
+
+Required vs optional is determined by the field types in your DTOs. `Option<T>` fields become optional properties in the JSON Schema.
+
+## Custom endpoints as MCP tools
+
+Custom API endpoints you write in your scan directories automatically become MCP tools. The function name becomes the tool name (underscored), the doc comment becomes the description, and the parameters become the schema.
+
+```rust
+/// Get training volume (total sets x reps x weight) for an exercise
+/// over the last N days. Useful for tracking progressive overload.
+pub async fn training_volume(
+    store: &Store,
+    exercise_id: &str,
+    days: i32,
+) -> Result<f64, AppError> { ... }
+```
+
+This produces an MCP tool:
+- **Name**: `training_volume`
+- **Description**: "Get training volume (total sets x reps x weight) for an exercise over the last N days. Useful for tracking progressive overload."
+- **Parameters**: `{ "exercise_id": { "type": "string" }, "days": { "type": "integer" } }`
+
+## MCP alongside other transports
+
+MCP generation is independent of HTTP and IPC generation. You can run all three, or just MCP, or any combination. They all read from the same `ApiOutput` and produce separate output files.
+
+A common pattern is to generate all three transports:
+
+```rust
+generators: vec![
+    GeneratorConfig::Server(ServerGenerator::HttpAxum {
+        output: "src/api/transport/http/generated.rs".into(),
+    }),
+    GeneratorConfig::Server(ServerGenerator::TauriIpc {
+        output: "src/api/transport/ipc/generated.rs".into(),
+    }),
+    GeneratorConfig::Server(ServerGenerator::Mcp {
+        output: "src/api/transport/mcp/generated.rs".into(),
+    }),
+],
+```
+
+This gives you: a web API, a desktop app API, and an AI-accessible API -- all from the same entity definitions, all type-safe, all kept in sync automatically.
+
+<Aside type="tip">
+When you add a new entity or custom endpoint, all three transports update on the next build. There's nothing extra to wire up for MCP -- if it shows up in your API surface, it shows up as an MCP tool.
+</Aside>

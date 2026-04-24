@@ -281,11 +281,9 @@ fn parse_relation_meta(list: &syn::MetaList) -> Option<RelationInfo> {
 
     for meta in &nested {
         match meta {
-            Meta::Path(p) => {
+            Meta::Path(p) if kind_name.is_none() => {
                 // First bare identifier is the relation kind
-                if kind_name.is_none() {
-                    kind_name = Some(p.get_ident()?.to_string());
-                }
+                kind_name = Some(p.get_ident()?.to_string());
             }
             Meta::NameValue(nv) if nv.path.is_ident("target") => {
                 target = expr_to_string(&nv.value);

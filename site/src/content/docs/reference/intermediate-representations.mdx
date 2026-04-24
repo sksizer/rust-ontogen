@@ -1,0 +1,268 @@
+---
+title: Intermediate Representations
+description: Reference for all IR output types that flow between Ontogen generators.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Each generator in the pipeline returns a plain Rust struct. These intermediate representations (IRs) carry typed metadata from one stage to the next. There's no magic here -- just data that downstream generators use to make smarter decisions.
+
+## `SchemaOutput`
+
+Returned by `parse_schema()`. The starting point for everything.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entities` | `Vec<EntityDef>` | All parsed entity definitions from your schema directory. |
+
+`EntityDef` and its subtypes (`FieldDef`, `FieldType`, `FieldRole`, `RelationInfo`, `RelationKind`) are covered in the [Field Types](/reference/field-types/) reference.
+
+---
+
+## `SeaOrmOutput`
+
+Returned by `gen_seaorm()`. Describes what was generated for the persistence layer.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entity_tables` | `Vec<EntityTableMeta>` | Table metadata for each generated entity. |
+| `junction_tables` | `Vec<JunctionMeta>` | Junction table metadata for many-to-many relations. |
+| `conversion_fns` | `Vec<ConversionMeta>` | Which from_model/to_active_model conversions were generated. |
+
+### `EntityTableMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entity_name` | `String` | Rust struct name (e.g., `"Workout"`). |
+| `table_name` | `String` | SQL table name (e.g., `"workouts"`). |
+| `module_path` | `String` | Rust module path for the generated SeaORM entity (e.g., `"crate::persistence::db::entities::workout"`). |
+| `columns` | `Vec<ColumnMeta>` | Column definitions for this table. |
+
+### `ColumnMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `String` | Column name (e.g., `"workout_id"`). |
+| `column_type` | `String` | SeaORM column type as a string (e.g., `"String"`, `"Option<i32>"`). |
+| `is_primary_key` | `bool` | Whether this column is the primary key. |
+
+### `JunctionMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `table_name` | `String` | Junction table name (e.g., `"workout_tags"`). |
+| `source_entity` | `String` | Source entity name (e.g., `"Workout"`). |
+| `target_entity` | `String` | Target entity name (e.g., `"Tag"`). |
+| `source_fk` | `String` | FK column pointing to the source (e.g., `"workout_id"`). |
+| `target_fk` | `String` | FK column pointing to the target (e.g., `"tag_id"`). |
+
+### `ConversionMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entity_name` | `String` | Entity name this conversion is for. |
+| `module_path` | `String` | Module path where the conversion code lives. |
+
+### How `gen_store` uses `SeaOrmOutput`
+
+When you pass `Some(&seaorm)` to `gen_store`, it uses the structured metadata for exact table names, column names, and junction table references instead of guessing from naming conventions. For example:
+
+- `JunctionMeta.table_name` tells it the exact junction table to sync for many-to-many updates.
+- `JunctionMeta.source_fk` and `target_fk` give exact column names for the `sync_junction()` calls.
+- `EntityTableMeta.module_path` drives the correct `use` statements in generated store code.
+
+When you pass `None`, the store generator derives all of this from snake_case transformations of entity and field names. This works if your naming is conventional, but the structured metadata is more reliable.
+
+---
+
+## `StoreOutput`
+
+Returned by `gen_store()`. Describes the generated CRUD layer.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `methods` | `Vec<StoreMethodMeta>` | All generated and scanned store methods. |
+| `scaffolded_hooks` | `Vec<ScaffoldMeta>` | Hook files that were scaffolded during this build. |
+| `change_channels` | `Vec<ChannelMeta>` | Per-entity broadcast channels (when change events are enabled). |
+
+### `StoreMethodMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entity_name` | `String` | Which entity this method belongs to (e.g., `"Workout"`). |
+| `name` | `String` | Method name (e.g., `"create_workout"`, `"list_workouts"`). |
+| `kind` | `StoreMethodKind` | Whether it's a standard CRUD operation or a custom method. |
+| `params` | `Vec<ParamMeta>` | Method parameters. |
+| `return_type` | `String` | Return type as a string (e.g., `"Vec<Workout>"`, `"Workout"`). |
+| `source` | `Source` | Where this method came from (generated or scanned). |
+
+### `StoreMethodKind`
+
+```rust
+pub enum StoreMethodKind {
+    Crud(CrudOp),
+    Custom,
+}
+
+pub enum CrudOp {
+    List,
+    Get,
+    Create,
+    Update,
+    Delete,
+}
+```
+
+### `ScaffoldMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entity_name` | `String` | Entity this hook file belongs to. |
+| `file_path` | `PathBuf` | Absolute path to the scaffolded hook file. |
+| `functions` | `Vec<String>` | Function names in the hook file (e.g., `["before_create", "after_create", ...]`). |
+
+### `ChannelMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entity_name` | `String` | Entity this channel is for. |
+| `subscribe_method` | `String` | Method name to subscribe (e.g., `"subscribe_workout_changes"`). |
+| `event_type` | `String` | Event type name (e.g., `"WorkoutChangeEvent"`). |
+
+---
+
+## `ApiOutput`
+
+Returned by `gen_api()`. The unified view of all API endpoints -- both generated CRUD and hand-written custom endpoints.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `modules` | `Vec<ApiModule>` | All API modules, organized by entity/domain. |
+
+### `ApiModule`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `String` | Module name (e.g., `"workout"`, `"reports"`). |
+| `fns` | `Vec<ApiFnMeta>` | All functions in this module. |
+| `state_type` | `StateKind` | Whether functions in this module use `AppState` or `Store`. |
+
+### `ApiFnMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `String` | Function name (e.g., `"create"`, `"get_by_id"`, `"archive"`). |
+| `doc` | `String` | Doc comment text. Used as the MCP tool description and in future OpenAPI docs. |
+| `params` | `Vec<ParamMeta>` | Function parameters (excluding the first state/store parameter). |
+| `return_type` | `String` | Return type as a string (e.g., `"Vec<Workout>"`). |
+| `source` | `Source` | Generated or scanned. |
+| `classified_op` | `OpKind` | Operation classification that drives HTTP verb and route structure. |
+
+### `StateKind`
+
+```rust
+pub enum StateKind {
+    AppState,  // Function takes &AppState as first param
+    Store,     // Function takes &Store as first param
+}
+```
+
+`Store`-scoped functions get project-scoped routes when `route_prefix` is configured. `AppState`-scoped functions get unscoped routes.
+
+---
+
+## `ServersOutput`
+
+Returned by `gen_servers()`. Describes all transport endpoints that were generated.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `http_routes` | `Vec<HttpRouteMeta>` | Generated HTTP route handlers. |
+| `ipc_commands` | `Vec<IpcCommandMeta>` | Generated Tauri IPC commands. |
+| `mcp_tools` | `Vec<McpToolMeta>` | Generated MCP tool definitions. |
+
+### `HttpRouteMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `method` | `String` | HTTP method (e.g., `"GET"`, `"POST"`, `"PUT"`, `"DELETE"`). |
+| `path` | `String` | Route path (e.g., `"/api/workouts"`, `"/api/workouts/:id"`). |
+| `handler_name` | `String` | Handler function name in the generated Rust code. |
+| `module_name` | `String` | API module this route belongs to. |
+
+### `IpcCommandMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `command_name` | `String` | Tauri command name (e.g., `"get_workouts"`, `"create_workout"`). |
+| `params` | `Vec<ParamMeta>` | Command parameters. |
+| `return_type` | `String` | Return type. |
+
+### `McpToolMeta`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tool_name` | `String` | MCP tool name (e.g., `"list_workouts"`). |
+| `description` | `String` | Tool description from the API function's doc comment. |
+| `params_schema` | `String` | JSON Schema string describing tool parameters. |
+
+---
+
+## Shared types
+
+### `Source`
+
+Every method and function in the IR carries a `Source` discriminator that records whether it was generated from an `EntityDef` or scanned from a hand-written source file.
+
+```rust
+pub enum Source {
+    Generated { module_path: String },
+    Scanned { module_path: String, file_path: PathBuf },
+}
+```
+
+| Variant | Fields | Description |
+|---------|--------|-------------|
+| `Generated` | `module_path` | Produced by a codegen layer from an `EntityDef`. The `module_path` is the Rust path to the generated module (e.g., `"crate::api::v1::generated::workout"`). |
+| `Scanned` | `module_path`, `file_path` | Parsed from a hand-written source file. `file_path` points to the original `.rs` file on disk. |
+
+Downstream generators use `Source` to emit correct `use` statements. A `Generated` function is imported from the generated module path. A `Scanned` function is imported from its original location.
+
+### `OpKind`
+
+Classifies what kind of operation an API function represents. This drives HTTP verb selection, route structure, and parameter handling in transport generators.
+
+```rust
+pub enum OpKind {
+    List,
+    GetById,
+    Create,
+    Update,
+    Delete,
+    CustomGet,
+    CustomPost,
+    EventStream,
+}
+```
+
+| Variant | HTTP Method | Route Pattern | Description |
+|---------|------------|---------------|-------------|
+| `List` | `GET` | `/entities` | Returns all entities. |
+| `GetById` | `GET` | `/entities/:id` | Returns one entity by ID. |
+| `Create` | `POST` | `/entities` | Creates a new entity. |
+| `Update` | `PUT` | `/entities/:id` | Updates an existing entity. |
+| `Delete` | `DELETE` | `/entities/:id` | Deletes an entity. |
+| `CustomGet` | `GET` | `/entities/:action` | Custom read operation with non-standard parameters. |
+| `CustomPost` | `POST` | `/entities/:action` | Custom write operation with non-standard parameters. |
+| `EventStream` | `GET` (SSE) | `/events/:name` | Server-Sent Events stream. |
+
+`OpKind` is assigned automatically during API scanning based on function name patterns and parameter shapes. For generated CRUD functions, the mapping is direct. For scanned custom functions, the classifier looks at the function name prefix (`get_*` becomes `CustomGet`, others become `CustomPost`) and whether the return type looks like a stream.
+
+### `ParamMeta`
+
+A function or method parameter, shared across store, API, and server IRs.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `String` | Parameter name (e.g., `"id"`, `"input"`). |
+| `param_type` | `String` | Rust type as a string (e.g., `"&str"`, `"CreateWorkoutInput"`). |
