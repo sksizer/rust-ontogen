@@ -21,7 +21,11 @@ use crate::schema::model::EntityDef;
 /// Scaffold hook files for all entities. Returns paths of newly created files.
 ///
 /// Only creates files that don't already exist — never overwrites user edits.
-pub fn scaffold_hooks(entities: &[EntityDef], hooks_dir: &Path) -> Result<Vec<String>, String> {
+pub fn scaffold_hooks(
+    entities: &[EntityDef],
+    hooks_dir: &Path,
+    schema_module_path: &str,
+) -> Result<Vec<String>, String> {
     fs::create_dir_all(hooks_dir).map_err(|e| format!("Failed to create {}: {e}", hooks_dir.display()))?;
 
     let mut created = Vec::new();
@@ -31,7 +35,7 @@ pub fn scaffold_hooks(entities: &[EntityDef], hooks_dir: &Path) -> Result<Vec<St
         let path = hooks_dir.join(format!("{snake}.rs"));
 
         if !path.exists() {
-            let code = generate_hook_file(entity);
+            let code = generate_hook_file(entity, schema_module_path);
             fs::write(&path, &code).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
             crate::rustfmt(&path);
             created.push(snake.clone());
@@ -48,7 +52,7 @@ pub fn scaffold_hooks(entities: &[EntityDef], hooks_dir: &Path) -> Result<Vec<St
 
 // ─── Per-entity hook file ────────────────────────────────────────────────────
 
-fn generate_hook_file(entity: &EntityDef) -> String {
+fn generate_hook_file(entity: &EntityDef, schema_module_path: &str) -> String {
     let name = &entity.name;
     let snake = to_snake_case(name);
 
@@ -62,7 +66,7 @@ fn generate_hook_file(entity: &EntityDef) -> String {
 
     code.push_str("#![allow(unused_variables, clippy::unnecessary_wraps, clippy::unused_async)]\n\n");
 
-    code.push_str(&format!("use crate::schema::{{{name}, AppError}};\n"));
+    code.push_str(&format!("use {schema_module_path}::{{{name}, AppError}};\n"));
     code.push_str("use crate::store::Store;\n");
     code.push_str(&format!("use crate::store::generated::{snake}::{name}Update;\n\n"));
 
@@ -158,7 +162,7 @@ mod tests {
     #[test]
     fn test_hook_file_has_all_lifecycle_functions() {
         let entity = make_role_entity();
-        let code = generate_hook_file(&entity);
+        let code = generate_hook_file(&entity, "crate::schema");
 
         assert!(code.contains("pub async fn before_create("));
         assert!(code.contains("pub async fn after_create("));
@@ -171,7 +175,7 @@ mod tests {
     #[test]
     fn test_hook_file_uses_correct_types() {
         let entity = make_role_entity();
-        let code = generate_hook_file(&entity);
+        let code = generate_hook_file(&entity, "crate::schema");
 
         assert!(code.contains("use crate::schema::{Role, AppError};"));
         assert!(code.contains("use crate::store::generated::role::RoleUpdate;"));
@@ -180,12 +184,24 @@ mod tests {
     }
 
     #[test]
+    fn test_hook_file_respects_custom_schema_module_path() {
+        let entity = make_role_entity();
+        let code = generate_hook_file(&entity, "my_crate::domain");
+
+        assert!(
+            code.contains("use my_crate::domain::{Role, AppError};"),
+            "Expected custom schema path in hook file, got:\n{code}"
+        );
+        assert!(!code.contains("use crate::schema::{Role, AppError};"));
+    }
+
+    #[test]
     fn test_hook_file_is_never_overwritten() {
         let dir = tempfile::tempdir().unwrap();
         let hooks_dir = dir.path().join("hooks");
 
         // First scaffold — creates the file
-        let created = scaffold_hooks(&[make_role_entity()], &hooks_dir).unwrap();
+        let created = scaffold_hooks(&[make_role_entity()], &hooks_dir, "crate::schema").unwrap();
         assert_eq!(created, vec!["role"]);
 
         // Write custom content
@@ -193,7 +209,7 @@ mod tests {
         std::fs::write(&path, "// custom logic").unwrap();
 
         // Second scaffold — should NOT overwrite
-        let created = scaffold_hooks(&[make_role_entity()], &hooks_dir).unwrap();
+        let created = scaffold_hooks(&[make_role_entity()], &hooks_dir, "crate::schema").unwrap();
         assert!(created.is_empty());
 
         let content = std::fs::read_to_string(&path).unwrap();

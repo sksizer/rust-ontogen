@@ -37,23 +37,29 @@ pub fn write_and_format(path: &Path, content: impl AsRef<str>) -> Result<(), Cod
 ///
 /// Reads `CARGO_MANIFEST_DIR` (set by Cargo during `build.rs` execution)
 /// and extracts the `edition` field. Falls back to `"2021"` if unavailable.
-fn detect_edition() -> String {
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let cargo_toml = std::path::Path::new(&manifest_dir).join("Cargo.toml");
-        if let Ok(content) = std::fs::read_to_string(cargo_toml) {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if let Some(rest) = trimmed.strip_prefix("edition") {
-                    let rest = rest.trim().strip_prefix('=').unwrap_or(rest).trim();
-                    let rest = rest.trim_matches('"').trim_matches('\'');
-                    if rest.len() == 4 && rest.chars().all(|c| c.is_ascii_digit()) {
-                        return rest.to_string();
+///
+/// The result is cached per process, since `CARGO_MANIFEST_DIR` and the
+/// file it points to are stable for the duration of a single build.
+fn detect_edition() -> &'static str {
+    static EDITION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    EDITION.get_or_init(|| {
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            let cargo_toml = std::path::Path::new(&manifest_dir).join("Cargo.toml");
+            if let Ok(content) = std::fs::read_to_string(cargo_toml) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if let Some(rest) = trimmed.strip_prefix("edition") {
+                        let rest = rest.trim().strip_prefix('=').unwrap_or(rest).trim();
+                        let rest = rest.trim_matches('"').trim_matches('\'');
+                        if rest.len() == 4 && rest.chars().all(|c| c.is_ascii_digit()) {
+                            return rest.to_string();
+                        }
                     }
                 }
             }
         }
-    }
-    "2021".to_string()
+        "2021".to_string()
+    })
 }
 
 /// Run `rustfmt` on a string in memory, returning the formatted result.
@@ -72,7 +78,7 @@ fn rustfmt_string(input: &str) -> Result<String, CodegenError> {
 
     let mut child = Command::new("rustfmt")
         .arg("--edition")
-        .arg(&edition)
+        .arg(edition)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

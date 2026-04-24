@@ -1,0 +1,22 @@
+{
+  "$schema_doc": "See scripts/cousin_review/task.md for the full schema. Each entry in 'cousins' describes a third-party repo that contains Rust code in explicitly whitelisted subpaths. Nothing is touched unless it is opted-in via 'targets[].applies' or 'global_applies'. 'forbidden_paths' is a belt-and-suspenders hard deny list. 'targets[].check' overrides the default check command for that subpath.",
+  "$example": {
+    "name": "acme-monorepo",
+    "url": "git@github.com:acme/monorepo.git",
+    "notes": "Bazel-based monorepo. CI is Bazel-managed — never touch .github or root configs.",
+    "targets": [
+      {
+        "path": "backend/services/auth",
+        "applies": ["rustfmt.toml", "clippy.toml"],
+        "check": "bazel test //backend/services/auth/..."
+      },
+      {
+        "path": "libs/core",
+        "applies": ["rustfmt.toml"]
+      }
+    ],
+    "global_applies": ["CLAUDE.md"],
+    "forbidden_paths": [".github/**", "Cargo.toml", "justfile", "WORKSPACE", "MODULE.bazel"]
+  },
+  "cousins": []
+}

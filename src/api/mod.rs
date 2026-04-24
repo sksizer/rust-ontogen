@@ -57,7 +57,7 @@ pub fn generate(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput,
         }
 
         let snake = helpers::to_snake_case(&entity.name);
-        let code = gen_crud::generate_crud_module(entity);
+        let code = gen_crud::generate_crud_module(entity, config);
 
         let path = output_dir.join(format!("{snake}.rs"));
         crate::write_and_format(&path, &code)?;

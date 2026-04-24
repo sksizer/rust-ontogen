@@ -158,3 +158,27 @@ alias tb := template-backport
 template-backport-all *args:
     bash scripts/template_backport_all.sh {{args}}
 alias tba := template-backport-all
+
+# ---------------------------------------------------------------------------- #
+#                                   COUSINS                                    #
+# ---------------------------------------------------------------------------- #
+
+# Review one cousin repo (by name from scripts/cousins.json) for template-sourced improvements (dry-run by default; --execute to run)
+cousin-review *args:
+    bash scripts/cousin_review.sh {{args}}
+alias cr := cousin-review
+
+# Review every cousin in scripts/cousins.json in parallel (dry-run by default; --execute to run)
+cousin-review-all *args:
+    bash scripts/cousin_review_all.sh {{args}}
+alias cra := cousin-review-all
+
+# Apply template-sourced changes to a cousin's opted-in paths and open a PR (dry-run by default; --execute to run)
+cousin-apply *args:
+    bash scripts/cousin_apply.sh {{args}}
+alias ca := cousin-apply
+
+# Apply changes to every cousin, one PR each (dry-run by default; --execute to run)
+cousin-apply-all *args:
+    bash scripts/cousin_apply_all.sh {{args}}
+alias caa := cousin-apply-all
