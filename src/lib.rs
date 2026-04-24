@@ -165,6 +165,9 @@ pub struct StoreConfig {
     /// When `None`, hook scaffolding is skipped (generated CRUD still calls hooks —
     /// the consuming crate must provide its own hook modules).
     pub hooks_dir: Option<PathBuf>,
+    /// Import path for the schema module in generated code (e.g., `"crate::schema"`).
+    /// Defaults to `"crate::schema"`.
+    pub schema_module_path: String,
 }
 
 /// Configuration for API layer generation.
@@ -181,6 +184,9 @@ pub struct ApiConfig {
     pub state_type: String,
     /// The Store type name for scanning (e.g., `"Store"`).
     pub store_type: Option<String>,
+    /// Import path for the schema module in generated code (e.g., `"crate::schema"`).
+    /// Defaults to `"crate::schema"`.
+    pub schema_module_path: String,
 }
 
 /// Configuration for server transport generation.

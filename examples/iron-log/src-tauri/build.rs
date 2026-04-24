@@ -56,6 +56,7 @@ fn main() {
             &ontogen::StoreConfig {
                 output_dir: "src/store/generated".into(),
                 hooks_dir: Some("src/store/hooks".into()),
+                schema_module_path: "crate::schema".to_string(),
             },
         ),
         "Stage 4: generate store",
@@ -71,6 +72,7 @@ fn main() {
                 scan_dirs: vec![],
                 state_type: "AppState".to_string(),
                 store_type: Some("Store".to_string()),
+                schema_module_path: "crate::schema".to_string(),
             },
         ),
         "Stage 5: generate API",

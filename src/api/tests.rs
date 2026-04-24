@@ -24,6 +24,7 @@ mod tests {
             scan_dirs: vec![],
             state_type: "AppState".to_string(),
             store_type: Some("Store".to_string()),
+            schema_module_path: "crate::schema".to_string(),
         }
     }
 
@@ -105,6 +106,39 @@ mod tests {
         assert!(content.contains("store.create_agent(agent)"));
         assert!(content.contains("store.update_agent(id, updates)"));
         assert!(content.contains("store.delete_agent(id)"));
+    }
+
+    /// Test that a non-default `schema_module_path` flows into generated API code.
+    #[test]
+    fn custom_schema_module_path_is_respected() {
+        let dir = schema_dir();
+        if !dir.exists() {
+            return;
+        }
+
+        let entities = parse_schema_dir(&dir).expect("parse failed");
+        let agent = entities.iter().find(|e| e.name == "Agent").expect("Agent entity not found");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = base_config(tmp.path().to_path_buf());
+        config.schema_module_path = "my_crate::domain".to_string();
+
+        api::generate(&[agent.clone()], &config).expect("gen_api failed");
+
+        let content = std::fs::read_to_string(tmp.path().join("agent.rs")).unwrap();
+        assert!(
+            content.contains("use my_crate::domain::AppError;"),
+            "Expected custom schema path for AppError, got:\n{content}"
+        );
+        assert!(
+            content.contains("use my_crate::domain::Agent;"),
+            "Expected custom schema path for Agent, got:\n{content}"
+        );
+        assert!(
+            content.contains("use my_crate::domain::{CreateAgentInput, UpdateAgentInput};"),
+            "Expected custom schema path for input types, got:\n{content}"
+        );
+        assert!(!content.contains("use crate::schema::"), "Default schema path should not appear");
     }
 
     /// Test that excluded entities are skipped.
