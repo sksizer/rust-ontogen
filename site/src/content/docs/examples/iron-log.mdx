@@ -1,0 +1,420 @@
+---
+title: "Iron Log"
+description: A complete Tauri + Nuxt weight-lifting tracker built with Ontogen.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Iron Log is a weight-lifting tracker built as a Tauri desktop app with a Nuxt frontend. It's the reference example for Ontogen -- a small but complete application that exercises the full pipeline from schema definitions through generated TypeScript client code.
+
+Four entity definitions produce 39 generated files. The entire backend -- persistence, CRUD, API, HTTP handlers, and IPC commands -- comes from those four annotated structs plus a `build.rs`.
+
+The source lives at `examples/iron-log/` in the Ontogen repository.
+
+## The domain
+
+A weight-lifting tracker needs a few things:
+
+- **Exercises**: the movements you do (bench press, squat, deadlift). Each has a name, muscle group, and equipment type.
+- **Workouts**: a training session on a specific date. Can have a name, duration, and notes.
+- **Workout Sets**: individual sets within a workout -- weight, reps, RPE. Each set belongs to a workout and an exercise.
+- **Tags**: labels you can attach to workouts (e.g., "push day", "deload", "PR").
+
+The relationships: workout sets belong to both a workout and an exercise (two `belongs_to` relations). Workouts have a many-to-many relationship with tags through a junction table.
+
+## The four entities
+
+### Exercise
+
+The simplest entity. No relations, just data fields.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, table = "exercises")]
+pub struct Exercise {
+    #[ontology(id)]
+    pub id: String,
+
+    pub name: String,
+    pub muscle_group: String,
+    pub equipment: String,
+
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+```
+
+Straightforward: a string ID, required fields for name/muscle group/equipment, and an optional notes field. No annotations beyond `id` needed -- everything else is plain data.
+
+### Tag
+
+Even simpler. Just a name.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, table = "tags")]
+pub struct Tag {
+    #[ontology(id)]
+    pub id: String,
+
+    pub name: String,
+}
+```
+
+### Workout
+
+This one has a relation -- workouts can have tags.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, table = "workouts")]
+pub struct Workout {
+    #[ontology(id)]
+    pub id: String,
+
+    #[serde(default)]
+    pub name: Option<String>,
+
+    pub date: String,
+
+    #[serde(default)]
+    pub duration_minutes: Option<i32>,
+
+    #[serde(default)]
+    pub notes: Option<String>,
+
+    #[serde(default)]
+    #[ontology(relation(many_to_many, target = "Tag"))]
+    pub tags: Vec<String>,
+
+    pub created_at: String,
+}
+```
+
+The `tags` field is annotated with `relation(many_to_many, target = "Tag")`. This triggers:
+- A `workout_tags` junction table entity in SeaORM generation.
+- `sync_junction()` calls in the store's `create_workout` and `update_workout` methods.
+- `populate_workout_relations()` that loads tag IDs from the junction table on reads.
+
+### WorkoutSet
+
+Two `belongs_to` relations -- every set references both a workout and an exercise.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, table = "workout_sets")]
+pub struct WorkoutSet {
+    #[ontology(id)]
+    pub id: String,
+
+    #[ontology(relation(belongs_to, target = "Workout"))]
+    pub workout_id: String,
+
+    #[ontology(relation(belongs_to, target = "Exercise"))]
+    pub exercise_id: String,
+
+    pub set_number: i32,
+    pub weight_grams: i32,
+    pub reps: i32,
+
+    #[serde(default)]
+    pub rpe: Option<i32>,
+
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+```
+
+The `workout_id` and `exercise_id` fields are foreign keys. The `belongs_to` annotations tell Ontogen to generate SeaORM relation definitions pointing to the `Workout` and `Exercise` entities.
+
+Notice `weight_grams: i32` instead of a float. Storing weight as integer grams avoids floating-point precision issues -- a deliberate domain modeling choice, not an Ontogen requirement.
+
+## What gets generated
+
+From these four structs, `cargo build` produces 39 files across the project. Here's the breakdown.
+
+### SeaORM entities (6 files)
+
+```
+src/persistence/db/entities/generated/
+  mod.rs
+  exercise.rs
+  tag.rs
+  workout.rs
+  workout_set.rs
+  workout_tags.rs      # junction table for Workout <-> Tag
+```
+
+Each entity file has a `Model` struct with SeaORM column annotations, a `Relation` enum, and `ActiveModelBehavior`. The `workout.rs` entity has a `Related<tag::Entity>` implementation that routes through the `workout_tags` junction table.
+
+The junction table (`workout_tags.rs`) is a full SeaORM entity with `BelongsTo` relations to both `workout` and `tag`.
+
+### Conversions (5 files)
+
+```
+src/persistence/db/conversions/generated/
+  mod.rs
+  exercise.rs
+  tag.rs
+  workout.rs
+  workout_set.rs
+```
+
+Each contains `from_model()` (SeaORM model to schema type) and `to_active_model()` (schema type to SeaORM active model). For workout, `from_model()` initializes `tags: Vec::new()` because the junction data is loaded separately by `populate_workout_relations()`.
+
+### DTOs (5 files)
+
+```
+src/schema/dto/
+  mod.rs
+  exercise.rs
+  tag.rs
+  workout.rs
+  workout_set.rs
+```
+
+Each contains `CreateEntityInput` and `UpdateEntityInput`. The create input has all fields. The update input wraps every non-ID field in `Option` for partial updates. Both have `Deserialize`, `JsonSchema`, and `specta::Type` derives.
+
+### Store CRUD (5 files)
+
+```
+src/store/generated/
+  mod.rs
+  exercise.rs
+  tag.rs
+  workout.rs
+  workout_set.rs
+```
+
+Each contains the five CRUD methods (`list_*`, `get_*`, `create_*`, `update_*`, `delete_*`) plus a `EntityUpdate` struct with an `apply()` method and `From` implementations for DTO-to-entity conversion.
+
+The `workout.rs` store file is the most interesting because of the many-to-many relation. Its `create_workout` method:
+1. Calls `hooks::before_create`.
+2. Inserts the workout row.
+3. Calls `sync_junction("workout_tags", ...)` to populate the junction table.
+4. Reloads the workout (to get populated relations).
+5. Emits a change event.
+6. Calls `hooks::after_create`.
+
+### Hooks (5 files)
+
+```
+src/store/hooks/
+  mod.rs
+  exercise.rs
+  tag.rs
+  workout.rs
+  workout_set.rs
+```
+
+Scaffolded once, never overwritten. Each has `before_create`, `after_create`, `before_update`, `after_update`, `before_delete`, `after_delete` -- all with empty bodies that return `Ok(())`. In Iron Log, they're left empty because the app doesn't need pre/post-processing hooks.
+
+### API modules (5 files)
+
+```
+src/api/v1/generated/
+  mod.rs
+  exercise.rs
+  tag.rs
+  workout.rs
+  workout_set.rs
+```
+
+Thin forwarding layer. Each function (e.g., `list`, `get_by_id`, `create`) takes a `&Store` reference and delegates to the corresponding store method.
+
+### Transport handlers (2 files)
+
+```
+src/api/transport/http/generated.rs
+src/api/transport/ipc/generated.rs
+```
+
+The HTTP file generates Axum route handlers. The IPC file generates Tauri command handlers. Both call through the same API layer.
+
+The IPC file contains 20 commands (5 per entity x 4 entities). Each command extracts `State<'_, Arc<AppState>>`, gets the store, calls the API function, and maps errors to strings.
+
+### TypeScript client (1 file)
+
+```
+../src-nuxt/app/generated/transport.ts
+```
+
+A split transport layer that provides typed functions for every CRUD operation. Detects at runtime whether Tauri IPC is available and routes accordingly.
+
+## The `build.rs`
+
+Iron Log's build script runs the full pipeline:
+
+```rust
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    ontogen::emit_rerun_directives(&std::path::PathBuf::from("src/schema"));
+
+    // Stage 1: Parse schema
+    let schema = unwrap_codegen(
+        ontogen::parse_schema(&ontogen::SchemaConfig {
+            schema_dir: "src/schema".into(),
+        }),
+        "Stage 1: parse schema",
+    );
+
+    // Stage 2: Generate SeaORM entities
+    let seaorm = unwrap_codegen(
+        ontogen::gen_seaorm(&schema.entities, &ontogen::SeaOrmConfig {
+            entity_output: "src/persistence/db/entities/generated".into(),
+            conversion_output: "src/persistence/db/conversions/generated".into(),
+            skip_conversions: vec![],
+        }),
+        "Stage 2: generate SeaORM entities",
+    );
+
+    // Stage 3: DTOs
+    unwrap_codegen(
+        ontogen::gen_dtos(&schema.entities, &ontogen::DtoConfig {
+            output_dir: "src/schema/dto".into(),
+        }),
+        "Stage 3: generate DTOs",
+    );
+
+    // Stage 4: Store
+    unwrap_codegen(
+        ontogen::gen_store(&schema.entities, Some(&seaorm), &ontogen::StoreConfig {
+            output_dir: "src/store/generated".into(),
+            hooks_dir: Some("src/store/hooks".into()),
+        }),
+        "Stage 4: generate store",
+    );
+
+    // Stage 5: API
+    unwrap_codegen(
+        ontogen::gen_api(&schema.entities, &ontogen::ApiConfig {
+            output_dir: "src/api/v1/generated".into(),
+            exclude: vec![],
+            scan_dirs: vec![],
+            state_type: "AppState".to_string(),
+            store_type: Some("Store".to_string()),
+        }),
+        "Stage 5: generate API",
+    );
+
+    // Stage 6: Transports (HTTP + IPC + TypeScript)
+    // Uses the servers::config API for combined transport generation
+    let config = Config {
+        api_dir: "src/api/v1".into(),
+        state_type: "AppState".to_string(),
+        service_import_path: "crate::api::v1".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        state_import: "crate::AppState".to_string(),
+        generators: vec![
+            GeneratorConfig::Server(ServerGenerator::HttpAxum {
+                output: "src/api/transport/http/generated.rs".into(),
+            }),
+            GeneratorConfig::Server(ServerGenerator::TauriIpc {
+                output: "src/api/transport/ipc/generated.rs".into(),
+            }),
+            GeneratorConfig::Client(ClientGenerator::HttpTauriIpcSplit {
+                output: "../src-nuxt/app/generated/transport.ts".into(),
+                bindings_path: "../src-nuxt/app/generated/types.ts".into(),
+            }),
+        ],
+        // ... other config
+    };
+
+    ontogen::servers::generate_transport(&config)
+        .expect("Stage 6: failed to generate transports");
+
+    tauri_build::build();
+}
+```
+
+Six stages, explicit data flow, everything visible in one file.
+
+## The `Store`
+
+The hand-written `Store` type provides the infrastructure that generated CRUD code relies on:
+
+```rust
+pub struct Store {
+    pub db: Arc<DatabaseConnection>,
+    change_tx: broadcast::Sender<EntityChange>,
+}
+```
+
+It exposes:
+- `db()` -- returns the database connection for SeaORM queries.
+- `emit_change()` -- broadcasts change events (created/updated/deleted) that the UI can subscribe to.
+- `sync_junction()` -- replaces junction table rows for many-to-many updates.
+- `load_junction_ids()` -- loads related IDs from a junction table.
+
+The generated CRUD methods are implemented as `impl Store` blocks, so they have access to all of this.
+
+## Project layout
+
+```
+iron-log/
+  src-tauri/
+    build.rs                              # Ontogen pipeline
+    Cargo.toml
+    src/
+      schema/
+        exercise.rs                       # 4 entity definitions
+        tag.rs                            #   (you write these)
+        workout.rs
+        workout_set.rs
+        mod.rs
+        dto/                              # generated input types
+      persistence/
+        db/
+          entities/generated/             # generated SeaORM entities
+          conversions/generated/          # generated model conversions
+        fs_markdown/                      # markdown parser (for frontmatter)
+      store/
+        generated/                        # generated CRUD methods
+        hooks/                            # scaffolded lifecycle hooks
+        mod.rs                            # Store struct (you write this)
+      api/
+        v1/
+          generated/                      # generated API modules
+          mod.rs
+        transport/
+          http/generated.rs               # generated Axum handlers
+          ipc/generated.rs                # generated Tauri IPC commands
+      lib.rs                              # AppState definition
+      main.rs                             # Tauri app entry point
+  src-nuxt/
+    app/
+      generated/
+        transport.ts                      # generated TypeScript client
+```
+
+The pattern is consistent: you write schema files and infrastructure code (Store, AppState, mod.rs files). Ontogen fills in the `generated/` directories and scaffolds hooks. Your code and generated code live side by side but never overlap.
+
+## Running the example
+
+From the `examples/iron-log/` directory:
+
+```bash
+# Install frontend dependencies
+cd src-nuxt && npm install && cd ..
+
+# Build and run the Tauri app
+cd src-tauri && cargo tauri dev
+```
+
+The Tauri build triggers `build.rs`, which runs the Ontogen pipeline and generates all 39 files before compilation. The Nuxt dev server picks up the generated TypeScript client.
+
+<Aside type="note">
+Iron Log uses SQLite via SeaORM. You'll need to create the database schema before running the app. The SQL migrations aren't part of the example yet -- you'd need to create the tables manually or add SeaORM migrations. See the entity definitions for the expected table structures.
+</Aside>
+
+## What to look at
+
+If you're exploring the example to understand Ontogen, start here:
+
+1. **`src/schema/workout.rs`** -- the most interesting entity because of the many-to-many tag relation.
+2. **`src/store/generated/workout.rs`** -- see how the relation drives junction table sync in create/update.
+3. **`src/persistence/db/entities/generated/workout_tags.rs`** -- the generated junction table entity.
+4. **`src/api/transport/ipc/generated.rs`** -- 20 Tauri IPC commands, all generated from 4 entities.
+5. **`build.rs`** -- the full pipeline in one file, six stages, explicit data flow.
+
+The progression from schema definition to transport handler is the point. One annotated struct becomes a SeaORM entity, a conversion layer, a DTO pair, five CRUD store methods, five API forwarding functions, five HTTP routes, five IPC commands, and five TypeScript client functions. Multiply by four entities, and you have a complete backend from 80 lines of schema code.

@@ -166,6 +166,7 @@ version = "0.1.0"
 dependencies = [
  "cruet",
  "ontogen-core",
+ "ontogen-macros",
  "quote",
  "syn",
  "tempfile",

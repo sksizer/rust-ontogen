@@ -1,0 +1,300 @@
+---
+title: Tauri Integration
+description: Setting up Ontogen with a Tauri desktop application.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Ontogen pairs naturally with Tauri. You define entities in the Tauri crate's `src/schema/`, run the generator pipeline in `build.rs`, and get Tauri IPC command handlers alongside your Axum HTTP handlers -- both generated from the same API surface.
+
+The TypeScript client generator produces a split transport layer that uses Tauri IPC when running as a desktop app and HTTP when running in a browser. Your frontend code calls the same functions either way.
+
+This recipe walks through setting up a Tauri + Ontogen project from scratch.
+
+## Project structure
+
+A typical Tauri + Ontogen project has two codebases side by side:
+
+```
+my-app/
+  src-tauri/                 # Tauri Rust crate
+    build.rs                 # Ontogen pipeline + tauri_build
+    Cargo.toml
+    src/
+      schema/                # Your entity definitions
+      persistence/db/        # Generated SeaORM entities + conversions
+      store/                 # Generated CRUD + your hooks
+      api/v1/                # Generated API + your custom endpoints
+      api/transport/http/    # Generated Axum handlers
+      api/transport/ipc/     # Generated Tauri IPC handlers
+      lib.rs
+      main.rs
+  src-nuxt/                  # (or src-vue, src-react, etc.)
+    app/generated/
+      transport.ts           # Generated TypeScript client
+      types.ts               # Type bindings
+```
+
+## Recipe: Set up Tauri + Ontogen
+
+<Steps>
+
+1. ### Add dependencies
+
+   In `src-tauri/Cargo.toml`:
+
+   ```toml
+   [build-dependencies]
+   ontogen = "0.1"
+   tauri-build = { version = "2", features = [] }
+
+   [dependencies]
+   ontogen-macros = "0.1"
+   tauri = { version = "2", features = [] }
+   sea-orm = { version = "1", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
+   serde = { version = "1", features = ["derive"] }
+   serde_json = "1"
+   tokio = { version = "1", features = ["full"] }
+   axum = "0.8"
+   specta = { version = "=2.0.0-rc.23", features = ["derive", "function"] }
+   schemars = "0.8"
+   thiserror = "2"
+   ```
+
+   `specta` and `schemars` are needed because the generated IPC commands use `#[specta::specta]` for TypeScript type generation and `JsonSchema` derives in DTOs.
+
+2. ### Write the build script
+
+   Create `src-tauri/build.rs` with the full pipeline:
+
+   ```rust
+   use ontogen::servers::config::{ClientGenerator, Config, GeneratorConfig, ServerGenerator};
+   use ontogen::servers::types::NamingConfig;
+   use ontogen::CodegenError;
+
+   fn unwrap_codegen<T>(result: Result<T, CodegenError>, stage: &str) -> T {
+       result.unwrap_or_else(|e| {
+           e.emit_cargo_warning();
+           panic!("{stage}: {e}");
+       })
+   }
+
+   fn main() {
+       println!("cargo:rerun-if-changed=build.rs");
+       ontogen::emit_rerun_directives(&std::path::PathBuf::from("src/schema"));
+       ontogen::emit_rerun_directives_excluding(
+           &std::path::PathBuf::from("src/api/v1"),
+           &["generated"],
+       );
+
+       // Stage 1: Parse schema
+       let schema = unwrap_codegen(
+           ontogen::parse_schema(&ontogen::SchemaConfig {
+               schema_dir: "src/schema".into(),
+           }),
+           "parse schema",
+       );
+
+       // Stage 2: Generate SeaORM entities
+       let seaorm = unwrap_codegen(
+           ontogen::gen_seaorm(&schema.entities, &ontogen::SeaOrmConfig {
+               entity_output: "src/persistence/db/entities/generated".into(),
+               conversion_output: "src/persistence/db/conversions/generated".into(),
+               skip_conversions: vec![],
+           }),
+           "gen_seaorm",
+       );
+
+       // Stage 3: Generate DTOs
+       unwrap_codegen(
+           ontogen::gen_dtos(&schema.entities, &ontogen::DtoConfig {
+               output_dir: "src/schema/dto".into(),
+           }),
+           "gen_dtos",
+       );
+
+       // Stage 4: Generate store
+       unwrap_codegen(
+           ontogen::gen_store(&schema.entities, Some(&seaorm), &ontogen::StoreConfig {
+               output_dir: "src/store/generated".into(),
+               hooks_dir: Some("src/store/hooks".into()),
+           }),
+           "gen_store",
+       );
+
+       // Stage 5: Generate API
+       unwrap_codegen(
+           ontogen::gen_api(&schema.entities, &ontogen::ApiConfig {
+               output_dir: "src/api/v1/generated".into(),
+               exclude: vec![],
+               scan_dirs: vec![],
+               state_type: "AppState".to_string(),
+               store_type: Some("Store".to_string()),
+           }),
+           "gen_api",
+       );
+
+       // Stage 6: Generate transports (HTTP + IPC + TypeScript client)
+       let config = Config {
+           api_dir: "src/api/v1".into(),
+           state_type: "AppState".to_string(),
+           service_import_path: "crate::api::v1".to_string(),
+           types_import_path: "crate::schema".to_string(),
+           state_import: "crate::AppState".to_string(),
+           naming: NamingConfig::default(),
+           generators: vec![
+               GeneratorConfig::Server(ServerGenerator::HttpAxum {
+                   output: "src/api/transport/http/generated.rs".into(),
+               }),
+               GeneratorConfig::Server(ServerGenerator::TauriIpc {
+                   output: "src/api/transport/ipc/generated.rs".into(),
+               }),
+               GeneratorConfig::Client(ClientGenerator::HttpTauriIpcSplit {
+                   output: "../src-nuxt/app/generated/transport.ts".into(),
+                   bindings_path: "../src-nuxt/app/generated/types.ts".into(),
+               }),
+           ],
+           rustfmt_edition: "2024".to_string(),
+           sse_route_overrides: Default::default(),
+           ts_skip_commands: vec![],
+           route_prefix: None,
+           store_type: Some("Store".to_string()),
+           store_import: Some("crate::store::Store".to_string()),
+           schema_entities: schema.entities.clone(),
+           pagination: None,
+       };
+
+       ontogen::servers::generate_transport(&config)
+           .expect("failed to generate transports");
+
+       tauri_build::build();
+   }
+   ```
+
+   Notice `tauri_build::build()` at the end. Ontogen runs first, generates all the code, and then Tauri's build step runs. Order matters.
+
+3. ### Set up `AppState`
+
+   The generated IPC handlers expect an `AppState` type with a `store()` method. In `src/lib.rs`:
+
+   ```rust
+   pub mod api;
+   pub mod persistence;
+   pub mod schema;
+   pub mod store;
+
+   use std::sync::Arc;
+   use sea_orm::DatabaseConnection;
+   use crate::schema::AppError;
+   use crate::store::Store;
+
+   pub struct AppState {
+       store: Store,
+   }
+
+   impl AppState {
+       pub fn new(db: Arc<DatabaseConnection>) -> Self {
+           Self { store: Store::new(db) }
+       }
+
+       pub async fn store(&self) -> Result<&Store, AppError> {
+           Ok(&self.store)
+       }
+   }
+   ```
+
+   The generated IPC handlers call `state.store().await?` to get the store reference. The `async` on `store()` lets you do async initialization or project scoping in more complex setups.
+
+4. ### Register IPC commands
+
+   In `src/main.rs`, register the generated commands with Tauri:
+
+   ```rust
+   use std::sync::Arc;
+
+   fn main() {
+       tauri::Builder::default()
+           .setup(|app| {
+               // Initialize your database
+               let db = /* create DatabaseConnection */;
+               let state = Arc::new(iron_log::AppState::new(db));
+               app.manage(state);
+               Ok(())
+           })
+           .invoke_handler(tauri::generate_handler![
+               // Import from your generated IPC module
+               iron_log::api::transport::ipc::generated::get_exercises,
+               iron_log::api::transport::ipc::generated::get_exercise_by_id,
+               iron_log::api::transport::ipc::generated::create_exercise,
+               iron_log::api::transport::ipc::generated::update_exercise,
+               iron_log::api::transport::ipc::generated::delete_exercise,
+               // ... repeat for each entity
+           ])
+           .run(tauri::generate_context!())
+           .expect("error while running tauri application");
+   }
+   ```
+
+   Each entity gets five IPC commands (list, get, create, update, delete). The generated command names follow the pattern `get_{entities}`, `get_{entity}_by_id`, `create_{entity}`, `update_{entity}`, `delete_{entity}`.
+
+5. ### Use the TypeScript client
+
+   The generated `transport.ts` gives you typed functions that work in both web and desktop contexts:
+
+   ```typescript
+   import { getExercises, createExercise } from '~/generated/transport';
+
+   // Works via Tauri IPC in desktop, HTTP in browser
+   const exercises = await getExercises();
+
+   const newExercise = await createExercise({
+     id: 'ex-bench-press',
+     name: 'Bench Press',
+     muscle_group: 'chest',
+     equipment: 'barbell',
+   });
+   ```
+
+   The split transport detects at runtime whether Tauri's IPC is available. If it is, calls go through `invoke()`. If not, they fall back to HTTP fetch.
+
+</Steps>
+
+## What the generated IPC code looks like
+
+Each entity's CRUD operations become Tauri commands. Here's what the generator produces for an `Exercise` entity:
+
+```rust
+#[tauri::command]
+#[specta::specta]
+pub async fn get_exercises(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<Exercise>, String> {
+    let store = state.store().await.map_err(|e| e.to_string())?;
+    exercise::list(&store).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn create_exercise(
+    input: CreateExerciseInput,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Exercise, String> {
+    let store = state.store().await.map_err(|e| e.to_string())?;
+    exercise::create(&store, input).await.map_err(|e| e.to_string())
+}
+```
+
+Key things to notice:
+
+- `State<'_, Arc<AppState>>` is Tauri's state extractor. The `AppState` is the same one you registered with `app.manage()`.
+- `#[specta::specta]` enables TypeScript type generation from the Rust signatures.
+- Errors are mapped to `String` because Tauri IPC requires string-serializable errors.
+- The handler delegates to the API layer (`exercise::list`, `exercise::create`), which delegates to the store.
+
+## Both transports, same API
+
+The power of Ontogen's pipeline is that both transport layers (HTTP and IPC) are generated from the same `ApiOutput`. Adding a new entity or custom endpoint automatically appears in both.
+
+<Aside type="note">
+If you have endpoints that only make sense for one transport (say, a file upload that only works over HTTP), you can exclude specific commands from the TypeScript IPC client using `ts_skip_commands` in the server config.
+</Aside>

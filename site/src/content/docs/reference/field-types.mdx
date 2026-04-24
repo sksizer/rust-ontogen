@@ -1,0 +1,177 @@
+---
+title: Field Types
+description: Reference for FieldType and FieldRole enums and their mappings.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+When `parse_schema()` reads your annotated structs, it maps each field's Rust type into a `FieldType` variant and each `#[ontology(...)]` annotation into a `FieldRole`. These two enums drive all downstream code generation -- how columns are typed in SeaORM, how fields appear in DTOs, what TypeScript type is emitted, etc.
+
+## `FieldType`
+
+A simplified representation of the Rust type. Ontogen only needs to know the shape of a type for code generation -- it doesn't need to resolve the full type system.
+
+### Type mapping table
+
+| `FieldType` variant | Rust type | SeaORM column type | SQL type (SQLite) | TypeScript type |
+|---------------------|-----------|--------------------|--------------------|-----------------|
+| `String` | `String` | `String` | `TEXT NOT NULL` | `string` |
+| `OptionString` | `Option<String>` | `Option<String>` | `TEXT` | `string \| null` |
+| `I32` | `i32` | `i32` | `INTEGER NOT NULL` | `number` |
+| `OptionI32` | `Option<i32>` | `Option<i32>` | `INTEGER` | `number \| null` |
+| `I64` | `i64` | `i64` | `INTEGER NOT NULL` | `number` |
+| `OptionI64` | `Option<i64>` | `Option<i64>` | `INTEGER` | `number \| null` |
+| `Bool` | `bool` | `bool` | `BOOLEAN NOT NULL` | `boolean` |
+| `OptionBool` | `Option<bool>` | `Option<bool>` | `BOOLEAN` | `boolean \| null` |
+| `OptionEnum(name)` | `Option<EnumType>` | `Option<String>` | `TEXT` | `string \| null` |
+| `VecString` | `Vec<String>` | `String` (JSON) | `TEXT NOT NULL` | `string[]` |
+| `VecStruct(name)` | `Vec<StructType>` | `String` (JSON) | `TEXT NOT NULL` | `StructType[]` |
+| `Other(name)` | anything else | `String` | `TEXT NOT NULL` | `string` |
+
+### How types are detected
+
+`parse_schema()` uses `syn` to inspect the `Type` of each field. The detection logic is straightforward pattern matching:
+
+- `String` -- exact match.
+- `Option<String>` -- `Option` wrapper with `String` inner type.
+- `Option<SomeType>` where the field has `#[ontology(enum_field)]` -- becomes `OptionEnum("SomeType")`.
+- `Vec<String>` -- `Vec` wrapper with `String` inner type.
+- `Vec<SomeType>` where `SomeType` is not `String` -- becomes `VecStruct("SomeType")`.
+- `i32`, `i64`, `bool` and their `Option` wrappers -- exact matches.
+- Everything else -- `Other("TypeName")`, treated as a string-serialized value.
+
+<Aside type="note">
+`i64` is also used for `u64` fields. SQLite has no unsigned integer type, so Ontogen treats both as `i64` in the SeaORM layer. If you need unsigned semantics, enforce that in your application logic or hooks.
+</Aside>
+
+### `Vec` fields in the database
+
+`Vec<String>` and `Vec<StructType>` fields are stored as JSON-serialized strings in the database column. The SeaORM entity uses a `String` column, and the conversion layer handles `serde_json::to_string()` / `serde_json::from_str()`.
+
+The exception is `Vec<String>` fields annotated with a relation (`belongs_to`, `has_many`, `many_to_many`). These aren't stored in the entity's table at all -- they're populated at read time from the related table or junction table.
+
+### `OptionEnum` handling
+
+When a field has `#[ontology(enum_field)]` and an `Option<T>` type, the `FieldType` is `OptionEnum("T")`. The string inside is the enum type name.
+
+In the SeaORM entity, this becomes an `Option<String>` column. The conversion code uses `.map(|v| v.to_string())` going into the database and `.map(|s| s.parse().unwrap())` coming out.
+
+Your enum type needs to implement `Display` + `FromStr` or handle serde string conversion. Ontogen doesn't generate the enum -- you provide it.
+
+### `Other` fallback
+
+Any type that doesn't match the known patterns becomes `Other("TypeName")`. It's treated as string-serialized in the database. This works for custom types that implement `Serialize`/`Deserialize`, but you lose type-specific behavior in the generated code.
+
+---
+
+## `FieldRole`
+
+Determines how a field participates in code generation. Set by `#[ontology(...)]` annotations on the field.
+
+| `FieldRole` variant | Annotation | Description |
+|---------------------|------------|-------------|
+| `Id` | `#[ontology(id)]` | Primary key. One per entity. |
+| `Body` | `#[ontology(body)]` | Markdown body content (below frontmatter). |
+| `EnumField` | `#[ontology(enum_field)]` | Enum type stored as string. |
+| `Relation(RelationInfo)` | `#[ontology(relation(...))]` | Cross-entity reference. |
+| `Plain` | (none) | Regular data field. Default for unannotated fields. |
+| `Skip` | `#[ontology(skip)]` | Excluded from all code generation. |
+
+### Role effects by generator
+
+| Generator | `Id` | `Body` | `EnumField` | `Relation` | `Plain` | `Skip` |
+|-----------|------|--------|-------------|------------|---------|--------|
+| SeaORM entity | Primary key | Regular column | String column | FK column or excluded | Regular column | Excluded |
+| SeaORM conversion | Included | Included | String conversion | FK: included; Vec: skipped (populated separately) | Included | Excluded |
+| DTOs (Create) | Included | Included | Included | Included | Included | Excluded |
+| DTOs (Update) | Excluded | Included | Included | Included | Included | Excluded |
+| Store CRUD | Lookup key | Regular field | Regular field | Relation population / junction sync | Regular field | Excluded |
+| Markdown writer | Frontmatter | Body section | Frontmatter | Wikilink formatting | Frontmatter | Excluded |
+| Markdown parser | Frontmatter | Body section | Frontmatter | Wikilink parsing | Frontmatter | Excluded |
+
+---
+
+## `RelationInfo`
+
+Attached to fields with `FieldRole::Relation`. Describes the relationship between entities.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | `RelationKind` | The cardinality of the relation. |
+| `target` | `String` | Target entity name (e.g., `"Tag"`, `"Workout"`). Must match a struct name in your schema. |
+| `junction` | `Option<String>` | Override for junction table name. Only used with `ManyToMany`. Derived automatically if not specified. |
+| `foreign_key` | `Option<String>` | FK column on the target entity. Only used with `HasMany`. |
+
+## `RelationKind`
+
+| Variant | Schema field type | Junction table | FK column | Description |
+|---------|-------------------|----------------|-----------|-------------|
+| `BelongsTo` | `String` or `Option<String>` | No | On this entity | This entity holds a FK pointing to the target. |
+| `HasMany` | `Vec<String>` | No | On the target entity | The target entity has a FK pointing back to this entity. |
+| `ManyToMany` | `Vec<String>` | Yes | In the junction table | Both sides linked through a junction table. |
+
+### `BelongsTo` example
+
+```rust
+#[ontology(relation(belongs_to, target = "Workout"))]
+pub workout_id: String,
+```
+
+The `workout_id` column exists on this entity's table. SeaORM generates a `BelongsTo` relation variant.
+
+### `HasMany` example
+
+```rust
+#[ontology(relation(has_many, target = "WorkoutSet", foreign_key = "workout_id"))]
+pub sets: Vec<String>,
+```
+
+No column on this entity's table. The `WorkoutSet` entity has a `workout_id` column. At read time, `populate_*_relations()` queries `workout_sets` where `workout_id` matches.
+
+### `ManyToMany` example
+
+```rust
+#[ontology(relation(many_to_many, target = "Tag"))]
+pub tags: Vec<String>,
+```
+
+A junction table (`workout_tags`) is generated with `workout_id` and `tag_id` columns. At read time, `populate_*_relations()` loads tag IDs from the junction table. On create/update, `sync_junction()` replaces the junction rows.
+
+---
+
+## `FieldDef`
+
+The full field definition as parsed from your schema struct.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `String` | Rust field name (e.g., `"workout_id"`, `"tags"`). |
+| `field_type` | `FieldType` | Simplified type representation. |
+| `role` | `FieldRole` | Role in the ontology model. |
+| `serde_default` | `bool` | Whether the field has `#[serde(default)]`. |
+| `multiline_list` | `bool` | Whether `#[ontology(multiline_list)]` is present. Affects Markdown rendering. |
+| `default_value` | `Option<String>` | Value from `#[ontology(default_value = "...")]`. When the field matches this value, it's omitted from Markdown frontmatter. |
+
+## `EntityDef`
+
+The full entity definition. One per annotated struct.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | `String` | -- | Rust struct name (e.g., `"Workout"`). |
+| `directory` | `String` | snake_case of `name` | Subdirectory for Markdown files. |
+| `table` | `String` | snake_case of `name` | SeaORM table name. |
+| `type_name` | `String` | snake_case of `name` | Frontmatter `type:` value. |
+| `prefix` | `String` | snake_case of `name` | ID prefix. |
+| `fields` | `Vec<FieldDef>` | -- | All fields on the struct. |
+
+### Helper methods on `EntityDef`
+
+| Method | Return type | Description |
+|--------|-------------|-------------|
+| `id_field()` | `Option<&FieldDef>` | The field with `FieldRole::Id`, if any. |
+| `body_field()` | `Option<&FieldDef>` | The field with `FieldRole::Body`, if any. |
+| `relation_fields()` | `impl Iterator<Item = &FieldDef>` | All fields with `FieldRole::Relation(_)`. |
+| `junction_relations()` | `impl Iterator<Item = (&FieldDef, &RelationInfo)>` | All `ManyToMany` relation fields. |
+| `has_many_relations()` | `impl Iterator<Item = (&FieldDef, &RelationInfo)>` | All `HasMany` relation fields. |
+| `belongs_to_relations()` | `impl Iterator<Item = (&FieldDef, &RelationInfo)>` | All `BelongsTo` relation fields. |
