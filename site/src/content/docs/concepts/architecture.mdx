@@ -1,0 +1,197 @@
+---
+title: Architecture
+description: How Ontogen's layered generator pipeline works and why it's designed this way.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Most application stacks follow a predictable pattern. You define a data model, then you need a persistence layer, then CRUD methods, then API endpoints, then server handlers, then client code. For every entity. The shapes are almost identical each time -- only the names and fields change.
+
+Ontogen exists because that pattern is mechanical enough to automate. It's a build-time code generator that runs in `build.rs` and produces everything downstream from an annotated Rust struct.
+
+## The Pipeline
+
+The central architectural concept is a layered pipeline of independent generator functions. Each function takes configuration and optionally the output of a previous stage, then writes files and returns typed metadata for the next stage.
+
+```text
+                         ┌──────────────────────────────────────────────┐
+                         │                 build.rs                     │
+                         └──────────────────────────────────────────────┘
+                                            │
+                                            ▼
+                              ┌──────────────────────────┐
+              Schema/*.rs ──► │     parse_schema()       │──► SchemaOutput
+                              └──────────────────────────┘     { entities: Vec<EntityDef> }
+                                            │
+                    ┌───────────────────────┬┼──────────────────────┐
+                    │                       ││                      │
+                    ▼                       ▼▼                      ▼
+          ┌─────────────────┐  ┌─────────────────────┐   ┌──────────────┐
+          │  gen_seaorm()   │  │  gen_markdown_io()   │   │  gen_dtos()  │
+          └─────────────────┘  └─────────────────────┘   └──────────────┘
+                    │                  (files)                (files)
+                    ▼
+              SeaOrmOutput
+        { entity_tables, junction_tables, conversion_fns }
+                    │
+                    ▼
+          ┌─────────────────┐
+          │  gen_store()    │──► StoreOutput
+          └─────────────────┘    { methods, scaffolded_hooks, change_channels }
+                    │
+                    ▼
+          ┌─────────────────┐
+          │  gen_api()      │──► ApiOutput
+          └─────────────────┘    { modules: Vec<ApiModule> }
+                    │
+                    ▼
+          ┌─────────────────┐
+          │  gen_servers()  │──► ServersOutput
+          └─────────────────┘    { http_routes, ipc_commands, mcp_tools }
+                    │
+                    ▼
+          ┌─────────────────┐
+          │  gen_clients()  │──► (TypeScript files, admin registry)
+          └─────────────────┘
+```
+
+Data flows top to bottom. Each arrow is a plain Rust struct -- no framework types, no trait objects, no magic. Just data.
+
+## Generators Are Functions, Not a Framework
+
+Every generator in Ontogen is a standalone function. Here's what `gen_store` actually looks like:
+
+```rust
+pub fn gen_store(
+    entities: &[EntityDef],
+    seaorm: Option<&SeaOrmOutput>,
+    config: &StoreConfig,
+) -> Result<StoreOutput, CodegenError> { ... }
+```
+
+Three things to notice:
+
+1. It's a regular function. Not a method on a builder, not a step in a pipeline object, not a trait implementation. Just a function you call.
+2. The `seaorm` parameter is `Option`. If you have SeaORM metadata, great -- the store generator uses it for exact table and column names. If you don't, it falls back to naming conventions. Either way it works.
+3. It returns `StoreOutput` -- a concrete struct that downstream generators can consume. No dynamic dispatch, no type erasure.
+
+This pattern repeats across every generator in the pipeline.
+
+## The Independence Principle
+
+Each generator receives configuration and optional upstream IR. Nothing else. No shared mutable state, no global registry, no framework context object.
+
+This means you can use generators independently:
+
+- **Just persistence**: Call `parse_schema` and `gen_seaorm` to get SeaORM entities. Stop there.
+- **Persistence + store**: Add `gen_store` for CRUD methods with lifecycle hooks.
+- **Full stack**: Chain everything through `gen_clients` for TypeScript code.
+- **Skip the middle**: Use `gen_markdown_io` alongside `gen_seaorm` without involving the store or API layers at all.
+
+The generators at the top of the pipeline (seaorm, markdown_io, dtos) are siblings -- they all consume `SchemaOutput` independently and don't depend on each other. The lower layers form a chain, where each stage enriches the next.
+
+<Aside type="tip">
+The optional chaining pattern (`seaorm: Option<&SeaOrmOutput>`) is deliberate. When an upstream output is available, generators use its structured metadata. When it's absent, they fall back to conventions. This means you never have to run a generator you don't need just to satisfy a dependency.
+</Aside>
+
+## The `generated/` Convention
+
+Generated code lives in `generated/` subdirectories within your project structure:
+
+```text
+src/
+├── store/
+│   ├── generated/        ← gen_store writes here
+│   │   ├── mod.rs
+│   │   ├── task.rs
+│   │   └── agent.rs
+│   └── hooks/            ← scaffolded once, you own these
+│       ├── mod.rs
+│       ├── task.rs
+│       └── agent.rs
+├── api/
+│   └── v1/
+│       ├── generated/    ← gen_api writes here
+│       │   ├── mod.rs
+│       │   └── task.rs
+│       ├── task.rs       ← your custom endpoints live alongside
+│       └── reports.rs    ← entirely hand-written modules too
+└── schema/
+    ├── task.rs           ← your annotated structs (the source of truth)
+    └── agent.rs
+```
+
+This separation matters for three reasons:
+
+1. You can `git diff` the `generated/` directories to see exactly what changed after a schema modification.
+2. You never accidentally edit generated code, and the generator never overwrites your code.
+3. Your IDE can distinguish between files you maintain and files the build system maintains.
+
+The `generated/` directories are cleaned on each build -- stale files from renamed or deleted entities are removed automatically.
+
+## What Each Generator Does
+
+**`parse_schema()`** reads your `src/schema/` directory, finds structs with `#[derive(OntologyEntity)]` and `#[ontology(...)]` annotations, and parses them into `EntityDef` metadata using `syn`. This is always the starting point.
+
+**`gen_seaorm()`** generates SeaORM entity modules: table models with typed columns, relation enums, junction table definitions for many-to-many relationships, and `from_model()`/`to_active_model()` conversion functions.
+
+**`gen_markdown_io()`** generates YAML-frontmatter parsers, Markdown writers, and filesystem operations for reading/writing entities as Markdown files. Useful for content-as-code workflows.
+
+**`gen_dtos()`** generates `CreateEntityInput` and `UpdateEntityInput` structs -- the input types for create and update operations. Also invoked internally by `gen_store`, but available independently if you want input types without a full store layer.
+
+**`gen_store()`** generates CRUD methods (`list`, `get`, `create`, `update`, `delete`) with lifecycle hook call sites, `EntityUpdate` structs with `apply()` methods, and relation population helpers. Scaffolds hook files once per entity.
+
+**`gen_api()`** generates forwarding functions that bridge the store layer to transport handlers. Scans hand-written API directories and merges custom endpoints with generated CRUD into a unified `ApiOutput`.
+
+**`gen_servers()`** generates transport-specific handlers: Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions. Each transport reads the same `ApiOutput` and produces handlers appropriate for its protocol.
+
+**`gen_clients()`** generates TypeScript client functions for HTTP and Tauri IPC, split transport layers that select the right backend, and admin UI registry with per-field metadata.
+
+## How It Comes Together in build.rs
+
+A typical `build.rs` chains the generators together:
+
+```rust
+use ontogen::*;
+
+fn main() -> Result<(), CodegenError> {
+    let schema = parse_schema(&SchemaConfig {
+        schema_dir: "src/schema".into(),
+    })?;
+
+    let seaorm = gen_seaorm(&schema.entities, &SeaOrmConfig {
+        entity_output: "src/persistence/db/entities".into(),
+        conversion_output: "src/persistence/db/conversion.rs".into(),
+        skip_conversions: vec![],
+    })?;
+
+    gen_markdown_io(&schema.entities, &MarkdownIoConfig {
+        output_dir: "src/persistence/markdown".into(),
+    })?;
+
+    let _store = gen_store(&schema.entities, Some(&seaorm), &StoreConfig {
+        output_dir: "src/store/generated".into(),
+        hooks_dir: Some("src/store/hooks".into()),
+    })?;
+
+    let api = gen_api(&schema.entities, &ApiConfig {
+        output_dir: "src/api/v1/generated".into(),
+        exclude: vec![],
+        scan_dirs: vec!["src/api/v1".into()],
+        state_type: "AppState".into(),
+        store_type: Some("Store".into()),
+    })?;
+
+    let servers = gen_servers(Some(&api), &[], &ServersConfig {
+        // ... transport configuration
+    })?;
+
+    gen_clients(&servers, Some(&api), &ClientsConfig {
+        // ... client generator configuration
+    })?;
+
+    Ok(())
+}
+```
+
+Each function call is explicit. You can see the full generation pipeline in one place, comment out stages you don't need, and add conditional logic. There's no hidden orchestration.

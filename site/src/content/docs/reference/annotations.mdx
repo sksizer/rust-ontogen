@@ -1,0 +1,254 @@
+---
+title: Annotations
+description: Complete reference for all #[ontology(...)] annotations.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Ontogen reads `#[ontology(...)]` attributes from your schema structs at build time using `syn`. The `#[derive(OntologyEntity)]` macro itself is a no-op -- it just makes the attributes legal Rust. All the real work happens in `build.rs` when `parse_schema()` processes the source files.
+
+## Struct-level annotations
+
+Applied to the struct itself, alongside `#[derive(OntologyEntity)]`.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, table = "workouts", directory = "workouts", type_name = "workout", prefix = "wkt")]
+pub struct Workout {
+    // ...
+}
+```
+
+| Attribute | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `entity` | Yes | -- | Marks this struct as an Ontogen entity. Required for the struct to be picked up by `parse_schema()`. |
+| `table` | No | snake_case of struct name | SeaORM table name (e.g., `"workouts"`). |
+| `directory` | No | snake_case of struct name | Subdirectory for Markdown files (e.g., `"workouts"`). Used by `gen_markdown_io()`. |
+| `type_name` | No | snake_case of struct name | The `type:` value in frontmatter YAML (e.g., `"workout"`). Used by the Markdown parser dispatch. |
+| `prefix` | No | snake_case of struct name | ID prefix for global uniqueness (e.g., `"wkt"`). Useful when IDs are prefixed like `wkt-abc123`. |
+
+### Minimal form
+
+Most of the time you don't need all the attributes. If your struct name matches your conventions, this is sufficient:
+
+```rust
+#[derive(OntologyEntity)]
+#[ontology(entity, table = "exercises")]
+pub struct Exercise {
+    // ...
+}
+```
+
+When `directory`, `type_name`, and `prefix` are omitted, they all default to the snake_case version of the struct name (e.g., `"exercise"` for `Exercise`).
+
+---
+
+## Field-level annotations
+
+Applied to individual fields within an entity struct.
+
+### `#[ontology(id)]`
+
+Marks the primary key field. Every entity should have exactly one `id` field. The field is typically `String`.
+
+```rust
+#[ontology(id)]
+pub id: String,
+```
+
+**Effect on generated code:**
+- SeaORM entity gets `#[sea_orm(primary_key, auto_increment = false)]`.
+- Store CRUD: `get_*()` looks up by this field; `delete_*()` deletes by this field.
+- DTOs: the field is included in `CreateInput` but excluded from `UpdateInput` (you can't change the ID).
+
+### `#[ontology(body)]`
+
+Marks a field as the Markdown body content, not part of YAML frontmatter.
+
+```rust
+#[ontology(body)]
+pub content: String,
+```
+
+**Effect on generated code:**
+- Markdown writer puts this field's value below the `---` frontmatter separator.
+- Markdown parser reads everything after frontmatter into this field.
+- SeaORM entity includes it as a regular column.
+
+### `#[ontology(enum_field)]`
+
+Marks a field whose type is a Rust enum, stored as a string in the database.
+
+```rust
+#[ontology(enum_field)]
+pub status: Option<TaskStatus>,
+```
+
+**Effect on generated code:**
+- SeaORM column type is `String` (or `Option<String>`).
+- Conversions use `.to_string()` / `.parse()` to go between the enum and its string representation.
+- DTOs use the string form.
+
+<Aside type="note">
+The enum type itself (e.g., `TaskStatus`) must implement `Display` and `FromStr` (or be `Serialize`/`Deserialize` with string representation). Ontogen doesn't generate the enum -- you define it yourself.
+</Aside>
+
+### `#[ontology(skip)]`
+
+Excludes a field from all code generation. The field exists in your Rust struct but Ontogen pretends it's not there.
+
+```rust
+#[ontology(skip)]
+pub cached_value: Option<String>,
+```
+
+**Effect on generated code:**
+- Not included in SeaORM entity.
+- Not included in DTOs.
+- Not included in Markdown frontmatter.
+- Not included in from_model/to_active_model conversions.
+
+### `#[ontology(multiline_list)]`
+
+Rendering hint for `Vec<String>` fields in Markdown output. Write each item on its own line (YAML block sequence) instead of inline `[a, b, c]`.
+
+```rust
+#[ontology(multiline_list)]
+pub tags: Vec<String>,
+```
+
+**Markdown output with `multiline_list`:**
+```yaml
+tags:
+  - "[[tag-1]]"
+  - "[[tag-2]]"
+```
+
+**Markdown output without (default):**
+```yaml
+tags: ["[[tag-1]]", "[[tag-2]]"]
+```
+
+### `#[ontology(default_value = "...")]`
+
+Rendering hint for Markdown output. When the field's value equals this default, skip rendering it in frontmatter entirely.
+
+```rust
+#[ontology(default_value = "active")]
+pub status: String,
+```
+
+If `status` is `"active"`, the field won't appear in the Markdown frontmatter. This keeps Markdown files clean when most entities have the default value.
+
+---
+
+## Relation annotations
+
+Relations are field-level annotations that describe cross-entity references. They affect SeaORM entity generation (relation enums, junction tables), store generation (population helpers, junction sync), and Markdown I/O (wikilink formatting).
+
+### `belongs_to`
+
+A many-to-one relationship. This entity has a foreign key column pointing to the target.
+
+```rust
+#[ontology(relation(belongs_to, target = "Workout"))]
+pub workout_id: String,
+```
+
+| Attribute | Required | Description |
+|-----------|----------|-------------|
+| `target` | Yes | The target entity name (e.g., `"Workout"`). Must match a struct name in your schema. |
+
+**Field type:** `String` for a required FK, `Option<String>` for an optional FK.
+
+**Effect on generated code:**
+- SeaORM: `Relation` enum gets a `BelongsTo` variant with `from`/`to` column mapping.
+- Store: no special handling beyond the normal column.
+- Markdown: the field value is formatted as a wikilink (e.g., `"[[wkt-abc123]]"`).
+
+### `has_many`
+
+A one-to-many reverse relationship. The target entity has a FK column pointing back to this entity. No additional column is needed on this entity.
+
+```rust
+#[ontology(relation(has_many, target = "WorkoutSet", foreign_key = "workout_id"))]
+pub sets: Vec<String>,
+```
+
+| Attribute | Required | Description |
+|-----------|----------|-------------|
+| `target` | Yes | The target entity name. |
+| `foreign_key` | Yes | The FK column on the target entity that references this entity's ID. |
+
+**Field type:** `Vec<String>`. Populated at read time by querying the target table.
+
+**Effect on generated code:**
+- SeaORM: `Relation` enum gets a `HasMany` variant.
+- Store: `populate_*_relations()` loads the related IDs after fetching the parent.
+- DTOs: the field appears in inputs, accepting a list of related IDs.
+
+### `many_to_many`
+
+A many-to-many relationship through a junction table.
+
+```rust
+#[ontology(relation(many_to_many, target = "Tag"))]
+pub tags: Vec<String>,
+```
+
+With optional explicit junction table name:
+
+```rust
+#[ontology(relation(many_to_many, target = "Tag", junction = "workout_tags"))]
+pub tags: Vec<String>,
+```
+
+| Attribute | Required | Description |
+|-----------|----------|-------------|
+| `target` | Yes | The target entity name. |
+| `junction` | No | Explicit junction table name. When omitted, derived as `{source_table}_{field_name}` (e.g., `workout_tags`). |
+
+**Field type:** `Vec<String>`. Populated at read time from the junction table.
+
+**Effect on generated code:**
+- SeaORM: a full junction table entity is generated (e.g., `workout_tags`) with `BelongsTo` relations to both sides. The source entity gets `Related<TargetEntity>` with `via()`.
+- Store: `create_*()` and `update_*()` call `sync_junction()` to keep the junction table in sync. `populate_*_relations()` loads related IDs via the junction table.
+- DTOs: the field appears in both `CreateInput` and `UpdateInput` as `Vec<String>`.
+
+---
+
+## Combination rules
+
+Here's what's valid and what's not:
+
+| Annotation | Valid field types | Notes |
+|------------|-------------------|-------|
+| `id` | `String` | Exactly one per entity. |
+| `body` | `String` | At most one per entity. Only meaningful for Markdown I/O. |
+| `enum_field` | `Option<EnumType>`, `EnumType` | The enum must handle its own string conversion. |
+| `skip` | Any | Excluded from everything. |
+| `multiline_list` | `Vec<String>`, `Vec<T>` | Markdown rendering only. |
+| `default_value` | `String`, `Option<String>` | Markdown rendering only. |
+| `relation(belongs_to)` | `String`, `Option<String>` | FK column on this entity. |
+| `relation(has_many)` | `Vec<String>` | Reverse FK on the target. Requires `foreign_key`. |
+| `relation(many_to_many)` | `Vec<String>` | Junction table. Optional `junction` attribute. |
+
+Fields with no `#[ontology(...)]` annotation are treated as `FieldRole::Plain`. They're included in all generated code as regular data fields.
+
+<Aside type="caution">
+Don't combine multiple role annotations on the same field. A field can be `id` or `body` or `enum_field` or a `relation` or `skip` or plain -- not more than one. The `multiline_list` and `default_value` hints can be combined with any role.
+</Aside>
+
+---
+
+## Required derives
+
+Your entity struct needs these derives alongside `OntologyEntity`:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+```
+
+- `Serialize` and `Deserialize` are needed because generated DTOs, transport layers, and Markdown I/O all depend on serde.
+- `Clone` is needed because several generated functions clone entities (e.g., cloning the entity before mutation in update flows).
+- `Debug` is not strictly required but strongly recommended -- error messages reference entity state.
