@@ -1,0 +1,525 @@
+---
+title: Store Layer
+description: Generated CRUD methods, update structs, and relation population in the store layer.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The store layer sits between your persistence layer and your API. For each entity, it generates list/get/create/update/delete methods with lifecycle hooks, an `Update` struct with an `apply()` method, `From` impls for DTO types, and relation population logic. This is the layer where junction tables get synced, has_many fields get populated, and your custom business logic hooks into the lifecycle.
+
+## Configuration
+
+```rust
+let store_output = ontogen::gen_store(
+    &schema.entities,
+    Some(&seaorm_output),  // optional SeaORM metadata
+    &ontogen::StoreConfig {
+        output_dir: PathBuf::from("src/store/generated"),
+        hooks_dir: Some(PathBuf::from("src/store/hooks")),
+    },
+)?;
+```
+
+### StoreConfig Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `output_dir` | `PathBuf` | Directory for generated store modules |
+| `hooks_dir` | `Option<PathBuf>` | Directory for scaffolded hook files. `None` skips hook scaffolding. |
+
+When `hooks_dir` is `Some`, the generator creates hook files for new entities (never overwrites existing ones). When `None`, hook scaffolding is skipped entirely, but the generated CRUD code still calls hook functions -- you're responsible for providing the modules yourself.
+
+## What Gets Generated
+
+For each entity, you get one file in `output_dir`:
+
+```
+src/store/generated/
+    mod.rs
+    workout.rs        // WorkoutUpdate, apply(), From impls, CRUD methods
+    workout_set.rs
+    exercise.rs
+    tag.rs
+```
+
+And if `hooks_dir` is set, scaffolded hook files:
+
+```
+src/store/hooks/
+    mod.rs            // regenerated each build to track entities
+    workout.rs        // scaffolded once, never overwritten
+    workout_set.rs
+    exercise.rs
+    tag.rs
+```
+
+## The Generated Store Module
+
+Each entity module contains four things. Let's trace through what gets generated for a `Workout` entity with a `many_to_many` tags relation.
+
+### 1. The Update Struct
+
+Every field except `id` and `skip` fields gets an `Option`-wrapped version:
+
+```rust
+/// Partial update for a Workout. Only `Some` values are applied.
+#[derive(Debug, Clone, Default)]
+pub struct WorkoutUpdate {
+    pub name: Option<Option<String>>,       // nullable field -> double Option
+    pub date: Option<String>,               // required field -> single Option
+    pub duration_minutes: Option<Option<i32>>,
+    pub notes: Option<Option<String>>,
+    pub tags: Option<Vec<String>>,          // vec field -> Option<Vec>
+    pub created_at: Option<String>,
+}
+```
+
+The wrapping rules are:
+- Required types (`String`, `i32`) become `Option<T>` -- `None` means "don't update"
+- Nullable types (`Option<String>`) become `Option<Option<T>>` -- outer `None` means "don't update", `Some(None)` means "set to null"
+- Vec types (`Vec<String>`) become `Option<Vec<T>>` -- `None` means "don't update"
+
+### 2. The apply() Method
+
+A method on the Update struct that patches an entity in place:
+
+```rust
+impl WorkoutUpdate {
+    fn apply(&self, workout: &mut Workout) {
+        if let Some(name) = &self.name {
+            workout.name.clone_from(name);
+        }
+        if let Some(date) = &self.date {
+            workout.date.clone_from(date);
+        }
+        if let Some(duration_minutes) = &self.duration_minutes {
+            workout.duration_minutes.clone_from(duration_minutes);
+        }
+        if let Some(notes) = &self.notes {
+            workout.notes.clone_from(notes);
+        }
+        if let Some(tags) = &self.tags {
+            workout.tags.clone_from(tags);
+        }
+        if let Some(created_at) = &self.created_at {
+            workout.created_at.clone_from(created_at);
+        }
+    }
+}
+```
+
+The `apply()` method uses `clone_from` for each present field. This is the central mechanism for partial updates -- the store fetches the current entity, calls `apply()`, then persists the result.
+
+### 3. From Impls for DTOs
+
+Two `From` implementations bridge DTO input types to domain types:
+
+```rust
+// Create: DTO -> domain entity
+impl From<crate::schema::CreateWorkoutInput> for Workout {
+    fn from(input: crate::schema::CreateWorkoutInput) -> Self {
+        Self {
+            id: input.id,
+            name: input.name,
+            date: input.date,
+            duration_minutes: input.duration_minutes,
+            notes: input.notes,
+            tags: strip_wikilinks_vec(input.tags),
+            created_at: input.created_at,
+        }
+    }
+}
+
+// Update: DTO -> update struct
+impl From<crate::schema::UpdateWorkoutInput> for WorkoutUpdate {
+    fn from(input: crate::schema::UpdateWorkoutInput) -> Self {
+        Self {
+            name: input.name,
+            date: input.date,
+            duration_minutes: input.duration_minutes,
+            notes: input.notes,
+            tags: input.tags.map(strip_wikilinks_vec),
+            created_at: input.created_at,
+        }
+    }
+}
+```
+
+<Aside>
+Relation fields get wikilink stripping applied. This handles the case where incoming data contains `[[entity_id]]` markdown-style links that need to be resolved to bare IDs. The generators import `strip_wikilink`, `strip_wikilink_opt`, and `strip_wikilinks_vec` as needed.
+</Aside>
+
+### 4. CRUD Methods on Store
+
+The core of the generated module is an `impl Store` block with five methods:
+
+<Tabs>
+  <TabItem label="list">
+    ```rust
+    pub async fn list_workouts(&self) -> Result<Vec<Workout>, AppError> {
+        let models = workout::Entity::find()
+            .all(self.db())
+            .await
+            .map_err(|e| AppError::DbError(e.to_string()))?;
+
+        let mut entities: Vec<Workout> = models.iter()
+            .map(Workout::from_model)
+            .collect();
+        for entity in &mut entities {
+            self.populate_workout_relations(entity).await?;
+        }
+        Ok(entities)
+    }
+    ```
+
+    For entities without relations, the population loop is omitted and the method returns directly from the `map`.
+  </TabItem>
+  <TabItem label="get">
+    ```rust
+    pub async fn get_workout(&self, id: &str) -> Result<Workout, AppError> {
+        let model = workout::Entity::find_by_id(id)
+            .one(self.db())
+            .await
+            .map_err(|e| AppError::DbError(e.to_string()))?
+            .ok_or_else(|| AppError::WorkoutNotFound(id.to_string()))?;
+
+        let mut entity = Workout::from_model(&model);
+        self.populate_workout_relations(&mut entity).await?;
+        Ok(entity)
+    }
+    ```
+
+    The `NotFound` error variant is derived from the entity name: `{Entity}NotFound`.
+  </TabItem>
+  <TabItem label="create">
+    ```rust
+    pub async fn create_workout(&self, mut workout: Workout)
+        -> Result<Workout, AppError>
+    {
+        hooks::before_create(self, &mut workout).await?;
+
+        let id = workout.id.clone();
+        let tags = workout.tags.clone();  // extract before converting
+        let active = workout.to_active_model();
+
+        active.insert(self.db()).await
+            .map_err(|e| AppError::DbError(e.to_string()))?;
+
+        // Sync junction table
+        self.sync_junction(
+            "workout_tags", "workout_id", "tag_id",
+            &id, &tags
+        ).await?;
+
+        let created = self.get_workout(&id).await?;
+        self.emit_change(ChangeOp::Created, EntityKind::Workout, id);
+
+        hooks::after_create(self, &created).await?;
+        Ok(created)
+    }
+    ```
+
+    The create flow: hook -> extract relation fields -> insert -> sync junctions -> re-fetch -> emit event -> hook -> return.
+  </TabItem>
+  <TabItem label="update">
+    ```rust
+    pub async fn update_workout(&self, id: &str, updates: WorkoutUpdate)
+        -> Result<Workout, AppError>
+    {
+        let existing_model = workout::Entity::find_by_id(id)
+            .one(self.db()).await
+            .map_err(|e| AppError::DbError(e.to_string()))?
+            .ok_or_else(|| AppError::WorkoutNotFound(id.to_string()))?;
+
+        let mut current = Workout::from_model(&existing_model);
+        self.populate_workout_relations(&mut current).await?;
+
+        hooks::before_update(self, &current, &updates).await?;
+
+        let tags_changed = updates.tags.is_some();
+
+        updates.apply(&mut current);
+
+        let active = current.to_active_model();
+        active.update(self.db()).await
+            .map_err(|e| AppError::DbError(e.to_string()))?;
+
+        if tags_changed {
+            self.sync_junction(
+                "workout_tags", "workout_id", "tag_id",
+                id, &current.tags
+            ).await?;
+        }
+
+        let result = self.get_workout(id).await?;
+        self.emit_change(
+            ChangeOp::Updated, EntityKind::Workout, id.to_string()
+        );
+
+        hooks::after_update(self, &result).await?;
+        Ok(result)
+    }
+    ```
+
+    Junction sync is conditional -- it only runs when the relation field was actually included in the update. This avoids unnecessary DELETE+INSERT cycles.
+  </TabItem>
+  <TabItem label="delete">
+    ```rust
+    pub async fn delete_workout(&self, id: &str) -> Result<(), AppError> {
+        hooks::before_delete(self, id).await?;
+
+        let existing = workout::Entity::find_by_id(id)
+            .one(self.db()).await
+            .map_err(|e| AppError::DbError(e.to_string()))?
+            .ok_or_else(|| AppError::WorkoutNotFound(id.to_string()))?;
+
+        let active: workout::ActiveModel = existing.into();
+        active.delete(self.db()).await
+            .map_err(|e| AppError::DbError(e.to_string()))?;
+
+        self.emit_change(
+            ChangeOp::Deleted, EntityKind::Workout, id.to_string()
+        );
+
+        hooks::after_delete(self, id).await?;
+        Ok(())
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## Relation Population
+
+Entities with `has_many` or `many_to_many` fields get a `populate_{entity}_relations` method. This method fills in the relation fields that `from_model()` left as `Vec::new()`.
+
+```rust
+pub(crate) async fn populate_workout_relations(
+    &self,
+    workout: &mut crate::schema::Workout,
+) -> Result<(), crate::schema::AppError> {
+    workout.tags = self
+        .load_junction_ids("workout_tags", "workout_id", "tag_id", &workout.id)
+        .await?;
+    Ok(())
+}
+```
+
+For `has_many` fields, the population uses a SeaORM query:
+
+```rust
+// has_many: query target table filtered by FK
+node.contains = {
+    use crate::persistence::db::entities::node;
+    let children = node::Entity::find()
+        .filter(node::Column::ParentId.eq(&node.id))
+        .all(self.db())
+        .await
+        .map_err(|e| AppError::DbError(e.to_string()))?;
+    children.into_iter().map(|m| m.id).collect()
+};
+```
+
+For `many_to_many` fields, it queries the junction table:
+
+```rust
+// many_to_many: load IDs from junction table
+node.fulfills = self
+    .load_junction_ids("node_fulfills", "node_id", "requirement_id", &node.id)
+    .await?;
+```
+
+Both `list_*` and `get_*` methods call `populate_relations` after converting from the database model. This means every entity returned by the store has its relation fields fully populated.
+
+<Aside type="caution">
+For entities with many relations, `list_*` can be expensive -- it runs N+1 queries (one per entity per relation type). This is a known trade-off. For high-throughput scenarios, consider hand-written list methods with joins.
+</Aside>
+
+## Junction Sync
+
+When creating or updating an entity, `many_to_many` fields are synced via `sync_junction`. This method:
+
+1. Deletes all existing junction rows for the entity
+2. Inserts new junction rows for each ID in the field
+
+```rust
+// In create
+self.sync_junction("workout_tags", "workout_id", "tag_id", &id, &tags).await?;
+
+// In update (conditional)
+if tags_changed {
+    self.sync_junction("workout_tags", "workout_id", "tag_id", id, &current.tags).await?;
+}
+```
+
+The `sync_junction` method is provided by your `Store` implementation. Ontogen generates the calls with the correct table and column names.
+
+## Simple vs Complex Entities
+
+The generator produces different code depending on whether an entity has relations:
+
+**Simple entities** (no `has_many` or `many_to_many`):
+- No `populate_relations` method
+- List and get return directly from `from_model`
+- Create and update have no junction sync
+- Simpler, faster code
+
+**Complex entities** (any `has_many` or `many_to_many`):
+- `populate_relations` method generated
+- List and get call `populate_relations` after conversion
+- Create extracts relation field values before converting to active model
+- Update tracks which relation fields changed and conditionally syncs
+
+## Lifecycle Hooks
+
+The generated CRUD methods call hook functions at six points:
+
+| Hook | Timing | Receives | Can |
+|---|---|---|---|
+| `before_create` | Before insert | `&mut Entity` | Modify entity, reject with `Err` |
+| `after_create` | After insert + relations | `&Entity` | Side effects |
+| `before_update` | Before apply + persist | `&Entity, &EntityUpdate` | Validate, reject with `Err` |
+| `after_update` | After persist + relations | `&Entity` | Side effects |
+| `before_delete` | Before delete | `&str` (id) | Reject with `Err` |
+| `after_delete` | After delete | `&str` (id) | Side effects |
+
+### Scaffolded Hook Files
+
+When `hooks_dir` is set, the generator creates one file per entity:
+
+```rust
+//! Lifecycle hooks for Workout.
+//!
+//! This file was scaffolded by ontogen. It is yours to edit.
+//! Fill in hook bodies with custom logic (validation, side effects, etc.).
+//! This file is NEVER overwritten by the generator.
+
+#![allow(unused_variables, clippy::unnecessary_wraps, clippy::unused_async)]
+
+use crate::schema::{Workout, AppError};
+use crate::store::Store;
+use crate::store::generated::workout::WorkoutUpdate;
+
+/// Called before a workout is inserted.
+pub async fn before_create(
+    _store: &Store, _workout: &mut Workout
+) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Called after a workout is successfully created.
+pub async fn after_create(
+    _store: &Store, _workout: &Workout
+) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Called before a workout is updated.
+pub async fn before_update(
+    _store: &Store,
+    _current: &Workout,
+    _updates: &WorkoutUpdate,
+) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Called after a workout is successfully updated.
+pub async fn after_update(
+    _store: &Store, _workout: &Workout
+) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Called before a workout is deleted.
+pub async fn before_delete(
+    _store: &Store, _id: &str
+) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Called after a workout is successfully deleted.
+pub async fn after_delete(
+    _store: &Store, _id: &str
+) -> Result<(), AppError> {
+    Ok(())
+}
+```
+
+These files are scaffolded once and never overwritten. You own them. Fill in the function bodies with validation, status transitions, cascade deletes, audit logging -- whatever your domain requires.
+
+The `hooks/mod.rs` file _is_ regenerated each build to track new entities, but it only contains `pub mod` declarations.
+
+<Aside type="tip">
+The `before_create` hook receives `&mut Entity`, so you can modify the entity before it's persisted. This is the right place to set computed fields, assign IDs, validate constraints, or normalize data.
+</Aside>
+
+## The StoreOutput IR
+
+`gen_store` returns a `StoreOutput` struct for downstream generators:
+
+```rust
+pub struct StoreOutput {
+    pub methods: Vec<StoreMethodMeta>,
+    pub scaffolded_hooks: Vec<ScaffoldMeta>,
+    pub change_channels: Vec<ChannelMeta>,
+}
+```
+
+### StoreMethodMeta
+
+Each generated CRUD method is captured as metadata:
+
+```rust
+pub struct StoreMethodMeta {
+    pub entity_name: String,     // "Workout"
+    pub name: String,            // "create_workout"
+    pub kind: StoreMethodKind,   // Crud(Create)
+    pub params: Vec<ParamMeta>,
+    pub return_type: String,     // "Workout"
+    pub source: Source,          // Generated { module_path: "..." }
+}
+```
+
+The five standard methods per entity are:
+
+| Method Name | Kind | Return Type |
+|---|---|---|
+| `list_{entities}` | `Crud(List)` | `Vec<Entity>` |
+| `get_{entity}` | `Crud(Get)` | `Entity` |
+| `create_{entity}` | `Crud(Create)` | `Entity` |
+| `update_{entity}` | `Crud(Update)` | `Entity` |
+| `delete_{entity}` | `Crud(Delete)` | `()` |
+
+### How SeaOrmOutput Enriches Generation
+
+The `seaorm` parameter to `gen_store` is optional:
+
+```rust
+// With SeaORM metadata (preferred)
+let store = ontogen::gen_store(&entities, Some(&seaorm_output), &config)?;
+
+// Without -- infers junction table names from conventions
+let store = ontogen::gen_store(&entities, None, &config)?;
+```
+
+When `SeaOrmOutput` is provided, the store generator uses the exact junction table names and FK column names from the SeaORM layer. When absent, it derives them using the same naming conventions (`{entity}_{field}` for junction tables, `{entity}_id` for FK columns). In practice, both paths produce the same names, but passing the output makes the dependency explicit and catches naming mismatches early.
+
+## Method Naming
+
+Method names follow a consistent pattern:
+
+| Operation | Pattern | Example |
+|---|---|---|
+| List | `list_{plural_snake}` | `list_workouts` |
+| Get | `get_{snake}` | `get_workout` |
+| Create | `create_{snake}` | `create_workout` |
+| Update | `update_{snake}` | `update_workout` |
+| Delete | `delete_{snake}` | `delete_workout` |
+
+The pluralization uses a simple English rule set: add `s`, handle `es` for sibilants, handle `ies` for consonant + `y`.
+
+| Entity | Plural Method |
+|---|---|
+| `Workout` | `list_workouts` |
+| `Exercise` | `list_exercises` |
+| `WorkoutSet` | `list_workout_sets` |
+| `Capability` | `list_capabilities` |

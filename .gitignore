@@ -3,3 +3,6 @@ target/
 
 # files
 **/*.rs.bk
+.idea
+.darkfactory/worktrees/
+.darkfactory/transcripts/
