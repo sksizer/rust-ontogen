@@ -1,0 +1,238 @@
+---
+title: Defining Entities
+description: How to write entity structs that Ontogen can parse and generate code from.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+An entity in Ontogen is a Rust struct with two things: a derive macro and an `#[ontology(...)]` attribute. That's the contract. Get those right and the entire pipeline -- SeaORM entities, CRUD store, API layer, server transports, typed clients -- generates from your struct definition.
+
+## The Minimum Viable Entity
+
+```rust
+use ontogen_macros::OntologyEntity;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity)]
+pub struct Agent {
+    #[ontology(id)]
+    pub id: String,
+
+    pub name: String,
+
+    #[serde(default)]
+    #[ontology(body)]
+    pub body: String,
+}
+```
+
+Three things make this work:
+
+1. `#[derive(OntologyEntity)]` -- makes `#[ontology(...)]` attributes legal Rust. The macro itself does nothing; it expands to an empty token stream.
+2. `#[ontology(entity)]` on the struct -- tells `build.rs` this is an entity to process.
+3. `#[ontology(id)]` on exactly one field -- marks the primary key.
+
+That's it. Everything else is optional.
+
+## What the Derive Macro Actually Does
+
+Nothing. Literally nothing.
+
+The `OntologyEntity` derive macro is a no-op proc macro defined in `ontogen-macros`:
+
+```rust
+#[proc_macro_derive(OntologyEntity, attributes(ontology))]
+pub fn derive_ontology_entity(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
+```
+
+Its only purpose is to register `ontology` as a valid attribute namespace. Without it, `rustc` would reject `#[ontology(...)]` as an unrecognized attribute.
+
+The real work happens in `build.rs`, which reads your source files with `syn`, finds structs that have both `#[derive(OntologyEntity)]` and `#[ontology(entity, ...)]`, and parses them into `EntityDef` values.
+
+<Aside type="tip">
+This split design is intentional. Proc macros run at compile time and can't access the filesystem or coordinate between structs. `build.rs` can do both -- it reads all your schema files, builds a cross-referenced model, and generates code that depends on the full entity graph.
+</Aside>
+
+## Struct-Level Attributes
+
+The `#[ontology(entity, ...)]` attribute accepts four optional parameters. All have sensible defaults derived from the struct name.
+
+```rust
+#[ontology(
+    entity,
+    directory = "work_sessions",    // defaults to snake_case of struct name
+    table = "work_sessions",        // defaults to snake_case of struct name
+    type_name = "work_session",     // defaults to snake_case of struct name
+    prefix = "session"              // defaults to snake_case of struct name
+)]
+pub struct WorkSession { ... }
+```
+
+### `directory`
+
+Controls the subdirectory name for markdown file I/O. When using the markdown persistence layer, entities are stored in `{base_path}/{directory}/`. Defaults to the snake_case of the struct name.
+
+### `table`
+
+The SeaORM database table name. This value ends up in the generated `#[sea_orm(table_name = "...")]` attribute. Defaults to the snake_case of the struct name.
+
+You'll override this most often for pluralization:
+
+```rust
+#[ontology(entity, table = "capabilities")]
+pub struct Capability { ... }
+
+#[ontology(entity, table = "acceptance_criteria")]
+pub struct AcceptanceCriterion { ... }
+```
+
+### `type_name`
+
+The value written to YAML frontmatter as the `type:` field in markdown files. Used by the markdown parser to dispatch to the correct entity parser. Defaults to the snake_case of the struct name.
+
+### `prefix`
+
+ID prefix for generating globally unique identifiers. When your system creates new entities, IDs follow the pattern `{prefix}_{ulid}`. Defaults to the snake_case of the struct name.
+
+Override it for shorter IDs:
+
+```rust
+#[ontology(entity, prefix = "req")]
+pub struct Requirement { ... }
+
+#[ontology(entity, prefix = "spec")]
+pub struct Specification { ... }
+```
+
+## The EntityDef Type
+
+When `build.rs` parses your struct, it produces an `EntityDef`:
+
+```rust
+pub struct EntityDef {
+    pub name: String,       // "WorkSession"
+    pub directory: String,  // "work_sessions"
+    pub table: String,      // "work_sessions"
+    pub type_name: String,  // "work_session"
+    pub prefix: String,     // "work_session" (or override)
+    pub fields: Vec<FieldDef>,
+}
+```
+
+This struct is the input to every generator in the pipeline. Every decision about what code to produce traces back to an `EntityDef`.
+
+## Default Inference Rules
+
+When you omit optional attributes, Ontogen derives them from the struct name using `to_snake_case`:
+
+| Struct Name | `directory` | `table` | `type_name` | `prefix` |
+|---|---|---|---|---|
+| `Agent` | `agent` | `agent` | `agent` | `agent` |
+| `WorkSession` | `work_session` | `work_session` | `work_session` | `work_session` |
+| `AcceptanceCriterion` | `acceptance_criterion` | `acceptance_criterion` | `acceptance_criterion` | `acceptance_criterion` |
+
+You can override any subset. The rest still infer from the struct name:
+
+```rust
+#[ontology(entity, table = "work_sessions", prefix = "session")]
+pub struct WorkSession { ... }
+// directory = "work_session" (inferred)
+// type_name = "work_session" (inferred)
+// table = "work_sessions" (overridden)
+// prefix = "session" (overridden)
+```
+
+## A Complete Annotated Example
+
+Here's a fully-featured entity showing all the moving parts:
+
+```rust
+use ontogen_macros::OntologyEntity;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, directory = "nodes", table = "nodes")]
+pub struct Node {
+    #[ontology(id)]
+    pub id: String,
+
+    pub name: String,
+
+    #[ontology(enum_field)]
+    pub kind: Option<NodeKind>,
+
+    #[serde(default)]
+    #[ontology(relation(belongs_to, target = "Node"))]
+    pub parent_id: Option<String>,
+
+    #[serde(default)]
+    #[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
+    pub contains: Vec<String>,
+
+    pub owner: Option<String>,
+
+    #[serde(default)]
+    pub tags: Vec<String>,
+
+    #[serde(default)]
+    #[ontology(body)]
+    pub body: String,
+
+    #[serde(default)]
+    #[ontology(relation(many_to_many, target = "Requirement"))]
+    pub fulfills: Vec<String>,
+}
+```
+
+From this single struct, the pipeline produces:
+- A SeaORM entity with columns for `id`, `name`, `kind`, `parent_id`, `owner`, `tags` (as JSON), and `body`
+- A `belongs_to` relation to itself (via `parent_id`)
+- A junction table `node_fulfills` linking nodes to requirements
+- A `Relation` enum with `ParentId` and `FulfillsLink` variants
+- Store CRUD methods that populate `contains` and `fulfills` from the database
+- An `NodeUpdate` struct where every field except `id` is wrapped in `Option`
+
+## File Organization
+
+Put each entity in its own file under a `schema/` directory:
+
+```
+src/
+  schema/
+    mod.rs          // pub mod node; pub mod requirement; ...
+    node.rs         // #[derive(OntologyEntity)] pub struct Node { ... }
+    requirement.rs  // #[derive(OntologyEntity)] pub struct Requirement { ... }
+    agent.rs        // ...
+```
+
+Then point `SchemaConfig` at that directory:
+
+```rust
+// build.rs
+let schema = ontogen::parse_schema(&ontogen::SchemaConfig {
+    schema_dir: PathBuf::from("src/schema"),
+})?;
+```
+
+The parser reads every `.rs` file in the directory, finds structs with both `#[derive(OntologyEntity)]` and `#[ontology(entity, ...)]`, and skips everything else. Other structs, enums, helper functions, imports -- all ignored.
+
+<Aside>
+Non-entity structs in the schema directory are fine. The parser only processes structs that have both the derive and the `entity` attribute. You can keep enum definitions like `NodeKind` or helper types like `AcceptanceCriterion` in the same directory.
+</Aside>
+
+## Common Mistakes
+
+**Missing the derive macro.** Without `#[derive(OntologyEntity)]`, the `#[ontology(...)]` attributes are illegal Rust and the compiler rejects them outright.
+
+**Missing `entity` in the struct attribute.** `#[ontology(directory = "nodes")]` without `entity` as the first token will be silently ignored by the parser. The struct just won't appear in the output.
+
+**Missing `#[ontology(id)]`.** Every entity needs exactly one field marked as the ID. Without it, the SeaORM generator won't know which column to mark as the primary key, and the store layer won't know how to look up or reference the entity.
+
+**Using `#[ontology]` instead of `#[ontology(...)]`.** The attribute needs parentheses with at least one token inside. Bare `#[ontology]` is valid Rust but the parser won't match it.
+
+**Putting entities in subdirectories.** The parser only reads `.rs` files directly in the `schema_dir`. It does not recurse into subdirectories. All entity files must be at the top level of the schema directory.
+
+**Forgetting `#[serde(default)]` on optional collections.** While not required by Ontogen, fields like `Vec<String>` and `Option<T>` typically need `#[serde(default)]` for correct deserialization from YAML frontmatter where the field might be absent.
