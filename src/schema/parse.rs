@@ -66,7 +66,6 @@ fn has_ontology_entity_derive(attrs: &[Attribute]) -> bool {
     })
 }
 
-
 /// Parse a struct with `#[ontology(entity, ...)]` into an `EntityDef`.
 fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityDef>, String> {
     let struct_attrs = parse_struct_ontology_attrs(&input.attrs);
