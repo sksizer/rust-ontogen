@@ -1,0 +1,155 @@
+---
+title: Installation
+description: Add Ontogen to your Rust project and set up the workspace dependencies.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Add the dependencies
+
+Ontogen has two crates you need: the main `ontogen` crate (a build dependency that runs your code generators) and `ontogen-macros` (a regular dependency that provides the `#[derive(OntologyEntity)]` attribute).
+
+Add both to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ontogen-macros = "0.1"
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+ontogen = "0.1"
+```
+
+That's the minimum. `ontogen-macros` goes in `[dependencies]` because your schema structs use its derive macro at compile time. `ontogen` goes in `[build-dependencies]` because it runs inside `build.rs` to generate code before your crate compiles.
+
+<Aside type="tip">
+  You don't need to depend on `ontogen-core` directly. The main `ontogen` crate re-exports everything from it -- all the IR types, model definitions, naming utilities, and helper functions are available under the `ontogen::` namespace.
+</Aside>
+
+### Why serde?
+
+Your schema structs need `Serialize` and `Deserialize` derives. The generated persistence code, DTOs, and transport layers all depend on serde for serialization. If you're already using serde in your project, you're set.
+
+## Create the build script
+
+Create a `build.rs` file in your project root (next to `Cargo.toml`):
+
+```rust
+// build.rs
+use ontogen::CodegenError;
+
+/// Unwrap a codegen result, emitting a cargo:warning before panicking.
+fn unwrap_codegen<T>(result: Result<T, CodegenError>, stage: &str) -> T {
+    result.unwrap_or_else(|e| {
+        e.emit_cargo_warning();
+        panic!("{stage}: {e}");
+    })
+}
+
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+
+    // We'll fill in the pipeline stages in Quick Start.
+    // For now, just parse the schema to verify everything compiles.
+    let _schema = unwrap_codegen(
+        ontogen::parse_schema(&ontogen::SchemaConfig {
+            schema_dir: "src/schema".into(),
+        }),
+        "parse schema",
+    );
+}
+```
+
+The `unwrap_codegen` helper gives you readable build errors. When something goes wrong, `CodegenError::emit_cargo_warning()` prints the error as a `cargo:warning` line so you see it clearly in your build output, not buried in a backtrace.
+
+<Aside type="note">
+  `parse_schema` automatically emits `cargo:rerun-if-changed` directives for every `.rs` file in your schema directory. When you edit an entity, Cargo re-runs `build.rs` and regenerates the affected code. You only need the manual `rerun-if-changed=build.rs` line for the build script itself.
+</Aside>
+
+## Set up the schema directory
+
+Create `src/schema/` for your entity definitions:
+
+```
+your-project/
+  Cargo.toml
+  build.rs
+  src/
+    schema/
+      mod.rs      # re-exports your entity types
+    lib.rs        # or main.rs
+```
+
+Your `src/schema/mod.rs` will re-export entity types so the rest of your crate can use them:
+
+```rust
+// src/schema/mod.rs
+mod task;
+pub use task::Task;
+```
+
+This is where Ontogen looks for structs annotated with `#[derive(OntologyEntity)]`. Each `.rs` file in the schema directory is parsed by `syn` during the build. The derive macro itself is a no-op -- it just makes the `#[ontology(...)]` attributes legal Rust. All the real work happens in `build.rs`.
+
+## Project structure
+
+As you add generators to the pipeline, Ontogen writes output into `generated/` subdirectories within your project. A typical layout after running the full pipeline looks like this:
+
+```
+src/
+  schema/
+    mod.rs
+    task.rs                           # your entity definition
+    dto/                              # generated Create/Update input types
+      mod.rs
+      task.rs
+  persistence/
+    db/
+      entities/
+        generated/                    # generated SeaORM entities
+          mod.rs
+          task.rs
+          task_requirements.rs        # junction table (if many-to-many)
+      conversions/
+        generated/                    # generated from_model / to_active_model
+          mod.rs
+          task.rs
+  store/
+    mod.rs
+    generated/                        # generated CRUD methods
+      mod.rs
+      task.rs
+    hooks/                            # scaffolded once, never overwritten
+      mod.rs
+      task.rs
+  api/
+    v1/
+      mod.rs
+      generated/                      # generated API forwarding functions
+        mod.rs
+        task.rs
+    transport/
+      http/
+        generated.rs                  # generated Axum route handlers
+      ipc/
+        generated.rs                  # generated Tauri IPC commands
+```
+
+You don't need all of this on day one. Each generator targets a specific output directory, and you enable them one at a time. The [Quick Start](/getting-started/quick-start/) walks through adding generators incrementally.
+
+<Aside type="caution">
+  Never edit files inside `generated/` directories. Ontogen overwrites them on every build. Your hand-written code lives in the parent directories alongside the generated modules. The one exception is hook files in `store/hooks/` -- those are scaffolded once per entity and never touched again.
+</Aside>
+
+## Verify the setup
+
+Run a build to confirm everything is wired up:
+
+```bash
+cargo build
+```
+
+If your `src/schema/` directory is empty or has no annotated structs, that's fine -- `parse_schema` returns an empty list and the build succeeds. If something is misconfigured, you'll see a `cargo:warning=ontogen:` line telling you what went wrong.
+
+## Next steps
+
+You've got the scaffolding in place. Head to [Quick Start](/getting-started/quick-start/) to define your first entity and watch Ontogen generate code from it.

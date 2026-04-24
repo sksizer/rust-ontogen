@@ -1,0 +1,332 @@
+---
+title: Field Types & Roles
+description: How Ontogen maps Rust types to database columns, API parameters, and client types.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Every field on your entity struct has two properties that drive code generation: its **type** (what Rust type it is) and its **role** (what `#[ontology(...)]` annotation it has). Together these determine what column type goes in the database, how the field appears in DTOs, how it's converted between layers, and whether it gets special handling in the store.
+
+## FieldType: The Type System
+
+When `build.rs` parses a field, it classifies the Rust type into a `FieldType` variant. This is a simplified representation -- Ontogen doesn't need the full complexity of Rust's type system, just enough to make correct code generation decisions.
+
+```rust
+pub enum FieldType {
+    String,
+    I32,
+    I64,
+    Bool,
+    OptionString,
+    OptionI32,
+    OptionI64,
+    OptionBool,
+    OptionEnum(String),
+    VecString,
+    VecStruct(String),
+    Other(String),
+}
+```
+
+The classification uses pattern matching on the AST. It recognizes the common types directly and falls back to `Other(String)` for anything else.
+
+### Type Classification Rules
+
+The parser inspects the last path segment of each type:
+
+| Rust Type | FieldType | Notes |
+|---|---|---|
+| `String` | `String` | Plain string |
+| `i32` | `I32` | 32-bit integer |
+| `i64` | `I64` | 64-bit integer |
+| `u64` | `I64` | Mapped to i64 (SQLite has no unsigned integers) |
+| `bool` | `Bool` | Boolean |
+| `Option<String>` | `OptionString` | Nullable string |
+| `Option<i32>` | `OptionI32` | Nullable integer |
+| `Option<i64>` | `OptionI64` | Nullable 64-bit integer |
+| `Option<u64>` | `OptionI64` | Mapped to nullable i64 |
+| `Option<bool>` | `OptionBool` | Nullable boolean |
+| `Option<TaskStatus>` | `OptionEnum("TaskStatus")` | Any non-primitive Option inner type |
+| `Vec<String>` | `VecString` | String list -- stored as JSON in DB |
+| `Vec<AcceptanceCriterion>` | `VecStruct("AcceptanceCriterion")` | Struct list -- stored as JSON in DB |
+| `RequirementStatus` | `Other("RequirementStatus")` | Anything else (enums, custom types) |
+
+<Aside type="tip">
+`u64` maps to `I64` because SQLite doesn't have unsigned integer types. The generated code uses `i64` for database columns and casts on the way in and out.
+</Aside>
+
+## The Full Type Mapping Chain
+
+Each `FieldType` variant maps through every layer of the pipeline. Here's what happens to each type as it flows from your schema struct through SeaORM, then through the conversion layer:
+
+### Primitive Types
+
+| FieldType | SeaORM Column | `from_model()` | `to_active_model()` |
+|---|---|---|---|
+| `String` | `String` | `model.name.clone()` | `Set(self.name.clone())` |
+| `I32` | `i32` | `model.count` | `Set(self.count)` |
+| `I64` | `i64` | `model.timestamp` | `Set(self.timestamp)` |
+| `Bool` | `bool` | `model.active` | `Set(self.active)` |
+
+Copy types (`i32`, `i64`, `bool`) don't need `.clone()`. Strings do. The generator knows the difference.
+
+### Nullable Types
+
+| FieldType | SeaORM Column | `from_model()` | `to_active_model()` |
+|---|---|---|---|
+| `OptionString` | `Option<String>` | `model.notes.clone()` | `Set(self.notes.clone())` |
+| `OptionI32` | `Option<i32>` | `model.rpe` | `Set(self.rpe)` |
+| `OptionI64` | `Option<i64>` | `model.max_value` | `Set(self.max_value)` |
+| `OptionBool` | `Option<bool>` | `model.verified` | `Set(self.verified)` |
+
+Nullable types map directly. `Option<String>` in your struct becomes `Option<String>` in the database column. No transformation needed.
+
+### Collection Types
+
+| FieldType | SeaORM Column | `from_model()` | `to_active_model()` |
+|---|---|---|---|
+| `VecString` | `String` | `decode_json_vec(&model.tags)` | `Set(serde_json::to_string(&self.tags).unwrap_or_default())` |
+| `VecStruct("T")` | `String` | `serde_json::from_str(&model.items).unwrap_or_default()` | `Set(serde_json::to_string(&self.items).unwrap_or_default())` |
+
+Both `Vec<String>` and `Vec<T>` are stored as JSON strings in the database. The conversion layer serializes on write and deserializes on read.
+
+<Aside>
+`VecString` has its own `decode_json_vec` helper that handles edge cases -- empty strings, malformed JSON falling back to an empty vec. `VecStruct` uses `serde_json` directly.
+</Aside>
+
+### Enum Types
+
+| FieldType | SeaORM Column | `from_model()` | `to_active_model()` |
+|---|---|---|---|
+| `OptionEnum("TaskStatus")` | `Option<String>` | serde parse from `"variant"` string | `Set(self.status.as_ref().map(enum_to_string))` |
+| `Other("RequirementStatus")` | `String` | serde parse with fallback | `Set(enum_to_string(&self.status))` |
+
+Enums go through a serde JSON roundtrip. The database stores the string representation (e.g., `"active"`), and `from_model()` parses it back:
+
+```rust
+// Optional enum
+status: model.status.as_deref()
+    .and_then(|s| serde_json::from_str::<crate::schema::TaskStatus>(
+        &format!("\"{s}\"")
+    ).ok()),
+
+// Required enum with fallback
+status: serde_json::from_str::<crate::schema::RequirementStatus>(
+    &format!("\"{}\"", &model.status)
+).unwrap_or_else(|_|
+    serde_json::from_str::<crate::schema::RequirementStatus>("\"\"")
+        .expect("enum should have a fallback variant")
+),
+```
+
+The required enum path expects your enum to have a fallback variant that deserializes from an empty string.
+
+### The `Other` Fallback
+
+When the parser encounters a type it doesn't specifically recognize, it captures the raw type string:
+
+```rust
+pub priority: TaskPriority,  // FieldType::Other("TaskPriority")
+```
+
+If it's a known primitive (`u8`, `u16`, `u32`, etc.), the column type is `i32` with a cast:
+
+```rust
+// from_model
+#[allow(clippy::cast_sign_loss)] priority: model.priority as u32,
+
+// to_active_model
+#[allow(clippy::cast_possible_wrap)] priority: Set(self.priority as i32),
+```
+
+For non-primitive `Other` types, it's stored as `String` in the database and cloned:
+
+```rust
+priority: model.priority.clone(),
+priority: Set(self.priority.clone()),
+```
+
+## FieldRole: What a Field Means
+
+While `FieldType` captures the Rust type, `FieldRole` captures the semantic meaning. It's derived from the `#[ontology(...)]` annotation on the field (or defaults to `Plain` when there's no annotation).
+
+```rust
+pub enum FieldRole {
+    Id,                     // #[ontology(id)]
+    Body,                   // #[ontology(body)]
+    EnumField,              // #[ontology(enum_field)]
+    Relation(RelationInfo), // #[ontology(relation(...))]
+    Plain,                  // no annotation
+    Skip,                   // #[ontology(skip)]
+}
+```
+
+### How Role Changes Generation
+
+The same `FieldType` can produce very different generated code depending on the role:
+
+<Tabs>
+  <TabItem label="Id">
+    ```rust
+    // Schema struct
+    #[ontology(id)]
+    pub id: String,
+
+    // Generated SeaORM column
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: String,
+
+    // Not in Update struct (can't change an ID)
+    // Not in DTO update input
+    ```
+  </TabItem>
+  <TabItem label="Body">
+    ```rust
+    // Schema struct
+    #[ontology(body)]
+    pub body: String,
+
+    // Generated SeaORM column
+    pub body: String,
+
+    // In Update struct as Option<String>
+    // Special handling in markdown I/O (content below frontmatter)
+    ```
+  </TabItem>
+  <TabItem label="Relation (belongs_to)">
+    ```rust
+    // Schema struct
+    #[ontology(relation(belongs_to, target = "Workout"))]
+    pub workout_id: String,
+
+    // Generated SeaORM column (FK exists in DB)
+    pub workout_id: String,
+
+    // Plus a Relation enum variant:
+    // #[sea_orm(belongs_to = "super::workout::Entity", ...)]
+    // WorkoutId,
+    ```
+  </TabItem>
+  <TabItem label="Relation (many_to_many)">
+    ```rust
+    // Schema struct
+    #[ontology(relation(many_to_many, target = "Tag"))]
+    pub tags: Vec<String>,
+
+    // NO SeaORM column generated (stored in junction table)
+    // from_model() returns Vec::new()
+    // Store populates via populate_relations()
+    ```
+  </TabItem>
+  <TabItem label="Skip">
+    ```rust
+    // Schema struct
+    #[ontology(skip)]
+    pub acceptance_criteria: Vec<AcceptanceCriterion>,
+
+    // SeaORM column exists (stored as JSON)
+    pub acceptance_criteria: String,
+
+    // But excluded from Update struct and DTOs
+    // Treated as Plain in from_model/to_active_model
+    ```
+  </TabItem>
+</Tabs>
+
+## Vec&lt;String&gt;: Tags vs Relations
+
+A `Vec<String>` field can mean two completely different things depending on its role:
+
+**Plain `Vec<String>` -- data stored as JSON:**
+
+```rust
+#[serde(default)]
+pub tags: Vec<String>,
+// FieldRole::Plain
+// Stored as JSON string in a regular DB column
+// from_model: decode_json_vec(&model.tags)
+// to_active_model: Set(serde_json::to_string(&self.tags).unwrap())
+```
+
+**Relation `Vec<String>` -- IDs resolved from a junction table:**
+
+```rust
+#[serde(default)]
+#[ontology(relation(many_to_many, target = "Tag"))]
+pub tags: Vec<String>,
+// FieldRole::Relation(ManyToMany)
+// NO database column
+// from_model: Vec::new()
+// Populated by store's populate_relations()
+// Synced by store's sync_junction() on create/update
+```
+
+The Rust type is identical. The role determines everything about how it's handled.
+
+<Aside type="caution">
+This is a common source of confusion. If your `Vec<String>` field isn't being populated from the database, check whether it has a `relation` annotation. Without one, it's treated as a plain JSON-serialized list. With one, it's resolved through a junction table.
+</Aside>
+
+## Nullability and Option
+
+The presence or absence of `Option` directly maps to database nullability:
+
+| Schema Type | DB Column | Nullable? |
+|---|---|---|
+| `String` | `String` | No (NOT NULL) |
+| `Option<String>` | `Option<String>` | Yes |
+| `i32` | `i32` | No |
+| `Option<i32>` | `Option<i32>` | Yes |
+| `Vec<String>` | `String` (JSON) | No (empty vec = `"[]"`) |
+
+There's one exception: `Option<String>` as an ID field. The SeaORM column becomes a non-nullable `String`, because primary keys can't be NULL:
+
+```rust
+#[ontology(id)]
+pub id: Option<String>,
+// SeaORM: pub id: String (NOT nullable)
+```
+
+## Update Struct Type Wrapping
+
+In the generated `{Entity}Update` struct, every field gets wrapped in `Option` to represent "was this field included in the update?":
+
+| Schema Type | Update Struct Type | Meaning of `None` |
+|---|---|---|
+| `String` | `Option<String>` | Field not being updated |
+| `Option<String>` | `Option<Option<String>>` | Outer `None` = not updating; inner `None` = clearing the value |
+| `i32` | `Option<i32>` | Field not being updated |
+| `Vec<String>` | `Option<Vec<String>>` | Field not being updated |
+| `Option<TaskStatus>` | `Option<Option<TaskStatus>>` | Outer `None` = not updating; inner `None` = clearing |
+
+The double-`Option` pattern for nullable fields lets you distinguish between "don't change this field" (`None`) and "set this field to null" (`Some(None)`).
+
+Here's what the generated Update struct looks like for a Workout:
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub struct WorkoutUpdate {
+    pub name: Option<Option<String>>,       // nullable field
+    pub date: Option<String>,               // required field
+    pub duration_minutes: Option<Option<i32>>, // nullable field
+    pub notes: Option<Option<String>>,      // nullable field
+    pub tags: Option<Vec<String>>,          // vec field
+    pub created_at: Option<String>,         // required field
+}
+```
+
+And the `apply()` method uses `clone_from` for each field that's `Some`:
+
+```rust
+impl WorkoutUpdate {
+    fn apply(&self, workout: &mut Workout) {
+        if let Some(name) = &self.name {
+            workout.name.clone_from(name);
+        }
+        if let Some(date) = &self.date {
+            workout.date.clone_from(date);
+        }
+        // ... same pattern for all fields
+    }
+}
+```
