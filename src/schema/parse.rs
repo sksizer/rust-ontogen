@@ -68,7 +68,8 @@ fn has_ontology_entity_derive(attrs: &[Attribute]) -> bool {
 
 /// Parse a struct with `#[ontology(entity, ...)]` into an `EntityDef`.
 fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityDef>, String> {
-    let struct_attrs = parse_struct_ontology_attrs(&input.attrs);
+    let name = input.ident.to_string();
+    let struct_attrs = parse_struct_ontology_attrs(&name, &input.attrs);
     let Some(struct_attrs) = struct_attrs else {
         return Ok(None); // No #[ontology(entity, ...)] on this struct
     };
@@ -85,9 +86,7 @@ fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityD
         field_defs.push(parse_field(field)?);
     }
 
-    let name = input.ident.to_string();
     let default_snake = to_snake_case(&name);
-
     let directory = struct_attrs.directory.unwrap_or_else(|| default_snake.clone());
     let table = struct_attrs.table.unwrap_or_else(|| default_snake.clone());
     let type_name = struct_attrs.type_name.unwrap_or_else(|| default_snake.clone());
@@ -134,7 +133,7 @@ struct StructOntologyAttrs {
 }
 
 /// Parse the `#[ontology(entity, ...)]` attribute.
-fn parse_struct_ontology_attrs(attrs: &[Attribute]) -> Option<StructOntologyAttrs> {
+fn parse_struct_ontology_attrs(struct_name: &str, attrs: &[Attribute]) -> Option<StructOntologyAttrs> {
     for attr in attrs {
         if !attr.path().is_ident("ontology") {
             continue;
@@ -142,6 +141,9 @@ fn parse_struct_ontology_attrs(attrs: &[Attribute]) -> Option<StructOntologyAttr
 
         let Ok(nested) = attr.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
         else {
+            println!(
+                "cargo:warning=ontogen: malformed #[ontology(...)] on struct `{struct_name}` — attribute will be ignored"
+            );
             continue;
         };
 
@@ -185,7 +187,7 @@ fn parse_field(field: &Field) -> Result<FieldDef, String> {
     let name = field.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
 
     let field_type = classify_type(&field.ty);
-    let ontology_attrs = parse_field_ontology_attrs(&field.attrs).map_err(|e| format!("field `{name}`: {e}"))?;
+    let ontology_attrs = parse_field_ontology_attrs(&name, &field.attrs).map_err(|e| format!("field `{name}`: {e}"))?;
     let serde_default = has_serde_default(&field.attrs);
 
     Ok(FieldDef {
@@ -206,7 +208,7 @@ struct FieldOntologyAttrs {
 }
 
 /// Parse all `#[ontology(...)]` field-level attributes, collecting role and rendering hints.
-fn parse_field_ontology_attrs(attrs: &[Attribute]) -> Result<FieldOntologyAttrs, String> {
+fn parse_field_ontology_attrs(field_name: &str, attrs: &[Attribute]) -> Result<FieldOntologyAttrs, String> {
     let mut result = FieldOntologyAttrs { role: FieldRole::Plain, multiline_list: false, default_value: None };
 
     for attr in attrs {
@@ -216,6 +218,9 @@ fn parse_field_ontology_attrs(attrs: &[Attribute]) -> Result<FieldOntologyAttrs,
 
         let Ok(nested) = attr.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
         else {
+            println!(
+                "cargo:warning=ontogen: malformed #[ontology(...)] on field `{field_name}` — attribute will be ignored"
+            );
             continue;
         };
 
@@ -711,6 +716,89 @@ mod tests {
             }
             other => panic!("Expected Relation, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn malformed_ontology_attr_on_field_is_skipped_cleanly() {
+        // Malformed `#[ontology(...)]` at the field level should be skipped with a
+        // `cargo:warning` diagnostic rather than panicking — the rest of the struct
+        // should still parse normally.
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Node {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(this is garbage syntax)]
+                pub name: String,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        assert_eq!(entities.len(), 1);
+        let node = &entities[0];
+
+        // The malformed attr is ignored — `name` still shows up as a plain field.
+        let name_field = node.fields.iter().find(|f| f.name == "name").expect("name field should exist");
+        assert_eq!(name_field.role, FieldRole::Plain);
+
+        // id and body still parse correctly.
+        assert!(node.id_field().is_some());
+        assert!(node.body_field().is_some());
+    }
+
+    #[test]
+    fn malformed_relation_meta_is_skipped_cleanly() {
+        // Malformed inner `relation(...)` should not panic; the outer `#[ontology(...)]`
+        // parses, so the field falls back to Plain.
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Node {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(relation(!! not valid !!))]
+                pub parent_id: Option<String>,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        let node = &entities[0];
+        let parent = node.fields.iter().find(|f| f.name == "parent_id").expect("parent_id should exist");
+        // With a malformed relation the role stays Plain (the `relation` arm bails out).
+        assert_eq!(parent.role, FieldRole::Plain);
+    }
+
+    #[test]
+    fn malformed_ontology_attr_on_struct_is_skipped_cleanly() {
+        // Malformed struct-level `#[ontology(...)]` short-circuits parse_struct_ontology_attrs
+        // for that attribute; since no well-formed `#[ontology(entity, ...)]` is present,
+        // the struct is skipped (no EntityDef produced), but parsing must not panic.
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(!! not valid !!)]
+            pub struct Broken {
+                pub id: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        // Malformed attr is skipped, no `entity` marker ever found -> no entities produced.
+        assert!(entities.is_empty());
     }
 
     #[test]
