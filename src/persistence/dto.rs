@@ -476,4 +476,14 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Syntax check: verify generate_dto_code emits a syntactically valid
+    /// Rust source file.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        let code = generate_dto_code(&make_entity());
+        syn::parse_file(&code).unwrap_or_else(|e| {
+            panic!("persistence::dto::generate_dto_code produced invalid Rust: {e}\n--- code ---\n{code}")
+        });
+    }
 }

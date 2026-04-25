@@ -6,7 +6,9 @@
 use std::fs;
 use std::path::Path;
 
-use crate::servers::classify::{OpKind, classify_op, is_read_operation};
+use ontogen_core::ir::OpKind;
+
+use crate::servers::classify::{classify_op, is_read_operation};
 use crate::servers::config::Config;
 use crate::servers::generators::ipc::command_name;
 use crate::servers::parse::{ApiFn, ApiModule, Param};
@@ -160,7 +162,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
                          \x20 }},\n\n",
                     ));
                 }
-                OpKind::UpdateById => {
+                OpKind::Update => {
                     let input_type = rust_type_to_ts(&extract_input_type(&f.params[1].ty));
                     out.push_str(&format!(
                         "  async {camel}(id: string, input: {input_type}): Promise<{ts_ret}> {{\n\
@@ -168,7 +170,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
                          \x20 }},\n\n",
                     ));
                 }
-                OpKind::DeleteById => {
+                OpKind::Delete => {
                     out.push_str(&format!(
                         "  async {camel}(id: string): Promise<null> {{\n\
                          \x20   await httpDelete(`/{plural}/${{encodeURIComponent(id)}}`);\n\
@@ -182,6 +184,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
                 OpKind::CustomGet | OpKind::CustomPost => {
                     generate_generic_ts_handler(&mut out, module, f, config);
                 }
+                OpKind::EventStream => continue,
             }
         }
     }

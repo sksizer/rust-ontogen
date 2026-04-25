@@ -1,78 +1,49 @@
 //! Operation classification and parameter analysis.
 
-use crate::servers::parse::ApiFn;
+use ontogen_core::ir::OpKind;
 use ontogen_core::naming::pluralize;
 
-/// The kind of operation a function represents.
-#[derive(Debug)]
-pub enum OpKind {
-    /// `list()` — returns all entities.
-    List,
-    /// `get_by_id(id)` — returns a single entity by ID.
-    GetById,
-    /// `create(input)` — creates a new entity.
-    Create,
-    /// `update(id, input)` — updates an entity by ID.
-    UpdateById,
-    /// `delete(id)` — deletes an entity by ID.
-    DeleteById,
-    /// `list_{children}(parent_id)` — list child entities of a parent.
-    /// Generates `GET /api/{parents}/:parent_id/{children}`.
-    JunctionList {
-        /// URL segment for the child collection, e.g. "roles".
-        child_segment: String,
-    },
-    /// `add_{child}(parent_id, child_id)` — add a child to a parent.
-    /// Generates `POST /api/{parents}/:parent_id/{children}`.
-    JunctionAdd {
-        /// URL segment for the child collection, e.g. "roles".
-        child_segment: String,
-    },
-    /// `remove_{child}(parent_id, child_id)` — remove a child from a parent.
-    /// Generates `DELETE /api/{parents}/:parent_id/{children}/:child_id`.
-    JunctionRemove {
-        /// URL segment for the child collection, e.g. "roles".
-        child_segment: String,
-    },
-    /// Custom read operation (inferred from `get_` prefix or no params).
-    CustomGet,
-    /// Custom write/mutation operation.
-    CustomPost,
-}
+use crate::servers::parse::{ApiFn, Param};
 
 /// Classify a function into an operation kind.
 pub fn classify_op(func: &ApiFn) -> OpKind {
-    match func.name.as_str() {
+    classify_by_name_and_params(&func.name, &func.params)
+}
+
+/// Classify a function by name and parameters.
+///
+/// Lower-level entry point used when an `ApiFn` is not available
+/// (e.g., the API layer's IR conversion).
+pub fn classify_by_name_and_params(name: &str, params: &[Param]) -> OpKind {
+    match name {
         "list" => OpKind::List,
         "get_by_id" => OpKind::GetById,
         "create" => OpKind::Create,
-        "update" => OpKind::UpdateById,
-        "delete" => OpKind::DeleteById,
+        "update" => OpKind::Update,
+        "delete" => OpKind::Delete,
         _ => {
-            let name = &func.name;
-
-            // Junction: add_{child}(parent_id, child_id) — exactly 2 string params
+            // Junction: add_{child}(parent_id, child_id) — exactly 2 params
             if let Some(rest) = name.strip_prefix("add_")
-                && func.params.len() == 2
+                && params.len() == 2
             {
                 return OpKind::JunctionAdd { child_segment: junction_child_segment(rest, false) };
             }
 
-            // Junction: remove_{child}(parent_id, child_id) — exactly 2 string params
+            // Junction: remove_{child}(parent_id, child_id) — exactly 2 params
             if let Some(rest) = name.strip_prefix("remove_")
-                && func.params.len() == 2
+                && params.len() == 2
             {
                 return OpKind::JunctionRemove { child_segment: junction_child_segment(rest, false) };
             }
 
             // Junction: list_{children}(parent_id) — exactly 1 param, not "list" itself
             if let Some(rest) = name.strip_prefix("list_")
-                && func.params.len() == 1
+                && params.len() == 1
             {
                 return OpKind::JunctionList { child_segment: junction_child_segment(rest, true) };
             }
 
-            if name.starts_with("get_") || func.params.is_empty() { OpKind::CustomGet } else { OpKind::CustomPost }
+            if name.starts_with("get_") || params.is_empty() { OpKind::CustomGet } else { OpKind::CustomPost }
         }
     }
 }

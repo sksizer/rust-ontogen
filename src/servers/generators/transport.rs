@@ -11,7 +11,9 @@
 use std::fs;
 use std::path::Path;
 
-use crate::servers::classify::{OpKind, classify_op, is_read_operation};
+use ontogen_core::ir::OpKind;
+
+use crate::servers::classify::{classify_op, is_read_operation};
 use crate::servers::config::Config;
 use crate::servers::generators::ipc::command_name;
 use crate::servers::parse::{ApiModule, Param};
@@ -249,14 +251,14 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                     let input_type = rust_type_to_ts(&extract_input_type(&f.params[0].ty));
                     out.push_str(&format!("  {}(input: {}{pp_trailing}): Promise<{}>;\n", camel, input_type, ret_str));
                 }
-                OpKind::UpdateById => {
+                OpKind::Update => {
                     let input_type = rust_type_to_ts(&extract_input_type(&f.params[1].ty));
                     out.push_str(&format!(
                         "  {}(id: string, input: {}{pp_trailing}): Promise<{}>;\n",
                         camel, input_type, ret_str
                     ));
                 }
-                OpKind::DeleteById => {
+                OpKind::Delete => {
                     out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<null>;\n", camel));
                 }
                 OpKind::JunctionList { .. } => {
@@ -291,6 +293,7 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                     let params_str = params.join(", ");
                     out.push_str(&format!("  {}({}): Promise<{}>;\n", camel, params_str, ret_str));
                 }
+                OpKind::EventStream => continue,
             }
         }
     }
@@ -541,7 +544,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                         camel, input_type, ret_str, ret_str,
                     ));
                 }
-                OpKind::UpdateById => {
+                OpKind::Update => {
                     let input_type = rust_type_to_ts(&extract_input_type(&f.params[1].ty));
                     let path_expr = sp_template(&format!("/{plural}/${{encodeURIComponent(id)}}"));
                     out.push_str(&format!(
@@ -551,7 +554,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                         camel, input_type, ret_str, ret_str,
                     ));
                 }
-                OpKind::DeleteById => {
+                OpKind::Delete => {
                     let path_expr = sp_template(&format!("/{plural}/${{encodeURIComponent(id)}}"));
                     out.push_str(&format!(
                         "    async {}(id: string{pp_trailing}): Promise<null> {{\n\
@@ -640,6 +643,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                 OpKind::CustomGet | OpKind::CustomPost => {
                     generate_http_custom_method(out, module, f, config);
                 }
+                OpKind::EventStream => continue,
             }
         }
     }
@@ -839,7 +843,7 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                         camel, input_type, ret_str,
                     ));
                 }
-                OpKind::UpdateById => {
+                OpKind::Update => {
                     let input_type = rust_type_to_ts(&extract_input_type(&f.params[1].ty));
                     out.push_str(&format!(
                         "    async {}(id: string, input: {}{pp_trailing}): Promise<{}> {{\n\
@@ -848,7 +852,7 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                         camel, input_type, ret_str,
                     ));
                 }
-                OpKind::DeleteById => {
+                OpKind::Delete => {
                     out.push_str(&format!(
                         "    async {}(id: string{pp_trailing}): Promise<null> {{\n\
                          \x20     await invoke('{invoke_name}', {{ id{ipc_arg} }});\n\
@@ -900,6 +904,7 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                 OpKind::CustomGet | OpKind::CustomPost => {
                     generate_ipc_custom_method(out, f, &cmd_name, config);
                 }
+                OpKind::EventStream => continue,
             }
         }
     }

@@ -1,12 +1,14 @@
 # Architecture Assessment — 2026-04-25
 
+> **Status:** Findings #1, #2, #3, and #6 have been addressed. See per-finding **Resolution** notes.
+
 ## Executive Summary
 
 - **Sound pipeline design**: six composable generators with clean staged IR; the core concept is solid and well-executed.
-- **ServersOutput is always empty**: `generate()` returns `http_routes/ipc_commands/mcp_tools: vec![]` unconditionally — the downstream IR contract is promised but never delivered, blocking future client generators.
-- **Dual OpKind types with diverging semantics**: `ir::OpKind` (public) and `servers::classify::OpKind` (internal) represent the same concept with different variant names and coverage — a latent contract mismatch.
+- ~~**ServersOutput is always empty**~~ **[RESOLVED]**: `generate()` now populates `http_routes`, `ipc_commands`, and `mcp_tools` from the parsed `ApiModule` list — see Finding #1.
+- ~~**Dual OpKind types with diverging semantics**~~ **[RESOLVED]**: consolidated into a single `ir::OpKind` covering CRUD + Junction + Custom + EventStream. See Finding #3.
 - **Several `_`-prefixed "unused enrichment" parameters** (`_seaorm`, `_api`, `_scan_dirs`) signal that planned IR-threading is stubbed but not yet wired.
-- **`StoreMethodMeta.params` is always empty**: metadata consumers downstream receive structurally correct but contentless parameter lists.
+- ~~**`StoreMethodMeta.params` is always empty**~~ **[RESOLVED]**: parameters now mirror the actual generated CRUD signatures. See Finding #2.
 - **Pervasive "TODO: review" banners** across nearly every file indicate an incomplete post-refactor cleanup pass.
 
 ---
@@ -48,27 +50,29 @@ rust-ontogen/
 
 ## Findings
 
-### 1. IR Contract — ServersOutput is always empty
+### 1. IR Contract — ServersOutput is always empty  **[RESOLVED]**
 
 - **Severity:** high
 - **Location:** `src/servers/mod.rs:78–80`
 - **Observation:** `servers::generate()` returns `ServersOutput { http_routes: vec![], ipc_commands: vec![], mcp_tools: vec![] }` on every call. The actual routes/commands/tools are generated as side effects (written to disk), but the IR output is never populated. Line 78 has an explicit `let _ = modules; // TODO: extract route/command metadata`.
 - **Why it matters:** `ServersOutput` is defined in the public IR (and fully typed with `HttpRouteMeta`, `IpcCommandMeta`, `McpToolMeta`) specifically so client generators can mirror server shapes exactly. As-is, any code consuming `ServersOutput` gets empty vecs. Future phases (typed channels, CLI generator) that depend on this IR are blocked.
 - **Suggested direction:** After `generate_transport()` returns the parsed module list, iterate it to build `HttpRouteMeta`/`IpcCommandMeta`/`McpToolMeta` from the same information the generators use. Alternatively, have each generator append to a shared accumulator passed by mutable reference.
+- **Resolution:** Added `extract_server_metadata` in `src/servers/mod.rs` that walks the same `modules` list the generators consume and produces `HttpRouteMeta`, `IpcCommandMeta`, and `McpToolMeta` records. HTTP routes correctly mirror prefix-scoping for store-based modules under `route_prefix`; events get both unscoped and scoped variants when prefix is set. Also changed `McpToolMeta` from `params_schema: String` (which was effectively unfillable from compile-time inputs) to `params: Vec<ParamMeta>` to match the IPC variant. Five new tests pin the IR shape (`test_extract_metadata_*` in `src/servers/tests.rs`).
 
 ---
 
-### 2. IR Contract — StoreMethodMeta.params always empty
+### 2. IR Contract — StoreMethodMeta.params always empty  **[RESOLVED]**
 
 - **Severity:** medium
 - **Location:** `src/store/mod.rs:150–192` (`collect_method_meta`)
 - **Observation:** Every `StoreMethodMeta` constructed in `collect_method_meta` hard-codes `params: vec![]`. The `list_*` method actually takes `(limit: Option<u64>, offset: Option<u64>)`; `get_*`, `update_*`, `delete_*` each take an `id: &str`; `create_*` takes an input struct. The IR type supports params but they are never populated.
 - **Why it matters:** Downstream consumers (e.g., API generation that should use `StoreOutput` instead of re-deriving method signatures) cannot use the metadata. It also creates a gap between the IR's promise and its content.
 - **Suggested direction:** Populate `params` in `collect_method_meta` to match the actual generated signatures. The information is already available from `EntityDef`.
+- **Resolution:** `collect_method_meta` now emits `params` matching the real signatures: `list_*` carries `(limit, offset)`; `get_*`, `delete_*` carry `(id)`; `update_*` carries `(id, updates)`; `create_*` carries `({snake}: {Name})`. Test `method_meta_params_match_signatures` pins the exact shapes so future drift in `gen_crud` triggers a test failure.
 
 ---
 
-### 3. Dual OpKind with Diverging Semantics
+### 3. Dual OpKind with Diverging Semantics  **[RESOLVED]**
 
 - **Severity:** medium
 - **Location:** `ontogen-core/src/ir.rs:188–200` vs. `src/servers/classify.rs:8–41`
@@ -79,6 +83,7 @@ rust-ontogen/
   The two enums share a name and purpose but diverge on variant names (`Update` vs `UpdateById`, `Delete` vs `DeleteById`) and coverage (the internal one knows about junction operations; the public one knows about `EventStream`). The API layer's `classify_op` in `api/mod.rs:91–113` also implements a third, simpler classification that returns `ir::OpKind` without junction awareness.
 - **Why it matters:** Three classification sites produce three different type results for the same concept. Contributors adding a new operation kind must update all three independently, and the mismatch between the internal richer type and the public IR type means information is lost crossing the boundary.
 - **Suggested direction:** Consolidate into one `OpKind` in `ir.rs` that covers all cases (including junctions and event streams). Remove the duplicate in `classify.rs` and the inline classifier in `api/mod.rs`. The extra variants add no complexity cost — they make the IR complete.
+- **Resolution:** Single `ir::OpKind` (in `ontogen-core`) now covers all 11 cases: `List`, `GetById`, `Create`, `Update`, `Delete`, `JunctionList { child_segment }`, `JunctionAdd { child_segment }`, `JunctionRemove { child_segment }`, `CustomGet`, `CustomPost`, `EventStream`. Dropped `Copy` derive since junction variants carry `String`. Deleted the duplicate enum in `servers::classify` and the inline classifier in `api/mod.rs`. Single classifier `classify_by_name_and_params` is shared across both layers (with an `ApiFn` convenience wrapper). Generators were updated to match `Update`/`Delete` (renamed from `UpdateById`/`DeleteById`); generated output is byte-identical (snapshot tests pass).
 
 ---
 
@@ -102,13 +107,14 @@ rust-ontogen/
 
 ---
 
-### 6. `EntityTableMeta.columns` Always Empty
+### 6. `EntityTableMeta.columns` Always Empty  **[RESOLVED]**
 
 - **Severity:** low
 - **Location:** `src/persistence/seaorm/mod.rs:25`
 - **Observation:** `EntityTableMeta` carries a `columns: Vec<ColumnMeta>` field, but it is always constructed as `columns: vec![]` with a `// TODO: populate from field metadata` comment. The field metadata is available from `EntityDef.fields` at the time of construction.
 - **Why it matters:** `SeaOrmOutput.entity_tables` is part of the public IR. Consumers who use `columns` to derive column names (e.g., the unused `_seaorm` param in store generation) would get empty slices. The IR contract is unfulfilled.
 - **Suggested direction:** Populate from `entity.fields`, mapping `FieldDef` → `ColumnMeta`. The mapping is straightforward from `FieldType`.
+- **Resolution:** Added `pub(crate) fn column_meta_for(field: &FieldDef) -> Option<ColumnMeta>` in `gen_entity.rs` that mirrors the same skip rules `generate_model_column` uses (HasMany / ManyToMany return `None`; everything else maps to a `ColumnMeta` with the SeaORM-emitted column type and `is_primary_key` set from `FieldRole::Id`). `seaorm/mod.rs` now uses it via `e.fields.iter().filter_map(gen_entity::column_meta_for)` to populate `EntityTableMeta.columns`. New test `column_meta_skips_has_many_and_many_to_many` pins the rules.
 
 ---
 

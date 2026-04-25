@@ -522,4 +522,20 @@ mod tests {
         assert!(code.contains("if fulfills_changed {"));
         assert!(code.contains("if contains_changed {"));
     }
+
+    /// Syntax check: verify the generated `impl Store` block parses as valid
+    /// Rust for both simple and relation-heavy entities.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        for entity in [make_role_entity(), make_node_entity()] {
+            let mut code = String::new();
+            generate_crud_impl(&mut code, &entity);
+            syn::parse_file(&code).unwrap_or_else(|e| {
+                panic!(
+                    "store::gen_crud::generate_crud_impl produced invalid Rust for entity '{}': {e}\n--- code ---\n{code}",
+                    entity.name
+                )
+            });
+        }
+    }
 }
