@@ -663,11 +663,7 @@ mod tests {
 
     #[test]
     fn generate_all_real_schemas() {
-        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
-        if !schema_dir.exists() {
-            eprintln!("Skipping: schema dir not found");
-            return;
-        }
+        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
 
         let entities = crate::schema::parse::parse_schema_dir(&schema_dir).unwrap();
         assert!(!entities.is_empty());
@@ -693,41 +689,24 @@ mod tests {
         // Spot checks for specific entities
         let find = |name: &str| entities.iter().find(|e| e.name == name).unwrap();
 
-        // Capability: parent_id hidden, contains rendered
-        let cap_code = generate_writer_code(find("Capability"));
-        assert!(!cap_code.contains("parent_id:"), "Capability.parent_id should be hidden");
-        assert!(cap_code.contains("entity.contains"), "Capability.contains should be rendered");
-
-        // Contract: field names used as YAML keys
-        let contract_code = generate_writer_code(find("Contract"));
-        assert!(contract_code.contains(r#"contract_type: {}"#), "Contract.contract_type should use field name as key");
+        // Workout: self-referential parent_id rendered as Option wikilink, multiline tags rendered
+        let workout_code = generate_writer_code(find("Workout"));
         assert!(
-            contract_code.contains(r#"contract_state: {}"#),
-            "Contract.contract_state should use field name as key"
+            workout_code.contains("wikilink(val)"),
+            "Workout.parent_id (Option<String> belongs_to) should render via wikilink"
         );
-        // Skip fields rendered
-        assert!(contract_code.contains("entity.states"), "Contract.states (skip) should be rendered");
+        assert!(workout_code.contains(r#"fm.push_str("tags:\n")"#), "Workout.tags should be multiline");
+        // Skip field is still rendered in writer
+        assert!(workout_code.contains("entity.local_only"), "Workout.local_only (skip) should be rendered");
 
-        // Requirement: disposition default suppression
-        let req_code = generate_writer_code(find("Requirement"));
-        assert!(
-            req_code.contains(r#"entity.disposition != "active""#),
-            "Requirement.disposition should suppress default"
-        );
+        // Exercise: plain field names used as YAML keys
+        let exercise_code = generate_writer_code(find("Exercise"));
+        assert!(exercise_code.contains(r#"muscle_group: {}"#), "Exercise.muscle_group should use field name as key");
+        assert!(exercise_code.contains(r#"equipment: {}"#), "Exercise.equipment should use field name as key");
 
-        // UnitOfWork: multiline depends_on
-        let uow_code = generate_writer_code(find("UnitOfWork"));
-        assert!(uow_code.contains(r#"fm.push_str("depends_on:\n")"#), "UnitOfWork.depends_on should be multiline");
-
-        // WorkExecution: required belongs_to fields rendered with wikilink
-        let we_code = generate_writer_code(find("WorkExecution"));
-        assert!(
-            we_code.contains("wikilink(&entity.unit_of_work_id)"),
-            "WorkExecution.unit_of_work_id should use wikilink"
-        );
-        assert!(
-            we_code.contains("wikilink(&entity.workflow_template_id)"),
-            "WorkExecution.workflow_template_id should use wikilink"
-        );
+        // WorkoutSet: required belongs_to fields rendered with wikilink
+        let ws_code = generate_writer_code(find("WorkoutSet"));
+        assert!(ws_code.contains("wikilink(&entity.workout_id)"), "WorkoutSet.workout_id should use wikilink");
+        assert!(ws_code.contains("wikilink(&entity.exercise_id)"), "WorkoutSet.exercise_id should use wikilink");
     }
 }

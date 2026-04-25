@@ -809,41 +809,17 @@ mod tests {
         assert_eq!(to_snake_case("Evidence"), "evidence");
     }
 
-    /// Parse the actual schema directory and verify all 10 entities are found
-    /// with correct metadata.
+    /// Parse the embedded fixture schema directory and verify all entities are
+    /// found with correct metadata.
     #[test]
     fn parse_all_real_schemas() {
-        let schema_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
-
-        if !schema_dir.exists() {
-            // Skip in CI or standalone builds where the full repo isn't available
-            eprintln!("Skipping parse_all_real_schemas: schema dir not found at {}", schema_dir.display());
-            return;
-        }
+        let schema_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
 
         let entities = parse_schema_dir(&schema_dir).expect("failed to parse schema dir");
         let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
 
-        // All 17 entities must be present
-        let expected = [
-            "Product",
-            "Problem",
-            "Goal",
-            "Capability",
-            "Relation",
-            "Contract",
-            "Constraint",
-            "Evidence",
-            "Specification",
-            "Requirement",
-            "AcceptanceCriterion",
-            "UnitOfWork",
-            "WorkflowTemplate",
-            "StepResult",
-            "Agent",
-            "Role",
-            "WorkExecution",
-        ];
+        // All 4 fixture entities must be present
+        let expected = ["Tag", "Exercise", "Workout", "WorkoutSet"];
         for name in &expected {
             assert!(names.contains(name), "Missing entity: {name}. Found: {names:?}");
         }
@@ -859,90 +835,44 @@ mod tests {
         // Spot-check key properties
         let find = |name: &str| entities.iter().find(|e| e.name == name).unwrap();
 
-        // Capability (renamed from Node)
-        let cap = find("Capability");
-        assert_eq!(cap.directory, "capability");
-        assert_eq!(cap.table, "capabilities");
-        assert!(cap.id_field().is_some());
-        assert!(cap.body_field().is_some());
-        assert_eq!(cap.id_field().unwrap().field_type, FieldType::String);
-        // has_many (contains) + belongs_to (parent_id) + many_to_many (goal_ids)
-        assert_eq!(cap.belongs_to_relations().count(), 1, "Capability should have 1 belongs_to");
-        assert_eq!(cap.has_many_relations().count(), 1, "Capability should have 1 has_many");
-        assert_eq!(cap.junction_relations().count(), 1, "Capability should have 1 many_to_many");
+        // Tag — simple entity, no relations
+        let tag = find("Tag");
+        assert_eq!(tag.directory, "tag");
+        assert_eq!(tag.table, "tags");
+        assert!(tag.id_field().is_some());
+        assert_eq!(tag.id_field().unwrap().field_type, FieldType::String);
+        assert_eq!(tag.relation_fields().count(), 0);
 
-        // Contract — 4 belongs_to (scope, from_id, to_id, spec) + 1 many_to_many (fulfills)
-        let contract = find("Contract");
-        assert_eq!(contract.directory, "contract");
-        assert_eq!(contract.belongs_to_relations().count(), 4, "Contract should have 4 belongs_to");
-        assert_eq!(contract.junction_relations().count(), 1, "Contract should have 1 many_to_many");
+        // Exercise — simple entity with Option<String>, no relations
+        let ex = find("Exercise");
+        assert_eq!(ex.directory, "exercise");
+        assert_eq!(ex.table, "exercises");
+        assert_eq!(ex.relation_fields().count(), 0);
+        let notes = ex.fields.iter().find(|f| f.name == "notes").unwrap();
+        assert_eq!(notes.field_type, FieldType::OptionString);
 
-        // Evidence — no relations (polymorphic ref not annotated yet)
-        let evidence = find("Evidence");
-        assert_eq!(evidence.id_field().unwrap().field_type, FieldType::String);
-        assert_eq!(evidence.belongs_to_relations().count(), 0);
+        // Workout — 1 belongs_to (parent_id, self-ref) + 1 many_to_many (tags) + body field
+        let w = find("Workout");
+        assert_eq!(w.directory, "workout");
+        assert_eq!(w.table, "workouts");
+        assert!(w.body_field().is_some(), "Workout should have a body field");
+        assert_eq!(w.body_field().unwrap().name, "notes");
+        assert_eq!(w.belongs_to_relations().count(), 1, "Workout should have 1 belongs_to");
+        assert_eq!(w.junction_relations().count(), 1, "Workout should have 1 many_to_many");
 
-        // Relation — 2 belongs_to (from_id, to_id)
-        let rel = find("Relation");
-        assert_eq!(rel.directory, "relation");
-        assert_eq!(rel.table, "relations");
-        assert_eq!(rel.belongs_to_relations().count(), 2, "Relation should have 2 belongs_to");
+        // Multiline list flag on `tags`
+        let tags = w.fields.iter().find(|f| f.name == "tags").unwrap();
+        assert!(tags.multiline_list, "Workout.tags should be multiline_list");
 
-        // Requirement — 3 belongs_to (specification_id, parent_id, superseded_by) + 1 many_to_many (depends_on)
-        let req = find("Requirement");
-        assert_eq!(req.belongs_to_relations().count(), 3);
-        assert_eq!(req.junction_relations().count(), 1);
-
-        // Specification — 2 many_to_many (capability_ids, depends_on)
-        let spec = find("Specification");
-        assert_eq!(spec.junction_relations().count(), 2);
-
-        // Constraint — 1 many_to_many (scope_ids)
-        let cst = find("Constraint");
-        assert_eq!(cst.directory, "constraint");
-        assert_eq!(cst.table, "constraints");
-        assert_eq!(cst.junction_relations().count(), 1);
-
-        // AcceptanceCriterion — 1 belongs_to (requirement_id)
-        let ac = find("AcceptanceCriterion");
-        assert_eq!(ac.directory, "acceptance_criterion");
-        assert_eq!(ac.table, "acceptance_criteria");
-        assert_eq!(ac.belongs_to_relations().count(), 1);
-
-        // Product — no relations
-        let product = find("Product");
-        assert_eq!(product.directory, "product");
-        assert_eq!(product.relation_fields().count(), 0);
-
-        // Problem — 1 belongs_to (product_id)
-        let problem = find("Problem");
-        assert_eq!(problem.belongs_to_relations().count(), 1);
-
-        // Goal — 1 belongs_to (problem_id)
-        let goal = find("Goal");
-        assert_eq!(goal.belongs_to_relations().count(), 1);
-
-        // WorkExecution — 2 belongs_to (unit_of_work_id, workflow_template_id)
-        let we = find("WorkExecution");
-        assert_eq!(we.table, "work_executions");
-        assert_eq!(we.belongs_to_relations().count(), 2);
-
-        // UnitOfWork — 2 belongs_to (workflow_template_id, parent_id) + 2 many_to_many (depends_on, constraints)
-        let uow = find("UnitOfWork");
-        assert_eq!(uow.directory, "unit_of_work");
-        assert_eq!(uow.table, "units_of_work");
-        assert_eq!(uow.belongs_to_relations().count(), 2);
-        assert_eq!(uow.junction_relations().count(), 2);
-
-        // StepResult — 2 belongs_to (work_execution_id, agent_id)
-        let sr = find("StepResult");
-        assert_eq!(sr.directory, "step_result");
-        assert_eq!(sr.table, "step_results");
-        assert_eq!(sr.belongs_to_relations().count(), 2);
-
-        // Agent — no relations
-        let agent = find("Agent");
-        assert_eq!(agent.relation_fields().count(), 0);
+        // WorkoutSet — 2 belongs_to (workout_id, exercise_id), several i32 fields
+        let ws = find("WorkoutSet");
+        assert_eq!(ws.directory, "workout_set");
+        assert_eq!(ws.table, "workout_sets");
+        assert_eq!(ws.belongs_to_relations().count(), 2, "WorkoutSet should have 2 belongs_to");
+        let reps = ws.fields.iter().find(|f| f.name == "reps").unwrap();
+        assert_eq!(reps.field_type, FieldType::I32);
+        let rpe = ws.fields.iter().find(|f| f.name == "rpe").unwrap();
+        assert_eq!(rpe.field_type, FieldType::OptionI32);
     }
 
     #[test]

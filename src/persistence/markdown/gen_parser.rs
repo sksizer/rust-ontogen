@@ -428,11 +428,7 @@ mod tests {
 
     #[test]
     fn generate_all_real_schemas() {
-        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
-        if !schema_dir.exists() {
-            eprintln!("Skipping: schema dir not found");
-            return;
-        }
+        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
 
         let entities = crate::schema::parse::parse_schema_dir(&schema_dir).unwrap();
         assert!(!entities.is_empty());
