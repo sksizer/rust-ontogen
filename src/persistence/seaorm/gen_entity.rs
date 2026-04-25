@@ -737,6 +737,19 @@ mod tests {
         assert!(code.contains("impl Related<super::requirement::Entity>"));
     }
 
+    /// Ensures `generate_entity_code` emits syntactically valid Rust.
+    /// Output is a complete module file (banner + use + struct/enum/impl items),
+    /// so `syn::parse_file` can parse it directly. Unresolved paths like
+    /// `super::node_fulfills::Entity` are fine — `syn` does no name resolution.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        let mods = modules(&["Node", "Requirement"]);
+        let code = generate_entity_code(&make_node_entity(), &mods);
+
+        syn::parse_file(&code)
+            .unwrap_or_else(|e| panic!("seaorm/gen_entity emitted invalid Rust: {e}\n--- code ---\n{code}"));
+    }
+
     /// Parse real schemas and verify generated code for all 13 entities.
     #[test]
     fn generate_all_real_schemas() {

@@ -295,4 +295,20 @@ mod tests {
         assert!(code.contains("impl From<crate::schema::UpdateRoleInput> for RoleUpdate"));
         assert!(code.contains("body: input.body"));
     }
+
+    /// Ensures the combined Update-related generators produce syntactically valid Rust.
+    /// Each emits top-level items (struct, impl blocks); together they form a parseable file.
+    /// `syn::parse_file` does no name resolution, so `crate::schema::...` paths are fine.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        let entity = make_role_entity();
+        let mut code = String::new();
+        generate_update_struct(&mut code, &entity);
+        generate_apply_method(&mut code, &entity);
+        generate_from_update_input(&mut code, &entity);
+        generate_from_create_input(&mut code, &entity);
+
+        syn::parse_file(&code)
+            .unwrap_or_else(|e| panic!("store/gen_update emitted invalid Rust: {e}\n--- code ---\n{code}"));
+    }
 }

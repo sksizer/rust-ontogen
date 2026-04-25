@@ -68,3 +68,48 @@ pub fn generate_crud_module(entity: &EntityDef, config: &ApiConfig) -> String {
 
     code
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType};
+
+    fn make_role_entity() -> EntityDef {
+        EntityDef {
+            name: "Role".to_string(),
+            directory: "role".to_string(),
+            table: "roles".to_string(),
+            type_name: "role".to_string(),
+            prefix: "role".to_string(),
+            fields: vec![
+                FieldDef::new("id", FieldType::String, FieldRole::Id),
+                FieldDef::new("body", FieldType::String, FieldRole::Body),
+            ],
+        }
+    }
+
+    fn base_config() -> ApiConfig {
+        ApiConfig {
+            output_dir: std::path::PathBuf::new(),
+            exclude: vec![],
+            scan_dirs: vec![],
+            state_type: "AppState".to_string(),
+            store_type: Some("Store".to_string()),
+            schema_module_path: "crate::schema".to_string(),
+        }
+    }
+
+    /// Ensures `generate_crud_module` emits a syntactically valid Rust file.
+    /// Output is a complete file (header + uses + functions); `syn::parse_file` parses
+    /// it directly. Unresolved paths like `crate::schema::Role` are syntactically fine
+    /// because `syn` performs no name resolution.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        let entity = make_role_entity();
+        let config = base_config();
+        let code = generate_crud_module(&entity, &config);
+
+        syn::parse_file(&code)
+            .unwrap_or_else(|e| panic!("api/gen_crud emitted invalid Rust: {e}\n--- code ---\n{code}"));
+    }
+}
