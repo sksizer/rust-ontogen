@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::servers::classify::{OpKind, classify_op, is_read_operation};
+use ontogen_core::ir::OpKind;
+
+use crate::servers::classify::{classify_op, is_read_operation};
 use crate::servers::config::{ClientGenerator, Config, GeneratorConfig, PrefixParam, RoutePrefix, ServerGenerator};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{
@@ -427,8 +429,8 @@ fn test_classify_crud_operations() {
             "list" => assert!(matches!(op, OpKind::List)),
             "get_by_id" => assert!(matches!(op, OpKind::GetById)),
             "create" => assert!(matches!(op, OpKind::Create)),
-            "update" => assert!(matches!(op, OpKind::UpdateById)),
-            "delete" => assert!(matches!(op, OpKind::DeleteById)),
+            "update" => assert!(matches!(op, OpKind::Update)),
+            "delete" => assert!(matches!(op, OpKind::Delete)),
             _ => panic!("unexpected function name: {}", f.name),
         }
     }
@@ -1421,4 +1423,98 @@ fn test_e2e_scan_real_api_modules() {
         state_count,
         modules.len() - store_count - state_count,
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// extract_server_metadata — ServersOutput IR population
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_extract_metadata_crud_routes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_crud_module("node", true)];
+
+    let output = crate::servers::extract_server_metadata(&modules, &config);
+
+    let nodes: Vec<_> = output.http_routes.iter().filter(|r| r.module_name == "node").collect();
+    assert_eq!(nodes.len(), 5, "Expected 5 CRUD routes, got {nodes:?}");
+
+    let by_method = |m: &str| nodes.iter().find(|r| r.method == m).expect(m);
+    assert_eq!(by_method("GET").path, "/api/nodes");
+    assert_eq!(by_method("POST").path, "/api/nodes");
+    assert_eq!(by_method("PUT").path, "/api/nodes/:id");
+    assert_eq!(by_method("DELETE").path, "/api/nodes/:id");
+    let gets: Vec<_> = nodes.iter().filter(|r| r.method == "GET").collect();
+    assert!(gets.iter().any(|r| r.path == "/api/nodes/:id"), "Expected get_by_id route");
+}
+
+#[test]
+fn test_extract_metadata_ipc_and_mcp_populated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_crud_module("node", true)];
+
+    let output = crate::servers::extract_server_metadata(&modules, &config);
+
+    assert_eq!(output.ipc_commands.len(), 5);
+    assert_eq!(output.mcp_tools.len(), 5);
+
+    let create_cmd = output.ipc_commands.iter().find(|c| c.command_name == "node_create").expect("node_create");
+    assert_eq!(create_cmd.params.len(), 1);
+    assert_eq!(create_cmd.params[0].name, "input");
+    assert_eq!(create_cmd.return_type, "Node");
+
+    let update_tool = output.mcp_tools.iter().find(|t| t.tool_name == "node_update").expect("node_update");
+    assert_eq!(update_tool.params.len(), 2);
+    assert!(update_tool.description.contains("Update"));
+}
+
+#[test]
+fn test_extract_metadata_scopes_store_modules_with_prefix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config_with_prefix(tmp.path().to_path_buf());
+    let modules = vec![make_crud_module("node", true)];
+
+    let output = crate::servers::extract_server_metadata(&modules, &config);
+
+    for r in &output.http_routes {
+        if r.module_name == "node" {
+            assert!(r.path.starts_with("/api/projects/:project_id/nodes"), "Expected scoped path, got {}", r.path);
+        }
+    }
+}
+
+#[test]
+fn test_extract_metadata_emits_event_routes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_event_module()];
+
+    let output = crate::servers::extract_server_metadata(&modules, &config);
+
+    assert!(output.ipc_commands.is_empty());
+    assert!(output.mcp_tools.is_empty());
+
+    let paths: Vec<_> = output.http_routes.iter().map(|r| r.path.as_str()).collect();
+    assert!(paths.contains(&"/api/events/graph-updated"), "got {paths:?}");
+    assert!(paths.contains(&"/api/events/entity-changed"), "got {paths:?}");
+}
+
+#[test]
+fn test_extract_metadata_custom_get_includes_path_params() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_custom_module()];
+
+    let output = crate::servers::extract_server_metadata(&modules, &config);
+
+    let snapshot = output.http_routes.iter().find(|r| r.handler_name.contains("get_graph_snapshot")).expect("snapshot");
+    assert_eq!(snapshot.method, "GET");
+    // get_graph_snapshot has only an Option<&str> param → no path params
+    assert!(!snapshot.path.contains(":parent_id"), "Optional params should not be path-params: {}", snapshot.path);
+
+    let detail = output.http_routes.iter().find(|r| r.handler_name.contains("get_node_detail")).expect("detail");
+    assert_eq!(detail.method, "GET");
+    assert!(detail.path.contains(":node_id"), "Required param should be path-param: {}", detail.path);
 }

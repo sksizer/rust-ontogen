@@ -6,7 +6,9 @@
 use std::fs;
 use std::path::Path;
 
-use crate::servers::classify::{OpKind, classify_op};
+use ontogen_core::ir::OpKind;
+
+use crate::servers::classify::classify_op;
 use crate::servers::config::Config;
 use crate::servers::parse::{ApiFn, ApiModule};
 use crate::servers::types::{
@@ -309,7 +311,7 @@ pub async fn {cmd_name}(
                     command_names.push(cmd_name);
                 }
 
-                OpKind::UpdateById => {
+                OpKind::Update => {
                     let cmd_name = command_name(module, f, config);
                     let input_type = extract_input_type(&f.params[1].ty);
                     let await_str = if is_async { "\n        .await" } else { "" };
@@ -330,7 +332,7 @@ pub async fn {cmd_name}(
                     command_names.push(cmd_name);
                 }
 
-                OpKind::DeleteById => {
+                OpKind::Delete => {
                     let cmd_name = command_name(module, f, config);
                     let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
@@ -370,6 +372,8 @@ pub async fn {cmd_name}(
                     generate_generic_ipc_handler(&mut out, module, f, config);
                     command_names.push(cmd_name);
                 }
+
+                OpKind::EventStream => continue,
             }
         }
     }

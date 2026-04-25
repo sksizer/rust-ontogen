@@ -669,4 +669,15 @@ mod tests {
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Syntax check: verify generate_conversion_code emits a syntactically
+    /// valid Rust source file.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        let entity = make_simple_entity();
+        let code = generate_conversion_code(&entity);
+        syn::parse_file(&code).unwrap_or_else(|e| {
+            panic!("seaorm::gen_conversion::generate_conversion_code produced invalid Rust: {e}\n--- code ---\n{code}")
+        });
+    }
 }

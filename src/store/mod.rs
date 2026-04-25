@@ -23,7 +23,7 @@ mod tests;
 
 use std::fs;
 
-use crate::ir::{CrudOp, ScaffoldMeta, Source, StoreMethodKind, StoreMethodMeta, StoreOutput};
+use crate::ir::{CrudOp, ParamMeta, ScaffoldMeta, Source, StoreMethodKind, StoreMethodMeta, StoreOutput};
 use crate::schema::model::EntityDef;
 use crate::{CodegenError, SeaOrmOutput, StoreConfig};
 
@@ -142,17 +142,28 @@ fn generate_entity_store(entity: &EntityDef, config: &StoreConfig) -> String {
 // ─── Metadata collection ─────────────────────────────────────────────────────
 
 /// Collect StoreMethodMeta for all generated CRUD methods on this entity.
+///
+/// Parameter shapes mirror the signatures emitted by `gen_crud`:
+///   `list_{plural}(limit: Option<u64>, offset: Option<u64>)`
+///   `get_{snake}(id: &str)`
+///   `create_{snake}({snake}: {Name})`
+///   `update_{snake}(id: &str, updates: {Name}Update)`
+///   `delete_{snake}(id: &str)`
 fn collect_method_meta(entity: &EntityDef) -> Vec<StoreMethodMeta> {
     let snake = helpers::to_snake_case(&entity.name);
     let plural = helpers::pluralize(&snake);
     let source = Source::Generated { module_path: format!("crate::store::generated::{snake}") };
+    let id_param = || ParamMeta { name: "id".to_string(), param_type: "&str".to_string() };
 
     vec![
         StoreMethodMeta {
             entity_name: entity.name.clone(),
             name: format!("list_{plural}"),
             kind: StoreMethodKind::Crud(CrudOp::List),
-            params: vec![],
+            params: vec![
+                ParamMeta { name: "limit".to_string(), param_type: "Option<u64>".to_string() },
+                ParamMeta { name: "offset".to_string(), param_type: "Option<u64>".to_string() },
+            ],
             return_type: format!("Vec<{}>", entity.name),
             source: source.clone(),
         },
@@ -160,7 +171,7 @@ fn collect_method_meta(entity: &EntityDef) -> Vec<StoreMethodMeta> {
             entity_name: entity.name.clone(),
             name: format!("get_{snake}"),
             kind: StoreMethodKind::Crud(CrudOp::Get),
-            params: vec![],
+            params: vec![id_param()],
             return_type: entity.name.clone(),
             source: source.clone(),
         },
@@ -168,7 +179,7 @@ fn collect_method_meta(entity: &EntityDef) -> Vec<StoreMethodMeta> {
             entity_name: entity.name.clone(),
             name: format!("create_{snake}"),
             kind: StoreMethodKind::Crud(CrudOp::Create),
-            params: vec![],
+            params: vec![ParamMeta { name: snake.clone(), param_type: entity.name.clone() }],
             return_type: entity.name.clone(),
             source: source.clone(),
         },
@@ -176,7 +187,10 @@ fn collect_method_meta(entity: &EntityDef) -> Vec<StoreMethodMeta> {
             entity_name: entity.name.clone(),
             name: format!("update_{snake}"),
             kind: StoreMethodKind::Crud(CrudOp::Update),
-            params: vec![],
+            params: vec![
+                id_param(),
+                ParamMeta { name: "updates".to_string(), param_type: format!("{}Update", entity.name) },
+            ],
             return_type: entity.name.clone(),
             source: source.clone(),
         },
@@ -184,7 +198,7 @@ fn collect_method_meta(entity: &EntityDef) -> Vec<StoreMethodMeta> {
             entity_name: entity.name.clone(),
             name: format!("delete_{snake}"),
             kind: StoreMethodKind::Crud(CrudOp::Delete),
-            params: vec![],
+            params: vec![id_param()],
             return_type: "()".to_string(),
             source,
         },

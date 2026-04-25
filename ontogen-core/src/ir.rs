@@ -184,13 +184,31 @@ pub enum StateKind {
 }
 
 /// Classified operation type — drives HTTP method and route structure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpKind {
     List,
     GetById,
     Create,
     Update,
     Delete,
+    /// `list_{children}(parent_id)` — list child entities of a parent.
+    /// Generates `GET /api/{parents}/:parent_id/{children}`.
+    JunctionList {
+        /// URL segment for the child collection, e.g. "roles".
+        child_segment: String,
+    },
+    /// `add_{child}(parent_id, child_id)` — add a child to a parent.
+    /// Generates `POST /api/{parents}/:parent_id/{children}`.
+    JunctionAdd {
+        /// URL segment for the child collection, e.g. "roles".
+        child_segment: String,
+    },
+    /// `remove_{child}(parent_id, child_id)` — remove a child from a parent.
+    /// Generates `DELETE /api/{parents}/:parent_id/{children}/:child_id`.
+    JunctionRemove {
+        /// URL segment for the child collection, e.g. "roles".
+        child_segment: String,
+    },
     /// Custom read (GET with non-standard params).
     CustomGet,
     /// Custom write (POST with non-standard params).
@@ -234,7 +252,7 @@ pub struct IpcCommandMeta {
 pub struct McpToolMeta {
     pub tool_name: String,
     pub description: String,
-    pub params_schema: String,
+    pub params: Vec<ParamMeta>,
 }
 
 // ── Shared types ────────────────────────────────────────────────────

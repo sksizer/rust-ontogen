@@ -473,4 +473,14 @@ mod tests {
             );
         }
     }
+
+    /// Syntax check: verify generate_parser_dispatch emits a syntactically
+    /// valid Rust source file.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        let code = generate_parser_dispatch(&make_test_entities());
+        syn::parse_file(&code).unwrap_or_else(|e| {
+            panic!("markdown::gen_parser::generate_parser_dispatch produced invalid Rust: {e}\n--- code ---\n{code}")
+        });
+    }
 }

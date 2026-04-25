@@ -6,7 +6,9 @@
 use std::fs;
 use std::path::Path;
 
-use crate::servers::classify::{OpKind, classify_op};
+use ontogen_core::ir::OpKind;
+
+use crate::servers::classify::classify_op;
 use crate::servers::config::Config;
 use crate::servers::parse::{ApiFn, ApiModule};
 use crate::servers::types::{collect_type_import, extract_input_type, param_to_owned_type, to_pascal_case};
@@ -450,7 +452,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     ));
                 }
 
-                OpKind::UpdateById => {
+                OpKind::Update => {
                     // tool_name computed above
                     let input_type = extract_input_type(&f.params[1].ty);
                     let await_str = if is_async { ".await" } else { "" };
@@ -477,7 +479,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     ));
                 }
 
-                OpKind::DeleteById => {
+                OpKind::Delete => {
                     // tool_name computed above
                     let await_str = if is_async { ".await" } else { "" };
                     let (prefix, first_arg) =
@@ -512,6 +514,8 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                 OpKind::CustomGet | OpKind::CustomPost => {
                     generate_generic_mcp_tool(&mut out, svc, f, config, false);
                 }
+
+                OpKind::EventStream => continue,
             }
         }
     }
