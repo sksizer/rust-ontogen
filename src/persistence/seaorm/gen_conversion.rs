@@ -625,6 +625,19 @@ mod tests {
         assert!(code.contains("skipped: Set(self.skipped.clone()),"));
     }
 
+    /// Ensures `generate_conversion_code` emits syntactically valid Rust.
+    /// Output is a full module file (banner + use + impl block), so `syn::parse_file`
+    /// can parse it directly. Unresolved paths like `crate::schema::Agent` are fine —
+    /// `syn` performs no name resolution.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        let entity = make_simple_entity();
+        let code = generate_conversion_code(&entity);
+
+        syn::parse_file(&code)
+            .unwrap_or_else(|e| panic!("seaorm/gen_conversion emitted invalid Rust: {e}\n--- code ---\n{code}"));
+    }
+
     #[test]
     fn generate_all_real_schemas() {
         let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
