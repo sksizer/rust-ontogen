@@ -449,11 +449,7 @@ mod tests {
 
     #[test]
     fn no_wikilinks_or_source_file() {
-        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
-        if !schema_dir.exists() {
-            eprintln!("Skipping: schema dir not found");
-            return;
-        }
+        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
 
         let entities = crate::schema::parse::parse_schema_dir(&schema_dir).expect("Failed to parse schema dir");
 

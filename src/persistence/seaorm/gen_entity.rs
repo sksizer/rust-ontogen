@@ -737,15 +737,10 @@ mod tests {
         assert!(code.contains("impl Related<super::requirement::Entity>"));
     }
 
-    /// Parse real schemas and verify generated code for all 13 entities.
+    /// Parse the embedded fixture schemas and verify generated code for each entity.
     #[test]
     fn generate_all_real_schemas() {
-        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
-
-        if !schema_dir.exists() {
-            eprintln!("Skipping: schema dir not found");
-            return;
-        }
+        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
 
         let entities = crate::schema::parse::parse_schema_dir(&schema_dir).expect("parse failed");
         let mods = build_entity_module_map(&entities);
@@ -775,15 +770,8 @@ mod tests {
 
         let junction_names: Vec<&str> = junctions.iter().map(|(n, _)| n.as_str()).collect();
 
-        // Expected 8 junction tables
-        assert_eq!(junctions.len(), 8, "expected 8 junction tables, got: {:?}", junction_names);
-        assert!(junction_names.contains(&"capability_goal_ids"));
-        assert!(junction_names.contains(&"specification_capability_ids"));
-        assert!(junction_names.contains(&"specification_depends_on"));
-        assert!(junction_names.contains(&"requirement_depends_on"));
-        assert!(junction_names.contains(&"contract_fulfills"));
-        assert!(junction_names.contains(&"constraint_scope_ids"));
-        assert!(junction_names.contains(&"unit_of_work_depends_on"));
-        assert!(junction_names.contains(&"unit_of_work_constraints"));
+        // Fixture: 1 many_to_many (Workout.tags) -> 1 junction
+        assert_eq!(junctions.len(), 1, "expected 1 junction table, got: {:?}", junction_names);
+        assert!(junction_names.contains(&"workout_tags"));
     }
 }

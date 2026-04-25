@@ -7,18 +7,13 @@ mod tests {
     use crate::{StoreConfig, schema::parse::parse_schema_dir, store};
 
     /// Test that gen_store produces valid code for all real entities.
-    /// This reads the actual schema files and generates store code to a temp dir.
+    /// This reads the embedded fixture schema files and generates store code to a temp dir.
     #[test]
     fn generate_all_real_schemas() {
-        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
-
-        if !schema_dir.exists() {
-            eprintln!("Skipping: schema dir not found at {}", schema_dir.display());
-            return;
-        }
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
 
         let entities = parse_schema_dir(&schema_dir).expect("parse_schema_dir failed");
-        assert!(!entities.is_empty(), "Expected at least one entity from real schemas");
+        assert!(!entities.is_empty(), "Expected at least one entity from fixture schemas");
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = StoreConfig {
@@ -68,17 +63,13 @@ mod tests {
         }
     }
 
-    /// Test that Role (simplest entity) generates code matching the hand-written pattern.
+    /// Test that Tag (simplest entity, no relations) generates code matching the hand-written pattern.
     #[test]
-    fn role_matches_hand_written_pattern() {
-        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
-
-        if !schema_dir.exists() {
-            return;
-        }
+    fn tag_matches_hand_written_pattern() {
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
 
         let entities = parse_schema_dir(&schema_dir).expect("parse failed");
-        let role = entities.iter().find(|e| e.name == "Role").expect("Role entity not found");
+        let tag = entities.iter().find(|e| e.name == "Tag").expect("Tag entity not found");
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = StoreConfig {
@@ -87,24 +78,23 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
         };
 
-        store::generate(&[role.clone()], None, &config).expect("gen_store failed");
+        store::generate(&[tag.clone()], None, &config).expect("gen_store failed");
 
-        let content = std::fs::read_to_string(tmp.path().join("role.rs")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
-        // Key patterns from hand-written role.rs
-        assert!(content.contains("list_roles"), "Missing list_roles");
-        assert!(content.contains("get_role"), "Missing get_role");
-        assert!(content.contains("create_role"), "Missing create_role");
-        assert!(content.contains("update_role"), "Missing update_role");
-        assert!(content.contains("delete_role"), "Missing delete_role");
-        assert!(content.contains("RoleUpdate"), "Missing RoleUpdate struct");
-        assert!(content.contains("pub body: Option<String>"), "Missing body field in RoleUpdate");
+        // Key CRUD method names
+        assert!(content.contains("list_tags"), "Missing list_tags");
+        assert!(content.contains("get_tag"), "Missing get_tag");
+        assert!(content.contains("create_tag"), "Missing create_tag");
+        assert!(content.contains("update_tag"), "Missing update_tag");
+        assert!(content.contains("delete_tag"), "Missing delete_tag");
+        assert!(content.contains("TagUpdate"), "Missing TagUpdate struct");
         assert!(content.contains("emit_change(ChangeOp::Created"), "Missing Created event");
         assert!(content.contains("emit_change(ChangeOp::Updated"), "Missing Updated event");
         assert!(content.contains("emit_change(ChangeOp::Deleted"), "Missing Deleted event");
-        assert!(content.contains("RoleNotFound"), "Missing error variant");
-        // Should NOT have populate_relations (simple entity)
-        assert!(!content.contains("populate_role_relations"), "Role should not have populate_relations");
+        assert!(content.contains("TagNotFound"), "Missing error variant");
+        // Should NOT have populate_relations (simple entity, no relations)
+        assert!(!content.contains("populate_tag_relations"), "Tag should not have populate_relations");
 
         // Hook calls should be present in generated CRUD
         assert!(content.contains("hooks::before_create("), "Missing before_create hook call");
@@ -115,20 +105,16 @@ mod tests {
         assert!(content.contains("hooks::after_delete("), "Missing after_delete hook call");
 
         // Hook module import
-        assert!(content.contains("use crate::store::hooks::role as hooks;"), "Missing hooks import");
+        assert!(content.contains("use crate::store::hooks::tag as hooks;"), "Missing hooks import");
     }
 
     /// Test that a non-default `schema_module_path` flows into generated store code.
     #[test]
     fn custom_schema_module_path_is_respected() {
-        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
-
-        if !schema_dir.exists() {
-            return;
-        }
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
 
         let entities = parse_schema_dir(&schema_dir).expect("parse failed");
-        let role = entities.iter().find(|e| e.name == "Role").expect("Role entity not found");
+        let tag = entities.iter().find(|e| e.name == "Tag").expect("Tag entity not found");
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let hooks = tmp.path().join("hooks");
@@ -138,35 +124,31 @@ mod tests {
             schema_module_path: "my_crate::domain".to_string(),
         };
 
-        store::generate(&[role.clone()], None, &config).expect("gen_store failed");
+        store::generate(&[tag.clone()], None, &config).expect("gen_store failed");
 
-        let content = std::fs::read_to_string(tmp.path().join("role.rs")).unwrap();
-        assert!(content.contains("use my_crate::domain::Role;"), "Expected custom schema path import, got:\n{content}");
+        let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
+        assert!(content.contains("use my_crate::domain::Tag;"), "Expected custom schema path import, got:\n{content}");
         assert!(
             content.contains("use my_crate::domain::{AppError, ChangeOp, EntityKind};"),
             "Expected custom schema path for AppError/ChangeOp/EntityKind, got:\n{content}"
         );
-        assert!(!content.contains("use crate::schema::Role;"), "Default schema path should not appear");
+        assert!(!content.contains("use crate::schema::Tag;"), "Default schema path should not appear");
 
         // Hook file should also use the custom path
-        let hook_content = std::fs::read_to_string(hooks.join("role.rs")).unwrap();
+        let hook_content = std::fs::read_to_string(hooks.join("tag.rs")).unwrap();
         assert!(
-            hook_content.contains("use my_crate::domain::{Role, AppError};"),
+            hook_content.contains("use my_crate::domain::{AppError, Tag};"),
             "Expected custom schema path in hook file, got:\n{hook_content}"
         );
     }
 
-    /// Test that Capability (complex entity with junctions) generates junction sync code.
+    /// Test that Workout (entity with junction many_to_many + self belongs_to) generates junction sync code.
     #[test]
-    fn capability_has_junction_sync() {
-        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
-
-        if !schema_dir.exists() {
-            return;
-        }
+    fn workout_has_junction_sync() {
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
 
         let entities = parse_schema_dir(&schema_dir).expect("parse failed");
-        let cap = entities.iter().find(|e| e.name == "Capability").expect("Capability entity not found");
+        let workout = entities.iter().find(|e| e.name == "Workout").expect("Workout entity not found");
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = StoreConfig {
@@ -175,14 +157,13 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
         };
 
-        store::generate(&[cap.clone()], None, &config).expect("gen_store failed");
+        store::generate(&[workout.clone()], None, &config).expect("gen_store failed");
 
-        let content = std::fs::read_to_string(tmp.path().join("capability.rs")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("workout.rs")).unwrap();
 
-        assert!(content.contains("populate_capability_relations"), "Missing populate_capability_relations");
+        assert!(content.contains("populate_workout_relations"), "Missing populate_workout_relations");
         assert!(content.contains("sync_junction"), "Missing sync_junction call");
-        assert!(content.contains("capability_goal_ids"), "Missing capability_goal_ids junction table");
-        assert!(content.contains("set_capability_parent"), "Missing set_capability_parent helper");
-        assert!(content.contains("goal_ids_changed"), "Missing conditional junction sync tracking");
+        assert!(content.contains("workout_tags"), "Missing workout_tags junction table");
+        assert!(content.contains("tags_changed"), "Missing conditional junction sync tracking");
     }
 }
