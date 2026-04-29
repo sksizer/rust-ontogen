@@ -1,4 +1,3 @@
-// TODO: review — banner strings updated from old crate names
 //! Generate filesystem operation helpers from parsed ontology entity definitions.
 //!
 //! Generates:

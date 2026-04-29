@@ -1,4 +1,3 @@
-// TODO: review — banner strings updated from old crate names
 //! Generate markdown writer functions from parsed ontology entity definitions.
 //!
 //! For each entity, generates a `render_{entity}(entity: &crate::schema::{Name}) -> String`

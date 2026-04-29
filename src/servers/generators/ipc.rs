@@ -1,4 +1,3 @@
-// TODO: review — banner strings updated from old crate names
 #![allow(clippy::too_many_lines, clippy::format_push_string)]
 
 //! Generate Tauri IPC command handlers from API modules.
