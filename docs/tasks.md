@@ -1,4 +1,3 @@
-<!-- TODO: review — rewritten to remove old crate names and internal references -->
 # Ontogen -- Task Backlog
 
 ## Active Tasks

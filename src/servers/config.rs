@@ -1,4 +1,3 @@
-// TODO: review — doc comment updated from old crate name
 //! Configuration for the codegen pipeline.
 
 use std::collections::HashMap;

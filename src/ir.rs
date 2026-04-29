@@ -1,4 +1,3 @@
-// TODO: review — replaced with re-export wrapper during ontogen-core extraction
 //! Re-exports intermediate representation types from `ontogen_core`.
 //!
 //! The canonical definitions live in `ontogen_core::ir`. This module

@@ -1,4 +1,3 @@
-// TODO: review — banner strings updated from old crate names
 //! Generate DB ↔ Schema conversion code from parsed ontology entity definitions.
 //!
 //! For each entity, generates:
