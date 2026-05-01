@@ -98,7 +98,7 @@ pub fn event_name(fn_name: &str) -> String {
 
 /// Convert a snake_case string to PascalCase.
 pub fn to_pascal_case(s: &str) -> String {
-    s.split('_').map(|w| capitalize(w)).collect::<String>()
+    s.split('_').map(capitalize).collect::<String>()
 }
 
 /// Convert a Rust param type to its owned form for struct fields.

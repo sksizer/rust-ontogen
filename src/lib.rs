@@ -1,15 +1,5 @@
 // TODO: review — rewritten to re-export from ontogen-core, config types kept here
 #![forbid(unsafe_code)]
-#![allow(
-    clippy::too_many_lines,
-    clippy::format_push_string,
-    clippy::uninlined_format_args,
-    clippy::doc_markdown,
-    clippy::match_wildcard_for_single_variants,
-    clippy::manual_let_else,
-    clippy::redundant_closure,
-    clippy::redundant_closure_for_method_calls
-)]
 
 //! Ontogen — build-time code generator for ontology-driven applications.
 //!
