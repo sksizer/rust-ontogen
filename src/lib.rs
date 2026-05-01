@@ -179,10 +179,10 @@ pub fn gen_dtos(entities: &[EntityDef], config: &DtoConfig) -> Result<(), Codege
 /// Generate the store layer: CRUD methods, `Update` structs, `From` impls,
 /// and `populate_relations` helpers.
 ///
-/// Pass the [`SeaOrmOutput`] from [`gen_seaorm`] to get exact table and column
-/// names in generated SQL; if omitted, junction table names are inferred from
-/// entity and field naming conventions, which can drift if you've customised
-/// SeaORM table names.
+/// The `seaorm` parameter is **reserved for future enrichment** (e.g., using
+/// exact column names from [`SeaOrmOutput`] instead of deriving them by
+/// convention) and currently has no effect on generated output. Pass `None`
+/// today; passing `Some(_)` is forward-compatible but produces identical code.
 ///
 /// # Errors
 ///
@@ -256,9 +256,14 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 /// Generate server transport handlers (Axum, Tauri, etc.) and TypeScript clients
 /// from API metadata.
 ///
-/// Pass the [`ApiOutput`] from [`gen_api`] for exact routing based on structured
-/// metadata; if `None`, the generator falls back to scanning the source files in
-/// `scan_dirs` with `syn`. The set of transports emitted is controlled by
+/// Currently, this function always scans `config.api_dir` with `syn`,
+/// regardless of `api` and `scan_dirs`. Both parameters are **reserved for
+/// future enrichment** — `api` for using structured metadata directly without
+/// re-parsing, and `scan_dirs` for additional scan locations beyond
+/// `config.api_dir`. They have no effect today; pass `None` and `&[]`
+/// respectively. Both signatures are kept stable for forward compatibility.
+///
+/// The set of transports emitted is controlled by
 /// [`ServersConfig::generators`] and [`ServersConfig::client_generators`].
 ///
 /// # Errors
