@@ -260,6 +260,10 @@ fn field_db_type(field: &FieldDef) -> &'static str {
         FieldType::OptionI32 => "Option<i32>",
         FieldType::I64 => "i64",
         FieldType::OptionI64 => "Option<i64>",
+        FieldType::F32 => "f32",
+        FieldType::OptionF32 => "Option<f32>",
+        FieldType::F64 => "f64",
+        FieldType::OptionF64 => "Option<f64>",
         FieldType::Bool => "bool",
         FieldType::OptionBool => "Option<bool>",
         FieldType::VecString | FieldType::VecStruct(_) => "String", // JSON
@@ -418,6 +422,11 @@ mod tests {
         assert_eq!(field_db_type(&mk(FieldType::VecString, FieldRole::Plain)), "String");
         assert_eq!(field_db_type(&mk(FieldType::OptionEnum("X".into()), FieldRole::Plain)), "Option<String>");
         assert_eq!(field_db_type(&mk(FieldType::Other("Foo".into()), FieldRole::EnumField)), "String");
+        // Float types: bare primitive db types (not the Other(...) fallback).
+        assert_eq!(field_db_type(&mk(FieldType::F32, FieldRole::Plain)), "f32");
+        assert_eq!(field_db_type(&mk(FieldType::OptionF32, FieldRole::Plain)), "Option<f32>");
+        assert_eq!(field_db_type(&mk(FieldType::F64, FieldRole::Plain)), "f64");
+        assert_eq!(field_db_type(&mk(FieldType::OptionF64, FieldRole::Plain)), "Option<f64>");
     }
 
     fn make_node_entity() -> EntityDef {

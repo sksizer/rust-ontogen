@@ -153,6 +153,10 @@ fn field_to_create_type(field: &FieldDef) -> String {
         FieldType::OptionI32 => "Option<i32>".to_string(),
         FieldType::I64 => "i64".to_string(),
         FieldType::OptionI64 => "Option<i64>".to_string(),
+        FieldType::F32 => "f32".to_string(),
+        FieldType::OptionF32 => "Option<f32>".to_string(),
+        FieldType::F64 => "f64".to_string(),
+        FieldType::OptionF64 => "Option<f64>".to_string(),
         FieldType::Bool => "bool".to_string(),
         FieldType::OptionBool => "Option<bool>".to_string(),
         FieldType::VecString => "Vec<String>".to_string(),
@@ -182,6 +186,8 @@ fn generate_serde_default_attr(field: &FieldDef) -> String {
                     FieldType::OptionString
                         | FieldType::OptionI32
                         | FieldType::OptionI64
+                        | FieldType::OptionF32
+                        | FieldType::OptionF64
                         | FieldType::OptionBool
                         | FieldType::OptionEnum(_)
                         | FieldType::VecString
@@ -445,6 +451,54 @@ mod tests {
         assert!(code.contains(r#"#[serde(default = "default_disposition")]"#), "Should use named default fn");
         assert!(code.contains("fn default_disposition()"), "Should generate the default fn");
         assert!(code.contains(r#""active".to_string()"#), "Default fn should return the value");
+    }
+
+    #[test]
+    fn float_field_types_end_to_end() {
+        // End-to-end: parse a schema struct with f32/f64 fields and verify the
+        // generated DTO contains the expected types (not Other(...)).
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Measurement {
+                #[ontology(id)]
+                pub id: String,
+
+                pub temperature: f32,
+                pub humidity: Option<f32>,
+                pub pressure: f64,
+                pub altitude: Option<f64>,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let entities = crate::schema::parse::parse_schema_source(source, std::path::Path::new("test.rs"))
+            .expect("parse should succeed");
+        assert_eq!(entities.len(), 1);
+
+        // Verify parsed types
+        let m = &entities[0];
+        assert_eq!(m.fields.iter().find(|f| f.name == "temperature").unwrap().field_type, FieldType::F32);
+        assert_eq!(m.fields.iter().find(|f| f.name == "humidity").unwrap().field_type, FieldType::OptionF32);
+        assert_eq!(m.fields.iter().find(|f| f.name == "pressure").unwrap().field_type, FieldType::F64);
+        assert_eq!(m.fields.iter().find(|f| f.name == "altitude").unwrap().field_type, FieldType::OptionF64);
+
+        // Generate DTO code and verify it contains the float types as bare primitives
+        let code = generate_dto_code(m);
+        assert!(code.contains("pub temperature: f32,"), "DTO should contain bare f32 field, got: {code}");
+        assert!(code.contains("pub humidity: Option<f32>,"), "DTO should contain Option<f32> field, got: {code}");
+        assert!(code.contains("pub pressure: f64,"), "DTO should contain bare f64 field, got: {code}");
+        assert!(code.contains("pub altitude: Option<f64>,"), "DTO should contain Option<f64> field, got: {code}");
+
+        // Confirm Other(...) was not used as a fallback for floats
+        assert!(
+            !code.contains("crate::schema::f32") && !code.contains("crate::schema::f64"),
+            "Floats should not be qualified through Other(...) escape hatch"
+        );
     }
 
     #[test]
