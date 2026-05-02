@@ -130,13 +130,14 @@ rust-ontogen/
 
 ---
 
-### 8. Public Visibility Leaks in `servers` Module
+### 8. Public Visibility Leaks in `servers` Module  **[RESOLVED]**
 
 - **Severity:** low
 - **Location:** `src/servers/mod.rs:7–13`
 - **Observation:** `classify`, `config`, `generators`, `parse`, and `types` are all declared as `pub mod` in `servers/mod.rs`. The internal `parse::ApiFn`, `parse::Param`, `servers::classify::OpKind`, and generator-internal types are all transitively reachable from crate consumers. The public API surface in `lib.rs` does not intend to expose these.
 - **Why it matters:** Accidental public surface — downstream crates could depend on internal types, making internal refactors breaking changes. The `servers::classify::OpKind` being public while `ir::OpKind` exists is especially confusing.
 - **Suggested direction:** Change to `pub(crate) mod` for `classify`, `generators`, and `types`. Keep `config` and `parse` pub only for the specific types re-exported through `lib.rs`. Explicitly enumerate what is meant to be public.
+- **Resolution:** Tightened all five submodules (`classify`, `config`, `generators`, `parse`, `types`) to `pub(crate) mod`. The intentional public surface is preserved via the existing `pub use` re-exports at `servers/mod.rs:16–22` (`Config`, `GeneratorConfig`, `ServerGenerator`, `ClientGenerator`, `PaginationConfig`, `PrefixParam`, `RoutePrefix`, `ApiFn`, `ApiModule`, `EventFn`, `Param`, `NamingConfig`). External consumers now access these only as `ontogen::servers::Foo` (or the top-level re-exports in `lib.rs`), never via the longer `ontogen::servers::config::Foo` path. One internal reference in `lib.rs` was updated to use the canonical re-export (`servers::ClientGenerator` instead of `servers::config::ClientGenerator`). The internal types `OpKind` (in `classify`), generator helpers, and parse-internal helpers are no longer reachable from outside the crate.
 
 ---
 
