@@ -6,7 +6,9 @@
 use std::fs;
 use std::path::Path;
 
-use crate::servers::classify::{OpKind, classify_op, is_read_operation};
+use ontogen_core::ir::OpKind;
+
+use crate::servers::classify::{classify_op, is_read_operation};
 use crate::servers::config::Config;
 use crate::servers::parse::{ApiFn, ApiModule};
 use crate::servers::types::{
@@ -292,7 +294,7 @@ async fn {handler_name}(
                     ));
                 }
 
-                OpKind::UpdateById => {
+                OpKind::Update => {
                     let input_type = extract_input_type(&f.params[1].ty);
                     let await_str = if is_async { "\n        .await" } else { "" };
                     let err_map = ".map_err(|e| err(e.to_string()))";
@@ -312,7 +314,7 @@ async fn {handler_name}(
                     ));
                 }
 
-                OpKind::DeleteById => {
+                OpKind::Delete => {
                     let await_str = if is_async { "\n        .await" } else { "" };
                     let err_map = ".map_err(|e| err(e.to_string()))";
                     out.push_str(&format!(
@@ -427,6 +429,8 @@ async fn {handler_name}(
                 OpKind::CustomGet | OpKind::CustomPost => {
                     generate_generic_http_handler(&mut out, &mut route_entries, module, f, config);
                 }
+
+                OpKind::EventStream => continue,
             }
         }
 
@@ -838,7 +842,7 @@ async fn {handler_name}(
                     ));
                 }
 
-                OpKind::UpdateById => {
+                OpKind::Update => {
                     let handler_name = format!("update_{}_handler_scoped", url_sing);
                     let input_type = extract_input_type(&f.params[1].ty);
                     let await_str = if is_async { "\n        .await" } else { "" };
@@ -859,7 +863,7 @@ async fn {handler_name}(
                     ));
                 }
 
-                OpKind::DeleteById => {
+                OpKind::Delete => {
                     let handler_name = format!("delete_{}_handler_scoped", url_sing);
                     let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
@@ -887,6 +891,8 @@ async fn {handler_name}(
                     let _ = child_segment;
                     generate_generic_http_handler_scoped(out, routes, module, f, config, prefix);
                 }
+
+                OpKind::EventStream => continue,
 
                 OpKind::CustomGet | OpKind::CustomPost => {
                     generate_generic_http_handler_scoped(out, routes, module, f, config, prefix);
