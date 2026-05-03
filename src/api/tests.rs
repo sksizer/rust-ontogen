@@ -10,11 +10,12 @@ mod tests {
     use crate::{api, ir};
 
     fn schema_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema")
     }
 
     fn api_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/api/v1")
+        // No embedded API fixture yet — scan tests still skip until one is added.
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/api/v1")
     }
 
     fn base_config(output_dir: PathBuf) -> ApiConfig {
@@ -32,10 +33,6 @@ mod tests {
     #[test]
     fn generate_all_real_schemas() {
         let dir = schema_dir();
-        if !dir.exists() {
-            eprintln!("Skipping: schema dir not found at {}", dir.display());
-            return;
-        }
 
         let entities = parse_schema_dir(&dir).expect("parse_schema_dir failed");
         assert!(!entities.is_empty());
@@ -70,72 +67,63 @@ mod tests {
 
     /// Test that generated code matches the hand-written pattern.
     #[test]
-    fn agent_matches_hand_written_pattern() {
+    fn tag_matches_hand_written_pattern() {
         let dir = schema_dir();
-        if !dir.exists() {
-            return;
-        }
 
         let entities = parse_schema_dir(&dir).expect("parse failed");
-        let agent = entities.iter().find(|e| e.name == "Agent").expect("Agent entity not found");
+        let tag = entities.iter().find(|e| e.name == "Tag").expect("Tag entity not found");
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = base_config(tmp.path().to_path_buf());
 
-        api::generate(&[agent.clone()], &config).expect("gen_api failed");
+        api::generate(&[tag.clone()], &config).expect("gen_api failed");
 
-        let content = std::fs::read_to_string(tmp.path().join("agent.rs")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
-        // Should match the patterns from hand-written agent.rs
-        assert!(content.contains("use crate::schema::Agent"), "Missing Agent import");
+        // Should match the patterns from hand-written entity api files
+        assert!(content.contains("use crate::schema::Tag"), "Missing Tag import");
         assert!(content.contains("use crate::store::Store"), "Missing Store import");
-        assert!(content.contains("CreateAgentInput"), "Missing CreateAgentInput");
-        assert!(content.contains("UpdateAgentInput"), "Missing UpdateAgentInput");
-        assert!(content.contains("AgentUpdate"), "Missing AgentUpdate import");
+        assert!(content.contains("CreateTagInput"), "Missing CreateTagInput");
+        assert!(content.contains("UpdateTagInput"), "Missing UpdateTagInput");
+        assert!(content.contains("TagUpdate"), "Missing TagUpdate import");
 
         // Function signatures
         assert!(content.contains("pub async fn list(store: &Store)"));
         assert!(content.contains("pub async fn get_by_id(store: &Store, id: &str)"));
-        assert!(content.contains("pub async fn create(store: &Store, input: CreateAgentInput)"));
-        assert!(content.contains("pub async fn update(store: &Store, id: &str, input: UpdateAgentInput)"));
+        assert!(content.contains("pub async fn create(store: &Store, input: CreateTagInput)"));
+        assert!(content.contains("pub async fn update(store: &Store, id: &str, input: UpdateTagInput)"));
         assert!(content.contains("pub async fn delete(store: &Store, id: &str)"));
 
         // Store delegation
-        assert!(content.contains("store.list_agents(None, None)"));
-        assert!(content.contains("store.get_agent(id)"));
-        assert!(content.contains("store.create_agent(agent)"));
-        assert!(content.contains("store.update_agent(id, updates)"));
-        assert!(content.contains("store.delete_agent(id)"));
+        assert!(content.contains("store.list_tags(None, None)"));
+        assert!(content.contains("store.get_tag(id)"));
+        assert!(content.contains("store.create_tag(tag)"));
+        assert!(content.contains("store.update_tag(id, updates)"));
+        assert!(content.contains("store.delete_tag(id)"));
     }
 
     /// Test that a non-default `schema_module_path` flows into generated API code.
     #[test]
     fn custom_schema_module_path_is_respected() {
         let dir = schema_dir();
-        if !dir.exists() {
-            return;
-        }
 
         let entities = parse_schema_dir(&dir).expect("parse failed");
-        let agent = entities.iter().find(|e| e.name == "Agent").expect("Agent entity not found");
+        let tag = entities.iter().find(|e| e.name == "Tag").expect("Tag entity not found");
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut config = base_config(tmp.path().to_path_buf());
         config.schema_module_path = "my_crate::domain".to_string();
 
-        api::generate(&[agent.clone()], &config).expect("gen_api failed");
+        api::generate(&[tag.clone()], &config).expect("gen_api failed");
 
-        let content = std::fs::read_to_string(tmp.path().join("agent.rs")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
         assert!(
             content.contains("use my_crate::domain::AppError;"),
             "Expected custom schema path for AppError, got:\n{content}"
         );
+        assert!(content.contains("use my_crate::domain::Tag;"), "Expected custom schema path for Tag, got:\n{content}");
         assert!(
-            content.contains("use my_crate::domain::Agent;"),
-            "Expected custom schema path for Agent, got:\n{content}"
-        );
-        assert!(
-            content.contains("use my_crate::domain::{CreateAgentInput, UpdateAgentInput};"),
+            content.contains("use my_crate::domain::{CreateTagInput, UpdateTagInput};"),
             "Expected custom schema path for input types, got:\n{content}"
         );
         assert!(!content.contains("use crate::schema::"), "Default schema path should not appear");
@@ -145,21 +133,18 @@ mod tests {
     #[test]
     fn exclude_skips_entities() {
         let dir = schema_dir();
-        if !dir.exists() {
-            return;
-        }
 
         let entities = parse_schema_dir(&dir).expect("parse failed");
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut config = base_config(tmp.path().to_path_buf());
-        config.exclude = vec!["Contract".to_string(), "Evidence".to_string()];
+        config.exclude = vec!["Workout".to_string(), "WorkoutSet".to_string()];
 
         let output = api::generate(&entities, &config).expect("gen_api failed");
 
-        assert!(!output.modules.iter().any(|m| m.name == "contract"));
-        assert!(!output.modules.iter().any(|m| m.name == "evidence"));
-        assert!(!tmp.path().join("contract.rs").exists());
-        assert!(!tmp.path().join("evidence.rs").exists());
+        assert!(!output.modules.iter().any(|m| m.name == "workout"));
+        assert!(!output.modules.iter().any(|m| m.name == "workout_set"));
+        assert!(!tmp.path().join("workout.rs").exists());
+        assert!(!tmp.path().join("workout_set.rs").exists());
         assert_eq!(output.modules.len(), entities.len() - 2);
     }
 
@@ -167,17 +152,14 @@ mod tests {
     #[test]
     fn op_kinds_are_correct() {
         let dir = schema_dir();
-        if !dir.exists() {
-            return;
-        }
 
         let entities = parse_schema_dir(&dir).expect("parse failed");
-        let role = entities.iter().find(|e| e.name == "Role").expect("Role");
+        let tag = entities.iter().find(|e| e.name == "Tag").expect("Tag");
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = base_config(tmp.path().to_path_buf());
 
-        let output = api::generate(&[role.clone()], &config).expect("gen_api failed");
+        let output = api::generate(&[tag.clone()], &config).expect("gen_api failed");
         let module = &output.modules[0];
 
         let find_fn = |name: &str| module.fns.iter().find(|f| f.name == name).unwrap();

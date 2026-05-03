@@ -627,11 +627,7 @@ mod tests {
 
     #[test]
     fn generate_all_real_schemas() {
-        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
-        if !schema_dir.exists() {
-            eprintln!("Skipping: schema dir not found");
-            return;
-        }
+        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
         let entities = crate::schema::parse::parse_schema_dir(&schema_dir).expect("Failed to parse schema dir");
 
         let dir = std::env::temp_dir().join("ontology_codegen_test_conversions");
@@ -647,24 +643,23 @@ mod tests {
             .collect();
 
         assert!(files.contains(&"mod.rs".to_string()));
-        assert!(files.contains(&"capability.rs".to_string()));
-        assert!(files.contains(&"unit_of_work.rs".to_string()));
-        assert!(files.contains(&"requirement.rs".to_string()));
-        assert!(files.contains(&"specification.rs".to_string()));
-        assert!(files.contains(&"agent.rs".to_string()));
-        assert!(files.contains(&"work_execution.rs".to_string()));
-        assert!(files.contains(&"contract.rs".to_string()));
-        assert!(files.contains(&"evidence.rs".to_string()));
+        assert!(files.contains(&"tag.rs".to_string()));
+        assert!(files.contains(&"exercise.rs".to_string()));
+        assert!(files.contains(&"workout.rs".to_string()));
+        assert!(files.contains(&"workout_set.rs".to_string()));
 
-        // Verify has_many/many_to_many fields are Vec::new() in from_model but absent from to_active_model
-        let cap_code = std::fs::read_to_string(dir.join("capability.rs")).unwrap();
-        assert!(cap_code.contains("contains: Vec::new(),"), "has_many field should be empty-initialized in from_model");
-        let to_active = cap_code.split("to_active_model").nth(1).unwrap();
-        assert!(!to_active.contains("contains:"), "has_many field should not be in to_active_model");
-        assert!(!to_active.contains("goal_ids:"), "many_to_many field should not be in to_active_model");
-        assert!(cap_code.contains("parent_id:"), "belongs_to field should appear");
-        assert!(!cap_code.contains("wikilinks"), "wikilinks should not be in conversion");
-        assert!(!cap_code.contains("source_file"), "source_file should not be in conversion");
+        // Verify many_to_many fields are absent from to_active_model on Workout
+        let workout_code = std::fs::read_to_string(dir.join("workout.rs")).unwrap();
+        let to_active = workout_code.split("to_active_model").nth(1).unwrap();
+        assert!(!to_active.contains("tags:"), "many_to_many field should not be in to_active_model");
+        assert!(workout_code.contains("parent_id:"), "belongs_to field should appear");
+        assert!(!workout_code.contains("wikilinks"), "wikilinks should not be in conversion");
+        assert!(!workout_code.contains("source_file"), "source_file should not be in conversion");
+
+        // WorkoutSet has two belongs_to fields that should appear
+        let ws_code = std::fs::read_to_string(dir.join("workout_set.rs")).unwrap();
+        assert!(ws_code.contains("workout_id:"), "WorkoutSet.workout_id (belongs_to) should appear");
+        assert!(ws_code.contains("exercise_id:"), "WorkoutSet.exercise_id (belongs_to) should appear");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
