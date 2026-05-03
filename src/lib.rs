@@ -53,6 +53,16 @@ pub use ontogen_core::utils::{
 
 use std::path::PathBuf;
 
+/// Canonical default for `schema_module_path` on [`StoreConfig`] and [`ApiConfig`].
+///
+/// Both configs require the import path to the schema module in generated code.
+/// Use this constant rather than hard-coding `"crate::schema"` so that any future
+/// change to the convention propagates to every direct consumer at once. Callers
+/// who construct configs via [`Pipeline`](pipeline::Pipeline) do not need to set
+/// the field directly — the builder applies this default and propagates it to
+/// both configs.
+pub const DEFAULT_SCHEMA_MODULE_PATH: &str = "crate::schema";
+
 // ── Top-level generator functions ───────────────────────────────────
 //
 // These are the public API. Each wraps the corresponding module's logic
@@ -208,7 +218,7 @@ pub fn gen_dtos(entities: &[EntityDef], config: &DtoConfig) -> Result<(), Codege
 /// let store = gen_store(&schema.entities, Some(&seaorm), &StoreConfig {
 ///     output_dir: PathBuf::from("src/store/generated"),
 ///     hooks_dir: Some(PathBuf::from("src/store/hooks")),
-///     schema_module_path: "crate::schema".into(),
+///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
 /// })?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
@@ -246,7 +256,7 @@ pub fn gen_store(
 ///     scan_dirs: vec![PathBuf::from("src/api/v1")],
 ///     state_type: "AppState".into(),
 ///     store_type: Some("Store".into()),
-///     schema_module_path: "crate::schema".into(),
+///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
 /// })?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
@@ -288,7 +298,7 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 ///     scan_dirs: vec![PathBuf::from("src/api/v1")],
 ///     state_type: "AppState".into(),
 ///     store_type: Some("Store".into()),
-///     schema_module_path: "crate::schema".into(),
+///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
 /// })?;
 ///
 /// gen_servers(
@@ -389,7 +399,8 @@ pub struct StoreConfig {
     /// hooks, so the consuming crate must provide its own hook modules.
     pub hooks_dir: Option<PathBuf>,
     /// Import path for the schema module in generated code (e.g., `"crate::schema"`).
-    /// Defaults to `"crate::schema"`.
+    /// Use [`DEFAULT_SCHEMA_MODULE_PATH`] for the canonical default; the same
+    /// constant is referenced by [`ApiConfig::schema_module_path`].
     pub schema_module_path: String,
 }
 
@@ -416,7 +427,8 @@ pub struct ApiConfig {
     /// (e.g., `"Store"`). When `None`, generated CRUD calls free functions.
     pub store_type: Option<String>,
     /// Import path for the schema module in generated code (e.g., `"crate::schema"`).
-    /// Defaults to `"crate::schema"`.
+    /// Use [`DEFAULT_SCHEMA_MODULE_PATH`] for the canonical default; the same
+    /// constant is referenced by [`StoreConfig::schema_module_path`].
     pub schema_module_path: String,
 }
 

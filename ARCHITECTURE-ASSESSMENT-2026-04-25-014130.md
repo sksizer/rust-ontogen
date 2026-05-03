@@ -173,13 +173,14 @@ rust-ontogen/
 
 ---
 
-### 12. Schema Import Path Duplicated Across Config Structs
+### 12. Schema Import Path Duplicated Across Config Structs  **[RESOLVED]**
 
 - **Severity:** low
 - **Location:** `src/lib.rs:156–186` (`StoreConfig::schema_module_path`, `ApiConfig::schema_module_path`)
 - **Observation:** Both `StoreConfig` and `ApiConfig` carry an identical `schema_module_path: String` field with the same purpose and same default value (`"crate::schema"`). A build.rs must set this consistently in both places.
 - **Why it matters:** Minor ergonomics: easy to forget to set one. Not a runtime risk because the defaults match.
 - **Suggested direction:** Either document a canonical default prominently, or extract into a shared `PipelineConfig` that both configs embed or reference.
+- **Resolution:** Adopted the first suggestion. Promoted the canonical default to a public constant `ontogen::DEFAULT_SCHEMA_MODULE_PATH = "crate::schema"` and cross-referenced it from both struct field rustdocs and the `gen_store` / `gen_api` doctest examples. The internal `pipeline::DEFAULT_SCHEMA_MODULE_PATH` was deleted in favor of importing the public one. `Pipeline` already eliminates the duplication for the recommended ergonomic path (one `schema_module_path` builder method, propagated to both configs); for direct-construction consumers, a single named constant collapses the "easy to forget to set one consistently" risk that motivated the finding without breaking the public API. The fully-shared `PipelineConfig` extraction was not pursued — it is a larger breaking change for a low-severity ergonomics issue.
 
 ---
 
