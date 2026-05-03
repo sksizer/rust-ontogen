@@ -150,23 +150,25 @@ rust-ontogen/
 
 ---
 
-### 10. `install_admin_layer` is a Misplaced String-Manipulation Utility
+### 10. `install_admin_layer` is a Misplaced String-Manipulation Utility  **[RESOLVED]**
 
 - **Severity:** low
 - **Location:** `src/lib.rs:236–282`
 - **Observation:** `install_admin_layer` performs regex-free string manipulation on a `nuxt.config.ts` file to inject an `extends` array entry. It uses `String::find` and manual index arithmetic to locate `extends:` and `[`, then splices text. It is categorised as `CodegenError::Client` but has nothing to do with client code generation.
 - **Why it matters:** The approach is fragile: it will silently do nothing (and print a `cargo:warning`) for nuxt configs with unusual formatting. It belongs conceptually with the client/admin layer generator but sits in `lib.rs` alongside the core pipeline entry points, obscuring the API.
 - **Suggested direction:** Move to `servers/generators/admin.rs` or a dedicated `clients/nuxt.rs`. Consider using a simple TOML/JSON manipulation approach or documenting the exact config format constraints.
+- **Resolution:** Moved the implementation and `AdminLayerConfig` to a new top-level `src/admin.rs` module. (Did not put it in `servers/generators/admin.rs` — that file generates the TS admin _registry_, a different concern.) `lib.rs` keeps `install_admin_layer` and `AdminLayerConfig` as public re-exports so the build.rs API is unchanged. The fragile string-edit semantics are documented inline so the constraints are explicit; replacing with a real TS-config parser stays as future work.
 
 ---
 
-### 11. `cruet` Listed as Dependency but Not Directly Imported
+### 11. `cruet` Listed as Dependency but Not Directly Imported  **[VERIFIED — DEP IS USED]**
 
 - **Severity:** low
 - **Location:** `Cargo.toml:21`
 - **Observation:** `cruet = "1.0"` is listed as a direct dependency of the main crate, but grepping the source shows no `use cruet::` or `extern crate cruet` usage. All naming utilities (`to_snake_case`, `to_pascal_case`, `pluralize`) are in `ontogen-core/src/naming.rs` and implemented directly.
 - **Why it matters:** Unused direct dependency adds to compile time, supply-chain surface, and dependency audit scope. It may be a leftover from before the naming utilities were extracted to `ontogen-core`.
 - **Suggested direction:** Verify with `cargo +nightly udeps` or `cargo machete`. If unused, remove.
+- **Resolution:** False positive. `cruet` is used in `src/servers/types.rs` at three sites: `cruet::to_plural` (lines 214, 247) and `cruet::to_singular` (line 224), called via fully-qualified path rather than a `use cruet::...` import. The grep in the original observation was too narrow. The dependency is legitimate and stays.
 
 ---
 
