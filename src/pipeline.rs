@@ -41,12 +41,9 @@ use std::path::PathBuf;
 
 use crate::ir::{ApiOutput, SchemaOutput, SeaOrmOutput};
 use crate::{
-    ApiConfig, CodegenError, DtoConfig, MarkdownIoConfig, SchemaConfig, SeaOrmConfig, ServersConfig, StoreConfig,
-    gen_api, gen_dtos, gen_markdown_io, gen_seaorm, gen_servers, gen_store, parse_schema,
+    ApiConfig, CodegenError, DEFAULT_SCHEMA_MODULE_PATH, DtoConfig, MarkdownIoConfig, SchemaConfig, SeaOrmConfig,
+    ServersConfig, StoreConfig, gen_api, gen_dtos, gen_markdown_io, gen_seaorm, gen_servers, gen_store, parse_schema,
 };
-
-/// Default schema module path used for `StoreConfig` and `ApiConfig`.
-const DEFAULT_SCHEMA_MODULE_PATH: &str = "crate::schema";
 
 /// Default store type name used for the `api` and `servers` stages once a
 /// store stage has been registered.
