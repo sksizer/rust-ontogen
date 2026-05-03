@@ -243,6 +243,24 @@ fn generate_model_column(field: &FieldDef) -> Option<String> {
     Some(out)
 }
 
+/// Build a `ColumnMeta` for a field, or `None` if the field has no DB column.
+///
+/// Mirrors the skip rules in `generate_model_column` so the metadata stays
+/// in sync with the actually-emitted SeaORM model.
+pub(crate) fn column_meta_for(field: &FieldDef) -> Option<crate::ir::ColumnMeta> {
+    if let FieldRole::Relation(info) = &field.role
+        && matches!(info.kind, RelationKind::HasMany | RelationKind::ManyToMany)
+    {
+        return None;
+    }
+
+    Some(crate::ir::ColumnMeta {
+        name: field.name.clone(),
+        column_type: field_db_type(field).to_string(),
+        is_primary_key: field.role == FieldRole::Id,
+    })
+}
+
 /// Map a schema field to its DB column type string.
 fn field_db_type(field: &FieldDef) -> &'static str {
     if field.role == FieldRole::Id {
@@ -737,19 +755,6 @@ mod tests {
         assert!(code.contains("impl Related<super::requirement::Entity>"));
     }
 
-    /// Ensures `generate_entity_code` emits syntactically valid Rust.
-    /// Output is a complete module file (banner + use + struct/enum/impl items),
-    /// so `syn::parse_file` can parse it directly. Unresolved paths like
-    /// `super::node_fulfills::Entity` are fine — `syn` does no name resolution.
-    #[test]
-    fn generated_code_is_valid_rust() {
-        let mods = modules(&["Node", "Requirement"]);
-        let code = generate_entity_code(&make_node_entity(), &mods);
-
-        syn::parse_file(&code)
-            .unwrap_or_else(|e| panic!("seaorm/gen_entity emitted invalid Rust: {e}\n--- code ---\n{code}"));
-    }
-
     /// Parse real schemas and verify generated code for all 13 entities.
     #[test]
     fn generate_all_real_schemas() {
@@ -798,5 +803,51 @@ mod tests {
         assert!(junction_names.contains(&"constraint_scope_ids"));
         assert!(junction_names.contains(&"unit_of_work_depends_on"));
         assert!(junction_names.contains(&"unit_of_work_constraints"));
+    }
+
+    #[test]
+    fn column_meta_skips_has_many_and_many_to_many() {
+        let node = make_node_entity();
+        let cols: Vec<_> = node.fields.iter().filter_map(column_meta_for).collect();
+
+        let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"id"), "id column missing");
+        assert!(names.contains(&"parent_id"), "belongs_to column should be present");
+        assert!(!names.contains(&"contains"), "has_many should not yield a column");
+        assert!(!names.contains(&"fulfills"), "many_to_many should not yield a column");
+
+        let id = cols.iter().find(|c| c.name == "id").unwrap();
+        assert!(id.is_primary_key);
+        assert_eq!(id.column_type, "String");
+
+        let parent = cols.iter().find(|c| c.name == "parent_id").unwrap();
+        assert!(!parent.is_primary_key);
+        assert_eq!(parent.column_type, "Option<String>");
+    }
+
+    /// Syntax check: verify generate_entity_code and generate_junction_code
+    /// emit syntactically valid Rust source files.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        let mods = modules(&["Node", "Requirement"]);
+        let node = make_node_entity();
+
+        let entity_code = generate_entity_code(&node, &mods);
+        syn::parse_file(&entity_code).unwrap_or_else(|e| {
+            panic!("seaorm::gen_entity::generate_entity_code produced invalid Rust: {e}\n--- code ---\n{entity_code}")
+        });
+
+        // Also check the paired junction generator since it shares this module.
+        let fulfills_field = node.fields.iter().find(|f| f.name == "fulfills").expect("fulfills field");
+        let info = match &fulfills_field.role {
+            FieldRole::Relation(i) => i,
+            _ => panic!("expected relation"),
+        };
+        let (_jname, junction_code) = generate_junction_code(&node, fulfills_field, info, &mods);
+        syn::parse_file(&junction_code).unwrap_or_else(|e| {
+            panic!(
+                "seaorm::gen_entity::generate_junction_code produced invalid Rust: {e}\n--- code ---\n{junction_code}"
+            )
+        });
     }
 }

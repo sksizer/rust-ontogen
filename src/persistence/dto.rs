@@ -447,18 +447,6 @@ mod tests {
         assert!(code.contains(r#""active".to_string()"#), "Default fn should return the value");
     }
 
-    /// Ensures `generate_dto_code` emits syntactically valid Rust.
-    /// Output is a full module file (banner + use + struct definitions + helper fns).
-    /// `syn::parse_file` parses it directly; unresolved paths like
-    /// `crate::schema::AgentType` are syntactically fine.
-    #[test]
-    fn generated_code_is_valid_rust() {
-        let code = generate_dto_code(&make_entity());
-
-        syn::parse_file(&code)
-            .unwrap_or_else(|e| panic!("persistence/dto emitted invalid Rust: {e}\n--- code ---\n{code}"));
-    }
-
     #[test]
     fn no_wikilinks_or_source_file() {
         let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
@@ -487,5 +475,15 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Syntax check: verify generate_dto_code emits a syntactically valid
+    /// Rust source file.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        let code = generate_dto_code(&make_entity());
+        syn::parse_file(&code).unwrap_or_else(|e| {
+            panic!("persistence::dto::generate_dto_code produced invalid Rust: {e}\n--- code ---\n{code}")
+        });
     }
 }

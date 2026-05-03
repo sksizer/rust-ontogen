@@ -18,11 +18,12 @@ pub fn generate(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOrmO
         .iter()
         .map(|e| {
             let snake = gen_entity::to_snake_case(&e.name);
+            let columns = e.fields.iter().filter_map(gen_entity::column_meta_for).collect();
             crate::ir::EntityTableMeta {
                 entity_name: e.name.clone(),
                 table_name: e.table.clone(),
                 module_path: format!("crate::persistence::db::entities::generated::{snake}"),
-                columns: vec![], // TODO: populate from field metadata
+                columns,
             }
         })
         .collect();

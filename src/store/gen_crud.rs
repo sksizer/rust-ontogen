@@ -523,17 +523,19 @@ mod tests {
         assert!(code.contains("if contains_changed {"));
     }
 
-    /// Ensures the generator emits syntactically valid Rust.
-    /// `generate_crud_impl` produces a top-level `impl Store { ... }` block, which
-    /// `syn::parse_file` can parse directly (unresolved type/path references are fine —
-    /// `syn` does no name resolution).
+    /// Syntax check: verify the generated `impl Store` block parses as valid
+    /// Rust for both simple and relation-heavy entities.
     #[test]
     fn generated_code_is_valid_rust() {
-        let entity = make_node_entity();
-        let mut code = String::new();
-        generate_crud_impl(&mut code, &entity);
-
-        syn::parse_file(&code)
-            .unwrap_or_else(|e| panic!("store/gen_crud emitted invalid Rust: {e}\n--- code ---\n{code}"));
+        for entity in [make_role_entity(), make_node_entity()] {
+            let mut code = String::new();
+            generate_crud_impl(&mut code, &entity);
+            syn::parse_file(&code).unwrap_or_else(|e| {
+                panic!(
+                    "store::gen_crud::generate_crud_impl produced invalid Rust for entity '{}': {e}\n--- code ---\n{code}",
+                    entity.name
+                )
+            });
+        }
     }
 }

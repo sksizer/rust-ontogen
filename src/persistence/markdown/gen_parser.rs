@@ -426,18 +426,6 @@ mod tests {
         assert_eq!(parse_result_field_name("contract"), "contracts");
     }
 
-    /// Ensures `generate_parser_dispatch` emits syntactically valid Rust.
-    /// Output is a full module file (banner + uses + enum + struct + functions),
-    /// so `syn::parse_file` parses it directly. Unresolved paths like
-    /// `crate::schema::Node` are syntactically fine — `syn` does no name resolution.
-    #[test]
-    fn generated_code_is_valid_rust() {
-        let code = generate_parser_dispatch(&make_test_entities());
-
-        syn::parse_file(&code)
-            .unwrap_or_else(|e| panic!("markdown/gen_parser emitted invalid Rust: {e}\n--- code ---\n{code}"));
-    }
-
     #[test]
     fn generate_all_real_schemas() {
         let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
@@ -484,5 +472,15 @@ mod tests {
                 entity.name
             );
         }
+    }
+
+    /// Syntax check: verify generate_parser_dispatch emits a syntactically
+    /// valid Rust source file.
+    #[test]
+    fn generated_code_is_valid_rust() {
+        let code = generate_parser_dispatch(&make_test_entities());
+        syn::parse_file(&code).unwrap_or_else(|e| {
+            panic!("markdown::gen_parser::generate_parser_dispatch produced invalid Rust: {e}\n--- code ---\n{code}")
+        });
     }
 }

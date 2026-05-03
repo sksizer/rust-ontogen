@@ -185,4 +185,54 @@ mod tests {
         assert!(content.contains("set_capability_parent"), "Missing set_capability_parent helper");
         assert!(content.contains("goal_ids_changed"), "Missing conditional junction sync tracking");
     }
+
+    /// `StoreMethodMeta.params` should match the actual generated method signatures.
+    #[test]
+    fn method_meta_params_match_signatures() {
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/schema");
+        if !schema_dir.exists() {
+            return;
+        }
+
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        let role = entities.iter().find(|e| e.name == "Role").expect("Role entity not found");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = StoreConfig {
+            output_dir: tmp.path().to_path_buf(),
+            hooks_dir: None,
+            schema_module_path: "crate::schema".to_string(),
+        };
+
+        let output = store::generate(&[role.clone()], None, &config).expect("gen_store failed");
+
+        let by_name =
+            |n: &str| output.methods.iter().find(|m| m.name == n).unwrap_or_else(|| panic!("missing method {n}"));
+
+        let list = by_name("list_roles");
+        assert_eq!(list.params.len(), 2);
+        assert_eq!(list.params[0].name, "limit");
+        assert_eq!(list.params[0].param_type, "Option<u64>");
+        assert_eq!(list.params[1].name, "offset");
+
+        let get = by_name("get_role");
+        assert_eq!(get.params.len(), 1);
+        assert_eq!(get.params[0].name, "id");
+        assert_eq!(get.params[0].param_type, "&str");
+
+        let create = by_name("create_role");
+        assert_eq!(create.params.len(), 1);
+        assert_eq!(create.params[0].name, "role");
+        assert_eq!(create.params[0].param_type, "Role");
+
+        let update = by_name("update_role");
+        assert_eq!(update.params.len(), 2);
+        assert_eq!(update.params[0].name, "id");
+        assert_eq!(update.params[1].name, "updates");
+        assert_eq!(update.params[1].param_type, "RoleUpdate");
+
+        let delete = by_name("delete_role");
+        assert_eq!(delete.params.len(), 1);
+        assert_eq!(delete.params[0].name, "id");
+    }
 }

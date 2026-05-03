@@ -21,6 +21,7 @@ use std::path::Path;
 
 use crate::ir::{ApiFnMeta, ApiModule, ApiOutput, OpKind, ParamMeta, Source, StateKind};
 use crate::schema::model::EntityDef;
+use crate::servers::classify::classify_by_name_and_params;
 use crate::servers::parse;
 use crate::store::helpers;
 use crate::{ApiConfig, CodegenError};
@@ -87,37 +88,12 @@ pub fn generate(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput,
 
 // ─── Scanning → IR conversion ────────────────────────────────────────────────
 
-/// Classify an API function by its name and parameter shape.
-fn classify_op(name: &str, params: &[parse::Param]) -> OpKind {
-    match name {
-        "list" => OpKind::List,
-        "get_by_id" => OpKind::GetById,
-        "create" => OpKind::Create,
-        "update" => OpKind::Update,
-        "delete" => OpKind::Delete,
-        _ => {
-            // Heuristic: if it takes no params or only Option params → GET
-            // If it takes an input struct → POST
-            if params.is_empty() {
-                OpKind::CustomGet
-            } else if params
-                .iter()
-                .any(|p| !p.ty.starts_with("Option") && !p.ty.starts_with("&str") && !p.ty.starts_with("String"))
-            {
-                OpKind::CustomPost
-            } else {
-                OpKind::CustomGet
-            }
-        }
-    }
-}
-
 /// Convert a scanned `parse::ApiFn` into an IR `ApiFnMeta`.
 fn convert_scanned_fn(func: &parse::ApiFn, scan_dir: &Path, module_name: &str) -> ApiFnMeta {
     let params: Vec<ParamMeta> =
         func.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
 
-    let classified_op = classify_op(&func.name, &func.params);
+    let classified_op = classify_by_name_and_params(&func.name, &func.params);
 
     ApiFnMeta {
         name: func.name.clone(),

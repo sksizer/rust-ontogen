@@ -24,8 +24,10 @@ pub use config::ServerGenerator as ServerGeneratorConfig;
 
 use std::path::PathBuf;
 
+use ontogen_core::ir::OpKind;
+
 use crate::CodegenError;
-use crate::ir::{ApiOutput, ServersOutput};
+use crate::ir::{ApiOutput, HttpRouteMeta, IpcCommandMeta, McpToolMeta, ParamMeta, ServersOutput};
 
 /// Generate server transports.
 ///
@@ -73,11 +75,134 @@ pub fn generate(
     // Run the transport generation pipeline
     let modules = generate_transport(&legacy_config).map_err(CodegenError::Server)?;
 
-    // Build output metadata for downstream consumers
-    // Phase 1: minimal metadata — enough for clients
-    let _ = modules; // TODO: extract route/command metadata from generated output
+    Ok(extract_server_metadata(&modules, &legacy_config))
+}
 
-    Ok(ServersOutput { http_routes: vec![], ipc_commands: vec![], mcp_tools: vec![] })
+/// Build `ServersOutput` from the same parsed modules the generators consumed.
+///
+/// HTTP routes mirror the path/method decisions made by the HTTP generator
+/// (including project-scoping for store-based modules when `route_prefix`
+/// is set). IPC commands and MCP tools are 1:1 with API functions —
+/// `route_prefix` does not affect them.
+fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config) -> ServersOutput {
+    let mut http_routes = Vec::new();
+    let mut ipc_commands = Vec::new();
+    let mut mcp_tools = Vec::new();
+
+    for m in modules {
+        let url_plural = config.naming.url_plural(&m.name);
+        let is_store_module = m.functions.first().is_some_and(|f| f.first_param_is_store);
+
+        // HTTP base path: store-based modules get scoped under route_prefix
+        // when configured (mirroring http.rs:166-170 + generate_scoped_handlers).
+        let http_base = match (&config.route_prefix, is_store_module) {
+            (Some(prefix), true) => format!("/api/{}", prefix.segments),
+            _ => "/api".to_string(),
+        };
+
+        for f in &m.functions {
+            let op = classify::classify_op(f);
+            let handler_name = generators::ipc::command_name(&m.name, f, config);
+            let params: Vec<ParamMeta> =
+                f.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
+
+            if let Some((method, path)) = http_route_for(&op, &http_base, &url_plural, &m.name, f, config) {
+                http_routes.push(HttpRouteMeta {
+                    method,
+                    path,
+                    handler_name: handler_name.clone(),
+                    module_name: m.name.clone(),
+                });
+            }
+
+            ipc_commands.push(IpcCommandMeta {
+                command_name: handler_name.clone(),
+                params: params.clone(),
+                return_type: f.return_type.clone(),
+            });
+
+            mcp_tools.push(McpToolMeta { tool_name: handler_name, description: f.doc.clone(), params });
+        }
+
+        // SSE event streams — HTTP-only. When route_prefix is set, both
+        // unscoped and prefix-scoped variants are emitted (http.rs:463-500
+        // and the scoped handler block).
+        for ev in &m.events {
+            let ev_name = crate::servers::types::event_name(&ev.name);
+            let unscoped =
+                config.sse_route_overrides.get(&ev.name).cloned().unwrap_or_else(|| format!("/api/events/{}", ev_name));
+            http_routes.push(HttpRouteMeta {
+                method: "GET".to_string(),
+                path: unscoped.clone(),
+                handler_name: format!("{}_sse", ev.name),
+                module_name: m.name.clone(),
+            });
+
+            if let Some(prefix) = &config.route_prefix {
+                let scoped_path = match config.sse_route_overrides.get(&ev.name) {
+                    Some(override_path) => match override_path.strip_prefix("/api/") {
+                        Some(rest) => format!("/api/{}/{}", prefix.segments, rest),
+                        None => format!("/api/{}{}", prefix.segments, override_path),
+                    },
+                    None => format!("/api/{}/events/{}", prefix.segments, ev_name),
+                };
+                http_routes.push(HttpRouteMeta {
+                    method: "GET".to_string(),
+                    path: scoped_path,
+                    handler_name: format!("{}_sse_scoped", ev.name),
+                    module_name: m.name.clone(),
+                });
+            }
+        }
+    }
+
+    ServersOutput { http_routes, ipc_commands, mcp_tools }
+}
+
+/// Compute the HTTP method + path for a classified function.
+///
+/// Returns `None` for `EventStream` (events are emitted separately from `m.events`).
+fn http_route_for(
+    op: &OpKind,
+    base: &str,
+    plural: &str,
+    module: &str,
+    f: &parse::ApiFn,
+    config: &config::Config,
+) -> Option<(String, String)> {
+    let route = match op {
+        OpKind::List => ("GET", format!("{base}/{plural}")),
+        OpKind::Create => ("POST", format!("{base}/{plural}")),
+        OpKind::GetById => ("GET", format!("{base}/{plural}/:id")),
+        OpKind::Update => ("PUT", format!("{base}/{plural}/:id")),
+        OpKind::Delete => ("DELETE", format!("{base}/{plural}/:id")),
+        OpKind::JunctionList { child_segment } => ("GET", format!("{base}/{plural}/:parent_id/{child_segment}")),
+        OpKind::JunctionAdd { child_segment } => ("POST", format!("{base}/{plural}/:parent_id/{child_segment}")),
+        OpKind::JunctionRemove { child_segment } => {
+            ("DELETE", format!("{base}/{plural}/:parent_id/{child_segment}/:child_id"))
+        }
+        OpKind::CustomGet | OpKind::CustomPost => {
+            let is_get = classify::is_read_operation(&f.name);
+            let action = config.naming.derive_action(module, &f.name);
+            let mut path = format!("{base}/{plural}");
+            if !action.is_empty() {
+                path.push('/');
+                path.push_str(&action);
+            }
+            // GET handlers extract path params from non-Option non-Input params.
+            // POST handlers put all such params into the JSON body — no path params.
+            if is_get {
+                for p in &f.params {
+                    if !p.ty.starts_with("Option<") && !p.ty.contains("Input") {
+                        path.push_str(&format!("/:{}", p.name));
+                    }
+                }
+            }
+            (if is_get { "GET" } else { "POST" }, path)
+        }
+        OpKind::EventStream => return None,
+    };
+    Some((route.0.to_string(), route.1))
 }
 
 /// Run the transport generation pipeline (parse API modules + generate server/client code).

@@ -88,7 +88,7 @@ mod tests {
         }
     }
 
-    fn base_config() -> ApiConfig {
+    fn make_config() -> ApiConfig {
         ApiConfig {
             output_dir: std::path::PathBuf::new(),
             exclude: vec![],
@@ -99,17 +99,14 @@ mod tests {
         }
     }
 
-    /// Ensures `generate_crud_module` emits a syntactically valid Rust file.
-    /// Output is a complete file (header + uses + functions); `syn::parse_file` parses
-    /// it directly. Unresolved paths like `crate::schema::Role` are syntactically fine
-    /// because `syn` performs no name resolution.
+    /// Syntax check: verify `generate_crud_module` emits a syntactically valid
+    /// Rust source file.
     #[test]
     fn generated_code_is_valid_rust() {
-        let entity = make_role_entity();
-        let config = base_config();
-        let code = generate_crud_module(&entity, &config);
-
-        syn::parse_file(&code)
-            .unwrap_or_else(|e| panic!("api/gen_crud emitted invalid Rust: {e}\n--- code ---\n{code}"));
+        let config = make_config();
+        let code = generate_crud_module(&make_role_entity(), &config);
+        syn::parse_file(&code).unwrap_or_else(|e| {
+            panic!("api::gen_crud::generate_crud_module produced invalid Rust: {e}\n--- code ---\n{code}")
+        });
     }
 }
