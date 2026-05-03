@@ -446,7 +446,7 @@ pub struct ServersConfig {
     /// Which server transport generators to run (Axum, Tauri IPC, etc.).
     pub generators: Vec<servers::ServerGeneratorConfig>,
     /// Which client generators to run (TypeScript transports, admin registry, etc.).
-    pub client_generators: Vec<servers::config::ClientGenerator>,
+    pub client_generators: Vec<servers::ClientGenerator>,
     /// Rustfmt edition for formatting generated Rust (e.g., `"2021"`).
     pub rustfmt_edition: String,
     /// SSE route overrides keyed by entity name; values are full URL paths.

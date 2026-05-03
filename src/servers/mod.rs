@@ -3,13 +3,17 @@
 //! Also includes client generators (TypeScript, admin registry) which will
 //! move to the `clients` module in a later phase.
 
-pub mod classify;
-pub mod config;
-pub mod generators;
-pub mod parse;
+// All submodules are crate-internal; their public types are re-exported below
+// where intended for downstream consumption. External code reaches them via
+// `ontogen::servers::Foo` (or, more commonly, via the top-level re-exports in
+// `lib.rs`), not via the longer `ontogen::servers::config::Foo` path.
+pub(crate) mod classify;
+pub(crate) mod config;
+pub(crate) mod generators;
+pub(crate) mod parse;
 #[cfg(test)]
 mod tests;
-pub mod types;
+pub(crate) mod types;
 
 // Re-export key types at the servers module level
 pub use config::{
