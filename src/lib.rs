@@ -1,4 +1,3 @@
-// TODO: review — rewritten to re-export from ontogen-core, config types kept here
 #![forbid(unsafe_code)]
 #![allow(
     clippy::too_many_lines,

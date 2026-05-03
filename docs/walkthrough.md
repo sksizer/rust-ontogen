@@ -1,4 +1,3 @@
-<!-- TODO: review — title and references updated from old crate names -->
 # Ontogen: Detailed Walkthrough
 
 This document walks through the ontogen codegen system end-to-end with concrete examples showing what each layer produces, how the IR (intermediate representation) flows between generators, and what the generated code looks like.

@@ -1,4 +1,3 @@
-<!-- TODO: review — verify copyright holder and year -->
 MIT License
 
 Copyright (c) 2026 Kelly Sizer
