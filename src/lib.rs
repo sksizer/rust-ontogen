@@ -30,9 +30,12 @@
 
 pub mod api;
 pub mod persistence;
+pub mod pipeline;
 pub mod schema;
 pub mod servers;
 pub mod store;
+
+pub use pipeline::Pipeline;
 
 #[cfg(test)]
 mod snapshots;
