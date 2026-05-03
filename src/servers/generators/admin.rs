@@ -159,8 +159,11 @@ fn generate_fields_for_entity(module_name: &str, entities: &[EntityDef]) -> Stri
         let (field_type, relation_to) = classify_admin_field(field);
         let is_id = field.role == FieldRole::Id;
         let is_body = field.role == FieldRole::Body;
-        let is_required =
-            is_id || matches!(field.field_type, FieldType::String | FieldType::I32 | FieldType::I64 | FieldType::Bool);
+        let is_required = is_id
+            || matches!(
+                field.field_type,
+                FieldType::String | FieldType::I32 | FieldType::I64 | FieldType::F32 | FieldType::F64 | FieldType::Bool
+            );
         let is_read_only = key == "source_file" || key == "created_at" || key == "last_opened_at";
 
         // Display hints: sensible defaults
@@ -230,6 +233,8 @@ fn classify_admin_field(field: &ontogen_core::model::FieldDef) -> (&'static str,
         (_, FieldType::VecStruct(_)) => ("string-array", None),
         (_, FieldType::I32 | FieldType::OptionI32) => ("number", None),
         (_, FieldType::I64 | FieldType::OptionI64) => ("number", None),
+        (_, FieldType::F32 | FieldType::OptionF32) => ("number", None),
+        (_, FieldType::F64 | FieldType::OptionF64) => ("number", None),
         (_, FieldType::Bool | FieldType::OptionBool) => ("boolean", None),
         (_, FieldType::Other(_)) => ("string", None),
     }

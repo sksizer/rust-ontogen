@@ -211,10 +211,14 @@ fn generate_from_model_field(field: &FieldDef) -> Option<String> {
         FieldRole::Plain => match &field.field_type {
             FieldType::String => Some(format!("{name}: model.{name}.clone(),")),
             FieldType::OptionString => Some(format!("{name}: model.{name}.clone(),")),
-            FieldType::I32 | FieldType::I64 | FieldType::Bool => Some(format!("{name}: model.{name},")),
-            FieldType::OptionI32 | FieldType::OptionI64 | FieldType::OptionBool => {
+            FieldType::I32 | FieldType::I64 | FieldType::F32 | FieldType::F64 | FieldType::Bool => {
                 Some(format!("{name}: model.{name},"))
             }
+            FieldType::OptionI32
+            | FieldType::OptionI64
+            | FieldType::OptionF32
+            | FieldType::OptionF64
+            | FieldType::OptionBool => Some(format!("{name}: model.{name},")),
             FieldType::VecString => Some(format!("{name}: decode_json_vec(&model.{name}),")),
             FieldType::VecStruct(_) => {
                 Some(format!("{name}: serde_json::from_str(&model.{name}).unwrap_or_default(),"))
@@ -290,10 +294,14 @@ fn generate_to_active_model_field(field: &FieldDef) -> Option<String> {
         FieldRole::Plain => match &field.field_type {
             FieldType::String => Some(format!("{name}: Set(self.{name}.clone()),")),
             FieldType::OptionString => Some(format!("{name}: Set(self.{name}.clone()),")),
-            FieldType::I32 | FieldType::I64 | FieldType::Bool => Some(format!("{name}: Set(self.{name}),")),
-            FieldType::OptionI32 | FieldType::OptionI64 | FieldType::OptionBool => {
+            FieldType::I32 | FieldType::I64 | FieldType::F32 | FieldType::F64 | FieldType::Bool => {
                 Some(format!("{name}: Set(self.{name}),"))
             }
+            FieldType::OptionI32
+            | FieldType::OptionI64
+            | FieldType::OptionF32
+            | FieldType::OptionF64
+            | FieldType::OptionBool => Some(format!("{name}: Set(self.{name}),")),
             FieldType::VecString | FieldType::VecStruct(_) => {
                 Some(format!("{name}: Set(serde_json::to_string(&self.{name}).unwrap_or_default()),"))
             }

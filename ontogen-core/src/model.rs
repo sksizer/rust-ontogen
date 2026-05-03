@@ -76,6 +76,14 @@ pub enum FieldType {
     I64,
     /// `Option<i64>` (also used for `Option<u64>`)
     OptionI64,
+    /// `f32`
+    F32,
+    /// `Option<f32>`
+    OptionF32,
+    /// `f64`
+    F64,
+    /// `Option<f64>`
+    OptionF64,
     /// `bool`
     Bool,
     /// `Option<bool>`

@@ -329,6 +329,8 @@ fn classify_type(ty: &Type) -> FieldType {
                 Some("String") if segments.len() == 1 => FieldType::String,
                 Some("i32") if segments.len() == 1 => FieldType::I32,
                 Some("i64" | "u64") if segments.len() == 1 => FieldType::I64,
+                Some("f32") if segments.len() == 1 => FieldType::F32,
+                Some("f64") if segments.len() == 1 => FieldType::F64,
                 Some("bool") if segments.len() == 1 => FieldType::Bool,
                 Some("Option") => {
                     let inner = extract_generic_arg(last_segment);
@@ -336,6 +338,8 @@ fn classify_type(ty: &Type) -> FieldType {
                         Some("String") => FieldType::OptionString,
                         Some("i32") => FieldType::OptionI32,
                         Some("i64" | "u64") => FieldType::OptionI64,
+                        Some("f32") => FieldType::OptionF32,
+                        Some("f64") => FieldType::OptionF64,
                         Some("bool") => FieldType::OptionBool,
                         Some(other) => FieldType::OptionEnum(other.to_string()),
                         None => FieldType::Other(quote::quote!(#ty).to_string()),
@@ -948,5 +952,53 @@ mod tests {
         assert!(validate_identifier("table", "has-dash").is_err());
         assert!(validate_identifier("table", "has space").is_err());
         assert!(validate_identifier("table", "users'; DROP TABLE users; --").is_err());
+    }
+
+    #[test]
+    fn parse_float_field_types() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Measurement {
+                #[ontology(id)]
+                pub id: String,
+
+                pub temperature: f32,
+                pub humidity: Option<f32>,
+                pub pressure: f64,
+                pub altitude: Option<f64>,
+
+                #[ontology(body)]
+                pub body: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        assert_eq!(entities.len(), 1);
+        let m = &entities[0];
+
+        let temperature = m.fields.iter().find(|f| f.name == "temperature").unwrap();
+        assert_eq!(temperature.field_type, FieldType::F32);
+
+        let humidity = m.fields.iter().find(|f| f.name == "humidity").unwrap();
+        assert_eq!(humidity.field_type, FieldType::OptionF32);
+
+        let pressure = m.fields.iter().find(|f| f.name == "pressure").unwrap();
+        assert_eq!(pressure.field_type, FieldType::F64);
+
+        let altitude = m.fields.iter().find(|f| f.name == "altitude").unwrap();
+        assert_eq!(altitude.field_type, FieldType::OptionF64);
+
+        // Ensure none fell through to Other(...)
+        for f in &m.fields {
+            assert!(
+                !matches!(f.field_type, FieldType::Other(_)),
+                "field {} should not be Other(...): {:?}",
+                f.name,
+                f.field_type
+            );
+        }
     }
 }
