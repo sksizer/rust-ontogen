@@ -364,7 +364,14 @@ impl Pipeline {
 
         // Stage 5: servers
         if let Some(stage) = self.servers {
-            gen_servers(api_out.as_ref(), &stage.scan_dirs, &stage.config)?;
+            // Auto-forward parsed entities to the admin-registry generator,
+            // unless the caller has already set them explicitly. Without this,
+            // admin-registry.ts ships with empty `fields: []` for every entity.
+            let mut servers_config = stage.config;
+            if servers_config.schema_entities.is_empty() {
+                servers_config.schema_entities = schema.entities.clone();
+            }
+            gen_servers(api_out.as_ref(), &stage.scan_dirs, &servers_config)?;
         }
 
         Ok(())

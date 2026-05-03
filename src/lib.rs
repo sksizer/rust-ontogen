@@ -320,6 +320,7 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 ///         store_type: Some("Store".into()),
 ///         store_import: Some("crate::Store".into()),
 ///         pagination: None,
+///         schema_entities: schema.entities.clone(),
 ///     },
 /// )?;
 /// # Ok::<(), ontogen::CodegenError>(())
@@ -474,6 +475,19 @@ pub struct ServersConfig {
     pub store_import: Option<String>,
     /// Optional pagination configuration for list operations.
     pub pagination: Option<servers::PaginationConfig>,
+    /// Parsed schema entities, used by the admin-registry client generator
+    /// to derive per-field UI metadata (label, type, required, etc.).
+    ///
+    /// Pass `schema.entities.clone()` from the [`SchemaOutput`] returned by
+    /// [`parse_schema`]. Leaving this empty silently strips the field
+    /// metadata from `admin-registry.ts` output, so the admin layer renders
+    /// blank tables. Server transports (Axum, Tauri IPC, MCP) and the
+    /// transport TypeScript clients do not consume this field — only the
+    /// admin-registry generator does.
+    ///
+    /// [`Pipeline`] users do not need to set this; the builder forwards
+    /// `schema.entities` automatically.
+    pub schema_entities: Vec<EntityDef>,
 }
 
 // `AdminLayerConfig` and `install_admin_layer` are re-exported from the

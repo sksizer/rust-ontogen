@@ -71,7 +71,7 @@ pub fn generate(
         route_prefix: config.route_prefix.clone(),
         store_type: config.store_type.clone(),
         store_import: config.store_import.clone(),
-        schema_entities: Vec::new(),
+        schema_entities: config.schema_entities.clone(),
         pagination: config.pagination.clone(),
     };
 
