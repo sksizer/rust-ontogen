@@ -1,6 +1,6 @@
 # Architecture Assessment — 2026-04-25
 
-> **Status:** Findings #1, #2, #3, #4, #5, and #6 have been addressed. See per-finding **Resolution** notes.
+> **Status:** Findings #1, #2, #3, #4, #5, #6, #8, #9, #10, and #11 have been addressed. See per-finding **Resolution** notes. Findings #7, #12 remain open; see `ARCHITECTURE-FOLLOWUPS-2026-05-03.md` for the optional cleanup queue.
 
 ## Executive Summary
 
@@ -141,13 +141,14 @@ rust-ontogen/
 
 ---
 
-### 9. `api::classify_op` Duplicates `servers::classify::classify_op`
+### 9. `api::classify_op` Duplicates `servers::classify::classify_op`  **[RESOLVED]**
 
 - **Severity:** low
 - **Location:** `src/api/mod.rs:91–113` vs. `src/servers/classify.rs:44–78`
 - **Observation:** Two `classify_op` functions exist in different modules. The one in `api/mod.rs` is a simplified matcher returning `ir::OpKind`; the one in `servers/classify.rs` is richer (handles junction patterns) and returns `servers::classify::OpKind`. Both ultimately drive HTTP verb/route decisions for the same operations.
 - **Why it matters:** Logic duplication; they can diverge silently. The api-layer classifier is less capable (no junction awareness) but feeds into the same IR used by the transport generators.
 - **Suggested direction:** Once `OpKind` is consolidated (Finding 3), there should be one canonical classifier used by both layers.
+- **Resolution:** Resolved transitively by Finding #3 (PR #37). With `OpKind` consolidated to a single `ontogen_core::ir::OpKind`, only one classifier remains: `servers::classify::classify_by_name_and_params`. The api layer (`src/api/mod.rs:96`) imports and calls it directly — no second implementation exists. A residual code-organization smell remains (the canonical classifier lives under `servers::classify` and is consumed sideways by `api`); see `ARCHITECTURE-FOLLOWUPS-2026-05-03.md` for the optional cleanup of relocating it to a neutral home.
 
 ---
 
