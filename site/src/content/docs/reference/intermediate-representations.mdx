@@ -204,7 +204,7 @@ Returned by `gen_servers()`. Describes all transport endpoints that were generat
 |-------|------|-------------|
 | `tool_name` | `String` | MCP tool name (e.g., `"list_workouts"`). |
 | `description` | `String` | Tool description from the API function's doc comment. |
-| `params_schema` | `String` | JSON Schema string describing tool parameters. |
+| `params` | `Vec<ParamMeta>` | Parameters the tool accepts. The MCP transport generator turns these into a JSON Schema at codegen time. |
 
 ---
 
@@ -230,7 +230,7 @@ Downstream generators use `Source` to emit correct `use` statements. A `Generate
 
 ### `OpKind`
 
-Classifies what kind of operation an API function represents. This drives HTTP verb selection, route structure, and parameter handling in transport generators.
+Classifies what kind of operation an API function represents. This drives HTTP verb selection, route structure, and parameter handling in transport generators. Defined in `ontogen_core::ir::OpKind` and re-exported as `ontogen::OpKind`.
 
 ```rust
 pub enum OpKind {
@@ -239,6 +239,9 @@ pub enum OpKind {
     Create,
     Update,
     Delete,
+    JunctionList   { child_segment: String },
+    JunctionAdd    { child_segment: String },
+    JunctionRemove { child_segment: String },
     CustomGet,
     CustomPost,
     EventStream,
@@ -252,11 +255,14 @@ pub enum OpKind {
 | `Create` | `POST` | `/entities` | Creates a new entity. |
 | `Update` | `PUT` | `/entities/:id` | Updates an existing entity. |
 | `Delete` | `DELETE` | `/entities/:id` | Deletes an entity. |
+| `JunctionList { child_segment }` | `GET` | `/parents/:parent_id/{child_segment}` | List child entities of a parent through a junction. |
+| `JunctionAdd { child_segment }` | `POST` | `/parents/:parent_id/{child_segment}` | Add a child to a parent through a junction. |
+| `JunctionRemove { child_segment }` | `DELETE` | `/parents/:parent_id/{child_segment}/:child_id` | Remove a child from a parent through a junction. |
 | `CustomGet` | `GET` | `/entities/:action` | Custom read operation with non-standard parameters. |
 | `CustomPost` | `POST` | `/entities/:action` | Custom write operation with non-standard parameters. |
 | `EventStream` | `GET` (SSE) | `/events/:name` | Server-Sent Events stream. |
 
-`OpKind` is assigned automatically during API scanning based on function name patterns and parameter shapes. For generated CRUD functions, the mapping is direct. For scanned custom functions, the classifier looks at the function name prefix (`get_*` becomes `CustomGet`, others become `CustomPost`) and whether the return type looks like a stream.
+`OpKind` is assigned automatically during API scanning based on function name patterns and parameter shapes. For generated CRUD functions, the mapping is direct. Junction operations are recognized by name prefixes like `list_*`/`add_*`/`remove_*` paired with parent+child id parameters. For other scanned custom functions, the classifier looks at the function name prefix (`get_*` becomes `CustomGet`, others become `CustomPost`) and whether the return type looks like a stream.
 
 ### `ParamMeta`
 

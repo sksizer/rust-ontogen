@@ -63,6 +63,7 @@ let api_output = ontogen::gen_api(
         scan_dirs: vec!["src/api/v1".into()],
         state_type: "AppState".to_string(),
         store_type: Some("Store".to_string()),
+        schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
     },
 )?;
 ```
@@ -74,6 +75,7 @@ let api_output = ontogen::gen_api(
 | `scan_dirs` | `Vec<PathBuf>` | Directories to scan for hand-written API modules |
 | `state_type` | `String` | The app state type name (e.g., `"AppState"`) |
 | `store_type` | `Option<String>` | The store type name for function parameter scanning |
+| `schema_module_path` | `String` | Rust import path for schema types in generated code. Use [`ontogen::DEFAULT_SCHEMA_MODULE_PATH`](/reference/public-api/#default_schema_module_path) for the canonical default. |
 
 ## The merge model
 
@@ -88,7 +90,7 @@ Generated CRUD modules ──┐
 Scanned hand-written ────┘
 ```
 
-Downstream generators (`gen_servers`, `gen_clients`) receive the merged `ApiOutput` and see no difference between generated and hand-written functions. A custom endpoint you wrote by hand gets HTTP routes, IPC commands, and MCP tools just like the generated CRUD operations.
+Downstream generation in `gen_servers` (which also drives client artifacts via `ServersConfig.client_generators`) receives the merged `ApiOutput` and sees no difference between generated and hand-written functions. A custom endpoint you wrote by hand gets HTTP routes, IPC commands, MCP tools, and TypeScript client functions just like the generated CRUD operations.
 
 ### How scan_dirs discovery works
 
@@ -144,11 +146,11 @@ pub struct ApiFnMeta {
     pub params: Vec<ParamMeta>,  // parameter names and types
     pub return_type: String,     // e.g., "Vec<Task>"
     pub source: Source,          // Generated or Scanned
-    pub classified_op: OpKind,   // List, GetById, Create, Update, Delete, CustomGet, CustomPost
+    pub classified_op: OpKind,   // see ontogen_core::ir::OpKind
 }
 ```
 
-The `OpKind` classification drives how downstream generators produce routes and commands. The standard CRUD operations (`List`, `GetById`, `Create`, `Update`, `Delete`) get predictable HTTP methods and paths. Custom operations are classified as either `CustomGet` or `CustomPost` based on heuristics: functions starting with `get_` or taking no parameters become GET endpoints, while functions taking an input struct become POST endpoints.
+The `OpKind` classification drives how downstream generators produce routes and commands. The standard CRUD operations (`List`, `GetById`, `Create`, `Update`, `Delete`) get predictable HTTP methods and paths. Junction operations (`JunctionList`, `JunctionAdd`, `JunctionRemove`) are recognized for `list_*`/`add_*`/`remove_*` functions that take a parent ID plus a child ID and produce nested routes like `/api/agents/:parent_id/roles`. Custom operations are classified as either `CustomGet` or `CustomPost` based on heuristics: functions starting with `get_` or taking no parameters become GET endpoints, while functions taking an input struct become POST endpoints. Event-stream functions are classified as `EventStream`.
 
 ## The Source enum
 

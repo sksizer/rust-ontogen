@@ -31,20 +31,20 @@ The descriptions come from your API function doc comments. The parameter schemas
 
 1. ### Add the MCP generator to your server config
 
-   In your `build.rs`, add `ServerGenerator::Mcp` to the generators list:
+   In your `build.rs`, add `ServerGenerator::Mcp` to the `generators` list on `ServersConfig`:
 
    ```rust
-   use ontogen::servers::config::{GeneratorConfig, ServerGenerator};
+   use ontogen::servers::ServerGenerator;
 
-   // Inside your Config or ServersConfig:
+   // Inside your ServersConfig:
    generators: vec![
-       GeneratorConfig::Server(ServerGenerator::HttpAxum {
+       ServerGenerator::HttpAxum {
            output: "src/api/transport/http/generated.rs".into(),
-       }),
+       },
        // Add MCP alongside your other transports
-       GeneratorConfig::Server(ServerGenerator::Mcp {
+       ServerGenerator::Mcp {
            output: "src/api/transport/mcp/generated.rs".into(),
-       }),
+       },
    ],
    ```
 
@@ -165,16 +165,18 @@ MCP generation is independent of HTTP and IPC generation. You can run all three,
 A common pattern is to generate all three transports:
 
 ```rust
+use ontogen::servers::ServerGenerator;
+
 generators: vec![
-    GeneratorConfig::Server(ServerGenerator::HttpAxum {
+    ServerGenerator::HttpAxum {
         output: "src/api/transport/http/generated.rs".into(),
-    }),
-    GeneratorConfig::Server(ServerGenerator::TauriIpc {
+    },
+    ServerGenerator::TauriIpc {
         output: "src/api/transport/ipc/generated.rs".into(),
-    }),
-    GeneratorConfig::Server(ServerGenerator::Mcp {
+    },
+    ServerGenerator::Mcp {
         output: "src/api/transport/mcp/generated.rs".into(),
-    }),
+    },
 ],
 ```
 

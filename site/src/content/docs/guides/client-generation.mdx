@@ -12,24 +12,28 @@ Ontogen generates TypeScript client code that mirrors your server API surface. T
 Client generators are configured through the `client_generators` field on `ServersConfig`:
 
 ```rust
+use ontogen::servers::ClientGenerator;
+
 client_generators: vec![
-    ontogen::servers::config::ClientGenerator::HttpTs {
+    ClientGenerator::HttpTs {
         output: "../src-nuxt/app/types/httpCommands.ts".into(),
         bindings_path: "../src-nuxt/app/types/bindings.ts".into(),
     },
-    ontogen::servers::config::ClientGenerator::HttpTauriIpcSplit {
+    ClientGenerator::HttpTauriIpcSplit {
         output: "../src-nuxt/app/transport/generated.ts".into(),
         bindings_path: "../src-nuxt/app/types/bindings.ts".into(),
     },
-    ontogen::servers::config::ClientGenerator::AdminRegistry {
+    ClientGenerator::AdminRegistry {
         output: "../src-nuxt/layers/admin/generated/admin-registry.ts".into(),
     },
 ],
 ```
 
 <Aside type="note">
-  Client generators currently run inside `gen_servers`, not through the separate `gen_clients` function. The `gen_clients` API exists for forward compatibility but is not yet wired. Include your client generators in `ServersConfig.client_generators`.
+  Client generation runs inside `gen_servers` -- there is no separate `gen_clients` function. Add the generators above to `ServersConfig.client_generators` and call `gen_servers` (or, more commonly, `Pipeline::servers(...).build()`).
 </Aside>
+
+`ClientGenerator` lives at `ontogen::servers::ClientGenerator` (re-exported at the module level). The internal path `ontogen::servers::config::ClientGenerator` is `pub(crate)` and no longer accessible to downstream crates.
 
 ## TypeScript HTTP client
 

@@ -5,11 +5,91 @@ description: Wiring up the full Ontogen pipeline in your build.rs file.
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Your `build.rs` is where the Ontogen pipeline runs. Each generator is a standalone function call that reads config, processes entities, and writes output files. This guide walks through the complete pipeline from `parse_schema` through `gen_clients`.
+Your `build.rs` is where the Ontogen pipeline runs. There are two ways to wire it up: the `Pipeline` builder (recommended for almost everything) and direct calls to the underlying generator functions (when you need maximum control).
 
-## Complete build.rs walkthrough
+## The recommended shape: `Pipeline`
 
-Here's a full pipeline that runs every generator:
+`Pipeline` is a fluent builder over the generator functions. It applies sensible defaults, threads each stage's typed output into the next, and -- importantly -- forwards `schema.entities` into the admin-registry generator automatically. Method order on the builder is irrelevant; `build()` always runs stages in the canonical dependency order.
+
+The canonical reference for a Pipeline-based `build.rs` is `examples/iron-log/src-tauri/build.rs` in the repo. Here is essentially that file:
+
+```rust
+// build.rs
+use std::path::PathBuf;
+
+use ontogen::servers::{ClientGenerator, NamingConfig, ServerGenerator};
+use ontogen::{Pipeline, ServersConfig};
+
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    ontogen::emit_rerun_directives_excluding(
+        &PathBuf::from("src/api/v1"),
+        &["generated"],
+    );
+
+    let servers_config = ServersConfig {
+        api_dir: "src/api/v1".into(),
+        state_type: "AppState".into(),
+        service_import_path: "crate::api::v1".into(),
+        types_import_path: "crate::schema".into(),
+        state_import: "crate::AppState".into(),
+        naming: NamingConfig::default(),
+        generators: vec![
+            ServerGenerator::HttpAxum {
+                output: "src/api/transport/http/generated.rs".into(),
+            },
+            ServerGenerator::TauriIpc {
+                output: "src/api/transport/ipc/generated.rs".into(),
+            },
+        ],
+        client_generators: vec![
+            ClientGenerator::HttpTauriIpcSplit {
+                output: "../src-nuxt/app/generated/transport.ts".into(),
+                bindings_path: "../src-nuxt/app/generated/types.ts".into(),
+            },
+            ClientGenerator::AdminRegistry {
+                output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
+            },
+        ],
+        rustfmt_edition: "2024".into(),
+        sse_route_overrides: Default::default(),
+        ts_skip_commands: vec![],
+        route_prefix: None,
+        store_type: Some("Store".into()),
+        store_import: Some("crate::store::Store".into()),
+        pagination: None,
+        // Pipeline auto-fills this from parse_schema; leave empty.
+        schema_entities: Vec::new(),
+    };
+
+    Pipeline::new("src/schema")
+        .seaorm(
+            "src/persistence/db/entities/generated",
+            "src/persistence/db/conversions/generated",
+        )
+        .dtos("src/schema/dto")
+        .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
+        .api("src/api/v1/generated", "AppState")
+        .servers(servers_config)
+        .build()
+        .unwrap_or_else(|e| {
+            e.emit_cargo_warning();
+            panic!("ontogen pipeline failed: {e}");
+        });
+
+    // For Tauri projects, run tauri_build::build() after Ontogen's pipeline.
+}
+```
+
+That's roughly 70 lines for a full Tauri + Nuxt pipeline -- HTTP, IPC, TypeScript split client, admin registry. To skip a stage, omit its method call.
+
+<Aside type="tip">
+The builder's defaults: `schema_module_path` defaults to `ontogen::DEFAULT_SCHEMA_MODULE_PATH` (`"crate::schema"`) and propagates to both the store and API stages; when you opt into `store(...)`, the API stage's `store_type` defaults to `Some("Store")`. Override either with `.schema_module_path(...)` or `.api_store_type(Some(_))`.
+</Aside>
+
+## The explicit form
+
+If you'd rather call each generator function directly -- to inspect intermediate IRs, to insert custom logic between stages, or just to see what `Pipeline` is doing -- the same build looks like this:
 
 ```rust
 // build.rs
@@ -76,6 +156,7 @@ fn main() {
             &ontogen::StoreConfig {
                 output_dir: "src/store/generated".into(),
                 hooks_dir: Some("src/store/hooks".into()),
+                schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
             },
         ),
         "gen_store",
@@ -91,13 +172,14 @@ fn main() {
                 scan_dirs: vec!["src/api/v1".into()],
                 state_type: "AppState".to_string(),
                 store_type: Some("Store".to_string()),
+                schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
             },
         ),
         "gen_api",
     );
 
     // ── 5. Server transports + client generators ─────────────────
-    let servers = unwrap_codegen(
+    let _servers = unwrap_codegen(
         ontogen::gen_servers(
             Some(&api),
             &["src/api/v1".into()],
@@ -109,46 +191,45 @@ fn main() {
                 state_import: "crate::AppState".to_string(),
                 naming: ontogen::servers::NamingConfig::default(),
                 generators: vec![
-                    ontogen::servers::ServerGeneratorConfig::HttpAxum {
+                    ontogen::servers::ServerGenerator::HttpAxum {
                         output: "src/api/transport/http/generated.rs".into(),
                     },
-                    ontogen::servers::ServerGeneratorConfig::TauriIpc {
+                    ontogen::servers::ServerGenerator::TauriIpc {
                         output: "src/api/transport/ipc/generated.rs".into(),
                     },
                 ],
                 client_generators: vec![
-                    ontogen::servers::config::ClientGenerator::HttpTauriIpcSplit {
+                    ontogen::servers::ClientGenerator::HttpTauriIpcSplit {
                         output: "../src-nuxt/app/transport/generated.ts".into(),
                         bindings_path: "../src-nuxt/app/types/bindings.ts".into(),
                     },
-                    ontogen::servers::config::ClientGenerator::AdminRegistry {
+                    ontogen::servers::ClientGenerator::AdminRegistry {
                         output: "../src-nuxt/layers/admin/generated/admin-registry.ts".into(),
                     },
                 ],
-                rustfmt_edition: "2021".to_string(),
+                rustfmt_edition: "2024".to_string(),
                 sse_route_overrides: HashMap::new(),
                 ts_skip_commands: vec![],
                 route_prefix: None,
                 store_type: Some("Store".to_string()),
                 store_import: Some("crate::store::Store".to_string()),
                 pagination: None,
+                // Required for the admin-registry generator. Pipeline does
+                // this for you; the explicit form must pass it manually,
+                // otherwise admin-registry.ts ships with empty `fields: []`.
+                schema_entities: schema.entities.clone(),
             },
         ),
         "gen_servers",
     );
-
-    // ── 6. Client generation (forward-compat, currently a no-op) ──
-    let _ = ontogen::gen_clients(
-        &servers,
-        Some(&api),
-        &ontogen::ClientsConfig {
-            generators: vec![],
-        },
-    );
 }
 ```
 
-That's a lot of config. Let's break down the reasoning.
+<Aside type="caution">
+When calling `gen_servers` directly (not through `Pipeline`), you **must** populate `ServersConfig.schema_entities` if any of your client generators is `AdminRegistry`. Without it, the admin-registry generator silently emits empty `fields: []` for every entity and the admin UI has nothing to render. `Pipeline::servers(...)` fills this in automatically.
+</Aside>
+
+The supporting types -- `NamingConfig`, `ServerGenerator`, `ClientGenerator`, `RoutePrefix`, `PaginationConfig` -- all live in `ontogen::servers::*` (re-exported at the module level). The internal paths `ontogen::servers::config::*` and `ontogen::servers::types::*` are `pub(crate)`; always import via `ontogen::servers::Foo`.
 
 ## The recommended ordering
 
@@ -165,12 +246,13 @@ parse_schema  ──────────────────────
               │
               └── gen_api  ─── uses entities, returns ApiOutput
                        │
-                       └── gen_servers  ─── uses ApiOutput, returns ServersOutput
-                                │
-                                └── gen_clients  ─── uses ServersOutput + ApiOutput
+                       └── gen_servers  ─── uses ApiOutput; emits server
+                                            transports AND client artifacts
+                                            (controlled by ServersConfig
+                                            .client_generators)
 ```
 
-`parse_schema` always comes first because every other generator needs `SchemaOutput.entities`. After that, `gen_seaorm`, `gen_markdown_io`, and `gen_dtos` are independent -- they only need the entity list. `gen_store` benefits from `SeaOrmOutput` but works without it. `gen_api` and `gen_servers` form a chain where each stage's output feeds the next.
+`parse_schema` always comes first because every other generator needs `SchemaOutput.entities`. After that, `gen_seaorm`, `gen_markdown_io`, and `gen_dtos` are independent -- they only need the entity list. `gen_store` benefits from `SeaOrmOutput` but works without it. `gen_api` and `gen_servers` form a chain where each stage's output feeds the next. There is no separate `gen_clients` function -- client TypeScript and admin-registry generation is driven by `ServersConfig.client_generators` inside `gen_servers`.
 
 ## Partial pipelines
 
@@ -218,9 +300,25 @@ You don't need to run everything. Pick the generators you need.
         ontogen::gen_store(&schema.entities, Some(&seaorm), &ontogen::StoreConfig {
             output_dir: "src/store/generated".into(),
             hooks_dir: Some("src/store/hooks".into()),
+            schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
         }),
         "gen_store",
     );
+    ```
+
+    Or, with `Pipeline`:
+    ```rust
+    ontogen::Pipeline::new("src/schema")
+        .seaorm(
+            "src/persistence/db/entities/generated",
+            "src/persistence/db/conversions/generated",
+        )
+        .store(
+            "src/store/generated",
+            Some::<std::path::PathBuf>("src/store/hooks".into()),
+        )
+        .build()
+        .expect("ontogen pipeline failed");
     ```
   </TabItem>
   <TabItem label="Markdown only">
@@ -256,6 +354,9 @@ pub enum CodegenError {
     Api(String),
     Server(String),
     Client(String),
+    /// An external tool required by the codegen pipeline is missing or failed
+    /// (e.g., rustfmt, prettier).
+    ExternalTool { tool: &'static str, detail: String },
 }
 ```
 
@@ -358,13 +459,13 @@ If some generators are only needed for certain build targets (e.g., Tauri IPC on
 
 ```rust
 let mut server_generators = vec![
-    ontogen::servers::ServerGeneratorConfig::HttpAxum {
+    ontogen::servers::ServerGenerator::HttpAxum {
         output: "src/api/transport/http/generated.rs".into(),
     },
 ];
 
 #[cfg(feature = "desktop")]
-server_generators.push(ontogen::servers::ServerGeneratorConfig::TauriIpc {
+server_generators.push(ontogen::servers::ServerGenerator::TauriIpc {
     output: "src/api/transport/ipc/generated.rs".into(),
 });
 ```

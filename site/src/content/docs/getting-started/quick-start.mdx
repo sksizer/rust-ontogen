@@ -176,6 +176,7 @@ The store layer generates CRUD methods and lifecycle hooks. Add it to `build.rs`
             &ontogen::StoreConfig {
                 output_dir: "src/store/generated".into(),
                 hooks_dir: Some("src/store/hooks".into()),
+                schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
             },
         ),
         "generate store",
@@ -183,6 +184,8 @@ The store layer generates CRUD methods and lifecycle hooks. Add it to `build.rs`
 ```
 
 Passing `Some(&seaorm)` gives the store generator access to the SeaORM output metadata -- exact table names, column mappings, junction table details. If you pass `None`, it infers these from naming conventions. Explicit is better.
+
+`schema_module_path` is the Rust path generated code uses to import your schema types. Use the `ontogen::DEFAULT_SCHEMA_MODULE_PATH` constant (which expands to `"crate::schema"`) so any future change to the convention propagates here automatically.
 
 After building, you get:
 
@@ -325,12 +328,17 @@ fn main() {
             &ontogen::StoreConfig {
                 output_dir: "src/store/generated".into(),
                 hooks_dir: Some("src/store/hooks".into()),
+                schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
             },
         ),
         "generate store",
     );
 }
 ```
+
+<Aside type="tip">
+  Once you're past the "what does each stage do" learning phase, the [`Pipeline`](/concepts/pipeline/) builder removes most of this boilerplate -- one method call per stage, sensible defaults for every config field. Everything in this guide is what `Pipeline` calls under the hood, so it's worth seeing the explicit form first.
+</Aside>
 
 ## What's next
 

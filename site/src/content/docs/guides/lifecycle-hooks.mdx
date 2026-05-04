@@ -199,6 +199,7 @@ let store_output = ontogen::gen_store(
     &ontogen::StoreConfig {
         output_dir: "src/store/generated".into(),
         hooks_dir: Some("src/store/hooks".into()),
+        schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
     },
 )?;
 ```

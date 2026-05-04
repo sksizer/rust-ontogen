@@ -74,8 +74,11 @@ The scan happens at build time. When you add a new `.rs` file to a scan director
        scan_dirs: vec!["src/api/v1".into()],  // scans for hand-written modules
        state_type: "AppState".to_string(),
        store_type: Some("Store".to_string()),
+       schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
    })?;
    ```
+
+   With the [`Pipeline`](/concepts/pipeline/) builder, this is `.api("src/api/v1/generated", "AppState").api_scan_dirs(vec!["src/api/v1".into()])`.
 
    The scanner reads every `.rs` file in `src/api/v1/` (excluding the `generated/` subdirectory) and extracts function signatures.
 

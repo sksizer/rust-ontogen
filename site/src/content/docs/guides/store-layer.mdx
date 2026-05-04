@@ -16,6 +16,7 @@ let store_output = ontogen::gen_store(
     &ontogen::StoreConfig {
         output_dir: PathBuf::from("src/store/generated"),
         hooks_dir: Some(PathBuf::from("src/store/hooks")),
+        schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
     },
 )?;
 ```
@@ -26,6 +27,7 @@ let store_output = ontogen::gen_store(
 |---|---|---|
 | `output_dir` | `PathBuf` | Directory for generated store modules |
 | `hooks_dir` | `Option<PathBuf>` | Directory for scaffolded hook files. `None` skips hook scaffolding. |
+| `schema_module_path` | `String` | Rust import path for the schema module in generated code. Use [`ontogen::DEFAULT_SCHEMA_MODULE_PATH`](/reference/public-api/#default_schema_module_path) (`"crate::schema"`) for the canonical default. |
 
 When `hooks_dir` is `Some`, the generator creates hook files for new entities (never overwrites existing ones). When `None`, hook scaffolding is skipped entirely, but the generated CRUD code still calls hook functions -- you're responsible for providing the modules yourself.
 
