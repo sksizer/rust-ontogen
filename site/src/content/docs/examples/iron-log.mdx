@@ -243,91 +243,76 @@ A split transport layer that provides typed functions for every CRUD operation. 
 
 ## The `build.rs`
 
-Iron Log's build script runs the full pipeline:
+Iron Log's build script uses the `Pipeline` builder. The full file is around 70 lines and looks like this (verbatim from `examples/iron-log/src-tauri/build.rs`):
 
 ```rust
+use std::path::PathBuf;
+
+use ontogen::servers::{ClientGenerator, NamingConfig, ServerGenerator};
+use ontogen::{Pipeline, ServersConfig};
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    ontogen::emit_rerun_directives(&std::path::PathBuf::from("src/schema"));
-
-    // Stage 1: Parse schema
-    let schema = unwrap_codegen(
-        ontogen::parse_schema(&ontogen::SchemaConfig {
-            schema_dir: "src/schema".into(),
-        }),
-        "Stage 1: parse schema",
+    ontogen::emit_rerun_directives_excluding(
+        &PathBuf::from("src/api/v1"),
+        &["generated"],
     );
 
-    // Stage 2: Generate SeaORM entities
-    let seaorm = unwrap_codegen(
-        ontogen::gen_seaorm(&schema.entities, &ontogen::SeaOrmConfig {
-            entity_output: "src/persistence/db/entities/generated".into(),
-            conversion_output: "src/persistence/db/conversions/generated".into(),
-            skip_conversions: vec![],
-        }),
-        "Stage 2: generate SeaORM entities",
-    );
-
-    // Stage 3: DTOs
-    unwrap_codegen(
-        ontogen::gen_dtos(&schema.entities, &ontogen::DtoConfig {
-            output_dir: "src/schema/dto".into(),
-        }),
-        "Stage 3: generate DTOs",
-    );
-
-    // Stage 4: Store
-    unwrap_codegen(
-        ontogen::gen_store(&schema.entities, Some(&seaorm), &ontogen::StoreConfig {
-            output_dir: "src/store/generated".into(),
-            hooks_dir: Some("src/store/hooks".into()),
-        }),
-        "Stage 4: generate store",
-    );
-
-    // Stage 5: API
-    unwrap_codegen(
-        ontogen::gen_api(&schema.entities, &ontogen::ApiConfig {
-            output_dir: "src/api/v1/generated".into(),
-            exclude: vec![],
-            scan_dirs: vec![],
-            state_type: "AppState".to_string(),
-            store_type: Some("Store".to_string()),
-        }),
-        "Stage 5: generate API",
-    );
-
-    // Stage 6: Transports (HTTP + IPC + TypeScript)
-    // Uses the servers::config API for combined transport generation
-    let config = Config {
+    let servers_config = ServersConfig {
         api_dir: "src/api/v1".into(),
-        state_type: "AppState".to_string(),
-        service_import_path: "crate::api::v1".to_string(),
-        types_import_path: "crate::schema".to_string(),
-        state_import: "crate::AppState".to_string(),
+        state_type: "AppState".into(),
+        service_import_path: "crate::api::v1".into(),
+        types_import_path: "crate::schema".into(),
+        state_import: "crate::AppState".into(),
+        naming: NamingConfig::default(),
         generators: vec![
-            GeneratorConfig::Server(ServerGenerator::HttpAxum {
+            ServerGenerator::HttpAxum {
                 output: "src/api/transport/http/generated.rs".into(),
-            }),
-            GeneratorConfig::Server(ServerGenerator::TauriIpc {
+            },
+            ServerGenerator::TauriIpc {
                 output: "src/api/transport/ipc/generated.rs".into(),
-            }),
-            GeneratorConfig::Client(ClientGenerator::HttpTauriIpcSplit {
+            },
+        ],
+        client_generators: vec![
+            ClientGenerator::HttpTauriIpcSplit {
                 output: "../src-nuxt/app/generated/transport.ts".into(),
                 bindings_path: "../src-nuxt/app/generated/types.ts".into(),
-            }),
+            },
+            ClientGenerator::AdminRegistry {
+                output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
+            },
         ],
-        // ... other config
+        rustfmt_edition: "2024".into(),
+        sse_route_overrides: Default::default(),
+        ts_skip_commands: vec![],
+        route_prefix: None,
+        store_type: Some("Store".into()),
+        store_import: Some("crate::store::Store".into()),
+        pagination: None,
+        // Pipeline auto-fills this from parsed schema entities.
+        schema_entities: Vec::new(),
     };
 
-    ontogen::servers::generate_transport(&config)
-        .expect("Stage 6: failed to generate transports");
+    Pipeline::new("src/schema")
+        .seaorm(
+            "src/persistence/db/entities/generated",
+            "src/persistence/db/conversions/generated",
+        )
+        .dtos("src/schema/dto")
+        .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
+        .api("src/api/v1/generated", "AppState")
+        .servers(servers_config)
+        .build()
+        .unwrap_or_else(|e| {
+            e.emit_cargo_warning();
+            panic!("ontogen pipeline failed: {e}");
+        });
 
     tauri_build::build();
 }
 ```
 
-Six stages, explicit data flow, everything visible in one file.
+Pipeline runs every stage in dependency order regardless of method-call order. It also threads each stage's typed output (`SchemaOutput → SeaOrmOutput → ApiOutput → ServersOutput`) into the next, applies `schema_module_path` defaults to `StoreConfig`/`ApiConfig`, and forwards `schema.entities` into `ServersConfig.schema_entities` so the admin-registry generator gets the field metadata it needs.
 
 ## The `Store`
 

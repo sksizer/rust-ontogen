@@ -44,12 +44,11 @@ Schema/*.rs  ──►  parse_schema()  ──►  SchemaOutput
            │
            ▼
      gen_servers()  ──►  ServersOutput
-           │
-           ▼
-     gen_clients()  ──►  TypeScript, admin registry
+                       (also emits TypeScript clients
+                        and admin registry)
 ```
 
-Each generator is standalone. You can run the full pipeline or pick individual stages. Upstream outputs enrich downstream generators but are never required.
+Each generator is standalone. You can run the full pipeline, drive it through the [`Pipeline`](/concepts/pipeline/) builder, or pick individual stages. Upstream outputs enrich downstream generators but are never required.
 
 ## What You Write
 

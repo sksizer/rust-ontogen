@@ -48,11 +48,9 @@ The central architectural concept is a layered pipeline of independent generator
           ┌─────────────────┐
           │  gen_servers()  │──► ServersOutput
           └─────────────────┘    { http_routes, ipc_commands, mcp_tools }
-                    │
-                    ▼
-          ┌─────────────────┐
-          │  gen_clients()  │──► (TypeScript files, admin registry)
-          └─────────────────┘
+                                 (also emits TypeScript clients
+                                  and admin registry, controlled
+                                  by ServersConfig.client_generators)
 ```
 
 Data flows top to bottom. Each arrow is a plain Rust struct -- no framework types, no trait objects, no magic. Just data.
@@ -85,7 +83,7 @@ This means you can use generators independently:
 
 - **Just persistence**: Call `parse_schema` and `gen_seaorm` to get SeaORM entities. Stop there.
 - **Persistence + store**: Add `gen_store` for CRUD methods with lifecycle hooks.
-- **Full stack**: Chain everything through `gen_clients` for TypeScript code.
+- **Full stack**: Chain everything through `gen_servers` (with `client_generators` populated) for HTTP, IPC, MCP, and TypeScript clients.
 - **Skip the middle**: Use `gen_markdown_io` alongside `gen_seaorm` without involving the store or API layers at all.
 
 The generators at the top of the pipeline (seaorm, markdown_io, dtos) are siblings -- they all consume `SchemaOutput` independently and don't depend on each other. The lower layers form a chain, where each stage enriches the next.
@@ -143,55 +141,27 @@ The `generated/` directories are cleaned on each build -- stale files from renam
 
 **`gen_api()`** generates forwarding functions that bridge the store layer to transport handlers. Scans hand-written API directories and merges custom endpoints with generated CRUD into a unified `ApiOutput`.
 
-**`gen_servers()`** generates transport-specific handlers: Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions. Each transport reads the same `ApiOutput` and produces handlers appropriate for its protocol.
-
-**`gen_clients()`** generates TypeScript client functions for HTTP and Tauri IPC, split transport layers that select the right backend, and admin UI registry with per-field metadata.
+**`gen_servers()`** generates transport-specific handlers: Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions. It also drives client-side generation -- the same call emits TypeScript clients and the admin-UI registry, controlled by `ServersConfig.client_generators`. Each transport reads the same `ApiOutput` and produces output appropriate for its protocol.
 
 ## How It Comes Together in build.rs
 
-A typical `build.rs` chains the generators together:
+The recommended way to wire the pipeline is through the [`Pipeline`](/concepts/pipeline/) builder, which calls all of the above functions for you with sensible defaults:
 
 ```rust
-use ontogen::*;
+use ontogen::Pipeline;
 
-fn main() -> Result<(), CodegenError> {
-    let schema = parse_schema(&SchemaConfig {
-        schema_dir: "src/schema".into(),
-    })?;
-
-    let seaorm = gen_seaorm(&schema.entities, &SeaOrmConfig {
-        entity_output: "src/persistence/db/entities".into(),
-        conversion_output: "src/persistence/db/conversion.rs".into(),
-        skip_conversions: vec![],
-    })?;
-
-    gen_markdown_io(&schema.entities, &MarkdownIoConfig {
-        output_dir: "src/persistence/markdown".into(),
-    })?;
-
-    let _store = gen_store(&schema.entities, Some(&seaorm), &StoreConfig {
-        output_dir: "src/store/generated".into(),
-        hooks_dir: Some("src/store/hooks".into()),
-    })?;
-
-    let api = gen_api(&schema.entities, &ApiConfig {
-        output_dir: "src/api/v1/generated".into(),
-        exclude: vec![],
-        scan_dirs: vec!["src/api/v1".into()],
-        state_type: "AppState".into(),
-        store_type: Some("Store".into()),
-    })?;
-
-    let servers = gen_servers(Some(&api), &[], &ServersConfig {
-        // ... transport configuration
-    })?;
-
-    gen_clients(&servers, Some(&api), &ClientsConfig {
-        // ... client generator configuration
-    })?;
-
-    Ok(())
+fn main() {
+    Pipeline::new("src/schema")
+        .seaorm(
+            "src/persistence/db/entities/generated",
+            "src/persistence/db/conversions/generated",
+        )
+        .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
+        .api("src/api/v1/generated", "AppState")
+        // .servers(servers_config) — add when you want HTTP/IPC/MCP/clients
+        .build()
+        .expect("ontogen pipeline failed");
 }
 ```
 
-Each function call is explicit. You can see the full generation pipeline in one place, comment out stages you don't need, and add conditional logic. There's no hidden orchestration.
+If you'd rather call each generator function directly (one per stage, every config field spelled out), that's still fully supported -- see the [Build Script Setup](/guides/build-script-setup/) guide. There's no hidden orchestration either way: `Pipeline` is a thin wrapper over the same `parse_schema → gen_seaorm → ... → gen_servers` calls.

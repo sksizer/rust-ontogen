@@ -26,6 +26,10 @@ That's the minimum. `ontogen-macros` goes in `[dependencies]` because your schem
   You don't need to depend on `ontogen-core` directly. The main `ontogen` crate re-exports everything from it -- all the IR types, model definitions, naming utilities, and helper functions are available under the `ontogen::` namespace.
 </Aside>
 
+<Aside type="caution">
+  Ontogen's MSRV is **Rust 1.85**. The crates use the 2024 edition, which requires this minimum. If you're on an older toolchain, run `rustup update` first.
+</Aside>
+
 ### Why serde?
 
 Your schema structs need `Serialize` and `Deserialize` derives. The generated persistence code, DTOs, and transport layers all depend on serde for serialization. If you're already using serde in your project, you're set.

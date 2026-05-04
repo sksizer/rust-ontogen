@@ -91,11 +91,13 @@ Used by [`gen_store()`](/reference/public-api/#gen_store).
 |-------|------|-------------|
 | `output_dir` | `PathBuf` | Output directory for generated CRUD method modules. Each entity gets its own file. |
 | `hooks_dir` | `Option<PathBuf>` | Directory for scaffolded hook files. When `Some`, hook files are created once per entity and never overwritten. When `None`, hook scaffolding is skipped entirely. |
+| `schema_module_path` | `String` | Rust import path for the schema module in generated code. Use [`ontogen::DEFAULT_SCHEMA_MODULE_PATH`](/reference/public-api/#default_schema_module_path) (`"crate::schema"`) for the canonical default. |
 
 ```rust
 StoreConfig {
     output_dir: "src/store/generated".into(),
     hooks_dir: Some("src/store/hooks".into()),
+    schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
 }
 ```
 
@@ -118,6 +120,7 @@ Used by [`gen_api()`](/reference/public-api/#gen_api).
 | `scan_dirs` | `Vec<PathBuf>` | Directories to scan for hand-written API modules. Scanned functions are merged with generated CRUD into a unified `ApiOutput`. When empty, only generated modules are included. |
 | `state_type` | `String` | The `AppState` type name. Used when scanning hand-written modules to identify functions that take the global state. |
 | `store_type` | `Option<String>` | The `Store` type name. Functions whose first parameter matches this are treated as entity-scoped (they operate on a specific store instance rather than the global state). |
+| `schema_module_path` | `String` | Rust import path for the schema module in generated code. Use [`ontogen::DEFAULT_SCHEMA_MODULE_PATH`](/reference/public-api/#default_schema_module_path) (`"crate::schema"`) for the canonical default. |
 
 ```rust
 ApiConfig {
@@ -126,6 +129,7 @@ ApiConfig {
     scan_dirs: vec!["src/api/v1".into()],
     state_type: "AppState".to_string(),
     store_type: Some("Store".to_string()),
+    schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
 }
 ```
 
@@ -165,10 +169,15 @@ This is the largest config type because it controls multiple transport generator
 | `store_type` | `Option<String>` | Store type for entity-scoped functions. |
 | `store_import` | `Option<String>` | Import path for the Store type. |
 | `pagination` | `Option<PaginationConfig>` | Pagination support for list operations. |
+| `schema_entities` | `Vec<EntityDef>` | Parsed schema entities used by the admin-registry client generator to emit per-field UI metadata. Pass `schema.entities.clone()` from the [`SchemaOutput`](/reference/intermediate-representations/#schemaoutput) returned by `parse_schema`. Without it, `admin-registry.ts` ships with empty `fields: []` per entity. The [`Pipeline`](/reference/public-api/#pipeline) builder fills this in automatically. Server transports (Axum, Tauri IPC, MCP) and the transport TypeScript clients do not consume it -- only the admin-registry generator does. |
+
+<Aside type="note">
+The supporting types below (`NamingConfig`, `ServerGenerator`, `ClientGenerator`, `RoutePrefix`, `PrefixParam`, `PaginationConfig`) live in the `ontogen::servers::*` module and are re-exported at the module level. The `ontogen::servers::config::*` and `ontogen::servers::types::*` paths used in earlier docs are now `pub(crate)` -- always import from `ontogen::servers::Foo` (or via `use ontogen::servers::{Foo, Bar};`).
+</Aside>
 
 ### `NamingConfig`
 
-Controls how entity names are transformed for URLs, labels, and module names.
+Controls how entity names are transformed for URLs, labels, and module names. Lives at `ontogen::servers::NamingConfig`.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -235,27 +244,6 @@ Optional prefix for project-scoped routes (e.g., `/api/projects/:project_id/node
 |-------|------|-------------|
 | `default_limit` | `u32` | Default page size when `limit` is not specified in the request. |
 | `max_limit` | `u32` | Maximum allowed page size. Requests above this are clamped. |
-
----
-
-## `ClientsConfig`
-
-Used by [`gen_clients()`](/reference/public-api/#gen_clients).
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `generators` | `Vec<ClientGeneratorConfig>` | Which client generators to run. Uses the same `ClientGenerator` variants described in `ServersConfig`. |
-
-```rust
-ClientsConfig {
-    generators: vec![
-        ClientGeneratorConfig::HttpTauriIpcSplit {
-            output: "../src-nuxt/app/generated/transport.ts".into(),
-            bindings_path: "../src-nuxt/app/generated/types.ts".into(),
-        },
-    ],
-}
-```
 
 ---
 

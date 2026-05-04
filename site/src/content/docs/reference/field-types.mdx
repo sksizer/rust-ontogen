@@ -21,6 +21,10 @@ A simplified representation of the Rust type. Ontogen only needs to know the sha
 | `OptionI32` | `Option<i32>` | `Option<i32>` | `INTEGER` | `number \| null` |
 | `I64` | `i64` | `i64` | `INTEGER NOT NULL` | `number` |
 | `OptionI64` | `Option<i64>` | `Option<i64>` | `INTEGER` | `number \| null` |
+| `F32` | `f32` | `f32` | `REAL NOT NULL` | `number` |
+| `OptionF32` | `Option<f32>` | `Option<f32>` | `REAL` | `number \| null` |
+| `F64` | `f64` | `f64` | `REAL NOT NULL` | `number` |
+| `OptionF64` | `Option<f64>` | `Option<f64>` | `REAL` | `number \| null` |
 | `Bool` | `bool` | `bool` | `BOOLEAN NOT NULL` | `boolean` |
 | `OptionBool` | `Option<bool>` | `Option<bool>` | `BOOLEAN` | `boolean \| null` |
 | `OptionEnum(name)` | `Option<EnumType>` | `Option<String>` | `TEXT` | `string \| null` |
@@ -37,7 +41,7 @@ A simplified representation of the Rust type. Ontogen only needs to know the sha
 - `Option<SomeType>` where the field has `#[ontology(enum_field)]` -- becomes `OptionEnum("SomeType")`.
 - `Vec<String>` -- `Vec` wrapper with `String` inner type.
 - `Vec<SomeType>` where `SomeType` is not `String` -- becomes `VecStruct("SomeType")`.
-- `i32`, `i64`, `bool` and their `Option` wrappers -- exact matches.
+- `i32`, `i64`, `f32`, `f64`, `bool` and their `Option` wrappers -- exact matches.
 - Everything else -- `Other("TypeName")`, treated as a string-serialized value.
 
 <Aside type="note">

@@ -5,9 +5,13 @@ description: Complete reference for all public functions in the ontogen crate.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Every generator in Ontogen is a standalone function. You call them from `build.rs`, pass configuration, and get back a typed result. No builder pattern, no framework context, no trait implementations.
+Every generator in Ontogen is a standalone function. You call them from `build.rs`, pass configuration, and get back a typed result. No framework context, no trait implementations.
 
 The functions are listed here in pipeline order -- each one's output can feed the next.
+
+<Aside type="tip">
+For most projects, the [`Pipeline`](/concepts/pipeline/) builder wraps these functions with sensible defaults and threads outputs between stages for you. The functions documented here remain the canonical low-level API and are what `Pipeline` calls under the hood.
+</Aside>
 
 ## `parse_schema`
 
@@ -176,6 +180,7 @@ Generates the CRUD store layer:
 let store = gen_store(&schema.entities, Some(&seaorm), &StoreConfig {
     output_dir: "src/store/generated".into(),
     hooks_dir: Some("src/store/hooks".into()),
+    schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
 })?;
 ```
 
@@ -216,6 +221,7 @@ let api = gen_api(&schema.entities, &ApiConfig {
     scan_dirs: vec!["src/api/v1".into()],
     state_type: "AppState".to_string(),
     store_type: Some("Store".to_string()),
+    schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
 })?;
 ```
 
@@ -236,6 +242,7 @@ Generates transport-specific server handlers from the unified API surface:
 - **Axum HTTP handlers** -- route functions with `GET`/`POST`/`PUT`/`DELETE` methods, path extraction, JSON request/response bodies, and error mapping. Includes an `entity_routes()` function returning a configured `Router`.
 - **Tauri IPC commands** -- `#[tauri::command]` functions with `State` extraction and `specta` type annotations for TypeScript binding generation.
 - **MCP tool definitions** -- tool name, description (from doc comments), and JSON Schema parameter definitions for the Model Context Protocol.
+- **TypeScript clients and admin registry** -- driven by `ServersConfig.client_generators`. The same call emits HTTP-only clients, the HTTP-or-IPC split transport, and the admin-UI registry.
 
 Each transport reads the same `ApiOutput` and produces handlers appropriate for its protocol. The `OpKind` classification drives HTTP verb selection, route structure, and parameter handling.
 
@@ -243,11 +250,11 @@ Each transport reads the same `ApiOutput` and produces handlers appropriate for 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `api` | `Option<&ApiOutput>` | Structured API metadata. When `None`, falls back to scanning source files with `syn`. |
-| `scan_dirs` | `&[PathBuf]` | Additional directories to scan when `api` is `None`. |
-| `config` | `&ServersConfig` | Transport configuration -- which generators to run, import paths, naming, route prefixes, etc. |
+| `api` | `Option<&ApiOutput>` | Structured API metadata. When `None`, falls back to scanning source files with `syn`. Reserved for future enrichment; currently ignored. |
+| `scan_dirs` | `&[PathBuf]` | Additional directories to scan. Reserved for future enrichment; currently ignored -- `config.api_dir` is always scanned. |
+| `config` | `&ServersConfig` | Transport configuration -- which server generators to run, which client generators to run, import paths, naming, route prefixes, pagination, etc. |
 
-**Returns:** `ServersOutput` describing all generated HTTP routes, IPC commands, and MCP tools. Client generators use this to mirror the server surface exactly.
+**Returns:** `ServersOutput` describing all generated HTTP routes, IPC commands, and MCP tools.
 
 ```rust
 let servers = gen_servers(Some(&api), &[], &ServersConfig {
@@ -258,58 +265,73 @@ let servers = gen_servers(Some(&api), &[], &ServersConfig {
     state_import: "crate::AppState".to_string(),
     naming: NamingConfig::default(),
     generators: vec![
-        ServerGeneratorConfig::HttpAxum {
+        ServerGenerator::HttpAxum {
             output: "src/api/transport/http/generated.rs".into(),
         },
-        ServerGeneratorConfig::TauriIpc {
+        ServerGenerator::TauriIpc {
             output: "src/api/transport/ipc/generated.rs".into(),
         },
     ],
+    client_generators: vec![],
+    // schema_entities is required for the admin-registry client generator;
+    // pass `schema.entities.clone()` from `parse_schema`. The Pipeline
+    // builder forwards this automatically.
+    schema_entities: schema.entities.clone(),
     // ... other config fields
 })?;
 ```
 
 ---
 
-## `gen_clients`
+## `Pipeline`
 
 ```rust
-pub fn gen_clients(
-    servers: &ServersOutput,
-    api: Option<&ApiOutput>,
-    config: &ClientsConfig,
-) -> Result<(), CodegenError>
+pub struct Pipeline { /* ... */ }
+
+impl Pipeline {
+    pub fn new(schema_dir: impl Into<PathBuf>) -> Self;
+    pub fn schema_module_path(self, path: impl Into<String>) -> Self;
+    pub fn seaorm(self, entity_output: impl Into<PathBuf>, conversion_output: impl Into<PathBuf>) -> Self;
+    pub fn seaorm_skip_conversions(self, skip: Vec<String>) -> Self;
+    pub fn markdown_io(self, output_dir: impl Into<PathBuf>) -> Self;
+    pub fn dtos(self, output_dir: impl Into<PathBuf>) -> Self;
+    pub fn store<P: Into<PathBuf>>(self, output_dir: impl Into<PathBuf>, hooks_dir: Option<P>) -> Self;
+    pub fn api(self, output_dir: impl Into<PathBuf>, state_type: impl Into<String>) -> Self;
+    pub fn api_exclude(self, exclude: Vec<String>) -> Self;
+    pub fn api_scan_dirs(self, scan_dirs: Vec<PathBuf>) -> Self;
+    pub fn api_store_type(self, store_type: Option<String>) -> Self;
+    pub fn servers(self, config: ServersConfig) -> Self;
+    pub fn servers_scan_dirs(self, scan_dirs: Vec<PathBuf>) -> Self;
+    pub fn build(self) -> Result<(), CodegenError>;
+}
 ```
 
-Generates client-side code that mirrors the server transport surface:
+A fluent builder over the generator functions above. Method order on the builder is irrelevant -- `build()` always runs stages in dependency order (`schema → seaorm/markdown_io/dtos → store → api → servers`) and threads each stage's typed output into the next.
 
-- **HTTP + Tauri IPC split transport** -- a TypeScript module that provides the same function signatures regardless of whether the app is running as a web app (HTTP) or a Tauri desktop app (IPC). The right backend is selected at runtime.
-- **HTTP-only TypeScript client** -- for web-only deployments.
-- **Admin registry** -- TypeScript metadata about each entity (fields, types, relations) for building admin UIs.
+Sensible defaults are applied automatically:
 
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `servers` | `&ServersOutput` | Server transport metadata -- routes, commands, tools. |
-| `api` | `Option<&ApiOutput>` | API metadata for richer type information in clients. |
-| `config` | `&ClientsConfig` | Which client generators to run. |
-
-**Returns:** `()`. Writes TypeScript files only.
+- `schema_module_path` defaults to [`DEFAULT_SCHEMA_MODULE_PATH`](#default_schema_module_path) (`"crate::schema"`) and propagates to both `StoreConfig` and `ApiConfig`.
+- When the `store` stage is enabled and the API stage hasn't overridden it, `store_type` defaults to `Some("Store")`.
+- When the `servers` stage is enabled, the builder forwards `schema.entities` into `ServersConfig.schema_entities` so the admin-registry generator gets the field metadata it needs (without it, admin-registry.ts ships with empty `fields: []` per entity).
 
 ```rust
-gen_clients(&servers, Some(&api), &ClientsConfig {
-    generators: vec![
-        ClientGeneratorConfig::HttpTauriIpcSplit {
-            output: "../src-nuxt/app/generated/transport.ts".into(),
-            bindings_path: "../src-nuxt/app/generated/types.ts".into(),
-        },
-        ClientGeneratorConfig::AdminRegistry {
-            output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
-        },
-    ],
-})?;
+ontogen::Pipeline::new("src/schema")
+    .seaorm("src/persistence/db/entities/generated", "src/persistence/db/conversions/generated")
+    .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
+    .api("src/api/v1/generated", "AppState")
+    .build()
+    .expect("ontogen pipeline failed");
 ```
+
+---
+
+## `DEFAULT_SCHEMA_MODULE_PATH`
+
+```rust
+pub const DEFAULT_SCHEMA_MODULE_PATH: &str = "crate::schema";
+```
+
+Canonical default for the `schema_module_path` field on [`StoreConfig`](/reference/configuration/#storeconfig) and [`ApiConfig`](/reference/configuration/#apiconfig). Use this constant instead of hard-coding `"crate::schema"` so future changes to the convention propagate to every direct caller. `Pipeline` callers don't need to reference it -- the builder applies it automatically.
 
 ---
 

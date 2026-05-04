@@ -31,27 +31,35 @@ let servers_output = ontogen::gen_servers(
         state_import: "crate::AppState".to_string(),
         naming: ontogen::servers::NamingConfig::default(),
         generators: vec![
-            ontogen::servers::ServerGeneratorConfig::HttpAxum {
+            ontogen::servers::ServerGenerator::HttpAxum {
                 output: "src/api/transport/http/generated.rs".into(),
             },
-            ontogen::servers::ServerGeneratorConfig::TauriIpc {
+            ontogen::servers::ServerGenerator::TauriIpc {
                 output: "src/api/transport/ipc/generated.rs".into(),
             },
-            ontogen::servers::ServerGeneratorConfig::Mcp {
+            ontogen::servers::ServerGenerator::Mcp {
                 output: "src/api/transport/mcp/generated.rs".into(),
             },
         ],
         client_generators: vec![],
-        rustfmt_edition: "2021".to_string(),
+        rustfmt_edition: "2024".to_string(),
         sse_route_overrides: Default::default(),
         ts_skip_commands: vec![],
         route_prefix: None,
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
+        // Required when using the AdminRegistry client generator. Pipeline
+        // forwards this from parse_schema automatically; explicit calls must
+        // pass it manually. Pass Vec::new() if not using admin-registry.
+        schema_entities: schema.entities.clone(),
     },
 )?;
 ```
+
+<Aside type="tip">
+The [`Pipeline`](/concepts/pipeline/) builder constructs and runs `gen_servers` for you. Among other things, it auto-forwards `schema.entities` into `ServersConfig.schema_entities`, so you don't need to remember to pass it through. The explicit call shown here exists for the cases where you need that level of control.
+</Aside>
 
 Let's walk through the important fields:
 
@@ -63,9 +71,11 @@ Let's walk through the important fields:
 | `types_import_path` | Import path for schema/DTO types |
 | `state_import` | Full import path for the state type |
 | `naming` | Pluralization and URL naming overrides |
-| `generators` | Which transports to generate |
+| `generators` | Which server transports to generate |
+| `client_generators` | Which client artifacts to generate (TypeScript transports, admin registry) |
 | `store_type` | Store type name for entity-scoped functions |
 | `store_import` | Full import path for the Store type |
+| `schema_entities` | Parsed entities (used by the admin-registry generator). Pipeline auto-fills this. |
 
 ## HTTP/Axum generation
 

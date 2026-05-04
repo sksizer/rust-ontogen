@@ -197,18 +197,21 @@ After the merge, `ApiOutput.modules` contains everything. Downstream generators 
 
 ### Operation Classification
 
-Each function is classified into an `OpKind`:
+Each function is classified into an `OpKind` (defined in `ontogen_core::ir`):
 
 ```rust
 pub enum OpKind {
-    List,          // GET /tasks
-    GetById,       // GET /tasks/:id
-    Create,        // POST /tasks
-    Update,        // PUT /tasks/:id
-    Delete,        // DELETE /tasks/:id
-    CustomGet,     // GET with non-standard params
-    CustomPost,    // POST with non-standard params
-    EventStream,   // SSE endpoint
+    List,                                      // GET /tasks
+    GetById,                                   // GET /tasks/:id
+    Create,                                    // POST /tasks
+    Update,                                    // PUT /tasks/:id
+    Delete,                                    // DELETE /tasks/:id
+    JunctionList   { child_segment: String },  // GET /agents/:id/roles
+    JunctionAdd    { child_segment: String },  // POST /agents/:id/roles
+    JunctionRemove { child_segment: String },  // DELETE /agents/:id/roles/:child_id
+    CustomGet,                                 // GET with non-standard params
+    CustomPost,                                // POST with non-standard params
+    EventStream,                               // SSE endpoint
 }
 ```
 
@@ -245,11 +248,11 @@ pub struct IpcCommandMeta {
 pub struct McpToolMeta {
     pub tool_name: String,       // "get_task"
     pub description: String,     // "Get a single task by ID"
-    pub params_schema: String,   // JSON Schema
+    pub params: Vec<ParamMeta>,  // tool inputs
 }
 ```
 
-`gen_clients` consumes this to generate TypeScript code that mirrors the server's API exactly. The client generator knows every route path, every command name, every parameter type -- because it's all in the IR.
+The same `ServersOutput` underpins client generation: the client generators that run inside `gen_servers` (controlled by `ServersConfig.client_generators`) produce TypeScript code that mirrors the server's API exactly. They know every route path, every command name, every parameter type -- because it's all in the IR.
 
 ## Tracing an Entity Through the Pipeline
 

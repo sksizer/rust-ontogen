@@ -158,102 +158,63 @@ The `#[serde(default)]` attribute isn't an Ontogen annotation, but Ontogen reads
 
 ## The full pipeline
 
-Let's wire up every generator. Here's the complete `build.rs`:
+Let's wire up every generator. The recommended path is the [`Pipeline`](/concepts/pipeline/) builder -- one method call per stage, sensible defaults applied for you, and `schema.entities` is auto-forwarded to the admin-registry generator:
 
 ```rust
 // build.rs
-use ontogen::CodegenError;
-
-fn unwrap_codegen<T>(result: Result<T, CodegenError>, stage: &str) -> T {
-    result.unwrap_or_else(|e| {
-        e.emit_cargo_warning();
-        panic!("{stage}: {e}");
-    })
-}
+use ontogen::servers::{ClientGenerator, NamingConfig, ServerGenerator};
+use ontogen::{Pipeline, ServersConfig};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
-    // Stage 1: Parse schema
-    let schema = unwrap_codegen(
-        ontogen::parse_schema(&ontogen::SchemaConfig {
-            schema_dir: "src/schema".into(),
-        }),
-        "parse schema",
-    );
+    let servers_config = ServersConfig {
+        api_dir: "src/api/v1".into(),
+        state_type: "AppState".into(),
+        service_import_path: "crate::api::v1".into(),
+        types_import_path: "crate::schema".into(),
+        state_import: "crate::AppState".into(),
+        naming: NamingConfig::default(),
+        generators: vec![
+            // Add HttpAxum, TauriIpc, Mcp here when you want server transports.
+        ],
+        client_generators: vec![
+            // Add HttpTs, HttpTauriIpcSplit, AdminRegistry here when you want
+            // client artifacts.
+        ],
+        rustfmt_edition: "2024".into(),
+        sse_route_overrides: Default::default(),
+        ts_skip_commands: vec![],
+        route_prefix: None,
+        store_type: Some("Store".into()),
+        store_import: Some("crate::store::Store".into()),
+        pagination: None,
+        // Pipeline auto-fills this with the parsed schema entities.
+        schema_entities: Vec::new(),
+    };
 
-    // Stage 2: Generate SeaORM entities + conversions
-    let seaorm = unwrap_codegen(
-        ontogen::gen_seaorm(
-            &schema.entities,
-            &ontogen::SeaOrmConfig {
-                entity_output: "src/persistence/db/entities/generated".into(),
-                conversion_output: "src/persistence/db/conversions/generated".into(),
-                skip_conversions: vec![],
-            },
-        ),
-        "generate SeaORM entities",
-    );
-
-    // Stage 3: Generate Store layer (CRUD + hooks)
-    let _store = unwrap_codegen(
-        ontogen::gen_store(
-            &schema.entities,
-            Some(&seaorm),
-            &ontogen::StoreConfig {
-                output_dir: "src/store/generated".into(),
-                hooks_dir: Some("src/store/hooks".into()),
-            },
-        ),
-        "generate store",
-    );
-
-    // Stage 4: Generate API layer
-    let api = unwrap_codegen(
-        ontogen::gen_api(
-            &schema.entities,
-            &ontogen::ApiConfig {
-                output_dir: "src/api/v1/generated".into(),
-                exclude: vec![],
-                scan_dirs: vec![],
-                state_type: "AppState".to_string(),
-                store_type: Some("Store".to_string()),
-            },
-        ),
-        "generate API",
-    );
-
-    // Stage 5: Generate server transports
-    let _servers = unwrap_codegen(
-        ontogen::gen_servers(
-            Some(&api),
-            &[],
-            &ontogen::ServersConfig {
-                api_dir: "src/api/v1".into(),
-                state_type: "AppState".to_string(),
-                service_import_path: "crate::api::v1".to_string(),
-                types_import_path: "crate::schema".to_string(),
-                state_import: "crate::AppState".to_string(),
-                naming: Default::default(),
-                generators: vec![],  // add HttpAxum, TauriIpc, etc. here
-                client_generators: vec![],
-                rustfmt_edition: "2021".to_string(),
-                sse_route_overrides: Default::default(),
-                ts_skip_commands: vec![],
-                route_prefix: None,
-                store_type: Some("Store".to_string()),
-                store_import: Some("crate::store::Store".to_string()),
-                pagination: None,
-            },
-        ),
-        "generate servers",
-    );
+    Pipeline::new("src/schema")
+        .seaorm(
+            "src/persistence/db/entities/generated",
+            "src/persistence/db/conversions/generated",
+        )
+        .dtos("src/schema/dto")
+        .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
+        .api("src/api/v1/generated", "AppState")
+        .servers(servers_config)
+        .build()
+        .unwrap_or_else(|e| {
+            e.emit_cargo_warning();
+            panic!("ontogen pipeline failed: {e}");
+        });
 }
 ```
 
 <Aside type="tip">
-  Each stage's return value feeds into the next. `SchemaOutput` goes into `gen_seaorm` and `gen_store`. `SeaOrmOutput` enriches `gen_store` with exact table metadata. `ApiOutput` tells `gen_servers` what endpoints exist. The generators are independent functions -- you can call them in any order, or skip stages entirely -- but passing upstream outputs makes downstream generators smarter.
+  Method order on `Pipeline` doesn't matter -- `build()` always runs stages in the canonical order (`schema → seaorm → markdown_io → dtos → store → api → servers`) and threads each stage's output into the next. Skip a method to skip a stage. The builder also auto-applies `schema_module_path` defaults so you don't have to repeat them on `StoreConfig` and `ApiConfig`.
 </Aside>
+
+If you'd rather see the explicit form (every generator function called by hand), that's covered in the [Build Script Setup](/guides/build-script-setup/) guide. Both shapes work identically -- `Pipeline` is just a wrapper.
 
 ## What gets generated
 
@@ -415,15 +376,17 @@ These look trivial -- and they are. The API layer exists so that server transpor
 To generate actual HTTP handlers, add a server generator to the `generators` vec in your `ServersConfig`. For example, Axum HTTP:
 
 ```rust
-use ontogen::servers::ServerGeneratorConfig;
+use ontogen::servers::ServerGenerator;
 
 // In your ServersConfig:
 generators: vec![
-    ServerGeneratorConfig::HttpAxum {
+    ServerGenerator::HttpAxum {
         output: "src/api/transport/http/generated.rs".into(),
     },
 ],
 ```
+
+(`ontogen::servers::ServerGenerator` is also re-exported as `ontogen::servers::ServerGeneratorConfig` -- both names refer to the same enum.)
 
 This produces Axum route handlers with proper routing:
 
