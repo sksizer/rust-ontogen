@@ -1,10 +1,10 @@
 ---
-status: draft
+status: in-progress
 ---
 # OF-005 - Document accepted `state_type` / `store_type` first-param shapes
 
 - **Severity:** Medium
-- **Status:** Open
+- **Status:** In progress (branch `feat/of-001-005-parser-skip-diagnostic`)
 - **Source:** [feedback.md OF-005](2026-05-12-pumice.md)
 - **Related:** [OF-001](./OF-001-parser-skip-diagnostic.md)
 

@@ -1,10 +1,10 @@
 ---
-status: draft
+status: in-progress
 ---
 # OF-001 - Emit diagnostic when parser skips a non-matching `pub fn`
 
 - **Severity:** High
-- **Status:** Open
+- **Status:** In progress (branch `feat/of-001-005-parser-skip-diagnostic`)
 - **Source:** [feedback.md OF-001](2026-05-12-pumice.md)
 - **Related:** [OF-005](./OF-005-document-state-store-shapes.md)
 
