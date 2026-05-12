@@ -45,7 +45,7 @@ onMounted(async () => {
       >
         <div class="text-sm text-(--ui-text-muted)">{{ entity.pluralLabel }}</div>
         <div class="text-2xl font-semibold text-(--ui-text) mt-1">
-          {{ counts[entity.plural] ?? '—' }}
+          {{ counts[entity.plural] ?? '-' }}
         </div>
       </NuxtLink>
     </div>

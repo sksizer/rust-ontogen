@@ -1,11 +1,11 @@
 ## Context
 
-You are running inside a **fresh clone of the template repo**, which is your current working directory. Do NOT `cd` away from it for edits — this is the tree you will commit and push.
+You are running inside a **fresh clone of the template repo**, which is your current working directory. Do NOT `cd` away from it for edits - this is the tree you will commit and push.
 
 Environment variables:
 
-- `DOWNSTREAM_DIR` — absolute path to a local clone of the downstream project you are harvesting from.
-- `DOWNSTREAM_NAME` — short name of the downstream project (e.g. `rust-path-opener`), safe for branch names and PR titles.
+- `DOWNSTREAM_DIR` - absolute path to a local clone of the downstream project you are harvesting from.
+- `DOWNSTREAM_NAME` - short name of the downstream project (e.g. `rust-path-opener`), safe for branch names and PR titles.
 
 Shared infrastructure files (candidates for backport):
 
@@ -15,7 +15,7 @@ Shared infrastructure files (candidates for backport):
 - `CLAUDE.md`, `cliff.toml`, `justfile`, `release.toml`, `rust-toolchain.toml`, `rustfmt.toml`
 - `scripts/**` (except `scripts/downstream.txt`, which is template-only and MUST NEVER be backported)
 
-Files that are ALWAYS off-limits (project-specific — never backport):
+Files that are ALWAYS off-limits (project-specific - never backport):
 
 - `Cargo.toml`, `Cargo.lock`
 - `README.md`
@@ -41,8 +41,8 @@ For directories, use `diff -ruN ./<dir> "$DOWNSTREAM_DIR/<dir>"`.
 
 For each hunk, decide:
 
-- **BACKPORT** — a clear improvement (bug fix, better default, new reusable script, CI fix, etc.) that would benefit every downstream project. Must be high confidence.
-- **SKIP** — project-specific, stale drift, stylistic noise, or anything you are not ~95% sure is an improvement.
+- **BACKPORT** - a clear improvement (bug fix, better default, new reusable script, CI fix, etc.) that would benefit every downstream project. Must be high confidence.
+- **SKIP** - project-specific, stale drift, stylistic noise, or anything you are not ~95% sure is an improvement.
 
 Check commit history in the downstream for intent:
 

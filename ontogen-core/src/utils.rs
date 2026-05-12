@@ -119,7 +119,7 @@ pub fn rustfmt(path: &Path) {
 
 /// Format TypeScript content in memory via prettier, then write only if changed.
 ///
-/// Mirrors `write_and_format` for Rust — formats in memory first so
+/// Mirrors `write_and_format` for Rust - formats in memory first so
 /// `write_if_changed` can skip the write when content is identical,
 /// preventing unnecessary mtime changes that trigger file-watchers.
 ///
@@ -225,7 +225,7 @@ pub fn emit_rerun_directives(dir: &Path) {
 /// excluding subdirectories whose names are in `exclude_dirs`.
 ///
 /// Use this when a directory contains both hand-written source files and
-/// generated output subdirectories — watching generated output creates
+/// generated output subdirectories - watching generated output creates
 /// a self-triggering rebuild loop.
 pub fn emit_rerun_directives_excluding(dir: &Path, exclude_dirs: &[&str]) {
     println!("cargo:rerun-if-changed={}", dir.display());

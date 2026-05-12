@@ -16,8 +16,8 @@ Add a **CLI client generator** to ontogen that consumes the same API metadata (I
 
 The generator reads from one of two sources (configurable):
 
-1. **IR path** — `ApiOutput` from the codegen pipeline. Available at build time when running the full pipeline.
-2. **Scan path** — parse API modules directly (same `servers::parse` scanner). Works standalone without running upstream generators.
+1. **IR path** - `ApiOutput` from the codegen pipeline. Available at build time when running the full pipeline.
+2. **Scan path** - parse API modules directly (same `servers::parse` scanner). Works standalone without running upstream generators.
 
 Both paths produce the same internal representation: a list of modules, each with typed functions, params, return types, and operation classifications.
 
@@ -92,8 +92,8 @@ Plus an `execute()` function that dispatches each subcommand to the appropriate 
 
 The generated CLI uses a thin MCP client that:
 
-1. **stdio transport** — spawns the server binary as a child process, communicates via JSON-RPC over stdin/stdout
-2. **HTTP/SSE transport** — connects to `http://localhost:4243` (or configured URL)
+1. **stdio transport** - spawns the server binary as a child process, communicates via JSON-RPC over stdin/stdout
+2. **HTTP/SSE transport** - connects to `http://localhost:4243` (or configured URL)
 3. Serializes subcommand args → MCP `tools/call` request
 4. Deserializes response → pretty-printed JSON (default) or raw JSON (`--raw`)
 
@@ -175,6 +175,6 @@ pub enum ClientGeneratorConfig {
 
 ## Decisions
 
-1. **Binary location** — generated as another binary in the consuming project. The binary name is a config option (e.g., `binary_name: "myapp-cli"`). The generator outputs a `main.rs` + `generated.rs` into a configured crate directory.
-2. **MCP client** — generate a minimal inline JSON-RPC client. The protocol surface is small (`initialize`, `tools/call`, `tools/list`), so no external MCP crate dependency needed. Just `serde_json`, `tokio`, and transport I/O.
-3. **Auth** — local only to start. No auth headers for stdio or HTTP transport. Can add later if needed.
+1. **Binary location** - generated as another binary in the consuming project. The binary name is a config option (e.g., `binary_name: "myapp-cli"`). The generator outputs a `main.rs` + `generated.rs` into a configured crate directory.
+2. **MCP client** - generate a minimal inline JSON-RPC client. The protocol surface is small (`initialize`, `tools/call`, `tools/list`), so no external MCP crate dependency needed. Just `serde_json`, `tokio`, and transport I/O.
+3. **Auth** - local only to start. No auth headers for stdio or HTTP transport. Can add later if needed.

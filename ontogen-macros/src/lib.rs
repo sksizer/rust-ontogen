@@ -1,7 +1,7 @@
 //! No-op proc-macro crate that makes `#[ontology(...)]` attributes legal Rust.
 //!
 //! All actual interpretation of these attributes happens in `build.rs` via `syn`.
-//! This crate never contains logic — it just passes the annotated item through unchanged.
+//! This crate never contains logic - it just passes the annotated item through unchanged.
 
 #![forbid(unsafe_code)]
 

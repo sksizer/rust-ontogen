@@ -11,7 +11,7 @@
 <template>
   <div style="padding: 2rem; font-family: system-ui">
     <h1>Iron Log</h1>
-    <p>Weight lifting tracker — ontogen example project.</p>
+    <p>Weight lifting tracker - ontogen example project.</p>
     <p>
       Run <code>cargo build</code> in <code>src-tauri/</code> to generate the
       full persistence + API + transport stack from the schema entities.

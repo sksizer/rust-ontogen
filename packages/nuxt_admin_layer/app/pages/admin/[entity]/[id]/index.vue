@@ -173,7 +173,7 @@ function resolveRelationRoute(field: { relationTo?: string }, value: unknown): s
 
                 <!-- Default -->
                 <template v-else>
-                  {{ formatFieldValue(currentItem, field.key) ?? '—' }}
+                  {{ formatFieldValue(currentItem, field.key) ?? '-' }}
                 </template>
               </td>
             </tr>

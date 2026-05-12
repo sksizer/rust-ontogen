@@ -61,10 +61,10 @@ pub fn collect_type_import(ty: &str, imports: &mut Vec<String>) {
         return;
     }
     if inner.contains("::") {
-        // Entity-qualified: e.g. relation::Model — handled via entity import
+        // Entity-qualified: e.g. relation::Model - handled via entity import
         return;
     }
-    // Skip Rust primitives — they don't need importing.
+    // Skip Rust primitives - they don't need importing.
     if matches!(
         inner.as_str(),
         "bool"
@@ -187,7 +187,7 @@ pub fn collect_ts_import(ts_type: &str, imports: &mut Vec<String>) {
     }
 }
 
-/// Naming configuration for modules — handles pluralization and URL singularization.
+/// Naming configuration for modules - handles pluralization and URL singularization.
 ///
 /// Uses `cruet` for Rails-style inflection (handles irregular words like
 /// "dependencies" → "dependency"). Override maps take precedence over cruet.

@@ -1,10 +1,10 @@
 //! Generate Update struct, apply() method, and From impls for store entities.
 //!
 //! For each entity generates:
-//! - `{Entity}Update` struct — all non-id, non-skip fields wrapped in Option
-//! - `{Entity}Update::apply()` — patches entity in-place
-//! - `From<Update{Entity}Input> for {Entity}Update` — DTO → patch struct
-//! - `From<Create{Entity}Input> for {Entity}` — DTO → domain entity
+//! - `{Entity}Update` struct - all non-id, non-skip fields wrapped in Option
+//! - `{Entity}Update::apply()` - patches entity in-place
+//! - `From<Update{Entity}Input> for {Entity}Update` - DTO → patch struct
+//! - `From<Create{Entity}Input> for {Entity}` - DTO → domain entity
 
 use super::helpers::to_snake_case;
 use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationKind};

@@ -1,4 +1,4 @@
-// @ontogen/admin-types — Framework-agnostic type definitions for the ontogen admin registry.
+// @ontogen/admin-types - Framework-agnostic type definitions for the ontogen admin registry.
 // These types are shared between the admin generator (Rust), UI layers (Nuxt, React, etc.),
 // and consuming applications.
 
@@ -19,7 +19,7 @@ export interface AdminFieldDef {
   required?: boolean
   /** For 'enum' fields */
   enumValues?: string[]
-  /** For 'relation' / 'relation-array' fields — target entity key */
+  /** For 'relation' / 'relation-array' fields - target entity key */
   relationTo?: string
   /** Show in list table columns */
   showInTable?: boolean

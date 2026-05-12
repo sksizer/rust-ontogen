@@ -6,7 +6,7 @@
 //! config struct field.
 //!
 //! The existing config structs and generator functions remain the canonical
-//! API — `Pipeline` is a thin wrapper that constructs them under the hood.
+//! API - `Pipeline` is a thin wrapper that constructs them under the hood.
 //!
 //! # Example
 //!
@@ -30,7 +30,7 @@
 //!
 //! - `schema_module_path` defaults to `"crate::schema"` (matches `StoreConfig`
 //!   and `ApiConfig` defaults).
-//! - `api(state_type)` is required — there's no universal default for the
+//! - `api(state_type)` is required - there's no universal default for the
 //!   AppState type, so the builder asks for it explicitly.
 //! - `store_type` (used by `api` and `servers`) defaults to `Some("Store")` once
 //!   the store stage is enabled, otherwise `None`.
@@ -112,7 +112,7 @@ pub struct Pipeline {
 impl Pipeline {
     /// Start a new pipeline rooted at `schema_dir`.
     ///
-    /// `schema_dir` is the only universally-required input — every pipeline
+    /// `schema_dir` is the only universally-required input - every pipeline
     /// begins with `parse_schema`. All other stages are opt-in.
     pub fn new(schema_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -177,7 +177,7 @@ impl Pipeline {
 
     /// Enable standalone Create/Update DTO generation.
     ///
-    /// Note: `gen_store` already produces DTOs internally — only enable this
+    /// Note: `gen_store` already produces DTOs internally - only enable this
     /// stage if you want DTOs without a full store layer.
     #[must_use]
     pub fn dtos(mut self, output_dir: impl Into<PathBuf>) -> Self {

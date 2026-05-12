@@ -36,10 +36,10 @@ or walk directories with `diff -ruN "$TEMPLATE_DIR/<dir>" "<dir>"`.
 
 For every non-trivial difference, decide whether it is:
 
-- **BACKPORT** — a genuine improvement (bug fix, new capability, better default, cleaner config, new script, etc.) that would benefit every downstream project if added to the template.
-- **PROJECT-SPECIFIC** — a customization that only makes sense for this project (e.g. a workflow step tailored to this repo's deploy target). Do not recommend these.
-- **DRIFT** — stale local edits, accidental changes, or noise. Do not recommend these.
-- **TEMPLATE-NEWER** — the template has changes the downstream doesn't. Ignore; `cargo_update_all` handles that direction.
+- **BACKPORT** - a genuine improvement (bug fix, new capability, better default, cleaner config, new script, etc.) that would benefit every downstream project if added to the template.
+- **PROJECT-SPECIFIC** - a customization that only makes sense for this project (e.g. a workflow step tailored to this repo's deploy target). Do not recommend these.
+- **DRIFT** - stale local edits, accidental changes, or noise. Do not recommend these.
+- **TEMPLATE-NEWER** - the template has changes the downstream doesn't. Ignore; `cargo_update_all` handles that direction.
 
 Be conservative: when in doubt, mark it PROJECT-SPECIFIC or DRIFT, not BACKPORT.
 
@@ -55,14 +55,14 @@ Print a single markdown report to stdout with this exact structure:
 # Template Backport Review: <repo name>
 
 ## Summary
-<one-line summary: e.g. "3 candidates found" or "No backport candidates — downstream is in sync with template on shared files.">
+<one-line summary: e.g. "3 candidates found" or "No backport candidates - downstream is in sync with template on shared files.">
 
 ## Backport Candidates
 
 ### <file path>
 **What changed:** <1-2 sentence description>
 **Why it matters:** <why this benefits all downstream projects>
-**Origin commit(s):** <short sha — subject line, if found>
+**Origin commit(s):** <short sha - subject line, if found>
 **Suggested action:** <"copy file verbatim" | "merge hunk" | "adapt idea">
 
 <repeat per candidate>

@@ -16,14 +16,14 @@ template-tauri-nuxt/
 │   ├── sync-template-check  # Template drift detection
 │   └── tauri-wrapper.mjs # Wraps tauri CLI to inject auto-selected ports
 ├── docs/                 # Project documentation
-├── src-nuxt/             # Frontend — Nuxt.js application
+├── src-nuxt/             # Frontend - Nuxt.js application
 │   ├── .storybook/       # Storybook configuration
 │   ├── app/              # Vue components, assets, and pages
 │   │   └── components/   # Extracted components + co-located stories
 │   ├── server/           # Nuxt server code
 │   ├── tests/            # Frontend tests (Vitest)
 │   └── public/           # Static assets
-├── src-tauri/            # Backend — Rust/Tauri application
+├── src-tauri/            # Backend - Rust/Tauri application
 │   ├── src/              # Rust source code
 │   ├── capabilities/     # Tauri capability definitions
 │   └── icons/            # App icons (all platforms)
@@ -32,7 +32,7 @@ template-tauri-nuxt/
 ├── mise.toml             # Tool version management and port env vars
 ├── lefthook.yml          # Git hook configuration
 ├── commitlint.config.ts  # Conventional commit enforcement
-└── package.json          # Root package — orchestrates cross-project scripts
+└── package.json          # Root package - orchestrates cross-project scripts
 ```
 
 ## Command Interface
@@ -41,10 +41,10 @@ template-tauri-nuxt/
 
 Both `Makefile` and `justfile` are canonical command interfaces. They expose **identical targets** so developers can use whichever runner they prefer:
 
-- **make** — available everywhere, no extra install needed
-- **just** — installable via `cargo install just` or `mise use just`
+- **make** - available everywhere, no extra install needed
+- **just** - installable via `cargo install just` or `mise use just`
 
-Pick one and delete the other, or keep both — they will always mirror each other.
+Pick one and delete the other, or keep both - they will always mirror each other.
 
 ### Command Mirroring Rule
 
@@ -110,18 +110,18 @@ When entering the project directory with mise active, port env vars are set auto
 When using this template for a new project:
 
 ```bash
-# Interactive — prompts for project name and bundle ID:
+# Interactive - prompts for project name and bundle ID:
 make initialize         # or: just initialize
 
-# Non-interactive — set env vars:
+# Non-interactive - set env vars:
 PROJECT_NAME=my_app BUNDLE_ID=com.example.myapp make rename
 ```
 
 The initialization scripts update all references to the template defaults (`tauri_nuxt`, `com.sksizer.example`) across:
 
-- `package.json` (root) — `name` field
-- `src-tauri/tauri.conf.json` — `productName`, `identifier`, window `title`
-- `src-tauri/Cargo.toml` — `name`, lib `name`
+- `package.json` (root) - `name` field
+- `src-tauri/tauri.conf.json` - `productName`, `identifier`, window `title`
+- `src-tauri/Cargo.toml` - `name`, lib `name`
 
 ## CI/CD
 
@@ -134,12 +134,12 @@ The initialization scripts update all references to the template defaults (`taur
 ## Git Hooks (Lefthook)
 
 **pre-commit** (parallel):
-- `eslint` — lint JS/TS/Vue files
-- `oxlint` — fast lint pass
-- `prettier` — format check
-- `clippy` — Rust lint (warnings = errors)
-- `rustfmt` — Rust format check
-- `typecheck` — Nuxt type checking
+- `eslint` - lint JS/TS/Vue files
+- `oxlint` - fast lint pass
+- `prettier` - format check
+- `clippy` - Rust lint (warnings = errors)
+- `rustfmt` - Rust format check
+- `typecheck` - Nuxt type checking
 
 **commit-msg**: `commitlint` enforces Conventional Commits.
 
@@ -147,7 +147,7 @@ The initialization scripts update all references to the template defaults (`taur
 
 | Layer | Frontend | Backend |
 |-------|----------|---------|
-| Fast lint | oxlint | — |
+| Fast lint | oxlint | - |
 | Full lint | ESLint + @nuxt/eslint | cargo clippy (-D warnings) |
 | Format | Prettier (no semi, single quotes, 100 width) | cargo fmt |
 
@@ -157,7 +157,7 @@ The initialization scripts update all references to the template defaults (`taur
 |-------|------|---------|
 | Frontend | Vitest + @nuxt/test-utils | `make test-unit` |
 | Backend | cargo test | `make rust-test` |
-| All | — | `make test` |
+| All | - | `make test` |
 
 ## Version Management
 

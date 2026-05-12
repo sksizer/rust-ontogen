@@ -1,6 +1,6 @@
 ## Goal
 
-Bring this repository up to date with its upstream template, producing a PR whose diff is **minimal and surgical** — exactly the bytes that changed upstream, nothing more.
+Bring this repository up to date with its upstream template, producing a PR whose diff is **minimal and surgical** - exactly the bytes that changed upstream, nothing more.
 
 > **CRITICAL: do not retype file contents.** If you read a template file and then rewrite it via the Write tool, even tiny formatting differences (whitespace, trailing newline, comment reflow, EOL) will make the PR look like a full-file rewrite. Always propagate changes by **copying bytes** from the upstream clone, never by reconstructing them.
 
@@ -41,9 +41,9 @@ diff -u ./<path> "$TEMPLATE_DIR/<path>"
 
 (or `diff -ruN ./<dir> "$TEMPLATE_DIR/<dir>"` for directories).
 
-If the diff is empty, **skip the file entirely** — do not touch it. If the file does not exist locally but exists in the template, treat it as a new file to bring over.
+If the diff is empty, **skip the file entirely** - do not touch it. If the file does not exist locally but exists in the template, treat it as a new file to bring over.
 
-## 4. Propagate changes — copy, never retype
+## 4. Propagate changes - copy, never retype
 
 For each file with a non-empty diff:
 
@@ -53,7 +53,7 @@ For each file with a non-empty diff:
   ```
   This is the right choice for ~95% of files. It guarantees a minimal diff because the resulting file is byte-identical to upstream.
 
-- **Only use surgical `Edit` hunks** when the local file has intentional, project-specific modifications you must preserve. In that case, apply the smallest possible edit that brings the upstream change in. **Never use the `Write` tool to rewrite a whole template-tracked file from your own output** — always `cp` instead.
+- **Only use surgical `Edit` hunks** when the local file has intentional, project-specific modifications you must preserve. In that case, apply the smallest possible edit that brings the upstream change in. **Never use the `Write` tool to rewrite a whole template-tracked file from your own output** - always `cp` instead.
 
 For new files (present in template, absent locally), `cp` them in.
 
@@ -68,7 +68,7 @@ git diff --stat
 git diff
 ```
 
-For each touched file, the displayed diff should match (a subset of) what `diff -u ./<path> "$TEMPLATE_DIR/<path>"` showed in step 3 **before** you copied. If any file shows a much larger diff than expected — especially if it looks like every line changed — you have a line-ending or whitespace problem. Investigate before continuing:
+For each touched file, the displayed diff should match (a subset of) what `diff -u ./<path> "$TEMPLATE_DIR/<path>"` showed in step 3 **before** you copied. If any file shows a much larger diff than expected - especially if it looks like every line changed - you have a line-ending or whitespace problem. Investigate before continuing:
 
 ```
 file ./<path> "$TEMPLATE_DIR/<path>"   # check for CRLF vs LF

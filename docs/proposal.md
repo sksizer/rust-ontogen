@@ -16,17 +16,17 @@ API fns ──► service-codegen ──► HTTP, IPC, MCP, TypeScript
 
 **Pain points:**
 1. Store layer is ~95% identical boilerplate across 10 entities (CRUD, junction sync, relation population, event emission)
-2. Two independent codegen crates parse separately — no shared entity metadata flows between them
+2. Two independent codegen crates parse separately - no shared entity metadata flows between them
 3. Adding a new entity requires touching 5+ hand-written files beyond what's generated
 4. No standard lifecycle hooks, change channels, or instrumentation points
 5. The API layer (`src/api/v1/*.rs`) is also largely boilerplate forwarding to Store
 
 ## Core Principles
 
-1. **Each generator is independently executable** — give it config and it runs; no mandatory upstream dependency
-2. **Chainable outputs** — each generator returns a typed output struct that downstream generators *can* consume for richer generation, but don't *require*
-3. **Multiple input sources** — the transport layer must still scan source files for non-entity APIs (graph, events, project, status, settings, path_opener, entity_counts)
-4. **Generated and custom coexist** — generated code lives in `generated/` subdirectories alongside hand-written modules; the transport layer merges both
+1. **Each generator is independently executable** - give it config and it runs; no mandatory upstream dependency
+2. **Chainable outputs** - each generator returns a typed output struct that downstream generators *can* consume for richer generation, but don't *require*
+3. **Multiple input sources** - the transport layer must still scan source files for non-entity APIs (graph, events, project, status, settings, path_opener, entity_counts)
+4. **Generated and custom coexist** - generated code lives in `generated/` subdirectories alongside hand-written modules; the transport layer merges both
 
 ## Architecture: Independent Generators with Optional Chaining
 
@@ -63,7 +63,7 @@ API fns ──► service-codegen ──► HTTP, IPC, MCP, TypeScript
 
 ### Generator Function Signatures
 
-Each generator is a standalone function. Upstream outputs are `Option` parameters — enrichment, not requirements. All merge layers normalize generated + scanned sources into the **same IR types** (see [Unified IR Types](#unified-ir-types)).
+Each generator is a standalone function. Upstream outputs are `Option` parameters - enrichment, not requirements. All merge layers normalize generated + scanned sources into the **same IR types** (see [Unified IR Types](#unified-ir-types)).
 
 ```rust
 // ── Source discriminator (shared across all layers) ────────────────
@@ -157,7 +157,7 @@ pub fn gen_store(
     config: &StoreConfig,
 ) -> Result<StoreOutput, CodegenError>;
 
-/// Standalone DTO generation — for consumers who want Create/Update input
+/// Standalone DTO generation - for consumers who want Create/Update input
 /// types without generating a full store layer. Same output as the DTO
 /// portion of gen_store, just without CRUD/hooks/channels.
 pub fn gen_dtos(
@@ -177,7 +177,7 @@ pub fn gen_api(
 
 /// Generate server-side transport handlers (HTTP, IPC, MCP).
 /// Returns ServersOutput describing the concrete routes/commands/tools
-/// that were generated — this is what client generators consume.
+/// that were generated - this is what client generators consume.
 pub fn gen_servers(
     api: &ApiOutput,
     entities: Option<&[EntityDef]>,
@@ -185,7 +185,7 @@ pub fn gen_servers(
 ) -> Result<ServersOutput, CodegenError>;
 
 /// Generate client libraries (TypeScript, CLI, admin registry).
-/// Built from ServersOutput — mirrors the actual server endpoints.
+/// Built from ServersOutput - mirrors the actual server endpoints.
 /// Each client type derives its shape from which servers exist:
 /// - TypeScript: createHttpTransport() / createIpcTransport() / unified interface
 /// - CLI: Rust clap subcommands that call HTTP endpoints
@@ -202,7 +202,7 @@ pub fn gen_clients(
 All merge layers normalize generated and scanned sources into the **same struct types**. The `source` field is provenance metadata (for import paths), not a behavioral discriminator. Downstream consumers process all entries uniformly.
 
 ```rust
-/// A store method — same type whether generated from schema or scanned from custom/.
+/// A store method - same type whether generated from schema or scanned from custom/.
 /// `entity_name` is the grouping key that drives REST resource routing
 /// (e.g. "Widget" → api/v1/widgets/ with standard REST verbs).
 pub struct StoreMethodMeta {
@@ -211,7 +211,7 @@ pub struct StoreMethodMeta {
     pub kind: StoreMethodKind,         // Crud(Create) or Custom
     pub params: Vec<ParamMeta>,
     pub return_type: String,
-    pub source: Source,                // Generated or Scanned — same struct either way
+    pub source: Source,                // Generated or Scanned - same struct either way
 }
 
 pub enum StoreMethodKind {
@@ -221,13 +221,13 @@ pub enum StoreMethodKind {
 
 // Entity association for scanned methods:
 // - Generated: entity_name is known from the EntityDef being iterated
-// - Scanned CRUD: naming convention — create_widget → entity "Widget",
+// - Scanned CRUD: naming convention - create_widget → entity "Widget",
 //   list_widgets → entity "Widget". Matches the generated naming pattern.
 //   Override with #[ontology(entity = "Widget")] when convention doesn't fit.
 // - Scanned Custom: entity_name from #[ontology(entity = "Node")] annotation
 //   or "" if the method isn't entity-scoped (consumed via hand-written API only)
 
-/// An API function — same type whether generated or scanned.
+/// An API function - same type whether generated or scanned.
 pub struct ApiFn {
     pub name: String,                  // "create" or "archive"
     pub params: Vec<ParamMeta>,
@@ -236,7 +236,7 @@ pub struct ApiFn {
     pub classified_op: OpKind,         // List, GetById, Create, ..., CustomPost
 }
 
-/// An API module — may contain functions from both sources, all as ApiFn.
+/// An API module - may contain functions from both sources, all as ApiFn.
 pub struct ApiModule {
     pub name: String,                  // "node"
     pub fns: Vec<ApiFn>,              // mixed sources, same type
@@ -299,7 +299,7 @@ fn main() {
         ],
     })?;
 
-    // ── Servers (HTTP, IPC, MCP — independent of each other) ─────
+    // ── Servers (HTTP, IPC, MCP - independent of each other) ─────
     let servers = gen_servers(&api, Some(&schema.entities), &ServersConfig {
         // Shared: project scoping concept.
         // Each server represents this differently (URL prefix, param, schema field).
@@ -315,11 +315,11 @@ fn main() {
         }),
         ipc: Some(IpcConfig {
             output: "src/api/transport/ipc/generated.rs".into(),
-            // IPC: projectId as optional camelCase arg — derived from scoping
+            // IPC: projectId as optional camelCase arg - derived from scoping
         }),
         mcp: Some(McpConfig {
             output: "src/api/transport/mcp/generated.rs".into(),
-            // MCP: project_id injected into tool JSON schema — derived from scoping
+            // MCP: project_id injected into tool JSON schema - derived from scoping
         }),
     })?;
 
@@ -372,14 +372,14 @@ src/
 │   │   ├── requirement.rs
 │   │   ├── agent.rs            #   simple entities: hooks file is all no-ops
 │   │   └── ...
-│   ├── hooks/                  # ◄ Scaffolded once, never overwritten — fill in as needed
+│   ├── hooks/                  # ◄ Scaffolded once, never overwritten - fill in as needed
 │   │   ├── mod.rs
 │   │   ├── node.rs             #   before_create, after_create, before_update, etc.
 │   │   ├── requirement.rs      #   (status transition validation)
 │   │   └── ...
 │   ├── custom/                 # ◄ Hand-written: custom store methods beyond CRUD
 │   │   ├── mod.rs
-│   │   └── node_custom.rs      #   e.g. bulk_reparent_nodes() — custom store methods
+│   │   └── node_custom.rs      #   e.g. bulk_reparent_nodes() - custom store methods
 │   ├── mod.rs                  # re-exports generated + custom, Store struct
 │   └── store.rs                # Store construction, helper methods (sync_junction, etc.)
 │
@@ -411,7 +411,7 @@ The generated/custom split is the **same concept** at both store and API levels:
 
 | Layer | Generated (`generated/`) | Hooks / Custom | How they connect |
 |-------|--------------------------|-----------------|------------------|
-| **Store** | CRUD methods, update structs, relation population | `hooks/` — scaffolded once, fill in validation logic; `custom/` — additional store methods (e.g. `bulk_reparent_nodes`) | Generated CRUD imports and calls `hooks::entity::before_create(...)` etc.; custom store methods are additional `impl Store` blocks |
+| **Store** | CRUD methods, update structs, relation population | `hooks/` - scaffolded once, fill in validation logic; `custom/` - additional store methods (e.g. `bulk_reparent_nodes`) | Generated CRUD imports and calls `hooks::entity::before_create(...)` etc.; custom store methods are additional `impl Store` blocks |
 | **API** | CRUD forwarding (list, get, create, update, delete) | Non-entity modules (graph, events) + extra entity functions (archive) | Transport merges both into one `ApiModule` per entity |
 
 **Store-level custom methods** work just like API-level custom functions. If you need a `bulk_reparent_nodes()` that doesn't fit the CRUD pattern:
@@ -495,9 +495,9 @@ pub fn gen_api(
 ```
 
 This means:
-- **graph.rs, events.rs, project.rs, etc.** — scanned and included as-is
-- **node.rs** — if it exists in both `v1/generated/` and `v1/` (hand-written), the custom functions are merged into the generated module's `ApiModule`, so the server generator sees everything
-- **agent.rs** — if only generated exists, that's all transport sees
+- **graph.rs, events.rs, project.rs, etc.** - scanned and included as-is
+- **node.rs** - if it exists in both `v1/generated/` and `v1/` (hand-written), the custom functions are merged into the generated module's `ApiModule`, so the server generator sees everything
+- **agent.rs** - if only generated exists, that's all transport sees
 
 ## Key Design Decisions
 
@@ -506,10 +506,10 @@ This means:
 **Decision:** Each generator is a standalone `pub fn` with explicit inputs, not methods on a pipeline builder.
 
 **Rationale:**
-- You can run `gen_servers` + `gen_clients` alone against scanned source files — no schema parsing needed
+- You can run `gen_servers` + `gen_clients` alone against scanned source files - no schema parsing needed
 - You can run `gen_seaorm` + `gen_store` without generating servers/clients (useful for a library crate that has no API)
 - Testing is straightforward: construct inputs, call function, assert outputs
-- The chain is explicit in build.rs — you see exactly what flows where
+- The chain is explicit in build.rs - you see exactly what flows where
 
 **Trade-off:** Slightly more verbose build.rs compared to a fluent builder. But the clarity of explicit data flow is worth it.
 
@@ -521,20 +521,20 @@ Each generator works without upstream output, but produces **richer code** when 
 |-----------|-----------------|---------------|
 | `gen_store` | Infers junction tables from `#[ontology(relation)]` | Gets exact table/column names from `SeaOrmOutput` |
 | `gen_api` | Generates CRUD assuming standard store method names | Knows exact method signatures from `StoreOutput` |
-| `gen_servers` | Parses API source files with `syn` (current behavior) | Receives structured `ApiModule` metadata — no parsing needed |
+| `gen_servers` | Parses API source files with `syn` (current behavior) | Receives structured `ApiModule` metadata - no parsing needed |
 
 The independent mode is the **fallback**; the chained mode is the **optimization**.
 
 ### 3. Store Generation with Scaffold Hooks
 
-The generated store provides the full CRUD boilerplate. For lifecycle customization, it uses the **scaffold pattern**: a `hooks/` directory of plain functions that the generated CRUD imports and calls. Hook files are generated once as no-op stubs — you fill them in with your logic. They're never overwritten on subsequent builds.
+The generated store provides the full CRUD boilerplate. For lifecycle customization, it uses the **scaffold pattern**: a `hooks/` directory of plain functions that the generated CRUD imports and calls. Hook files are generated once as no-op stubs - you fill them in with your logic. They're never overwritten on subsequent builds.
 
 **Two directories per entity:**
 
 ```
 store/
 ├── generated/          # ◄ Overwritten every build
-│   ├── node.rs         #   CRUD methods — imports and calls hooks/node.rs
+│   ├── node.rs         #   CRUD methods - imports and calls hooks/node.rs
 │   ├── task.rs
 │   └── ...
 ├── hooks/              # ◄ Scaffolded once, then yours to edit
@@ -546,7 +546,7 @@ store/
 **Scaffolded hooks file** (generated once, never overwritten):
 
 ```rust
-// store/hooks/node.rs (SCAFFOLDED — fill in as needed)
+// store/hooks/node.rs (SCAFFOLDED - fill in as needed)
 
 use crate::schema::Node;
 use crate::store::Store;
@@ -591,7 +591,7 @@ pub async fn after_delete(_store: &Store, _id: &str) -> Result<(), AppError> {
 **Generated CRUD** (regenerated every build, calls the hooks):
 
 ```rust
-// store/generated/node.rs (REGENERATED — imports hooks)
+// store/generated/node.rs (REGENERATED - imports hooks)
 
 use crate::store::hooks::node as hooks;
 
@@ -623,7 +623,7 @@ impl Store {
 }
 ```
 
-**Adding custom logic** — just fill in the stub:
+**Adding custom logic** - just fill in the stub:
 
 ```rust
 // store/hooks/node.rs (YOUR EDITS)
@@ -633,7 +633,7 @@ pub async fn before_update(
     current: &Node,
     updates: &NodeUpdate,
 ) -> Result<(), AppError> {
-    // Custom containment validation — just code inline
+    // Custom containment validation - just code inline
     if let Some(ref contains) = updates.contains {
         validate_no_circular_containment(store, &current.id, contains).await?;
     }
@@ -641,7 +641,7 @@ pub async fn before_update(
 }
 ```
 
-No traits, no registration, no wiring. The generated CRUD calls `hooks::before_update(...)` — you just write the function body.
+No traits, no registration, no wiring. The generated CRUD calls `hooks::before_update(...)` - you just write the function body.
 
 ### 4. Change Channels (Optional Per-Entity Broadcasts)
 
@@ -756,32 +756,32 @@ impl Store {
 
 Incremental, not a rewrite. Each phase produces working code.
 
-**Phase 1: Consolidate crates** (low risk) — COMPLETE
+**Phase 1: Consolidate crates** (low risk) - COMPLETE
 - Created unified crate consolidating both prior schema-codegen and service-codegen crates
 - Module hierarchy: `schema/`, `persistence/`, `servers/`, `clients/`
 - Established IR types in `ir.rs` (`SchemaOutput`, `SeaOrmOutput`, `StoreOutput`, `ApiOutput`, `ServersOutput`)
 - Top-level generator functions (`parse_schema`, `gen_seaorm`, `gen_dtos`, `gen_servers`, `gen_clients`)
 - All 50 existing tests pass in new structure
-- Original crates untouched — no behavioral change
+- Original crates untouched - no behavioral change
 
-**Phase 2: Generate Store layer** (medium risk) — COMPLETE
+**Phase 2: Generate Store layer** (medium risk) - COMPLETE
 - Generates CRUD methods, Update structs, From<> impls, populate_relations for all entities
 - Handles three complexity tiers: simple, junction (many_to_many), has_many
 - 64 tests passing including integration tests against real schemas
 
-**Phase 3: Generate API layer** (low risk) — COMPLETE
+**Phase 3: Generate API layer** (low risk) - COMPLETE
 - Generates CRUD forwarding modules into `api/v1/generated/`
 - Scans hand-written API directories for custom modules (graph, events, project, etc.)
 - Merges generated + scanned into unified `ApiOutput` with correct `StateKind` and `OpKind`
 - Added `doc` field to `ApiFnMeta` IR for MCP/OpenAPI documentation
 - 73 tests passing (9 new API tests including scan+merge integration tests)
 
-**Phase 4: Generate remaining boilerplate** (low risk) — ABSORBED INTO PHASE 2
+**Phase 4: Generate remaining boilerplate** (low risk) - ABSORBED INTO PHASE 2
 - Update structs + apply methods → done in Phase 2
 - From<Input> conversions → done in Phase 2
 - populate_relations() → done in Phase 2
 
-**Phase 5: Wire build.rs and swap hand-written code** — COMPLETE
+**Phase 5: Wire build.rs and swap hand-written code** - COMPLETE
 - Replaced prior codegen build-dependencies with single `ontogen`
 - `build.rs` now calls full pipeline: `parse_schema` → `gen_seaorm` + `gen_markdown_io` + `gen_dtos` → `gen_store` → `gen_api`
 - Deleted 7 hand-written store entity modules (~1,487 lines of boilerplate):
@@ -789,10 +789,10 @@ Incremental, not a rewrite. Each phase produces working code.
 - Deleted 7 hand-written API CRUD forwarding modules (~230 lines of boilerplate):
   - Role, Agent, Node, Requirement, Specification, Task, WorkSession
 - Store uses `pub mod generated; pub mod hooks; pub use generated::*;` pattern
-  - `store/generated/*.rs` — regenerated each build (gitignored)
-  - `store/hooks/*.rs` — scaffolded once, never overwritten (committed)
+  - `store/generated/*.rs` - regenerated each build (gitignored)
+  - `store/hooks/*.rs` - scaffolded once, never overwritten (committed)
 - API uses same pattern: `pub mod generated; pub use generated::*;` in `v1.rs`
-  - `api/v1/generated/*.rs` — regenerated each build (gitignored)
+  - `api/v1/generated/*.rs` - regenerated each build (gitignored)
   - Custom modules (graph, events, project, etc.) remain hand-written alongside
 - Transport scanner (`scan_api_dir`) enhanced to scan subdirectories, finding both
   hand-written `api/v1/*.rs` and generated `api/v1/generated/*.rs` files
@@ -806,12 +806,12 @@ Incremental, not a rewrite. Each phase produces working code.
 - Test entity excluded pending `AppError::TestNotFound` / `EntityKind::Test` support
 - 76 ontogen tests + all integration tests + 6 wikilink normalization tests pass
 
-**Phase 5b: Enable all entities in codegen** — COMPLETE
+**Phase 5b: Enable all entities in codegen** - COMPLETE
 - Added `AppError::TestNotFound`, `ContractNotFound`, `EvidenceNotFound` variants
 - Added `EntityKind::Test` + `tests_changed` to `GraphDelta`
 - Removed `#[ontology(skip)]` from Contract's `states`, `transitions`, `forbid`, `endpoints` fields
   - Plain `Vec<String>` fields are stored as JSON text columns and handled by existing codegen pipeline
-- Removed all store/API exclusions — all 10 entities now generated by codegen
+- Removed all store/API exclusions - all 10 entities now generated by codegen
 - Deleted hand-written `store/contract.rs` (225 lines), `store/evidence.rs` (118 lines)
 - Deleted hand-written `api/v1/contract.rs` (34 lines), `api/v1/evidence.rs` (34 lines)
 - Moved Contract/Evidence prefix validation warnings into `hooks/contract.rs` and `hooks/evidence.rs`
@@ -819,22 +819,22 @@ Incremental, not a rewrite. Each phase produces working code.
 - Added `EntityKind::Test` handling in `subscribers.rs` (fs write, file path, db delete)
 - 142 tests passing (11 CRUD roundtrip tests including new Contract, Evidence, Test)
 
-**Phase 6: Change channels and instrumentation** (additive) — REMAINING
+**Phase 6: Change channels and instrumentation** (additive) - REMAINING
 - Add typed per-entity channels
 - Add tracing instrumentation
-- Both purely additive — no breaking changes
+- Both purely additive - no breaking changes
 
 ## What Stays Hand-Written
 
 | What | Where | Why |
 |------|-------|-----|
-| Schema definitions | `src/schema/*.rs` | Source of truth — always authored by humans |
+| Schema definitions | `src/schema/*.rs` | Source of truth - always authored by humans |
 | Hook implementations | `src/store/hooks/*.rs` | Custom business logic (validation, containment, etc.) |
 | Status machines | `schema/common.rs` | Domain logic, not boilerplate |
 | Custom API modules | `src/api/v1/*.rs` | graph, events, project, status, path_opener, settings, entity_counts |
 | Build configuration | `build.rs` | Pipeline setup and entity overrides |
 | Migrations | `src/persistence/db/migrations/` | Schema evolution requires human judgment |
-| Store helpers | `src/store/store.rs` | `sync_junction()`, `load_junction_ids()`, `emit_change()` — shared infrastructure |
+| Store helpers | `src/store/store.rs` | `sync_junction()`, `load_junction_ids()`, `emit_change()` - shared infrastructure |
 
 ## File Ownership: Current vs Proposed
 
@@ -856,7 +856,7 @@ Incremental, not a rewrite. Each phase produces working code.
 
 2. **Output struct serialization**: Deferred to post-v1. Adding `#[derive(Serialize, Deserialize)]` to output structs is trivial and has no architectural impact.
 
-3. **Generated mod.rs management**: Parent `mod.rs` is hand-written, uses `pub use generated::*` and `pub use custom::*` glob re-exports to flatten the namespace. Callers see a unified API without knowing which module a symbol came from. Name collisions between generated and custom code produce a compile error — catching conflicts at build time.
+3. **Generated mod.rs management**: Parent `mod.rs` is hand-written, uses `pub use generated::*` and `pub use custom::*` glob re-exports to flatten the namespace. Callers see a unified API without knowing which module a symbol came from. Name collisions between generated and custom code produce a compile error - catching conflicts at build time.
 
 ```rust
 // src/store/mod.rs (hand-written, never overwritten)

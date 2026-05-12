@@ -22,21 +22,21 @@ pub fn classify_by_name_and_params(name: &str, params: &[Param]) -> OpKind {
         "update" => OpKind::Update,
         "delete" => OpKind::Delete,
         _ => {
-            // Junction: add_{child}(parent_id, child_id) — exactly 2 params
+            // Junction: add_{child}(parent_id, child_id) - exactly 2 params
             if let Some(rest) = name.strip_prefix("add_")
                 && params.len() == 2
             {
                 return OpKind::JunctionAdd { child_segment: junction_child_segment(rest, false) };
             }
 
-            // Junction: remove_{child}(parent_id, child_id) — exactly 2 params
+            // Junction: remove_{child}(parent_id, child_id) - exactly 2 params
             if let Some(rest) = name.strip_prefix("remove_")
                 && params.len() == 2
             {
                 return OpKind::JunctionRemove { child_segment: junction_child_segment(rest, false) };
             }
 
-            // Junction: list_{children}(parent_id) — exactly 1 param, not "list" itself
+            // Junction: list_{children}(parent_id) - exactly 1 param, not "list" itself
             if let Some(rest) = name.strip_prefix("list_")
                 && params.len() == 1
             {

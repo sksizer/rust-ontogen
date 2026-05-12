@@ -6,7 +6,7 @@ type EntityRecord = Record<string, unknown>
 /**
  * Contract: the consuming app must provide this auto-imported composable:
  *
- *   useTransport() — returns a Transport object with CRUD methods
+ *   useTransport() - returns a Transport object with CRUD methods
  *
  * The admin registry is provided automatically by the layer's Nuxt module
  * via the #admin-registry alias pointing to app/admin/generated/admin-registry.ts.

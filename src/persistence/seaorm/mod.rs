@@ -1,4 +1,4 @@
-//! SeaORM persistence generator — entity models, relations, and conversions.
+//! SeaORM persistence generator - entity models, relations, and conversions.
 
 pub mod gen_conversion;
 pub mod gen_entity;

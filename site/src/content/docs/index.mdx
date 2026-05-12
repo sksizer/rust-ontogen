@@ -1,9 +1,9 @@
 ---
 title: Ontogen
-description: Build-time code generation for ontology-driven Rust applications. Define your entities once — get your full stack generated.
+description: Build-time code generation for ontology-driven Rust applications. Define your entities once - get your full stack generated.
 template: splash
 hero:
-  tagline: Define your entities once as annotated Rust structs. Ontogen generates your persistence layer, CRUD store, API endpoints, server transports, and typed client libraries — all at build time, all from a single source of truth.
+  tagline: Define your entities once as annotated Rust structs. Ontogen generates your persistence layer, CRUD store, API endpoints, server transports, and typed client libraries - all at build time, all from a single source of truth.
   actions:
     - text: Get Started
       link: /getting-started/installation/
@@ -23,7 +23,7 @@ You've defined your data model. Now you need a database entity. And a conversion
 
 For every single entity.
 
-That's hundreds of lines of code that look almost identical across your codebase — the kind of boilerplate where the 95th copy-paste is where bugs hide.
+That's hundreds of lines of code that look almost identical across your codebase - the kind of boilerplate where the 95th copy-paste is where bugs hide.
 
 ## The Pipeline
 
@@ -88,7 +88,7 @@ From that single struct definition, one `cargo build` generates:
     Forwarding functions that bridge your store to your transport layer. Generated modules merge seamlessly with hand-written custom endpoints.
   </Card>
   <Card title="Server Transports" icon="rocket">
-    Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions — all generated from the same API surface with consistent naming.
+    Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions - all generated from the same API surface with consistent naming.
   </Card>
   <Card title="TypeScript Clients" icon="seti:typescript">
     Typed client functions for HTTP and Tauri IPC, split transport layers that pick the right backend at runtime, and admin UI registry with per-field metadata.
@@ -119,13 +119,13 @@ From that single struct definition, one `cargo build` generates:
 
 ## Key Design Decisions
 
-**Independent generators, not a monolith.** Each generator is a standalone function. `gen_seaorm` doesn't know about `gen_api`. You can use just the persistence layer and skip everything else, or run the full pipeline. This isn't a framework that owns your architecture — it's a toolbox.
+**Independent generators, not a monolith.** Each generator is a standalone function. `gen_seaorm` doesn't know about `gen_api`. You can use just the persistence layer and skip everything else, or run the full pipeline. This isn't a framework that owns your architecture - it's a toolbox.
 
 **Generated and custom code coexist.** Generated code lands in `generated/` subdirectories. Your hand-written modules live alongside them. The API layer scans both and merges them into a unified intermediate representation. Downstream generators see no difference between generated and custom endpoints.
 
-**Typed IRs between stages.** Each generator returns a plain Rust struct — `SchemaOutput`, `SeaOrmOutput`, `StoreOutput`, `ApiOutput`, `ServersOutput`. No magic, no framework types. Just data that the next stage can use to make smarter decisions.
+**Typed IRs between stages.** Each generator returns a plain Rust struct - `SchemaOutput`, `SeaOrmOutput`, `StoreOutput`, `ApiOutput`, `ServersOutput`. No magic, no framework types. Just data that the next stage can use to make smarter decisions.
 
-**Lifecycle hooks you own.** Hook files are scaffolded once per entity and never overwritten. You fill in `before_create`, `after_update`, `before_delete` — the generated store calls them at the right time. Your business logic stays in files you control.
+**Lifecycle hooks you own.** Hook files are scaffolded once per entity and never overwritten. You fill in `before_create`, `after_update`, `before_delete` - the generated store calls them at the right time. Your business logic stays in files you control.
 
 ## Get Started
 

@@ -1,4 +1,4 @@
-//! Server transport generators — HTTP (Axum), IPC (Tauri), MCP.
+//! Server transport generators - HTTP (Axum), IPC (Tauri), MCP.
 //!
 //! Also includes client generators (TypeScript, admin registry) which will
 //! move to the `clients` module in a later phase.
@@ -85,7 +85,7 @@ pub fn generate(
 ///
 /// HTTP routes mirror the path/method decisions made by the HTTP generator
 /// (including project-scoping for store-based modules when `route_prefix`
-/// is set). IPC commands and MCP tools are 1:1 with API functions —
+/// is set). IPC commands and MCP tools are 1:1 with API functions -
 /// `route_prefix` does not affect them.
 fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config) -> ServersOutput {
     let mut http_routes = Vec::new();
@@ -127,7 +127,7 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
             mcp_tools.push(McpToolMeta { tool_name: handler_name, description: f.doc.clone(), params });
         }
 
-        // SSE event streams — HTTP-only. When route_prefix is set, both
+        // SSE event streams - HTTP-only. When route_prefix is set, both
         // unscoped and prefix-scoped variants are emitted (http.rs:463-500
         // and the scoped handler block).
         for ev in &m.events {
@@ -193,7 +193,7 @@ fn http_route_for(
                 path.push_str(&action);
             }
             // GET handlers extract path params from non-Option non-Input params.
-            // POST handlers put all such params into the JSON body — no path params.
+            // POST handlers put all such params into the JSON body - no path params.
             if is_get {
                 for p in &f.params {
                     if !p.ty.starts_with("Option<") && !p.ty.contains("Input") {

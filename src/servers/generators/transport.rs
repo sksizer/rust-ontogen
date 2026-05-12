@@ -4,8 +4,8 @@
 //!
 //! Produces a single file containing:
 //! - `Transport` interface
-//! - `createHttpTransport()` — fetch-based HTTP implementation
-//! - `createIpcTransport()` — Tauri IPC invoke-based implementation
+//! - `createHttpTransport()` - fetch-based HTTP implementation
+//! - `createIpcTransport()` - Tauri IPC invoke-based implementation
 
 use std::fs;
 use std::path::Path;
@@ -135,7 +135,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         out.push_str(&format!("}} from '{}';\n\n", bindings_import_path));
     }
 
-    // IPC imports — must be at top level for lint compliance
+    // IPC imports - must be at top level for lint compliance
     out.push_str("import { invoke } from '@tauri-apps/api/core';\n");
     let has_events = modules.iter().any(|m| !m.events.is_empty());
     if has_events {
@@ -145,7 +145,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
     for t in &missing {
         out.push_str(&format!(
-            "// TODO: Type '{t}' not yet exported from bindings.ts — using placeholder\n\
+            "// TODO: Type '{t}' not yet exported from bindings.ts - using placeholder\n\
              type {t} = Record<string, unknown>;\n\n"
         ));
     }
@@ -661,7 +661,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
             if config.route_prefix.is_some() {
                 // When route_prefix is configured, accept optional projectId and
                 // use scoped path when provided.
-                // Use addEventListener with the named event type — onmessage only
+                // Use addEventListener with the named event type - onmessage only
                 // catches unnamed SSE events, but the backend sends named events
                 // via `.event("{ev_name}")`.
                 out.push_str(&format!(
@@ -1129,7 +1129,7 @@ fn generate_ipc_custom_method(out: &mut String, f: &crate::servers::parse::ApiFn
         }
         let params_str = ts_params.join(", ");
 
-        // Build invoke args object — Tauri expects snake_case keys for IPC
+        // Build invoke args object - Tauri expects snake_case keys for IPC
         let invoke_args: Vec<String> = f.params.iter().map(|p| snake_to_camel(&p.name)).collect();
         let ipc_arg_only = ts_ipc_prefix_arg_only(config);
         let args_str = if invoke_args.is_empty() && !ipc_arg_only.is_empty() {

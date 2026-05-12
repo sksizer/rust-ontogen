@@ -1,4 +1,4 @@
-//! Markdown filesystem persistence generator — writers, parser dispatch, fs helpers.
+//! Markdown filesystem persistence generator - writers, parser dispatch, fs helpers.
 
 pub mod gen_fs_ops;
 pub mod gen_parser;

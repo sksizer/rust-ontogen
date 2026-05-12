@@ -158,7 +158,7 @@ fn main() {
         )
         .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
         .api("src/api/v1/generated", "AppState")
-        // .servers(servers_config) — add when you want HTTP/IPC/MCP/clients
+        // .servers(servers_config) - add when you want HTTP/IPC/MCP/clients
         .build()
         .expect("ontogen pipeline failed");
 }

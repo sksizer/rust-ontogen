@@ -141,13 +141,13 @@ pub status: Option<TaskStatus>,
 The generated conversion code uses serde for the roundtrip:
 
 ```rust
-// from_model() — DB string to Rust enum
+// from_model() - DB string to Rust enum
 status: model.status.as_deref()
     .and_then(|s| serde_json::from_str::<crate::schema::TaskStatus>(
         &format!("\"{s}\"")
     ).ok()),
 
-// to_active_model() — Rust enum to DB string
+// to_active_model() - Rust enum to DB string
 status: Set(self.status.as_ref().map(enum_to_string)),
 ```
 
@@ -208,15 +208,15 @@ Defines a relationship to another entity. This is the most complex annotation an
 Quick summary of the three kinds:
 
 ```rust
-// belongs_to — FK column on this table
+// belongs_to - FK column on this table
 #[ontology(relation(belongs_to, target = "Node"))]
 pub parent_id: Option<String>,
 
-// has_many — reverse side of a belongs_to
+// has_many - reverse side of a belongs_to
 #[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
 pub contains: Vec<String>,
 
-// many_to_many — junction table
+// many_to_many - junction table
 #[ontology(relation(many_to_many, target = "Requirement"))]
 pub fulfills: Vec<String>,
 ```

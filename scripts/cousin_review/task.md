@@ -4,8 +4,8 @@ You are running inside a **clone of a cousin repository** (your current working 
 
 Environment variables:
 
-- `TEMPLATE_DIR` — absolute path to a local checkout of the template repo (the "source of ideas").
-- `COUSIN_CONFIG_JSON` — a JSON string describing THIS cousin only. Schema:
+- `TEMPLATE_DIR` - absolute path to a local checkout of the template repo (the "source of ideas").
+- `COUSIN_CONFIG_JSON` - a JSON string describing THIS cousin only. Schema:
 
   ```
   {
@@ -24,20 +24,20 @@ Environment variables:
   }
   ```
 
-- `COUSIN_NAME` — same as `.name` above, pre-extracted for convenience.
+- `COUSIN_NAME` - same as `.name` above, pre-extracted for convenience.
 
-## Safety rules — these are not guidelines
+## Safety rules - these are not guidelines
 
 1. **Opt-in only.** You may ONLY examine and discuss these file slots:
    - For each `targets[i]`: the files listed in `targets[i].applies`, evaluated at path `targets[i].path/<file>` inside the cousin.
    - Each file in `global_applies`, evaluated at the cousin repo root.
-   - Anything else is off-limits — do not diff it, do not open it, do not recommend touching it.
+   - Anything else is off-limits - do not diff it, do not open it, do not recommend touching it.
 
 2. **Forbidden paths win.** If a file slot derived from rule 1 matches any pattern in `forbidden_paths`, drop it immediately. Forbidden paths are a hard deny list and always take precedence.
 
 3. **Respect the cousin's conventions.** Read the cousin's own `notes` field carefully. If the cousin says "Bazel-managed", do not recommend changes that assume Cargo/just. If the cousin uses a different formatter style, note it but do not recommend clobbering it.
 
-4. **Never recommend repo-wide changes.** The template is not authoritative here — it is only a source of suggestions scoped to the opted-in slots.
+4. **Never recommend repo-wide changes.** The template is not authoritative here - it is only a source of suggestions scoped to the opted-in slots.
 
 ## Task
 
@@ -72,10 +72,10 @@ Before opening any path, verify it does not match `forbidden_paths`. If it does,
 
 For every non-empty diff, decide:
 
-- **SUGGEST-ADOPT** — the template version is clearly better for this target, and the cousin's surrounding project would tolerate the change. Must be ~95% confident. Consider: does the cousin already have this file? Is the diff small and low-risk? Does the cousin's notes field contradict this?
-- **SUGGEST-NEW-FILE** — the cousin doesn't have this file at all and would benefit from it. Even more conservative: only recommend if the file is clearly standalone (e.g. a per-crate `rustfmt.toml`) and the target crate path exists.
-- **KEEP-COUSIN** — the cousin's version is fine or better; no change recommended.
-- **NOT-APPLICABLE** — the diff exists but the change doesn't make sense in this cousin (e.g. the template assumes tooling the cousin doesn't have).
+- **SUGGEST-ADOPT** - the template version is clearly better for this target, and the cousin's surrounding project would tolerate the change. Must be ~95% confident. Consider: does the cousin already have this file? Is the diff small and low-risk? Does the cousin's notes field contradict this?
+- **SUGGEST-NEW-FILE** - the cousin doesn't have this file at all and would benefit from it. Even more conservative: only recommend if the file is clearly standalone (e.g. a per-crate `rustfmt.toml`) and the target crate path exists.
+- **KEEP-COUSIN** - the cousin's version is fine or better; no change recommended.
+- **NOT-APPLICABLE** - the diff exists but the change doesn't make sense in this cousin (e.g. the template assumes tooling the cousin doesn't have).
 
 Check the cousin's git history for intent where helpful:
 
@@ -93,11 +93,11 @@ Print a single markdown report to stdout with this exact structure:
 # Cousin Review: <COUSIN_NAME>
 
 ## Summary
-<one-line summary — candidate count and any high-level observations>
+<one-line summary - candidate count and any high-level observations>
 
 ## Suggestions
 
-### <target path or "(global)"> — <file>
+### <target path or "(global)"> - <file>
 **Classification:** SUGGEST-ADOPT | SUGGEST-NEW-FILE
 **What changes:** <1-2 sentence description>
 **Why it might help:** <reason scoped to this target>
@@ -107,7 +107,7 @@ Print a single markdown report to stdout with this exact structure:
 <repeat per suggestion>
 
 ## Considered but skipped
-- <target path> — <file>: KEEP-COUSIN / NOT-APPLICABLE — <one-line reason>
+- <target path> - <file>: KEEP-COUSIN / NOT-APPLICABLE - <one-line reason>
 <repeat, or omit section if empty>
 
 ## Forbidden paths honored

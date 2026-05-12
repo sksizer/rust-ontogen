@@ -14,7 +14,7 @@ mod tests {
     }
 
     fn api_dir() -> PathBuf {
-        // No embedded API fixture yet — scan tests still skip until one is added.
+        // No embedded API fixture yet - scan tests still skip until one is added.
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/api/v1")
     }
 
@@ -211,7 +211,7 @@ mod tests {
             return;
         }
 
-        // No entities — just scan
+        // No entities - just scan
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut config = base_config(tmp.path().to_path_buf());
         config.scan_dirs = vec![adir];
@@ -251,7 +251,7 @@ mod tests {
         let snapshot_fn =
             graph.fns.iter().find(|f| f.name == "get_graph_snapshot").expect("get_graph_snapshot not found");
 
-        // Has optional parent_id param — should be CustomGet
+        // Has optional parent_id param - should be CustomGet
         assert_eq!(snapshot_fn.classified_op, ir::OpKind::CustomGet);
         assert!(!snapshot_fn.doc.is_empty(), "Should have doc comment");
     }
@@ -276,7 +276,7 @@ mod tests {
 
         let agent_module = output.modules.iter().find(|m| m.name == "agent").expect("agent module");
 
-        // Should still have exactly 5 CRUD functions — scanning finds the same
+        // Should still have exactly 5 CRUD functions - scanning finds the same
         // 5 in the hand-written file, but merge deduplicates by name
         assert_eq!(
             agent_module.fns.len(),

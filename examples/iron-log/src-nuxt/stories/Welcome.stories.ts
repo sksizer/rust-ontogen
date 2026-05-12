@@ -36,7 +36,7 @@ const WelcomePage = defineComponent({
           ]),
           h('ul', { style: 'color: #666; line-height: 2;' }, [
             h('li', {}, 'Use args for prop customization via Storybook controls'),
-            h('li', {}, 'Components work without Tauri — pass mock functions as props'),
+            h('li', {}, 'Components work without Tauri - pass mock functions as props'),
             h('li', {}, 'See the Components section in the sidebar for examples'),
           ]),
           h(

@@ -1,4 +1,4 @@
-//! Schema parsing — extracts `EntityDef` metadata from `#[ontology(...)]` annotations.
+//! Schema parsing - extracts `EntityDef` metadata from `#[ontology(...)]` annotations.
 //!
 //! This is always the starting point of the pipeline.
 

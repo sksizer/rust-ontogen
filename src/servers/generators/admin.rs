@@ -143,7 +143,7 @@ fn generate_fields_for_entity(module_name: &str, entities: &[EntityDef]) -> Stri
 
     let entity = match entity {
         Some(e) => e,
-        None => return String::new(), // No schema data — empty fields array
+        None => return String::new(), // No schema data - empty fields array
     };
 
     let mut fields = Vec::new();

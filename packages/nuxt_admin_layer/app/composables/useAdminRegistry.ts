@@ -2,7 +2,7 @@ import type { AdminEntityConfig, AdminFieldDef } from '@ontogen/admin-types'
 
 // #admin-registry is a virtual alias set by the layer's Nuxt module.
 // It resolves to the consuming app's app/admin/generated/admin-registry.ts at build time.
-// @ts-ignore — alias is only resolvable during Nuxt build, not standalone tsc
+// @ts-ignore - alias is only resolvable during Nuxt build, not standalone tsc
 import {
   adminEntities,
   adminEntityMap,

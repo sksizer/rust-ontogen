@@ -12,7 +12,7 @@
 //! - `before_create`, `after_create`, `before_update`, `after_update`,
 //!   `before_delete`, `after_delete`
 //!
-//! Hook files are written once and never overwritten — fill in your custom logic.
+//! Hook files are written once and never overwritten - fill in your custom logic.
 
 mod gen_crud;
 mod gen_hooks;

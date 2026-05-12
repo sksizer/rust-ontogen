@@ -201,7 +201,7 @@ pub struct PaginationParams {
                     let err_map = ".map_err(|e| err(e.to_string()))";
                     // Check for a query parameter struct (e.g., ListAgentsQuery)
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    // Check for plain string params (e.g., skill_id: &str) — scoped list filters
+                    // Check for plain string params (e.g., skill_id: &str) - scoped list filters
                     let plain_params: Vec<_> =
                         f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
 
@@ -374,7 +374,7 @@ async fn {handler_name}(
 "
                         ));
                     }
-                    // Collect for merging — will be combined with JunctionAdd on the same path
+                    // Collect for merging - will be combined with JunctionAdd on the same path
                     junction_routes
                         .entry(format!("/api/{url_plural}/:parent_id/{child_segment}"))
                         .or_default()
@@ -458,7 +458,7 @@ async fn {handler_name}(
         }
     }
 
-    // Flush junction routes — merge methods on the same path
+    // Flush junction routes - merge methods on the same path
     for (path, methods) in &junction_routes {
         route_entries.push(format!("        .route(\"{}\", {})", path, methods.join(".")));
     }
@@ -1086,7 +1086,7 @@ fn generate_generic_http_handler_scoped(
         out.push_str(&format!("    state.{accessor}(&{pp_name}).map_err(|e| err(e.to_string()))?;\n"));
     }
 
-    // Function call — pass &store for store-based, &state for state-based
+    // Function call - pass &store for store-based, &state for state-based
     let first_arg = if f.first_param_is_store { "&store" } else { "&state" };
     out.push_str(&format!("    {}::{}({first_arg}", svc, fn_name));
     for p in &path_params {

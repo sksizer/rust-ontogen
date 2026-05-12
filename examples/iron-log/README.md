@@ -1,4 +1,4 @@
-# Iron Log — Ontogen Example Project
+# Iron Log - Ontogen Example Project
 
 A weight-lifting tracker demonstrating the full ontogen code generation pipeline.
 
@@ -6,10 +6,10 @@ A weight-lifting tracker demonstrating the full ontogen code generation pipeline
 
 | Entity | Relations | Purpose |
 |---|---|---|
-| **Exercise** | — | Exercise catalog (name, muscle group, equipment) |
+| **Exercise** | - | Exercise catalog (name, muscle group, equipment) |
 | **Workout** | many-to-many Tag | A training session (date, duration, notes) |
 | **WorkoutSet** | belongs-to Workout, belongs-to Exercise | A single set (weight, reps, RPE) |
-| **Tag** | — | Labels for categorizing workouts |
+| **Tag** | - | Labels for categorizing workouts |
 
 ## Generated Stack
 
@@ -35,7 +35,7 @@ cargo build
 ```
 
 This generates all code from the 4 schema entity files. The generated TypeScript
-client uses `HttpTauriIpcSplit` — it auto-switches between Tauri IPC (desktop) and
+client uses `HttpTauriIpcSplit` - it auto-switches between Tauri IPC (desktop) and
 HTTP fetch (browser) at runtime.
 
 ## Project Structure

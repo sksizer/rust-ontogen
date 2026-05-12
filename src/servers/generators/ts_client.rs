@@ -69,7 +69,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
     for t in &missing {
         out.push_str(&format!(
-            "// TODO: Type '{t}' not yet exported from bindings.ts — using placeholder\n\
+            "// TODO: Type '{t}' not yet exported from bindings.ts - using placeholder\n\
              type {t} = Record<string, unknown>;\n\n"
         ));
     }

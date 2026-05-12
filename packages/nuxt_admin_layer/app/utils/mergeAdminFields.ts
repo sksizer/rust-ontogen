@@ -17,7 +17,7 @@ export function mergeAdminFields(
   for (const [entityKey, fieldOverrides] of Object.entries(overrides)) {
     const baseFields = result[entityKey]
     if (!baseFields) {
-      // Override for an entity not in generated — skip (or could add)
+      // Override for an entity not in generated - skip (or could add)
       continue
     }
 

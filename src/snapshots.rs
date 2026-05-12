@@ -2,8 +2,8 @@
 //!
 //! These tests freeze the exact string output of a handful of generators so
 //! future changes surface as reviewable diffs in the `.snap` files under
-//! `src/snapshots/`. This is intentionally narrow coverage — simple + complex
-//! cases per generator — not a comprehensive sweep.
+//! `src/snapshots/`. This is intentionally narrow coverage - simple + complex
+//! cases per generator - not a comprehensive sweep.
 //!
 //! ## Updating snapshots
 //!
@@ -18,7 +18,7 @@
 //! ## How the tests are structured
 //!
 //! - `gen_entity` (SeaORM) is snapshotted by calling `generate_entity_code`
-//!   directly — it's pub and returns a `String`.
+//!   directly - it's pub and returns a `String`.
 //! - `gen_dtos` and `gen_store` are snapshotted by calling their public
 //!   `generate()` entrypoints against a tempdir and reading the resulting
 //!   file back. This is deliberate: the public API is what consumers see, so
@@ -33,7 +33,7 @@ use crate::{DtoConfig, StoreConfig};
 
 // ─── Fixture builders ────────────────────────────────────────────────────────
 
-/// Simple entity: `Role { id, name, body }` — no relations.
+/// Simple entity: `Role { id, name, body }` - no relations.
 fn simple_role_entity() -> EntityDef {
     EntityDef {
         name: "Role".to_string(),
@@ -103,7 +103,7 @@ fn article_mtm_tags_entity() -> EntityDef {
 }
 
 /// Build a `{name -> snake_case}` module map containing every entity name
-/// referenced by a fixture — used by `generate_entity_code`.
+/// referenced by a fixture - used by `generate_entity_code`.
 fn modules_map(names: &[&str]) -> HashMap<String, String> {
     names.iter().map(|n| (n.to_string(), to_snake_case(n))).collect()
 }

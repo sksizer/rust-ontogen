@@ -3,7 +3,7 @@
   "$example": {
     "name": "acme-monorepo",
     "url": "git@github.com:acme/monorepo.git",
-    "notes": "Bazel-based monorepo. CI is Bazel-managed — never touch .github or root configs.",
+    "notes": "Bazel-based monorepo. CI is Bazel-managed - never touch .github or root configs.",
     "targets": [
       {
         "path": "backend/services/auth",

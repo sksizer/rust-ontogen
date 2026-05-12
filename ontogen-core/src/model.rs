@@ -72,7 +72,7 @@ pub enum FieldType {
     I32,
     /// `Option<i32>`
     OptionI32,
-    /// `i64` (also used for `u64` — SQLite has no unsigned integers)
+    /// `i64` (also used for `u64` - SQLite has no unsigned integers)
     I64,
     /// `Option<i64>` (also used for `Option<u64>`)
     OptionI64,
@@ -95,23 +95,23 @@ pub enum FieldType {
 /// The role of a field in the ontology model, derived from `#[ontology(...)]` attributes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldRole {
-    /// `#[ontology(id)]` — primary key field.
+    /// `#[ontology(id)]` - primary key field.
     Id,
 
-    /// `#[ontology(body)]` — markdown body, not part of frontmatter.
+    /// `#[ontology(body)]` - markdown body, not part of frontmatter.
     Body,
 
-    /// `#[ontology(enum_field)]` — enum stored as string in DB.
+    /// `#[ontology(enum_field)]` - enum stored as string in DB.
     EnumField,
 
-    /// `#[ontology(relation(...))]` — a cross-reference to another entity.
+    /// `#[ontology(relation(...))]` - a cross-reference to another entity.
     Relation(RelationInfo),
 
-    /// No ontology annotation — a plain data field.
+    /// No ontology annotation - a plain data field.
     /// For `Vec<String>` fields, stored as JSON in DB.
     Plain,
 
-    /// `#[ontology(skip)]` — excluded from codegen.
+    /// `#[ontology(skip)]` - excluded from codegen.
     Skip,
 }
 

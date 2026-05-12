@@ -6,7 +6,7 @@
 //! - `before_update`, `after_update`
 //! - `before_delete`, `after_delete`
 //!
-//! Hook files are **scaffolded once** — if the file already exists, it is
+//! Hook files are **scaffolded once** - if the file already exists, it is
 //! never overwritten. Fill in the function bodies with your custom logic
 //! (validation, status transitions, side effects, etc.).
 
@@ -20,7 +20,7 @@ use crate::schema::model::EntityDef;
 
 /// Scaffold hook files for all entities. Returns paths of newly created files.
 ///
-/// Only creates files that don't already exist — never overwrites user edits.
+/// Only creates files that don't already exist - never overwrites user edits.
 pub fn scaffold_hooks(
     entities: &[EntityDef],
     hooks_dir: &Path,
@@ -120,10 +120,10 @@ fn generate_hook_file(entity: &EntityDef, schema_module_path: &str) -> String {
 // ─── mod.rs generation ───────────────────────────────────────────────────────
 
 /// Generate the hooks `mod.rs`. This IS regenerated each build to pick up new
-/// entities, but it only contains `pub mod` declarations — no user code.
+/// entities, but it only contains `pub mod` declarations - no user code.
 fn generate_hooks_mod_rs(entities: &[EntityDef], hooks_dir: &Path) -> String {
     let mut code = String::new();
-    code.push_str("//! Hook modules — regenerated each build to track entities.\n");
+    code.push_str("//! Hook modules - regenerated each build to track entities.\n");
     code.push_str("//! Each module file is scaffolded once and never overwritten.\n\n");
 
     let mut names: Vec<String> = entities.iter().map(|e| to_snake_case(&e.name)).collect();
@@ -200,7 +200,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks_dir = dir.path().join("hooks");
 
-        // First scaffold — creates the file
+        // First scaffold - creates the file
         let created = scaffold_hooks(&[make_role_entity()], &hooks_dir, "crate::schema").unwrap();
         assert_eq!(created, vec!["role"]);
 
@@ -208,7 +208,7 @@ mod tests {
         let path = hooks_dir.join("role.rs");
         std::fs::write(&path, "// custom logic").unwrap();
 
-        // Second scaffold — should NOT overwrite
+        // Second scaffold - should NOT overwrite
         let created = scaffold_hooks(&[make_role_entity()], &hooks_dir, "crate::schema").unwrap();
         assert!(created.is_empty());
 

@@ -1,8 +1,8 @@
 //! Generate Create/Update DTO types from parsed ontology entity definitions.
 //!
 //! For each entity, generates:
-//! - `Create{Entity}Input` — all fields for creating a new entity
-//! - `Update{Entity}Input` — all fields wrapped in `Option<T>` for partial updates
+//! - `Create{Entity}Input` - all fields for creating a new entity
+//! - `Update{Entity}Input` - all fields wrapped in `Option<T>` for partial updates
 //!
 //! Generated DTOs are clean API-layer types:
 //! - No persistence-only fields (wikilinks, source_file)

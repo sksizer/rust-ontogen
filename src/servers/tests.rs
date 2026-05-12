@@ -220,7 +220,7 @@ fn write_synthetic_api(dir: &std::path::Path, filename: &str, content: &str) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// types.rs — Pure function tests
+// types.rs - Pure function tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -416,7 +416,7 @@ fn test_api_module_is_crud() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// classify.rs — Operation classification
+// classify.rs - Operation classification
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -485,7 +485,7 @@ fn test_is_read_operation() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// parse.rs — API module parsing
+// parse.rs - API module parsing
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -668,7 +668,7 @@ pub async fn list(store: &Store) -> Result<Vec<String>, anyhow::Error> { todo!()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Generator integration tests — verify generated output structure
+// Generator integration tests - verify generated output structure
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -1070,7 +1070,7 @@ fn test_http_generator_junction_module() {
     assert!(content.contains("async fn destination_skill_add_skill("));
     assert!(content.contains("async fn destination_skill_list_skills("));
 
-    // Regression guards — no old-style custom URLs.
+    // Regression guards - no old-style custom URLs.
     assert!(
         !content.contains("/api/destination_skills/add-skill"),
         "regression: old action-style custom URL leaked into HTTP routes"
@@ -1151,12 +1151,12 @@ fn test_ts_transport_junction_module() {
         let double = format!("invoke(\"{}\"", cmd);
         assert!(
             content.contains(&single) || content.contains(&double),
-            "TS transport missing invoke({}) — ipc.rs would never be reached",
+            "TS transport missing invoke({}) - ipc.rs would never be reached",
             cmd
         );
     }
 
-    // Regression guards — no plural-prefixed invoke names or snake_case URLs.
+    // Regression guards - no plural-prefixed invoke names or snake_case URLs.
     assert!(
         !content.contains("invoke('destination_skills_add_skill'")
             && !content.contains("invoke(\"destination_skills_add_skill\""),
@@ -1219,15 +1219,15 @@ fn test_junction_cross_transport_consistency() {
         let rust_decl = format!("pub async fn {}(", cmd);
         assert!(
             ipc.contains(&rust_decl),
-            "IPC output missing Rust handler `{}` — TS transport would fail to invoke",
+            "IPC output missing Rust handler `{}` - TS transport would fail to invoke",
             cmd
         );
-        // Prettier may quote invoke arg with either ' or " — accept either.
+        // Prettier may quote invoke arg with either ' or " - accept either.
         let ts_single = format!("invoke('{}'", cmd);
         let ts_double = format!("invoke(\"{}\"", cmd);
         assert!(
             ts.contains(&ts_single) || ts.contains(&ts_double),
-            "TS transport missing invoke({}) — IPC handler would never be called",
+            "TS transport missing invoke({}) - IPC handler would never be called",
             cmd
         );
     }
@@ -1252,7 +1252,7 @@ fn test_junction_cross_transport_consistency() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// E2E pipeline — scan real API modules → generate all outputs
+// E2E pipeline - scan real API modules → generate all outputs
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -1397,7 +1397,7 @@ fn test_e2e_scan_real_api_modules() {
         let has_list = m.functions.iter().any(|f| f.name == "list");
         let has_create = m.functions.iter().any(|f| f.name == "create");
         if has_list && has_create {
-            // Full CRUD entity — should have all 5
+            // Full CRUD entity - should have all 5
             let fn_names: Vec<&str> = m.functions.iter().map(|f| f.name.as_str()).collect();
             assert!(
                 fn_names.contains(&"list")
@@ -1426,7 +1426,7 @@ fn test_e2e_scan_real_api_modules() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// extract_server_metadata — ServersOutput IR population
+// extract_server_metadata - ServersOutput IR population
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]

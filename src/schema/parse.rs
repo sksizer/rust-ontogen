@@ -142,7 +142,7 @@ fn parse_struct_ontology_attrs(struct_name: &str, attrs: &[Attribute]) -> Option
         let Ok(nested) = attr.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
         else {
             println!(
-                "cargo:warning=ontogen: malformed #[ontology(...)] on struct `{struct_name}` — attribute will be ignored"
+                "cargo:warning=ontogen: malformed #[ontology(...)] on struct `{struct_name}` - attribute will be ignored"
             );
             continue;
         };
@@ -219,7 +219,7 @@ fn parse_field_ontology_attrs(field_name: &str, attrs: &[Attribute]) -> Result<F
         let Ok(nested) = attr.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
         else {
             println!(
-                "cargo:warning=ontogen: malformed #[ontology(...)] on field `{field_name}` — attribute will be ignored"
+                "cargo:warning=ontogen: malformed #[ontology(...)] on field `{field_name}` - attribute will be ignored"
             );
             continue;
         };
@@ -250,9 +250,9 @@ fn parse_field_ontology_attrs(field_name: &str, attrs: &[Attribute]) -> Result<F
 /// Parse `#[ontology(relation(kind, target = "...", ...))]` into a `RelationInfo`.
 ///
 /// The relation kind must be explicitly specified:
-/// - `belongs_to` — FK column on this table (many-to-one)
-/// - `has_many` — reverse of a belongs_to on the target (requires `foreign_key`)
-/// - `many_to_many` — junction table (optionally override with `junction`)
+/// - `belongs_to` - FK column on this table (many-to-one)
+/// - `has_many` - reverse of a belongs_to on the target (requires `foreign_key`)
+/// - `many_to_many` - junction table (optionally override with `junction`)
 fn parse_relation_meta(list: &syn::MetaList) -> Result<Option<RelationInfo>, String> {
     let Ok(nested) = list.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated) else {
         return Ok(None);
@@ -472,7 +472,7 @@ mod tests {
             other => panic!("Expected Relation, got {other:?}"),
         }
 
-        // contains (has_many — reverse of parent_id, no junction table)
+        // contains (has_many - reverse of parent_id, no junction table)
         let contains = &node.fields[4];
         assert_eq!(contains.name, "contains");
         assert_eq!(contains.field_type, FieldType::VecString);
@@ -514,12 +514,12 @@ mod tests {
             other => panic!("Expected Relation, got {other:?}"),
         }
 
-        // junction_relations — only fulfills (many_to_many)
+        // junction_relations - only fulfills (many_to_many)
         let junctions: Vec<_> = node.junction_relations().collect();
         assert_eq!(junctions.len(), 1);
         assert_eq!(junctions[0].0.name, "fulfills");
 
-        // has_many_relations — only contains
+        // has_many_relations - only contains
         let has_many: Vec<_> = node.has_many_relations().collect();
         assert_eq!(has_many.len(), 1);
         assert_eq!(has_many[0].0.name, "contains");
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn malformed_ontology_attr_on_field_is_skipped_cleanly() {
         // Malformed `#[ontology(...)]` at the field level should be skipped with a
-        // `cargo:warning` diagnostic rather than panicking — the rest of the struct
+        // `cargo:warning` diagnostic rather than panicking - the rest of the struct
         // should still parse normally.
         let source = r#"
             use ontogen_macros::OntologyEntity;
@@ -748,7 +748,7 @@ mod tests {
         assert_eq!(entities.len(), 1);
         let node = &entities[0];
 
-        // The malformed attr is ignored — `name` still shows up as a plain field.
+        // The malformed attr is ignored - `name` still shows up as a plain field.
         let name_field = node.fields.iter().find(|f| f.name == "name").expect("name field should exist");
         assert_eq!(name_field.role, FieldRole::Plain);
 
@@ -839,7 +839,7 @@ mod tests {
         // Spot-check key properties
         let find = |name: &str| entities.iter().find(|e| e.name == name).unwrap();
 
-        // Tag — simple entity, no relations
+        // Tag - simple entity, no relations
         let tag = find("Tag");
         assert_eq!(tag.directory, "tag");
         assert_eq!(tag.table, "tags");
@@ -847,7 +847,7 @@ mod tests {
         assert_eq!(tag.id_field().unwrap().field_type, FieldType::String);
         assert_eq!(tag.relation_fields().count(), 0);
 
-        // Exercise — simple entity with Option<String>, no relations
+        // Exercise - simple entity with Option<String>, no relations
         let ex = find("Exercise");
         assert_eq!(ex.directory, "exercise");
         assert_eq!(ex.table, "exercises");
@@ -855,7 +855,7 @@ mod tests {
         let notes = ex.fields.iter().find(|f| f.name == "notes").unwrap();
         assert_eq!(notes.field_type, FieldType::OptionString);
 
-        // Workout — 1 belongs_to (parent_id, self-ref) + 1 many_to_many (tags) + body field
+        // Workout - 1 belongs_to (parent_id, self-ref) + 1 many_to_many (tags) + body field
         let w = find("Workout");
         assert_eq!(w.directory, "workout");
         assert_eq!(w.table, "workouts");
@@ -868,7 +868,7 @@ mod tests {
         let tags = w.fields.iter().find(|f| f.name == "tags").unwrap();
         assert!(tags.multiline_list, "Workout.tags should be multiline_list");
 
-        // WorkoutSet — 2 belongs_to (workout_id, exercise_id), several i32 fields
+        // WorkoutSet - 2 belongs_to (workout_id, exercise_id), several i32 fields
         let ws = find("WorkoutSet");
         assert_eq!(ws.directory, "workout_set");
         assert_eq!(ws.table, "workout_sets");

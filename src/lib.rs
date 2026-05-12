@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Ontogen — build-time code generator for ontology-driven applications.
+//! Ontogen - build-time code generator for ontology-driven applications.
 //!
 //! Generates code from schema definitions through a layered pipeline:
 //!
@@ -14,7 +14,7 @@
 //!             └── gen_servers → ServersOutput  (also emits TypeScript clients)
 //! ```
 //!
-//! Each generator is a standalone function. Upstream outputs are `Option` parameters —
+//! Each generator is a standalone function. Upstream outputs are `Option` parameters -
 //! enrichment, not requirements. Generators can run independently or be chained.
 
 pub mod admin;
@@ -59,7 +59,7 @@ use std::path::PathBuf;
 /// Use this constant rather than hard-coding `"crate::schema"` so that any future
 /// change to the convention propagates to every direct consumer at once. Callers
 /// who construct configs via [`Pipeline`](pipeline::Pipeline) do not need to set
-/// the field directly — the builder applies this default and propagates it to
+/// the field directly - the builder applies this default and propagates it to
 /// both configs.
 pub const DEFAULT_SCHEMA_MODULE_PATH: &str = "crate::schema";
 
@@ -70,7 +70,7 @@ pub const DEFAULT_SCHEMA_MODULE_PATH: &str = "crate::schema";
 
 /// Parse schema files into structured entity metadata.
 ///
-/// Always the starting point when entity metadata is needed — every other
+/// Always the starting point when entity metadata is needed - every other
 /// generator consumes the resulting [`SchemaOutput::entities`]. Also emits
 /// `cargo:rerun-if-changed` directives for the schema directory so the build
 /// script re-runs whenever any schema file is touched.
@@ -269,7 +269,7 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 ///
 /// Currently, this function always scans `config.api_dir` with `syn`,
 /// regardless of `api` and `scan_dirs`. Both parameters are **reserved for
-/// future enrichment** — `api` for using structured metadata directly without
+/// future enrichment** - `api` for using structured metadata directly without
 /// re-parsing, and `scan_dirs` for additional scan locations beyond
 /// `config.api_dir`. They have no effect today; pass `None` and `&[]`
 /// respectively. Both signatures are kept stable for forward compatibility.
@@ -375,7 +375,7 @@ pub struct MarkdownIoConfig {
 
 /// Configuration for [`gen_dtos`].
 ///
-/// Used when you want input DTOs without a full store layer — for example,
+/// Used when you want input DTOs without a full store layer - for example,
 /// in a thin client crate that posts payloads to a remote service. When using
 /// [`gen_store`], the same DTOs are emitted automatically and this config is
 /// not needed.
@@ -396,7 +396,7 @@ pub struct StoreConfig {
     pub output_dir: PathBuf,
     /// Directory for scaffolded hook files (e.g., `src/store/hooks/`).
     /// When `Some`, hook files are scaffolded once per entity (never overwritten).
-    /// When `None`, hook scaffolding is skipped — generated CRUD still calls
+    /// When `None`, hook scaffolding is skipped - generated CRUD still calls
     /// hooks, so the consuming crate must provide its own hook modules.
     pub hooks_dir: Option<PathBuf>,
     /// Import path for the schema module in generated code (e.g., `"crate::schema"`).
@@ -482,7 +482,7 @@ pub struct ServersConfig {
     /// [`parse_schema`]. Leaving this empty silently strips the field
     /// metadata from `admin-registry.ts` output, so the admin layer renders
     /// blank tables. Server transports (Axum, Tauri IPC, MCP) and the
-    /// transport TypeScript clients do not consume this field — only the
+    /// transport TypeScript clients do not consume this field - only the
     /// admin-registry generator does.
     ///
     /// [`Pipeline`] users do not need to set this; the builder forwards
@@ -496,7 +496,7 @@ pub struct ServersConfig {
 // on the core pipeline entry points and config types.
 pub use admin::AdminLayerConfig;
 
-/// Install the ontogen admin layer into a Nuxt app — see [`admin::install`].
+/// Install the ontogen admin layer into a Nuxt app - see [`admin::install`].
 ///
 /// Re-exported here for `build.rs` ergonomics. Equivalent to
 /// `ontogen::admin::install(config)`.

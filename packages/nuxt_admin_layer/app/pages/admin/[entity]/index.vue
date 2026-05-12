@@ -78,7 +78,7 @@ function navigateToCreate() {
                 <span class="text-blue-600 underline">{{ item[field.key] }}</span>
               </template>
               <template v-else>
-                {{ formatFieldValue(item, field.key) ?? '—' }}
+                {{ formatFieldValue(item, field.key) ?? '-' }}
               </template>
             </td>
           </tr>

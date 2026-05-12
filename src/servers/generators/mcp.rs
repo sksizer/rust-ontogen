@@ -234,7 +234,7 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
             props_obj.insert(\"{pp_name}\".to_string(), json!({{
                 \"type\": \"string\",
                 \"format\": \"uuid\",
-                \"description\": \"Project ID (optional — uses default project if omitted)\"
+                \"description\": \"Project ID (optional - uses default project if omitted)\"
             }}));
         }}
     }}

@@ -3,40 +3,40 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
-// TODO: Type 'CreateExerciseInput' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'CreateExerciseInput' not yet exported from bindings.ts - using placeholder
 type CreateExerciseInput = Record<string, unknown>
 
-// TODO: Type 'CreateTagInput' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'CreateTagInput' not yet exported from bindings.ts - using placeholder
 type CreateTagInput = Record<string, unknown>
 
-// TODO: Type 'CreateWorkoutInput' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'CreateWorkoutInput' not yet exported from bindings.ts - using placeholder
 type CreateWorkoutInput = Record<string, unknown>
 
-// TODO: Type 'CreateWorkoutSetInput' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'CreateWorkoutSetInput' not yet exported from bindings.ts - using placeholder
 type CreateWorkoutSetInput = Record<string, unknown>
 
-// TODO: Type 'Exercise' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'Exercise' not yet exported from bindings.ts - using placeholder
 type Exercise = Record<string, unknown>
 
-// TODO: Type 'Tag' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'Tag' not yet exported from bindings.ts - using placeholder
 type Tag = Record<string, unknown>
 
-// TODO: Type 'UpdateExerciseInput' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'UpdateExerciseInput' not yet exported from bindings.ts - using placeholder
 type UpdateExerciseInput = Record<string, unknown>
 
-// TODO: Type 'UpdateTagInput' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'UpdateTagInput' not yet exported from bindings.ts - using placeholder
 type UpdateTagInput = Record<string, unknown>
 
-// TODO: Type 'UpdateWorkoutInput' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'UpdateWorkoutInput' not yet exported from bindings.ts - using placeholder
 type UpdateWorkoutInput = Record<string, unknown>
 
-// TODO: Type 'UpdateWorkoutSetInput' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'UpdateWorkoutSetInput' not yet exported from bindings.ts - using placeholder
 type UpdateWorkoutSetInput = Record<string, unknown>
 
-// TODO: Type 'Workout' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'Workout' not yet exported from bindings.ts - using placeholder
 type Workout = Record<string, unknown>
 
-// TODO: Type 'WorkoutSet' not yet exported from bindings.ts — using placeholder
+// TODO: Type 'WorkoutSet' not yet exported from bindings.ts - using placeholder
 type WorkoutSet = Record<string, unknown>
 
 // ── Transport Interface ──

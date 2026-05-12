@@ -18,7 +18,7 @@ Run:
 cargo update 2>&1
 ```
 
-Save the full output — you will include it in the PR body.
+Save the full output - you will include it in the PR body.
 
 ## 3. Code quality checks
 

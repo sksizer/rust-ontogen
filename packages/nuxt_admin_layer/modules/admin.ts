@@ -1,4 +1,4 @@
-// @ts-nocheck — this module runs in Nuxt's build context, not the consuming app's tsc
+// @ts-nocheck - this module runs in Nuxt's build context, not the consuming app's tsc
 import { defineNuxtModule } from '@nuxt/kit'
 import { join } from 'pathe'
 

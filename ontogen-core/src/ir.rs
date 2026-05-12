@@ -1,7 +1,7 @@
 //! Intermediate Representation types that flow between generators.
 //!
 //! Each generator produces a typed output struct. Downstream generators accept
-//! these as `Option<&Output>` parameters — enrichment, not requirements.
+//! these as `Option<&Output>` parameters - enrichment, not requirements.
 //! All merge layers normalize generated + scanned sources into the **same types**.
 
 use std::path::PathBuf;
@@ -86,7 +86,7 @@ pub struct StoreOutput {
     pub change_channels: Vec<ChannelMeta>,
 }
 
-/// A store method — same type whether generated from schema or scanned from custom/.
+/// A store method - same type whether generated from schema or scanned from custom/.
 #[derive(Debug, Clone)]
 pub struct StoreMethodMeta {
     /// Entity this method belongs to (e.g., "Node", "Widget").
@@ -147,7 +147,7 @@ pub struct ApiOutput {
     pub modules: Vec<ApiModule>,
 }
 
-/// An API module — may contain functions from both generated and scanned sources.
+/// An API module - may contain functions from both generated and scanned sources.
 #[derive(Debug, Clone)]
 pub struct ApiModule {
     /// Module name (e.g., "node").
@@ -158,7 +158,7 @@ pub struct ApiModule {
     pub state_type: StateKind,
 }
 
-/// An API function — same type whether generated or scanned.
+/// An API function - same type whether generated or scanned.
 #[derive(Debug, Clone)]
 pub struct ApiFnMeta {
     /// Function name (e.g., "create", "archive").
@@ -182,7 +182,7 @@ pub enum StateKind {
     Store,
 }
 
-/// Classified operation type — drives HTTP method and route structure.
+/// Classified operation type - drives HTTP method and route structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpKind {
     List,
@@ -190,19 +190,19 @@ pub enum OpKind {
     Create,
     Update,
     Delete,
-    /// `list_{children}(parent_id)` — list child entities of a parent.
+    /// `list_{children}(parent_id)` - list child entities of a parent.
     /// Generates `GET /api/{parents}/:parent_id/{children}`.
     JunctionList {
         /// URL segment for the child collection, e.g. "roles".
         child_segment: String,
     },
-    /// `add_{child}(parent_id, child_id)` — add a child to a parent.
+    /// `add_{child}(parent_id, child_id)` - add a child to a parent.
     /// Generates `POST /api/{parents}/:parent_id/{children}`.
     JunctionAdd {
         /// URL segment for the child collection, e.g. "roles".
         child_segment: String,
     },
-    /// `remove_{child}(parent_id, child_id)` — remove a child from a parent.
+    /// `remove_{child}(parent_id, child_id)` - remove a child from a parent.
     /// Generates `DELETE /api/{parents}/:parent_id/{children}/:child_id`.
     JunctionRemove {
         /// URL segment for the child collection, e.g. "roles".

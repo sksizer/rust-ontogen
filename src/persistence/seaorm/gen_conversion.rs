@@ -1,8 +1,8 @@
 //! Generate DB ↔ Schema conversion code from parsed ontology entity definitions.
 //!
 //! For each entity, generates:
-//! - `from_model()` — converts SeaORM Model → schema type
-//! - `to_active_model()` — converts schema type → SeaORM ActiveModel
+//! - `from_model()` - converts SeaORM Model → schema type
+//! - `to_active_model()` - converts schema type → SeaORM ActiveModel
 //!
 //! Generated code is written to `conversions/generated/{entity}.rs` and a `mod.rs`
 //! re-exporting all modules.
@@ -161,7 +161,7 @@ fn generate_from_model_field(field: &FieldDef) -> Option<String> {
     let name = &field.name;
 
     match &field.role {
-        // Skip fields are treated as plain fields in conversions — they have DB columns
+        // Skip fields are treated as plain fields in conversions - they have DB columns
         // but are excluded from writer/relation codegen. Fall through to plain handling.
         FieldRole::Skip => generate_from_model_field(&FieldDef { role: FieldRole::Plain, ..field.clone() }),
 
@@ -179,7 +179,7 @@ fn generate_from_model_field(field: &FieldDef) -> Option<String> {
         // Body field
         FieldRole::Body => Some(format!("{name}: model.{name}.clone(),")),
 
-        // Enum field — parse from string stored in DB
+        // Enum field - parse from string stored in DB
         FieldRole::EnumField => match &field.field_type {
             FieldType::OptionEnum(type_name) if is_primitive_type(type_name) => {
                 Some(format!(r#"{name}: model.{name}.map(|v| v as {type_name}),"#))
@@ -187,7 +187,7 @@ fn generate_from_model_field(field: &FieldDef) -> Option<String> {
             FieldType::OptionEnum(type_name) => Some(format!(
                 r#"{name}: model.{name}.as_deref().and_then(|s| serde_json::from_str::<crate::schema::{type_name}>(&format!("\"{{s}}\"")).ok()),"#
             )),
-            // Required enum (e.g., RequirementStatus) — stored as String in DB
+            // Required enum (e.g., RequirementStatus) - stored as String in DB
             // Use serde_json roundtrip: quote the string as JSON to parse the enum variant.
             _ => {
                 let type_name = match &field.field_type {
@@ -200,7 +200,7 @@ fn generate_from_model_field(field: &FieldDef) -> Option<String> {
             }
         },
 
-        // belongs_to relation — direct clone (FK column)
+        // belongs_to relation - direct clone (FK column)
         FieldRole::Relation(_) => match &field.field_type {
             FieldType::OptionString => Some(format!("{name}: model.{name}.clone(),")),
             FieldType::String => Some(format!("{name}: model.{name}.clone(),")),
@@ -256,7 +256,7 @@ fn generate_to_active_model_field(field: &FieldDef) -> Option<String> {
     let name = &field.name;
 
     match &field.role {
-        // Skip fields are treated as plain fields in conversions — they have DB columns
+        // Skip fields are treated as plain fields in conversions - they have DB columns
         FieldRole::Skip => generate_to_active_model_field(&FieldDef { role: FieldRole::Plain, ..field.clone() }),
 
         // has_many and many_to_many: not in DB model, managed by Store
@@ -273,7 +273,7 @@ fn generate_to_active_model_field(field: &FieldDef) -> Option<String> {
         // Body field
         FieldRole::Body => Some(format!("{name}: Set(self.{name}.clone()),")),
 
-        // Enum field — serialize to string for DB storage
+        // Enum field - serialize to string for DB storage
         FieldRole::EnumField => match &field.field_type {
             FieldType::OptionEnum(t) if is_primitive_type(t) => {
                 Some(format!("{name}: Set(self.{name}.map(|v| v as i32)),"))
@@ -283,7 +283,7 @@ fn generate_to_active_model_field(field: &FieldDef) -> Option<String> {
             _ => Some(format!("{name}: Set(enum_to_string(&self.{name})),")),
         },
 
-        // belongs_to relation — direct clone (FK column)
+        // belongs_to relation - direct clone (FK column)
         FieldRole::Relation(_) => match &field.field_type {
             FieldType::OptionString => Some(format!("{name}: Set(self.{name}.clone()),")),
             FieldType::String => Some(format!("{name}: Set(self.{name}.clone()),")),

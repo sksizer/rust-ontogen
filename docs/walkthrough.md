@@ -55,7 +55,7 @@ The codegen system is a **pipeline of independent generators**. Each generator:
  └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-The intermediate representations (IRs) are the `*Output` structs. They're plain Rust structs — no magic, no framework. Each one captures what the previous generator produced so the next generator can make smarter decisions.
+The intermediate representations (IRs) are the `*Output` structs. They're plain Rust structs - no magic, no framework. Each one captures what the previous generator produced so the next generator can make smarter decisions.
 
 ---
 
@@ -257,9 +257,9 @@ This `EntityDef` is the **primary IR**. Every downstream generator reads it.
 
 ## Stage 2: Generate Persistence
 
-The persistence layer has **two independent generators**. Neither chains into the other — they both consume `EntityDef` directly and produce building blocks.
+The persistence layer has **two independent generators**. Neither chains into the other - they both consume `EntityDef` directly and produce building blocks.
 
-### 2a: gen_seaorm — Database Layer
+### 2a: gen_seaorm - Database Layer
 
 ```rust
 let seaorm = gen_seaorm(&schema.entities, &SeaOrmConfig {
@@ -270,7 +270,7 @@ let seaorm = gen_seaorm(&schema.entities, &SeaOrmConfig {
 // This output feeds into gen_store as optional enrichment.
 ```
 
-### 2b: gen_markdown_io — Markdown I/O
+### 2b: gen_markdown_io - Markdown I/O
 
 ```rust
 // Always generates: parsers, writers, path helpers, fs_ops.
@@ -281,7 +281,7 @@ gen_markdown_io(&schema.entities, &MarkdownIoConfig {
         subscriber_output: "src/persistence/fs_markdown/generated/subscriber.rs".into(),
     }),
 })?;
-// Returns () — no downstream IR needed.
+// Returns () - no downstream IR needed.
 ```
 
 ### Files Generated
@@ -304,7 +304,7 @@ pub struct Model {
     pub tags: String,                        // Vec<String> → JSON string in DB
     pub assignee_id: Option<String>,         // belongs_to FK column
     pub body: String,
-    // NOTE: fulfills and depends_on are NOT columns — they're junction tables
+    // NOTE: fulfills and depends_on are NOT columns - they're junction tables
 }
 ```
 
@@ -396,7 +396,7 @@ pub fn render_task(task: &Task) -> String {
 
 #### Store Event Wiring (opt-in): `persistence/fs_markdown/generated/subscriber.rs`
 
-When `store_wiring` is configured, `gen_markdown_io` also generates an `FsSubscriber` that listens for store `EntityChange` events and writes markdown files. The pattern is mechanical across all entities — match on `EntityKind`, call the generated `write_*()` function, guard against write-back loops:
+When `store_wiring` is configured, `gen_markdown_io` also generates an `FsSubscriber` that listens for store `EntityChange` events and writes markdown files. The pattern is mechanical across all entities - match on `EntityKind`, call the generated `write_*()` function, guard against write-back loops:
 
 ```rust
 // Generated (opt-in via store_wiring config)
@@ -469,11 +469,11 @@ impl FsSubscriber {
 }
 ```
 
-You're still free to hand-write this subscriber if you need custom behavior (batching, debouncing, project-scoped paths, etc.) — just set `store_wiring: None` and the building blocks are still generated for you to call directly.
+You're still free to hand-write this subscriber if you need custom behavior (batching, debouncing, project-scoped paths, etc.) - just set `store_wiring: None` and the building blocks are still generated for you to call directly.
 
 ### The IR: `SeaOrmOutput`
 
-Only `gen_seaorm` produces a downstream IR. `gen_markdown_io` returns `()` — it writes files to disk but produces no metadata for downstream generators.
+Only `gen_seaorm` produces a downstream IR. `gen_markdown_io` returns `()` - it writes files to disk but produces no metadata for downstream generators.
 
 ```rust
 SeaOrmOutput {
@@ -521,7 +521,7 @@ SeaOrmOutput {
 }
 ```
 
-**Why this IR matters:** The store generator can use `junction_tables` to know exactly which `sync_junction()` calls to emit. Without this IR, it would have to re-derive junction info from the schema annotations — possible, but less precise (e.g., the table name might have been overridden).
+**Why this IR matters:** The store generator can use `junction_tables` to know exactly which `sync_junction()` calls to emit. Without this IR, it would have to re-derive junction info from the schema annotations - possible, but less precise (e.g., the table name might have been overridden).
 
 ---
 
@@ -581,7 +581,7 @@ pub struct UpdateTaskInput {
 #### Scaffold Hooks: `store/hooks/task.rs` (generated once, never overwritten)
 
 ```rust
-// SCAFFOLDED — fill in as needed. This file is yours; codegen will not overwrite it.
+// SCAFFOLDED - fill in as needed. This file is yours; codegen will not overwrite it.
 use crate::schema::Task;
 use crate::store::Store;
 use crate::store::generated::task::TaskUpdate;
@@ -929,7 +929,7 @@ StoreOutput {
 }
 ```
 
-**Why this IR matters:** The API generator knows the exact store method names and signatures. It doesn't have to guess that `list_tasks()` exists — it sees it in `StoreOutput`.
+**Why this IR matters:** The API generator knows the exact store method names and signatures. It doesn't have to guess that `list_tasks()` exists - it sees it in `StoreOutput`.
 
 ### Store: Generated vs Custom (Same Split as API)
 
@@ -941,10 +941,10 @@ src/store/
 │   ├── mod.rs
 │   ├── task.rs                #   CRUD (imports hooks::task), TaskUpdate, From<Input>, populate_relations
 │   ├── node.rs                #   CRUD (imports hooks::node), NodeUpdate, From<Input>, populate_relations
-│   ├── agent.rs               #   CRUD (imports hooks::agent — all no-ops)
+│   ├── agent.rs               #   CRUD (imports hooks::agent - all no-ops)
 │   ├── channels.rs            #   EntityChannels, typed subscribe methods
 │   └── ...
-├── hooks/                     # ◄ Scaffolded once, never overwritten — fill in as needed
+├── hooks/                     # ◄ Scaffolded once, never overwritten - fill in as needed
 │   ├── mod.rs
 │   ├── task.rs                #   before_create, after_create, ... (no-op stubs)
 │   ├── node.rs                #   before_create (containment validation), ...
@@ -962,7 +962,7 @@ src/store/
 ```rust
 // Hand-written: src/store/custom/node_custom.rs
 impl Store {
-    /// Custom method — not CRUD, can't be generated from schema.
+    /// Custom method - not CRUD, can't be generated from schema.
     /// Uses generated methods internally.
     pub async fn bulk_reparent_nodes(
         &self,
@@ -1017,7 +1017,7 @@ Schema ──► gen_store ──► store/generated/node.rs (CRUD, imports hook
 Not every entity needs to come from the schema. If you have a `Widget` backed by an external API or a custom storage strategy, you can write CRUD methods in `store/custom/` and the scanner will recognize them by naming convention:
 
 ```rust
-// store/custom/widget.rs — hand-written, not schema-derived
+// store/custom/widget.rs - hand-written, not schema-derived
 impl Store {
     pub async fn list_widgets(&self) -> Result<Vec<Widget>, AppError> { ... }
     pub async fn get_widget(&self, id: &str) -> Result<Widget, AppError> { ... }
@@ -1027,7 +1027,7 @@ impl Store {
 }
 ```
 
-The scanner produces `StoreMethodMeta` entries with `entity_name: "Widget"` and `kind: Crud(Create)`, etc. — inferred from the `create_widget` naming convention. From there, the pipeline treats Widget identically to a schema entity:
+The scanner produces `StoreMethodMeta` entries with `entity_name: "Widget"` and `kind: Crud(Create)`, etc. - inferred from the `create_widget` naming convention. From there, the pipeline treats Widget identically to a schema entity:
 
 ```
 (no schema) ──► scanner ──► StoreMethodMeta { entity: "Widget", kind: Crud(*) }
@@ -1169,7 +1169,7 @@ Suppose you add a custom `archive_task()` function alongside generated CRUD.
 **Hand-written:** `src/api/v1/task.rs`
 
 ```rust
-// Custom function — NOT generated, lives alongside generated CRUD
+// Custom function - NOT generated, lives alongside generated CRUD
 use crate::store::Store;
 use crate::schema::Task;
 use crate::types::AppError;
@@ -1246,7 +1246,7 @@ Each transport handles project scoping differently based on `ScopingConfig`:
 #### HTTP: `api/transport/http/generated.rs` (excerpt)
 
 ```rust
-// Task routes — generated + custom merged
+// Task routes - generated + custom merged
 pub fn task_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/tasks", get(list_tasks))
@@ -1325,7 +1325,7 @@ ServersOutput {
 }
 ```
 
-**Why this IR matters:** The client generator reads `ServersOutput` to know exactly which endpoints exist on which protocols. It doesn't guess — it mirrors what was actually generated.
+**Why this IR matters:** The client generator reads `ServersOutput` to know exactly which endpoints exist on which protocols. It doesn't guess - it mirrors what was actually generated.
 
 ---
 
@@ -1360,7 +1360,7 @@ Reads `ServersOutput` and generates client libraries that mirror the server endp
 ```typescript
 // ── Unified interface (always generated) ───────────────────────
 export interface Transport {
-    // Generated from ServersOutput — every endpoint across all servers
+    // Generated from ServersOutput - every endpoint across all servers
     listTasks(projectId?: string): Promise<Task[]>;
     getTaskById(id: string, projectId?: string): Promise<Task>;
     createTask(input: CreateTaskInput, projectId?: string): Promise<Task>;
@@ -1373,7 +1373,7 @@ export interface Transport {
 // ── HTTP transport (generated because servers.http_routes is non-empty) ──
 export function createHttpTransport(baseUrl: string): Transport {
     return {
-        // Mirrors HttpRouteMeta — uses the actual route paths
+        // Mirrors HttpRouteMeta - uses the actual route paths
         listTasks: (projectId) =>
             fetch(`${baseUrl}/projects/${projectId}/tasks`).then(r => r.json()),
         createTask: (input, projectId) =>
@@ -1391,7 +1391,7 @@ export function createHttpTransport(baseUrl: string): Transport {
 // ── IPC transport (generated because servers.ipc_commands is non-empty) ──
 export function createIpcTransport(): Transport {
     return {
-        // Mirrors IpcCommandMeta — uses the actual command names + camelCase params
+        // Mirrors IpcCommandMeta - uses the actual command names + camelCase params
         listTasks: (projectId) =>
             invoke('list_tasks', { projectId }),
         createTask: (input, projectId) =>
@@ -1403,7 +1403,7 @@ export function createIpcTransport(): Transport {
 }
 ```
 
-If only HTTP was configured (no IPC), `createIpcTransport()` would not be generated at all — no dead code.
+If only HTTP was configured (no IPC), `createIpcTransport()` would not be generated at all - no dead code.
 
 ---
 
@@ -1520,7 +1520,7 @@ fn main() {
 
 #### After (unified system): 2 manual steps
 
-1. Create `src/schema/label.rs` (hand-written — same as before)
+1. Create `src/schema/label.rs` (hand-written - same as before)
 2. Run build → **everything else is generated**:
    - DB entities, conversions, DTOs, markdown I/O (persistence layer)
    - Store CRUD + scaffold hooks + populate_relations (store layer)
@@ -1529,7 +1529,7 @@ fn main() {
 
 If Label needs custom logic (e.g., a validation hook), just fill in the scaffolded stub:
 
-3. Edit `src/store/hooks/label.rs` — the no-op stubs are already there, just add your logic
+3. Edit `src/store/hooks/label.rs` - the no-op stubs are already there, just add your logic
 
 ---
 
@@ -1559,7 +1559,7 @@ let servers = gen_servers(&api, None, &ServersConfig {
     naming: NamingConfig::default(),
 })?;
 
-// Client only generates createHttpTransport() — no IPC, no switching
+// Client only generates createHttpTransport() - no IPC, no switching
 gen_clients(&servers, None, &ClientsConfig {
     typescript: Some(TypeScriptConfig {
         output: "frontend/api.ts".into(),
@@ -1579,7 +1579,7 @@ let schema = parse_schema(&SchemaConfig {
 })?;
 
 let seaorm = gen_seaorm(&schema.entities, &SeaOrmConfig { /* ... */ })?;
-// No gen_markdown_io — no markdown for this project
+// No gen_markdown_io - no markdown for this project
 
 let _store = gen_store(
     &schema.entities,
@@ -1595,7 +1595,7 @@ let _store = gen_store(
     },
 )?;
 
-// No gen_api, gen_servers, or gen_clients — this is a library
+// No gen_api, gen_servers, or gen_clients - this is a library
 ```
 
 ### Example 3: DTOs only (no store, no CRUD)
@@ -1607,7 +1607,7 @@ let schema = parse_schema(&SchemaConfig {
     schema_dir: "src/schema".into(),
 })?;
 
-// Standalone DTO generation — same output as gen_store's DTO portion,
+// Standalone DTO generation - same output as gen_store's DTO portion,
 // but without generating CRUD/hooks/channels.
 gen_dtos(&schema.entities, &DtoConfig {
     output_dir: "src/dto".into(),
@@ -1626,7 +1626,7 @@ let api = gen_api(&schema.entities, Some(&store), &["src/api/v1"], &api_config)?
 
 let servers = gen_servers(&api, Some(&schema.entities), &servers_config)?;
 
-// New server type — takes ApiOutput, produces GraphQL schema + resolvers
+// New server type - takes ApiOutput, produces GraphQL schema + resolvers
 // Could also contribute to ServersOutput for client generation
 gen_graphql(&api, Some(&schema.entities), &GraphQLConfig {
     output: "src/graphql/generated.rs".into(),

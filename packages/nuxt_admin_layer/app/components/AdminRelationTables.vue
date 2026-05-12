@@ -130,7 +130,7 @@ function getEntityRoute(entityKey: string, item: EntityRecord): string {
                 </NuxtLink>
               </td>
               <td class="py-1.5 px-3 text-(--ui-text) text-sm">
-                {{ item[getDisplayField(rel.sourceEntityKey)] ?? '—' }}
+                {{ item[getDisplayField(rel.sourceEntityKey)] ?? '-' }}
               </td>
             </tr>
           </tbody>

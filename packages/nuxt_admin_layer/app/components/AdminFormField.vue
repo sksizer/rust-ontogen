@@ -52,7 +52,7 @@ function removeArrayItem(index: number) {
       class="w-full px-3 py-2 text-sm rounded-md border border-(--ui-border) bg-(--ui-bg) text-(--ui-text) focus:outline-none focus:ring-1 focus:ring-(--ui-border-accented)"
       @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value || undefined)"
     >
-      <option value="">— Select —</option>
+      <option value="">- Select -</option>
       <option v-for="val in field.enumValues" :key="val" :value="val">
         {{ val }}
       </option>
