@@ -106,11 +106,16 @@ use tauri::State;
 
     for m in modules {
         for f in &m.functions {
-            collect_type_import(&f.return_type, &mut type_imports);
+            collect_type_import(&f.return_type_ast, &mut type_imports);
             for p in &f.params {
+                // The substring filter on the rendered name is intentional:
+                // only param types named like `*Input` or `*Query` get pulled
+                // into the import list. We still walk the AST for the actual
+                // collection so generic wrappers (Option, Vec, …) get peeled
+                // properly.
                 let ty = extract_input_type(&p.ty);
                 if ty.contains("Input") || ty.contains("Query") {
-                    collect_type_import(&ty, &mut type_imports);
+                    collect_type_import(&p.ty_ast, &mut type_imports);
                 }
             }
         }

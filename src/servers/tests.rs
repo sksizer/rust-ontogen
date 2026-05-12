@@ -55,8 +55,24 @@ fn test_config_with_prefix(api_dir: PathBuf) -> Config {
     config
 }
 
+/// Build a `Param` from a name and a type string. Panics if the type fails to
+/// parse as a `syn::Type`.
+fn param(name: &str, ty: &str) -> Param {
+    let ty_ast: syn::Type = syn::parse_str(ty).expect("test param type must parse as syn::Type");
+    Param { name: name.to_string(), ty: ty.to_string(), ty_ast }
+}
+
+/// Parse a type string into a `syn::Type` for `ApiFn::return_type_ast` in tests.
+fn ty_ast(ty: &str) -> syn::Type {
+    syn::parse_str(ty).expect("test return type must parse as syn::Type")
+}
+
 /// Build a simple CRUD ApiModule for testing generators.
 fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
+    let list_ret = format!("Vec<{}>", capitalize(name));
+    let single_ret = capitalize(name);
+    let create_input = format!("Create{}Input", capitalize(name));
+    let update_input = format!("Update{}Input", capitalize(name));
     ApiModule {
         name: name.to_string(),
         functions: vec![
@@ -65,42 +81,44 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 is_async: true,
                 doc: format!("List all {}s.", name),
                 params: vec![],
-                return_type: format!("Vec<{}>", capitalize(name)),
+                return_type: list_ret.clone(),
+                return_type_ast: ty_ast(&list_ret),
                 first_param_is_store: is_store_based,
             },
             ApiFn {
                 name: "get_by_id".to_string(),
                 is_async: true,
                 doc: format!("Get a {} by ID.", name),
-                params: vec![Param { name: "id".to_string(), ty: "&str".to_string() }],
-                return_type: capitalize(name),
+                params: vec![param("id", "&str")],
+                return_type: single_ret.clone(),
+                return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
             },
             ApiFn {
                 name: "create".to_string(),
                 is_async: true,
                 doc: format!("Create a new {}.", name),
-                params: vec![Param { name: "input".to_string(), ty: format!("Create{}Input", capitalize(name)) }],
-                return_type: capitalize(name),
+                params: vec![param("input", &create_input)],
+                return_type: single_ret.clone(),
+                return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
             },
             ApiFn {
                 name: "update".to_string(),
                 is_async: true,
                 doc: format!("Update a {}.", name),
-                params: vec![
-                    Param { name: "id".to_string(), ty: "&str".to_string() },
-                    Param { name: "input".to_string(), ty: format!("Update{}Input", capitalize(name)) },
-                ],
-                return_type: capitalize(name),
+                params: vec![param("id", "&str"), param("input", &update_input)],
+                return_type: single_ret.clone(),
+                return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
             },
             ApiFn {
                 name: "delete".to_string(),
                 is_async: true,
                 doc: format!("Delete a {}.", name),
-                params: vec![Param { name: "id".to_string(), ty: "&str".to_string() }],
+                params: vec![param("id", "&str")],
                 return_type: "()".to_string(),
+                return_type_ast: ty_ast("()"),
                 first_param_is_store: is_store_based,
             },
         ],
@@ -117,16 +135,18 @@ fn make_custom_module() -> ApiModule {
                 name: "get_graph_snapshot".to_string(),
                 is_async: true,
                 doc: "Get the graph snapshot.".to_string(),
-                params: vec![Param { name: "parent_id".to_string(), ty: "Option<&str>".to_string() }],
+                params: vec![param("parent_id", "Option<&str>")],
                 return_type: "GraphSnapshot".to_string(),
+                return_type_ast: ty_ast("GraphSnapshot"),
                 first_param_is_store: false,
             },
             ApiFn {
                 name: "get_node_detail".to_string(),
                 is_async: true,
                 doc: "Get node detail.".to_string(),
-                params: vec![Param { name: "node_id".to_string(), ty: "&str".to_string() }],
+                params: vec![param("node_id", "&str")],
                 return_type: "NodeDetail".to_string(),
+                return_type_ast: ty_ast("NodeDetail"),
                 first_param_is_store: false,
             },
         ],
@@ -158,11 +178,9 @@ fn make_junction_module() -> ApiModule {
                 name: "add_skill".to_string(),
                 is_async: false,
                 doc: "Link a skill to a destination.".to_string(),
-                params: vec![
-                    Param { name: "destination_id".to_string(), ty: "&str".to_string() },
-                    Param { name: "skill_id".to_string(), ty: "&str".to_string() },
-                ],
+                params: vec![param("destination_id", "&str"), param("skill_id", "&str")],
                 return_type: "()".to_string(),
+                return_type_ast: ty_ast("()"),
                 first_param_is_store: false,
             },
             // Junction remove: remove_skill(destination_id, skill_id)
@@ -170,11 +188,9 @@ fn make_junction_module() -> ApiModule {
                 name: "remove_skill".to_string(),
                 is_async: false,
                 doc: "Unlink a skill from a destination.".to_string(),
-                params: vec![
-                    Param { name: "destination_id".to_string(), ty: "&str".to_string() },
-                    Param { name: "skill_id".to_string(), ty: "&str".to_string() },
-                ],
+                params: vec![param("destination_id", "&str"), param("skill_id", "&str")],
                 return_type: "()".to_string(),
+                return_type_ast: ty_ast("()"),
                 first_param_is_store: false,
             },
             // Junction list (children-of-parent): list_skills(destination_id)
@@ -182,8 +198,9 @@ fn make_junction_module() -> ApiModule {
                 name: "list_skills".to_string(),
                 is_async: false,
                 doc: "List skills linked to a destination.".to_string(),
-                params: vec![Param { name: "destination_id".to_string(), ty: "&str".to_string() }],
+                params: vec![param("destination_id", "&str")],
                 return_type: "Vec<Skill>".to_string(),
+                return_type_ast: ty_ast("Vec<Skill>"),
                 first_param_is_store: false,
             },
             // Junction list (reverse): list_destinations(skill_id)
@@ -191,8 +208,9 @@ fn make_junction_module() -> ApiModule {
                 name: "list_destinations".to_string(),
                 is_async: false,
                 doc: "List destinations linked to a skill.".to_string(),
-                params: vec![Param { name: "skill_id".to_string(), ty: "&str".to_string() }],
+                params: vec![param("skill_id", "&str")],
                 return_type: "Vec<DestinationSkill>".to_string(),
+                return_type_ast: ty_ast("Vec<DestinationSkill>"),
                 first_param_is_store: false,
             },
             // Custom post: publish(destination_id, skill_id, version)
@@ -200,12 +218,9 @@ fn make_junction_module() -> ApiModule {
                 name: "publish".to_string(),
                 is_async: false,
                 doc: "Publish a skill to a destination.".to_string(),
-                params: vec![
-                    Param { name: "destination_id".to_string(), ty: "&str".to_string() },
-                    Param { name: "skill_id".to_string(), ty: "&str".to_string() },
-                    Param { name: "version".to_string(), ty: "i64".to_string() },
-                ],
+                params: vec![param("destination_id", "&str"), param("skill_id", "&str"), param("version", "i64")],
                 return_type: "PublishResult".to_string(),
+                return_type_ast: ty_ast("PublishResult"),
                 first_param_is_store: false,
             },
         ],
@@ -265,20 +280,71 @@ fn test_inner_type() {
 #[test]
 fn test_collect_type_import() {
     let mut imports = Vec::new();
-    collect_type_import("Vec<Node>", &mut imports);
+    collect_type_import(&ty_ast("Vec<Node>"), &mut imports);
     assert_eq!(imports, vec!["Node"]);
 
-    collect_type_import("()", &mut imports);
+    collect_type_import(&ty_ast("()"), &mut imports);
     assert_eq!(imports.len(), 1, "() should not add imports");
 
-    collect_type_import("relation::Model", &mut imports);
+    collect_type_import(&ty_ast("relation::Model"), &mut imports);
     assert_eq!(imports.len(), 1, "entity-qualified types should not add imports");
 
-    collect_type_import("Node", &mut imports);
+    collect_type_import(&ty_ast("Node"), &mut imports);
     assert_eq!(imports.len(), 1, "duplicates should not be added");
 
-    collect_type_import("Requirement", &mut imports);
+    collect_type_import(&ty_ast("Requirement"), &mut imports);
     assert_eq!(imports, vec!["Node", "Requirement"]);
+}
+
+/// Comprehensive matrix for `collect_type_import` covering OF-008 and OF-010.
+///
+/// Each row is `(input type string, expected imports)`. The walker must:
+/// - skip primitives and prelude scalars,
+/// - peel single-arg wrappers (Option, Vec, Box, Arc, Rc, Cow) and recurse,
+/// - recurse into multi-arg generics (HashMap, BTreeMap, Result, …) without
+///   importing the head,
+/// - skip qualified paths (`crate::schema::Foo`, `relation::Model`),
+/// - peel `&T` / `&mut T` references,
+/// - handle nested combinations of all of the above.
+#[test]
+fn test_collect_type_import_matrix() {
+    let cases: &[(&str, &[&str])] = &[
+        ("()", &[]),
+        ("String", &[]),
+        ("&str", &[]),
+        ("bool", &[]),
+        ("i64", &[]),
+        ("u128", &[]),
+        ("f32", &[]),
+        ("MyType", &["MyType"]),
+        ("&MyType", &["MyType"]),
+        ("&mut MyType", &["MyType"]),
+        ("Vec<MyType>", &["MyType"]),
+        ("Option<MyType>", &["MyType"]),
+        ("Option<String>", &[]),
+        ("Vec<Option<MyType>>", &["MyType"]),
+        ("Option<Vec<MyType>>", &["MyType"]),
+        ("Box<MyType>", &["MyType"]),
+        ("Arc<MyType>", &["MyType"]),
+        ("Rc<MyType>", &["MyType"]),
+        ("HashMap<String, MyType>", &["MyType"]),
+        ("HashMap<MyKey, MyValue>", &["MyKey", "MyValue"]),
+        ("HashMap<String, Vec<MyType>>", &["MyType"]),
+        ("BTreeMap<String, MyType>", &["MyType"]),
+        ("HashSet<MyType>", &["MyType"]),
+        ("BTreeSet<MyType>", &["MyType"]),
+        ("Option<HashMap<String, Vec<MyType>>>", &["MyType"]),
+        ("crate::schema::Foo", &[]),
+        ("Vec<crate::schema::Foo>", &[]),
+        ("Option<crate::schema::Foo>", &[]),
+    ];
+
+    for (input, expected) in cases {
+        let mut imports = Vec::new();
+        collect_type_import(&ty_ast(input), &mut imports);
+        let got: Vec<&str> = imports.iter().map(String::as_str).collect();
+        assert_eq!(got, *expected, "input was `{}`", input);
+    }
 }
 
 #[test]
@@ -451,8 +517,9 @@ fn test_classify_custom_operations() {
         name: "switch_project".to_string(),
         is_async: true,
         doc: String::new(),
-        params: vec![Param { name: "path".to_string(), ty: "&str".to_string() }],
+        params: vec![param("path", "&str")],
         return_type: "()".to_string(),
+        return_type_ast: ty_ast("()"),
         first_param_is_store: false,
     };
     assert!(matches!(classify_op(&post_fn), OpKind::CustomPost));
@@ -466,6 +533,7 @@ fn test_classify_no_params_is_get() {
         doc: String::new(),
         params: vec![],
         return_type: "Vec<String>".to_string(),
+        return_type_ast: ty_ast("Vec<String>"),
         first_param_is_store: false,
     };
     assert!(matches!(classify_op(&no_param_fn), OpKind::CustomGet));
@@ -1517,4 +1585,59 @@ fn test_extract_metadata_custom_get_includes_path_params() {
     let detail = output.http_routes.iter().find(|r| r.handler_name.contains("get_node_detail")).expect("detail");
     assert_eq!(detail.method, "GET");
     assert!(detail.path.contains(":node_id"), "Required param should be path-param: {}", detail.path);
+}
+
+/// Regression test for OF-008 and OF-010.
+///
+/// Parses a synthetic api module whose return types include `Option<T>`,
+/// `Option<String>`, `HashMap<K, V>`, `Box<T>`, and a nested
+/// `Option<HashMap<String, Vec<T>>>` — the exact patterns that previously
+/// caused `collect_type_import` to emit invalid Rust into the `use
+/// crate::schema::{ ... };` block. After the fix, the generated import block
+/// must contain only the leaf identifiers and never wrappers like
+/// `Option<...>` or `HashMap<...>`.
+#[test]
+fn test_collect_type_import_no_leak_of_wrappers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "backup.rs",
+        r#"
+use crate::store::Store;
+use std::collections::HashMap;
+
+pub async fn backup_data(store: &Store) -> Result<Option<String>, anyhow::Error> { todo!() }
+pub async fn restore_pick(store: &Store) -> Result<Option<RestoreCandidate>, anyhow::Error> { todo!() }
+pub async fn get_prefs(store: &Store) -> Result<HashMap<String, NotificationPrefs>, anyhow::Error> { todo!() }
+pub async fn get_keyed(store: &Store) -> Result<HashMap<MyKey, MyValue>, anyhow::Error> { todo!() }
+pub async fn boxed(store: &Store) -> Result<Box<Schema>, anyhow::Error> { todo!() }
+pub async fn deeply_nested(store: &Store) -> Result<Option<HashMap<String, Vec<NestedItem>>>, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert_eq!(modules.len(), 1);
+
+    let output_path = tmp.path().join("ipc_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    crate::servers::generators::ipc::generate(&output_path, &modules, &config);
+
+    let content = std::fs::read_to_string(&output_path).unwrap();
+
+    // The `use crate::schema::{ ... };` block must contain the leaf types we
+    // expect — and must NOT contain any wrapper-leak literals.
+    for must_contain in ["RestoreCandidate", "NotificationPrefs", "MyKey", "MyValue", "Schema", "NestedItem"].iter() {
+        assert!(content.contains(must_contain), "expected `{must_contain}` in generated output");
+    }
+
+    // No wrappers must ever appear inside a `use crate::schema::{ ... }`.
+    for forbidden in ["Option<", "HashMap<", "Box<", "Vec<", "Result<"].iter() {
+        let schema_block_starts = content.find("use crate::schema::{").expect("schema use block");
+        let schema_block_ends =
+            content[schema_block_starts..].find("};").map(|i| schema_block_starts + i).expect("schema block end");
+        let schema_block = &content[schema_block_starts..schema_block_ends];
+        assert!(!schema_block.contains(forbidden), "wrapper `{forbidden}` leaked into use block: {schema_block}");
+    }
 }

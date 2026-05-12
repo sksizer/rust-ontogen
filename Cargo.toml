@@ -18,7 +18,7 @@ categories = ["development-tools::build-utils"]
 ontogen-core = { path = "ontogen-core", version = "=0.1.0" }
 ontogen-macros = { path = "ontogen-macros", version = "=0.1.0" }
 cruet = "1.0"
-syn = { version = "2", features = ["full", "parsing"] }
+syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
 quote = "1"
 
 [dev-dependencies]

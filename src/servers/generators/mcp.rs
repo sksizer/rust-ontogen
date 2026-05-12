@@ -112,9 +112,11 @@ use serde_json::{json, Value};
     for m in modules {
         for f in &m.functions {
             for p in &f.params {
+                // See comment in ipc.rs: substring filter on the rendered name
+                // is intentional; AST walker handles the actual collection.
                 let ty = extract_input_type(&p.ty);
                 if ty.contains("Input") || ty.contains("Query") {
-                    collect_type_import(&ty, &mut type_imports);
+                    collect_type_import(&p.ty_ast, &mut type_imports);
                 }
             }
         }

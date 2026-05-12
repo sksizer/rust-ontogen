@@ -27,6 +27,12 @@ pub struct ApiFn {
     pub params: Vec<Param>,
     /// The inner `T` from `Result<T, E>`, as a normalized string.
     pub return_type: String,
+    /// The inner `T` from `Result<T, E>`, as a `syn::Type` AST.
+    ///
+    /// Carrying the AST forward lets downstream consumers (notably
+    /// `collect_type_import`) recurse structurally into generic args
+    /// instead of substring-matching the rendered string.
+    pub return_type_ast: syn::Type,
     /// Whether the first parameter is a store type (vs app state type).
     ///
     /// When true, generated handlers construct a Store from the AppState
@@ -42,6 +48,11 @@ pub struct Param {
     pub name: String,
     /// Normalized type string (no extra spaces).
     pub ty: String,
+    /// Parameter type as a `syn::Type` AST.
+    ///
+    /// Used by `collect_type_import` to walk into generic arguments
+    /// instead of relying on substring checks against `ty`.
+    pub ty_ast: syn::Type,
 }
 
 /// An event function that returns a `broadcast::Receiver<T>`.
@@ -147,18 +158,19 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 .filter_map(|arg| {
                     if let FnArg::Typed(pat) = arg {
                         let ty = norm_type(&pat.ty);
+                        let ty_ast = (*pat.ty).clone();
                         let name = match pat.pat.as_ref() {
                             syn::Pat::Ident(ident) => ident.ident.to_string(),
                             _ => String::new(),
                         };
-                        Some(Param { name, ty })
+                        Some(Param { name, ty, ty_ast })
                     } else {
                         None
                     }
                 })
                 .collect();
 
-            let return_type = extract_result_ok_type(&func.sig.output);
+            let (return_type, return_type_ast) = extract_result_ok_type(&func.sig.output);
 
             functions.push(ApiFn {
                 name: func.sig.ident.to_string(),
@@ -166,6 +178,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 doc,
                 params,
                 return_type,
+                return_type_ast,
                 first_param_is_store: is_store,
             });
         }
@@ -185,8 +198,11 @@ fn is_receiver_return_type(ret: &ReturnType) -> bool {
     false
 }
 
-/// Extract `T` from `Result<T, E>`.
-fn extract_result_ok_type(ret: &ReturnType) -> String {
+/// Extract `T` from `Result<T, E>` as both a normalized string and AST.
+///
+/// When the return type is not a `Result<...>`, returns `("()", syn::Type::Tuple(_))`
+/// for the unit type.
+fn extract_result_ok_type(ret: &ReturnType) -> (String, Type) {
     if let ReturnType::Type(_, ty) = ret
         && let Type::Path(tp) = ty.as_ref()
     {
@@ -195,10 +211,10 @@ fn extract_result_ok_type(ret: &ReturnType) -> String {
             && let PathArguments::AngleBracketed(args) = &seg.arguments
             && let Some(GenericArgument::Type(t)) = args.args.first()
         {
-            return norm_type(t);
+            return (norm_type(t), t.clone());
         }
     }
-    "()".to_string()
+    ("()".to_string(), syn::parse_quote!(()))
 }
 
 /// Scan a directory for API source files and parse them all.

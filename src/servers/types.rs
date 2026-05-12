@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use syn::Type;
+use syn::{GenericArgument, PathArguments, Type, TypeParamBound};
 
 /// Normalize a syn Type to a clean string (no extra spaces around ::, <, >).
 pub fn norm_type(ty: &Type) -> String {
@@ -53,41 +53,159 @@ pub fn inner_type(ty: &str) -> String {
     if ty.starts_with("Vec<") && ty.ends_with('>') { ty[4..ty.len() - 1].to_string() } else { ty.to_string() }
 }
 
-/// Collect the simple type names that need importing from the types module.
-/// Skips Vec wrappers, entity-qualified types, and built-in types.
-pub fn collect_type_import(ty: &str, imports: &mut Vec<String>) {
-    let inner = inner_type(ty);
-    if inner == "()" || inner.is_empty() {
-        return;
-    }
-    if inner.contains("::") {
-        // Entity-qualified: e.g. relation::Model - handled via entity import
-        return;
-    }
-    // Skip Rust primitives - they don't need importing.
-    if matches!(
-        inner.as_str(),
+/// Wrappers we peel through to find the underlying types that need importing.
+///
+/// Single-arg wrappers (`Option<T>`, `Vec<T>`, etc.) and multi-arg containers
+/// (`HashMap<K, V>`, `Result<T, E>`) are *both* in this set. The recursive
+/// walker treats them uniformly: it never imports the head, but always recurses
+/// into every generic argument.
+const KNOWN_CONTAINERS: &[&str] = &[
+    "Option", "Vec", "Box", "Arc", "Rc", "Cow", "Result", "HashMap", "BTreeMap", "HashSet", "BTreeSet", "IndexMap",
+    "IndexSet",
+];
+
+/// Names that should never be added to the import list — primitives, prelude
+/// scalars, and a few path types that occasionally appear in return positions.
+fn is_prelude_scalar(name: &str) -> bool {
+    matches!(
+        name,
         "bool"
+            | "char"
             | "i8"
             | "i16"
             | "i32"
             | "i64"
             | "i128"
+            | "isize"
             | "u8"
             | "u16"
             | "u32"
             | "u64"
             | "u128"
+            | "usize"
             | "f32"
             | "f64"
             | "String"
             | "str"
-            | "&str"
-    ) {
-        return;
+            | "PathBuf"
+            | "Path"
+    )
+}
+
+/// Collect the simple type names that need importing from the types module.
+///
+/// Walks the `syn::Type` AST recursively. Skips:
+/// - prelude/primitive types (`String`, `i64`, `bool`, …),
+/// - qualified paths (`crate::schema::Foo`, `relation::Model`) — those are
+///   handled by the entity-import path elsewhere,
+/// - known container heads (`Option`, `Vec`, `HashMap`, …) — recurses into
+///   their generic args instead,
+/// - `dyn Trait` and `impl Trait`.
+///
+/// Unknown generic heads (e.g., user-defined `MyContainer<T>`) still have their
+/// args walked defensively, but the head itself is not imported — that case is
+/// rare in service-fn returns and the head usually points at a std container we
+/// don't know about yet.
+pub fn collect_type_import(ty: &Type, imports: &mut Vec<String>) {
+    match ty {
+        // References: &T, &mut T — peel and recurse.
+        Type::Reference(r) => collect_type_import(&r.elem, imports),
+
+        // Tuples: recurse into each element. The unit type `()` is a tuple
+        // with no elements and naturally produces no imports.
+        Type::Tuple(t) => {
+            for elem in &t.elems {
+                collect_type_import(elem, imports);
+            }
+        }
+
+        // Path types: the interesting case.
+        Type::Path(tp) => {
+            // Qualified paths like `crate::schema::Foo` or `relation::Model`
+            // are handled by the entity-import path elsewhere.
+            if tp.qself.is_some() || tp.path.segments.len() > 1 {
+                // Still recurse into the *last* segment's generic args, in
+                // case a user wrote `crate::schema::Vec<MyType>` (unusual but
+                // harmless to handle).
+                if let Some(last) = tp.path.segments.last() {
+                    walk_path_args(&last.arguments, imports);
+                }
+                return;
+            }
+
+            let Some(seg) = tp.path.segments.last() else { return };
+            let name = seg.ident.to_string();
+
+            if KNOWN_CONTAINERS.contains(&name.as_str()) {
+                walk_path_args(&seg.arguments, imports);
+                return;
+            }
+
+            // Unknown generic head: still recurse into its args so we don't
+            // miss imports buried inside an unfamiliar wrapper.
+            if !matches!(seg.arguments, PathArguments::None) {
+                walk_path_args(&seg.arguments, imports);
+                return;
+            }
+
+            if is_prelude_scalar(&name) {
+                return;
+            }
+
+            if !imports.contains(&name) {
+                imports.push(name);
+            }
+        }
+
+        // `dyn Trait` / `impl Trait` — skip entirely, but walk into bounds if
+        // any of them are concrete trait objects with generic args. For safety
+        // we simply do nothing — these shapes essentially never appear in DTO
+        // return positions.
+        Type::TraitObject(to) => {
+            // Defensive: a bound like `dyn AsRef<MyType>` would still benefit
+            // from walking the args.
+            for bound in &to.bounds {
+                if let TypeParamBound::Trait(t) = bound
+                    && let Some(last) = t.path.segments.last()
+                {
+                    walk_path_args(&last.arguments, imports);
+                }
+            }
+        }
+        Type::ImplTrait(it) => {
+            for bound in &it.bounds {
+                if let TypeParamBound::Trait(t) = bound
+                    && let Some(last) = t.path.segments.last()
+                {
+                    walk_path_args(&last.arguments, imports);
+                }
+            }
+        }
+
+        // Groups / parens just wrap an inner type.
+        Type::Group(g) => collect_type_import(&g.elem, imports),
+        Type::Paren(p) => collect_type_import(&p.elem, imports),
+
+        // Arrays and slices: recurse into the element type.
+        Type::Array(a) => collect_type_import(&a.elem, imports),
+        Type::Slice(s) => collect_type_import(&s.elem, imports),
+        Type::Ptr(p) => collect_type_import(&p.elem, imports),
+
+        // BareFn, Infer, Macro, Never, TraitObject, Verbatim, etc. — nothing
+        // useful to import.
+        _ => {}
     }
-    if !imports.contains(&inner) {
-        imports.push(inner);
+}
+
+/// Recurse into the generic arguments of a path segment, calling
+/// `collect_type_import` on each type argument.
+fn walk_path_args(args: &PathArguments, imports: &mut Vec<String>) {
+    if let PathArguments::AngleBracketed(ab) = args {
+        for arg in &ab.args {
+            if let GenericArgument::Type(t) = arg {
+                collect_type_import(t, imports);
+            }
+        }
     }
 }
 
