@@ -1,0 +1,317 @@
+---
+title: Ontogen — accumulated feedback from Pumice usage
+type: feedback
+status: living
+last_updated: 2026-05-12
+related:
+  - architecture/03-modules/ontogen-pipeline.md
+  - architecture/08-decisions/0003-ontogen-for-entities.md
+  - tasks/0045-route-commands-through-ontogen-api-layer.md
+tags:
+  - ontogen
+  - codegen
+  - feedback
+---
+# Ontogen feedback log
+
+Living document. Each entry is a friction point or improvement idea
+encountered while using ontogen (`crates/ontogen/` upstream:
+`github.com/sksizer/rust-ontogen`) inside Pumice. Items are meant to
+eventually flow upstream as issues / PRs on the ontogen repo. Pumice's
+own architecture issues live in
+[[architecture/99-issues-and-contradictions]] — only ontogen-side
+improvements belong here.
+
+Severity: **High** = blocks adoption / produces wrong output silently;
+**Medium** = workable but ergonomic friction; **Low** = polish.
+
+## Open
+
+### OF-001 Parser silently drops functions with non-matching first-param type
+- **Severity:** High
+- **First hit:** Task 0045, while analysing why nothing past autostart was
+  flowing through the generated path.
+- **Location:** `ontogen-core` → `src/servers/parse.rs:103-119`
+  (`parse_api_module`).
+- **Behaviour:** The parser accepts a `pub fn` only when the *rendered*
+  type string of its first parameter contains the configured `state_type`
+  or `store_type` substring. Non-matching functions are dropped without a
+  warning or diagnostic. Result: a `pub fn` you placed in `api/v1/foo.rs`
+  silently produces no IPC handler, no HTTP route, no TS method — the
+  frontend has nothing typed to call against, but the build still succeeds.
+- **Repro:** Add `pub fn x(state: tauri::State<'_, Mutex<AppState>>) -> Result<(), AppError>`
+  to `api/v1/foo.rs` (real shape used by Pumice's existing `commands/`).
+  Rebuild. Function is invisible to ontogen with no signal.
+- **Proposed resolution:** Emit a `cargo:warning=` (or hard error behind
+  a config flag) when a `pub fn` in the scanned `api_dir` is skipped
+  because its first param doesn't match the configured `state_type` /
+  `store_type`. Wording suggestion:
+  `"ontogen: skipped fn `foo::bar` — first param type `State<'_, Mutex<AppState>>` does not match state_type 'PumiceState' or store_type 'Store'"`.
+- **Workaround until then:** `grep` to manually verify every fn in
+  `api/v1/` is reflected in `transport/ipc/generated.rs`.
+
+### OF-002 URL pluralization is forced for non-entity modules
+
+- **Severity:** Medium
+- **First hit:** Task 0045, migrating `database::get_path` — URL emitted as
+  `/api/databases/path` even though there's only one database.
+- **Location:** `ontogen-core` → naming config + `naming::url_plural`
+  used in HTTP route generation (`src/servers/generators/transport.rs:945`).
+- **Behaviour:** The URL plural segment is always derived from the module
+  name regardless of whether the module represents a collection or a
+  singleton. For CRUD modules this is correct (`timer_sessions`, etc.).
+  For singletons like `database`, `autostart`, `vault`, the URL reads as
+  `/api/databases/path`, `/api/autostarts/enabled`, `/api/vaults/config`
+  — all of which suggest a non-existent collection.
+- **Proposed resolution:** Add a module-level attribute or naming-config
+  option to mark a module as a **singleton**, in which case `url_plural`
+  short-circuits to the singular form. Two shapes worth considering:
+  1. Config-side: `NamingConfig::singleton_modules: Vec<String>`.
+  2. Source-side: a marker doc comment or attribute on the api module
+     file (e.g., `//! @ontogen(singleton)` at the top of `database.rs`).
+- **Impact today:** Cosmetic — IPC is the primary transport in Pumice
+  and is unaffected. Becomes user-visible if HTTP transport is
+  documented externally or used by admin tooling.
+
+### OF-003 Module name doubles as command-name prefix with no override
+- **Severity:** Medium
+- **First hit:** Task 0045, naming sketch (`journal::get_tag_history`
+  → `journalGetTagHistory()` reads worse than `tagGetHistory()` because
+  "tag history" is already in the function name).
+- **Location:** `ontogen-core` → `src/servers/generators/ipc.rs:76`
+  (`command_name = format!("{entity}_{fn_name}")`).
+- **Behaviour:** Every function in a module is prefixed
+  `{url_singular(module)}_`. This is correct when the module name is the
+  noun the operations are *about* — but when the function name already
+  encodes the noun, you get redundancy. The escape hatch today is to
+  rename either the function or the module, which means either weakening
+  the function name (`get_history` instead of `get_tag_history`) or
+  fragmenting the module structure (`tag.rs` purely so its prefix reads
+  cleanly).
+- **Proposed resolution:** Allow a per-function override via a doc-comment
+  directive or attribute. E.g.:
+  ```rust
+  /// @ontogen(name = "tag_get_history")
+  pub fn get_tag_history(store: &Store) -> ... { ... }
+  ```
+  Would emit `tag_get_history` / `tagGetHistory()` despite living in
+  `journal.rs`. Alternative: rename collisions are managed by the user
+  via a `ts_command_overrides: HashMap<String, String>` config knob.
+- **Impact today:** Forces module structure to be driven by naming
+  ergonomics rather than logical grouping. Workable but adds friction
+  during the planning phase.
+
+### OF-004 No "module is a singleton" semantic — affects HTTP, doc-gen, admin
+- **Severity:** Low (today), Medium (once admin UI is generated)
+- **Relates to:** OF-002.
+- **Description:** Singleton modules (autostart, database, vault) have no
+  way to declare themselves as such. Beyond URL plurality, this matters
+  for any future generator that distinguishes "list view + detail page"
+  (entity) from "single config screen" (singleton). The admin registry
+  emitter (`ClientGenerator::AdminRegistry`) currently includes only
+  entities; if singleton modules become first-class, the admin layer
+  could expose them as standalone screens.
+- **Proposed resolution:** Same singleton marker proposed in OF-002,
+  generalised so all downstream generators can branch on it.
+
+### OF-005 No surfaced contract for which `state_type` / `store_type` shapes
+        are accepted as first param
+- **Severity:** Medium
+- **First hit:** Task 0045, attempting to migrate commands that take
+  `State<'_, Mutex<AppState>>` — the parser doesn't see them, but it's
+  not obvious *why* without reading the ontogen source.
+- **Description:** The parser's substring-match rule (OF-001) means a
+  function taking `&Arc<PumiceState>` works but `State<'_, Arc<PumiceState>>`
+  does not, and `State<'_, Mutex<AppState>>` is silently invisible.
+  These constraints are not documented in user-facing ontogen docs (only
+  visible by reading `parse.rs`).
+- **Proposed resolution:** Document the accepted first-param shapes in
+  the ontogen README / examples, with the "this works / this doesn't"
+  table. Pair with OF-001's diagnostic to make it discoverable both
+  from docs and from build output.
+
+### OF-006 Generated TS bindings file emits `Record<string, unknown>` for
+        types it can't resolve
+- **Severity:** Medium
+- **Cross-ref:** Pumice task **0035**, pumice issue **ISS-002**.
+- **Location:** `ontogen-core` → TS bindings emitter (the
+  `bindings_path` consumer of the generator).
+- **Behaviour:** When an entity / DTO type can't be resolved against the
+  expected `bindings.ts` file, the generator falls back to
+  `Record<string, unknown>` with a `TODO:` comment in `transport.ts`. The
+  build doesn't fail; the TS surface is silently untyped.
+- **Proposed resolution:** Two parts. (a) Emit a `cargo:warning=` for
+  every fallback so the gap surfaces during build. (b) Provide a
+  documented end-to-end path for getting the bindings populated (the
+  current state requires the user to set up a separate
+  `specta::export_ts` binary; this is doable but unobvious — Pumice
+  task 0035 enumerates the steps).
+
+### OF-007 Pure utility functions can't be exposed without a no-op state param
+- **Severity:** Medium
+- **First hit:** Task 0045, migrating `copy_to_clipboard` — a function that
+  takes only `text: String` and needs no application state.
+- **Location:** `ontogen-core` → `src/servers/parse.rs:103-119`.
+- **Behaviour:** The parser requires every API function's first parameter
+  to be `&PumiceState` or `&Store` (or whatever's configured). Functions
+  that don't need any state — pure data transformations, OS-level
+  side-effects — can't satisfy this. Functions with zero parameters are
+  also silently dropped.
+- **Repro (current Pumice workaround):**
+  ```rust
+  // api/v1/clipboard.rs
+  pub fn copy(_state: &PumiceState, text: &str) -> Result<(), AppError> {
+      pumice_desktop::clipboard::copy_text(text.to_string()).map_err(AppError::DbError)
+  }
+  ```
+  The `_state` parameter is unused but mandatory — the function signature
+  is shaped to placate the parser, not because the state is needed.
+- **Proposed resolution:** Allow `pub fn` with no parameters, or with a
+  first parameter that isn't state-shaped, to still be emitted. The
+  emitted IPC/HTTP wrappers can simply not pass any state through. This
+  removes the "lying signature" workaround.
+- **Workaround until then:** Add `_state: &PumiceState` as the no-op first
+  param. Note this in the function doc-comment so the next reader knows
+  it's a parser constraint, not a design choice.
+
+### OF-008 `collect_type_import` doesn't unwrap `Option<T>` from return types
+- **Severity:** High (produces broken output)
+- **First hit:** Task 0045, migrating `backup_data` (returns
+  `Option<String>`) and `restore_from_backup` (returns
+  `Option<RestoreCandidate>`).
+- **Location:** `ontogen-core` → `src/servers/types.rs:52-54`
+  (`inner_type`) + `:58-92` (`collect_type_import`).
+- **Behaviour:** `inner_type` unwraps `Vec<T>` but not `Option<T>`. When a
+  service function's return type is `Result<Option<X>, AppError>`,
+  `collect_type_import` adds the literal string `Option<X>` to the type
+  import list. Generated output:
+  ```rust
+  use crate::schema::{
+      ...,
+      Option<RestoreCandidate>,  // ← invalid Rust path
+      Option<String>,            // ← Option is prelude; String is prelude
+      ...,
+  };
+  ```
+  This fails to compile (`expected one of ', ', '::', 'as', or '}', found '<'`).
+- **Repro:** A pub fn in api/v1 with signature
+  `pub async fn x(state: &PumiceState) -> Result<Option<String>, AppError>`.
+- **Proposed resolution:** Two changes to `ontogen-core/src/servers/types.rs`:
+  1. Extend `inner_type` to recursively strip `Option<>` and other common
+     generic wrappers (or split into `inner_type_for_import` and
+     `inner_type_for_ts`). The TS emitter at `rust_type_to_ts:153` already
+     handles `Option<T>` correctly — the import collector should too.
+  2. Skip prelude types unconditionally — already partially done via the
+     primitive list at `:68-86`, just needs `Option` and other wrappers
+     added (or, better, the recursive strip from (1) handles it).
+- **Workaround until then:** Wrap `Option<T>` returns in a named struct.
+  Pumice uses `BackupOutcome { saved_path: Option<String> }` and
+  `RestorePickOutcome { candidate: Option<RestoreCandidate> }` in
+  `src-tauri/src/schema/backup.rs`. Adds one indirection on the frontend
+  (`outcome.savedPath` instead of `outcome`) but otherwise transparent.
+
+### OF-009 cruet singularizes mass nouns ("data" → "datum")
+- **Severity:** Low
+- **First hit:** Task 0045, naming `api/v1/data.rs` for backup/restore/wipe
+  operations — emitted `datumBackup()`, `datumPickRestore()` because
+  `cruet::to_singular("data") = "datum"`. Same root cause re-tripped on
+  `api/v1/settings.rs` (cruet → `setting`).
+- **Location:** `ontogen-core` → `src/servers/types.rs:220-225`
+  (`NamingConfig::url_singular`).
+- **Behaviour:** cruet applies Rails-style inflection which treats Latin
+  pluralizations literally. Mass nouns like "data", "information",
+  "media", and plural-tantums like "settings" produce awkward
+  command/method names by default.
+- **Workaround in use:** Pumice's `build.rs` now sets
+  `singular_overrides: {"data": "data", "settings": "settings"}` plus
+  matching plural overrides. Works as documented.
+- **Proposed resolution:** Cosmetic — none strictly needed since the
+  override path is the documented escape hatch. Could ship a curated
+  default override set covering common mass nouns / plural-tantums. Or
+  document the pitfall in the NamingConfig doc-comment so users hit it
+  sooner.
+
+### OF-010 `collect_type_import` doesn't unwrap generics in return types
+- **Severity:** High (sibling of OF-008)
+- **First hit:** Task 0045, Bucket 3 notification module —
+  `notification::get_prefs() -> Result<HashMap<String, NotificationPrefs>, AppError>`
+  emitted `use crate::schema::{HashMap<String , NotificationPrefs>};`,
+  invalid Rust. 54 compile errors.
+- **Location:** `ontogen-core` → `src/servers/types.rs:52` (`inner_type()`)
+  — same function that misses `Option<T>` per OF-008.
+- **Behaviour:** `inner_type()` strips `Result` and `Vec`, but doesn't
+  handle parameterized generics like `HashMap<K, V>` — the full
+  rendered type ends up in the import list.
+- **Workaround in use:** Wrap the map in a struct
+  (`NotificationPrefsMap { entries: HashMap<…> }`). Same pattern as
+  OF-008's `BackupOutcome`.
+- **Proposed resolution:** Same fix as OF-008 — collect base type
+  identifiers, recurse into generic args. A single resolution covers
+  both OF-008 and OF-010.
+
+### OF-011 Inconsistent borrow handling for custom-type input parameters
+- **Severity:** High
+- **First hit:** Task 0045, Bucket 3 — debugging which signature shape
+  ontogen wants for input parameters. Six distinct cases observed,
+  inconsistent across types:
+  - `text: &str` → handler passes `&text` (`&String` deref-coerces)
+  - `enabled: bool` → handler passes `enabled` (by value)
+  - `id: String` (primitive owned) → handler passes `&id`
+  - `input: ProfileInput` (custom struct, short name) → handler passes
+    `input` (by value, *not* `&input`)
+  - `prefs: crate::schema::NotificationPrefs` (custom struct, qualified
+    path) → handler passes `&prefs` (by ref)
+  - `profile_id: SelectedProfileId` (custom struct, short name) →
+    handler passes `&profile_id` (by ref!)
+  - `rating: Option<u8>` → handler emits `rating.as_deref()`, which
+    fails compilation because `u8: !Deref`.
+- **Location:** `ontogen-core` → `src/servers/handlers.rs` (argument
+  forwarding logic).
+- **Behaviour:** The decision between by-value and by-ref forwarding
+  appears to depend on type-name shape and/or some path-resolution
+  heuristic. The `Option<T>` case always emits `.as_deref()` regardless
+  of whether `T: Deref`.
+- **Workaround in use:** Each call site is debugged by `cargo build`,
+  then the api/v1 function signature is updated to match what ontogen
+  emits (`&Type` vs owned `Type`, etc). For `Option<u8>`, wrap multiple
+  payload fields in a single struct param to avoid the `.as_deref()`
+  bug entirely (Pumice uses `JournalSubmission` for this).
+- **Proposed resolution:** Standardize on one convention. Either:
+  (a) always pass by value (require user fn to take owned), or
+  (b) always pass by ref (require `&T` in user fn). For `Option<T>`,
+  only emit `.as_deref()` when `T: Deref` (the obvious cases are
+  `String`, `Vec<T>`, `Box<T>`, etc — gate on the inner type).
+
+### OF-012 Helper modules in `api/v1/` are auto-scanned by parser
+- **Severity:** Low
+- **First hit:** Task 0045, when creating `api/v1/setting_helpers.rs`
+  for shared `update_setting<R,S,C>(state, ...)` helper. ontogen
+  scanned the file and tried to emit a transport command for the
+  generic function.
+- **Location:** `ontogen-core` → `src/servers/parse.rs:103-119`
+  (the same parser entrypoint per OF-001).
+- **Behaviour:** Every `pub fn` whose first param matches `state_type` /
+  `store_type` is considered for emission. There's no opt-out marker.
+- **Workaround in use:** Move helper files out of `api/v1/` — Pumice's
+  helper lives at `crate::api::setting_helpers` (one level above the
+  scanned dir).
+- **Proposed resolution:** Attribute-based opt-out
+  (`#[ontogen::skip]`), or a file-level `// ontogen:skip` magic
+  comment, or honour `pub(crate)` visibility (only scan `pub`
+  functions).
+
+## Resolved / Filed upstream
+
+(Empty — entries move here once they're filed as ontogen issues / PRs and
+either merged or wontfix'd.)
+
+## Conventions
+
+- One entry per finding. Don't bundle multiple proposals into one OF-xxx.
+- Sequential IDs (OF-001, OF-002, ...). Don't renumber when entries move
+  to Resolved.
+- Each entry must include: severity, first-hit context, location in
+  ontogen source, behaviour, proposed resolution, and workaround if
+  applicable.
+- Severity reflects impact on Pumice's adoption of ontogen — not absolute
+  importance of the issue to ontogen's user base.
