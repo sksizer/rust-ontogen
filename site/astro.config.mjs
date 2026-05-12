@@ -79,6 +79,7 @@ export default defineConfig({
 						{ label: 'Annotations', slug: 'reference/annotations' },
 						{ label: 'Intermediate Representations', slug: 'reference/intermediate-representations' },
 						{ label: 'Field Types', slug: 'reference/field-types' },
+						{ label: 'Related Art', slug: 'reference/related-art' },
 					],
 				},
 				{
@@ -87,6 +88,7 @@ export default defineConfig({
 						{ label: 'Iron Log', slug: 'examples/iron-log' },
 					],
 				},
+				{ label: 'Roadmap', slug: 'roadmap' },
 			],
 		}),
 	],
