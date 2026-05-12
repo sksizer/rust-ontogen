@@ -1,8 +1,20 @@
+---
+status: draft
+---
 # OF-011 - Make handler argument forwarding consistent and fix `.as_deref()` for non-Deref `Option<T>`
 
 - **Severity:** High
 - **Status:** Open (design decision needed)
-- **Source:** [feedback.md OF-011](../feedback.md)
+- **Source:** [feedback.md OF-011](2026-05-12-pumice.md)
+
+## Status update (2026-05-12, from `7c056fe`)
+
+The AST groundwork landed as a side-effect of OF-008/OF-010. `Param::ty_ast: syn::Type`
+is now on the IR, so the forwarding decision can use AST inspection (peel `Option`, check
+the inner type against a small Deref-implementing allowlist) instead of substring
+heuristics on the rendered type string. Effort estimate drops from Medium-plus to Medium;
+the algorithm sketch under "Proposed resolution" below should be re-read with that in
+mind (option A becomes the obvious choice).
 
 ## Problem
 

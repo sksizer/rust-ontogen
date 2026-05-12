@@ -1,8 +1,11 @@
+---
+status: draft
+---
 # OF-003 - Per-function command-name override
 
 - **Severity:** Medium
 - **Status:** Open
-- **Source:** [feedback.md OF-003](../feedback.md)
+- **Source:** [feedback.md OF-003](2026-05-12-pumice.md)
 
 ## Problem
 

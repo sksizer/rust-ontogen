@@ -1,8 +1,11 @@
+---
+status: draft
+---
 # OF-006 - Warn on TS bindings fallback to `Record<string, unknown>`
 
 - **Severity:** Medium
 - **Status:** Open
-- **Source:** [feedback.md OF-006](../feedback.md)
+- **Source:** [feedback.md OF-006](2026-05-12-pumice.md)
 - **Cross-ref:** Pumice task 0035, pumice issue ISS-002
 
 ## Problem

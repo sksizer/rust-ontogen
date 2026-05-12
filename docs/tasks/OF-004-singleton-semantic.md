@@ -1,8 +1,11 @@
+---
+status: draft
+---
 # OF-004 - First-class singleton-module semantic for downstream generators
 
 - **Severity:** Low (today), Medium (once admin UI is generated)
 - **Status:** Open
-- **Source:** [feedback.md OF-004](../feedback.md)
+- **Source:** [feedback.md OF-004](2026-05-12-pumice.md)
 - **Related:** [OF-002](./OF-002-singleton-url-pluralization.md)
 
 ## Problem

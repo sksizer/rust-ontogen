@@ -1,8 +1,11 @@
+---
+status: draft
+---
 # OF-012 - File-level skip marker for helper modules in `api/v1/`
 
 - **Severity:** Low
 - **Status:** Open
-- **Source:** [feedback.md OF-012](../feedback.md)
+- **Source:** [feedback.md OF-012](2026-05-12-pumice.md)
 
 ## Problem
 

@@ -4,7 +4,7 @@ One file per discrete piece of work. Each file is self-contained: severity, loca
 
 ## Pumice feedback (OF-###)
 
-Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md`](../feedback.md).
+Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md`](2026-05-12-pumice.md).
 
 | ID | Severity | Title |
 | --- | --- | --- |
@@ -23,9 +23,9 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 
 ## Suggested priority
 
-1. **OF-008 + OF-010** (one PR; clear bug, small fix, unblocks `Option` / `HashMap` returns).
+1. ~~**OF-008 + OF-010**~~ - resolved in `7c056fe` (2026-05-12).
 2. **OF-001 + OF-005** (diagnostic + docs page documents the contract).
-3. **OF-011** (medium fix; needs the design call in the file first).
+3. **OF-011** (groundwork now in place via `7c056fe`; effort dropped to Medium).
 4. **OF-012** (small, isolated).
 5. **OF-002 + OF-004** (singleton marker; design discussion).
 6. **OF-003** (override mechanism; design discussion).
@@ -34,8 +34,14 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 
 ## When an entry is resolved
 
-Move it to the "Resolved" table below with the PR / commit reference. Do not delete the file - retain it for context.
+Set frontmatter `status: closed` and `resolution: fixed` (or `wontfix`), update the
+inline status line to `Resolved (<commit>, <date>)`, add a Resolution section near the
+top, and append a row to the Resolved table below. Do not delete the file - retain it
+for context.
 
 ## Resolved
 
-(Empty.)
+| ID | Resolution | Commit | Date |
+| --- | --- | --- | --- |
+| [OF-008](./OF-008-inner-type-strip-option.md) | Fixed via syn::Type AST walker in `collect_type_import`. Breaking API change. | `7c056fe` | 2026-05-12 |
+| [OF-010](./OF-010-collect-type-import-generics.md) | Fixed together with OF-008. | `7c056fe` | 2026-05-12 |

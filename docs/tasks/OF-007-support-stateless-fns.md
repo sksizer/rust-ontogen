@@ -1,8 +1,11 @@
+---
+status: draft
+---
 # OF-007 - Support pure utility functions without a no-op state parameter
 
 - **Severity:** Medium
 - **Status:** Open (design decision needed)
-- **Source:** [feedback.md OF-007](../feedback.md)
+- **Source:** [feedback.md OF-007](2026-05-12-pumice.md)
 
 ## Problem
 

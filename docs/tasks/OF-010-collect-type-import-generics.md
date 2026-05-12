@@ -1,9 +1,29 @@
+---
+status: closed
+resolution: fixed
+---
 # OF-010 - `collect_type_import` should recurse into multi-arg generics
 
 - **Severity:** High (produces broken output; sibling of OF-008)
-- **Status:** In progress
-- **Source:** [feedback.md OF-010](../feedback.md)
+- **Status:** Resolved (`7c056fe`, 2026-05-12)
+- **Source:** [feedback.md OF-010](2026-05-12-pumice.md)
 - **Related:** [OF-008](./OF-008-inner-type-strip-option.md) (same fix)
+
+## Resolution
+
+Shipped together with OF-008 in `7c056fe` on 2026-05-12. See
+[OF-008's Resolution section](./OF-008-inner-type-strip-option.md#resolution) for the
+full implementation summary.
+
+Concretely for OF-010: `HashMap<K, V>` and other multi-arg generics now recurse into each
+arg via the AST walker, so multi-arg containers no longer leak rendered strings into the
+import list. Test coverage includes `HashMap<String, T>`, `HashMap<K, V>`,
+`HashMap<String, Vec<T>>`, `BTreeMap`, `HashSet`, `BTreeSet`, and the nested case
+`Option<HashMap<String, Vec<T>>>`.
+
+---
+
+*The remainder of this document is preserved as a record of the original analysis.*
 
 ## Problem
 

@@ -1,8 +1,11 @@
+---
+status: draft
+---
 # OF-009 - Document or default-override cruet mass-noun singularization
 
 - **Severity:** Low
 - **Status:** Open
-- **Source:** [feedback.md OF-009](../feedback.md)
+- **Source:** [feedback.md OF-009](2026-05-12-pumice.md)
 
 ## Problem
 

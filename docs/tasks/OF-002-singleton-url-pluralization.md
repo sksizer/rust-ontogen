@@ -1,8 +1,11 @@
+---
+status: draft
+---
 # OF-002 - Singleton module URL pluralization
 
 - **Severity:** Medium
 - **Status:** Open
-- **Source:** [feedback.md OF-002](../feedback.md)
+- **Source:** [feedback.md OF-002](2026-05-12-pumice.md)
 - **Related:** [OF-004](./OF-004-singleton-semantic.md)
 
 ## Problem

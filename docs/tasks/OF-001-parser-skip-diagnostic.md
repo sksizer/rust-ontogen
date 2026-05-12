@@ -1,8 +1,11 @@
+---
+status: draft
+---
 # OF-001 - Emit diagnostic when parser skips a non-matching `pub fn`
 
 - **Severity:** High
 - **Status:** Open
-- **Source:** [feedback.md OF-001](../feedback.md)
+- **Source:** [feedback.md OF-001](2026-05-12-pumice.md)
 - **Related:** [OF-005](./OF-005-document-state-store-shapes.md)
 
 ## Problem

@@ -1,8 +1,11 @@
+---
+status: draft
+---
 # OF-005 - Document accepted `state_type` / `store_type` first-param shapes
 
 - **Severity:** Medium
 - **Status:** Open
-- **Source:** [feedback.md OF-005](../feedback.md)
+- **Source:** [feedback.md OF-005](2026-05-12-pumice.md)
 - **Related:** [OF-001](./OF-001-parser-skip-diagnostic.md)
 
 ## Problem

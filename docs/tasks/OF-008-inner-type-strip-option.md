@@ -1,9 +1,43 @@
+---
+status: closed
+resolution: fixed
+---
 # OF-008 - `inner_type` should recursively strip `Option<T>` and other wrappers
 
 - **Severity:** High (produces broken output)
-- **Status:** In progress
-- **Source:** [feedback.md OF-008](../feedback.md)
-- **Related:** [OF-010](./OF-010-collect-type-import-generics.md) (same root cause)
+- **Status:** Resolved (`7c056fe`, 2026-05-12)
+- **Source:** [feedback.md OF-008](2026-05-12-pumice.md)
+- **Related:** [OF-010](./OF-010-collect-type-import-generics.md) (same root cause, fixed together)
+
+## Resolution
+
+Shipped in `7c056fe` on 2026-05-12. Took the AST-based approach (Option B from the
+discussion) rather than the string-walker proposed below, after noticing the whole bug
+class exists because the parser flattens `syn::Type` to a string and downstream code
+re-parses it via substring checks.
+
+- `ApiFn` and `Param` now carry the parsed `syn::Type` alongside the rendered string
+  (`return_type_ast`, `ty_ast`). Parser populates both.
+- `collect_type_import` was rewritten as `fn(&syn::Type, &mut Vec<String>)` and walks the
+  AST recursively. Single-arg containers (`Option`, `Vec`, `Box`, `Arc`, `Rc`, `Cow`) are
+  peeled; multi-arg containers (`HashMap`, `BTreeMap`, `HashSet`, `BTreeSet`, `IndexMap`,
+  `IndexSet`, `Result`) recurse into each arg.
+- `inner_type` left untouched (callers in `ipc.rs:218,501` still need one-layer behaviour
+  for `PaginatedResult<{item_type}>`).
+- Call sites in `src/servers/generators/{ipc,http,mcp}.rs` updated to pass the AST.
+- 29-case unit-test matrix + end-to-end regression test added in `src/servers/tests.rs`.
+- Iron-log build and `just full-check` pass clean; no snapshot diffs.
+
+This is a breaking API change (new pub fields on `ApiFn`/`Param`, `collect_type_import`
+signature change, `syn::Type` now in the public surface). Flag in next release notes.
+
+Bonus: the AST is now available for [OF-011](./OF-011-handler-arg-forwarding.md), making
+that fix substantially simpler than originally scoped.
+
+---
+
+*The remainder of this document is preserved as a record of the original analysis and
+the proposed-but-not-shipped string-walker approach.*
 
 ## Problem
 
