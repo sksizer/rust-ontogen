@@ -8,10 +8,10 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::AppState;
-use crate::api::v1::{exercise, tag, workout, workout_set};
+use crate::api::v1::{exercise, stats, tag, workout, workout_set};
 use crate::schema::{
     CreateExerciseInput, CreateTagInput, CreateWorkoutInput, CreateWorkoutSetInput, Exercise, Tag, UpdateExerciseInput,
-    UpdateTagInput, UpdateWorkoutInput, UpdateWorkoutSetInput, Workout, WorkoutSet,
+    UpdateTagInput, UpdateWorkoutInput, UpdateWorkoutSetInput, Workout, WorkoutSet, WorkoutStats,
 };
 use crate::store::Store;
 
@@ -158,6 +158,14 @@ pub async fn workout_set_delete(id: String, state: State<'_, Arc<AppState>>) -> 
     workout_set::delete(store, &id).await.map_err(|e| e.to_string())
 }
 
+// ── Stats IPC Commands ──
+
+#[tauri::command]
+pub async fn stat_workout(state: State<'_, Arc<AppState>>) -> Result<WorkoutStats, String> {
+    let store = state.store().await.map_err(|e| e.to_string())?;
+    stats::workout(store).await.map_err(|e| e.to_string())
+}
+
 /// Generated IPC handler. Wire this into `tauri::Builder::invoke_handler()`.
 pub fn ipc_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
@@ -181,5 +189,6 @@ pub fn ipc_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'sta
         workout_set_create,
         workout_set_update,
         workout_set_delete,
+        stat_workout,
     ]
 }
