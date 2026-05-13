@@ -37,7 +37,7 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 1. ~~**OF-008 + OF-010**~~ - resolved in `7c056fe` (2026-05-12).
 2. ~~**OF-001 + OF-005**~~ - resolved in `919b74a` (2026-05-12).
 3. ~~**OF-011**~~ - resolved in `387d460` (2026-05-12); spawned [OF-013](./OF-013-ast-param-to-owned-type.md) as a follow-up.
-4. **OF-013** (AST-ify `param_to_owned_type`; pairs with OF-011's allowlist).
+4. ~~**OF-013**~~ - resolved in `71d76ce` (2026-05-12); closes the OF-011 follow-up loop.
 5. ~~**OF-012**~~ - resolved in `84d76dd` (2026-05-12).
 6. **OF-002 + OF-004** (singleton marker; design discussion).
 7. **OF-003** (override mechanism; design discussion).
@@ -54,3 +54,4 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 | [OF-001](./OF-001-parser-skip-diagnostic.md)       | `SkipRecord` / `ScanResult` plumb skipped pub fns out of the parser; `gen_api` and `generate_transport` emit one `cargo:warning=` per skip. Breaking signature change (crate-internal). | `919b74a` | 2026-05-12 |
 | [OF-005](./OF-005-document-state-store-shapes.md)  | New "Accepted Signatures" table + "Build-time skip warnings" section in `guides/api-layer.mdx`; each row pinned by a unit test.                                                         | `919b74a` | 2026-05-12 |
 | [OF-012](./OF-012-skip-marker-helpers.md)          | `// ontogen:skip` (and `//! ontogen:skip`) file-level marker. Marker in the leading comment block drops the file from `ScanResult.modules` and silences per-fn `SkipRecord`s.           | `84d76dd` | 2026-05-12 |
+| [OF-013](./OF-013-ast-param-to-owned-type.md)      | AST-driven `param_to_owned_type` mirrors `forward_arg_expr`'s DST allowlist (`&str`→`String`, `&[T]`→`Vec<T>`, `&Path`→`PathBuf`, `&CStr`→`CString`, `&OsStr`→`OsString`). New site-docs section + end-to-end symmetry test. Breaking signature change (crate-internal). | `71d76ce` | 2026-05-12 |
