@@ -5,7 +5,9 @@ pub mod http;
 pub mod ipc;
 pub mod mcp;
 pub mod transport;
+pub mod ts_bindings;
 pub mod ts_client;
+pub mod ts_sidecar;
 
 use std::path::PathBuf;
 

@@ -231,6 +231,59 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
         return Ok(modules);
     }
 
+    // OF-014 spike (option 1 half): emit schema-known TS aliases (entities +
+    // generated DTOs) to every distinct `bindings_path` declared by client
+    // generators *before* the client generators run. They then partition
+    // referenced types into schema-known (now satisfied) vs long-tail.
+    let mut written_bindings: std::collections::HashSet<std::path::PathBuf> = Default::default();
+    for generator in &config.generators {
+        let bp = match generator {
+            config::GeneratorConfig::Client(config::ClientGenerator::HttpTs { bindings_path, .. })
+            | config::GeneratorConfig::Client(config::ClientGenerator::HttpTauriIpcSplit { bindings_path, .. }) => {
+                Some(bindings_path.clone())
+            }
+            _ => None,
+        };
+        if let Some(path) = bp
+            && written_bindings.insert(path.clone())
+        {
+            let body = generators::ts_bindings::emit(&config.schema_entities);
+            crate::write_and_format_ts(&path, body).expect("Failed to write schema-known bindings");
+        }
+    }
+
+    // OF-014 spike (option 3 half): for the long tail, write a side-car
+    // binary into the user's crate, build+run it via cargo with a distinct
+    // CARGO_TARGET_DIR (avoids the parent cargo's target-dir lock — see
+    // rust-lang/cargo#8938), and append its stdout to bindings.ts. After
+    // this runs, the existing client generators below see a fully-populated
+    // bindings.ts and emit zero FallbackRecords.
+    //
+    // Env guard: the inner cargo invocation re-runs the user's build.rs,
+    // which would otherwise recurse into this block forever. The guard
+    // breaks the loop; the inner build still runs schema-known emission
+    // (idempotent) but skips re-invoking the side-car.
+    let in_sidecar_inner = std::env::var("ONTOGEN_TS_SIDECAR_INNER").is_ok();
+    let long_tail = generators::ts_bindings::long_tail(&modules, config, &config.schema_entities);
+    if !in_sidecar_inner && !long_tail.is_empty() && !written_bindings.is_empty() {
+        let manifest_dir = std::path::PathBuf::from(
+            std::env::var("CARGO_MANIFEST_DIR")
+                .map_err(|_| "CARGO_MANIFEST_DIR not set; ts_export side-car only runs from a build script")?,
+        );
+        let lib_crate_name = sidecar_lib_crate_name(&manifest_dir)?;
+        let types_module_path = sidecar_types_module_path(&config.types_import_path);
+        let source = generators::ts_sidecar::generate_sidecar_source(&lib_crate_name, &types_module_path, &long_tail);
+        generators::ts_sidecar::write_sidecar_source(&manifest_dir, &source);
+        let target_dir = std::path::PathBuf::from(
+            std::env::var("OUT_DIR").map_err(|_| "OUT_DIR not set; ts_export side-car needs build-script env")?,
+        )
+        .join("ontogen-ts-sidecar-target");
+        let ts = generators::ts_sidecar::run_sidecar(&manifest_dir, &target_dir)?;
+        for path in &written_bindings {
+            generators::ts_sidecar::append_to_bindings(path, &ts)?;
+        }
+    }
+
     for generator in &config.generators {
         match generator {
             config::GeneratorConfig::Server(config::ServerGenerator::HttpAxum { output }) => {
@@ -266,4 +319,46 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
     // write_if_changed, preventing unnecessary mtime changes.
 
     Ok(modules)
+}
+
+/// Read the user crate's Cargo.toml and return the lib crate name (the form
+/// used in `use foo::...` imports). Honours an explicit `[lib] name` if set;
+/// otherwise normalizes the package name (hyphens → underscores). Spike-grade
+/// regex-free parser — productionization should use `cargo metadata`.
+fn sidecar_lib_crate_name(manifest_dir: &std::path::Path) -> Result<String, String> {
+    let manifest_path = manifest_dir.join("Cargo.toml");
+    let content = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("failed to read {} for ts_export side-car: {e}", manifest_path.display()))?;
+    let mut in_section = "";
+    let mut package_name: Option<String> = None;
+    let mut lib_name: Option<String> = None;
+    for raw in content.lines() {
+        let line = raw.trim();
+        if let Some(rest) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            in_section = match rest {
+                "package" => "package",
+                "lib" => "lib",
+                _ => "",
+            };
+            continue;
+        }
+        if let Some((key, val)) = line.split_once('=') {
+            let k = key.trim();
+            let v = val.trim().trim_matches('"');
+            match (in_section, k) {
+                ("package", "name") => package_name = Some(v.to_string()),
+                ("lib", "name") => lib_name = Some(v.to_string()),
+                _ => {}
+            }
+        }
+    }
+    let name = lib_name.or_else(|| package_name.map(|n| n.replace('-', "_")));
+    name.ok_or_else(|| format!("could not determine lib crate name from {}", manifest_path.display()))
+}
+
+/// Convert a Rust import path of the form `crate::foo::bar` into the form
+/// usable from a sibling binary: `foo::bar`. The lib crate name will be
+/// prepended at side-car generation time.
+fn sidecar_types_module_path(types_import_path: &str) -> String {
+    types_import_path.strip_prefix("crate::").unwrap_or(types_import_path).to_string()
 }
