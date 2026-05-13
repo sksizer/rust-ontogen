@@ -118,8 +118,8 @@ Used by [`gen_api()`](/reference/public-api/#gen_api).
 | `output_dir` | `PathBuf` | Output directory for generated CRUD API modules. |
 | `exclude` | `Vec<String>` | Entity names to skip. These entities won't get generated API modules. |
 | `scan_dirs` | `Vec<PathBuf>` | Directories to scan for hand-written API modules. Scanned functions are merged with generated CRUD into a unified `ApiOutput`. When empty, only generated modules are included. |
-| `state_type` | `String` | The `AppState` type name. Used when scanning hand-written modules to identify functions that take the global state. |
-| `store_type` | `Option<String>` | The `Store` type name. Functions whose first parameter matches this are treated as entity-scoped (they operate on a specific store instance rather than the global state). |
+| `state_type` | `String` | The `AppState` type name. The scanner accepts a function when its rendered first-parameter type contains this string as a substring (`&AppState`, `&Arc<AppState>`, `State<'_, Arc<AppState>>` all match). See [accepted signatures](/guides/api-layer/#service-functions-accepted-signatures). |
+| `store_type` | `Option<String>` | The `Store` type name. Functions whose first parameter contains this substring are classified as entity-scoped (they operate on a specific store instance rather than the global state). Pick a distinctive name — `"Store"` will also match `"StoreContext"`, `"StoreManager"`, etc. |
 | `schema_module_path` | `String` | Rust import path for the schema module in generated code. Use [`ontogen::DEFAULT_SCHEMA_MODULE_PATH`](/reference/public-api/#default_schema_module_path) (`"crate::schema"`) for the canonical default. |
 
 ```rust
@@ -143,6 +143,8 @@ When `scan_dirs` is non-empty, `gen_api` parses every `.rs` file in those direct
 - The first parameter type to determine if it's `AppState`-scoped or `Store`-scoped
 
 Scanned functions are classified by their name pattern and parameter shape into `OpKind` values (List, GetById, Create, Update, Delete, CustomGet, CustomPost, EventStream). This classification drives HTTP verb and route selection in the server transport generators.
+
+Any `pub fn` whose first parameter doesn't match the substring rule, takes `&self` / `self`, or has no parameters at all is dropped from the generated output. `gen_api` prints one `cargo:warning=` per drop so they don't go silent. See [build-time skip warnings](/guides/api-layer/#build-time-skip-warnings) for the exact wording and how to react.
 
 ---
 

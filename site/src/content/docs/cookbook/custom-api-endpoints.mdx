@@ -171,6 +171,12 @@ pub async fn archive(store: &Store, id: &str) -> Result<(), AppError> { ... }
 pub async fn health_check(state: &AppState) -> Result<String, AppError> { ... }
 ```
 
+The parser accepts the function when the rendered first-parameter type contains your configured `state_type` or `store_type` as a substring. `&AppState`, `&Arc<AppState>`, and `State<'_, Arc<AppState>>` all match `state_type = "AppState"`. See [Service functions: accepted signatures](/guides/api-layer/#service-functions-accepted-signatures) for the full table including edge cases.
+
+<Aside type="caution">
+A `pub fn` whose first parameter doesn't match — or that takes `&self`, or has no parameters at all — used to be silently dropped. The build now emits a `cargo:warning=` per dropped function so you find out before clients fail to compile. If you don't see your function in the generated transports, check the `cargo build` output.
+</Aside>
+
 **Return type must be `Result<T, AppError>`** (or whatever your error type is):
 
 ```rust

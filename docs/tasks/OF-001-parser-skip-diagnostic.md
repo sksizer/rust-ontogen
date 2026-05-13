@@ -1,12 +1,53 @@
 ---
-status: in-progress
+status: closed
+resolution: fixed
+resolution_date: 2026-05-12
+resolution_commit: 919b74a
 ---
 # OF-001 - Emit diagnostic when parser skips a non-matching `pub fn`
 
 - **Severity:** High
-- **Status:** In progress (branch `feat/of-001-005-parser-skip-diagnostic`)
+- **Status:** Resolved (`919b74a`, 2026-05-12)
 - **Source:** [feedback.md OF-001](2026-05-12-pumice.md)
-- **Related:** [OF-005](./OF-005-document-state-store-shapes.md)
+- **Related:** [OF-005](./OF-005-document-state-store-shapes.md) (shipped together)
+
+## Resolution
+
+Shipped in `919b74a` on 2026-05-12 alongside OF-005. Took the breaking-signature
+path discussed in the Open Questions: `scan_api_dir` and `parse_api_module` now
+return result structs that carry skip records alongside the parsed modules.
+
+- `parse_api_module: ... -> Option<ApiModule>` became `... -> ModuleParseResult`.
+- `scan_api_dir: ... -> Vec<ApiModule>` became `... -> ScanResult`.
+- New pub types in `src/servers/parse.rs`: `SkipRecord`, `SkipReason`
+  (`FirstParamMismatch { first_param_ty, state_type, store_type }`,
+  `SelfReceiver`, `NoParams`), `ModuleParseResult`, `ScanResult`.
+- Both library call sites (`gen_api` in `src/api/mod.rs:79`, `generate_transport`
+  in `src/servers/mod.rs:221`) drain `scan_result.skips` and `println!` one
+  `cargo:warning=` line per record via `SkipRecord`'s `Display` impl.
+- Eight `scan_api_dir` test call sites in `src/servers/tests.rs` get `.modules`
+  appended to preserve the previous shape.
+- 12 new tests covering each `SkipReason` variant, the four
+  "out-of-scope" cases that must *not* produce a record (private fn, event fn,
+  etc.), the `Display` formatting, and the OF-005 acceptance-table rows.
+
+The change is not a public-API break: `pub(crate) mod parse;` (servers/mod.rs:13)
+keeps these signatures crate-internal. Only `ApiFn`, `ApiModule`, `EventFn`, and
+`Param` are re-exported. External callers see a behaviour change (warnings now
+appear) but no surface change.
+
+User-facing docs updated:
+- `site/src/content/docs/guides/api-layer.mdx` — new "Service functions:
+  accepted signatures" table + "Build-time skip warnings" section.
+- `site/src/content/docs/cookbook/custom-api-endpoints.mdx` — added a caution
+  callout explaining the cargo warning.
+- `site/src/content/docs/reference/configuration.mdx` — sharpened `state_type`
+  and `store_type` field descriptions; added a paragraph about skip warnings
+  to "How scanning works".
+
+---
+
+*The remainder of this document is preserved as a record of the original analysis.*
 
 ## Problem
 

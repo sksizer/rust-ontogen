@@ -763,15 +763,9 @@ pub fn rename(state: State<'_, Mutex<OtherKind>>, name: String) -> Result<(), an
     assert_eq!(scan.skips.len(), 1, "exactly one skip record");
     let rec = &scan.skips[0];
     assert_eq!(rec.fn_name, "rename");
-    assert!(matches!(
-        rec.reason,
-        crate::servers::parse::SkipReason::FirstParamMismatch { .. }
-    ));
-    if let crate::servers::parse::SkipReason::FirstParamMismatch {
-        first_param_ty,
-        state_type,
-        store_type,
-    } = &rec.reason
+    assert!(matches!(rec.reason, crate::servers::parse::SkipReason::FirstParamMismatch { .. }));
+    if let crate::servers::parse::SkipReason::FirstParamMismatch { first_param_ty, state_type, store_type } =
+        &rec.reason
     {
         assert!(first_param_ty.contains("OtherKind"), "captured the actual first-param type");
         assert_eq!(state_type, "AppState");
@@ -831,11 +825,7 @@ pub fn cache_clear() -> Result<(), anyhow::Error> {
 fn test_skip_record_includes_source_file_path() {
     let tmp = tempfile::tempdir().unwrap();
     let api_dir = tmp.path().join("api");
-    write_synthetic_api(
-        &api_dir,
-        "ghost.rs",
-        "pub fn no_params_here() -> Result<(), anyhow::Error> { todo!() }\n",
-    );
+    write_synthetic_api(&api_dir, "ghost.rs", "pub fn no_params_here() -> Result<(), anyhow::Error> { todo!() }\n");
 
     let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
 

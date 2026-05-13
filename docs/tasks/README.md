@@ -24,7 +24,7 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 ## Suggested priority
 
 1. ~~**OF-008 + OF-010**~~ - resolved in `7c056fe` (2026-05-12).
-2. **OF-001 + OF-005** (diagnostic + docs page documents the contract).
+2. ~~**OF-001 + OF-005**~~ - resolved in `919b74a` (2026-05-12).
 3. **OF-011** (groundwork now in place via `7c056fe`; effort dropped to Medium).
 4. **OF-012** (small, isolated).
 5. **OF-002 + OF-004** (singleton marker; design discussion).
@@ -45,3 +45,5 @@ for context.
 | --- | --- | --- | --- |
 | [OF-008](./OF-008-inner-type-strip-option.md) | Fixed via syn::Type AST walker in `collect_type_import`. Breaking API change. | `7c056fe` | 2026-05-12 |
 | [OF-010](./OF-010-collect-type-import-generics.md) | Fixed together with OF-008. | `7c056fe` | 2026-05-12 |
+| [OF-001](./OF-001-parser-skip-diagnostic.md) | `SkipRecord` / `ScanResult` plumb skipped pub fns out of the parser; `gen_api` and `generate_transport` emit one `cargo:warning=` per skip. Breaking signature change (crate-internal). | `919b74a` | 2026-05-12 |
+| [OF-005](./OF-005-document-state-store-shapes.md) | New "Accepted Signatures" table + "Build-time skip warnings" section in `guides/api-layer.mdx`; each row pinned by a unit test. | `919b74a` | 2026-05-12 |

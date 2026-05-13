@@ -94,7 +94,9 @@ Downstream generation in `gen_servers` (which also drives client artifacts via `
 
 ### How scan_dirs discovery works
 
-When you set `scan_dirs`, `gen_api` parses each `.rs` file in those directories using `syn`. It looks for public async functions whose first parameter is either your `state_type` (e.g., `&AppState`) or your `store_type` (e.g., `&Store`).
+When you set `scan_dirs`, `gen_api` parses each `.rs` file in those directories using `syn`. It looks for public functions whose first parameter is either your `state_type` (e.g., `&AppState`) or your `store_type` (e.g., `&Store`).
+
+The acceptance rule is a literal substring match: the parser stringifies the first parameter's type and accepts the function when that string contains the configured `state_type` (or `store_type`) as a substring. This is permissive on purpose — `&AppState`, `state: &AppState`, and `&Arc<AppState>` all pass — but it means a few subtle shapes are accepted-by-substring (`&AppStateLite` would match `state_type="AppState"`) and a few are rejected even though they look correct (`State<'_, Mutex<AppState>>` rejects when `state_type="PumiceState"`). See [Service functions: accepted signatures](#service-functions-accepted-signatures) below for the full table.
 
 For example, if you have a hand-written `src/api/v1/task.rs` alongside the generated `src/api/v1/generated/task.rs`:
 
@@ -198,6 +200,44 @@ pub fn task_updates(state: &AppState) -> broadcast::Receiver<TaskDelta> {
 ```
 
 Event streams get SSE endpoints in the HTTP generator and Tauri event forwarding in the IPC generator. They don't get MCP tools (MCP is request-response only).
+
+## Service functions: accepted signatures
+
+The parser is permissive about *how* you write the first parameter as long as the rendered type contains your configured `state_type` (or `store_type`) somewhere. Most natural shapes work; a handful of edge cases need to be understood.
+
+Assume `state_type = "AppState"` and `store_type = Some("Store")` for every row.
+
+| First parameter the user wrote                | Accepted? | Why                                                                                                                                  |
+| ---------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `state: &AppState`                             | yes       | Normalized type `&AppState` contains the substring `AppState`.                                                                       |
+| `state: &Arc<AppState>`                        | yes       | Normalized type `&Arc<AppState>` contains `AppState`.                                                                                |
+| `state: State<'_, Arc<AppState>>` (Tauri)      | yes       | Substring match still succeeds. The parser accepts the function, but the generated handlers expect a plain `&AppState` first param — your service function should match. |
+| `state: tauri::State<'_, Mutex<AppState>>`     | yes       | Same: substring contains `AppState`. Use this only if your service signature is already shaped to be called with this type.          |
+| `state: State<'_, Mutex<OtherState>>`          | **no**    | Stringified type doesn't contain `AppState` or `Store`. **Silently skipped today — see [Build-time skip warnings](#build-time-skip-warnings)** to surface it. |
+| `store: &Store`                                | yes       | Substring matches `store_type = "Store"`. Classified as store-scoped (`first_param_is_store = true`).                                |
+| `store: &StoreContext`                         | yes (footgun) | `"Store"` is a substring of `"StoreContext"`, so the parser treats this fn as store-scoped. Pick distinctive `store_type` names to avoid this. |
+| `(no parameters)`                              | **no**    | No first parameter to match against. Surfaced as `SkipReason::NoParams` in build warnings.                                           |
+| `&self` / `self`                               | **no**    | API modules host free functions, not methods. Surfaced as `SkipReason::SelfReceiver`.                                                |
+
+### Build-time skip warnings
+
+When `gen_api` (or `gen_servers`) encounters a `pub fn` that doesn't satisfy the rule above, it emits one `cargo:warning=` line per dropped function. The wording is one of:
+
+```
+warning: ontogen: skipped fn `foo::rename` in `src/api/v1/foo.rs` -
+  first param `tauri::State<'_, Mutex<OtherState>>` does not match
+  state_type 'AppState' or store_type 'Store'
+
+warning: ontogen: skipped fn `foo::cache_clear` in `src/api/v1/foo.rs` -
+  fn has no parameters
+
+warning: ontogen: skipped fn `foo::helper` in `src/api/v1/foo.rs` -
+  first param is `self`/`&self`
+```
+
+Private (`fn` without `pub`) functions, items that aren't functions (`struct`, `enum`, `use`, ...), and `mod.rs` files never produce a warning — those are intentional omissions, not silently-dropped API endpoints. Event functions (returning `broadcast::Receiver<T>`) are classified as events, not skipped.
+
+If you see a warning for a function you *did* mean as an API endpoint, the fix is almost always either renaming the configured `state_type` / `store_type` to match what you actually wrote, or adjusting the first parameter to use the canonical `&AppState` / `&Store` shape so downstream generators can call it cleanly.
 
 ## File organization
 
