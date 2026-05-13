@@ -242,10 +242,16 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
                 generators::ipc::generate(output, &modules, config);
             }
             config::GeneratorConfig::Client(config::ClientGenerator::HttpTs { output, bindings_path }) => {
-                generators::ts_client::generate(output, bindings_path, &modules, config);
+                let fallbacks = generators::ts_client::generate(output, bindings_path, &modules, config);
+                for record in &fallbacks {
+                    println!("cargo:warning={record}");
+                }
             }
             config::GeneratorConfig::Client(config::ClientGenerator::HttpTauriIpcSplit { output, bindings_path }) => {
-                generators::transport::generate(output, bindings_path, &modules, config);
+                let fallbacks = generators::transport::generate(output, bindings_path, &modules, config);
+                for record in &fallbacks {
+                    println!("cargo:warning={record}");
+                }
             }
             config::GeneratorConfig::Client(config::ClientGenerator::AdminRegistry { output }) => {
                 generators::admin::generate(output, &modules, config);

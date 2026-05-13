@@ -14,6 +14,7 @@ use ontogen_core::ir::OpKind;
 
 use crate::servers::classify::{classify_op, is_read_operation};
 use crate::servers::config::Config;
+use crate::servers::generators::FallbackRecord;
 use crate::servers::generators::ipc::command_name;
 use crate::servers::parse::{ApiModule, Param};
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
@@ -71,7 +72,13 @@ fn ts_ipc_prefix_arg_only(config: &Config) -> String {
 }
 
 /// Generate the unified transport layer and write to the output file.
-pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], config: &Config) {
+///
+/// Returns a [`FallbackRecord`] for every type referenced by the generated TS
+/// surface that wasn't exported from `bindings.ts` and therefore had to be
+/// stubbed as `Record<string, unknown>`. Callers (notably `generate_transport`
+/// in `src/servers/mod.rs`) emit a `cargo:warning=` for each so silent
+/// untyping shows up at build time. (OF-006)
+pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], config: &Config) -> Vec<FallbackRecord> {
     let mut out = String::new();
 
     // Read bindings.ts to discover exported types
@@ -143,6 +150,15 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     }
     out.push('\n');
 
+    let fallbacks: Vec<FallbackRecord> = missing
+        .iter()
+        .map(|t| FallbackRecord {
+            output: output.to_path_buf(),
+            bindings_path: bindings_path.to_path_buf(),
+            type_name: (*t).clone(),
+        })
+        .collect();
+
     for t in &missing {
         out.push_str(&format!(
             "// TODO: Type '{t}' not yet exported from bindings.ts - using placeholder\n\
@@ -178,6 +194,8 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
     crate::write_and_format_ts(output, out).expect("Failed to write transport generated file");
+
+    fallbacks
 }
 
 /// Generate the `Transport` interface.

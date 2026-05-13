@@ -110,6 +110,14 @@ Types that exist in bindings get proper imports. Types that are missing get a `R
 type CustomQueryResult = Record<string, unknown>;
 ```
 
+The placeholder keeps the generated TypeScript compiling, but loses type safety on every call that touches the missing type. To make sure the gap doesn't go unnoticed, the build emits a `cargo:warning=` line for each fallback:
+
+```text
+warning: ontogen: type 'CustomQueryResult' not found in `…/bindings.ts` - using `Record<string, unknown>` placeholder in `…/transport.ts`
+```
+
+The fix is to export the type from `bindings.ts` (typically by adding it to your `ts-rs` / `specta` export list). The warnings disappear once every referenced type is exported.
+
 ## Split transport (HTTP + Tauri IPC)
 
 The `HttpTauriIpcSplit` generator is for applications that run as both a web app and a Tauri desktop app. It generates a `Transport` interface with two implementations:
