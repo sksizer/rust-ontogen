@@ -362,14 +362,59 @@ fn test_to_pascal_case() {
     assert_eq!(to_pascal_case("get_by_id"), "GetById");
 }
 
+/// Matrix covering `param_to_owned_type` (OF-013).
+///
+/// The helper decides the *declared* owned form of a handler arg / struct
+/// field, given the user's service-fn parameter type. It must stay in lockstep
+/// with `forward_arg_expr`'s `.as_deref()` allowlist: every `&T` that the
+/// forwarding side calls `.as_deref()` on must have a sized owned companion
+/// here so the dereference target lines up. The DST → sized-companion mappings
+/// (`&str → String`, `&[T] → Vec<T>`, `&Path → PathBuf`, `&CStr → CString`,
+/// `&OsStr → OsString`) cover that allowlist.
 #[test]
-fn test_param_to_owned_type() {
-    assert_eq!(param_to_owned_type("&str"), "String");
-    assert_eq!(param_to_owned_type("& str"), "String");
-    assert_eq!(param_to_owned_type("Option<&str>"), "Option<String>");
-    assert_eq!(param_to_owned_type("String"), "String");
-    assert_eq!(param_to_owned_type("i32"), "i32");
-    assert_eq!(param_to_owned_type("CreateNodeInput"), "CreateNodeInput");
+fn test_param_to_owned_type_matrix() {
+    let cases: &[(&str, &str)] = &[
+        // Plain owned types — render as-is.
+        ("String", "String"),
+        ("i32", "i32"),
+        ("u8", "u8"),
+        ("bool", "bool"),
+        ("MyStruct", "MyStruct"),
+        ("CreateNodeInput", "CreateNodeInput"),
+        // Sized refs — just lose the `&`.
+        ("&MyStruct", "MyStruct"),
+        ("&crate::schema::Foo", "crate::schema::Foo"),
+        // Unsized-DST refs — map to sized owned companions.
+        ("&str", "String"),
+        ("&[u8]", "Vec<u8>"),
+        ("&[MyStruct]", "Vec<MyStruct>"),
+        ("&Path", "PathBuf"),
+        ("&CStr", "CString"),
+        ("&OsStr", "OsString"),
+        // Option<U> — recurse into U.
+        ("Option<String>", "Option<String>"),
+        ("Option<u8>", "Option<u8>"),
+        ("Option<MyStruct>", "Option<MyStruct>"),
+        ("Option<&str>", "Option<String>"),
+        ("Option<&[u8]>", "Option<Vec<u8>>"),
+        ("Option<&Path>", "Option<PathBuf>"),
+        ("Option<&CStr>", "Option<CString>"),
+        ("Option<&OsStr>", "Option<OsString>"),
+        ("Option<&MyStruct>", "Option<MyStruct>"),
+        // A qualified `Path`-like ident that isn't the prelude `Path` is not
+        // a recognized DST — strip the `&`, keep the user's path verbatim.
+        ("&my::Path", "my::Path"),
+        ("Option<&my::Path>", "Option<my::Path>"),
+        // Vec<&T> is left alone — owned-form recursion into container args is
+        // out of scope (see OF-013 open questions). `Vec<String>` etc. work
+        // correctly as IPC payloads via serde without any rewrite here.
+        ("Vec<&str>", "Vec<&str>"),
+    ];
+
+    for (input, expected) in cases {
+        let ty: syn::Type = syn::parse_str(input).expect("test input must parse as syn::Type");
+        assert_eq!(param_to_owned_type(&ty), *expected, "input was `{}`", input);
+    }
 }
 
 /// Matrix covering `forward_arg_expr` (OF-011).
@@ -2141,4 +2186,76 @@ pub async fn case_option_vec(store: &Store, tags: Option<Vec<String>>) -> Result
         !content.contains("rating.as_deref()"),
         "OF-011 regression: `rating.as_deref()` leaked back into IPC output"
     );
+}
+
+/// Regression test for OF-013.
+///
+/// The OF-011 fix made forwarding-side `.as_deref()` AST-aware (so
+/// `Option<&[u8]>` correctly emits `payload.as_deref()`), but the
+/// declaration side (`param_to_owned_type`) stayed string-based and
+/// produced `Option<[u8]>` — an unsized type that won't compile in a handler
+/// param list. OF-013 fixes the declaration side so the two stay in lockstep.
+///
+/// This test pins the symmetry: for each unsized-DST-under-Option shape, the
+/// generated IPC handler must declare the sized owned companion AND forward
+/// via `.as_deref()`. Plain `&[u8]` / `&Path` shapes are also checked to
+/// ensure the rule applies outside `Option<...>` too.
+#[test]
+fn test_of013_unsized_dst_owned_form_in_ipc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "dst_shapes.rs",
+        r#"
+use crate::store::Store;
+use std::path::Path;
+use std::ffi::{CStr, OsStr};
+
+pub async fn case_opt_bytes(store: &Store, payload: Option<&[u8]>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_opt_path(store: &Store, p: Option<&Path>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_opt_cstr(store: &Store, s: Option<&CStr>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_opt_osstr(store: &Store, s: Option<&OsStr>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_opt_str(store: &Store, s: Option<&str>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_ref_bytes(store: &Store, payload: &[u8]) -> Result<(), anyhow::Error> { todo!() }
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    assert_eq!(modules.len(), 1);
+
+    let output_path = tmp.path().join("ipc_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    crate::servers::generators::ipc::generate(&output_path, &modules, &config);
+
+    let content = std::fs::read_to_string(&output_path).unwrap();
+
+    // Each row: (param-declaration to find, forwarding call to find). The
+    // declaration uses `param_to_owned_type`; the forwarding uses
+    // `forward_arg_expr`. Both must agree.
+    let cases: &[(&str, &str)] = &[
+        ("payload: Option<Vec<u8>>", "dst_shapes::case_opt_bytes(store, payload.as_deref())"),
+        ("p: Option<PathBuf>", "dst_shapes::case_opt_path(store, p.as_deref())"),
+        ("s: Option<CString>", "dst_shapes::case_opt_cstr(store, s.as_deref())"),
+        ("s: Option<OsString>", "dst_shapes::case_opt_osstr(store, s.as_deref())"),
+        ("s: Option<String>", "dst_shapes::case_opt_str(store, s.as_deref())"),
+        ("payload: Vec<u8>", "dst_shapes::case_ref_bytes(store, &payload)"),
+    ];
+
+    for (decl, forward_call) in cases {
+        assert!(content.contains(decl), "OF-013: expected declared param `{decl}` in generated IPC, got:\n{content}");
+        assert!(
+            content.contains(forward_call),
+            "OF-013/OF-011 symmetry: expected forwarding `{forward_call}` in generated IPC, got:\n{content}"
+        );
+    }
+
+    // Negative: the pre-fix unsized declarations must not appear.
+    for forbidden in &["Option<[u8]>", "Option<Path>", "Option<CStr>", "Option<OsStr>", ": [u8]", ": str"] {
+        assert!(
+            !content.contains(forbidden),
+            "OF-013 regression: unsized declaration `{forbidden}` leaked into IPC output:\n{content}"
+        );
+    }
 }

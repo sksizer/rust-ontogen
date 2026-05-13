@@ -219,17 +219,66 @@ pub fn to_pascal_case(s: &str) -> String {
     s.split('_').map(capitalize).collect::<String>()
 }
 
-/// Convert a Rust param type to its owned form for struct fields.
-pub fn param_to_owned_type(ty: &str) -> String {
-    if ty.starts_with("Option<") {
-        // Option<&str> → Option<String>
-        let inner = &ty[7..ty.len() - 1];
-        let owned_inner = param_to_owned_type(inner);
-        format!("Option<{}>", owned_inner)
-    } else if ty == "&str" || ty == "& str" {
-        "String".to_string()
-    } else {
-        strip_ref(ty)
+/// Convert a service-fn parameter type to the owned form used in the generated
+/// handler struct / handler-arg declaration.
+///
+/// Rules, mirroring [`forward_arg_expr`]'s `.as_deref()` allowlist
+/// ([`owned_form_derefs_to`]):
+///
+/// - `&str` → `String`, `&[T]` → `Vec<T>`, `&Path` → `PathBuf`,
+///   `&CStr` → `CString`, `&OsStr` → `OsString` — the five DST refs that the
+///   forwarding side handles via `.as_deref()` get their sized companions here.
+/// - `&T` (any other) → `T` — sized targets just lose the ref.
+/// - `Option<U>` → `Option<owned(U)>` (recurse).
+/// - everything else → rendered as-is.
+///
+/// The two sides MUST stay in lockstep: any `&T` that gets `.as_deref()` on the
+/// forwarding side must have a sensible owned companion here, otherwise the
+/// generated handler fails to compile (the forwarding call expects an
+/// `Option<OwnedCompanion>` to deref from).
+pub fn param_to_owned_type(ty: &Type) -> String {
+    match ty {
+        Type::Reference(r) => owned_form_of_ref_target(&r.elem),
+        Type::Path(tp) if last_segment_is(tp, "Option") => match option_inner(tp) {
+            Some(inner) => format!("Option<{}>", param_to_owned_type(inner)),
+            None => norm_type(ty),
+        },
+        Type::Group(g) => param_to_owned_type(&g.elem),
+        Type::Paren(p) => param_to_owned_type(&p.elem),
+        _ => norm_type(ty),
+    }
+}
+
+/// Map the target type of a reference (`&T`) to its owned form.
+fn owned_form_of_ref_target(target: &Type) -> String {
+    match target {
+        Type::Slice(s) => format!("Vec<{}>", norm_type(&s.elem)),
+        Type::Group(g) => owned_form_of_ref_target(&g.elem),
+        Type::Paren(p) => owned_form_of_ref_target(&p.elem),
+        Type::Path(tp) => match dst_owned_companion(tp) {
+            Some(owned) => owned.to_string(),
+            None => norm_type(target),
+        },
+        _ => norm_type(target),
+    }
+}
+
+/// If `tp` is a single-segment path naming one of the recognized unsized DSTs,
+/// return its sized owned companion. Otherwise None.
+fn dst_owned_companion(tp: &syn::TypePath) -> Option<&'static str> {
+    if tp.qself.is_some() || tp.path.segments.len() > 1 {
+        return None;
+    }
+    let seg = tp.path.segments.last()?;
+    if !matches!(seg.arguments, PathArguments::None) {
+        return None;
+    }
+    match seg.ident.to_string().as_str() {
+        "str" => Some("String"),
+        "Path" => Some("PathBuf"),
+        "CStr" => Some("CString"),
+        "OsStr" => Some("OsString"),
+        _ => None,
     }
 }
 

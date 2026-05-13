@@ -213,7 +213,7 @@ pub struct PaginatedResult<T: Serialize> {
                         extra_args.push_str(", query");
                     }
                     for pp in &plain_params {
-                        let owned_ty = param_to_owned_type(&pp.ty);
+                        let owned_ty = param_to_owned_type(&pp.ty_ast);
                         param_lines.push_str(&format!("    {}: {},\n", pp.name, owned_ty));
                         extra_args.push_str(&format!(", &{}", pp.name));
                     }
@@ -464,7 +464,7 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
     out.push_str(&format!("#[tauri::command]\npub async fn {}(\n", cmd_fn_name));
 
     for p in &f.params {
-        let owned_ty = param_to_owned_type(&p.ty);
+        let owned_ty = param_to_owned_type(&p.ty_ast);
         out.push_str(&format!("    {}: {},\n", p.name, owned_ty));
     }
 
@@ -509,7 +509,7 @@ fn generate_paginated_ipc_handler(out: &mut String, module: &str, f: &ApiFn, con
     out.push_str(&format!("#[tauri::command]\npub async fn {}(\n", cmd_fn_name));
 
     for p in &f.params {
-        let owned_ty = param_to_owned_type(&p.ty);
+        let owned_ty = param_to_owned_type(&p.ty_ast);
         out.push_str(&format!("    {}: {},\n", p.name, owned_ty));
     }
 

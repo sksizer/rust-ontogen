@@ -295,7 +295,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
             let struct_name = format!("{}{}Input", to_pascal_case(&m.name), to_pascal_case(&f.name));
             out.push_str(&format!("#[derive(Deserialize, JsonSchema)]\npub struct {} {{\n", struct_name));
             for p in &f.params {
-                out.push_str(&format!("    pub {}: {},\n", p.name, param_to_owned_type(&p.ty)));
+                out.push_str(&format!("    pub {}: {},\n", p.name, param_to_owned_type(&p.ty_ast)));
             }
             out.push_str("}\n\n");
         }

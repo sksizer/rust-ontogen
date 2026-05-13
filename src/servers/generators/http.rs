@@ -570,7 +570,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
         let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for qp in &query_params {
-            out.push_str(&format!("    {}: {},\n", qp.name, param_to_owned_type(&qp.ty)));
+            out.push_str(&format!("    {}: {},\n", qp.name, param_to_owned_type(&qp.ty_ast)));
         }
         out.push_str("}\n\n");
     }
@@ -580,7 +580,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
         let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for bf in &body_fields {
-            out.push_str(&format!("    {}: {},\n", bf.name, param_to_owned_type(&bf.ty)));
+            out.push_str(&format!("    {}: {},\n", bf.name, param_to_owned_type(&bf.ty_ast)));
         }
         out.push_str("}\n\n");
     }
@@ -1012,7 +1012,7 @@ fn generate_generic_http_handler_scoped(
         let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for qp in &query_params {
-            out.push_str(&format!("    {}: {},\n", qp.name, param_to_owned_type(&qp.ty)));
+            out.push_str(&format!("    {}: {},\n", qp.name, param_to_owned_type(&qp.ty_ast)));
         }
         out.push_str("}\n\n");
     }
@@ -1020,7 +1020,7 @@ fn generate_generic_http_handler_scoped(
         let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for bf in &body_fields {
-            out.push_str(&format!("    {}: {},\n", bf.name, param_to_owned_type(&bf.ty)));
+            out.push_str(&format!("    {}: {},\n", bf.name, param_to_owned_type(&bf.ty_ast)));
         }
         out.push_str("}\n\n");
     }
