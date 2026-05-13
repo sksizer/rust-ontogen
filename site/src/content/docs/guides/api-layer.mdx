@@ -219,6 +219,35 @@ Assume `state_type = "AppState"` and `store_type = Some("Store")` for every row.
 | `(no parameters)`                              | **no**    | No first parameter to match against. Surfaced as `SkipReason::NoParams` in build warnings.                                           |
 | `&self` / `self`                               | **no**    | API modules host free functions, not methods. Surfaced as `SkipReason::SelfReceiver`.                                                |
 
+### Parameter types: references and `Option` shapes
+
+The first parameter is your state or store handle. Every *subsequent* parameter becomes a handler argument — declared as the owned form in the generated handler struct, then forwarded back to your service function in the shape you wrote.
+
+The mapping is deliberate: any `&T` you can write is paired with the matching sized owned type, so the handler can hold the owned value and convert back to a borrow at the call site. Five unsized DSTs are recognized explicitly because their bare form (`str`, `[u8]`, `Path`, `CStr`, `OsStr`) is not valid as a struct field; the generator substitutes the sized companion:
+
+| User-written parameter             | Generated handler holds | Forwarded to service as |
+| ---------------------------------- | ----------------------- | ----------------------- |
+| `name: String`                     | `name: String`          | `name`                  |
+| `count: u8`                        | `count: u8`             | `count`                 |
+| `id: MyId`                         | `id: MyId`              | `id`                    |
+| `prefs: crate::schema::Prefs`      | (same, qualified)       | `prefs`                 |
+| `text: &str`                       | `text: String`          | `&text`                 |
+| `id: &MyId`                        | `id: MyId`              | `&id`                   |
+| `payload: &[u8]`                   | `payload: Vec<u8>`      | `&payload`              |
+| `p: &Path`                         | `p: PathBuf`            | `&p`                    |
+| `s: &CStr`                         | `s: CString`            | `&s`                    |
+| `s: &OsStr`                        | `s: OsString`           | `&s`                    |
+| `rating: Option<u8>`               | `rating: Option<u8>`    | `rating`                |
+| `name: Option<String>`             | `name: Option<String>`  | `name`                  |
+| `name: Option<&str>`               | `name: Option<String>`  | `name.as_deref()`       |
+| `bytes: Option<&[u8]>`             | `bytes: Option<Vec<u8>>`| `bytes.as_deref()`      |
+| `p: Option<&Path>`                 | `p: Option<PathBuf>`    | `p.as_deref()`          |
+| `s: Option<&CStr>`                 | `s: Option<CString>`    | `s.as_deref()`          |
+| `s: Option<&OsStr>`                | `s: Option<OsString>`   | `s.as_deref()`          |
+| `profile: Option<&MyStruct>`       | `profile: Option<MyStruct>` | `profile.as_ref()`  |
+
+`Vec<&str>` and other container types holding refs are passed through as-written. If you need an owned variant inside a container, write it explicitly (`Vec<String>` rather than `Vec<&str>`).
+
 ### Build-time skip warnings
 
 When `gen_api` (or `gen_servers`) encounters a `pub fn` that doesn't satisfy the rule above, it emits one `cargo:warning=` line per dropped function. The wording is one of:

@@ -193,6 +193,8 @@ pub async fn get_sets(store: &Store, id: &str) -> Result<Vec<WorkoutSet>, AppErr
 pub async fn import(store: &Store, input: ImportWorkoutsInput) -> Result<Vec<Workout>, AppError> { ... }
 ```
 
+You can take parameters by reference (`&str`, `&[u8]`, `&Path`, `&CStr`, `&OsStr`, `&MyStruct`) or wrap them in `Option<…>`. The generator declares the matching sized owned type in the handler and forwards the borrow back to your function. See [Parameter types: references and `Option` shapes](/guides/api-layer/#parameter-types-references-and-option-shapes) for the full table.
+
 **Use doc comments for descriptions:**
 
 ```rust
