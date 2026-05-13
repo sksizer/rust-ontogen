@@ -6,7 +6,7 @@
 //! from files where public functions take a `&{StateType}` as their first parameter.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use syn::{FnArg, GenericArgument, PathArguments, ReturnType, Type, Visibility};
 
@@ -86,21 +86,118 @@ impl ApiModule {
     }
 }
 
+// ─── Skip records (OF-001) ────────────────────────────────────────────────────
+
+/// A `pub fn` in an API source file that the parser silently dropped.
+///
+/// The parser only accepts public functions whose first parameter contains the
+/// configured `state_type` (or `store_type`) as a substring. Functions that
+/// fail this check, take `self`/`&self`, or take no parameters at all are
+/// dropped from the generated output. `SkipRecord` makes those drops visible
+/// so the build can emit a `cargo:warning=...` line per occurrence.
+#[derive(Debug, Clone)]
+pub struct SkipRecord {
+    /// Source file the function was declared in.
+    pub file: PathBuf,
+    /// Function name (`fn <name>(...)`).
+    pub fn_name: String,
+    /// Why this function was dropped.
+    pub reason: SkipReason,
+}
+
+/// The reason `parse_api_module` dropped a `pub fn`.
+#[derive(Debug, Clone)]
+pub enum SkipReason {
+    /// First parameter's normalized type didn't contain `state_type` or
+    /// `store_type` as a substring.
+    FirstParamMismatch {
+        /// Normalized first-param type string the parser checked.
+        first_param_ty: String,
+        /// `state_type` that was searched for.
+        state_type: String,
+        /// `store_type` that was searched for, if any.
+        store_type: Option<String>,
+    },
+    /// First parameter was `self` or `&self`. Free-function API modules can't
+    /// host method-shaped signatures.
+    SelfReceiver,
+    /// Function had no parameters at all. There's no first parameter to match
+    /// against `state_type` / `store_type`.
+    NoParams,
+}
+
+impl std::fmt::Display for SkipRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let file = self.file.display();
+        let name = &self.fn_name;
+        match &self.reason {
+            SkipReason::FirstParamMismatch { first_param_ty, state_type, store_type } => {
+                let st = match store_type {
+                    Some(s) => format!(" or store_type '{s}'"),
+                    None => String::new(),
+                };
+                write!(
+                    f,
+                    "ontogen: skipped fn `{name}` in `{file}` - first param `{first_param_ty}` does not match state_type '{state_type}'{st}",
+                )
+            }
+            SkipReason::SelfReceiver => {
+                write!(f, "ontogen: skipped fn `{name}` in `{file}` - first param is `self`/`&self`")
+            }
+            SkipReason::NoParams => {
+                write!(f, "ontogen: skipped fn `{name}` in `{file}` - fn has no parameters")
+            }
+        }
+    }
+}
+
+/// Result of parsing a single API source file.
+///
+/// `module` is `None` when the file was filtered before reaching the function
+/// loop (e.g. `mod.rs`, unreadable, unparseable). `skips` is populated for any
+/// `pub fn` the loop dropped.
+#[derive(Debug, Default)]
+pub struct ModuleParseResult {
+    pub module: Option<ApiModule>,
+    pub skips: Vec<SkipRecord>,
+}
+
+/// Aggregated result of scanning a directory of API source files.
+///
+/// `modules` contains the parsed `ApiModule`s with kept functions or events.
+/// `skips` is the union of every per-file skip across the scan.
+#[derive(Debug, Default)]
+pub struct ScanResult {
+    pub modules: Vec<ApiModule>,
+    pub skips: Vec<SkipRecord>,
+}
+
 // ─── Parsing ──────────────────────────────────────────────────────────────────
 
-/// Parse a single API source file into an `ApiModule`.
+/// Parse a single API source file into a `ModuleParseResult`.
 ///
-/// Returns `None` if the file is `mod.rs`, can't be read, or can't be parsed.
-/// Only public functions whose first parameter type contains `state_type`
-/// (or `store_type` when configured) are included.
-pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>) -> Option<ApiModule> {
-    let file_stem = path.file_stem()?.to_str()?;
+/// `module` is populated when the file holds at least one accepted function or
+/// event. `skips` records any `pub fn` that was silently dropped — see
+/// [`SkipReason`] for the categories.
+///
+/// Files named `mod.rs` and files that fail to read or parse return
+/// `ModuleParseResult::default()` (empty module, empty skips).
+pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>) -> ModuleParseResult {
+    let mut result = ModuleParseResult::default();
+
+    let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return result;
+    };
     if file_stem == "mod" {
-        return None;
+        return result;
     }
 
-    let source = fs::read_to_string(path).ok()?;
-    let syntax = syn::parse_file(&source).ok()?;
+    let Ok(source) = fs::read_to_string(path) else {
+        return result;
+    };
+    let Ok(syntax) = syn::parse_file(&source) else {
+        return result;
+    };
 
     let mut functions = Vec::new();
     let mut events = Vec::new();
@@ -110,24 +207,48 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 continue;
             }
 
-            // Check if first param matches state_type or store_type
-            let first_param = func.sig.inputs.first();
-            let (is_accepted, is_store) = match first_param {
+            // Inspect first param. Three drop cases produce a SkipRecord;
+            // the accepting case sets `is_store` (false for state-scoped,
+            // true for store-scoped) and falls through.
+            let is_store = match func.sig.inputs.first() {
+                None => {
+                    result.skips.push(SkipRecord {
+                        file: path.to_path_buf(),
+                        fn_name: func.sig.ident.to_string(),
+                        reason: SkipReason::NoParams,
+                    });
+                    continue;
+                }
+                Some(FnArg::Receiver(_)) => {
+                    result.skips.push(SkipRecord {
+                        file: path.to_path_buf(),
+                        fn_name: func.sig.ident.to_string(),
+                        reason: SkipReason::SelfReceiver,
+                    });
+                    continue;
+                }
                 Some(FnArg::Typed(pat)) => {
                     let ty = norm_type(&pat.ty);
                     if ty.contains(state_type) {
-                        (true, false)
-                    } else if let Some(st) = store_type {
-                        if ty.contains(st) { (true, true) } else { (false, false) }
+                        false
+                    } else if let Some(st) = store_type
+                        && ty.contains(st)
+                    {
+                        true
                     } else {
-                        (false, false)
+                        result.skips.push(SkipRecord {
+                            file: path.to_path_buf(),
+                            fn_name: func.sig.ident.to_string(),
+                            reason: SkipReason::FirstParamMismatch {
+                                first_param_ty: ty,
+                                state_type: state_type.to_string(),
+                                store_type: store_type.map(String::from),
+                            },
+                        });
+                        continue;
                     }
                 }
-                _ => (false, false),
             };
-            if !is_accepted {
-                continue;
-            }
 
             let doc = func
                 .attrs
@@ -184,7 +305,8 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
         }
     }
 
-    Some(ApiModule { name: file_stem.to_string(), functions, events })
+    result.module = Some(ApiModule { name: file_stem.to_string(), functions, events });
+    result
 }
 
 /// Check if the return type is `broadcast::Receiver<T>` or `Receiver<T>`.
@@ -219,23 +341,28 @@ fn extract_result_ok_type(ret: &ReturnType) -> (String, Type) {
 
 /// Scan a directory for API source files and parse them all.
 ///
-/// Skips files ending in `_impl.rs` and `mod.rs`.
-pub fn scan_api_dir(api_dir: &Path, state_type: &str, store_type: Option<&str>) -> Vec<ApiModule> {
-    let mut modules = Vec::new();
+/// Skips files ending in `_impl.rs` and `mod.rs`. The returned `ScanResult`
+/// carries both the parsed modules (only those with at least one accepted
+/// function or event) and the union of every per-file [`SkipRecord`] so a
+/// caller can surface skipped functions through `cargo:warning=`.
+pub fn scan_api_dir(api_dir: &Path, state_type: &str, store_type: Option<&str>) -> ScanResult {
+    let mut result = ScanResult::default();
 
     // Collect .rs files from api_dir and its immediate subdirectories (e.g. generated/)
     let mut entries: Vec<_> = collect_rs_files(api_dir);
     entries.sort();
 
     for path in entries {
-        if let Some(m) = parse_api_module(&path, state_type, store_type)
+        let parsed = parse_api_module(&path, state_type, store_type);
+        result.skips.extend(parsed.skips);
+        if let Some(m) = parsed.module
             && (!m.functions.is_empty() || !m.events.is_empty())
         {
-            modules.push(m);
+            result.modules.push(m);
         }
     }
 
-    modules
+    result
 }
 
 /// Collect `.rs` files from a directory and its immediate subdirectories.

@@ -78,7 +78,11 @@ pub fn generate(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput,
     for scan_dir in &config.scan_dirs {
         let scanned = parse::scan_api_dir(scan_dir, &config.state_type, config.store_type.as_deref());
 
-        for scanned_module in scanned {
+        for record in &scanned.skips {
+            println!("cargo:warning={record}");
+        }
+
+        for scanned_module in scanned.modules {
             merge_scanned_module(&mut modules, &scanned_module, scan_dir);
         }
     }

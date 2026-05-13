@@ -585,7 +585,7 @@ pub async fn delete(store: &Store, id: &str) -> Result<(), anyhow::Error> { todo
 "#,
     );
 
-    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
     assert_eq!(modules.len(), 1);
 
     let m = &modules[0];
@@ -624,7 +624,7 @@ pub async fn create(state: &AppState, input: CreateProjectInput) -> Result<Proje
 "#,
     );
 
-    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
     assert_eq!(modules.len(), 1);
 
     let m = &modules[0];
@@ -657,7 +657,7 @@ pub fn entity_changed(state: &AppState) -> broadcast::Receiver<String> {
 "#,
     );
 
-    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
     assert_eq!(modules.len(), 1);
 
     let m = &modules[0];
@@ -685,7 +685,7 @@ fn test_parse_skips_mod_rs_and_impl_files() {
         "use crate::store::Store;\npub async fn list(store: &Store) -> Result<Vec<String>, anyhow::Error> { todo!() }\n",
     );
 
-    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
     assert_eq!(modules.len(), 1, "should only find node.rs");
     assert_eq!(modules[0].name, "node");
 }
@@ -707,7 +707,7 @@ fn test_parse_subdirectory_scanning() {
         "use crate::store::Store;\npub async fn list(store: &Store) -> Result<Vec<String>, anyhow::Error> { todo!() }\n",
     );
 
-    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
     assert_eq!(modules.len(), 2, "should find both top-level and generated/ files");
     let names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
     assert!(names.contains(&"graph"));
@@ -730,9 +730,263 @@ pub async fn list(store: &Store) -> Result<Vec<String>, anyhow::Error> { todo!()
 "#,
     );
 
-    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
     let f = &modules[0].functions[0];
     assert_eq!(f.doc, "List all roles in the system.");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// parse.rs - SkipRecord diagnostics (OF-001)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_skip_record_first_param_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "foo.rs",
+        r#"
+use tauri::State;
+use std::sync::Mutex;
+
+/// First param uses Tauri State with a wrapper that does not contain AppState.
+pub fn rename(state: State<'_, Mutex<OtherKind>>, name: String) -> Result<(), anyhow::Error> {
+    todo!()
+}
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+
+    assert!(scan.modules.is_empty(), "no fns should be kept");
+    assert_eq!(scan.skips.len(), 1, "exactly one skip record");
+    let rec = &scan.skips[0];
+    assert_eq!(rec.fn_name, "rename");
+    assert!(matches!(
+        rec.reason,
+        crate::servers::parse::SkipReason::FirstParamMismatch { .. }
+    ));
+    if let crate::servers::parse::SkipReason::FirstParamMismatch {
+        first_param_ty,
+        state_type,
+        store_type,
+    } = &rec.reason
+    {
+        assert!(first_param_ty.contains("OtherKind"), "captured the actual first-param type");
+        assert_eq!(state_type, "AppState");
+        assert_eq!(store_type.as_deref(), Some("Store"));
+    }
+}
+
+#[test]
+fn test_skip_record_self_receiver() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "foo.rs",
+        r#"
+/// A method-shaped fn snuck into a free-fn module.
+pub fn helper(&self, id: String) -> Result<(), anyhow::Error> {
+    todo!()
+}
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+
+    assert!(scan.modules.is_empty());
+    assert_eq!(scan.skips.len(), 1);
+    let rec = &scan.skips[0];
+    assert_eq!(rec.fn_name, "helper");
+    assert!(matches!(rec.reason, crate::servers::parse::SkipReason::SelfReceiver));
+}
+
+#[test]
+fn test_skip_record_no_params() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "foo.rs",
+        r#"
+/// Stateless utility with no params.
+pub fn cache_clear() -> Result<(), anyhow::Error> {
+    todo!()
+}
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+
+    assert!(scan.modules.is_empty());
+    assert_eq!(scan.skips.len(), 1);
+    let rec = &scan.skips[0];
+    assert_eq!(rec.fn_name, "cache_clear");
+    assert!(matches!(rec.reason, crate::servers::parse::SkipReason::NoParams));
+}
+
+#[test]
+fn test_skip_record_includes_source_file_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "ghost.rs",
+        "pub fn no_params_here() -> Result<(), anyhow::Error> { todo!() }\n",
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+
+    assert_eq!(scan.skips.len(), 1);
+    assert!(
+        scan.skips[0].file.ends_with("ghost.rs"),
+        "skip record carries the source file: got {:?}",
+        scan.skips[0].file
+    );
+}
+
+#[test]
+fn test_no_skip_record_for_private_fn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "foo.rs",
+        r#"
+fn private_helper(state: &OtherKind) -> Result<(), anyhow::Error> { todo!() }
+
+pub async fn list(store: &Store) -> Result<Vec<String>, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+
+    assert_eq!(scan.modules.len(), 1, "the pub fn keeps the module alive");
+    assert_eq!(scan.modules[0].functions.len(), 1);
+    assert!(scan.skips.is_empty(), "private fn is not a skip — got {:?}", scan.skips);
+}
+
+#[test]
+fn test_no_skip_record_for_event_fn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "events.rs",
+        r#"
+use tokio::sync::broadcast;
+
+pub fn graph_updated(state: &AppState) -> broadcast::Receiver<String> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+
+    assert_eq!(scan.modules.len(), 1);
+    assert_eq!(scan.modules[0].events.len(), 1, "event fn classified as event");
+    assert!(scan.skips.is_empty(), "events are not skips");
+}
+
+#[test]
+fn test_skip_record_display_formats() {
+    use crate::servers::parse::{SkipReason, SkipRecord};
+    use std::path::PathBuf;
+
+    let mismatch = SkipRecord {
+        file: PathBuf::from("src/api/v1/foo.rs"),
+        fn_name: "rename".to_string(),
+        reason: SkipReason::FirstParamMismatch {
+            first_param_ty: "tauri::State<'_,Mutex<AppState>>".to_string(),
+            state_type: "PumiceState".to_string(),
+            store_type: Some("Store".to_string()),
+        },
+    };
+    let s = mismatch.to_string();
+    assert!(s.contains("ontogen: skipped fn `rename`"));
+    assert!(s.contains("src/api/v1/foo.rs"));
+    assert!(s.contains("tauri::State<'_,Mutex<AppState>>"));
+    assert!(s.contains("'PumiceState'"));
+    assert!(s.contains("'Store'"));
+
+    let self_recv = SkipRecord {
+        file: PathBuf::from("src/api/v1/foo.rs"),
+        fn_name: "helper".to_string(),
+        reason: SkipReason::SelfReceiver,
+    };
+    assert!(self_recv.to_string().contains("first param is `self`/`&self`"));
+
+    let no_params = SkipRecord {
+        file: PathBuf::from("src/api/v1/foo.rs"),
+        fn_name: "cache_clear".to_string(),
+        reason: SkipReason::NoParams,
+    };
+    assert!(no_params.to_string().contains("fn has no parameters"));
+
+    // store_type=None should not emit the " or store_type '...'" suffix.
+    let no_store = SkipRecord {
+        file: PathBuf::from("src/api/v1/foo.rs"),
+        fn_name: "x".to_string(),
+        reason: SkipReason::FirstParamMismatch {
+            first_param_ty: "Other".to_string(),
+            state_type: "AppState".to_string(),
+            store_type: None,
+        },
+    };
+    assert!(!no_store.to_string().contains("store_type"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// parse.rs - OF-005 acceptance-table verification
+//
+// Each row of the "Accepted Signatures" docs table maps to one assertion below
+// so the table cannot drift from runtime behaviour silently.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Helper: write a single fn with a given first-param signature, scan with
+/// state_type="PumiceState" and store_type=Some("Store"), and return whether
+/// the fn was kept (true) or skipped (false).
+fn accepts(first_param: &str) -> bool {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "row.rs",
+        &format!("pub fn probe({first_param}) -> Result<(), anyhow::Error> {{ todo!() }}\n"),
+    );
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "PumiceState", Some("Store"));
+    !scan.modules.is_empty() && !scan.modules[0].functions.is_empty()
+}
+
+#[test]
+fn test_of005_table_accepted_rows() {
+    assert!(accepts("state: &PumiceState"), "row: &PumiceState should accept");
+    assert!(accepts("state: &Arc<PumiceState>"), "row: &Arc<PumiceState> should accept");
+    assert!(
+        accepts("state: State<'_, Arc<PumiceState>>"),
+        "row: Tauri State<'_, Arc<PumiceState>> — substring matches PumiceState, accepted (downstream may then fail to compile; see OF-005 docs)"
+    );
+    assert!(accepts("store: &Store"), "row: &Store should accept (store_type match)");
+}
+
+#[test]
+fn test_of005_table_rejected_rows() {
+    assert!(
+        !accepts("state: tauri::State<'_, Mutex<AppState>>"),
+        "row: State<'_, Mutex<AppState>> — no PumiceState/Store substring, must reject"
+    );
+}
+
+#[test]
+fn test_of005_table_store_substring_false_positive() {
+    // OF-005 documents that `&StoreContext` is silently accepted because
+    // "Store" is a substring of "StoreContext". This test pins that behaviour
+    // so the docs and runtime can't drift.
+    assert!(
+        accepts("store: &StoreContext"),
+        "footgun: &StoreContext matches store_type='Store' as a substring — currently accepted"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1451,7 +1705,7 @@ fn test_e2e_scan_real_api_modules() {
         return;
     }
 
-    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
 
     assert!(modules.len() >= 5, "Expected at least 5 modules, found {}", modules.len());
 
@@ -1617,7 +1871,7 @@ pub async fn deeply_nested(store: &Store) -> Result<Option<HashMap<String, Vec<N
 "#,
     );
 
-    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
     assert_eq!(modules.len(), 1);
 
     let output_path = tmp.path().join("ipc_generated.rs");
