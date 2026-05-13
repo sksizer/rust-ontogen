@@ -1,12 +1,43 @@
 ---
-status: in-progress
+status: closed
+resolution: fixed
+resolution_date: 2026-05-12
+resolution_commit: 919b74a
 ---
 # OF-005 - Document accepted `state_type` / `store_type` first-param shapes
 
 - **Severity:** Medium
-- **Status:** Open
+- **Status:** Resolved (`919b74a`, 2026-05-12)
 - **Source:** [feedback.md OF-005](2026-05-12-pumice.md)
-- **Related:** [OF-001](./OF-001-parser-skip-diagnostic.md)
+- **Related:** [OF-001](./OF-001-parser-skip-diagnostic.md) (shipped together)
+
+## Resolution
+
+Shipped in `919b74a` on 2026-05-12 alongside OF-001.
+
+The "this works / this doesn't" table now lives in
+`site/src/content/docs/guides/api-layer.mdx` under
+["Service functions: accepted signatures"](https://ontogen.dev/guides/api-layer/#service-functions-accepted-signatures),
+followed by a "Build-time skip warnings" section that documents the exact
+`cargo:warning=` wording from OF-001. The cookbook page
+`cookbook/custom-api-endpoints.mdx` and the reference page
+`reference/configuration.mdx` cross-link to that anchor.
+
+Every row of the table is pinned to a runtime test in
+`src/servers/tests.rs::test_of005_table_accepted_rows`,
+`test_of005_table_rejected_rows`, and
+`test_of005_table_store_substring_false_positive`, so the docs cannot drift
+from behaviour silently.
+
+The `&StoreContext` footgun (substring false-positive accept) is documented
+in the table and pinned by a test. Adding an info-level warning for that case
+was discussed during implementation and explicitly left out of scope to avoid
+warning-channel noise on legitimate names like `StoreManager`. Reconsider as
+a follow-up if a real user is bitten by it.
+
+---
+
+*The remainder of this document is preserved as a record of the original analysis.*
 
 ## Problem
 

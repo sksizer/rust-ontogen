@@ -218,8 +218,13 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
         return Err(format!("API directory does not exist: {}", config.api_dir.display()));
     }
 
-    let modules = parse::scan_api_dir(&config.api_dir, &config.state_type, config.store_type.as_deref());
+    let scanned = parse::scan_api_dir(&config.api_dir, &config.state_type, config.store_type.as_deref());
 
+    for record in &scanned.skips {
+        println!("cargo:warning={record}");
+    }
+
+    let modules = scanned.modules;
     if modules.is_empty() {
         return Ok(modules);
     }
