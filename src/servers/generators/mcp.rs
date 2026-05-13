@@ -586,10 +586,24 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
     // Pagination only applies to list operations that return Vec<T>;
     // custom result types are passed through unchanged.
     let paginate = is_list_op && config.pagination.is_some() && f.return_type.starts_with("Vec<");
-    let (hp, first_arg) = if f.first_param_is_store {
+    // Stateless tools skip the state/store handler prefix and forward no
+    // positional state argument to the service function. The MCP runtime
+    // still hands `state` and `args` to every tool handler closure — the
+    // body just doesn't reference state.
+    let (hp, first_arg) = if f.is_stateless {
+        (String::new(), "")
+    } else if f.first_param_is_store {
         (mcp_store_construction(config), "&store")
     } else {
         (mcp_handler_prefix(config), "state")
+    };
+    // For templates that emit `{first_arg}, input` or similar, pre-render
+    // the comma-suffixed prefix so stateless tools collapse to just `input`.
+    let first_arg_lead = if first_arg.is_empty() { String::new() } else { format!("{first_arg}, ") };
+    // For templates that emit `{first_arg}{call_args}` where call_args begins
+    // with `, `, drop the leading separator when there's no first_arg.
+    let strip_leading_comma = |s: &str| -> String {
+        if first_arg.is_empty() { s.trim_start_matches(", ").to_string() } else { s.to_string() }
     };
 
     // Use list-aware schema wrapper only when pagination will actually be applied
@@ -677,7 +691,7 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
                 Box::pin(async move {{
 {hp}                    let input: {input_type} = serde_json::from_value(args.clone())
                         .map_err(|e| format!(\"Invalid input: {{e}}\"))?;
-                    {svc}::{fn_name}({first_arg}, input){await_str}.map_err(|e| e.to_string())?;
+                    {svc}::{fn_name}({first_arg_lead}input){await_str}.map_err(|e| e.to_string())?;
                     Ok(json!({{\"success\": true}}))
                 }})
             }},
@@ -695,7 +709,7 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
                 Box::pin(async move {{
 {hp}                    let input: {input_type} = serde_json::from_value(args.clone())
                         .map_err(|e| format!(\"Invalid input: {{e}}\"))?;
-                    let result = {svc}::{fn_name}({first_arg}, input){await_str}.map_err(|e| e.to_string())?;
+                    let result = {svc}::{fn_name}({first_arg_lead}input){await_str}.map_err(|e| e.to_string())?;
                     serde_json::to_value(result).map_err(|e| format!(\"Serialize error: {{e}}\"))
                 }})
             }},
@@ -734,6 +748,10 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
                 call_args.push_str(&format!(", {}", p.name));
             }
         }
+        // When stateless, the leading `, ` from `call_args` is no longer
+        // separating from a state arg — drop it so the rendered call reads
+        // `fn(a, b)` rather than `fn(, a, b)`.
+        let call_args = strip_leading_comma(&call_args);
 
         if returns_unit {
             out.push_str(&format!(

@@ -592,8 +592,12 @@ fn generate_generic_http_handler(
         out.push_str("}\n\n");
     }
 
-    // Generate handler function
-    out.push_str(&format!("async fn {}(\n    State(state): State<Arc<{state_type}>>,\n", handler_name));
+    // Generate handler function. Stateless handlers omit the `State<...>`
+    // extractor entirely; the rest of the signature is identical.
+    out.push_str(&format!("async fn {}(\n", handler_name));
+    if !f.is_stateless {
+        out.push_str(&format!("    State(state): State<Arc<{state_type}>>,\n"));
+    }
 
     // Path params
     if path_params.len() == 1 {
@@ -646,26 +650,41 @@ fn generate_generic_http_handler(
 
     // Store construction for store-based functions without route_prefix.
     // `store` is already `&Store`, so pass directly; `state` needs `&`.
-    let first_arg = if f.first_param_is_store && config.route_prefix.is_none() {
+    // Stateless handlers pass no state/store and skip construction entirely.
+    let first_arg: Option<&str> = if f.is_stateless {
+        None
+    } else if f.first_param_is_store && config.route_prefix.is_none() {
         out.push_str("    let store = state.store().await.map_err(|e| err(e.to_string()))?;\n");
-        "store"
+        Some("store")
     } else {
-        "&state"
+        Some("&state")
     };
 
     // Function call
-    out.push_str(&format!("    {}::{}({first_arg}", svc, fn_name));
+    out.push_str(&format!("    {}::{}(", svc, fn_name));
+    let mut first = true;
+    if let Some(arg) = first_arg {
+        out.push_str(arg);
+        first = false;
+    }
+    let push_arg = |s: &str, out: &mut String, first: &mut bool| {
+        if !*first {
+            out.push_str(", ");
+        }
+        out.push_str(s);
+        *first = false;
+    };
     for p in &path_params {
-        out.push_str(&format!(", {}", forward_arg_expr(&p.name, &p.ty_ast)));
+        push_arg(&forward_arg_expr(&p.name, &p.ty_ast), out, &mut first);
     }
     for qp in &query_params {
-        out.push_str(&format!(", {}", forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast)));
+        push_arg(&forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast), out, &mut first);
     }
     if body_struct.is_some() {
-        out.push_str(", input");
+        push_arg("input", out, &mut first);
     }
     for bf in &body_fields {
-        out.push_str(&format!(", {}", forward_arg_expr(&format!("body.{}", bf.name), &bf.ty_ast)));
+        push_arg(&forward_arg_expr(&format!("body.{}", bf.name), &bf.ty_ast), out, &mut first);
     }
     out.push(')');
     out.push_str(await_str);
@@ -1033,8 +1052,13 @@ fn generate_generic_http_handler_scoped(
         out.push_str("}\n\n");
     }
 
-    // Generate handler function
-    out.push_str(&format!("async fn {}(\n    State(state): State<Arc<{state_type}>>,\n", handler_name));
+    // Generate handler function. Stateless handlers omit the `State<...>`
+    // extractor — the prefix path parameter still threads through so the
+    // route shape is preserved.
+    out.push_str(&format!("async fn {}(\n", handler_name));
+    if !f.is_stateless {
+        out.push_str(&format!("    State(state): State<Arc<{state_type}>>,\n"));
+    }
 
     // Path params (prefix param + any entity path params)
     if path_params.is_empty() {
@@ -1076,27 +1100,44 @@ fn generate_generic_http_handler_scoped(
         out.push_str(&format!(") -> Result<Json<{}>, ApiError> {{\n", ret_type));
     }
 
-    // Construct Store for store-based functions, or validate for state-based
-    if f.first_param_is_store {
+    // Construct Store / validate prefix for state-bearing functions.
+    // Stateless handlers skip the prefix-validation step entirely: they
+    // never read state, so there is nothing to validate via the accessor.
+    let first_arg: Option<&str> = if f.is_stateless {
+        None
+    } else if f.first_param_is_store {
         out.push_str(&format!("    let store = state.{accessor}(&{pp_name}).map_err(|e| err(e.to_string()))?;\n"));
+        Some("&store")
     } else {
         out.push_str(&format!("    state.{accessor}(&{pp_name}).map_err(|e| err(e.to_string()))?;\n"));
-    }
+        Some("&state")
+    };
 
-    // Function call - pass &store for store-based, &state for state-based
-    let first_arg = if f.first_param_is_store { "&store" } else { "&state" };
-    out.push_str(&format!("    {}::{}({first_arg}", svc, fn_name));
+    // Function call
+    out.push_str(&format!("    {}::{}(", svc, fn_name));
+    let mut first = true;
+    if let Some(arg) = first_arg {
+        out.push_str(arg);
+        first = false;
+    }
+    let push_arg = |s: &str, out: &mut String, first: &mut bool| {
+        if !*first {
+            out.push_str(", ");
+        }
+        out.push_str(s);
+        *first = false;
+    };
     for p in &path_params {
-        out.push_str(&format!(", {}", forward_arg_expr(&p.name, &p.ty_ast)));
+        push_arg(&forward_arg_expr(&p.name, &p.ty_ast), out, &mut first);
     }
     for qp in &query_params {
-        out.push_str(&format!(", {}", forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast)));
+        push_arg(&forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast), out, &mut first);
     }
     if body_struct.is_some() {
-        out.push_str(", input");
+        push_arg("input", out, &mut first);
     }
     for bf in &body_fields {
-        out.push_str(&format!(", {}", forward_arg_expr(&format!("body.{}", bf.name), &bf.ty_ast)));
+        push_arg(&forward_arg_expr(&format!("body.{}", bf.name), &bf.ty_ast), out, &mut first);
     }
     out.push(')');
     out.push_str(await_str);

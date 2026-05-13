@@ -453,13 +453,18 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
     let state_type = &config.state_type;
     let pp_line = prefix_param_line(config);
 
-    let (fn_pp_body, first_arg) = if f.first_param_is_store {
-        (store_construction_line(config), "store")
+    // Stateless handlers omit the `state: State<...>` extractor, the prefix
+    // validation / store-construction body, and the positional state/store
+    // argument when forwarding to the service function. The route-prefix
+    // parameter (e.g. `:project_id`) is still threaded through if configured.
+    let (fn_pp_body, first_arg) = if f.is_stateless {
+        (String::new(), None)
+    } else if f.first_param_is_store {
+        (store_construction_line(config), Some("store"))
     } else {
-        (prefix_validation_line(config), "&state")
+        (prefix_validation_line(config), Some("&state"))
     };
 
-    // Store-based custom handlers are always async (store construction is async)
     let cmd_fn_name = command_name(module, f, config);
     out.push_str(&format!("#[tauri::command]\npub async fn {}(\n", cmd_fn_name));
 
@@ -469,13 +474,24 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
     }
 
     out.push_str(&pp_line);
-    out.push_str(&format!("    state: State<'_, Arc<{state_type}>>,\n"));
+    if !f.is_stateless {
+        out.push_str(&format!("    state: State<'_, Arc<{state_type}>>,\n"));
+    }
     out.push_str(&format!(") -> Result<{}, String> {{\n", ret_type));
     out.push_str(&fn_pp_body);
 
-    out.push_str(&format!("    {}::{}({first_arg}", svc, fn_name));
+    out.push_str(&format!("    {}::{}(", svc, fn_name));
+    let mut first = true;
+    if let Some(arg) = first_arg {
+        out.push_str(arg);
+        first = false;
+    }
     for p in &f.params {
-        out.push_str(&format!(", {}", forward_arg_expr(&p.name, &p.ty_ast)));
+        if !first {
+            out.push_str(", ");
+        }
+        out.push_str(&forward_arg_expr(&p.name, &p.ty_ast));
+        first = false;
     }
     out.push(')');
     out.push_str(await_str);
@@ -499,10 +515,12 @@ fn generate_paginated_ipc_handler(out: &mut String, module: &str, f: &ApiFn, con
     let default_limit = pg.default_limit;
     let max_limit = pg.max_limit;
 
-    let (fn_pp_body, first_arg) = if f.first_param_is_store {
-        (store_construction_line(config), "store")
+    let (fn_pp_body, first_arg) = if f.is_stateless {
+        (String::new(), None)
+    } else if f.first_param_is_store {
+        (store_construction_line(config), Some("store"))
     } else {
-        (prefix_validation_line(config), "&state")
+        (prefix_validation_line(config), Some("&state"))
     };
 
     let cmd_fn_name = command_name(module, f, config);
@@ -516,13 +534,24 @@ fn generate_paginated_ipc_handler(out: &mut String, module: &str, f: &ApiFn, con
     out.push_str("    limit: Option<u32>,\n");
     out.push_str("    offset: Option<u32>,\n");
     out.push_str(&pp_line);
-    out.push_str(&format!("    state: State<'_, Arc<{state_type}>>,\n"));
+    if !f.is_stateless {
+        out.push_str(&format!("    state: State<'_, Arc<{state_type}>>,\n"));
+    }
     out.push_str(&format!(") -> Result<PaginatedResult<{}>, String> {{\n", item_type));
     out.push_str(&fn_pp_body);
 
-    out.push_str(&format!("    let all_items = {}::{}({first_arg}", svc, fn_name));
+    out.push_str(&format!("    let all_items = {}::{}(", svc, fn_name));
+    let mut first = true;
+    if let Some(arg) = first_arg {
+        out.push_str(arg);
+        first = false;
+    }
     for p in &f.params {
-        out.push_str(&format!(", {}", forward_arg_expr(&p.name, &p.ty_ast)));
+        if !first {
+            out.push_str(", ");
+        }
+        out.push_str(&forward_arg_expr(&p.name, &p.ty_ast));
+        first = false;
     }
     out.push(')');
     out.push_str(await_str);

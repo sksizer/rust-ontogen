@@ -84,6 +84,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type: list_ret.clone(),
                 return_type_ast: ty_ast(&list_ret),
                 first_param_is_store: is_store_based,
+                is_stateless: false,
             },
             ApiFn {
                 name: "get_by_id".to_string(),
@@ -93,6 +94,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type: single_ret.clone(),
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
+                is_stateless: false,
             },
             ApiFn {
                 name: "create".to_string(),
@@ -102,6 +104,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type: single_ret.clone(),
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
+                is_stateless: false,
             },
             ApiFn {
                 name: "update".to_string(),
@@ -111,6 +114,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type: single_ret.clone(),
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
+                is_stateless: false,
             },
             ApiFn {
                 name: "delete".to_string(),
@@ -120,6 +124,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type: "()".to_string(),
                 return_type_ast: ty_ast("()"),
                 first_param_is_store: is_store_based,
+                is_stateless: false,
             },
         ],
         events: vec![],
@@ -140,6 +145,7 @@ fn make_custom_module() -> ApiModule {
                 return_type: "GraphSnapshot".to_string(),
                 return_type_ast: ty_ast("GraphSnapshot"),
                 first_param_is_store: false,
+                is_stateless: false,
             },
             ApiFn {
                 name: "get_node_detail".to_string(),
@@ -149,6 +155,7 @@ fn make_custom_module() -> ApiModule {
                 return_type: "NodeDetail".to_string(),
                 return_type_ast: ty_ast("NodeDetail"),
                 first_param_is_store: false,
+                is_stateless: false,
             },
         ],
         events: vec![],
@@ -185,6 +192,7 @@ fn make_junction_module() -> ApiModule {
                 return_type: "()".to_string(),
                 return_type_ast: ty_ast("()"),
                 first_param_is_store: false,
+                is_stateless: false,
             },
             // Junction remove: remove_skill(destination_id, skill_id)
             ApiFn {
@@ -195,6 +203,7 @@ fn make_junction_module() -> ApiModule {
                 return_type: "()".to_string(),
                 return_type_ast: ty_ast("()"),
                 first_param_is_store: false,
+                is_stateless: false,
             },
             // Junction list (children-of-parent): list_skills(destination_id)
             ApiFn {
@@ -205,6 +214,7 @@ fn make_junction_module() -> ApiModule {
                 return_type: "Vec<Skill>".to_string(),
                 return_type_ast: ty_ast("Vec<Skill>"),
                 first_param_is_store: false,
+                is_stateless: false,
             },
             // Junction list (reverse): list_destinations(skill_id)
             ApiFn {
@@ -215,6 +225,7 @@ fn make_junction_module() -> ApiModule {
                 return_type: "Vec<DestinationSkill>".to_string(),
                 return_type_ast: ty_ast("Vec<DestinationSkill>"),
                 first_param_is_store: false,
+                is_stateless: false,
             },
             // Custom post: publish(destination_id, skill_id, version)
             ApiFn {
@@ -225,6 +236,7 @@ fn make_junction_module() -> ApiModule {
                 return_type: "PublishResult".to_string(),
                 return_type_ast: ty_ast("PublishResult"),
                 first_param_is_store: false,
+                is_stateless: false,
             },
         ],
         events: vec![],
@@ -642,6 +654,7 @@ fn test_classify_custom_operations() {
         return_type: "()".to_string(),
         return_type_ast: ty_ast("()"),
         first_param_is_store: false,
+        is_stateless: false,
     };
     assert!(matches!(classify_op(&post_fn), OpKind::CustomPost));
 }
@@ -656,6 +669,7 @@ fn test_classify_no_params_is_get() {
         return_type: "Vec<String>".to_string(),
         return_type_ast: ty_ast("Vec<String>"),
         first_param_is_store: false,
+        is_stateless: false,
     };
     assert!(matches!(classify_op(&no_param_fn), OpKind::CustomGet));
 }
@@ -2611,4 +2625,265 @@ pub async fn case_ref_bytes(store: &Store, payload: &[u8]) -> Result<(), anyhow:
             "OF-013 regression: unsized declaration `{forbidden}` leaked into IPC output:\n{content}"
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// parse.rs + generators - #[ontogen::stateless] (OF-007)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// `#[ontogen::stateless]` on a fn with no params is accepted: the parser
+/// skips the first-param state/store check and the NoParams guard, produces
+/// an `ApiFn` with `is_stateless = true`, and emits no `SkipRecord`.
+#[test]
+fn test_of007_stateless_zero_params_accepted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "clock.rs",
+        r#"
+#[ontogen::stateless]
+pub fn now() -> Result<i64, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert!(scan.skips.is_empty(), "stateless fn must not produce SkipRecord: {:?}", scan.skips);
+    let module = scan.modules.iter().find(|m| m.name == "clock").expect("clock module must be parsed");
+    let f = module.functions.iter().find(|f| f.name == "now").expect("now fn must be present");
+    assert!(f.is_stateless, "now() must be marked stateless");
+    assert!(!f.first_param_is_store, "stateless fns must not be store-scoped");
+    assert!(f.params.is_empty(), "zero-param stateless fn should have empty params");
+}
+
+/// `#[ontogen::stateless]` on a fn whose first parameter is unrelated to the
+/// configured state/store type is accepted. The parameter is included in
+/// `params` rather than being skipped as a state slot.
+#[test]
+fn test_of007_stateless_non_state_first_param_kept() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "clipboard.rs",
+        r#"
+#[ontogen::stateless]
+pub fn copy(text: &str) -> Result<(), anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert!(scan.skips.is_empty(), "stateless fn must not produce SkipRecord: {:?}", scan.skips);
+    let module = scan.modules.iter().find(|m| m.name == "clipboard").unwrap();
+    let f = module.functions.iter().find(|f| f.name == "copy").unwrap();
+    assert!(f.is_stateless);
+    assert_eq!(f.params.len(), 1, "stateless fns keep every input as a param (no state to skip)");
+    assert_eq!(f.params[0].name, "text");
+    assert_eq!(f.params[0].ty, "&str");
+}
+
+/// The bare `#[stateless]` path form (after `use ontogen::stateless`) is also
+/// accepted — the parser matches on the final path segment.
+#[test]
+fn test_of007_bare_stateless_path_form_accepted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "util.rs",
+        r#"
+use ontogen::stateless;
+
+#[stateless]
+pub fn checksum(payload: &[u8]) -> Result<String, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert!(scan.skips.is_empty(), "bare #[stateless] must be accepted: {:?}", scan.skips);
+    let module = scan.modules.iter().find(|m| m.name == "util").unwrap();
+    assert!(module.functions.iter().any(|f| f.name == "checksum" && f.is_stateless));
+}
+
+/// `&self` is still rejected even with `#[ontogen::stateless]` — method
+/// signatures don't fit free-function API modules regardless of state.
+#[test]
+fn test_of007_stateless_self_receiver_still_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "broken.rs",
+        r#"
+struct S;
+impl S {
+    #[ontogen::stateless]
+    pub fn foo(&self, _x: u32) -> Result<(), anyhow::Error> { todo!() }
+}
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    // The `&self` fn is inside an impl block, so scan_api_dir won't see it as
+    // a free `pub fn` — but the more direct guarantee is that no module is
+    // produced for `broken.rs` and no stateless fn lands. The negative shape
+    // matters more than the SkipRecord here.
+    assert!(
+        scan.modules.iter().find(|m| m.name == "broken").is_none_or(|m| m.functions.is_empty()),
+        "self-receiver methods must not be picked up by the parser"
+    );
+}
+
+/// An unmarked stateless-shaped fn (no `#[stateless]`, no state/store first
+/// param) still produces a `SkipRecord` with the hint mentioning the
+/// `#[ontogen::stateless]` attribute.
+#[test]
+fn test_of007_unmarked_stateless_fn_emits_skip_with_hint() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "lonely.rs",
+        r#"
+pub fn just_a_helper(x: u32) -> Result<(), anyhow::Error> { todo!() }
+pub fn no_params() -> Result<(), anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert_eq!(scan.skips.len(), 2, "two unmarked fns should each emit one SkipRecord");
+    let texts: Vec<String> = scan.skips.iter().map(ToString::to_string).collect();
+    assert!(
+        texts.iter().all(|s| s.contains("#[ontogen::stateless]")),
+        "OF-007 hint must appear in every state-shape skip warning, got:\n{texts:#?}"
+    );
+}
+
+/// End-to-end IPC: a stateless fn renders without `state: State<...>` and
+/// without a positional state forward. Path/owned-type behaviour is
+/// unchanged.
+#[test]
+fn test_of007_stateless_ipc_handler_shape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "util.rs",
+        r#"
+#[ontogen::stateless]
+pub fn copy(text: &str) -> Result<(), anyhow::Error> { todo!() }
+
+#[ontogen::stateless]
+pub fn now() -> Result<i64, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    let output_path = tmp.path().join("ipc_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    crate::servers::generators::ipc::generate(&output_path, &modules, &config);
+
+    let content = std::fs::read_to_string(&output_path).unwrap();
+
+    // The `copy` handler must declare `text: String`, take no `State<...>`
+    // extractor, and forward without a leading state argument.
+    assert!(content.contains("text: String"), "owned form for &str must still be String:\n{content}");
+    assert!(
+        content.contains("util::copy(text.as_deref())")
+            || content.contains("util::copy(&text)")
+            || content.contains("util::copy(text)"),
+        "stateless forward must call util::copy(text) directly with no state prefix:\n{content}"
+    );
+    assert!(!content.contains("util::copy(&state, text"), "stateless fn must not forward `&state`:\n{content}");
+
+    // The `now` handler is zero-param, so the body should be `util::now()`
+    // with no state extractor or argument.
+    assert!(content.contains("util::now()"), "zero-arg stateless call expected:\n{content}");
+    assert!(
+        !content.contains("fn util_now")
+            || !content[content.find("fn util_now").unwrap()..].lines().take(8).any(|l| l.contains("state: State<")),
+        "stateless fn handler must not declare `state: State<...>`:\n{content}"
+    );
+}
+
+/// End-to-end HTTP: a stateless fn renders without `State(state): State<...>`
+/// and forwards no state. Route nesting under `/api/<module>` is preserved.
+#[test]
+fn test_of007_stateless_http_handler_shape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "util.rs",
+        r#"
+#[ontogen::stateless]
+pub fn ping() -> Result<String, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    let output_path = tmp.path().join("http_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    crate::servers::generators::http::generate(&output_path, &modules, &config);
+
+    let content = std::fs::read_to_string(&output_path).unwrap();
+
+    // Locate the `ping` handler block and assert its signature has no State<>.
+    let ping_idx = content.find("fn util_ping").expect("util_ping handler must be emitted");
+    let handler_block: String = content[ping_idx..].chars().take(400).collect();
+    assert!(
+        !handler_block.contains("State(state)"),
+        "stateless HTTP handler must not declare State(state):\n{handler_block}"
+    );
+    assert!(
+        handler_block.contains("util::ping()"),
+        "stateless forward must call util::ping() with no leading state arg:\n{handler_block}"
+    );
+    // The module-nested route /api/utils/ping (nested by default) must appear.
+    assert!(
+        content.contains("/api/utils/ping") || content.contains("/api/util/ping"),
+        "stateless route should be nested under the module url:\n{content}"
+    );
+}
+
+/// End-to-end MCP: a stateless fn produces a tool whose handler body
+/// invokes the service fn directly with no state/store argument.
+#[test]
+fn test_of007_stateless_mcp_tool_shape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "util.rs",
+        r#"
+#[ontogen::stateless]
+pub fn echo(text: &str) -> Result<String, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    let output_path = tmp.path().join("mcp_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    crate::servers::generators::mcp::generate(&output_path, &modules, &config);
+
+    let content = std::fs::read_to_string(&output_path).unwrap();
+
+    // The tool's handler must not construct a Store or call validation,
+    // and must invoke util::echo with no state argument.
+    assert!(
+        content.contains("util::echo(text)"),
+        "stateless MCP tool must call util::echo(text) — no state prefix:\n{content}"
+    );
+    assert!(
+        !content.contains("util::echo(state, text") && !content.contains("util::echo(&store, text"),
+        "stateless MCP tool must not forward state or store:\n{content}"
+    );
 }

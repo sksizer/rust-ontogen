@@ -39,6 +39,13 @@ pub struct ApiFn {
     /// and pass it to the service function. When false, handlers pass
     /// the AppState directly.
     pub first_param_is_store: bool,
+    /// Whether the function was marked `#[ontogen::stateless]`.
+    ///
+    /// Stateless functions take no state/store parameter and are emitted
+    /// with handler shapes that omit the `State<...>` extractor and the
+    /// positional state/store forward. `params` then contains every
+    /// declared input rather than skipping a leading state argument.
+    pub is_stateless: bool,
 }
 
 /// A single function parameter.
@@ -149,14 +156,17 @@ impl std::fmt::Display for SkipRecord {
                 };
                 write!(
                     f,
-                    "ontogen: skipped fn `{name}` in `{file}` - first param `{first_param_ty}` does not match state_type '{state_type}'{st}",
+                    "ontogen: skipped fn `{name}` in `{file}` - first param `{first_param_ty}` does not match state_type '{state_type}'{st}; add `#[ontogen::stateless]` if this fn intentionally takes no state",
                 )
             }
             SkipReason::SelfReceiver => {
                 write!(f, "ontogen: skipped fn `{name}` in `{file}` - first param is `self`/`&self`")
             }
             SkipReason::NoParams => {
-                write!(f, "ontogen: skipped fn `{name}` in `{file}` - fn has no parameters")
+                write!(
+                    f,
+                    "ontogen: skipped fn `{name}` in `{file}` - fn has no parameters; add `#[ontogen::stateless]` if this fn intentionally takes no state",
+                )
             }
         }
     }
@@ -229,11 +239,34 @@ fn has_singleton_marker(source: &str) -> bool {
     has_top_level_marker(source, "singleton")
 }
 
+/// Returns true when any attribute on `func` is the `stateless` attribute
+/// from `ontogen-macros` — matched by the final path segment ident.
+///
+/// Accepts `#[stateless]`, `#[ontogen::stateless]`, or any other path that
+/// ends in `::stateless`. The match is purely syntactic; the proc-macro
+/// itself is a no-op pass-through, so the parser is the only consumer of
+/// the marker. A foreign `stateless` attribute from an unrelated crate
+/// would also match; users hitting that collision should rename the
+/// foreign attribute or omit it from API modules.
+fn has_stateless_attr(func: &syn::ItemFn) -> bool {
+    func.attrs.iter().any(|attr| {
+        matches!(attr.meta, syn::Meta::Path(_) | syn::Meta::List(_))
+            && attr.path().segments.last().is_some_and(|seg| seg.ident == "stateless")
+    })
+}
+
 /// Parse a single API source file into a `ModuleParseResult`.
 ///
 /// `module` is populated when the file holds at least one accepted function or
 /// event. `skips` records any `pub fn` that was silently dropped — see
 /// [`SkipReason`] for the categories.
+///
+/// Functions annotated with `#[ontogen::stateless]` bypass the first-param
+/// state/store check entirely and are included with `ApiFn::is_stateless`
+/// set, so downstream generators can emit handler shapes without the
+/// `State<...>` extractor or any positional state forward. `self`/`&self`
+/// receivers are still rejected — stateless or not, method signatures
+/// don't fit free-function API modules.
 ///
 /// Files named `mod.rs` and files that fail to read or parse return
 /// `ModuleParseResult::default()` (empty module, empty skips).
@@ -273,19 +306,18 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 continue;
             }
 
-            // Inspect first param. Three drop cases produce a SkipRecord;
-            // the accepting case sets `is_store` (false for state-scoped,
-            // true for store-scoped) and falls through.
-            let is_store = match func.sig.inputs.first() {
-                None => {
-                    result.skips.push(SkipRecord {
-                        file: path.to_path_buf(),
-                        fn_name: func.sig.ident.to_string(),
-                        reason: SkipReason::NoParams,
-                    });
-                    continue;
-                }
-                Some(FnArg::Receiver(_)) => {
+            let is_stateless = has_stateless_attr(func);
+
+            // For state-bearing fns, inspect the first param. Three drop cases
+            // produce a SkipRecord; the accepting case sets `is_store` (false
+            // for state-scoped, true for store-scoped) and falls through.
+            //
+            // For `#[ontogen::stateless]` fns the first-param check is
+            // bypassed: zero params is fine, any param shape is fine. The
+            // only retained guard is `self`/`&self`, since free-function API
+            // modules can't host method signatures regardless of state.
+            let is_store = if is_stateless {
+                if let Some(FnArg::Receiver(_)) = func.sig.inputs.first() {
                     result.skips.push(SkipRecord {
                         file: path.to_path_buf(),
                         fn_name: func.sig.ident.to_string(),
@@ -293,25 +325,45 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                     });
                     continue;
                 }
-                Some(FnArg::Typed(pat)) => {
-                    let ty = norm_type(&pat.ty);
-                    if ty.contains(state_type) {
-                        false
-                    } else if let Some(st) = store_type
-                        && ty.contains(st)
-                    {
-                        true
-                    } else {
+                false
+            } else {
+                match func.sig.inputs.first() {
+                    None => {
                         result.skips.push(SkipRecord {
                             file: path.to_path_buf(),
                             fn_name: func.sig.ident.to_string(),
-                            reason: SkipReason::FirstParamMismatch {
-                                first_param_ty: ty,
-                                state_type: state_type.to_string(),
-                                store_type: store_type.map(String::from),
-                            },
+                            reason: SkipReason::NoParams,
                         });
                         continue;
+                    }
+                    Some(FnArg::Receiver(_)) => {
+                        result.skips.push(SkipRecord {
+                            file: path.to_path_buf(),
+                            fn_name: func.sig.ident.to_string(),
+                            reason: SkipReason::SelfReceiver,
+                        });
+                        continue;
+                    }
+                    Some(FnArg::Typed(pat)) => {
+                        let ty = norm_type(&pat.ty);
+                        if ty.contains(state_type) {
+                            false
+                        } else if let Some(st) = store_type
+                            && ty.contains(st)
+                        {
+                            true
+                        } else {
+                            result.skips.push(SkipRecord {
+                                file: path.to_path_buf(),
+                                fn_name: func.sig.ident.to_string(),
+                                reason: SkipReason::FirstParamMismatch {
+                                    first_param_ty: ty,
+                                    state_type: state_type.to_string(),
+                                    store_type: store_type.map(String::from),
+                                },
+                            });
+                            continue;
+                        }
                     }
                 }
             };
@@ -337,11 +389,15 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 continue;
             }
 
+            // State-bearing fns: skip the leading state/store param.
+            // Stateless fns: keep every declared input — there's no state arg
+            // to drop.
+            let skip_first = if is_stateless { 0 } else { 1 };
             let params: Vec<Param> = func
                 .sig
                 .inputs
                 .iter()
-                .skip(1) // skip state
+                .skip(skip_first)
                 .filter_map(|arg| {
                     if let FnArg::Typed(pat) = arg {
                         let ty = norm_type(&pat.ty);
@@ -367,6 +423,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 return_type,
                 return_type_ast,
                 first_param_is_store: is_store,
+                is_stateless,
             });
         }
     }
