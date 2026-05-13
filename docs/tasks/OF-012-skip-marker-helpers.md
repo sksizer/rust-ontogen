@@ -1,11 +1,43 @@
 ---
-status: draft
+status: closed
+resolution: fixed
+resolution_date: 2026-05-12
+resolution_commit: 84d76dd
 ---
 # OF-012 - File-level skip marker for helper modules in `api/v1/`
 
 - **Severity:** Low
-- **Status:** Open
+- **Status:** Resolved (`84d76dd`, 2026-05-12)
 - **Source:** [feedback.md OF-012](2026-05-12-pumice.md)
+
+## Resolution
+
+Shipped in `84d76dd` on 2026-05-12 (option 1 from the proposed-resolution list). `parse_api_module` now checks the source for a file-level skip marker in its leading comment-and-attribute block before invoking syn. Two grammars are honoured, both requiring exact trimmed equality:
+
+- `// ontogen:skip` (plain line comment)
+- `//! ontogen:skip` (inner doc comment, including when embedded inside a multi-line `//!` block)
+
+When the marker is present, `parse_api_module` returns `ModuleParseResult::default()` immediately: the file is dropped from `ScanResult.modules` AND no [`SkipRecord`](./OF-001-parser-skip-diagnostic.md) is emitted for any `pub fn` inside it. Silencing the per-fn `cargo:warning=` lines is intentional — opt-out is a deliberate file-level decision, so the diagnostics that exist precisely to surface unintentional drops would be noise here.
+
+Placement rule: the marker must appear in the run of blank lines / `//` / `///` / `//!` line comments / `#![...]` inner attributes that precedes the first real item. Markers buried after a `use` or `pub fn` are ignored so the directive can't be smuggled in mid-file.
+
+Pumice's prior workaround (moving helper files one directory above `api/v1/`) is no longer necessary — helpers can sit alongside transport-bearing modules with a single comment line.
+
+Test coverage in `src/servers/tests.rs` (5 cases):
+
+- `test_parse_skip_marker_suppresses_module` - marker drops an otherwise-accepted module from the scan.
+- `test_parse_skip_marker_suppresses_skip_records` - marker silences the per-fn warnings that OF-001 would otherwise emit.
+- `test_parse_doc_comment_skip_marker` - `//! ontogen:skip` is honoured the same as `// ontogen:skip`.
+- `test_parse_skip_marker_after_real_items_not_honored` - marker buried after a `pub fn` does NOT take effect.
+- `test_parse_skip_marker_inside_doc_comment_block` - marker embedded inside a multi-line `//!` doc block is honoured.
+
+Site docs: added an "Opting a file out: `// ontogen:skip`" subsection in `guides/api-layer.mdx` directly under the existing "Build-time skip warnings" section, so readers reaching for an escape hatch find it adjacent to the diagnostics it silences.
+
+Per-function attribute (option 2 from the original sketch) and visibility-based opt-out (option 3) remain unimplemented; the whole-file mechanism is sufficient for the helper-module-in-`api/v1/` case.
+
+---
+
+*The remainder of this document is preserved as a record of the original analysis.*
 
 ## Problem
 
