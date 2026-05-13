@@ -2,7 +2,7 @@
 status: closed
 resolution: fixed
 resolution_date: 2026-05-13
-resolution_commit: TBD
+resolution_commit: 2804753
 ---
 # OF-009 - Document or default-override cruet mass-noun singularization
 
