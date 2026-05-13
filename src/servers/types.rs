@@ -463,6 +463,15 @@ pub struct NamingConfig {
     /// [`ApiModule::is_singleton`](crate::servers::ApiModule); both inputs
     /// are OR'd together by `apply_singleton_overlay` before generators run.
     pub singleton_modules: HashSet<String>,
+    /// Per-function overrides for the emitted IPC command / TS method name.
+    ///
+    /// Keys are `"module::fn_name"` (e.g., `"journal::get_tag_history"`).
+    /// Values replace the default `{entity}_{fn_name}` scheme for that
+    /// function only. The source-side `#[ontogen(rename = "...")]` attribute
+    /// takes precedence: if both are set, the attribute wins and the config
+    /// entry is silently ignored. HTTP route paths, the underlying Rust
+    /// function name, and generated query/body struct names are unaffected.
+    pub command_overrides: HashMap<String, String>,
 }
 
 impl NamingConfig {

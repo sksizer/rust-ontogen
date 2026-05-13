@@ -226,6 +226,7 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
 
     let mut modules = scanned.modules;
     parse::apply_singleton_overlay(&mut modules, &config.naming);
+    parse::apply_command_overrides(&mut modules, &config.naming);
     if modules.is_empty() {
         return Ok(modules);
     }

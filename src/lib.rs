@@ -39,7 +39,10 @@ pub use ontogen_core::naming;
 pub use ontogen_core::utils;
 
 // Re-export the proc-macros so users only need `ontogen` in their Cargo.toml.
-pub use ontogen_macros::{OntologyEntity, stateless};
+// The `ontogen` attribute is the umbrella for per-function directives
+// (mirrors the `serde::Serialize` re-export precedent: `use ontogen::ontogen;`
+// and then `#[ontogen(rename = "...")]` on a function).
+pub use ontogen_macros::{OntologyEntity, ontogen, stateless};
 
 // Re-export key types for ergonomic use in build.rs
 pub use ontogen_core::CodegenError;

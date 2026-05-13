@@ -85,6 +85,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type_ast: ty_ast(&list_ret),
                 first_param_is_store: is_store_based,
                 is_stateless: false,
+                command_override: None,
             },
             ApiFn {
                 name: "get_by_id".to_string(),
@@ -95,6 +96,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
                 is_stateless: false,
+                command_override: None,
             },
             ApiFn {
                 name: "create".to_string(),
@@ -105,6 +107,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
                 is_stateless: false,
+                command_override: None,
             },
             ApiFn {
                 name: "update".to_string(),
@@ -115,6 +118,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
                 is_stateless: false,
+                command_override: None,
             },
             ApiFn {
                 name: "delete".to_string(),
@@ -125,6 +129,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type_ast: ty_ast("()"),
                 first_param_is_store: is_store_based,
                 is_stateless: false,
+                command_override: None,
             },
         ],
         events: vec![],
@@ -146,6 +151,7 @@ fn make_custom_module() -> ApiModule {
                 return_type_ast: ty_ast("GraphSnapshot"),
                 first_param_is_store: false,
                 is_stateless: false,
+                command_override: None,
             },
             ApiFn {
                 name: "get_node_detail".to_string(),
@@ -156,6 +162,7 @@ fn make_custom_module() -> ApiModule {
                 return_type_ast: ty_ast("NodeDetail"),
                 first_param_is_store: false,
                 is_stateless: false,
+                command_override: None,
             },
         ],
         events: vec![],
@@ -193,6 +200,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("()"),
                 first_param_is_store: false,
                 is_stateless: false,
+                command_override: None,
             },
             // Junction remove: remove_skill(destination_id, skill_id)
             ApiFn {
@@ -204,6 +212,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("()"),
                 first_param_is_store: false,
                 is_stateless: false,
+                command_override: None,
             },
             // Junction list (children-of-parent): list_skills(destination_id)
             ApiFn {
@@ -215,6 +224,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("Vec<Skill>"),
                 first_param_is_store: false,
                 is_stateless: false,
+                command_override: None,
             },
             // Junction list (reverse): list_destinations(skill_id)
             ApiFn {
@@ -226,6 +236,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("Vec<DestinationSkill>"),
                 first_param_is_store: false,
                 is_stateless: false,
+                command_override: None,
             },
             // Custom post: publish(destination_id, skill_id, version)
             ApiFn {
@@ -237,6 +248,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("PublishResult"),
                 first_param_is_store: false,
                 is_stateless: false,
+                command_override: None,
             },
         ],
         events: vec![],
@@ -655,6 +667,7 @@ fn test_classify_custom_operations() {
         return_type_ast: ty_ast("()"),
         first_param_is_store: false,
         is_stateless: false,
+        command_override: None,
     };
     assert!(matches!(classify_op(&post_fn), OpKind::CustomPost));
 }
@@ -670,6 +683,7 @@ fn test_classify_no_params_is_get() {
         return_type_ast: ty_ast("Vec<String>"),
         first_param_is_store: false,
         is_stateless: false,
+        command_override: None,
     };
     assert!(matches!(classify_op(&no_param_fn), OpKind::CustomGet));
 }
@@ -2885,5 +2899,253 @@ pub fn echo(text: &str) -> Result<String, anyhow::Error> { todo!() }
     assert!(
         !content.contains("util::echo(state, text") && !content.contains("util::echo(&store, text"),
         "stateless MCP tool must not forward state or store:\n{content}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OF-003 - Per-function command-name override
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Build a one-function module with an explicit command override, mirroring
+/// the canonical OF-003 example (`journal::get_tag_history` renamed to
+/// `tag_get_history`).
+fn make_renamed_module(override_value: Option<&str>) -> ApiModule {
+    ApiModule {
+        name: "journal".to_string(),
+        functions: vec![ApiFn {
+            name: "get_tag_history".to_string(),
+            is_async: false,
+            doc: "Get the tag history.".to_string(),
+            params: vec![param("tag", "&str")],
+            return_type: "Vec<HistoryEntry>".to_string(),
+            return_type_ast: ty_ast("Vec<HistoryEntry>"),
+            first_param_is_store: true,
+            is_stateless: false,
+            command_override: override_value.map(|s| s.to_string()),
+        }],
+        events: vec![],
+        is_singleton: false,
+    }
+}
+
+#[test]
+fn test_parse_rename_attribute() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "journal.rs",
+        r#"
+use crate::store::Store;
+
+/// Get tag history.
+#[ontogen(rename = "tag_get_history")]
+pub fn get_tag_history(store: &Store, tag: &str) -> Result<Vec<HistoryEntry>, anyhow::Error> {
+    todo!()
+}
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    assert_eq!(modules.len(), 1);
+    let f = &modules[0].functions[0];
+    assert_eq!(f.name, "get_tag_history");
+    assert_eq!(f.command_override.as_deref(), Some("tag_get_history"));
+}
+
+#[test]
+fn test_parse_no_rename_attribute_leaves_override_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "journal.rs",
+        r#"
+use crate::store::Store;
+
+/// Get tag history.
+pub fn get_tag_history(store: &Store, tag: &str) -> Result<Vec<HistoryEntry>, anyhow::Error> {
+    todo!()
+}
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    let f = &modules[0].functions[0];
+    assert!(f.command_override.is_none(), "expected no override, got {:?}", f.command_override);
+}
+
+#[test]
+fn test_parse_ontogen_attribute_without_rename_is_ignored() {
+    // Unknown directives inside `#[ontogen(...)]` must not crash the parser
+    // and must not populate `command_override` - the function should still
+    // pass through with its default naming.
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "journal.rs",
+        r#"
+use crate::store::Store;
+
+/// Get tag history.
+#[ontogen(stateless)]
+pub fn get_tag_history(store: &Store, tag: &str) -> Result<Vec<HistoryEntry>, anyhow::Error> {
+    todo!()
+}
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    assert_eq!(modules.len(), 1);
+    assert_eq!(modules[0].functions.len(), 1, "function should still be parsed");
+    let f = &modules[0].functions[0];
+    assert!(f.command_override.is_none(), "unknown directive should leave override None");
+}
+
+#[test]
+fn test_parse_rename_attribute_with_invalid_value_drops_fn() {
+    // A non-string literal value (e.g., `rename = 42`) is malformed. The
+    // function is dropped from the parsed module so the mistake is visible
+    // at build time rather than silently falling back to the default name.
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "journal.rs",
+        r#"
+use crate::store::Store;
+
+/// Valid function - kept.
+pub fn list(store: &Store) -> Result<Vec<HistoryEntry>, anyhow::Error> { todo!() }
+
+/// Malformed override - dropped.
+#[ontogen(rename = 42)]
+pub fn get_tag_history(store: &Store, tag: &str) -> Result<Vec<HistoryEntry>, anyhow::Error> {
+    todo!()
+}
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    assert_eq!(modules.len(), 1);
+    let names: Vec<&str> = modules[0].functions.iter().map(|f| f.name.as_str()).collect();
+    assert!(names.contains(&"list"), "valid sibling fn should survive");
+    assert!(!names.contains(&"get_tag_history"), "fn with malformed `rename` value should be dropped, got {:?}", names);
+}
+
+#[test]
+fn test_apply_command_overrides_populates_field() {
+    let mut modules = vec![make_renamed_module(None)];
+    let mut naming = NamingConfig::default();
+    naming.command_overrides.insert("journal::get_tag_history".to_string(), "tag_get_history".to_string());
+
+    crate::servers::parse::apply_command_overrides(&mut modules, &naming);
+
+    let f = &modules[0].functions[0];
+    assert_eq!(f.command_override.as_deref(), Some("tag_get_history"));
+}
+
+#[test]
+fn test_command_overrides_source_wins_over_config() {
+    // Source-side attribute already set the override. The config map for
+    // the same key must NOT overwrite it.
+    let mut modules = vec![make_renamed_module(Some("from_source"))];
+    let mut naming = NamingConfig::default();
+    naming.command_overrides.insert("journal::get_tag_history".to_string(), "from_config".to_string());
+
+    crate::servers::parse::apply_command_overrides(&mut modules, &naming);
+
+    let f = &modules[0].functions[0];
+    assert_eq!(f.command_override.as_deref(), Some("from_source"), "source-side override must win over config map");
+}
+
+#[test]
+fn test_command_name_uses_override_when_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(tmp.path().to_path_buf());
+    let module = make_renamed_module(Some("tag_get_history"));
+    let f = &module.functions[0];
+
+    let name = crate::servers::generators::ipc::command_name(&module.name, f, &config);
+    assert_eq!(name, "tag_get_history", "override should be returned verbatim");
+}
+
+#[test]
+fn test_command_name_falls_back_when_override_absent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(tmp.path().to_path_buf());
+    let module = make_renamed_module(None);
+    let f = &module.functions[0];
+
+    let name = crate::servers::generators::ipc::command_name(&module.name, f, &config);
+    assert_eq!(name, "journal_get_tag_history", "default scheme is `{{entity}}_{{fn}}`");
+}
+
+#[test]
+fn test_ipc_handler_uses_override_function_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("ipc_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+
+    let modules = vec![make_renamed_module(Some("tag_get_history"))];
+    crate::servers::generators::ipc::generate(&output, &modules, &config);
+
+    let content = std::fs::read_to_string(&output).unwrap();
+    assert!(
+        content.contains("pub async fn tag_get_history("),
+        "IPC handler should use override as the command name. Generated:\n{}",
+        content
+    );
+    assert!(
+        !content.contains("pub async fn journal_get_tag_history("),
+        "default-scheme name should NOT appear when override is set"
+    );
+}
+
+#[test]
+fn test_ipc_handler_calls_unchanged_rust_fn() {
+    // The override changes only the emitted command name, not the
+    // underlying Rust path the handler delegates to.
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("ipc_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+
+    let modules = vec![make_renamed_module(Some("tag_get_history"))];
+    crate::servers::generators::ipc::generate(&output, &modules, &config);
+
+    let content = std::fs::read_to_string(&output).unwrap();
+    assert!(
+        content.contains("journal::get_tag_history("),
+        "handler body must still call the original Rust function path. Generated:\n{}",
+        content
+    );
+}
+
+#[test]
+fn test_ts_client_uses_override_camelcased() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("http-client.ts");
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "export type HistoryEntry = { tag: string; ts: number; };\n").unwrap();
+
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_renamed_module(Some("tag_get_history"))];
+
+    crate::servers::generators::ts_client::generate(&output, &bindings, &modules, &config);
+
+    let content = std::fs::read_to_string(&output).unwrap();
+    assert!(
+        content.contains("tagGetHistory"),
+        "TS client method name should be camelCased override. Generated:\n{}",
+        content
+    );
+    assert!(
+        !content.contains("journalGetTagHistory"),
+        "default-scheme camelCase should NOT appear when override is set"
     );
 }

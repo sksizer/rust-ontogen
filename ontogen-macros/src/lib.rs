@@ -54,3 +54,32 @@ pub fn derive_ontology_entity(_input: TokenStream) -> TokenStream {
 pub fn stateless(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
+
+/// Pass-through attribute macro for per-function ontogen directives.
+///
+/// The macro itself is a no-op - the annotated item is returned unchanged so the
+/// source remains legal Rust and rust-analyzer / rustdoc still see the original
+/// signature. The build script (which calls into `ontogen`) parses the
+/// attribute via `syn` and feeds the directives into the codegen pipeline.
+///
+/// Today only the `rename` directive is interpreted: it overrides the emitted
+/// IPC command / TS method name for a single function. The HTTP route path,
+/// the underlying Rust function name, and the generated query/body struct
+/// names are unchanged.
+///
+/// Usage:
+/// ```ignore
+/// use ontogen::ontogen;
+///
+/// #[ontogen(rename = "tag_get_history")]
+/// pub fn get_tag_history(store: &Store, tag: &str) -> Result<Vec<HistoryEntry>, Error> {
+///     // ... unchanged
+/// }
+/// ```
+///
+/// Future per-function directives can slot into the same `#[ontogen(...)]`
+/// umbrella.
+#[proc_macro_attribute]
+pub fn ontogen(_args: TokenStream, input: TokenStream) -> TokenStream {
+    input
+}

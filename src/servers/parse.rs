@@ -46,6 +46,17 @@ pub struct ApiFn {
     /// positional state/store forward. `params` then contains every
     /// declared input rather than skipping a leading state argument.
     pub is_stateless: bool,
+    /// Optional override for the emitted IPC command / TS method name.
+    ///
+    /// Populated by either the source-side `#[ontogen(rename = "...")]`
+    /// attribute or by [`NamingConfig::command_overrides`](crate::servers::types::NamingConfig::command_overrides).
+    /// When `Some`, the IPC generator uses this value verbatim (and the TS
+    /// client camel-cases it). When `None`, the default
+    /// `{entity}_{fn_name}` scheme applies.
+    ///
+    /// Precedence: if the source attribute is present, it wins; the config
+    /// map only fills in entries that were absent on the source side.
+    pub command_override: Option<String>,
 }
 
 /// A single function parameter.
@@ -142,6 +153,11 @@ pub enum SkipReason {
     /// Function had no parameters at all. There's no first parameter to match
     /// against `state_type` / `store_type`.
     NoParams,
+    /// Function carried `#[ontogen(rename = ...)]` with a non-string-literal
+    /// value (e.g., `rename = 42`). Dropping the function makes the mistake
+    /// visible at build time rather than silently falling back to the default
+    /// `{entity}_{fn}` command name.
+    InvalidRenameValue,
 }
 
 impl std::fmt::Display for SkipRecord {
@@ -166,6 +182,12 @@ impl std::fmt::Display for SkipRecord {
                 write!(
                     f,
                     "ontogen: skipped fn `{name}` in `{file}` - fn has no parameters; add `#[ontogen::stateless]` if this fn intentionally takes no state",
+                )
+            }
+            SkipReason::InvalidRenameValue => {
+                write!(
+                    f,
+                    "ontogen: skipped fn `{name}` in `{file}` - `#[ontogen(rename = ...)]` value must be a string literal"
                 )
             }
         }
@@ -393,6 +415,26 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
             // Stateless fns: keep every declared input — there's no state arg
             // to drop.
             let skip_first = if is_stateless { 0 } else { 1 };
+
+            // Parse the per-function `#[ontogen(...)]` attribute, if present.
+            // Today only `rename = "..."` is interpreted. A malformed value
+            // (e.g., a non-string literal) drops the function entirely so the
+            // mistake is visible at build time rather than silently falling
+            // back to the default command name.
+            let fn_ident = func.sig.ident.to_string();
+            let command_override = match parse_ontogen_rename(&func.attrs) {
+                OntogenAttr::None | OntogenAttr::OtherDirective => None,
+                OntogenAttr::Rename(value) => Some(value),
+                OntogenAttr::InvalidValue => {
+                    result.skips.push(SkipRecord {
+                        file: path.to_path_buf(),
+                        fn_name: fn_ident,
+                        reason: SkipReason::InvalidRenameValue,
+                    });
+                    continue;
+                }
+            };
+
             let params: Vec<Param> = func
                 .sig
                 .inputs
@@ -416,7 +458,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
             let (return_type, return_type_ast) = extract_result_ok_type(&func.sig.output);
 
             functions.push(ApiFn {
-                name: func.sig.ident.to_string(),
+                name: fn_ident,
                 is_async: func.sig.asyncness.is_some(),
                 doc,
                 params,
@@ -424,6 +466,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 return_type_ast,
                 first_param_is_store: is_store,
                 is_stateless,
+                command_override,
             });
         }
     }
@@ -443,6 +486,31 @@ pub fn apply_singleton_overlay(modules: &mut [ApiModule], naming: &crate::server
     for m in modules {
         if naming.singleton_modules.contains(&m.name) {
             m.is_singleton = true;
+        }
+    }
+}
+
+/// Apply per-function command-name overrides from
+/// [`NamingConfig::command_overrides`](crate::servers::types::NamingConfig)
+/// onto parsed [`ApiModule`]s.
+///
+/// Keys are `"module::fn_name"`. Source-side `#[ontogen(rename = "...")]`
+/// attributes always win: if [`ApiFn::command_override`] is already `Some`,
+/// the config entry is silently ignored. The config map is treated as an
+/// escape hatch for cases where the source can't be modified.
+pub fn apply_command_overrides(modules: &mut [ApiModule], naming: &crate::servers::types::NamingConfig) {
+    if naming.command_overrides.is_empty() {
+        return;
+    }
+    for m in modules.iter_mut() {
+        for f in &mut m.functions {
+            if f.command_override.is_some() {
+                continue;
+            }
+            let key = format!("{}::{}", m.name, f.name);
+            if let Some(value) = naming.command_overrides.get(&key) {
+                f.command_override = Some(value.clone());
+            }
         }
     }
 }
@@ -533,4 +601,78 @@ fn collect_rs_files(dir: &Path) -> Vec<std::path::PathBuf> {
 fn is_scannable_rs_file(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "rs")
         && !path.file_stem().is_some_and(|s| s.to_str().is_some_and(|s| s == "mod" || s.ends_with("_impl")))
+}
+
+/// Result of looking for the `#[ontogen(...)]` attribute on a function.
+#[derive(Debug)]
+enum OntogenAttr {
+    /// No `#[ontogen(...)]` attribute is present.
+    None,
+    /// `#[ontogen(rename = "value")]` with a valid string literal.
+    Rename(String),
+    /// `#[ontogen(...)]` is present but contains directives we do not yet
+    /// recognize (e.g., a future `stateless` marker). Today this is treated
+    /// the same as `None` for naming purposes.
+    OtherDirective,
+    /// `#[ontogen(rename = ...)]` is present but the value is not a string
+    /// literal. The caller should drop the function and surface a diagnostic.
+    InvalidValue,
+}
+
+/// Walk `attrs` looking for `#[ontogen(rename = "...")]`.
+///
+/// This is intentionally lenient about unknown directives so the umbrella
+/// `#[ontogen(...)]` attribute can host future per-function flags without
+/// breaking older versions. Only the `rename` arm has strict validation: a
+/// non-string-literal value yields [`OntogenAttr::InvalidValue`] so the parser
+/// can drop the function.
+fn parse_ontogen_rename(attrs: &[syn::Attribute]) -> OntogenAttr {
+    use syn::{Expr, ExprLit, Lit, Meta};
+
+    let mut result = OntogenAttr::None;
+
+    for attr in attrs {
+        if !attr.path().is_ident("ontogen") {
+            continue;
+        }
+
+        // Expect `#[ontogen(<nested>)]`. Anything else (e.g., `#[ontogen]`
+        // or `#[ontogen = "..."]`) is treated as an unknown directive.
+        let list = match &attr.meta {
+            Meta::List(list) => list,
+            _ => {
+                if matches!(result, OntogenAttr::None) {
+                    result = OntogenAttr::OtherDirective;
+                }
+                continue;
+            }
+        };
+
+        // Parse the nested meta list (`rename = "...", other = ...`).
+        let parsed = list.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated);
+        let nested = match parsed {
+            Ok(n) => n,
+            Err(_) => return OntogenAttr::InvalidValue,
+        };
+
+        for meta in nested {
+            if let Meta::NameValue(nv) = &meta
+                && nv.path.is_ident("rename")
+            {
+                match &nv.value {
+                    Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) => {
+                        result = OntogenAttr::Rename(s.value());
+                    }
+                    _ => return OntogenAttr::InvalidValue,
+                }
+            } else if matches!(result, OntogenAttr::None) {
+                // Unknown directive - leave the field untouched but mark
+                // that the attribute existed so the caller can distinguish
+                // "no attribute" from "attribute with future directive".
+                result = OntogenAttr::OtherDirective;
+            }
+        }
+    }
+
+    result
 }

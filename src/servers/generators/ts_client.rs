@@ -214,7 +214,11 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
 fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config: &Config) {
     let fn_name = &f.name;
-    let camel = snake_to_camel(fn_name);
+    // Method name uses the resolved command name (override-aware) so the TS
+    // surface matches the IPC command. The route action below still uses the
+    // raw `fn_name`, since the override is a naming fix for IPC/TS surfaces
+    // only - HTTP route paths are intentionally unaffected (see OF-003).
+    let camel = snake_to_camel(&command_name(module, f, config));
     let ts_ret = rust_type_to_ts(&f.return_type);
     let is_get = is_read_operation(fn_name);
     let action = config.naming.derive_action(module, fn_name);

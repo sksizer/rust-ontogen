@@ -73,9 +73,16 @@ fn store_construction_line(config: &Config) -> String {
 ///   CRUD:     `{entity}_list`, `{entity}_get_by_id`, `{entity}_create`, etc.
 ///   Junction: `{entity}_add_role`, `{entity}_list_skills`, etc.
 ///   Custom:   `{entity}_publish`, `{entity}_refresh`, etc.
+///
+/// If the function carries a per-function override (set via the source-side
+/// `#[ontogen(rename = "...")]` attribute or via
+/// [`NamingConfig::command_overrides`](crate::servers::types::NamingConfig::command_overrides)),
+/// that value is returned verbatim and the default scheme is skipped.
 pub fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
-    let entity = config.naming.url_singular(module);
-    format!("{}_{}", entity, f.name)
+    f.command_override.clone().unwrap_or_else(|| {
+        let entity = config.naming.url_singular(module);
+        format!("{}_{}", entity, f.name)
+    })
 }
 
 /// Generate IPC command handlers and write to the output file.
