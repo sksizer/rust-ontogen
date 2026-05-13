@@ -146,6 +146,8 @@ Scanned functions are classified by their name pattern and parameter shape into 
 
 Any `pub fn` whose first parameter doesn't match the substring rule, takes `&self` / `self`, or has no parameters at all is dropped from the generated output. `gen_api` prints one `cargo:warning=` per drop so they don't go silent. See [build-time skip warnings](/guides/api-layer/#build-time-skip-warnings) for the exact wording and how to react.
 
+If a function genuinely doesn't need state — a pure data transformation, a clock read, a sync OS-level side effect — annotate it with `#[ontogen::stateless]` to opt it into the API layer without a placeholder state parameter. The generators emit handlers without the `State<...>` extractor and forward no positional state argument. See [Stateless utility functions](/guides/api-layer/#stateless-utility-functions-ontogenstateless).
+
 ---
 
 ## `ServersConfig`

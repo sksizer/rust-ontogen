@@ -109,6 +109,7 @@ fn convert_scanned_fn(func: &parse::ApiFn, scan_dir: &Path, module_name: &str) -
             file_path: scan_dir.join(format!("{module_name}.rs")),
         },
         classified_op,
+        is_stateless: func.is_stateless,
     }
 }
 
@@ -124,6 +125,7 @@ fn convert_scanned_event(event: &parse::EventFn, scan_dir: &Path, module_name: &
             file_path: scan_dir.join(format!("{module_name}.rs")),
         },
         classified_op: OpKind::EventStream,
+        is_stateless: false,
     }
 }
 
@@ -183,6 +185,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             return_type: format!("Vec<{}>", entity.name),
             source: source.clone(),
             classified_op: OpKind::List,
+            is_stateless: false,
         },
         ApiFnMeta {
             name: "get_by_id".to_string(),
@@ -191,6 +194,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             return_type: entity.name.clone(),
             source: source.clone(),
             classified_op: OpKind::GetById,
+            is_stateless: false,
         },
         ApiFnMeta {
             name: "create".to_string(),
@@ -199,6 +203,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             return_type: entity.name.clone(),
             source: source.clone(),
             classified_op: OpKind::Create,
+            is_stateless: false,
         },
         ApiFnMeta {
             name: "update".to_string(),
@@ -210,6 +215,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             return_type: entity.name.clone(),
             source: source.clone(),
             classified_op: OpKind::Update,
+            is_stateless: false,
         },
         ApiFnMeta {
             name: "delete".to_string(),
@@ -218,6 +224,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             return_type: "()".to_string(),
             source,
             classified_op: OpKind::Delete,
+            is_stateless: false,
         },
     ];
 

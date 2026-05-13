@@ -89,6 +89,22 @@ and `NoParams` messages so users find the opt-in from the build output.
   recipe block under "Writing scannable functions" with zero-param and
   non-state-first-param examples plus a cross-reference to the
   api-layer.mdx subsection.
+- `site/src/content/docs/reference/configuration.mdx` ApiConfig
+  scanning note now points at the attribute.
+- `site/src/content/docs/reference/intermediate-representations.mdx`
+  documents the new `ApiFnMeta::is_stateless` flag and notes the
+  per-module `StateKind` limitation.
+
+**IR fidelity follow-up:**
+
+`ontogen_core::ir::ApiFnMeta` gained an `is_stateless: bool` field so
+the high-level IR carries the flag the parser already tracks. All
+in-tree construction sites set it: `convert_scanned_fn` reads from
+`parse::ApiFn::is_stateless`; generated CRUD fns (`list`, `get_by_id`,
+`create`, `update`, `delete`) and scanned events set it to `false`.
+Per-module `StateKind` remains the existing binary
+`AppState`/`Store` classification; the per-fn flag is the authoritative
+signal for stateless emission.
 
 ---
 

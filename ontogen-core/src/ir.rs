@@ -166,6 +166,12 @@ pub struct ApiFnMeta {
     /// Doc comment (used for MCP tool descriptions, OpenAPI docs, etc.).
     pub doc: String,
     /// Function parameters.
+    ///
+    /// For state-bearing fns, this is every input *after* the leading
+    /// state/store parameter (which the generators inject as the handler's
+    /// `State<...>` extractor). For fns marked `#[ontogen::stateless]`,
+    /// the IR carries every declared input — there is no leading state
+    /// slot to skip.
     pub params: Vec<ParamMeta>,
     /// Return type as a string.
     pub return_type: String,
@@ -173,6 +179,13 @@ pub struct ApiFnMeta {
     pub source: Source,
     /// Classified operation for HTTP verb routing.
     pub classified_op: OpKind,
+    /// `true` when the source `pub fn` was annotated `#[ontogen::stateless]`.
+    ///
+    /// Stateless fns opt out of the state/store first-param rule entirely.
+    /// Server-transport generators read this flag to emit handlers without
+    /// a `State<...>` extractor and without forwarding any positional state
+    /// argument. Generated CRUD functions always set this to `false`.
+    pub is_stateless: bool,
 }
 
 /// Whether a function operates on a project-scoped Store or the global AppState.

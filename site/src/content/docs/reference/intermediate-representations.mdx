@@ -153,10 +153,11 @@ Returned by `gen_api()`. The unified view of all API endpoints -- both generated
 |-------|------|-------------|
 | `name` | `String` | Function name (e.g., `"create"`, `"get_by_id"`, `"archive"`). |
 | `doc` | `String` | Doc comment text. Used as the MCP tool description and in future OpenAPI docs. |
-| `params` | `Vec<ParamMeta>` | Function parameters (excluding the first state/store parameter). |
+| `params` | `Vec<ParamMeta>` | Function parameters. For state-bearing fns: every input after the leading state/store parameter. For fns marked `#[ontogen::stateless]`: every declared input (no state slot to skip). |
 | `return_type` | `String` | Return type as a string (e.g., `"Vec<Workout>"`). |
 | `source` | `Source` | Generated or scanned. |
 | `classified_op` | `OpKind` | Operation classification that drives HTTP verb and route structure. |
+| `is_stateless` | `bool` | `true` when the source `pub fn` was annotated `#[ontogen::stateless]`. Generators read this to emit handlers without a `State<...>` extractor and without forwarding any positional state argument. Generated CRUD fns always set this to `false`. See [Stateless utility functions](/guides/api-layer/#stateless-utility-functions-ontogenstateless). |
 
 ### `StateKind`
 
@@ -168,6 +169,8 @@ pub enum StateKind {
 ```
 
 `Store`-scoped functions get project-scoped routes when `route_prefix` is configured. `AppState`-scoped functions get unscoped routes.
+
+`StateKind` is per-module, derived from any function whose first parameter matched `store_type`. A module composed entirely of `#[ontogen::stateless]` fns currently defaults to `StateKind::AppState` because no fn opts the module into store-scoping; the per-fn `ApiFnMeta::is_stateless` flag is the authoritative source for whether a specific handler threads state.
 
 ---
 
