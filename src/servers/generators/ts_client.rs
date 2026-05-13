@@ -9,12 +9,17 @@ use ontogen_core::ir::OpKind;
 
 use crate::servers::classify::{classify_op, is_read_operation};
 use crate::servers::config::Config;
+use crate::servers::generators::FallbackRecord;
 use crate::servers::generators::ipc::command_name;
 use crate::servers::parse::{ApiFn, ApiModule, Param};
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel};
 
 /// Generate TypeScript HTTP client and write to the output file.
-pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], config: &Config) {
+///
+/// Returns a [`FallbackRecord`] for every type referenced by the generated TS
+/// surface that wasn't exported from `bindings.ts` and therefore had to be
+/// stubbed as `Record<string, unknown>`. (OF-006)
+pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], config: &Config) -> Vec<FallbackRecord> {
     let mut out = String::new();
 
     // Read bindings.ts to discover which types are actually exported
@@ -66,6 +71,15 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         }
         out.push_str("} from './bindings';\n\n");
     }
+
+    let fallbacks: Vec<FallbackRecord> = missing
+        .iter()
+        .map(|t| FallbackRecord {
+            output: output.to_path_buf(),
+            bindings_path: bindings_path.to_path_buf(),
+            type_name: (*t).clone(),
+        })
+        .collect();
 
     for t in &missing {
         out.push_str(&format!(
@@ -194,6 +208,8 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
     crate::write_and_format_ts(output, out).expect("Failed to write TS HTTP client");
+
+    fallbacks
 }
 
 fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config: &Config) {

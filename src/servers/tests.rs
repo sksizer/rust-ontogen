@@ -1399,6 +1399,105 @@ fn test_ts_transport_generator_crud_module() {
     assert!(content.contains("Node"));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// transport.rs / ts_client.rs - bindings.ts fallback diagnostics (OF-006)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_transport_returns_fallback_record_for_missing_type() {
+    // When `bindings.ts` doesn't export a type the generated TS surface
+    // references, the emitter falls back to `Record<string, unknown>` and
+    // returns a `FallbackRecord` so the build can `cargo:warning=` it.
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("generated.ts");
+    let bindings = tmp.path().join("bindings.ts");
+
+    // Bindings file is empty - every referenced type will fall back.
+    std::fs::write(&bindings, "").unwrap();
+
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_crud_module("workout", true)];
+
+    let fallbacks = crate::servers::generators::transport::generate(&output, &bindings, &modules, &config);
+
+    let names: Vec<&str> = fallbacks.iter().map(|r| r.type_name.as_str()).collect();
+    assert!(names.contains(&"Workout"), "expected Workout fallback, got {names:?}");
+    assert!(names.contains(&"CreateWorkoutInput"), "expected CreateWorkoutInput fallback, got {names:?}");
+    assert!(names.contains(&"UpdateWorkoutInput"), "expected UpdateWorkoutInput fallback, got {names:?}");
+
+    for record in &fallbacks {
+        assert_eq!(record.output, output, "FallbackRecord.output should be the generator output path");
+        assert_eq!(
+            record.bindings_path, bindings,
+            "FallbackRecord.bindings_path should be the consulted bindings file"
+        );
+    }
+
+    // The placeholder is still emitted in the generated TS so callers can compile.
+    let content = std::fs::read_to_string(&output).unwrap();
+    assert!(content.contains("type Workout = Record<string, unknown>"));
+}
+
+#[test]
+fn test_transport_no_fallback_when_all_types_exported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("generated.ts");
+    let bindings = tmp.path().join("bindings.ts");
+
+    std::fs::write(
+        &bindings,
+        "export type Workout = { id: string };\n\
+         export type CreateWorkoutInput = { name: string };\n\
+         export type UpdateWorkoutInput = { name?: string };\n",
+    )
+    .unwrap();
+
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_crud_module("workout", true)];
+
+    let fallbacks = crate::servers::generators::transport::generate(&output, &bindings, &modules, &config);
+    assert!(fallbacks.is_empty(), "expected no fallbacks when bindings exports every type, got {fallbacks:?}");
+}
+
+#[test]
+fn test_ts_client_returns_fallback_record_for_missing_type() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("client.ts");
+    let bindings = tmp.path().join("bindings.ts");
+
+    std::fs::write(&bindings, "").unwrap();
+
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_crud_module("workout", true)];
+
+    let fallbacks = crate::servers::generators::ts_client::generate(&output, &bindings, &modules, &config);
+
+    let names: Vec<&str> = fallbacks.iter().map(|r| r.type_name.as_str()).collect();
+    assert!(names.contains(&"Workout"), "expected Workout fallback, got {names:?}");
+    assert!(names.contains(&"CreateWorkoutInput"), "expected CreateWorkoutInput fallback, got {names:?}");
+    assert!(names.contains(&"UpdateWorkoutInput"), "expected UpdateWorkoutInput fallback, got {names:?}");
+}
+
+#[test]
+fn test_fallback_record_display_format() {
+    use crate::servers::generators::FallbackRecord;
+    use std::path::PathBuf;
+
+    let record = FallbackRecord {
+        output: PathBuf::from("src/generated/transport.ts"),
+        bindings_path: PathBuf::from("src/generated/bindings.ts"),
+        type_name: "Workout".to_string(),
+    };
+    let msg = format!("{record}");
+    // The Display impl is what the build emits as `cargo:warning=<msg>`,
+    // so its shape is part of the user-visible contract.
+    assert!(msg.contains("ontogen:"), "warning should be ontogen-prefixed, got: {msg}");
+    assert!(msg.contains("'Workout'"), "warning should quote the missing type name, got: {msg}");
+    assert!(msg.contains("Record<string, unknown>"), "warning should mention the placeholder, got: {msg}");
+    assert!(msg.contains("bindings.ts"), "warning should reference the bindings file, got: {msg}");
+    assert!(msg.contains("transport.ts"), "warning should reference the output file, got: {msg}");
+}
+
 #[test]
 fn test_admin_registry_generator() {
     let tmp = tempfile::tempdir().unwrap();
