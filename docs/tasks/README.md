@@ -43,7 +43,7 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 6. ~~**OF-002 + OF-004**~~ - resolved in `d770838` (2026-05-12).
 7. ~~**OF-006**~~ - warning shipped in `8bed7f7` (2026-05-12); the e2e bindings doc was promoted to [OF-014](./OF-014-redesign-ts-bindings-pipeline.md).
 8. ~~**OF-007**~~ - resolved in `773d059` (2026-05-12); `#[ontogen::stateless]` no-op proc-macro opts a fn out of the state-first-param rule.
-9. **OF-003** (override mechanism; design discussion).
+9. ~~**OF-003**~~ - resolved in `ef63a0d` (2026-05-12); `#[ontogen(rename = "...")]` proc-macro attribute + `NamingConfig::command_overrides` config map, source-wins.
 10. **OF-014** (TS bindings pipeline redesign; design discussion).
 11. **OF-009** (lowest-value; documentation only).
 
@@ -62,3 +62,4 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 | [OF-004](./OF-004-singleton-semantic.md)           | `ApiModule::is_singleton` IR field gives downstream generators a first-class singleton signal. Shipped with OF-002.                                                                                                                                                     | `d770838` | 2026-05-12 |
 | [OF-006](./OF-006-ts-bindings-fallback-warning.md) | `FallbackRecord` plumbs missing-bindings types out of `transport.rs` and `ts_client.rs`; `generate_transport` emits one `cargo:warning=` per fallback. Warning text documented in `guides/client-generation.mdx`. The e2e bindings doc was promoted to [OF-014](./OF-014-redesign-ts-bindings-pipeline.md). | `8bed7f7` | 2026-05-12 |
 | [OF-007](./OF-007-support-stateless-fns.md)        | `#[ontogen::stateless]` no-op proc-macro in `ontogen-macros`; the parser bypasses the state/store first-param check when present, and IPC/HTTP/MCP generators emit handler shapes without the `State<...>` extractor or a positional state forward. OF-001 skip diagnostic now hints at the attribute. New site-docs section + recipe. | `773d059` | 2026-05-12 |
+| [OF-003](./OF-003-per-function-name-override.md)   | Per-function `#[ontogen(rename = "...")]` proc-macro attribute in `ontogen-macros` plus `NamingConfig::command_overrides` config map; both feed `ApiFn::command_override`. Source attribute wins over config. IPC handler name and TS HTTP client method follow the override; HTTP route paths and the underlying Rust fn name are unaffected. Malformed values surface as `SkipReason::InvalidRenameValue` via OF-001's diagnostic plumbing. Fixed a latent bug in `ts_client::generate_generic_ts_handler` along the way. | `ef63a0d` | 2026-05-12 |
