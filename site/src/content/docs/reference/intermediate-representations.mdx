@@ -158,6 +158,7 @@ Returned by `gen_api()`. The unified view of all API endpoints -- both generated
 | `source` | `Source` | Generated or scanned. |
 | `classified_op` | `OpKind` | Operation classification that drives HTTP verb and route structure. |
 | `is_stateless` | `bool` | `true` when the source `pub fn` was annotated `#[ontogen::stateless]`. Generators read this to emit handlers without a `State<...>` extractor and without forwarding any positional state argument. Generated CRUD fns always set this to `false`. See [Stateless utility functions](/guides/api-layer/#stateless-utility-functions-ontogenstateless). |
+| `command_override` | `Option<String>` | Set when the source `pub fn` was annotated `#[ontogen(rename = "...")]` or when a matching entry exists in `NamingConfig::command_overrides`. When `Some`, server-transport generators use this string verbatim as the IPC command name (the TS HTTP client camelCases it for the method name) in place of the default `{entity}_{fn_name}` scheme. HTTP route paths and the underlying Rust function name are unaffected. Generated CRUD fns always set this to `None`. See [Renaming a command](/guides/api-layer/#renaming-a-command-ontogenrename--). |
 
 ### `StateKind`
 

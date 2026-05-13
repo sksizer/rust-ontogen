@@ -186,6 +186,16 @@ pub struct ApiFnMeta {
     /// a `State<...>` extractor and without forwarding any positional state
     /// argument. Generated CRUD functions always set this to `false`.
     pub is_stateless: bool,
+    /// Per-function override for the emitted IPC command / TS method name.
+    ///
+    /// Populated from either the source-side `#[ontogen(rename = "...")]`
+    /// attribute or the build-side `NamingConfig::command_overrides` map.
+    /// When `Some`, server-transport generators use this string verbatim as
+    /// the IPC command name (and the TS HTTP client camelCases it for the
+    /// method name) in place of the default `{entity}_{fn_name}` scheme.
+    /// HTTP route paths and the underlying Rust function name are unaffected.
+    /// Generated CRUD functions always set this to `None`.
+    pub command_override: Option<String>,
 }
 
 /// Whether a function operates on a project-scoped Store or the global AppState.

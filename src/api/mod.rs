@@ -110,6 +110,7 @@ fn convert_scanned_fn(func: &parse::ApiFn, scan_dir: &Path, module_name: &str) -
         },
         classified_op,
         is_stateless: func.is_stateless,
+        command_override: func.command_override.clone(),
     }
 }
 
@@ -126,6 +127,7 @@ fn convert_scanned_event(event: &parse::EventFn, scan_dir: &Path, module_name: &
         },
         classified_op: OpKind::EventStream,
         is_stateless: false,
+        command_override: None,
     }
 }
 
@@ -186,6 +188,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             source: source.clone(),
             classified_op: OpKind::List,
             is_stateless: false,
+            command_override: None,
         },
         ApiFnMeta {
             name: "get_by_id".to_string(),
@@ -195,6 +198,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             source: source.clone(),
             classified_op: OpKind::GetById,
             is_stateless: false,
+            command_override: None,
         },
         ApiFnMeta {
             name: "create".to_string(),
@@ -204,6 +208,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             source: source.clone(),
             classified_op: OpKind::Create,
             is_stateless: false,
+            command_override: None,
         },
         ApiFnMeta {
             name: "update".to_string(),
@@ -216,6 +221,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             source: source.clone(),
             classified_op: OpKind::Update,
             is_stateless: false,
+            command_override: None,
         },
         ApiFnMeta {
             name: "delete".to_string(),
@@ -225,6 +231,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             source,
             classified_op: OpKind::Delete,
             is_stateless: false,
+            command_override: None,
         },
     ];
 

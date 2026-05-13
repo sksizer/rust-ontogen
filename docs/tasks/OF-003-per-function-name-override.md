@@ -33,9 +33,9 @@ Both feed the same `ApiFn::command_override: Option<String>` IR field. The IPC g
 
 Test coverage in `src/servers/tests.rs` (11 cases): attribute parsing (valid, absent, unknown directive, malformed value → drop), config overlay (populate + source-wins precedence), `command_name` resolution (override path + fallback path), and end-to-end IPC handler name, IPC handler body still calls the original Rust path, and TS client method camel-cases the override.
 
-Site docs: new "Renaming a command" subsection in `guides/api-layer.mdx`; new `command_overrides` row in the `NamingConfig` table in `reference/configuration.mdx`.
+Site docs: new "Renaming a command" subsection in `guides/api-layer.mdx`; new `command_overrides` row in the `NamingConfig` table in `reference/configuration.mdx`; new `command_override` row in the `ApiFnMeta` table in `reference/intermediate-representations.mdx`.
 
-**Known gap (out of scope here):** `gen_api`'s `ApiOutput` IR (in `src/api/mod.rs`) consumes parser output through a separate flattening path that doesn't currently propagate `command_override`. Today's user is `generate_transport` (HTTP/IPC/TS), which works directly with `ApiModule` and is unaffected. If a future generator consumes `ApiOutput` and needs per-fn naming, the parallel IR type and `merge_scanned_module` will need a parallel change. Same pattern as OF-002/OF-004 noted.
+**IR fidelity (follow-up, post-merge):** `ontogen_core::ir::ApiFnMeta` now carries `command_override: Option<String>`, populated from `parse::ApiFn::command_override` in `convert_scanned_fn`. The five generated CRUD construction sites and `convert_scanned_event` set it to `None`. This closes the gap that was originally noted as out-of-scope and matches the pattern OF-007 established in `6940a72` for `is_stateless`.
 
 ---
 
