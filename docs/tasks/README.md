@@ -42,9 +42,10 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 5. ~~**OF-012**~~ - resolved in `84d76dd` (2026-05-12).
 6. ~~**OF-002 + OF-004**~~ - resolved in `d770838` (2026-05-12).
 7. ~~**OF-006**~~ - warning shipped in `8bed7f7` (2026-05-12); the e2e bindings doc was promoted to [OF-014](./OF-014-redesign-ts-bindings-pipeline.md).
-8. **OF-003** (override mechanism; design discussion).
-9. **OF-014** (TS bindings pipeline redesign; design discussion).
-10. **OF-009** (lowest-value; documentation only).
+8. ~~**OF-007**~~ - resolved in `773d059` (2026-05-12); `#[ontogen::stateless]` no-op proc-macro opts a fn out of the state-first-param rule.
+9. **OF-003** (override mechanism; design discussion).
+10. **OF-014** (TS bindings pipeline redesign; design discussion).
+11. **OF-009** (lowest-value; documentation only).
 
 ## Resolved
 
@@ -60,3 +61,4 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 | [OF-002](./OF-002-singleton-url-pluralization.md)  | First-class singleton modules: `// ontogen:singleton` source marker + `NamingConfig::singleton_modules` config-side set, ORed into `ApiModule::is_singleton`. HTTP/TS gen route singletons through `url_for_module` (singular kebab). Shipped with OF-004.                | `d770838` | 2026-05-12 |
 | [OF-004](./OF-004-singleton-semantic.md)           | `ApiModule::is_singleton` IR field gives downstream generators a first-class singleton signal. Shipped with OF-002.                                                                                                                                                     | `d770838` | 2026-05-12 |
 | [OF-006](./OF-006-ts-bindings-fallback-warning.md) | `FallbackRecord` plumbs missing-bindings types out of `transport.rs` and `ts_client.rs`; `generate_transport` emits one `cargo:warning=` per fallback. Warning text documented in `guides/client-generation.mdx`. The e2e bindings doc was promoted to [OF-014](./OF-014-redesign-ts-bindings-pipeline.md). | `8bed7f7` | 2026-05-12 |
+| [OF-007](./OF-007-support-stateless-fns.md)        | `#[ontogen::stateless]` no-op proc-macro in `ontogen-macros`; the parser bypasses the state/store first-param check when present, and IPC/HTTP/MCP generators emit handler shapes without the `State<...>` extractor or a positional state forward. OF-001 skip diagnostic now hints at the attribute. New site-docs section + recipe. | `773d059` | 2026-05-12 |
