@@ -200,6 +200,28 @@ naming.singleton_modules.insert("database".to_string());
 naming.singleton_modules.insert("autostart".to_string());
 ```
 
+<Aside type="caution" title="Mass nouns and Latin plural-tantums">
+cruet treats Latin pluralizations literally and stem-strips trailing `s`, which produces awkward command names for English mass nouns and words that are already plural-tantum. If you have a module with any of the names below, add the matching override before shipping — the override mechanism works, it's just a sharp edge you only discover *after* the awkward command name lands in your TypeScript client.
+
+| Module name  | cruet singular | cruet plural | Why it's wrong                                                                                  |
+| ------------ | -------------- | ------------ | ----------------------------------------------------------------------------------------------- |
+| `data`       | `datum`        | `data`       | Latin singular; English treats `data` as a mass noun.                                           |
+| `metadata`   | `metadatum`    | `metadata`   | Same pattern as `data`.                                                                         |
+| `settings`   | `setting`      | `settings`   | Stem-strips the `s` -- `settings` is plural-tantum (no meaningful singular).                    |
+| `media`      | `medium`       | `medias`     | Both directions wrong: `medium` is a different sense; `medias` is not a word.                   |
+
+Mass nouns cruet handles correctly out of the box (no override needed): `information`, `news`, `evidence`, `series`, `schema`.
+
+```rust
+let mut naming = NamingConfig::default();
+naming.singular_overrides.insert("data".into(), "data".into());
+naming.singular_overrides.insert("metadata".into(), "metadata".into());
+naming.singular_overrides.insert("settings".into(), "settings".into());
+naming.singular_overrides.insert("media".into(), "media".into());
+naming.plural_overrides.insert("media".into(), "media".into());
+```
+</Aside>
+
 ### `ServerGeneratorConfig` / `ServerGenerator`
 
 ```rust

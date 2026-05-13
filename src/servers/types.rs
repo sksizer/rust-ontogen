@@ -448,6 +448,35 @@ pub fn collect_ts_import(ts_type: &str, imports: &mut Vec<String>) {
 ///
 /// Uses `cruet` for Rails-style inflection (handles irregular words like
 /// "dependencies" → "dependency"). Override maps take precedence over cruet.
+///
+/// # Pitfall: mass nouns and Latin plural-tantums
+///
+/// cruet treats Latin pluralizations literally and stem-strips trailing `s`,
+/// which produces awkward command names for English mass nouns and words
+/// that are already plural-tantum. The verified misfires are:
+///
+/// | Module name  | cruet singular | cruet plural | Why it's wrong                          |
+/// | ------------ | -------------- | ------------ | --------------------------------------- |
+/// | `data`       | `datum`        | `data`       | Latin singular; English treats `data` as mass |
+/// | `metadata`   | `metadatum`    | `metadata`   | Same pattern as `data`                  |
+/// | `settings`   | `setting`      | `settings`   | Stem-strips the `s` — `settings` is plural-tantum |
+/// | `media`      | `medium`       | `medias`     | Both directions wrong: `medium` is a different sense, `medias` isn't a word |
+///
+/// Mass nouns that cruet *does* handle correctly out of the box (no override
+/// needed): `information`, `news`, `evidence`, `series`, `schema`.
+///
+/// Use [`singular_overrides`](Self::singular_overrides) and
+/// [`plural_overrides`](Self::plural_overrides) to pin the form for any
+/// module name that misfires:
+///
+/// ```ignore
+/// let mut naming = NamingConfig::default();
+/// naming.singular_overrides.insert("data".into(), "data".into());
+/// naming.singular_overrides.insert("metadata".into(), "metadata".into());
+/// naming.singular_overrides.insert("settings".into(), "settings".into());
+/// naming.singular_overrides.insert("media".into(), "media".into());
+/// naming.plural_overrides.insert("media".into(), "media".into());
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct NamingConfig {
     /// Overrides for module → plural form (e.g., "evidence" → "evidence").
