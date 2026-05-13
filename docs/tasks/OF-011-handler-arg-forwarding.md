@@ -1,11 +1,36 @@
 ---
-status: draft
+status: closed
+resolution: fixed
+resolution_date: 2026-05-12
+resolution_commit: 387d460
 ---
 # OF-011 - Make handler argument forwarding consistent and fix `.as_deref()` for non-Deref `Option<T>`
 
 - **Severity:** High
-- **Status:** Open (design decision needed)
+- **Status:** Resolved (`387d460`, 2026-05-12)
 - **Source:** [feedback.md OF-011](2026-05-12-pumice.md)
+- **Spawned:** [OF-013](./OF-013-ast-param-to-owned-type.md) (param_to_owned_type AST-ification follow-up surfaced during this work)
+
+## Resolution
+
+Shipped in `387d460` on 2026-05-12 (option A from the discussion). The substring-on-type-name heuristics in `generate_generic_ipc_handler` and `generate_paginated_ipc_handler` were replaced with a single `forward_arg_expr` helper in `src/servers/types.rs` that reads `Param.ty_ast` directly.
+
+- `forward_arg_expr(name, &user_ty)` produces:
+  - `&name` for `&T` / `&mut T`
+  - `name.as_deref()` for `Option<&str>`, `Option<&[T]>`, `Option<&Path>`, `Option<&CStr>`, `Option<&OsStr>`
+  - `name.as_ref()` for `Option<&UserStruct>`
+  - `name` (by value) for `Option<T>` with owned `T`, owned `T`, primitives, and qualified-path types
+- Same helper routed through the parallel HTTP forwarding paths in `http.rs`, so query / path / body params get consistent treatment there too.
+- 26 unit tests + 1 end-to-end integration test added in `src/servers/tests.rs`. The Pumice-specific `Option<u8>` regression is explicitly covered.
+- Iron-log build and `just full-check` pass clean; iron-log's generated transport files are byte-identical (existing shapes round-trip identically through the new logic).
+
+Fixes the `.as_deref()` compile error for non-Deref `Option<T>` and the inconsistent ref / owned forwarding for custom struct params.
+
+**Audit follow-up:** `param_to_owned_type` is still string-based and produces uncompileable owned forms for unsized-DST inner types (`Option<&[u8]>`, `Option<&Path>`, etc.). Filed as [OF-013](./OF-013-ast-param-to-owned-type.md). No current consumer hits this so the bug is latent; this commit's forwarding correctly identifies the affected cases via the AST but the param-declaration side remains malformed until OF-013 lands.
+
+---
+
+*The remainder of this document is preserved as a record of the original analysis.*
 
 ## Status update (2026-05-12, from `7c056fe`)
 

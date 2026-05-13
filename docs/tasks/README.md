@@ -2,6 +2,16 @@
 
 One file per discrete piece of work. Each file is self-contained: severity, location in code, current behaviour, proposed resolution, effort estimate, and open questions.
 
+## When an entry is resolved
+- set frontmatter
+	- status: closed
+	- resolution: fixed (or wontfix)
+	- resolution_date: ISO Timestamp
+	- resolution_commit: commit-hash
+- document resolution changes
+
+# Planning Scratch
+
 ## Pumice feedback (OF-###)
 
 Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md`](2026-05-12-pumice.md).
@@ -22,27 +32,29 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 | [OF-012](./OF-012-skip-marker-helpers.md) | Low | File-level skip marker for helper modules in `api/v1/` |
 | [OF-013](./OF-013-ast-param-to-owned-type.md) | Medium | AST-ify `param_to_owned_type` for unsized-DST inner types (follow-up from OF-011) |
 
-## Suggested priority
+## Priority Planning
 
 1. ~~**OF-008 + OF-010**~~ - resolved in `7c056fe` (2026-05-12).
-2. **OF-001 + OF-005** (diagnostic + docs page documents the contract).
-3. **OF-011** (groundwork now in place via `7c056fe`; effort dropped to Medium).
-4. **OF-012** (small, isolated).
+2. **OF-001 + OF-005** - **in progress** on `feat/of-001-005-parser-skip-diagnostic`.
+3. ~~**OF-011**~~ - resolved in `387d460` (2026-05-12); spawned [OF-013](./OF-013-ast-param-to-owned-type.md) as a follow-up.
+4. **OF-013** (AST-ify `param_to_owned_type`; pairs with OF-011's allowlist).
+5. **OF-012** (small, isolated).
 5. **OF-002 + OF-004** (singleton marker; design discussion).
 6. **OF-003** (override mechanism; design discussion).
 7. **OF-006** (warning is easy; e2e bindings doc is its own task).
 8. **OF-009** (lowest-value; documentation only).
 
-## When an entry is resolved
+## In progress
 
-Set frontmatter `status: closed` and `resolution: fixed` (or `wontfix`), update the
-inline status line to `Resolved (<commit>, <date>)`, add a Resolution section near the
-top, and append a row to the Resolved table below. Do not delete the file - retain it
-for context.
+| ID                                                       | Title                                                | Branch                                          |
+| -------------------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------- |
+| [OF-001](./OF-001-parser-skip-diagnostic.md)             | Emit diagnostic when parser skips a non-matching fn  | `feat/of-001-005-parser-skip-diagnostic`        |
+| [OF-005](./OF-005-document-state-store-shapes.md)        | Document accepted state_type / store_type shapes     | `feat/of-001-005-parser-skip-diagnostic`        |
 
 ## Resolved
 
-| ID | Resolution | Commit | Date |
-| --- | --- | --- | --- |
-| [OF-008](./OF-008-inner-type-strip-option.md) | Fixed via syn::Type AST walker in `collect_type_import`. Breaking API change. | `7c056fe` | 2026-05-12 |
-| [OF-010](./OF-010-collect-type-import-generics.md) | Fixed together with OF-008. | `7c056fe` | 2026-05-12 |
+| ID                                                 | Resolution                                                                    | Commit    | Date       |
+| -------------------------------------------------- | ----------------------------------------------------------------------------- | --------- | ---------- |
+| [OF-008](./OF-008-inner-type-strip-option.md)      | Fixed via syn::Type AST walker in `collect_type_import`. Breaking API change. | `7c056fe` | 2026-05-12 |
+| [OF-010](./OF-010-collect-type-import-generics.md) | Fixed together with OF-008.                                                   | `7c056fe` | 2026-05-12 |
+| [OF-011](./OF-011-handler-arg-forwarding.md)       | AST-driven `forward_arg_expr` in `src/servers/types.rs` replaces type-name heuristics across IPC and HTTP handlers. Spawned OF-013. | `387d460` | 2026-05-12 |
