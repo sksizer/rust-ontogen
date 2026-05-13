@@ -1,12 +1,40 @@
 ---
-status: draft
+status: closed
+resolution: fixed
+resolution_date: 2026-05-12
+resolution_commit: d770838
 ---
 # OF-002 - Singleton module URL pluralization
 
 - **Severity:** Medium
-- **Status:** Open
+- **Status:** Resolved (`d770838`, 2026-05-12)
 - **Source:** [feedback.md OF-002](2026-05-12-pumice.md)
-- **Related:** [OF-004](./OF-004-singleton-semantic.md)
+- **Related:** [OF-004](./OF-004-singleton-semantic.md) (shipped together)
+
+## Resolution
+
+Shipped in `d770838` on 2026-05-12, jointly with [OF-004](./OF-004-singleton-semantic.md). Modules can now declare themselves as singletons through either of two mechanisms, both feeding the same `ApiModule::is_singleton` IR bit:
+
+1. **Source-side marker:** `// ontogen:singleton` or `//! ontogen:singleton` in the file's leading comment-and-attribute block (same placement rule as OF-012's `// ontogen:skip`).
+2. **Config-side:** `NamingConfig::singleton_modules: HashSet<String>` in `build.rs`. A post-parse overlay ORs config entries onto the parsed IR.
+
+The HTTP and TS-transport generators now route module URL segments through a new `NamingConfig::url_for_module(&ApiModule)` helper: singletons get the singular kebab-case form (`database` -> `database`, `auto_start` -> `auto-start`); entities keep the existing `url_plural` behaviour (`workout` -> `workouts`). The original `url_plural(&str)` is left untouched because internal naming consumers (e.g. `derive_action`) still depend on its plural semantics.
+
+For `database` containing `get_path()`:
+
+```
+GET /api/database/path
+```
+
+Test coverage in `src/servers/tests.rs` (12 cases): 5 parser cases pin the source-marker grammar, 3 cases pin the config overlay (including idempotency when both declarations are present), 3 cases pin the `url_for_module` matrix, and 1 end-to-end test asserts a synthetic `database.rs` with the marker generates `/api/database/path` rather than `/api/databases/path`.
+
+Site docs: `guides/api-layer.mdx` gains a "Singleton modules: `// ontogen:singleton`" subsection next to the OF-012 skip-marker section; `reference/configuration.mdx` documents the new `singleton_modules` field on `NamingConfig`.
+
+`gen_api`'s `ApiOutput` IR (in `src/api/mod.rs`) consumes parser output through a separate flattening path that does not currently propagate `is_singleton`. That's fine for the present user (HTTP via `generate_transport`); if a future generator consumes `ApiOutput` and needs singleton awareness, the IR type and `merge_scanned_module` will need a parallel change. Noted but out of scope for this fix.
+
+---
+
+*The remainder of this document is preserved as a record of the original analysis.*
 
 ## Problem
 
