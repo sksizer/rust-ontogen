@@ -277,6 +277,41 @@ If a file under your api directory is a pure helper module (shared utilities, no
 
 The marker must appear in the file's leading comment-and-attribute block — before any `use`, `pub fn`, or other item. When present, the file is dropped from `ScanResult.modules` and no per-fn `cargo:warning=` lines are emitted for anything in it (opt-out is intentional, so the diagnostics are silenced too).
 
+### Stateless utility functions: `#[ontogen::stateless]`
+
+Most service functions take your `state_type` (or `store_type`) as their first parameter so the generated handler can thread state through. Some functions don't need any state at all — pure data transformations, OS-level side effects, clock reads. Forcing those to declare a `_state: &AppState` parameter just to pass the parser produces signatures shaped by the parser's constraints rather than by what the function actually needs.
+
+The `#[ontogen::stateless]` attribute opts a function out of the state-first-param rule:
+
+```rust
+use ontogen::stateless;
+
+#[stateless]
+pub fn copy(text: &str) -> Result<(), AppError> {
+    pumice_desktop::clipboard::copy_text(text.to_string())
+        .map_err(AppError::DbError)
+}
+
+#[ontogen::stateless]
+pub fn now() -> Result<i64, AppError> {
+    Ok(chrono::Utc::now().timestamp())
+}
+```
+
+The attribute itself is a no-op proc-macro: the function body and signature pass through unchanged at expansion time. The ontogen parser reads it at build time and emits handler shapes that:
+
+- Omit the `State<...>` extractor (HTTP) / `tauri::State` argument (IPC).
+- Skip Store construction and prefix validation.
+- Forward only the user-declared parameters to the service function — no positional state argument is inserted.
+
+Routing is unchanged: stateless functions are nested under their module URL the same as state-bearing functions. `pub fn copy(...)` in `src/api/v1/clipboard.rs` becomes the IPC command `clipboard_copy` and the HTTP route `/api/clipboards/copy`, with the module URL transformed per the usual rules (use `// ontogen:singleton` if the module is a singleton and you want `/api/clipboard/copy` instead).
+
+Three other things to know:
+
+- **Either path form is accepted.** `#[stateless]` (after `use ontogen::stateless`) and `#[ontogen::stateless]` (fully qualified) are matched on the final path segment. Use whichever reads better in your module.
+- **`&self` / `self` is still rejected.** Methods don't fit free-function API modules regardless of statelessness.
+- **Without the attribute, the same fn is silently dropped.** Build warnings (see above) include `add #[ontogen::stateless] if this fn intentionally takes no state` so the diagnostic points to the opt-in.
+
 ### Singleton modules: `// ontogen:singleton`
 
 Some api modules represent a single entity rather than a collection — `database`, `autostart`, `vault`. Declare them as singletons so the HTTP generator emits singular kebab URLs (`/api/database/path`) instead of the default pluralized form (`/api/databases/path`). Two declaration mechanisms are accepted; both feed into the same `ApiModule::is_singleton` IR field:

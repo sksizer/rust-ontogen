@@ -203,6 +203,28 @@ You can take parameters by reference (`&str`, `&[u8]`, `&Path`, `&CStr`, `&OsStr
 pub async fn archive(store: &Store, id: &str) -> Result<(), AppError> { ... }
 ```
 
+**Opt out of the state-first-param rule with `#[ontogen::stateless]`:**
+
+Some operations genuinely don't need state — clock reads, pure data transforms, OS-level side effects. Mark them with `#[ontogen::stateless]` and the parser will accept any (or no) first parameter, while the generators emit handlers without the `State<...>` extractor:
+
+```rust
+use ontogen::stateless;
+
+// Zero params — handler is `fn util_now() -> Result<i64, String>`
+#[stateless]
+pub fn now() -> Result<i64, AppError> {
+    Ok(chrono::Utc::now().timestamp())
+}
+
+// Non-state first param — handler signature is just `text: String`
+#[stateless]
+pub fn copy(text: &str) -> Result<(), AppError> {
+    clipboard::copy_text(text.to_string()).map_err(AppError::DbError)
+}
+```
+
+See [Stateless utility functions](/guides/api-layer/#stateless-utility-functions-ontogenstateless) for the full behaviour.
+
 ## Rerun directives
 
 Don't forget to set up `cargo:rerun-if-changed` for your custom API directory. In your `build.rs`:
