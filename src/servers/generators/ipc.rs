@@ -11,7 +11,7 @@ use crate::servers::classify::classify_op;
 use crate::servers::config::Config;
 use crate::servers::parse::{ApiFn, ApiModule};
 use crate::servers::types::{
-    capitalize, collect_type_import, event_name, extract_input_type, inner_type, param_to_owned_type,
+    capitalize, collect_type_import, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
 };
 
 /// Returns the generated prefix param line for IPC commands (e.g., `project_id: Option<String>,`).
@@ -475,18 +475,7 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
 
     out.push_str(&format!("    {}::{}({first_arg}", svc, fn_name));
     for p in &f.params {
-        if p.ty.starts_with("Option<") {
-            out.push_str(&format!(", {}.as_deref()", p.name));
-        } else if p.ty.contains("Input")
-            || matches!(
-                p.ty.as_str(),
-                "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
-            )
-        {
-            out.push_str(&format!(", {}", p.name));
-        } else {
-            out.push_str(&format!(", &{}", p.name));
-        }
+        out.push_str(&format!(", {}", forward_arg_expr(&p.name, &p.ty_ast)));
     }
     out.push(')');
     out.push_str(await_str);
@@ -533,18 +522,7 @@ fn generate_paginated_ipc_handler(out: &mut String, module: &str, f: &ApiFn, con
 
     out.push_str(&format!("    let all_items = {}::{}({first_arg}", svc, fn_name));
     for p in &f.params {
-        if p.ty.starts_with("Option<") {
-            out.push_str(&format!(", {}.as_deref()", p.name));
-        } else if p.ty.contains("Input")
-            || matches!(
-                p.ty.as_str(),
-                "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
-            )
-        {
-            out.push_str(&format!(", {}", p.name));
-        } else {
-            out.push_str(&format!(", &{}", p.name));
-        }
+        out.push_str(&format!(", {}", forward_arg_expr(&p.name, &p.ty_ast)));
     }
     out.push(')');
     out.push_str(await_str);

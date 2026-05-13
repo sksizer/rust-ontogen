@@ -233,6 +233,94 @@ pub fn param_to_owned_type(ty: &str) -> String {
     }
 }
 
+/// Generate the forwarding expression for a handler parameter.
+///
+/// The handler holds an owned value (of `param_to_owned_type(user_ty)`). This
+/// function produces the expression that converts that owned value back into
+/// what the user-written service-fn signature wants:
+///
+/// - `&T` → `&name` (Rust deref-coerces `&String → &str`, `&Vec<T> → &[T]`).
+/// - `Option<&str>` / `Option<&[T]>` / `Option<&Path>` / `Option<&CStr>` /
+///   `Option<&OsStr>` → `name.as_deref()` (handler holds `Option<String>` /
+///   `Option<Vec<T>>` / `Option<PathBuf>` / etc. whose inner `Deref` target is
+///   the requested reference type).
+/// - `Option<&UserType>` (anything else under an `Option<&T>`) → `name.as_ref()`,
+///   producing `Option<&UserType>` without requiring `T: Deref`.
+/// - `Option<T>` (owned `T`) → `name` (handler also holds `Option<T>`).
+/// - everything else → `name` (handler owns it, user wants it owned).
+///
+/// This replaces the older substring heuristics on the rendered parameter type
+/// (which broke `Option<u8>` by always emitting `.as_deref()`).
+pub fn forward_arg_expr(name: &str, user_ty: &Type) -> String {
+    match user_ty {
+        // User wrote `&T` (or `&mut T`) — handler owns T → pass `&name`.
+        // Rust's deref coercion handles `&String → &str`, `&Vec<T> → &[T]`,
+        // `&PathBuf → &Path`, etc.
+        Type::Reference(_) => format!("&{name}"),
+
+        // User wrote `Option<...>` — inspect the inner type.
+        Type::Path(tp) if last_segment_is(tp, "Option") => match option_inner(tp) {
+            // User wrote `Option<&InnerRef>` where `InnerRef`'s owned form
+            // has a `Deref` impl yielding `InnerRef` (str/[T]/Path/CStr/OsStr).
+            // Handler holds `Option<OwnedInner>` → `.as_deref()` converts it.
+            Some(Type::Reference(r)) if owned_form_derefs_to(&r.elem) => format!("{name}.as_deref()"),
+            // User wrote `Option<&UserType>` (no Deref) — handler holds
+            // `Option<UserType>`. `.as_ref()` produces `Option<&UserType>`.
+            Some(Type::Reference(_)) => format!("{name}.as_ref()"),
+            // User wrote `Option<T>` (owned inner) — handler also has
+            // `Option<T>`. Pass by value.
+            _ => name.to_string(),
+        },
+
+        // Everything else: user wants owned T, handler has owned T.
+        _ => name.to_string(),
+    }
+}
+
+/// Return true when the last path segment's ident matches `name`. We only ever
+/// see single-segment `Option` paths in practice (the prelude one); this lets
+/// us match it regardless of any leading `::std::option::` prefix the user
+/// might have typed.
+fn last_segment_is(tp: &syn::TypePath, name: &str) -> bool {
+    tp.path.segments.last().is_some_and(|seg| seg.ident == name)
+}
+
+/// Extract the inner type `T` from an `Option<T>` path. Returns `None` if the
+/// path isn't an `Option`-shaped path with a single type arg.
+fn option_inner(tp: &syn::TypePath) -> Option<&Type> {
+    let seg = tp.path.segments.last()?;
+    let PathArguments::AngleBracketed(args) = &seg.arguments else { return None };
+    for arg in &args.args {
+        if let GenericArgument::Type(t) = arg {
+            return Some(t);
+        }
+    }
+    None
+}
+
+/// Return true when `T`'s owned form (as produced by `param_to_owned_type`)
+/// has a `Deref` impl yielding `&T`. Drives the `Option<&T>` →
+/// `name.as_deref()` rule.
+///
+/// Allowlist by leaf-identifier; deliberately small. Slices (`[T]`) are also
+/// accepted via `Type::Slice` since `Vec<T>: Deref<Target = [T]>`.
+fn owned_form_derefs_to(elem: &Type) -> bool {
+    match elem {
+        Type::Slice(_) => true,
+        Type::Path(tp) => {
+            let Some(seg) = tp.path.segments.last() else { return false };
+            // Only single-segment paths qualify — a user-qualified path like
+            // `my::Path` is not the prelude `Path` and we shouldn't assume it
+            // has a Deref impl.
+            if tp.qself.is_some() || tp.path.segments.len() > 1 {
+                return false;
+            }
+            matches!(seg.ident.to_string().as_str(), "str" | "Path" | "CStr" | "OsStr")
+        }
+        _ => false,
+    }
+}
+
 /// Convert snake_case to camelCase.
 pub fn snake_to_camel(s: &str) -> String {
     let mut result = String::new();

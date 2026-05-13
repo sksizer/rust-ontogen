@@ -11,7 +11,8 @@ use crate::servers::classify::{classify_op, is_read_operation};
 use crate::servers::config::Config;
 use crate::servers::parse::{ApiFn, ApiModule};
 use crate::servers::types::{
-    capitalize, collect_type_import, event_name, extract_input_type, inner_type, param_to_owned_type, to_pascal_case,
+    capitalize, collect_type_import, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
+    to_pascal_case,
 };
 
 /// Generate HTTP route handlers and write to the output file.
@@ -648,30 +649,16 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
     // Function call
     out.push_str(&format!("    {}::{}({first_arg}", svc, fn_name));
     for p in &path_params {
-        if matches!(
-            p.ty.as_str(),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
-        ) {
-            out.push_str(&format!(", {}", p.name));
-        } else {
-            out.push_str(&format!(", &{}", p.name));
-        }
+        out.push_str(&format!(", {}", forward_arg_expr(&p.name, &p.ty_ast)));
     }
     for qp in &query_params {
-        out.push_str(&format!(", q.{}.as_deref()", qp.name));
+        out.push_str(&format!(", {}", forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast)));
     }
     if body_struct.is_some() {
         out.push_str(", input");
     }
     for bf in &body_fields {
-        if matches!(
-            bf.ty.as_str(),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
-        ) {
-            out.push_str(&format!(", body.{}", bf.name));
-        } else {
-            out.push_str(&format!(", &body.{}", bf.name));
-        }
+        out.push_str(&format!(", {}", forward_arg_expr(&format!("body.{}", bf.name), &bf.ty_ast)));
     }
     out.push(')');
     out.push_str(await_str);
@@ -1092,27 +1079,16 @@ fn generate_generic_http_handler_scoped(
     let first_arg = if f.first_param_is_store { "&store" } else { "&state" };
     out.push_str(&format!("    {}::{}({first_arg}", svc, fn_name));
     for p in &path_params {
-        if matches!(
-            p.ty.as_str(),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "f32" | "f64"
-        ) {
-            out.push_str(&format!(", {}", p.name));
-        } else {
-            out.push_str(&format!(", &{}", p.name));
-        }
+        out.push_str(&format!(", {}", forward_arg_expr(&p.name, &p.ty_ast)));
     }
     for qp in &query_params {
-        out.push_str(&format!(", q.{}.as_deref()", qp.name));
+        out.push_str(&format!(", {}", forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast)));
     }
     if body_struct.is_some() {
         out.push_str(", input");
     }
     for bf in &body_fields {
-        if bf.ty == "i32" {
-            out.push_str(&format!(", body.{}", bf.name));
-        } else {
-            out.push_str(&format!(", &body.{}", bf.name));
-        }
+        out.push_str(&format!(", {}", forward_arg_expr(&format!("body.{}", bf.name), &bf.ty_ast)));
     }
     out.push(')');
     out.push_str(await_str);

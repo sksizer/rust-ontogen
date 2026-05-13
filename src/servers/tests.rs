@@ -13,8 +13,8 @@ use crate::servers::classify::{classify_op, is_read_operation};
 use crate::servers::config::{ClientGenerator, Config, GeneratorConfig, PrefixParam, RoutePrefix, ServerGenerator};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{
-    NamingConfig, capitalize, collect_ts_import, collect_type_import, event_name, extract_input_type, inner_type,
-    normalize_spaces, param_to_owned_type, rust_type_to_ts, snake_to_camel, strip_ref, to_pascal_case,
+    NamingConfig, capitalize, collect_ts_import, collect_type_import, event_name, extract_input_type, forward_arg_expr,
+    inner_type, normalize_spaces, param_to_owned_type, rust_type_to_ts, snake_to_camel, strip_ref, to_pascal_case,
 };
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
@@ -370,6 +370,57 @@ fn test_param_to_owned_type() {
     assert_eq!(param_to_owned_type("String"), "String");
     assert_eq!(param_to_owned_type("i32"), "i32");
     assert_eq!(param_to_owned_type("CreateNodeInput"), "CreateNodeInput");
+}
+
+/// Matrix covering `forward_arg_expr` (OF-011).
+///
+/// The helper decides how a handler with an owned binding `name` forwards
+/// the value to the user-written service fn. The big regression was
+/// `Option<u8>` → unconditional `.as_deref()`; that case is explicitly
+/// covered alongside owned-vs-reference and Option<&Deref>/Option<&UserType>
+/// permutations.
+#[test]
+fn test_forward_arg_expr_matrix() {
+    let cases: &[(&str, &str)] = &[
+        // Plain owned types -> by value
+        ("String", "name"),
+        ("bool", "name"),
+        ("u8", "name"),
+        ("i64", "name"),
+        ("MyStruct", "name"),
+        ("crate::schema::Foo", "name"),
+        // References -> by reference (deref-coerces in callee)
+        ("&str", "&name"),
+        ("&MyStruct", "&name"),
+        ("&crate::schema::Foo", "&name"),
+        ("&[u8]", "&name"),
+        ("&Path", "&name"),
+        // Option<T> owned inner -> by value (no .as_deref() bug)
+        ("Option<u8>", "name"),
+        ("Option<i64>", "name"),
+        ("Option<bool>", "name"),
+        ("Option<String>", "name"),
+        ("Option<MyStruct>", "name"),
+        ("Option<Vec<String>>", "name"),
+        ("Option<crate::schema::Foo>", "name"),
+        // Option<&Deref-target> -> .as_deref() via owned's Deref impl
+        ("Option<&str>", "name.as_deref()"),
+        ("Option<&[u8]>", "name.as_deref()"),
+        ("Option<&[MyStruct]>", "name.as_deref()"),
+        ("Option<&Path>", "name.as_deref()"),
+        ("Option<&CStr>", "name.as_deref()"),
+        ("Option<&OsStr>", "name.as_deref()"),
+        // Option<&UserType> -> .as_ref() (no Deref required)
+        ("Option<&MyStruct>", "name.as_ref()"),
+        // Qualified `Path`-like idents that aren't the prelude `Path` must NOT
+        // be treated as Deref targets — they are unknown user types.
+        ("Option<&my::Path>", "name.as_ref()"),
+    ];
+
+    for (input, expected) in cases {
+        let ty: syn::Type = syn::parse_str(input).expect("test input must parse as syn::Type");
+        assert_eq!(forward_arg_expr("name", &ty), *expected, "input was `{}`", input);
+    }
 }
 
 #[test]
@@ -1640,4 +1691,90 @@ pub async fn deeply_nested(store: &Store) -> Result<Option<HashMap<String, Vec<N
         let schema_block = &content[schema_block_starts..schema_block_ends];
         assert!(!schema_block.contains(forbidden), "wrapper `{forbidden}` leaked into use block: {schema_block}");
     }
+}
+
+/// Regression test for OF-011.
+///
+/// Drives the generic IPC handler through every param-shape that previously
+/// triggered wrong forwarding. The critical regression is `rating: Option<u8>`
+/// — the old generator emitted `rating.as_deref()`, which fails to compile
+/// because `u8: !Deref`. Several other shapes were also miscategorised by the
+/// "type-name-contains-Input" substring heuristic.
+///
+/// The test parses a synthetic api module, generates IPC, and asserts on the
+/// rendered forwarding expressions inside the service call. The function name
+/// for each case is unique so we can grep precisely.
+#[test]
+fn test_ipc_handler_arg_forwarding_matrix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "shapes.rs",
+        r#"
+use crate::store::Store;
+
+pub async fn case_ref_str(store: &Store, text: &str) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_owned_string(store: &Store, id: String) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_owned_bool(store: &Store, enabled: bool) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_owned_u8(store: &Store, count: u8) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_ref_struct(store: &Store, profile_id: SelectedProfileId) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_input_struct(store: &Store, input: ProfileInput) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_owned_qualified(store: &Store, prefs: crate::schema::NotificationPrefs) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_ref_qualified(store: &Store, prefs: &crate::schema::NotificationPrefs) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_option_u8(store: &Store, rating: Option<u8>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_option_owned_string(store: &Store, name: Option<String>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_option_ref_str(store: &Store, name: Option<&str>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_option_ref_struct(store: &Store, profile: Option<&MyStruct>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_option_ref_slice(store: &Store, bytes: Option<&[u8]>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_option_ref_path(store: &Store, p: Option<&Path>) -> Result<(), anyhow::Error> { todo!() }
+pub async fn case_option_vec(store: &Store, tags: Option<Vec<String>>) -> Result<(), anyhow::Error> { todo!() }
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert_eq!(modules.len(), 1);
+
+    let output_path = tmp.path().join("ipc_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    crate::servers::generators::ipc::generate(&output_path, &modules, &config);
+
+    let content = std::fs::read_to_string(&output_path).unwrap();
+
+    // Each case asserts the precise forwarding call. Function names in the
+    // generated output get the entity prefix (`shape_`), so we match on the
+    // bare service-fn portion: `shapes::case_..._args)`.
+    let cases: &[(&str, &str)] = &[
+        ("case_ref_str", "shapes::case_ref_str(store, &text)"),
+        ("case_owned_string", "shapes::case_owned_string(store, id)"),
+        ("case_owned_bool", "shapes::case_owned_bool(store, enabled)"),
+        ("case_owned_u8", "shapes::case_owned_u8(store, count)"),
+        ("case_ref_struct", "shapes::case_ref_struct(store, profile_id)"),
+        ("case_input_struct", "shapes::case_input_struct(store, input)"),
+        ("case_owned_qualified", "shapes::case_owned_qualified(store, prefs)"),
+        ("case_ref_qualified", "shapes::case_ref_qualified(store, &prefs)"),
+        // The OF-011 regression: Option<u8> must pass `rating`, NOT
+        // `rating.as_deref()`.
+        ("case_option_u8", "shapes::case_option_u8(store, rating)"),
+        ("case_option_owned_string", "shapes::case_option_owned_string(store, name)"),
+        ("case_option_ref_str", "shapes::case_option_ref_str(store, name.as_deref())"),
+        ("case_option_ref_struct", "shapes::case_option_ref_struct(store, profile.as_ref())"),
+        ("case_option_ref_slice", "shapes::case_option_ref_slice(store, bytes.as_deref())"),
+        ("case_option_ref_path", "shapes::case_option_ref_path(store, p.as_deref())"),
+        ("case_option_vec", "shapes::case_option_vec(store, tags)"),
+    ];
+
+    for (fn_name, expected_call) in cases {
+        assert!(
+            content.contains(expected_call),
+            "OF-011 forwarding regression for `{fn_name}`: expected `{expected_call}` in generated IPC, got:\n{content}"
+        );
+    }
+
+    // Negative: the old broken `rating.as_deref()` must not appear anywhere.
+    assert!(
+        !content.contains("rating.as_deref()"),
+        "OF-011 regression: `rating.as_deref()` leaked back into IPC output"
+    );
 }
