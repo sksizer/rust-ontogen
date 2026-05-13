@@ -2,11 +2,12 @@
 status: closed
 resolution: fixed
 resolution_date: 2026-05-12
+resolution_commit: 8bed7f7
 ---
 # OF-006 - Warn on TS bindings fallback to `Record<string, unknown>`
 
 - **Severity:** Medium
-- **Status:** Resolved (build-time warning shipped; e2e bindings docs deferred to [OF-014](./OF-014-redesign-ts-bindings-pipeline.md))
+- **Status:** Resolved (`8bed7f7`, 2026-05-12). Build-time warning shipped; e2e bindings docs deferred to [OF-014](./OF-014-redesign-ts-bindings-pipeline.md).
 - **Source:** [feedback.md OF-006](2026-05-12-pumice.md)
 - **Cross-ref:** Pumice task 0035, pumice issue ISS-002
 
