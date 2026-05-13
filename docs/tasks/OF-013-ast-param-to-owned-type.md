@@ -1,10 +1,10 @@
 ---
-status: draft
+status: in-progress
 ---
 # OF-013 - AST-ify `param_to_owned_type` so unsized-DST inner types yield correct owned forms
 
 - **Severity:** Medium (latent today; produces uncompileable handler param types once exercised)
-- **Status:** Open
+- **Status:** In progress
 - **Discovered:** During OF-011 implementation (commit `86045a5`); not from Pumice feedback.
 - **Related:** [OF-008](./OF-008-inner-type-strip-option.md) (introduced the AST groundwork), [OF-011](./OF-011-handler-arg-forwarding.md) (forwarding fix that surfaced this gap)
 
