@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 ---
 # OF-001 - Emit diagnostic when parser skips a non-matching `pub fn`
 

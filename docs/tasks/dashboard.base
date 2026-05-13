@@ -1,0 +1,15 @@
+views:
+  - type: table
+    name: Table
+    filters:
+      and:
+        - file.path.startsWith("tasks")
+        - file.ext == "md"
+        - file.name != "README"
+    order:
+      - file.name
+      - status
+      - resolution
+    columnSize:
+      file.name: 271
+      note.status: 245

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 ---
 # OF-005 - Document accepted `state_type` / `store_type` first-param shapes
 
