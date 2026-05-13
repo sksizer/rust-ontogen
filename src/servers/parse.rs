@@ -71,6 +71,17 @@ pub struct ApiModule {
     pub functions: Vec<ApiFn>,
     /// Event broadcast functions.
     pub events: Vec<EventFn>,
+    /// True when this module represents a singleton (a single entity, not a
+    /// collection — `database`, `autostart`, `vault`, …).
+    ///
+    /// The flag is set from either a source-side `// ontogen:singleton` /
+    /// `//! ontogen:singleton` marker in the file's leading
+    /// comment-and-attribute block (parser side), or from
+    /// [`NamingConfig::singleton_modules`](crate::servers::NamingConfig) via
+    /// the post-parse [`apply_singleton_overlay`] step. Downstream generators
+    /// (HTTP today; admin / doc-gen in the future) branch on this rather than
+    /// re-deriving from naming rules.
+    pub is_singleton: bool,
 }
 
 impl ApiModule {
@@ -174,19 +185,22 @@ pub struct ScanResult {
 
 // ─── Parsing ──────────────────────────────────────────────────────────────────
 
-/// Returns true when `source` has a file-level skip marker in its leading
-/// comment-and-attribute block.
+/// Returns true when `source` carries a file-level marker `name` (e.g. `skip`,
+/// `singleton`) in its leading comment-and-attribute block.
 ///
 /// The marker is matched anywhere in the run of blank lines, line comments
 /// (`//` / `///` / `//!`), and inner attributes (`#![...]`) that prefixes the
 /// file. Once a non-comment / non-attribute item is reached, later occurrences
-/// of the marker are ignored — opt-out is a file-level decision, not something
-/// that should be smuggled in mid-file.
+/// of the marker are ignored — file-level markers are file-level decisions,
+/// not something that should be smuggled in mid-file.
 ///
-/// Two grammars are honoured, both requiring exact trimmed equality:
-/// - `// ontogen:skip` (plain line comment)
-/// - `//! ontogen:skip` (inner doc comment)
-fn has_skip_marker(source: &str) -> bool {
+/// Two grammars are honoured per marker, both requiring exact trimmed equality:
+/// - `// ontogen:<name>` (plain line comment)
+/// - `//! ontogen:<name>` (inner doc comment, including inside a multi-line
+///   `//!` block)
+fn has_top_level_marker(source: &str, name: &str) -> bool {
+    let line_form = format!("// ontogen:{name}");
+    let doc_form = format!("//! ontogen:{name}");
     source
         .lines()
         .take_while(|line| {
@@ -195,8 +209,24 @@ fn has_skip_marker(source: &str) -> bool {
         })
         .any(|line| {
             let t = line.trim();
-            t == "// ontogen:skip" || t == "//! ontogen:skip"
+            t == line_form || t == doc_form
         })
+}
+
+/// Returns true when `source` has a file-level skip marker
+/// (`// ontogen:skip` / `//! ontogen:skip`) in its leading
+/// comment-and-attribute block. See [`has_top_level_marker`] for the
+/// placement rule.
+fn has_skip_marker(source: &str) -> bool {
+    has_top_level_marker(source, "skip")
+}
+
+/// Returns true when `source` has a file-level singleton marker
+/// (`// ontogen:singleton` / `//! ontogen:singleton`) in its leading
+/// comment-and-attribute block. See [`has_top_level_marker`] for the
+/// placement rule.
+fn has_singleton_marker(source: &str) -> bool {
+    has_top_level_marker(source, "singleton")
 }
 
 /// Parse a single API source file into a `ModuleParseResult`.
@@ -230,6 +260,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
     if has_skip_marker(&source) {
         return result;
     }
+    let is_singleton = has_singleton_marker(&source);
     let Ok(syntax) = syn::parse_file(&source) else {
         return result;
     };
@@ -340,8 +371,23 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
         }
     }
 
-    result.module = Some(ApiModule { name: file_stem.to_string(), functions, events });
+    result.module = Some(ApiModule { name: file_stem.to_string(), functions, events, is_singleton });
     result
+}
+
+/// OR a config-side singleton declaration onto each parsed [`ApiModule`].
+///
+/// The parser only sees the source-side marker, because it has no access to
+/// [`NamingConfig`](crate::servers::NamingConfig). This overlay merges the
+/// `naming.singleton_modules` set in after-the-fact so the IR reaches every
+/// downstream generator with the effective bit set. If either side flagged the
+/// module, it stays a singleton (no double-effect — just a logical OR).
+pub fn apply_singleton_overlay(modules: &mut [ApiModule], naming: &crate::servers::types::NamingConfig) {
+    for m in modules {
+        if naming.singleton_modules.contains(&m.name) {
+            m.is_singleton = true;
+        }
+    }
 }
 
 /// Check if the return type is `broadcast::Receiver<T>` or `Receiver<T>`.

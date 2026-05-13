@@ -187,8 +187,15 @@ Controls how entity names are transformed for URLs, labels, and module names. Li
 | `singular_overrides` | `HashMap<String, String>` | Module name to singular form. |
 | `label_overrides` | `HashMap<String, String>` | Module name to human label (e.g., `"work_session"` to `"Work Session"`). |
 | `plural_label_overrides` | `HashMap<String, String>` | Module name to human plural label. |
+| `singleton_modules` | `HashSet<String>` | Module names declared as singletons (single-entity modules like `database`, `autostart`, `vault`). The HTTP generator emits singular kebab URLs (`/api/database/path`) instead of the pluralized form. A source-side `// ontogen:singleton` marker reaches the same effect via `ApiModule::is_singleton`; both inputs are OR'd together before generators run. See the [singleton modules guide](/guides/api-layer/#singleton-modules-ontogensingleton). |
 
 Uses `cruet` for Rails-style inflection by default. Override maps take precedence.
+
+```rust
+let mut naming = NamingConfig::default();
+naming.singleton_modules.insert("database".to_string());
+naming.singleton_modules.insert("autostart".to_string());
+```
 
 ### `ServerGeneratorConfig` / `ServerGenerator`
 

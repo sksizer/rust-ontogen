@@ -156,7 +156,7 @@ pub struct PaginationParams {
 
     for m in modules {
         let module = &m.name;
-        let url_plural = config.naming.url_plural(module);
+        let url_plural = config.naming.url_for_module(m);
         let url_sing = config.naming.url_singular(module);
 
         if m.functions.is_empty() {
@@ -429,7 +429,7 @@ async fn {handler_name}(
                 }
 
                 OpKind::CustomGet | OpKind::CustomPost => {
-                    generate_generic_http_handler(&mut out, &mut route_entries, module, f, config);
+                    generate_generic_http_handler(&mut out, &mut route_entries, m, f, config);
                 }
 
                 OpKind::EventStream => continue,
@@ -526,14 +526,21 @@ async fn {handler_name}(
     crate::write_and_format(output, out).expect("Failed to write HTTP generated file");
 }
 
-fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, module: &str, f: &ApiFn, config: &Config) {
+fn generate_generic_http_handler(
+    out: &mut String,
+    routes: &mut Vec<String>,
+    module: &ApiModule,
+    f: &ApiFn,
+    config: &Config,
+) {
     let fn_name = &f.name;
-    let svc = module;
+    let name = module.name.as_str();
+    let svc = name;
     let is_async = f.is_async;
     let ret_type = &f.return_type;
     let is_get = is_read_operation(fn_name);
-    let action = config.naming.derive_action(module, fn_name);
-    let url_plural = config.naming.url_plural(module);
+    let action = config.naming.derive_action(name, fn_name);
+    let url_plural = config.naming.url_for_module(module);
     let returns_unit = f.return_type == "()" || ret_type == "()";
     let await_str = if is_async { "\n        .await" } else { "" };
     let state_type = &config.state_type;
@@ -562,12 +569,12 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
         route_path.push_str(&format!("/:{}", p.name));
     }
 
-    let handler_name = crate::servers::generators::ipc::command_name(module, f, config);
+    let handler_name = crate::servers::generators::ipc::command_name(name, f, config);
     let method = if is_get { "get" } else { "post" };
 
     // Generate query struct if needed
     if !query_params.is_empty() {
-        let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Query", to_pascal_case(name), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for qp in &query_params {
             out.push_str(&format!("    {}: {},\n", qp.name, param_to_owned_type(&qp.ty_ast)));
@@ -577,7 +584,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
 
     // Generate body struct if needed (for POST with plain params)
     if !body_fields.is_empty() {
-        let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Body", to_pascal_case(name), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for bf in &body_fields {
             out.push_str(&format!("    {}: {},\n", bf.name, param_to_owned_type(&bf.ty_ast)));
@@ -616,7 +623,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
 
     // Query params
     if !query_params.is_empty() {
-        let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Query", to_pascal_case(name), to_pascal_case(fn_name));
         out.push_str(&format!("    Query(q): Query<{}>,\n", struct_name));
     }
 
@@ -626,7 +633,7 @@ fn generate_generic_http_handler(out: &mut String, routes: &mut Vec<String>, mod
         out.push_str(&format!("    Json(input): Json<{}>,\n", input_type));
     }
     if !body_fields.is_empty() {
-        let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Body", to_pascal_case(name), to_pascal_case(fn_name));
         out.push_str(&format!("    Json(body): Json<{}>,\n", struct_name));
     }
 
@@ -701,7 +708,7 @@ fn generate_scoped_handlers(
     for m in modules {
         let module = &m.name;
         let plural = config.naming.module_plural(module);
-        let url_plural = config.naming.url_plural(module);
+        let url_plural = config.naming.url_for_module(m);
         let url_sing = config.naming.url_singular(module);
         let scoped_base = format!("/api/{}/{}", prefix.segments, url_plural);
 
@@ -877,13 +884,13 @@ async fn {handler_name}(
                     // but otherwise behave identically to unscoped junctions.
                     // Delegate to generic scoped handler for now.
                     let _ = child_segment;
-                    generate_generic_http_handler_scoped(out, routes, module, f, config, prefix);
+                    generate_generic_http_handler_scoped(out, routes, m, f, config, prefix);
                 }
 
                 OpKind::EventStream => continue,
 
                 OpKind::CustomGet | OpKind::CustomPost => {
-                    generate_generic_http_handler_scoped(out, routes, module, f, config, prefix);
+                    generate_generic_http_handler_scoped(out, routes, m, f, config, prefix);
                 }
             }
         }
@@ -959,18 +966,19 @@ async fn {handler_name}(
 fn generate_generic_http_handler_scoped(
     out: &mut String,
     routes: &mut Vec<String>,
-    module: &str,
+    module: &ApiModule,
     f: &ApiFn,
     config: &Config,
     prefix: &crate::servers::config::RoutePrefix,
 ) {
     let fn_name = &f.name;
-    let svc = module;
+    let name = module.name.as_str();
+    let svc = name;
     let is_async = f.is_async;
     let ret_type = &f.return_type;
     let is_get = is_read_operation(fn_name);
-    let action = config.naming.derive_action(module, fn_name);
-    let url_plural = config.naming.url_plural(module);
+    let action = config.naming.derive_action(name, fn_name);
+    let url_plural = config.naming.url_for_module(module);
     let returns_unit = f.return_type == "()" || ret_type == "()";
     let await_str = if is_async { "\n        .await" } else { "" };
     let state_type = &config.state_type;
@@ -1009,7 +1017,7 @@ fn generate_generic_http_handler_scoped(
     // Generate query/body struct definitions if needed (for store-based modules
     // these are not generated by the unscoped handler since it's skipped)
     if !query_params.is_empty() {
-        let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Query", to_pascal_case(name), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for qp in &query_params {
             out.push_str(&format!("    {}: {},\n", qp.name, param_to_owned_type(&qp.ty_ast)));
@@ -1017,7 +1025,7 @@ fn generate_generic_http_handler_scoped(
         out.push_str("}\n\n");
     }
     if !body_fields.is_empty() {
-        let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Body", to_pascal_case(name), to_pascal_case(fn_name));
         out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
         for bf in &body_fields {
             out.push_str(&format!("    {}: {},\n", bf.name, param_to_owned_type(&bf.ty_ast)));
@@ -1047,7 +1055,7 @@ fn generate_generic_http_handler_scoped(
 
     // Query params
     if !query_params.is_empty() {
-        let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Query", to_pascal_case(name), to_pascal_case(fn_name));
         out.push_str(&format!("    Query(q): Query<{}>,\n", struct_name));
     }
 
@@ -1057,7 +1065,7 @@ fn generate_generic_http_handler_scoped(
         out.push_str(&format!("    Json(input): Json<{}>,\n", input_type));
     }
     if !body_fields.is_empty() {
-        let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Body", to_pascal_case(name), to_pascal_case(fn_name));
         out.push_str(&format!("    Json(body): Json<{}>,\n", struct_name));
     }
 

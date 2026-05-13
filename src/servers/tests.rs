@@ -123,6 +123,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
             },
         ],
         events: vec![],
+        is_singleton: false,
     }
 }
 
@@ -151,6 +152,7 @@ fn make_custom_module() -> ApiModule {
             },
         ],
         events: vec![],
+        is_singleton: false,
     }
 }
 
@@ -160,6 +162,7 @@ fn make_event_module() -> ApiModule {
         name: "events".to_string(),
         functions: vec![],
         events: vec![EventFn { name: "graph_updated".to_string() }, EventFn { name: "entity_changed".to_string() }],
+        is_singleton: false,
     }
 }
 
@@ -225,6 +228,7 @@ fn make_junction_module() -> ApiModule {
             },
         ],
         events: vec![],
+        is_singleton: false,
     }
 }
 
@@ -542,6 +546,27 @@ fn test_naming_config_overrides() {
     assert_eq!(naming.url_singular("work_execution"), "work_execution");
     assert_eq!(naming.label("work_execution"), "Work Execution");
     assert_eq!(naming.plural_label("evidence"), "Evidence");
+}
+
+#[test]
+fn test_url_for_module_singleton_uses_singular() {
+    let naming = NamingConfig::default();
+    let m = ApiModule { name: "database".to_string(), functions: vec![], events: vec![], is_singleton: true };
+    assert_eq!(naming.url_for_module(&m), "database", "singleton modules must NOT be pluralized");
+}
+
+#[test]
+fn test_url_for_module_entity_uses_plural() {
+    let naming = NamingConfig::default();
+    let m = ApiModule { name: "workout".to_string(), functions: vec![], events: vec![], is_singleton: false };
+    assert_eq!(naming.url_for_module(&m), "workouts", "non-singleton modules go through url_plural");
+}
+
+#[test]
+fn test_url_for_module_singleton_with_underscore() {
+    let naming = NamingConfig::default();
+    let m = ApiModule { name: "auto_start".to_string(), functions: vec![], events: vec![], is_singleton: true };
+    assert_eq!(naming.url_for_module(&m), "auto-start", "singleton URL must be kebab-cased but NOT pluralized");
 }
 
 #[test]
@@ -904,6 +929,198 @@ pub async fn helper(state: &AppState) -> Result<(), anyhow::Error> { todo!() }
         scan.modules.iter().all(|m| m.name != "helpers"),
         "marker embedded in a multi-line //! block should still be honoured"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// parse.rs - File-level singleton marker (OF-002 / OF-004)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_parse_singleton_marker_sets_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "database.rs",
+        r#"// ontogen:singleton
+use crate::AppState;
+
+pub fn get_path(state: &AppState) -> Result<String, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let module = scan.modules.iter().find(|m| m.name == "database").expect("singleton module must still be scanned");
+    assert!(module.is_singleton, "// ontogen:singleton should set ApiModule::is_singleton");
+}
+
+#[test]
+fn test_parse_doc_comment_singleton_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "database.rs",
+        r#"//! ontogen:singleton
+use crate::AppState;
+
+pub fn get_path(state: &AppState) -> Result<String, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let module = scan.modules.iter().find(|m| m.name == "database").expect("singleton module must still be scanned");
+    assert!(module.is_singleton, "//! ontogen:singleton should set ApiModule::is_singleton");
+}
+
+#[test]
+fn test_parse_no_singleton_marker_defaults_false() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        r#"use crate::AppState;
+
+pub fn list(state: &AppState) -> Result<Vec<String>, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let module = scan.modules.iter().find(|m| m.name == "workout").expect("workout module must be scanned");
+    assert!(!module.is_singleton, "modules without the marker default to is_singleton == false");
+}
+
+#[test]
+fn test_parse_singleton_marker_after_real_items_not_honored() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    // A `use` plus a real `pub fn` come first; the marker is buried after them
+    // and must NOT take effect, mirroring the OF-012 placement rule.
+    write_synthetic_api(
+        &api_dir,
+        "database.rs",
+        r#"use crate::AppState;
+
+pub fn get_path(state: &AppState) -> Result<String, anyhow::Error> { todo!() }
+
+// ontogen:singleton
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let module = scan.modules.iter().find(|m| m.name == "database").expect("database module must still be parsed");
+    assert!(!module.is_singleton, "marker buried after items must not flip is_singleton");
+}
+
+#[test]
+fn test_parse_singleton_and_skip_markers_independent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    // Both markers in the leading block. `skip` wins outright — the module is
+    // dropped, so it is also not reported as a singleton anywhere.
+    write_synthetic_api(
+        &api_dir,
+        "database.rs",
+        r#"// ontogen:skip
+// ontogen:singleton
+use crate::AppState;
+
+pub fn get_path(state: &AppState) -> Result<String, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert!(
+        scan.modules.iter().all(|m| m.name != "database"),
+        "// ontogen:skip should drop the file even when // ontogen:singleton is also present"
+    );
+}
+
+#[test]
+fn test_singleton_config_overlay_sets_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "database.rs",
+        r#"use crate::AppState;
+
+pub fn get_path(state: &AppState) -> Result<String, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let mut naming = NamingConfig::default();
+    naming.singleton_modules.insert("database".to_string());
+
+    let mut modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    crate::servers::parse::apply_singleton_overlay(&mut modules, &naming);
+
+    let module = modules.iter().find(|m| m.name == "database").expect("database module must exist");
+    assert!(module.is_singleton, "config overlay should set is_singleton even without source marker");
+}
+
+#[test]
+fn test_singleton_config_overlay_idempotent_with_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "database.rs",
+        r#"// ontogen:singleton
+use crate::AppState;
+
+pub fn get_path(state: &AppState) -> Result<String, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let mut naming = NamingConfig::default();
+    naming.singleton_modules.insert("database".to_string());
+
+    let mut modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    crate::servers::parse::apply_singleton_overlay(&mut modules, &naming);
+
+    let module = modules.iter().find(|m| m.name == "database").expect("database module must exist");
+    assert!(module.is_singleton, "marker + config should still produce is_singleton == true (logical OR)");
+}
+
+#[test]
+fn test_singleton_config_overlay_no_effect_for_other_modules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "database.rs",
+        r#"use crate::AppState;
+
+pub fn get_path(state: &AppState) -> Result<String, anyhow::Error> { todo!() }
+"#,
+    );
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        r#"use crate::AppState;
+
+pub fn list(state: &AppState) -> Result<Vec<String>, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let mut naming = NamingConfig::default();
+    naming.singleton_modules.insert("database".to_string());
+
+    let mut modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    crate::servers::parse::apply_singleton_overlay(&mut modules, &naming);
+
+    let workout = modules.iter().find(|m| m.name == "workout").expect("workout module must exist");
+    assert!(!workout.is_singleton, "overlay must only flip modules listed in singleton_modules");
 }
 
 #[test]
@@ -1324,6 +1541,43 @@ fn test_http_generator_custom_functions() {
 
     // Custom GET with path params
     assert!(content.contains("get_node_detail"));
+}
+
+#[test]
+fn test_http_generator_singleton_module_uses_singular_url() {
+    // End-to-end: a synthetic `database.rs` with `// ontogen:singleton` plus an
+    // accepted custom GET fn should produce a route at `/api/database/path`
+    // (singular kebab) rather than `/api/databases/path` (the previous
+    // plural-only behaviour).
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    let output = tmp.path().join("http_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+
+    write_synthetic_api(
+        &api_dir,
+        "database.rs",
+        r#"// ontogen:singleton
+use crate::AppState;
+
+pub fn get_path(state: &AppState) -> Result<String, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    assert!(
+        modules.iter().any(|m| m.name == "database" && m.is_singleton),
+        "scan must produce a singleton database module"
+    );
+    crate::servers::generators::http::generate(&output, &modules, &config);
+
+    let content = std::fs::read_to_string(&output).unwrap();
+    assert!(content.contains("/api/database/path"), "singleton module must produce singular URL");
+    assert!(
+        !content.contains("/api/databases/path"),
+        "singleton module must NOT produce a pluralized URL: got\n{}",
+        content
+    );
 }
 
 #[test]

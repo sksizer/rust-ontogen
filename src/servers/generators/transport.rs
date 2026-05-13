@@ -421,8 +421,9 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
         }
         let module = &m.name;
         // Use kebab-case URL plural to match the routes registered by http.rs
-        // (e.g., `destination-skills`, not `destination_skills`).
-        let plural = config.naming.url_plural(module);
+        // (e.g., `destination-skills`, not `destination_skills`). Singleton
+        // modules collapse to their singular kebab form via `url_for_module`.
+        let plural = config.naming.url_for_module(m);
 
         for f in &m.functions {
             let op = classify_op(f);
@@ -640,7 +641,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                     ));
                 }
                 OpKind::CustomGet | OpKind::CustomPost => {
-                    generate_http_custom_method(out, module, f, config);
+                    generate_http_custom_method(out, m, f, config);
                 }
                 OpKind::EventStream => continue,
             }
@@ -934,15 +935,22 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
 }
 
 /// Generate a custom HTTP method (GET or POST with various param shapes).
-fn generate_http_custom_method(out: &mut String, module: &str, f: &crate::servers::parse::ApiFn, config: &Config) {
+fn generate_http_custom_method(
+    out: &mut String,
+    module: &crate::servers::parse::ApiModule,
+    f: &crate::servers::parse::ApiFn,
+    config: &Config,
+) {
     let fn_name = &f.name;
-    let cmd_name = command_name(module, f, config);
+    let name = module.name.as_str();
+    let cmd_name = command_name(name, f, config);
     let camel = snake_to_camel(&cmd_name);
     let ts_ret = rust_type_to_ts(&f.return_type);
     let is_get = is_read_operation(fn_name);
-    let action = config.naming.derive_action(module, fn_name);
-    // Use kebab-case URL plural to match http.rs route registration.
-    let plural = config.naming.url_plural(module);
+    let action = config.naming.derive_action(name, fn_name);
+    // Use kebab-case URL plural to match http.rs route registration. Singleton
+    // modules collapse to the singular kebab form via `url_for_module`.
+    let plural = config.naming.url_for_module(module);
     let returns_unit = f.return_type == "()";
     let has_prefix = config.route_prefix.is_some();
     let pp_camel = config.route_prefix.as_ref().map(|p| snake_to_camel(&p.params[0].name)).unwrap_or_default();

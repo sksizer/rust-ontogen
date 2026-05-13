@@ -277,6 +277,15 @@ If a file under your api directory is a pure helper module (shared utilities, no
 
 The marker must appear in the file's leading comment-and-attribute block — before any `use`, `pub fn`, or other item. When present, the file is dropped from `ScanResult.modules` and no per-fn `cargo:warning=` lines are emitted for anything in it (opt-out is intentional, so the diagnostics are silenced too).
 
+### Singleton modules: `// ontogen:singleton`
+
+Some api modules represent a single entity rather than a collection — `database`, `autostart`, `vault`. Declare them as singletons so the HTTP generator emits singular kebab URLs (`/api/database/path`) instead of the default pluralized form (`/api/databases/path`). Two declaration mechanisms are accepted; both feed into the same `ApiModule::is_singleton` IR field:
+
+- A file-level marker — `// ontogen:singleton` or `//! ontogen:singleton`, with the same placement rule as `// ontogen:skip` (leading comment-and-attribute block, before any item).
+- `NamingConfig::singleton_modules`, a `HashSet<String>` of module names in your build-script config. Useful when you don't own the source file or want to flip the bit centrally.
+
+Both inputs are OR'd together by a post-parse overlay before generators run, so either side alone is sufficient. The flag is exposed on `ApiModule::is_singleton` for downstream generators (HTTP uses it today via `NamingConfig::url_for_module`; admin and doc-gen will read the same bit when they need to branch on collection-vs-singleton presentation).
+
 ## File organization
 
 After running `gen_api` with `scan_dirs` configured:

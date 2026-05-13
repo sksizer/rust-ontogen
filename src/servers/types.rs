@@ -1,8 +1,10 @@
 //! Type normalization, transformation, and import collection utilities.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use syn::{GenericArgument, PathArguments, Type, TypeParamBound};
+
+use crate::servers::parse::ApiModule;
 
 /// Normalize a syn Type to a clean string (no extra spaces around ::, <, >).
 pub fn norm_type(ty: &Type) -> String {
@@ -456,6 +458,11 @@ pub struct NamingConfig {
     pub label_overrides: HashMap<String, String>,
     /// Overrides for module → human plural label (e.g., "evidence" → "Evidence").
     pub plural_label_overrides: HashMap<String, String>,
+    /// Module names declared as singletons via build-config. Source-side
+    /// `// ontogen:singleton` markers reach the same effect via
+    /// [`ApiModule::is_singleton`](crate::servers::ApiModule); both inputs
+    /// are OR'd together by `apply_singleton_overlay` before generators run.
+    pub singleton_modules: HashSet<String>,
 }
 
 impl NamingConfig {
@@ -483,6 +490,22 @@ impl NamingConfig {
     /// e.g., "agents" → "agents", "skill_files" → "skill-files".
     pub fn url_plural(&self, module: &str) -> String {
         self.module_plural(module).replace('_', "-")
+    }
+
+    /// Compute the URL path segment for an [`ApiModule`].
+    ///
+    /// Singleton modules (`module.is_singleton == true`) return the singular
+    /// kebab-case form of the module name — `database` stays `database`,
+    /// `auto_start` becomes `auto-start`. Entity (collection) modules go
+    /// through [`url_plural`](Self::url_plural).
+    ///
+    /// Takes `&ApiModule` rather than `&str` because the source-side singleton
+    /// marker lives on the IR; the config-side overlay
+    /// (`singleton_modules`) has already been merged into that bit by
+    /// `apply_singleton_overlay` before generators run, so callers don't need
+    /// to consult [`NamingConfig`] separately.
+    pub fn url_for_module(&self, module: &ApiModule) -> String {
+        if module.is_singleton { module.name.replace('_', "-") } else { self.url_plural(&module.name) }
     }
 
     /// Get the human-readable label for a module.

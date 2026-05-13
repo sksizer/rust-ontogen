@@ -93,7 +93,7 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
     let mut mcp_tools = Vec::new();
 
     for m in modules {
-        let url_plural = config.naming.url_plural(&m.name);
+        let url_plural = config.naming.url_for_module(m);
         let is_store_module = m.functions.first().is_some_and(|f| f.first_param_is_store);
 
         // HTTP base path: store-based modules get scoped under route_prefix
@@ -224,7 +224,8 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
         println!("cargo:warning={record}");
     }
 
-    let modules = scanned.modules;
+    let mut modules = scanned.modules;
+    parse::apply_singleton_overlay(&mut modules, &config.naming);
     if modules.is_empty() {
         return Ok(modules);
     }
