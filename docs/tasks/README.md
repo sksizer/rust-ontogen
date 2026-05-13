@@ -20,6 +20,7 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 | [OF-010](./OF-010-collect-type-import-generics.md) | High | `collect_type_import` should recurse into multi-arg generics |
 | [OF-011](./OF-011-handler-arg-forwarding.md) | High | Consistent handler argument forwarding; fix `.as_deref()` on non-Deref `Option<T>` |
 | [OF-012](./OF-012-skip-marker-helpers.md) | Low | File-level skip marker for helper modules in `api/v1/` |
+| [OF-013](./OF-013-ast-param-to-owned-type.md) | Medium | AST-ify `param_to_owned_type` for unsized-DST inner types (follow-up from OF-011) |
 
 ## Suggested priority
 
