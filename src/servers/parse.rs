@@ -174,6 +174,31 @@ pub struct ScanResult {
 
 // ─── Parsing ──────────────────────────────────────────────────────────────────
 
+/// Returns true when `source` has a file-level skip marker in its leading
+/// comment-and-attribute block.
+///
+/// The marker is matched anywhere in the run of blank lines, line comments
+/// (`//` / `///` / `//!`), and inner attributes (`#![...]`) that prefixes the
+/// file. Once a non-comment / non-attribute item is reached, later occurrences
+/// of the marker are ignored — opt-out is a file-level decision, not something
+/// that should be smuggled in mid-file.
+///
+/// Two grammars are honoured, both requiring exact trimmed equality:
+/// - `// ontogen:skip` (plain line comment)
+/// - `//! ontogen:skip` (inner doc comment)
+fn has_skip_marker(source: &str) -> bool {
+    source
+        .lines()
+        .take_while(|line| {
+            let t = line.trim_start();
+            t.is_empty() || t.starts_with("//") || t.starts_with("#!")
+        })
+        .any(|line| {
+            let t = line.trim();
+            t == "// ontogen:skip" || t == "//! ontogen:skip"
+        })
+}
+
 /// Parse a single API source file into a `ModuleParseResult`.
 ///
 /// `module` is populated when the file holds at least one accepted function or
@@ -182,6 +207,13 @@ pub struct ScanResult {
 ///
 /// Files named `mod.rs` and files that fail to read or parse return
 /// `ModuleParseResult::default()` (empty module, empty skips).
+///
+/// Files that opt out of scanning via a `// ontogen:skip` or
+/// `//! ontogen:skip` marker in the leading comment-and-attribute block also
+/// return `ModuleParseResult::default()`: the file is not represented in
+/// [`ScanResult::modules`] and no [`SkipRecord`] is emitted for any `pub fn`
+/// inside (opt-out is intentional, so silencing the per-fn warnings is the
+/// whole point of the marker).
 pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>) -> ModuleParseResult {
     let mut result = ModuleParseResult::default();
 
@@ -195,6 +227,9 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
     let Ok(source) = fs::read_to_string(path) else {
         return result;
     };
+    if has_skip_marker(&source) {
+        return result;
+    }
     let Ok(syntax) = syn::parse_file(&source) else {
         return result;
     };

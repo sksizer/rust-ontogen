@@ -239,6 +239,15 @@ Private (`fn` without `pub`) functions, items that aren't functions (`struct`, `
 
 If you see a warning for a function you *did* mean as an API endpoint, the fix is almost always either renaming the configured `state_type` / `store_type` to match what you actually wrote, or adjusting the first parameter to use the canonical `&AppState` / `&Store` shape so downstream generators can call it cleanly.
 
+### Opting a file out: `// ontogen:skip`
+
+If a file under your api directory is a pure helper module (shared utilities, not transport-eligible endpoints), you can opt the whole file out of scanning with a file-level marker. Either form is accepted:
+
+- `// ontogen:skip` (plain line comment)
+- `//! ontogen:skip` (inner doc comment, including embedded inside a multi-line `//!` block)
+
+The marker must appear in the file's leading comment-and-attribute block — before any `use`, `pub fn`, or other item. When present, the file is dropped from `ScanResult.modules` and no per-fn `cargo:warning=` lines are emitted for anything in it (opt-out is intentional, so the diagnostics are silenced too).
+
 ## File organization
 
 After running `gen_api` with `scan_dirs` configured:

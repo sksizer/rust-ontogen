@@ -741,6 +741,126 @@ fn test_parse_skips_mod_rs_and_impl_files() {
     assert_eq!(modules[0].name, "node");
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// parse.rs - File-level skip marker (OF-012)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_parse_skip_marker_suppresses_module() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "helpers.rs",
+        r#"// ontogen:skip
+use crate::AppState;
+
+pub fn list(state: &AppState) -> Result<Vec<String>, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert!(
+        scan.modules.iter().all(|m| m.name != "helpers"),
+        "marker should remove the module from the scan: got {:?}",
+        scan.modules.iter().map(|m| &m.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_parse_skip_marker_suppresses_skip_records() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "helpers.rs",
+        r#"// ontogen:skip
+
+pub fn helper(x: u32) -> Result<(), anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert!(scan.skips.is_empty(), "marker should silence per-fn skip records: got {:?}", scan.skips);
+}
+
+#[test]
+fn test_parse_doc_comment_skip_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "helpers.rs",
+        r#"//! ontogen:skip
+use crate::AppState;
+
+pub fn list(state: &AppState) -> Result<Vec<String>, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert!(
+        scan.modules.iter().all(|m| m.name != "helpers"),
+        "//! ontogen:skip should be honoured the same as // ontogen:skip"
+    );
+}
+
+#[test]
+fn test_parse_skip_marker_after_real_items_not_honored() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    // A `use` followed by a `pub fn` come first; the marker is buried after
+    // them and must NOT take effect.
+    write_synthetic_api(
+        &api_dir,
+        "helpers.rs",
+        r#"use crate::AppState;
+
+pub fn list(state: &AppState) -> Result<Vec<String>, anyhow::Error> { todo!() }
+
+// ontogen:skip
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let module = scan.modules.iter().find(|m| m.name == "helpers").expect("helpers module must still be parsed");
+    assert!(
+        module.functions.iter().any(|f| f.name == "list"),
+        "list fn must still be parsed when the marker is buried after items"
+    );
+}
+
+#[test]
+fn test_parse_skip_marker_inside_doc_comment_block() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "helpers.rs",
+        r#"//! Helper module for foo.
+//!
+//! ontogen:skip
+//!
+//! Internal helpers, not transport-eligible.
+
+use crate::AppState;
+
+pub async fn helper(state: &AppState) -> Result<(), anyhow::Error> { todo!() }
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert!(
+        scan.modules.iter().all(|m| m.name != "helpers"),
+        "marker embedded in a multi-line //! block should still be honoured"
+    );
+}
+
 #[test]
 fn test_parse_subdirectory_scanning() {
     let tmp = tempfile::tempdir().unwrap();
