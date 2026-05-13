@@ -76,13 +76,26 @@ The user-visible failure modes:
 
 ## Proposed direction (sketch, not a commitment)
 
-Three plausible shapes; pick one in the design pass:
+Four plausible shapes; pick one in the design pass.
+
+The schema-known surface is bigger than the original framing assumed:
+ontogen already generates `Create{Entity}Input` / `Update{Entity}Input`
+DTOs from `EntityDef` (`src/persistence/dto.rs`), and it parses every
+entity type itself via `parse_schema`. So for entities and generated
+DTOs, ontogen has full structural knowledge without consulting specta or
+ts-rs at all - the `FieldType` enum is a complete description. The "we'd
+have to write a Rust→TS emitter" cost from option 1 only bites for
+genuinely user-owned types referenced by custom API endpoints (the long
+tail).
 
 1. **Ontogen owns the bindings.** Drive `specta` (or our own ts emitter)
    from the same `schema_entities` / scanned-API metadata the rest of the
    pipeline already has. `bindings_path` becomes an *output*, not an
    *input*. No fallback, no warning - if a type is referenced and isn't
-   in the schema, that's a hard error.
+   in the schema, that's a hard error. For the entity + DTO surface,
+   "our own ts emitter" is a bounded mapping over `FieldType`; the open
+   question is how to handle the long-tail user-owned types from custom
+   endpoints (see option 3 for one answer).
 
 2. **Ontogen tells the user what to register.** Keep the user's
    `specta::export_ts` binary, but emit a Rust file (or a build-script
@@ -90,13 +103,41 @@ Three plausible shapes; pick one in the design pass:
    `bindings.ts`. The user's export binary `include!()`s it. Misses become
    compile errors, not runtime placeholders.
 
-3. **Status quo + better docs.** Write the e2e guide the OF-006 proposal
-   asked for. Cheapest, but doesn't address the underlying coupling - it
-   just teaches the ritual.
+3. **Ontogen generates the specta side-car.** ontogen already knows the
+   exact list of type names the TS emitter referenced (`import_types`
+   collection in `src/servers/generators/ts_client.rs:41-63` and
+   `transport.rs`). Have ontogen *write* a small Rust binary into the
+   user's crate that calls `specta::ts::export::<T>()` for each one, then
+   `cargo run` it as a pipeline step and capture the output as
+   `bindings.ts`. The user's only contribution is `#[derive(specta::Type)]`
+   on types they want crossing the boundary. Missing derive becomes a
+   *compile error in the generated binary*, not silent untyping.
 
-Option 1 is the most ambitious and probably the right end state; option 2
-is a stepping stone that doesn't require us to write a TS type emitter
-ourselves.
+   ontogen itself does not need to depend on specta - the dep lives in
+   the user's crate (where it already lives in our example). The cost is
+   real, though: the build now contains a compile-and-run-binary-in-the-
+   user's-crate step (build orchestration, recursive `cargo`, target dir
+   contention, error surfacing, rebuild-graph implications). Pairs
+   naturally with option 1 - schema-known types emitted directly from
+   `EntityDef`, the side-car only covers the user-owned long tail.
+
+4. **Status quo + better docs.** Write the e2e guide the OF-006 proposal
+   asked for. Cheapest, but doesn't address the underlying coupling - it
+   just teaches the ritual. Worth noting that `examples/iron-log` itself
+   doesn't have the side-car set up today (`bindings_path` resolves to a
+   nonexistent file, so every type in the generated transport is a
+   placeholder), so even the status-quo path needs work before it can be
+   documented.
+
+Option 1 is the most ambitious and probably the right end state. Option
+3 is the highest-leverage incremental move - it closes the silent-untyping
+hole without ontogen owning a TS type emitter, and the result is what
+option 1 would converge toward for the long-tail surface anyway. Option
+1 + option 3 pair cleanly: schema-known types from `EntityDef`, the rest
+from the generated side-car, both flowing into a single `bindings.ts`
+ontogen owns the path of. Option 2 is the lowest-effort closure of the
+silent-failure mode if the side-car orchestration in option 3 turns out
+to be too invasive.
 
 ## Effort
 
@@ -111,7 +152,9 @@ Large - this is a design discussion, not a one-PR fix. Expect:
 ## Open questions
 
 - Do we want ontogen to depend on `specta` directly, or stay generator-
-  agnostic? (Affects option 1 vs option 2.)
+  agnostic? (Affects option 1 directly. Option 3 sidesteps this - the
+  specta dep lives in the user's crate, ontogen just writes a binary
+  that uses it.)
 - Is `bindings.ts` the only TS-side surface that needs this, or do we want
   the same treatment for any future client (Zod schemas, OpenAPI, ...)?
 - Should the OF-006 warning be promoted to a hard error once OF-014 lands,

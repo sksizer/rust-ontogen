@@ -6,4 +6,5 @@ description: Related projects, prior work, and adjacent ideas worth knowing abou
 ## Similar Projects/Ideas
 https://github.com/thwbh/tauri-typegen
 
+https://github.com/specta-rs/tauri-specta
 
