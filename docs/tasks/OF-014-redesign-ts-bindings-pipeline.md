@@ -2,7 +2,7 @@
 status: closed
 resolution: fixed
 resolution_date: 2026-05-13
-resolution_commit: TBD
+resolution_commit: c87ba64
 ---
 # OF-014 - Redesign the TypeScript bindings / type-generation pipeline
 
