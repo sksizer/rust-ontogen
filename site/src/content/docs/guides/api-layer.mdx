@@ -188,6 +188,59 @@ Excluded entities still get store-layer code (CRUD methods, hooks). They just do
   You can use `scan_dirs` without `gen_api` generating any CRUD modules at all. Set `exclude` to every entity name and populate `scan_dirs` -- you'll get a purely hand-written API surface that still flows through the transport generators.
 </Aside>
 
+## Renaming a command: `#[ontogen(rename = "...")]`
+
+By default the IPC command and TypeScript client method for a function are derived as `{entity}_{fn_name}` (where `entity` is the singular form of the module name). This is correct when the module name is the noun the operations are *about*, but reads awkwardly when the function name already encodes the noun:
+
+```text
+journal::get_tag_history   →   journalGetTagHistory()   // redundant
+                           ←   tagGetHistory()           // clearer
+```
+
+Annotate the function with `#[ontogen(rename = "...")]` to override the emitted command name:
+
+```rust
+// src/api/v1/journal.rs
+use ontogen::ontogen;
+
+#[ontogen(rename = "tag_get_history")]
+pub fn get_tag_history(store: &Store, tag: &str) -> Result<Vec<HistoryEntry>, Error> {
+    // ... unchanged
+}
+```
+
+After this change:
+
+- The Tauri IPC command is `tag_get_history` (was `journal_get_tag_history`).
+- The TypeScript client method is `tagGetHistory()` (was `journalGetTagHistory()`).
+- The HTTP route path, the underlying Rust function `journal::get_tag_history`, and any generated query/body struct names are **unchanged**. The override is a naming fix for IPC and TypeScript surfaces only.
+
+The macro is a no-op at compile time -- it just makes the attribute legal Rust so rust-analyzer and rustdoc see the original signature. The build script reads it via `syn`.
+
+<Aside type="caution">
+  If you write `#[ontogen(rename = ...)]` with a non-string literal value (e.g., a number), the build script drops the function from generated transports and prints a `cargo:warning`. Fix the value or remove the attribute.
+</Aside>
+
+### Config-side overrides
+
+When the source can't be modified -- for example, generated CRUD functions or third-party API modules -- use [`NamingConfig::command_overrides`](/reference/configuration/#namingconfig) to override commands from the build script:
+
+```rust
+use std::collections::HashMap;
+
+let config = ServersConfig {
+    naming: NamingConfig {
+        command_overrides: HashMap::from([
+            ("journal::get_tag_history".to_string(), "tag_get_history".to_string()),
+        ]),
+        ..Default::default()
+    },
+    // ...
+};
+```
+
+Keys are `"module::fn_name"`. **Source wins:** if a function carries both a `#[ontogen(rename = "...")]` attribute and a matching config entry, the attribute is preserved and the config entry is silently ignored. The attribute is co-located with the function, so a reader looking at the source has the full naming story; the config map is an escape hatch.
+
 ## Event streams
 
 The scanner also detects event stream functions. Any function returning a broadcast receiver type is classified as `OpKind::EventStream`:

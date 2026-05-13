@@ -188,6 +188,7 @@ Controls how entity names are transformed for URLs, labels, and module names. Li
 | `label_overrides` | `HashMap<String, String>` | Module name to human label (e.g., `"work_session"` to `"Work Session"`). |
 | `plural_label_overrides` | `HashMap<String, String>` | Module name to human plural label. |
 | `singleton_modules` | `HashSet<String>` | Module names declared as singletons (single-entity modules like `database`, `autostart`, `vault`). The HTTP generator emits singular kebab URLs (`/api/database/path`) instead of the pluralized form. A source-side `// ontogen:singleton` marker reaches the same effect via `ApiModule::is_singleton`; both inputs are OR'd together before generators run. See the [singleton modules guide](/guides/api-layer/#singleton-modules-ontogensingleton). |
+| `command_overrides` | `HashMap<String, String>` | Per-function override for the emitted IPC command / TS method name. Keys are `"module::fn_name"` (e.g., `"journal::get_tag_history"`); values replace the default `{entity}_{fn_name}` scheme. The source-side `#[ontogen(rename = "...")]` attribute always wins -- the config entry is silently ignored when the attribute is set. HTTP route paths and the underlying Rust function name are unaffected. See [Renaming a command](/guides/api-layer/#renaming-a-command-ontogenrename--). |
 
 Uses `cruet` for Rails-style inflection by default. Override maps take precedence.
 
