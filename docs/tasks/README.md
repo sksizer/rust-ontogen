@@ -34,6 +34,7 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 | [OF-014](./OF-014-redesign-ts-bindings-pipeline.md) | Medium | Redesign the TypeScript bindings / type-generation pipeline (spawned from OF-006) |
 | [OF-015](./OF-015-productionize-typescript-generation.md) | Medium-High | Productionize the TypeScript generation pipeline (OF-014 follow-up) |
 | [OF-018](./OF-018-ts-fallback-mistokenizes-generics.md) | Low | TS bindings fallback emitter mis-tokenizes generic return types |
+| [OF-019](./OF-019-document-side-car-tauri-watcher.md) | Low | Document the OF-014 side-car's three consumer-side gotchas (`.taurignore`, `default-run`, CI disk pressure) in user-facing docs |
 
 ## Pumice feedback round 2 (2026-05-14)
 
@@ -56,6 +57,7 @@ Source: [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md)
 13. ~~**OF-017**~~ - resolved in `207aa96` (2026-05-14); dropped the `Input`/`Query` substring gate at all three generator call sites and added the missing return-type walk in `mcp.rs`. The post-OF-008/10 AST walker filters primitives, qualified paths, and known containers on its own; the gate was a holdover from the pre-AST walker and no longer earned its keep.
 14. ~~**OF-016**~~ - resolved in `b2f882c` (2026-05-14); classifier now consults the first-param AST so `get_*` with a body-carrying custom struct routes as `CustomPost` instead of forcing a broken `GET /api/...:filter` with `Path<String>`. Also replaces the name-based `is_read_operation` with `is_read_op(&OpKind)` so the classification result is the single source of truth across the pipeline.
 15. **OF-018** (low — TS fallback emitter mis-tokenizes generics). Hold until [OF-015](./OF-015-productionize-typescript-generation.md) decides the fallback path's fate; closes naturally if OF-015 hard-errors or removes the fallback.
+16. **OF-019** (low — document the OF-014 side-car's three consumer-side gotchas in user-facing docs). Spawned from Pumice's `pnpm tauri dev` + CI integration, 2026-05-14. Workarounds are inline in [OF-014's "Trying this on your project" recipe](./OF-014-redesign-ts-bindings-pipeline.md#trying-this-on-your-project); this ticket is the lift to stable user-facing pages plus a corresponding update to `examples/iron-log/`. Some gotchas dissolve if the upstream fixes in OF-015 land first (idempotent side-car writes; side-car emitted outside `src/bin/`; explicit `disable_codegen` config knob).
 
 ## Resolved
 

@@ -150,7 +150,44 @@ here, not in user-facing docs, so don't link external consumers to it.
    The file is regenerated on every build that has long-tail types;
    committing it adds noise without value.
 
-8. **Retire any pre-existing manual `specta::export_ts` setup.** This
+   **If the consumer is a Tauri app, also add a `.taurignore`** in the
+   Cargo-manifest dir (next to `src/bin/`) with the same entry:
+   ```
+   # src-tauri/.taurignore
+   src/bin/__ontogen_ts_export.rs
+   ```
+   tauri-cli's dev-mode file watcher (verified in 2.10.1
+   `src/interface/rust.rs::build_ignore_matcher`) uses a custom
+   `.taurignore` filename and does **not** honour standard `.gitignore`.
+   Without this file, the side-car write at the end of the first
+   `tauri dev` build trips the watcher and queues another `cargo run`,
+   which presents as a rebuild loop on dev-server startup. The
+   productionization story for this lives in
+   [OF-019](./OF-019-document-side-car-tauri-watcher.md).
+
+8. **If your CI runner is tight on disk** (default GitHub Actions
+   runners ship ~14 GB free), gate ontogen's `.servers()` stage behind
+   an env var in your `build.rs` and trust the committed generated
+   files; the side-car compiles a second copy of every transitive
+   dependency in its isolated `CARGO_TARGET_DIR` and doubles the cargo
+   footprint. A consumer's working pattern: env-gate locally + a
+   manual-dispatch "drift" CI job that re-runs the full pipeline on a
+   freed-disk runner and `git diff --exit-code`s the generated paths.
+   Sketch:
+
+   ```rust
+   // build.rs
+   let skip_servers = std::env::var("YOUR_APP_SKIP_SERVER_CODEGEN").is_ok();
+   let pipeline = Pipeline::new("src/schema")
+       .seaorm(...).dtos(...).store(...).api(...);
+   let pipeline = if skip_servers { pipeline } else { pipeline.servers(cfg) };
+   pipeline.build()?;
+   ```
+
+   Productionization should provide a first-class config knob for this
+   (tracked in [OF-019](./OF-019-document-side-car-tauri-watcher.md)).
+
+9. **Retire any pre-existing manual `specta::export_ts` setup.** This
    spike makes `bindings_path` an **output**, not an input - on every
    build, ontogen overwrites that file with schema-known types and
    appends side-car output. Any hand-curated content there will be
@@ -173,6 +210,19 @@ here, not in user-facing docs, so don't link external consumers to it.
 - **Adding a long-tail type doesn't trigger a rebuild on its own.**
   No `cargo:rerun-if-changed` for long-tail type sources. Touch
   `build.rs` or clean to force a rerun.
+- **Tauri consumers may see a rebuild loop without `.taurignore`.**
+  See step 7 above. Symptom: `tauri dev` finishes its first build,
+  app launches, then immediately rebuilds. tauri-cli's watcher tripped
+  on the side-car write. Fix is the `.taurignore` entry; productionization
+  in [OF-019](./OF-019-document-side-car-tauri-watcher.md).
+- **`cargo run` becomes ambiguous after the side-car lands.** Cargo
+  sees two `[[bin]]` targets (the app + `__ontogen_ts_export`) and
+  errors with "could not determine which binary to run." Consumers must
+  add `default-run = "<app-bin-name>"` to `[package]` in their
+  Cargo.toml. Tracked in [OF-019](./OF-019-document-side-car-tauri-watcher.md).
+- **CI disk pressure.** The inner cargo's separate `CARGO_TARGET_DIR`
+  doubles the target footprint and exceeds the ~14 GB free on default
+  GitHub Actions runners. See step 8 for the env-gate pattern.
 
 ### Known spike-grade shortcuts (productionization punch-list)
 
