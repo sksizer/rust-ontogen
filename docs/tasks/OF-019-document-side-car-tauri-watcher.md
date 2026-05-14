@@ -2,6 +2,7 @@
 status: closed
 resolution: fixed
 resolution_date: 2026-05-14
+resolution_commit: d0a9c5e
 ---
 # OF-019 - Document the OF-014 side-car's three consumer-side gotchas
 
