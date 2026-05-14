@@ -33,6 +33,13 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 | [OF-013](./OF-013-ast-param-to-owned-type.md) | Medium | AST-ify `param_to_owned_type` for unsized-DST inner types (follow-up from OF-011) |
 | [OF-014](./OF-014-redesign-ts-bindings-pipeline.md) | Medium | Redesign the TypeScript bindings / type-generation pipeline (spawned from OF-006) |
 | [OF-015](./OF-015-productionize-typescript-generation.md) | Medium-High | Productionize the TypeScript generation pipeline (OF-014 follow-up) |
+| [OF-016](./OF-016-classify-get-by-param-shape.md) | Medium | `get_*` classifier ignores param shape, forces HTTP GET + `Path<String>` |
+| [OF-017](./OF-017-param-import-substring-gate.md) | High | Param type-import collector is gated by `Input`/`Query` substring filter |
+| [OF-018](./OF-018-ts-fallback-mistokenizes-generics.md) | Low | TS bindings fallback emitter mis-tokenizes generic return types |
+
+## Pumice feedback round 2 (2026-05-14)
+
+Source: [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md). Three new findings surfaced when Pumice upgraded to ontogen rev `168ff379`. Mapped to upstream IDs OF-016/17/18 to avoid collision with the existing OF-013/14/15 (the consumer's log numbers them independently as OF-013/14/15).
 
 ## Priority Planning
 
@@ -48,6 +55,9 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 10. ~~**OF-014**~~ - design pass + option 1 + option 3 hybrid spike landed `c87ba64` (2026-05-13) on `worktree-of-014-spike-option-3`; spawned [OF-015](./OF-015-productionize-typescript-generation.md) for productionization.
 11. **OF-015** (productionize the TS generation pipeline; closes spike-grade shortcuts, ships user-facing guide, decides OF-006 warning fate).
 12. ~~**OF-009**~~ - resolved in `2804753` (2026-05-13); docs-only -- `NamingConfig` rustdoc and the configuration reference now carry a verified "mass nouns and Latin plural-tantums" callout.
+13. **OF-017** (high-severity — param import collector substring gate; produces uncompileable output for param structs whose name doesn't match `Input`/`Query`). Take next; small diff, large impact, unblocks Pumice's `export::*` migration without renames.
+14. **OF-016** (medium — `get_*` classifier ignores second-param shape). Pairs naturally with the existing OF-013 / OF-008 / OF-011 AST migration; the classifier is the last name-driven path through the pipeline.
+15. **OF-018** (low — TS fallback emitter mis-tokenizes generics). Hold until [OF-015](./OF-015-productionize-typescript-generation.md) decides the fallback path's fate; closes naturally if OF-015 hard-errors or removes the fallback.
 
 ## Resolved
 
