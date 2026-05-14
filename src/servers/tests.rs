@@ -2641,6 +2641,108 @@ pub async fn case_ref_bytes(store: &Store, payload: &[u8]) -> Result<(), anyhow:
     }
 }
 
+/// Regression test for OF-017.
+///
+/// Pre-fix, IPC / HTTP / MCP generators wrapped `collect_type_import` on each
+/// param in a substring filter that only invoked the walker when the rendered
+/// param type name contained `Input` or `Query`. Wrapper structs whose names
+/// didn't match that pattern (`ExportRequest`, `ExportFilterRequest`, …) were
+/// silently dropped from the `use crate::schema::{...}` block, producing
+/// uncompileable generated code.
+///
+/// Post-fix the gate is gone — the AST walker runs on every param. The
+/// walker's existing rules (skip primitives, skip qualified paths, recurse
+/// into containers) handle the no-op cases on their own.
+#[test]
+fn test_of017_param_imports_drop_substring_gate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "export.rs",
+        r#"
+use crate::store::Store;
+
+pub async fn run(store: &Store, request: &ExportRequest) -> Result<ExportSummary, anyhow::Error> { todo!() }
+pub async fn filtered_sessions(
+    store: &Store,
+    filter: &ExportFilterRequest,
+) -> Result<Vec<Session>, anyhow::Error> { todo!() }
+pub async fn rename(store: &Store, id: String, payload: &FilenameTemplateRequest) -> Result<(), anyhow::Error> { todo!() }
+pub async fn already_matched(store: &Store, opts: &ExportOptionsInput) -> Result<(), anyhow::Error> { todo!() }
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    assert_eq!(modules.len(), 1);
+
+    let config = test_config(tmp.path().to_path_buf());
+
+    // Each generator must emit `use crate::schema::{ ... }` containing every
+    // custom param/return type referenced above — including the ones that
+    // don't match the legacy `Input`/`Query` substring. Parse the use-block
+    // body so the assertion doesn't depend on rustfmt's line-wrapping
+    // (rustfmt collapses short blocks onto a single line).
+    let expected_in_imports = [
+        "ExportRequest",           // bare custom struct, param position, no Input/Query in name
+        "ExportFilterRequest",     // same shape, different name
+        "FilenameTemplateRequest", // same shape, alongside a primitive param
+        "ExportOptionsInput",      // legacy gate would have matched this; must still work
+        "ExportSummary",           // return-position custom struct
+        "Session",                 // return-position via Vec<Session>
+    ];
+    let forbidden_in_imports = ["String", "str", "Store"]; // primitive / state — never imported
+
+    fn schema_imports(content: &str) -> Vec<String> {
+        let Some(start) = content.find("use crate::schema::{") else { return Vec::new() };
+        let body_start = start + "use crate::schema::{".len();
+        let Some(rel_end) = content[body_start..].find('}') else { return Vec::new() };
+        content[body_start..body_start + rel_end]
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    fn assert_imports(label: &str, content: &str, expected: &[&str], forbidden: &[&str]) {
+        let imports = schema_imports(content);
+        for ty in expected {
+            assert!(
+                imports.iter().any(|i| i == ty),
+                "OF-017 {label}: expected `{ty}` in `use crate::schema::{{ ... }}` block. Parsed imports = {:?}\nFull output:\n{content}",
+                imports
+            );
+        }
+        for ty in forbidden {
+            assert!(
+                !imports.iter().any(|i| i == ty),
+                "OF-017 {label}: `{ty}` must not appear in `use crate::schema::{{ ... }}` block. Parsed imports = {:?}\nFull output:\n{content}",
+                imports
+            );
+        }
+    }
+
+    // IPC
+    let ipc_out = tmp.path().join("ipc_generated.rs");
+    crate::servers::generators::ipc::generate(&ipc_out, &modules, &config);
+    let ipc = std::fs::read_to_string(&ipc_out).unwrap();
+    assert_imports("IPC", &ipc, &expected_in_imports, &forbidden_in_imports);
+
+    // HTTP
+    let http_out = tmp.path().join("http_generated.rs");
+    crate::servers::generators::http::generate(&http_out, &modules, &config);
+    let http = std::fs::read_to_string(&http_out).unwrap();
+    assert_imports("HTTP", &http, &expected_in_imports, &forbidden_in_imports);
+
+    // MCP — covers both the param-side gate drop AND the new return-type walk
+    // (mcp.rs previously skipped `f.return_type_ast` entirely).
+    let mcp_out = tmp.path().join("mcp_generated.rs");
+    crate::servers::generators::mcp::generate(&mcp_out, &modules, &config);
+    let mcp = std::fs::read_to_string(&mcp_out).unwrap();
+    assert_imports("MCP (covers return-type walk regression)", &mcp, &expected_in_imports, &forbidden_in_imports);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // parse.rs + generators - #[ontogen::stateless] (OF-007)
 // ═══════════════════════════════════════════════════════════════════════════════

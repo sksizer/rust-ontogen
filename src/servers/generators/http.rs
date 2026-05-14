@@ -52,12 +52,7 @@ use serde::{Deserialize, Serialize};
         for f in &m.functions {
             collect_type_import(&f.return_type_ast, &mut type_imports);
             for p in &f.params {
-                // See comment in ipc.rs: substring filter on the rendered name
-                // is intentional; AST walker handles the actual collection.
-                let ty = extract_input_type(&p.ty);
-                if ty.contains("Input") || ty.contains("Query") {
-                    collect_type_import(&p.ty_ast, &mut type_imports);
-                }
+                collect_type_import(&p.ty_ast, &mut type_imports);
             }
         }
     }
