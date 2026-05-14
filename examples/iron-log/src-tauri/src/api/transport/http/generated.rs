@@ -209,5 +209,5 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
         .route("/api/workouts/:id", get(workout_get_by_id).put(workout_update).delete(workout_delete))
         .route("/api/workout-sets", get(workout_set_list).post(workout_set_create))
         .route("/api/workout-sets/:id", get(workout_set_get_by_id).put(workout_set_update).delete(workout_set_delete))
-        .route("/api/stats/workout", post(stat_workout))
+        .route("/api/stats/workout", get(stat_workout))
 }

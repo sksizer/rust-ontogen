@@ -177,7 +177,7 @@ export function createHttpTransport(): Transport {
       return null
     },
     async statWorkout(): Promise<WorkoutStats> {
-      return httpPost<WorkoutStats>('/stats/workout')
+      return httpGet('/stats/workout')
     },
   }
 }
