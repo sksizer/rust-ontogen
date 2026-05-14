@@ -1,11 +1,49 @@
 ---
-status: open
+status: closed
+resolution: fixed
+resolution_date: 2026-05-14
+resolution_commit: 207aa96
 ---
 # OF-017 - Param type-import collector is gated by `Input`/`Query` substring filter
 
 - **Severity:** High (produces uncompileable output for any param struct whose name doesn't match the substring filter)
+- **Status:** Resolved (`207aa96`, 2026-05-14)
 - **Source:** Pumice feedback, [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md). Filed in the consumer's log as "OF-014" (their numbering); upstream uses OF-017 to avoid collision with the (resolved) [OF-014](./OF-014-redesign-ts-bindings-pipeline.md) TS-bindings redesign.
 - **Related:** [OF-008](./OF-008-inner-type-strip-option.md) / [OF-010](./OF-010-collect-type-import-generics.md) — AST-ified the *walker* but left the substring *gate* in place. This ticket closes the gap.
+
+## Resolution
+
+Shipped in `207aa96` on 2026-05-14.
+
+The substring filter was dropped at all three call sites
+(`src/servers/generators/ipc.rs`, `http.rs`, `mcp.rs`). The
+`collect_type_import` walker now runs unconditionally on every param
+AST; its existing rules (skip primitives, skip qualified paths,
+recurse into known containers) handle the would-be-noisy cases on
+their own. The substring gate was a holdover from the pre-OF-008/10
+string-based walker and no longer earned its keep.
+
+While in the same area, `mcp.rs` gained a missing
+`collect_type_import(&f.return_type_ast, ...)` call. The IPC and HTTP
+generators already walked the return-type AST for imports; MCP didn't,
+so custom MCP tool return types would have hit the same silent-drop
+behaviour. The fix is one line and covered by the same regression test.
+
+**Test.** `test_of017_param_imports_drop_substring_gate` (in
+`src/servers/tests.rs`) parses a synthetic `api/v1/export.rs` through
+`scan_api_dir`, runs each of the three generators (IPC, HTTP, MCP),
+and parses the body of the rendered `use crate::schema::{ ... }` block.
+It asserts the import set contains every custom param/return type
+referenced -- `ExportRequest`, `ExportFilterRequest`,
+`FilenameTemplateRequest`, `ExportOptionsInput`, `ExportSummary`,
+`Session` -- *and* that prelude/state types (`String`, `str`, `Store`)
+never appear. Parses the use-block body rather than matching rendered
+lines so the test doesn't depend on rustfmt's line-wrap decisions for
+short use blocks.
+
+---
+
+*The remainder of this document is preserved as a record of the original analysis.*
 
 ## Problem
 
