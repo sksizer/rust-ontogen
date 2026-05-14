@@ -94,7 +94,7 @@ The scan happens at build time. When you add a new `.rs` file to a scan director
 
    After the build, look at your generated transport files. Your custom functions should appear alongside the CRUD handlers.
 
-   **HTTP routes**: `recent_count` becomes a `GET` endpoint (because it has no body parameter -- classified as `CustomGet`). `personal_best` also becomes `GET` because it only takes simple parameters.
+   **HTTP routes**: `recent_count` becomes a `GET` endpoint (no body parameter, classified as `CustomGet`). `personal_best` is also `GET` because its first parameter (`exercise_id: i64`) is an id-like primitive that fits in a URL path segment.
 
    **IPC commands**: both functions get `#[tauri::command]` wrappers.
 
@@ -104,20 +104,43 @@ The scan happens at build time. When you add a new `.rs` file to a scan director
 
 ## Function classification rules
 
-The scanner classifies each function into an `OpKind` that drives HTTP verb and route structure. Here's how it decides:
+The scanner classifies each function into an `OpKind` that drives HTTP verb and route structure. Classification first looks at the function name (matches against the CRUD vocabulary and the junction-table conventions); for custom functions that don't match a vocabulary entry, the classifier consults the first user-facing parameter's type to pick `CustomGet` vs `CustomPost`.
 
-| Function pattern | `OpKind` | HTTP | Route example |
-|------------------|----------|------|---------------|
-| Named `list` | `List` | `GET` | `/api/workouts` |
-| Named `get_by_id` | `GetById` | `GET` | `/api/workouts/:id` |
-| Named `create` | `Create` | `POST` | `/api/workouts` |
-| Named `update` | `Update` | `PUT` | `/api/workouts/:id` |
-| Named `delete` | `Delete` | `DELETE` | `/api/workouts/:id` |
-| Starts with `get_` or has only simple params | `CustomGet` | `GET` | `/api/workout-stats/recent-count` |
-| Takes a complex input type | `CustomPost` | `POST` | `/api/workout-stats/personal-best` |
-| Returns a stream type | `EventStream` | `GET` (SSE) | `/api/events/workout-updated` |
+### CRUD and junction vocabulary
+
+| Function name | `OpKind` | HTTP | Route example |
+|---------------|----------|------|---------------|
+| `list` | `List` | `GET` | `/api/workouts` |
+| `get_by_id` | `GetById` | `GET` | `/api/workouts/:id` |
+| `create` | `Create` | `POST` | `/api/workouts` |
+| `update` | `Update` | `PUT` | `/api/workouts/:id` |
+| `delete` | `Delete` | `DELETE` | `/api/workouts/:id` |
+| `add_{child}(parent_id, child_id)` | `JunctionAdd` | `POST` | `/api/workouts/:parent_id/{child}` |
+| `remove_{child}(parent_id, child_id)` | `JunctionRemove` | `DELETE` | `/api/workouts/:parent_id/{child}/:child_id` |
+| `list_{children}(parent_id)` | `JunctionList` | `GET` | `/api/workouts/:parent_id/{children}` |
+
+### Custom functions (CustomGet / CustomPost)
+
+For names that don't match a vocabulary entry, the classifier looks at the *shape* of the first user-facing parameter:
+
+| Function shape | `OpKind` | HTTP | How parameters are extracted |
+|----------------|----------|------|------------------------------|
+| Zero user-facing parameters | `CustomGet` | `GET` | (no extraction) |
+| `get_{name}(state, id: &str)` (or `String`, integer, `Uuid`, …) | `CustomGet` | `GET` | First param → URL path segment (`/api/.../:id`) |
+| `get_{name}(state, q: Option<…>)` | `CustomGet` | `GET` | `Option<…>` params → query string |
+| `get_{name}(state, body: &CustomStruct)` | `CustomPost` | `POST` | Body-carrying first param → JSON body |
+| Any other shape | `CustomPost` | `POST` | Non-`Option` non-`*Input` params → JSON body; `Option<…>` → query |
+| Returns `tokio::sync::broadcast::Receiver<T>` | `EventStream` | `GET` (SSE) | `/api/events/{event-name}` |
+
+The id-like primitive allowlist is: `bool`, `char`, `i8`–`i128`, `isize`, `u8`–`u128`, `usize`, `f32`, `f64`, `String`, `str`, and `Uuid`. References to any of these (`&str`, `&String`) are also path-extractable. Anything else (a single-segment custom struct, a fully-qualified path like `crate::schema::Foo`, or a generic container like `Vec<T>` / `HashMap<K, V>`) is treated as body-carrying.
 
 For custom functions, the module name becomes part of the route path. The function name is kebab-cased for the URL segment.
+
+<Aside type="tip">
+**`get_*` with a body.** A function named `get_filtered_sessions(store, filter: &ExportFilterRequest)` reads as a "get" semantically, but the filter is too complex to fit in a URL. Classification handles this automatically: because `ExportFilterRequest` is a custom struct, the function emits a `POST /api/{module}/filtered-sessions` route with the filter as the JSON body. The HTTP method is `POST` but the operation remains read-only on the IPC and MCP sides (those transports don't distinguish GET from POST).
+
+If you need to force a method regardless of param shape, file an issue — the source-side attribute (`#[ontogen::post]` / `#[ontogen::get]`) is on the roadmap.
+</Aside>
 
 ## Organizing custom endpoints
 

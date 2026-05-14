@@ -119,7 +119,7 @@ pub async fn close_by_project(store: &Store, project_id: &str) -> Result<(), App
 }
 ```
 
-The scanner picks up both functions, classifies `get_overdue` as a `CustomGet` (because it starts with `get_` and has no input struct) and `close_by_project` as a `CustomPost`. These get merged into the `task` module's metadata alongside the generated CRUD functions.
+The scanner picks up both functions, classifies `get_overdue` as a `CustomGet` (zero user-facing parameters, no body to extract) and `close_by_project` as a `CustomPost` (no name match in the CRUD vocabulary, first param is body-carrying for HTTP purposes). These get merged into the `task` module's metadata alongside the generated CRUD functions.
 
 ### Merge rules
 
@@ -152,7 +152,7 @@ pub struct ApiFnMeta {
 }
 ```
 
-The `OpKind` classification drives how downstream generators produce routes and commands. The standard CRUD operations (`List`, `GetById`, `Create`, `Update`, `Delete`) get predictable HTTP methods and paths. Junction operations (`JunctionList`, `JunctionAdd`, `JunctionRemove`) are recognized for `list_*`/`add_*`/`remove_*` functions that take a parent ID plus a child ID and produce nested routes like `/api/agents/:parent_id/roles`. Custom operations are classified as either `CustomGet` or `CustomPost` based on heuristics: functions starting with `get_` or taking no parameters become GET endpoints, while functions taking an input struct become POST endpoints. Event-stream functions are classified as `EventStream`.
+The `OpKind` classification drives how downstream generators produce routes and commands. The standard CRUD operations (`List`, `GetById`, `Create`, `Update`, `Delete`) get predictable HTTP methods and paths. Junction operations (`JunctionList`, `JunctionAdd`, `JunctionRemove`) are recognized for `list_*`/`add_*`/`remove_*` functions that take a parent ID plus a child ID and produce nested routes like `/api/agents/:parent_id/roles`. Custom operations are classified as either `CustomGet` or `CustomPost`: the classifier first checks the function name (so `get_*` is a `CustomGet` candidate, anything else defaults to `CustomPost`), then consults the AST of the first user-facing parameter — a `get_*` function whose first param is a body-carrying custom struct gets reclassified as `CustomPost` so the HTTP transport can emit a JSON body instead of an unworkable `Path<String>` extraction. See the [function classification table](/cookbook/custom-api-endpoints/#function-classification-rules) in the custom endpoints cookbook for the full ruleset. Event-stream functions are classified as `EventStream`.
 
 ## The Source enum
 
