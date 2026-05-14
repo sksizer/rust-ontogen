@@ -185,7 +185,7 @@ fn http_route_for(
             ("DELETE", format!("{base}/{plural}/:parent_id/{child_segment}/:child_id"))
         }
         OpKind::CustomGet | OpKind::CustomPost => {
-            let is_get = classify::is_read_operation(&f.name);
+            let is_get = classify::is_read_op(op);
             let action = config.naming.derive_action(module, &f.name);
             let mut path = format!("{base}/{plural}");
             if !action.is_empty() {

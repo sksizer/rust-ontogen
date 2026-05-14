@@ -12,7 +12,7 @@ use std::path::Path;
 
 use ontogen_core::ir::OpKind;
 
-use crate::servers::classify::{classify_op, is_read_operation};
+use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::config::Config;
 use crate::servers::generators::FallbackRecord;
 use crate::servers::generators::ipc::command_name;
@@ -964,7 +964,7 @@ fn generate_http_custom_method(
     let cmd_name = command_name(name, f, config);
     let camel = snake_to_camel(&cmd_name);
     let ts_ret = rust_type_to_ts(&f.return_type);
-    let is_get = is_read_operation(fn_name);
+    let is_get = is_read_op(&classify_op(f));
     let action = config.naming.derive_action(name, fn_name);
     // Use kebab-case URL plural to match http.rs route registration. Singleton
     // modules collapse to the singular kebab form via `url_for_module`.
@@ -1183,7 +1183,7 @@ fn generate_ipc_custom_method(out: &mut String, f: &crate::servers::parse::ApiFn
 
 /// Build TypeScript parameter list for a custom function.
 fn build_ts_params(f: &crate::servers::parse::ApiFn, config: &Config) -> Vec<String> {
-    let is_get = is_read_operation(&f.name);
+    let is_get = is_read_op(&classify_op(f));
     let body_struct: Option<&Param> = f.params.iter().find(|p| p.ty.contains("Input"));
     let query_params: Vec<&Param> = f.params.iter().filter(|p| p.ty.starts_with("Option<")).collect();
     let path_params: Vec<&Param> = if is_get {

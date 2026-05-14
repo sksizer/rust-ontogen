@@ -7,7 +7,7 @@ use std::path::Path;
 
 use ontogen_core::ir::OpKind;
 
-use crate::servers::classify::{classify_op, is_read_operation};
+use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::config::Config;
 use crate::servers::parse::{ApiFn, ApiModule};
 use crate::servers::types::{
@@ -533,7 +533,7 @@ fn generate_generic_http_handler(
     let svc = name;
     let is_async = f.is_async;
     let ret_type = &f.return_type;
-    let is_get = is_read_operation(fn_name);
+    let is_get = is_read_op(&classify_op(f));
     let action = config.naming.derive_action(name, fn_name);
     let url_plural = config.naming.url_for_module(module);
     let returns_unit = f.return_type == "()" || ret_type == "()";
@@ -990,7 +990,7 @@ fn generate_generic_http_handler_scoped(
     let svc = name;
     let is_async = f.is_async;
     let ret_type = &f.return_type;
-    let is_get = is_read_operation(fn_name);
+    let is_get = is_read_op(&classify_op(f));
     let action = config.naming.derive_action(name, fn_name);
     let url_plural = config.naming.url_for_module(module);
     let returns_unit = f.return_type == "()" || ret_type == "()";

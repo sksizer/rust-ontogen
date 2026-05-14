@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use ontogen_core::ir::OpKind;
 
-use crate::servers::classify::{classify_op, is_read_operation};
+use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::config::{ClientGenerator, Config, GeneratorConfig, PrefixParam, RoutePrefix, ServerGenerator};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{
@@ -688,17 +688,97 @@ fn test_classify_no_params_is_get() {
     assert!(matches!(classify_op(&no_param_fn), OpKind::CustomGet));
 }
 
+/// `is_read_op` checks an already-classified `OpKind`. Single source of
+/// truth replaces the name-based `is_read_operation` heuristic.
 #[test]
-fn test_is_read_operation() {
-    assert!(is_read_operation("get_by_id"));
-    assert!(is_read_operation("get_graph_snapshot"));
-    assert!(is_read_operation("list"));
-    assert!(is_read_operation("detect_installed_openers"));
+fn test_is_read_op() {
+    assert!(is_read_op(&OpKind::List));
+    assert!(is_read_op(&OpKind::GetById));
+    assert!(is_read_op(&OpKind::CustomGet));
+    assert!(is_read_op(&OpKind::JunctionList { child_segment: "skills".into() }));
 
-    assert!(!is_read_operation("create"));
-    assert!(!is_read_operation("update"));
-    assert!(!is_read_operation("delete"));
-    assert!(!is_read_operation("switch_project"));
+    assert!(!is_read_op(&OpKind::Create));
+    assert!(!is_read_op(&OpKind::Update));
+    assert!(!is_read_op(&OpKind::Delete));
+    assert!(!is_read_op(&OpKind::CustomPost));
+    assert!(!is_read_op(&OpKind::JunctionAdd { child_segment: "skills".into() }));
+    assert!(!is_read_op(&OpKind::JunctionRemove { child_segment: "skills".into() }));
+    assert!(!is_read_op(&OpKind::EventStream));
+}
+
+/// Regression test for OF-016.
+///
+/// A `get_*` function whose first user-facing param is a body-carrying
+/// custom struct must classify as `CustomPost`, not `CustomGet`. Pre-fix,
+/// the classifier looked only at the name; the HTTP generator then tried
+/// to extract the struct as a `Path<String>` URL segment and produced
+/// uncompileable handler code. Post-fix, the classifier consults the
+/// first param's AST and routes body-carrying shapes through POST.
+///
+/// The id-like primitive allowlist (`String`, integers, `Uuid`, etc.) and
+/// `Option<…>` (query slot) keep their old behavior — the change only
+/// affects custom-struct shapes.
+#[test]
+fn test_of016_classify_get_with_first_param_ast() {
+    fn fn_with_first_param(name: &str, ty: &str) -> ApiFn {
+        ApiFn {
+            name: name.to_string(),
+            is_async: true,
+            doc: String::new(),
+            params: vec![param("arg", ty)],
+            return_type: "String".to_string(),
+            return_type_ast: ty_ast("String"),
+            first_param_is_store: false,
+            is_stateless: false,
+            command_override: None,
+        }
+    }
+
+    // Each row: (fn name, first param type, expected OpKind matches CustomGet).
+    let cases: &[(&str, &str, bool)] = &[
+        // id-like primitives — path-param shape, stays CustomGet.
+        ("get_session", "String", true),
+        ("get_session", "&str", true),
+        ("get_session", "i32", true),
+        ("get_session", "i64", true),
+        ("get_session", "u64", true),
+        ("get_session", "Uuid", true),
+        // Option<…> — query-slot shape, stays CustomGet.
+        ("get_things", "Option<String>", true),
+        ("get_things", "Option<&str>", true),
+        ("get_things", "Option<i64>", true),
+        // Custom structs — body-carrying, must flip to CustomPost.
+        ("get_filtered_sessions", "&ExportFilterRequest", false),
+        ("get_summary", "&ExportRequest", false),
+        ("get_filtered", "ExportFilterRequest", false),
+        ("get_thing", "&crate::schema::ExportRequest", false), // qualified path
+        // Generic containers in body position — body-carrying.
+        ("get_aggregated", "Vec<Workout>", false),
+        ("get_aggregated", "HashMap<String, Stat>", false),
+    ];
+
+    for (name, ty_str, expect_get) in cases {
+        let f = fn_with_first_param(name, ty_str);
+        let op = classify_op(&f);
+        let got_get = matches!(op, OpKind::CustomGet);
+        assert_eq!(got_get, *expect_get, "OF-016: name=`{name}` first_param=`{ty_str}` got op={op:?}");
+        // Cross-check: is_read_op must agree with the classifier.
+        assert_eq!(is_read_op(&op), *expect_get, "is_read_op must agree with classifier for `{name}`/`{ty_str}`");
+    }
+
+    // Zero-param `get_*` stays CustomGet — no body to extract.
+    let zero = ApiFn {
+        name: "get_summary".to_string(),
+        is_async: true,
+        doc: String::new(),
+        params: vec![],
+        return_type: "Summary".to_string(),
+        return_type_ast: ty_ast("Summary"),
+        first_param_is_store: false,
+        is_stateless: false,
+        command_override: None,
+    };
+    assert!(matches!(classify_op(&zero), OpKind::CustomGet));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2741,6 +2821,120 @@ pub async fn already_matched(store: &Store, opts: &ExportOptionsInput) -> Result
     crate::servers::generators::mcp::generate(&mcp_out, &modules, &config);
     let mcp = std::fs::read_to_string(&mcp_out).unwrap();
     assert_imports("MCP (covers return-type walk regression)", &mcp, &expected_in_imports, &forbidden_in_imports);
+}
+
+/// End-to-end regression test for OF-016.
+///
+/// A `get_*` function whose first user-facing param is a body-carrying
+/// custom struct must classify as `CustomPost` and emit a `POST` HTTP
+/// route with `Json(...)` body extraction -- not a `GET` route with
+/// `Path<String>` extraction. Sibling `get_*` functions with id-like
+/// primitive params keep their original `GET` + `Path<...>` shape.
+///
+/// This is the integration test that pins the user-visible behavior:
+/// the classifier change plus the HTTP generator's existing
+/// body/path/query partition end up producing valid handler code on
+/// both sides of the heuristic.
+#[test]
+fn test_of016_get_with_body_param_routes_as_post() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+
+    write_synthetic_api(
+        &api_dir,
+        "export.rs",
+        r#"
+use crate::store::Store;
+
+pub async fn get_session(store: &Store, id: &str) -> Result<Session, anyhow::Error> { todo!() }
+pub async fn get_filtered_sessions(
+    store: &Store,
+    filter: &ExportFilterRequest,
+) -> Result<Vec<Session>, anyhow::Error> { todo!() }
+pub async fn get_summary(store: &Store, request: &ExportRequest) -> Result<ExportSummary, anyhow::Error> { todo!() }
+pub async fn get_recent(store: &Store, since: Option<String>) -> Result<Vec<Session>, anyhow::Error> { todo!() }
+pub async fn get_count(store: &Store) -> Result<i64, anyhow::Error> { todo!() }
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    assert_eq!(modules.len(), 1);
+
+    let output_path = tmp.path().join("http_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    crate::servers::generators::http::generate(&output_path, &modules, &config);
+
+    let content = std::fs::read_to_string(&output_path).unwrap();
+
+    // Body-carrying get_* functions must route as POST with Json body
+    // extraction. Today the HTTP generator wraps a non-`*Input`-named
+    // single-param body in a generated `{Module}{Fn}Body` struct -- not
+    // ideal but separate from OF-016. The OF-016 contract is "route is
+    // POST + body extraction" and "no Path<String> stuffing of the struct".
+    for (route_post, body_extraction) in &[
+        ("post(export_get_filtered_sessions)", "Json(body): Json<ExportGetFilteredSessionsBody>"),
+        ("post(export_get_summary)", "Json(body): Json<ExportGetSummaryBody>"),
+    ] {
+        assert!(
+            content.contains(route_post),
+            "OF-016: expected POST route fragment `{route_post}` in HTTP output, got:\n{content}"
+        );
+        assert!(
+            content.contains(body_extraction),
+            "OF-016: expected Json body extraction `{body_extraction}` in HTTP output, got:\n{content}"
+        );
+    }
+
+    // The generated wrapper body struct must reference the original custom
+    // struct type by its real name -- this is what the import collector
+    // (OF-017) had to start emitting for these to compile.
+    for body_field in &["    filter: ExportFilterRequest,", "    request: ExportRequest,"] {
+        assert!(content.contains(body_field), "OF-016: expected wrapper body field `{body_field}`, got:\n{content}");
+    }
+
+    // Negative: the body-carrying handlers must NOT extract the struct as
+    // a path segment. The classifier change is precisely what prevents
+    // this.
+    for forbidden in &[
+        "Path(filter): Path<String>",
+        "Path(request): Path<String>",
+        ":filter",
+        ":request",
+        "get(export_get_filtered_sessions)",
+        "get(export_get_summary)",
+    ] {
+        assert!(
+            !content.contains(forbidden),
+            "OF-016 regression: forbidden fragment `{forbidden}` leaked into HTTP output:\n{content}"
+        );
+    }
+
+    // Positive: id-like primitive first param stays GET with Path<String>.
+    assert!(
+        content.contains("get(export_get_session)"),
+        "OF-016: `get_session(id: &str)` must stay GET, got:\n{content}"
+    );
+    assert!(
+        content.contains("Path(id): Path<String>"),
+        "OF-016: `get_session` should still extract `id` as Path<String>, got:\n{content}"
+    );
+
+    // Positive: Option<String> first param stays GET with query
+    // extraction (current behavior preserved).
+    assert!(
+        content.contains("get(export_get_recent)"),
+        "OF-016: `get_recent(since: Option<String>)` should stay GET, got:\n{content}"
+    );
+    assert!(
+        content.contains("Query(q): Query<ExportGetRecentQuery>"),
+        "OF-016: `get_recent` should keep Query extraction, got:\n{content}"
+    );
+
+    // Positive: zero-param get_* stays GET (no body to carry).
+    assert!(
+        content.contains("get(export_get_count)"),
+        "OF-016: zero-param `get_count` should stay GET, got:\n{content}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

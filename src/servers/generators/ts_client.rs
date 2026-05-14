@@ -7,7 +7,7 @@ use std::path::Path;
 
 use ontogen_core::ir::OpKind;
 
-use crate::servers::classify::{classify_op, is_read_operation};
+use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::config::Config;
 use crate::servers::generators::FallbackRecord;
 use crate::servers::generators::ipc::command_name;
@@ -220,7 +220,7 @@ fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config
     // only - HTTP route paths are intentionally unaffected (see OF-003).
     let camel = snake_to_camel(&command_name(module, f, config));
     let ts_ret = rust_type_to_ts(&f.return_type);
-    let is_get = is_read_operation(fn_name);
+    let is_get = is_read_op(&classify_op(f));
     let action = config.naming.derive_action(module, fn_name);
     let plural = config.naming.module_plural(module);
     let returns_unit = f.return_type == "()";
