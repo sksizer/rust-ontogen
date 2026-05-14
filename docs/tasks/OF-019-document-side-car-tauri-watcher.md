@@ -1,11 +1,36 @@
 ---
-status: open
+status: closed
+resolution: fixed
+resolution_date: 2026-05-14
 ---
 # OF-019 - Document the OF-014 side-car's three consumer-side gotchas
 
 - **Severity:** Low (documentation; the three issues are workaround-able and discoverable, but each cost a consumer a debugging session)
+- **Status:** Resolved (2026-05-14). See [Resolution](#resolution) below.
 - **Source:** Pumice integration of the OF-014 spike, 2026-05-14. All three issues surfaced once pumice tried to use `pnpm tauri dev` + CI on hosted runners; the OF-014 ticket already documents the workarounds inline ("Trying this on your project" steps 7-8 and the "Things to watch for" list), but they need to land in user-facing docs so the next consumer doesn't have to read the spike ticket.
 - **Related:** [OF-014](./OF-014-redesign-ts-bindings-pipeline.md) (the spike whose side-effects this documents), [OF-015](./OF-015-productionize-typescript-generation.md) (productionization; should fold this in as one of its acceptance criteria).
+
+## Resolution
+
+Lift completed in three places:
+
+- **Site docs** -- `site/src/content/docs/guides/client-generation.mdx`:
+  - Rewrote the "bindings_path option" section to describe `bindings.ts` as an ontogen-owned **output**, the two emitters (schema-known + specta side-car), and the `#[derive(specta::Type)]` opt-in for long-tail types.
+  - Added a new "Integration gotchas" section with three subsections (`default-run`, `.taurignore`, CI disk pressure + opt-out env gate) backed by minimal code/config snippets.
+- **Site docs** -- `site/src/content/docs/cookbook/tauri-integration.mdx`:
+  - "Add dependencies" step now includes `default-run = "my-app"` in the recipe Cargo.toml plus a sentence explaining when it bites.
+  - New "Add `.taurignore` (Tauri-only)" step (step 2) shows the file contents and cross-links to the gotchas section for the full set.
+  - Subsequent steps renumbered 3-6.
+- **Example** -- `examples/iron-log/src-tauri/`:
+  - New `.taurignore` containing the side-car path.
+  - `Cargo.toml` gains `default-run = "iron-log"` with an inline comment explaining the cargo-ambiguity it pre-empts.
+  - `build.rs` now honours `IRON_LOG_SKIP_SERVER_CODEGEN=1` to demonstrate the CI escape-hatch pattern.
+- **README.md** -- new third "Known Issues" bullet summarizes the three workarounds and links out to the gotchas section for details.
+
+Three follow-ups noted in the original ticket are **deferred** rather than addressed here, since they belong upstream in OF-015 once productionization decisions land:
+- Idempotent side-car writes that would moot `.taurignore` (gotcha 1).
+- Emitting the side-car outside `src/bin/` so `default-run` isn't needed (gotcha 2).
+- A first-class `disable_codegen` knob on `ServersConfig` to replace the env-gate idiom (gotcha 3).
 
 ## Problem
 
