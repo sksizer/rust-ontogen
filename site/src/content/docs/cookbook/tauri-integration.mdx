@@ -44,6 +44,10 @@ my-app/
    In `src-tauri/Cargo.toml`:
 
    ```toml
+   [package]
+   name = "my-app"
+   default-run = "my-app"   # required once the TS bindings side-car lands
+
    [build-dependencies]
    ontogen = "0.1"
    tauri-build = { version = "2", features = [] }
@@ -57,13 +61,27 @@ my-app/
    tokio = { version = "1", features = ["full"] }
    axum = "0.8"
    specta = { version = "=2.0.0-rc.23", features = ["derive", "function"] }
+   specta-typescript = "=0.0.10"
    schemars = "0.8"
    thiserror = "2"
    ```
 
-   `specta` and `schemars` are needed because the generated IPC commands use `#[specta::specta]` for TypeScript type generation and `JsonSchema` derives in DTOs.
+   `specta` and `schemars` are needed because the generated IPC commands use `#[specta::specta]` for TypeScript type generation and `JsonSchema` derives in DTOs. `specta-typescript` is what the TS bindings side-car uses to export your long-tail types -- see the [TypeScript HTTP client](/guides/client-generation/#the-bindings_path-option) section for details on when it's required.
 
-2. ### Write the build script
+   The `default-run` key matters once a custom (non-CRUD) API endpoint introduces a long-tail return type: ontogen then writes `src/bin/__ontogen_ts_export.rs`, which makes `cargo run` ambiguous between your app and the side-car. Setting `default-run` ahead of time avoids the surprise the first time `pnpm tauri dev` fails with "could not determine which binary to run."
+
+2. ### Add `.taurignore` (Tauri-only)
+
+   Tauri's dev-mode file watcher uses a custom `.taurignore` filename and does **not** honour standard `.gitignore`. Without an entry for the ontogen side-car file, the first `tauri dev` build will hot-reload itself in a loop on startup. Create `src-tauri/.taurignore`:
+
+   ```text
+   # src-tauri/.taurignore
+   src/bin/__ontogen_ts_export.rs
+   ```
+
+   Add the same line to `.gitignore` so the regenerated file doesn't show up in diffs. See [Integration gotchas](/guides/client-generation/#integration-gotchas) for the full set of side-car side-effects (including CI disk pressure on hosted runners).
+
+3. ### Write the build script
 
    Create `src-tauri/build.rs` using the `Pipeline` builder. This mirrors the canonical `examples/iron-log/src-tauri/build.rs`:
 
@@ -138,7 +156,7 @@ my-app/
 
    The `ontogen::servers::*` re-exports (`ClientGenerator`, `NamingConfig`, `ServerGenerator`) replace the older `ontogen::servers::config::*` and `ontogen::servers::types::*` paths, which are now `pub(crate)`.
 
-3. ### Set up `AppState`
+4. ### Set up `AppState`
 
    The generated IPC handlers expect an `AppState` type with a `store()` method. In `src/lib.rs`:
 
@@ -170,7 +188,7 @@ my-app/
 
    The generated IPC handlers call `state.store().await?` to get the store reference. The `async` on `store()` lets you do async initialization or project scoping in more complex setups.
 
-4. ### Register IPC commands
+5. ### Register IPC commands
 
    In `src/main.rs`, register the generated commands with Tauri:
 
@@ -202,7 +220,7 @@ my-app/
 
    Each entity gets five IPC commands (list, get, create, update, delete). The generated command names follow the pattern `get_{entities}`, `get_{entity}_by_id`, `create_{entity}`, `update_{entity}`, `delete_{entity}`.
 
-5. ### Use the TypeScript client
+6. ### Use the TypeScript client
 
    The generated `transport.ts` gives you typed functions that work in both web and desktop contexts:
 
