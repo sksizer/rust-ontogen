@@ -1,11 +1,102 @@
 ---
-status: open
+status: closed
+resolution: fixed
+resolution_date: 2026-05-14
+resolution_commit: b2f882c
 ---
 # OF-016 - `get_*` classifier ignores param shape, forces HTTP GET + `Path<String>`
 
 - **Severity:** Medium
+- **Status:** Resolved (`b2f882c`, 2026-05-14)
 - **Source:** Pumice feedback, [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md). Filed in the consumer's log as "OF-013" (their numbering); upstream uses OF-016 to avoid collision with the already-resolved [OF-013](./OF-013-ast-param-to-owned-type.md).
-- **Related:** [OF-008](./OF-008-inner-type-strip-option.md) / [OF-010](./OF-010-collect-type-import-generics.md) (AST-ified `inner_type` / `collect_type_import`), [OF-011](./OF-011-handler-arg-forwarding.md) (AST-driven `forward_arg_expr`), [OF-013](./OF-013-ast-param-to-owned-type.md) (AST-ified `param_to_owned_type`). This ticket extends the same name → AST migration to the operation classifier.
+- **Related:** [OF-008](./OF-008-inner-type-strip-option.md) / [OF-010](./OF-010-collect-type-import-generics.md) (AST-ified `inner_type` / `collect_type_import`), [OF-011](./OF-011-handler-arg-forwarding.md) (AST-driven `forward_arg_expr`), [OF-013](./OF-013-ast-param-to-owned-type.md) (AST-ified `param_to_owned_type`), [OF-017](./OF-017-param-import-substring-gate.md) (dropped the `Input`/`Query` param-import gate). This ticket extends the same name → AST migration to the operation classifier — the last remaining name-driven decision in the pipeline.
+
+## Resolution
+
+Shipped in `b2f882c` on 2026-05-14. Site docs updated in `fe237b1`.
+
+`classify_by_name_and_params` in `src/servers/classify.rs` now consults
+the AST of the first user-facing parameter for `get_*` functions:
+
+- First param is a single-segment ident in the id-like primitive
+  allowlist (`bool`, `char`, `i8`..`i128`, `isize`, `u8`..`u128`,
+  `usize`, `f32`, `f64`, `String`, `str`, `Uuid`) → `CustomGet`
+  (path-extractable, current behavior preserved).
+- First param is `Option<…>` → `CustomGet` (query-extractable, current
+  behavior preserved).
+- First param is anything else (custom struct, qualified path,
+  `Vec<T>`, `HashMap<K, V>`, …) → `CustomPost` (body-carrying — HTTP
+  generator emits a `POST` route with JSON body extraction).
+- Zero-param `get_*` → `CustomGet` (no body to carry, current behavior
+  preserved).
+
+While in the same area, the name-based `is_read_operation(name: &str)
+-> bool` helper was replaced with `is_read_op(op: &OpKind) -> bool`.
+Single source of truth: the classifier decides once; downstream code
+checks the classified result. Updated six callers across `mod.rs`,
+`generators/http.rs`, `generators/transport.rs`, and
+`generators/ts_client.rs`. This closes a pre-existing latent
+divergence: the old `is_read_operation` would have returned `true`
+for `get_filtered_sessions` while the new classifier returns
+`CustomPost` for it — keeping the two in sync would have required
+updating `is_read_operation` to take params too, but it's cleaner to
+delete it and centralize on the OpKind.
+
+**Tests.**
+
+- `test_of016_classify_get_with_first_param_ast`: unit matrix covering
+  14 (name, first-param-type, expect_CustomGet) rows -- id-like
+  primitives, `Option<…>`, custom structs, qualified paths, generic
+  containers. Includes the symmetry assertion that
+  `is_read_op(&classify_op(f))` agrees with the classifier on every
+  row, so the two helpers cannot drift.
+- `test_of016_get_with_body_param_routes_as_post`: end-to-end test
+  parses a synthetic `api/v1/export.rs` with five functions through
+  `scan_api_dir` + `http::generate`, then asserts the rendered
+  output. Positive cases: `get_session(&str)` stays GET with
+  `Path(id): Path<String>`; `get_filtered_sessions(&ExportFilterRequest)`
+  and `get_summary(&ExportRequest)` flip to POST with
+  `Json(body): Json<{Module}{Fn}Body>`; `get_recent(Option<String>)`
+  stays GET with `Query(q): Query<…>` extraction; zero-param
+  `get_count` stays GET. Negative cases: no `Path(filter):
+  Path<String>` extraction of the body struct, no `:filter` or
+  `:request` URL segments, no `get(...)` route for the body-carrying
+  handlers.
+- `test_is_read_op` replaces the deleted `test_is_read_operation` and
+  exercises the new helper directly across the full OpKind range.
+
+**Documentation.**
+
+- `site/src/content/docs/cookbook/custom-api-endpoints.mdx` --
+  classification rules split into a CRUD/junction vocabulary table
+  and a custom-functions table keyed by first-param shape. The
+  id-like primitive allowlist is documented explicitly. A new
+  callout explains the body-carrying `get_*` case so consumers can
+  discover the routing rule from docs rather than from a build
+  failure.
+- `site/src/content/docs/guides/api-layer.mdx` -- softens the
+  blanket "starting with `get_` becomes GET" claim and links into
+  the cookbook table for the full ruleset.
+
+**Source-side attribute deferred.** The original ticket also proposed
+`#[ontogen::post]` / `#[ontogen::get]` (or `#[ontogen(method = "post")]`)
+as an explicit escape hatch. With the AST heuristic in place, no real
+user repro requires the attribute — the heuristic covers the common
+cases. If a downstream surfaces a shape the heuristic gets wrong, file
+a new ticket with the specific signature.
+
+**Path-extractor hardcoded `String` -- still latent.** The HTTP
+generator's `path_params` slot at `http.rs:603-625` still hardcodes
+`String` as the path-extractor type for any non-`i{32,64}`/`u{32,64}`
+shape. After OF-016, this is much less of a problem -- the only
+remaining way a non-`String` ident reaches the path slot is via
+`get_session(state, id: Uuid)` (or similar), which silently extracts
+as `String` and then fails to convert when the user fn expects `Uuid`.
+Worth a follow-up ticket if real consumers hit it; not in scope here.
+
+---
+
+*The remainder of this document is preserved as a record of the original analysis.*
 
 ## Problem
 
