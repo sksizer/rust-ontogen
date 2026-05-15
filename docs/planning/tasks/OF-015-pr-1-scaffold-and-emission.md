@@ -1,6 +1,7 @@
 ---
 status: in-progress
 last_reviewed: 2026-05-15
+epic: ts-pipeline
 ---
 # OF-015 PR 1 — Scaffold `crates/ontogen-ts/` + per-type emission
 
