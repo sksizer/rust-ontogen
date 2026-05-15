@@ -64,6 +64,7 @@ ontogen-ts owns: type collection (root → reachable closure, dedup, cycle detec
    - References (`&str`, `&[T]`) — already AST-typed in ontogen-core post-OF-013.
    - External-types table (defaults + per-project overrides): `Uuid`, `DateTime<_>`, `NaiveDate`, `OffsetDateTime`, `Url` → TS `string` by default. Open question on whether to ship defaults or require explicit declaration.
    - `#[ontogen::ts_opaque(target = "MyTsAlias")]` escape hatch (new attr in `ontogen-macros`): user provides the TS rendering, ontogen-ts treats the type as terminal.
+   - `#[ontogen::ts_name = "FooStats"]` disambiguation attr (new attr in `ontogen-macros`): overrides the default terminal-ident TS name when the user needs to break a name collision. Our attribute, our semantics — serde never sees it, JSON wire is unaffected.
 
 3. **Serde rename family (phase 1):**
    - `#[serde(rename = "...")]` on fields and enum variants — token substitution.
@@ -90,11 +91,7 @@ ontogen-ts owns: type collection (root → reachable closure, dedup, cycle detec
      - Drop `specta-typescript` from `[dependencies]` (specta itself stays — Tauri IPC bridge uses it).
    - `src/bin/__ontogen_ts_export.rs` no longer generated.
 
-6. **Decide the OF-006 `FallbackRecord` warning's fate.** With ontogen-ts validating against a supported subset, the "type not found in bindings.ts" failure mode changes shape: it becomes "type is outside the supported subset" or "type is unresolved." Three options:
-   - **Remove the warning**: ontogen-ts hard-errors on unsupported types; build fails fast and loud. Cleanest.
-   - **Keep as belt-and-braces**: catch any type that *somehow* still slips through.
-   - **Make strictness configurable** (`strict_unsupported: bool` on `EmitConfig`): hard error in strict mode, cargo:warning in lenient mode for incremental adoption.
-   - Decision-driver: how Pumice's long tail actually looks. If it has a small number of types outside the subset, strict + `#[ontogen::ts_opaque]` is the right answer. If many, lenient mode buys migration headroom.
+6. **OF-006 `FallbackRecord` warning is removed entirely.** ontogen-ts has exactly two outcomes per type — emit it, or hard-error with a structured `EmitError` pointing at the type and the reason. No `Record<string, unknown>` placeholder, no warning-and-continue, no configurable strictness knob. Rationale: the configurable-strictness middle ground re-introduces exactly the silent-untyping foot-gun OF-006 originally shipped to fix, gated behind an opt-in. The `#[ontogen::ts_opaque(target = "...")]` escape hatch covers the legitimate case where a user wants to opt a third-party type out. Build-fail UX: collect all errors into `Vec<EmitError>`, render each as a `cargo:warning` line, then panic — user sees the full punch-list in one build, not fix-one-rebuild-fix-one. Migration note: the `FallbackRecord` type and the warning-emission code paths in `transport.rs` / `ts_client.rs` get deleted; any consumer grep rule that matched the old warning text breaks (call this out in the cutover release's changelog).
 
 7. **User-facing docs:**
    - New `site/src/content/docs/guides/typescript-bindings.mdx` — the end-to-end TS bindings guide OF-006 originally asked for, now unblocked.
@@ -131,7 +128,7 @@ Rough breakdown (single dev, focused weeks):
 | Serde rename phase-1 (transforms + property tests)                     | 1 day   |
 | Type collection + cycle detection                                       | ½ day   |
 | Supported-subset validation                                             | ½ day   |
-| `#[ontogen::ts_opaque]` proc-macro in `ontogen-macros`                  | ½ day   |
+| `#[ontogen::ts_opaque]` + `#[ontogen::ts_name]` attrs in `ontogen-macros` | ½ day |
 | External-types table + defaults                                         | ½ day   |
 | Ontogen wiring (`gen_servers`, root collection, `type_pool`)            | 1 day   |
 | Delete side-car infrastructure + iron-log cleanup                       | ½ day   |
@@ -139,12 +136,27 @@ Rough breakdown (single dev, focused weeks):
 | Pumice integration validation                                           | 1 day   |
 | **Total**                                                               | ~8 days |
 
+## Decisions captured during the design pass (2026-05-14)
+
+- **Migration semantics**: hard-cutover. Delete `ts_sidecar.rs` + spike scaffolding when ontogen-ts ships; no parallel `BindingsStrategy` enum. The side-car was spike-grade from day one and the only consumers are iron-log + Pumice. Parallel paths would force us to maintain both code surfaces through a long deprecation window — worst of both worlds. Pumice has the OF-019 workarounds as a working fallback if ontogen-ts has subset gaps on cutover day; mitigation is to validate ontogen-ts against Pumice's full long-tail set before the cutover release and treat any gap as a phase-1 blocker.
+- **OF-006 `FallbackRecord` warning**: removed entirely. Hard-error only (see scope item 6). The `strict_unsupported: bool` knob is *not* added — it would re-introduce the silent-untyping foot-gun under an opt-in.
+- **Type-pool scope**: most permissive at the collector layer; selection happens during validation. Walk every `.rs` file under the user's `src/`, collect every `ItemStruct` / `ItemEnum` / `ItemType` defined at module level regardless of visibility, key by fully-qualified `TypePath`. `pub(crate)` types are included because they can be referenced from a `pub` API endpoint and still flow over the wire. Function-local and impl-block-nested types are excluded because they can't appear as plain return-type idents in a public API signature. Type aliases and generic structs go in the pool even though their *emission* policy is separate — pooling them keeps "unsupported shape" errors honest instead of disguising them as "unresolved reference."
+- **Scan root**: `src/` only. Not `examples/`, `benches/`, `tests/`, or `build.rs`. Those don't ship wire code.
+- **`cfg`-gated types**: pooled like any other. `syn::parse_file` gives us raw AST without cfg-eval; if a non-feature-gated root references a feature-gated type, the build fails — but it would have failed at Rust compile time too, so we're just surfacing the error earlier with a clearer message.
+- **Re-exports**: canonical key in the pool is the path where the item is *defined*, not where it's re-exported. Re-export resolution happens in root-collection (ontogen side) before pool lookup.
+- **Name-collision behavior**: hard error via `NameCollision { name, paths }`. Triggered at emit time, only on collisions between *reachable* types — two same-named types in the pool that neither reach from a root are fine. Error message lists both Rust paths plus the three fix paths in priority order: `#[ontogen::ts_name = "..."]` (preferred — TS-only rename, wire unaffected), `#[ontogen::ts_opaque(target = "...")]` (if one type should be opaque anyway), Rust-side rename (brute force). Hierarchical TS-directory emission as a richer disambiguation strategy is filed as [OF-020](./OF-020-hierarchical-ts-bindings.md) — speculative future work, only earns its keep if a real consumer hits collision-fatigue.
+
 ## Open questions
 
 - **External-types defaults**: ship sensible defaults (`Uuid`, `DateTime<_>`, `NaiveDate`, `OffsetDateTime`, `Url` → `string`) or require explicit per-project declaration? Defaults are friendlier; explicit is more honest. Probably ship a small default set + allow per-project override and addition.
+- **External-types match shape**: when matching `DateTime<Utc>` against the external-types table, key on terminal ident + arity (ignoring generic args), full path, or terminal ident only?
 - **`#[serde(rename_all = "...")]` mode coverage**: serde supports `lowercase`, `UPPERCASE`, `PascalCase`, `camelCase`, `snake_case`, `SCREAMING_SNAKE_CASE`, `kebab-case`, `SCREAMING-KEBAB-CASE`. All seven needed in phase 1, or only the common four (`camelCase`, `snake_case`, `PascalCase`, `kebab-case`)? Cheap to ship all seven once we own the transform engine.
 - **`#[serde(rename(serialize = "...", deserialize = "..."))]`**: split rename (different name on each direction). HTTP wire is symmetric (we both serialize and deserialize the same shape), so this almost never appears in practice. Probably reject with a clear error in phase 1; revisit if a real consumer needs it.
-- **Migration semantics**: hard-cutover (delete side-car when ontogen-ts ships) or parallel-strategy via a `BindingsStrategy` enum on `ServersConfig` (consumers opt into the new path)? Hard-cutover is cleaner; parallel adds complexity that only helps if we have unresolved subset gaps when shipping. Probably hard-cutover with an upgrade-notes section in the changelog.
+- **Generics in supported subset**: user-defined generic structs like `pub struct Paginated<T> { items: Vec<T>, total: u64 }` — in phase 1 or deferred? Phase 1's container handling (`Option<T>`, `Vec<T>`, `HashMap<K, V>`) is hardcoded; arbitrary user generics need generic-instantiation tracking in the emitter.
+- **Smart-pointer transparency**: `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<'_, str>` — unwrap silently for emission, or require explicit `#[ontogen::ts_opaque]`?
+- **Type-alias handling**: `type Foo = HashMap<String, Bar>` referenced from a root — follow the alias and inline (matches serde behavior at runtime) or emit `type Foo = ...` separately in TS?
+- **Output determinism**: explicit topological + alphabetical ordering so `bindings.ts` doesn't churn across builds.
+- **Repo location**: `ontogen-ts/` at repo root (matches `ontogen-core` / `ontogen-macros`) or under a `crates/` dir?
 - **Crate publication**: keep `ontogen-ts` path-dep-only inside the workspace at first, or publish to crates.io alongside `ontogen-core` / `ontogen-macros` from day one? Publishing locks the API earlier; path-only allows ergonomic iteration. Lean path-only until the API has been used in anger.
 
 ## Notes
