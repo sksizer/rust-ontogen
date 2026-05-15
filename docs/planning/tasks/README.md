@@ -1,49 +1,39 @@
 # Ontogen task backlog
 
-One file per discrete piece of work. Each file is self-contained: severity, location in code, current behaviour, proposed resolution, effort estimate, and open questions.
+One file per discrete piece of work. Each file is self-contained: goal,
+approach / plan, files to touch, acceptance criteria, and (for closed tasks)
+a `completion_note` summarising what shipped.
 
-## When an entry is resolved
-- set frontmatter
-	- status: closed
-	- resolution: fixed (or wontfix)
-	- resolution_date: ISO Timestamp
-	- resolution_commit: commit-hash
-- document resolution changes
+**Schema and conventions live at [`../README.md`](../README.md).** Frontmatter
+fields (`status`, `created`, `last_reviewed`, `relevance_note`,
+`completion_note`, `epic`), the `stage` / `stage/reason` status form, and
+the date-prefixed naming convention for new tasks (`YYYY-MM-DD-<slug>.md`)
+are all documented there.
 
-# Planning Scratch
+This file is the backlog index — the open / closed tables below.
+Filenames in the tables stay as-they-exist on disk; the older `OF-XXX-*.md`
+files are legacy and keep their names, new tasks use the date-prefixed form.
 
-## Pumice feedback (OF-###)
+## Open backlog
 
-Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md`](2026-05-12-pumice.md).
+Items in `draft` / `proposed` / `backlog` / `ready` / `in-progress`.
 
 | ID | Severity | Title |
 | --- | --- | --- |
-| [OF-001](./OF-001-parser-skip-diagnostic.md) | High | Emit diagnostic when parser skips a non-matching `pub fn` |
-| [OF-002](./OF-002-singleton-url-pluralization.md) | Medium | Singleton module URL pluralization |
-| [OF-003](./OF-003-per-function-name-override.md) | Medium | Per-function command-name override |
-| [OF-004](./OF-004-singleton-semantic.md) | Low/Med | First-class singleton-module semantic for downstream generators |
-| [OF-005](./OF-005-document-state-store-shapes.md) | Medium | Document accepted `state_type` / `store_type` first-param shapes |
-| [OF-006](./OF-006-ts-bindings-fallback-warning.md) | Medium | Warn on TS bindings fallback to `Record<string, unknown>` |
-| [OF-007](./OF-007-support-stateless-fns.md) | Medium | Support pure utility functions without a no-op state parameter |
-| [OF-008](./OF-008-inner-type-strip-option.md) | High | `inner_type` should recursively strip `Option<T>` and other wrappers |
-| [OF-009](./OF-009-cruet-mass-noun-pitfall.md) | Low | Document or default-override cruet mass-noun singularization |
-| [OF-010](./OF-010-collect-type-import-generics.md) | High | `collect_type_import` should recurse into multi-arg generics |
-| [OF-011](./OF-011-handler-arg-forwarding.md) | High | Consistent handler argument forwarding; fix `.as_deref()` on non-Deref `Option<T>` |
-| [OF-012](./OF-012-skip-marker-helpers.md) | Low | File-level skip marker for helper modules in `api/v1/` |
-| [OF-013](./OF-013-ast-param-to-owned-type.md) | Medium | AST-ify `param_to_owned_type` for unsized-DST inner types (follow-up from OF-011) |
-| [OF-014](./OF-014-redesign-ts-bindings-pipeline.md) | Medium | Redesign the TypeScript bindings / type-generation pipeline (spawned from OF-006) |
-| [OF-015](./OF-015-productionize-typescript-generation.md) | Medium-High | Replace the OF-014 side-car with a new `ontogen-ts` crate (build-time AST → TS emission); obsoletes the OF-019 consumer-side workarounds |
+| [OF-015](./OF-015-productionize-typescript-generation.md) | Medium-High | Replace the OF-014 side-car with a new `ontogen-ts` crate (build-time AST → TS emission); obsoletes the OF-019 consumer-side workarounds. **Tracked at epic level**: [`../epics/ts-pipeline.md`](../epics/ts-pipeline.md). |
 | [OF-018](./OF-018-ts-fallback-mistokenizes-generics.md) | Low | TS bindings fallback emitter mis-tokenizes generic return types |
 | [OF-020](./OF-020-hierarchical-ts-bindings.md) | Low | Hierarchical TS bindings output (per-module directory) for codebases that outgrow flat `bindings.ts` + `#[ontogen::ts_name]` disambiguation |
 | [OF-021](./OF-021-user-defined-generics-in-ts-emitter.md) | Low | First-class support for user-defined generic types in `ontogen-ts` (phase 1 rejects them with the concrete-type-alias workaround) |
 | [OF-022](./OF-022-richer-external-type-renderings.md) | Low | Richer external-type renderings in `ontogen-ts` (imported TS types like `moment.Moment` in addition to phase-1's primitive-only `"string"` / `"unknown"`) |
-| [OF-023](./OF-023-relocate-workspace-members-under-crates.md) | Low | Move existing workspace members (`ontogen-core/`, `ontogen-macros/`) under a `crates/` subdirectory; OF-015's new `crates/ontogen-ts/` will land there directly |
 
 ## Pumice feedback round 2 (2026-05-14)
 
-Source: [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md). Three new findings surfaced when Pumice upgraded to ontogen rev `168ff379`. Mapped to upstream IDs OF-016/17/18 to avoid collision with the existing OF-013/14/15 (the consumer's log numbers them independently as OF-013/14/15).
+Source: [`../../feedback/2026-05-14-pumice.md`](../../feedback/2026-05-14-pumice.md). Three new findings surfaced when Pumice upgraded to ontogen rev `168ff379`. Mapped to upstream IDs OF-016/17/18 to avoid collision with the existing OF-013/14/15 (the consumer's log numbers them independently as OF-013/14/15).
 
 ## Priority Planning
+
+Narrative thread on what landed when, and what's queued. Struck-through items
+are closed.
 
 1. ~~**OF-008 + OF-010**~~ - resolved in `7c056fe` (2026-05-12).
 2. ~~**OF-001 + OF-005**~~ - resolved in `919b74a` (2026-05-12).
@@ -55,7 +45,7 @@ Source: [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md)
 8. ~~**OF-007**~~ - resolved in `773d059` (2026-05-12); `#[ontogen::stateless]` no-op proc-macro opts a fn out of the state-first-param rule.
 9. ~~**OF-003**~~ - resolved in `ef63a0d` (2026-05-12); `#[ontogen(rename = "...")]` proc-macro attribute + `NamingConfig::command_overrides` config map, source-wins.
 10. ~~**OF-014**~~ - design pass + option 1 + option 3 hybrid spike landed `c87ba64` (2026-05-13) on `worktree-of-014-spike-option-3`; spawned [OF-015](./OF-015-productionize-typescript-generation.md) for productionization.
-11. **OF-015** (replace the OF-014 side-car with a new `ontogen-ts` crate doing build-time AST→TS emission, sibling to `ontogen-core`/`ontogen-macros`). Rewritten 2026-05-14 from "productionize the spike" to "replace the spike" after a design pass found that six of OF-014's eight punch-list items were side-car symptoms that evaporate under the new direction. Phase-1 scope: pool-in API, supported-subset validation, serde rename family (`rename`/`rename_all`/`skip`), external-types table, `#[ontogen::ts_opaque]` escape hatch, `#[ontogen::ts_name]` disambiguation attr, side-car deletion + iron-log cleanup + OF-019 doc rollback. Decisions captured 2026-05-14: hard-cutover migration; OF-006 `FallbackRecord` removed (hard error only, no fallback placeholder, no configurable strictness); pool layer most-permissive (collects all visibilities + type aliases + generic decls; selection happens during validation); name collisions hard-error with `#[ontogen::ts_name]` as the named fix path. Phase 2 (deferred): `tag`/`content`/`untagged`/`flatten` shape attrs.
+11. **OF-015** (replace the OF-014 side-car with a new `ontogen-ts` crate doing build-time AST→TS emission). Now tracked at epic level under [`../epics/ts-pipeline.md`](../epics/ts-pipeline.md); see that doc for the 8-PR phase mapping. PR 1 (scaffold + per-type emission) shipped via #55. Design decisions captured 2026-05-14: hard-cutover migration; OF-006 `FallbackRecord` removed (hard error only, no fallback placeholder, no configurable strictness); pool layer most-permissive (collects all visibilities + type aliases + generic decls; selection happens during validation); name collisions hard-error with `#[ontogen::ts_name]` as the named fix path. Phase 2 (deferred): `tag`/`content`/`untagged`/`flatten` shape attrs.
 12. ~~**OF-009**~~ - resolved in `2804753` (2026-05-13); docs-only -- `NamingConfig` rustdoc and the configuration reference now carry a verified "mass nouns and Latin plural-tantums" callout.
 13. ~~**OF-017**~~ - resolved in `207aa96` (2026-05-14); dropped the `Input`/`Query` substring gate at all three generator call sites and added the missing return-type walk in `mcp.rs`. The post-OF-008/10 AST walker filters primitives, qualified paths, and known containers on its own; the gate was a holdover from the pre-AST walker and no longer earned its keep.
 14. ~~**OF-016**~~ - resolved in `b2f882c` (2026-05-14); classifier now consults the first-param AST so `get_*` with a body-carrying custom struct routes as `CustomPost` instead of forcing a broken `GET /api/...:filter` with `Path<String>`. Also replaces the name-based `is_read_operation` with `is_read_op(&OpKind)` so the classification result is the single source of truth across the pipeline.
@@ -64,9 +54,14 @@ Source: [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md)
 17. **OF-020** (low — hierarchical TS bindings output, per-module directory structure) — speculative future work, only earns its keep if a real consumer hits collision-fatigue with [OF-015](./OF-015-productionize-typescript-generation.md)'s phase-1 flat-bindings + `#[ontogen::ts_name]` approach. Filed 2026-05-14 alongside the OF-015 design pass; not on the OF-015 critical path.
 18. **OF-021** (low — first-class user-defined generics in `ontogen-ts`) — phase 1 rejects with the concrete-type-alias workaround (`pub type PaginatedWorkouts = Paginated<Workout>`). Future work captures the two design strategies (monomorphization-as-default vs TS-generic emission via `#[ontogen::ts_generic]` opt-in) and the bound/lifetime/default open questions. Filed 2026-05-14 alongside the OF-015 design pass; priority depends on Pumice's actual generic-use count.
 19. **OF-022** (low — richer external-type renderings: imported TS types in addition to primitives). Phase 1's `external_types: HashMap<TypePath, &'static str>` handles `"string"`/`"unknown"`-style primitive renderings; OF-022 generalizes the value type to an enum that also supports `Imported { module, name, local_name }` for `moment.Moment` / `luxon.DateTime` / branded-string patterns. Purely additive when it lands. Filed 2026-05-14 alongside the OF-015 design pass.
-20. **OF-023** (low — relocate `ontogen-core/` and `ontogen-macros/` to `crates/`). Pure repo-hygiene cleanup; no behavioural impact. OF-015's new `crates/ontogen-ts/` lands at the conventional path; OF-023 brings the existing siblings in line. ~1-2 hours. Filed 2026-05-14 alongside the OF-015 design pass.
+20. ~~**OF-023**~~ - relocated workspace members under `crates/`; shipped via #54 (2026-05-14). Pure repo-hygiene cleanup; no behavioural impact.
 
-## Resolved
+## Closed
+
+Older legacy frontmatter (`status: closed` + `resolution: fixed` +
+`resolution_commit:`) is preserved on existing files. New closes use the
+`status: closed/<reason>` form with a `completion_note:` body field per
+[`../README.md`](../README.md).
 
 | ID                                                 | Resolution                                                                                                                                                                              | Commit    | Date       |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------- |
@@ -87,3 +82,4 @@ Source: [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md)
 | [OF-017](./OF-017-param-import-substring-gate.md)  | Dropped the `Input`/`Query` substring filter wrapping `collect_type_import` at all three generator call sites (`ipc.rs`, `http.rs`, `mcp.rs`); the post-OF-008/10 AST walker filters primitives, qualified paths, and known containers on its own. Also added the missing return-type walk in `mcp.rs`. New regression test parses the rendered `use crate::schema::{ ... }` block to assert every custom param/return type is imported. | `207aa96` | 2026-05-14 |
 | [OF-016](./OF-016-classify-get-by-param-shape.md)  | AST-aware classifier: `get_*` with a body-carrying first param (custom struct / qualified path / `Vec<T>` / `HashMap<K, V>`) reclassifies as `CustomPost` so HTTP routes as POST with JSON body extraction instead of forcing GET with `Path<String>` stuffing. Id-like primitives, `Option<…>`, and zero-param `get_*` keep their old behaviour. Also replaces the name-based `is_read_operation` with `is_read_op(&OpKind)` -- single source of truth derived from the classifier. New unit matrix + end-to-end test parses synthetic api/v1/export.rs through `http::generate` and asserts the rendered routes + handler signatures. Site docs updated to reflect the new rules. Source-attribute escape hatch (`#[ontogen::post]`) deferred until a real-world repro motivates it. | `b2f882c` | 2026-05-14 |
 | [OF-019](./OF-019-document-side-car-tauri-watcher.md) | Documentation lift of the OF-014 side-car's three consumer-side gotchas (`default-run`, `.taurignore`, CI disk pressure) from the spike ticket into user-facing pages. Rewrote the `bindings_path` section in `guides/client-generation.mdx` to describe the OF-014 model and added an "Integration gotchas" section. `cookbook/tauri-integration.mdx` recipe now sets `default-run` in step 1 and adds a `.taurignore` step. Iron-log gains `.taurignore`, `default-run`, and an `IRON_LOG_SKIP_SERVER_CODEGEN` env-gate. README "Known Issues" carries a short summary. Upstream fixes that would obviate the gotchas (idempotent side-car writes, emit outside `src/bin/`, `disable_codegen` knob) deferred to OF-015. | `d0a9c5e` | 2026-05-14 |
+| [OF-023](./OF-023-relocate-workspace-members-under-crates.md) | Relocated `ontogen-core/` and `ontogen-macros/` under `crates/`. Pure repo-hygiene cleanup; no behavioural impact. Shipped via #54. | `5944307` | 2026-05-14 |
