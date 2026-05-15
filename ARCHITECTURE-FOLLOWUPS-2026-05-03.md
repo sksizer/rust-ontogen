@@ -49,7 +49,7 @@ The following items appeared in `ARCHITECTURE_REVIEW.md` (the older, broader rev
 
 ### T14 - Batch rustfmt subprocess calls
 
-- **What it is:** `ontogen_core::utils::write_and_format` (`ontogen-core/src/utils.rs:30`) spawns one `rustfmt` subprocess per generated file, currently called ~4–8 times per `build.rs` invocation across all generators.
+- **What it is:** `ontogen_core::utils::write_and_format` (`crates/ontogen-core/src/utils.rs:30`) spawns one `rustfmt` subprocess per generated file, currently called ~4–8 times per `build.rs` invocation across all generators.
 - **Why we're not doing it:**
   1. Spawn overhead is ~50 ms/process on macOS. Total: 200–400 ms per build, well under the noise floor of any non-trivial Rust build (which already takes seconds for compile-on-change).
   2. PR #28 already cached `detect_edition()` in a `OnceLock`, eliminating the largest cost inside each spawn.

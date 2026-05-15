@@ -22,14 +22,14 @@ Tracking the incremental extraction of `ontogen` into a workspace of focused cra
 ontogen/                    (workspace root)
 ├── Cargo.toml              (workspace + ontogen package)
 ├── src/                    (ontogen -- full pipeline facade)
-├── ontogen-core/           (shared types, IR, naming, utilities)
+├── crates/ontogen-core/    (shared types, IR, naming, utilities)
 │   └── src/
 │       ├── lib.rs          (CodegenError + re-exports)
 │       ├── model.rs        (EntityDef, FieldDef, etc.)
 │       ├── ir.rs           (all *Output and *Meta types)
 │       ├── naming.rs       (to_snake_case, pluralize, junction helpers)
 │       └── utils.rs        (rustfmt, prettier, clean_generated_dir)
-└── ontogen-macros/         (proc-macro for #[derive(OntologyEntity)])
+└── crates/ontogen-macros/  (proc-macro for #[derive(OntologyEntity)])
 ```
 
 ## Future Extraction Phases
