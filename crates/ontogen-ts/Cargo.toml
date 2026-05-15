@@ -1,0 +1,16 @@
+[package]
+name = "ontogen-ts"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Rust AST → TypeScript emitter for ontogen's long-tail type bindings"
+license = "MIT"
+repository = "https://github.com/sksizer/rust-ontogen"
+keywords = ["codegen", "typescript", "ast", "syn"]
+categories = ["development-tools::build-utils"]
+
+[lib]
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
