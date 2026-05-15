@@ -1,5 +1,6 @@
 ---
-status: open
+status: in-progress
+last_reviewed: 2026-05-14
 ---
 # OF-023 - Move workspace members under a `crates/` subdirectory
 
@@ -54,6 +55,16 @@ Out:
 ## Effort
 
 Small. Probably 1-2 hours total — `git mv`, two `Cargo.toml` edits, a `grep -r "ontogen-core\|ontogen-macros" docs site README.md` to catch reference rot, `just full-check`, `cargo build` in iron-log, commit. The risk is incidental — easy to forget one path reference and have CI fail; the grep pass + `cargo check` catches both.
+
+## Acceptance criteria
+
+- [x] AC-1: `ontogen-core/` is relocated to `crates/ontogen-core/` and `ontogen-macros/` is relocated to `crates/ontogen-macros/`, performed with `git mv` so history is preserved (`git log --follow crates/ontogen-core/Cargo.toml` and `git log --follow crates/ontogen-macros/Cargo.toml` both reach pre-move history). _Verified: `git log --follow` from each relocated `Cargo.toml` reaches pre-move commits (8121106, 2e4bb58, 4482ab3, b6c1766, ...)._
+- [x] AC-2: Root `Cargo.toml` workspace `members` becomes `[".", "crates/ontogen-core", "crates/ontogen-macros"]`, and its `[dependencies]` entries for `ontogen-core` / `ontogen-macros` point at `path = "crates/ontogen-core"` / `path = "crates/ontogen-macros"` (versions and other keys unchanged). _Verified: edits applied to root `Cargo.toml`; `version = "=0.1.0"` retained on both path-deps._
+- [x] AC-3: `examples/iron-log/src-tauri/Cargo.toml`'s `ontogen-macros` path-dep updates from `../../../ontogen-macros` to `../../../crates/ontogen-macros`. The `ontogen` build-dep at `../../../` is left alone (root path is unchanged). _Verified: edit applied; build-dep on `ontogen` at `path = "../../../"` unchanged._
+- [x] AC-4: A repo-wide search for the legacy paths (`grep -rIn --exclude-dir=target --exclude-dir=node_modules -e 'ontogen-core/' -e 'ontogen-macros/' .`) returns zero stale references in tracked files outside `docs/tasks/` (historical task entries may keep their pre-move wording). _Verified: strict grep `(?<!crates/)(?<!\w)ontogen-(core|macros)/` outside `docs/tasks/` returns no hits; updated references in `ARCHITECTURE-ASSESSMENT-2026-04-25-014130.md`, `ARCHITECTURE-FOLLOWUPS-2026-05-03.md`, `docs/crate-extraction.md`, `docs/feedback/2026-05-12-pumice.md`._
+- [x] AC-5: `just full-check` passes cleanly in the worktree after the move. _Verified: `cargo fmt --all --check` clean, `cargo clippy -- --deny warnings` clean._
+- [x] AC-6: `cargo build` succeeds in `examples/iron-log/src-tauri/` against the relocated path-deps (build script + crate compile end-to-end). _Verified: `cargo build` in `examples/iron-log/src-tauri/` finished `dev` profile in 1m 35s._
+- [x] AC-7: Workspace root `ontogen` crate (`src/` at the repo root) is **not** moved — its package shape on crates.io is preserved per the "Out of scope" note. _Verified: `src/` remains at the workspace root (lib.rs, ir.rs, etc.); `[package] name = "ontogen"` in root `Cargo.toml` unchanged._
 
 ## Open questions
 
