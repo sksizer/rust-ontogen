@@ -4,10 +4,20 @@
 //! `emit_enum`) for the phase-1 supported subset. The top-level [`emit`]
 //! entry point's body is a `todo!()` stub — PR 4 wires type collection,
 //! validation, and ordering through it.
+//!
+//! The `#![allow(dead_code)]` below is intentional: `emit_type`,
+//! `emit_struct`, `emit_enum`, and their helpers are `pub(crate)` and only
+//! exercised by unit tests in this PR. PR 4's `emit()` body will call them
+//! and the allow attribute is removed at that point.
+
+#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 
-use syn::{GenericArgument, PathArguments, Type, TypeArray, TypePath as SynTypePath, TypeReference, TypeSlice};
+use syn::{
+    Fields, GenericArgument, ItemEnum, ItemStruct, PathArguments, Type, TypeArray, TypePath as SynTypePath,
+    TypeReference, TypeSlice,
+};
 
 use crate::types::{BigIntBehavior, EmitConfig, EmitError, TypePath};
 
@@ -130,6 +140,136 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
             reason: "type path had no segments".to_string(),
         })?;
     Ok(terminal)
+}
+
+/// Emit a `syn::ItemStruct` as a TypeScript `export type Name = { ... };`
+/// declaration.
+///
+/// Only named-field structs are supported in phase 1. Tuple structs
+/// (`struct Foo(u32, u32)`) and unit structs (`struct Bar;`) return
+/// [`EmitError::UnsupportedShape`] — the OF-014 spike survey showed neither
+/// shape carries enough name information to round-trip cleanly through TS
+/// without inventing field names. Users can wrap in a named-field struct or
+/// reach for `#[ontogen::ts_opaque]`.
+///
+/// Serde renames are *not* yet applied — PR 2 wires the rename engine in.
+/// Field names emit verbatim for now; the emission format places them in
+/// the order declared.
+pub(crate) fn emit_struct(item: &ItemStruct, config: &EmitConfig) -> Result<String, EmitError> {
+    let name = item.ident.to_string();
+    let referenced_by = TypePath::new(vec![name.clone()]).expect("single segment is non-empty");
+
+    match &item.fields {
+        Fields::Named(fields) => {
+            let mut field_lines: Vec<String> = Vec::with_capacity(fields.named.len());
+            for field in &fields.named {
+                let field_ident = field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
+                let ty_ts = emit_type(&field.ty, config, &referenced_by)?;
+                field_lines.push(format!("  {field_ident}: {ty_ts};"));
+            }
+            if field_lines.is_empty() {
+                // `struct Foo {}` — legal but empty. Emit `{}` rather than
+                // multi-line empties for readability.
+                Ok(format!("export type {name} = {{}};"))
+            } else {
+                let body = field_lines.join("\n");
+                Ok(format!("export type {name} = {{\n{body}\n}};"))
+            }
+        }
+        Fields::Unnamed(_) => Err(EmitError::UnsupportedShape {
+            type_path: referenced_by,
+            reason: "tuple structs are not supported in phase 1; wrap in a named-field struct or use \
+                     #[ontogen::ts_opaque]"
+                .to_string(),
+        }),
+        Fields::Unit => Err(EmitError::UnsupportedShape {
+            type_path: referenced_by,
+            reason: "unit structs are not supported in phase 1; use a named-field struct or #[ontogen::ts_opaque]"
+                .to_string(),
+        }),
+    }
+}
+
+/// Emit a `syn::ItemEnum` as a TypeScript union type.
+///
+/// Variant shape determines the rendering:
+///
+/// - **All variants C-style (no payload)** — emits a string-literal union:
+///   `export type Color = 'Red' | 'Green' | 'Blue';`
+/// - **One or more variants carry a payload** — emits the externally-tagged
+///   shape that `serde_json` produces by default for non-`#[serde(tag)]`
+///   enums:
+///   `export type Msg = { Click: ClickPayload } | { Hover: HoverPayload }
+///   | 'Ping';` (where `'Ping'` is the C-style variant).
+///
+/// Externally-tagged is the right default because `serde_json` emits
+/// `{"VariantName": payload}` for variant-with-payload values when no
+/// `#[serde(tag = "...")]` is set. Internally / adjacently / untagged enum
+/// representations are phase-2 work (gated behind `#[serde(tag)]` /
+/// `#[serde(untagged)]` — PR 2 rejects these attrs, full support is OF-015
+/// phase 2).
+///
+/// Empty enums (`enum Foo {}`) emit as `never` since they have no
+/// inhabitants — matches `serde_json::to_string`'s effective behavior
+/// (calling code can't ever construct a value).
+pub(crate) fn emit_enum(item: &ItemEnum, config: &EmitConfig) -> Result<String, EmitError> {
+    let name = item.ident.to_string();
+    let referenced_by = TypePath::new(vec![name.clone()]).expect("single segment is non-empty");
+
+    if item.variants.is_empty() {
+        return Ok(format!("export type {name} = never;"));
+    }
+
+    let mut variant_lines: Vec<String> = Vec::with_capacity(item.variants.len());
+    for variant in &item.variants {
+        let variant_name = variant.ident.to_string();
+        match &variant.fields {
+            Fields::Unit => {
+                // C-style — string-literal variant.
+                variant_lines.push(format!("'{variant_name}'"));
+            }
+            Fields::Unnamed(fields) => {
+                // Tuple-style variant. Serde's default external-tag emission
+                // wraps a single payload as `{"V": payload}` and a multi-arg
+                // tuple as `{"V": [a, b, c]}`. Phase-1 supports the
+                // single-payload case; multi-arg tuple variants are rejected
+                // as unsupported shape (users can refactor into a struct
+                // variant for clarity).
+                match fields.unnamed.len() {
+                    0 => variant_lines.push(format!("'{variant_name}'")),
+                    1 => {
+                        let payload_ts = emit_type(&fields.unnamed[0].ty, config, &referenced_by)?;
+                        variant_lines.push(format!("{{ {variant_name}: {payload_ts} }}"));
+                    }
+                    _ => {
+                        return Err(EmitError::UnsupportedShape {
+                            type_path: referenced_by,
+                            reason: format!(
+                                "enum variant `{variant_name}` has {} tuple fields; phase-1 supports unit, \
+                                 single-tuple, or struct variants (refactor into a struct variant for multi-field \
+                                 payloads)",
+                                fields.unnamed.len()
+                            ),
+                        });
+                    }
+                }
+            }
+            Fields::Named(fields) => {
+                // Struct-style variant: serde emits `{"V": {field1: ..., field2: ...}}`.
+                let mut field_lines: Vec<String> = Vec::with_capacity(fields.named.len());
+                for field in &fields.named {
+                    let field_ident = field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
+                    let ty_ts = emit_type(&field.ty, config, &referenced_by)?;
+                    field_lines.push(format!("{field_ident}: {ty_ts}"));
+                }
+                let body = field_lines.join("; ");
+                variant_lines.push(format!("{{ {variant_name}: {{ {body} }} }}"));
+            }
+        }
+    }
+
+    let body = variant_lines.join(" | ");
+    Ok(format!("export type {name} = {body};"))
 }
 
 /// Wrapper types that are silently peeled before re-classification.
@@ -354,12 +494,11 @@ mod tests {
 
     #[test]
     fn primitive_big_integers_honor_bigint_behavior() {
-        let mut config = EmitConfig::default();
-        config.bigint_behavior = BigIntBehavior::BigInt;
+        let config = EmitConfig { bigint_behavior: BigIntBehavior::BigInt, ..Default::default() };
         let rendered = emit_type(&ty("u64"), &config, &tp("Test")).unwrap();
         assert_eq!(rendered, "bigint");
 
-        config.bigint_behavior = BigIntBehavior::String;
+        let config = EmitConfig { bigint_behavior: BigIntBehavior::String, ..Default::default() };
         let rendered = emit_type(&ty("i64"), &config, &tp("Test")).unwrap();
         assert_eq!(rendered, "string");
     }
@@ -530,5 +669,245 @@ mod tests {
     fn multi_segment_path_collapses_to_terminal_for_now() {
         // PR 3's canonicalization will replace this with a real lookup.
         assert_eq!(emit("crate::models::Workout"), "Workout");
+    }
+
+    // ── Struct emission ────────────────────────────────────────────────
+
+    fn struct_item(src: &str) -> syn::ItemStruct {
+        syn::parse_str(src).unwrap_or_else(|err| panic!("failed to parse struct `{src}`: {err}"))
+    }
+
+    fn enum_item(src: &str) -> syn::ItemEnum {
+        syn::parse_str(src).unwrap_or_else(|err| panic!("failed to parse enum `{src}`: {err}"))
+    }
+
+    fn emit_struct_default(src: &str) -> String {
+        let config = EmitConfig::default();
+        emit_struct(&struct_item(src), &config).unwrap_or_else(|err| panic!("emit_struct errored: {err}"))
+    }
+
+    fn emit_enum_default(src: &str) -> String {
+        let config = EmitConfig::default();
+        emit_enum(&enum_item(src), &config).unwrap_or_else(|err| panic!("emit_enum errored: {err}"))
+    }
+
+    #[test]
+    fn struct_named_fields_emit_export_type() {
+        let ts = emit_struct_default(
+            "pub struct Workout {
+                pub id: u32,
+                pub name: String,
+                pub duration_secs: u32,
+            }",
+        );
+        assert_eq!(ts, "export type Workout = {\n  id: number;\n  name: string;\n  duration_secs: number;\n};");
+    }
+
+    #[test]
+    fn struct_with_all_primitive_field_types() {
+        let ts = emit_struct_default(
+            "pub struct AllPrims {
+                pub a: bool,
+                pub b: u8,
+                pub c: u16,
+                pub d: u32,
+                pub e: u64,
+                pub f: i8,
+                pub g: i16,
+                pub h: i32,
+                pub i: i64,
+                pub j: f32,
+                pub k: f64,
+                pub l: String,
+            }",
+        );
+        // Each field gets its own indented line.
+        assert!(ts.starts_with("export type AllPrims = {\n"));
+        assert!(ts.contains("  a: boolean;"));
+        assert!(ts.contains("  e: number;")); // u64 default → number
+        assert!(ts.contains("  l: string;"));
+        assert!(ts.ends_with("};"));
+    }
+
+    #[test]
+    fn struct_field_ref_str() {
+        // A `&'a str` field renders the same as `String`.
+        let ts = emit_struct_default(
+            "pub struct WithBorrowed<'a> {
+                pub name: &'a str,
+            }",
+        );
+        assert_eq!(ts, "export type WithBorrowed = {\n  name: string;\n};");
+    }
+
+    #[test]
+    fn struct_field_containers() {
+        let ts = emit_struct_default(
+            "pub struct Mix {
+                pub tags: Vec<String>,
+                pub maybe_id: Option<u32>,
+                pub lookup: HashMap<String, u32>,
+            }",
+        );
+        assert!(ts.contains("  tags: string[];"));
+        assert!(ts.contains("  maybe_id: number | null;"));
+        assert!(ts.contains("  lookup: Record<string, number>;"));
+    }
+
+    #[test]
+    fn struct_field_smart_pointer_box_transparent() {
+        let ts = emit_struct_default(
+            "pub struct WithBox {
+                pub child: Box<u32>,
+            }",
+        );
+        assert_eq!(ts, "export type WithBox = {\n  child: number;\n};");
+    }
+
+    #[test]
+    fn struct_field_unknown_ident_falls_through() {
+        // User-defined types fall through to terminal ident — PR 3 wires
+        // pool lookup. For now, the emission is well-formed TS referencing
+        // the as-yet-unresolved name.
+        let ts = emit_struct_default(
+            "pub struct Workout {
+                pub owner: User,
+            }",
+        );
+        assert_eq!(ts, "export type Workout = {\n  owner: User;\n};");
+    }
+
+    #[test]
+    fn struct_empty_named_fields() {
+        let ts = emit_struct_default("pub struct Empty {}");
+        assert_eq!(ts, "export type Empty = {};");
+    }
+
+    #[test]
+    fn struct_tuple_is_rejected() {
+        let config = EmitConfig::default();
+        let item = struct_item("pub struct NewType(pub u32);");
+        match emit_struct(&item, &config).expect_err("tuple struct should fail") {
+            EmitError::UnsupportedShape { reason, .. } => {
+                assert!(reason.contains("tuple"), "reason was: {reason}");
+            }
+            other => panic!("expected UnsupportedShape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_unit_is_rejected() {
+        let config = EmitConfig::default();
+        let item = struct_item("pub struct Marker;");
+        match emit_struct(&item, &config).expect_err("unit struct should fail") {
+            EmitError::UnsupportedShape { reason, .. } => {
+                assert!(reason.contains("unit"), "reason was: {reason}");
+            }
+            other => panic!("expected UnsupportedShape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_error_propagates_from_field_emission() {
+        // A `Mutex<u32>` field should cause emit_struct to surface the
+        // UnsupportedShape error.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            "pub struct Bad {
+                pub locked: std::sync::Mutex<u32>,
+            }",
+        );
+        let err = emit_struct(&item, &config).expect_err("Mutex field should fail");
+        assert!(matches!(err, EmitError::UnsupportedShape { .. }));
+    }
+
+    // ── Enum emission ──────────────────────────────────────────────────
+
+    #[test]
+    fn enum_c_style_emits_string_literal_union() {
+        let ts = emit_enum_default(
+            "pub enum Color {
+                Red,
+                Green,
+                Blue,
+            }",
+        );
+        assert_eq!(ts, "export type Color = 'Red' | 'Green' | 'Blue';");
+    }
+
+    #[test]
+    fn enum_single_variant_c_style() {
+        let ts = emit_enum_default("pub enum Singleton { Only }");
+        assert_eq!(ts, "export type Singleton = 'Only';");
+    }
+
+    #[test]
+    fn enum_empty_emits_never() {
+        let ts = emit_enum_default("pub enum Void {}");
+        assert_eq!(ts, "export type Void = never;");
+    }
+
+    #[test]
+    fn enum_tuple_variant_externally_tagged() {
+        // Default serde emission for a tuple-payload variant is the
+        // externally-tagged shape: `{"V": payload}`.
+        let ts = emit_enum_default(
+            "pub enum Msg {
+                Ping,
+                Click(ClickPayload),
+            }",
+        );
+        assert_eq!(ts, "export type Msg = 'Ping' | { Click: ClickPayload };");
+    }
+
+    #[test]
+    fn enum_struct_variant_externally_tagged() {
+        let ts = emit_enum_default(
+            "pub enum Event {
+                Idle,
+                Move { x: u32, y: u32 },
+            }",
+        );
+        assert_eq!(ts, "export type Event = 'Idle' | { Move: { x: number; y: number } };");
+    }
+
+    #[test]
+    fn enum_tuple_variant_with_primitive_payload() {
+        let ts = emit_enum_default(
+            "pub enum Token {
+                Number(u32),
+                Word(String),
+            }",
+        );
+        assert_eq!(ts, "export type Token = { Number: number } | { Word: string };");
+    }
+
+    #[test]
+    fn enum_multi_field_tuple_variant_is_rejected() {
+        let config = EmitConfig::default();
+        let item = enum_item(
+            "pub enum Bad {
+                Two(u32, u32),
+            }",
+        );
+        let err = emit_enum(&item, &config).expect_err("multi-tuple variant should fail");
+        match err {
+            EmitError::UnsupportedShape { reason, .. } => {
+                assert!(reason.contains("tuple"), "reason was: {reason}");
+            }
+            other => panic!("expected UnsupportedShape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_error_propagates_from_variant_emission() {
+        let config = EmitConfig::default();
+        let item = enum_item(
+            "pub enum Bad {
+                Locked(Mutex<u32>),
+            }",
+        );
+        let err = emit_enum(&item, &config).expect_err("Mutex variant payload should fail");
+        assert!(matches!(err, EmitError::UnsupportedShape { .. }));
     }
 }
