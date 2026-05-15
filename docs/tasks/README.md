@@ -35,6 +35,7 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 | [OF-015](./OF-015-productionize-typescript-generation.md) | Medium-High | Replace the OF-014 side-car with a new `ontogen-ts` crate (build-time AST → TS emission); obsoletes the OF-019 consumer-side workarounds |
 | [OF-018](./OF-018-ts-fallback-mistokenizes-generics.md) | Low | TS bindings fallback emitter mis-tokenizes generic return types |
 | [OF-020](./OF-020-hierarchical-ts-bindings.md) | Low | Hierarchical TS bindings output (per-module directory) for codebases that outgrow flat `bindings.ts` + `#[ontogen::ts_name]` disambiguation |
+| [OF-021](./OF-021-user-defined-generics-in-ts-emitter.md) | Low | First-class support for user-defined generic types in `ontogen-ts` (phase 1 rejects them with the concrete-type-alias workaround) |
 
 ## Pumice feedback round 2 (2026-05-14)
 
@@ -59,6 +60,7 @@ Source: [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md)
 15. **OF-018** (low — TS fallback emitter mis-tokenizes generics). Closes naturally under [OF-015](./OF-015-productionize-typescript-generation.md)'s 2026-05-14 decision to remove the `FallbackRecord` warning entirely and hard-error on unsupported types — the fallback emitter goes away, the mis-tokenization can't happen.
 16. ~~**OF-019**~~ - resolved 2026-05-14; rewrote the `bindings_path` section in `guides/client-generation.mdx` to describe the OF-014 model (bindings.ts is an output; two emitters; specta opt-in for long-tail types) and added an "Integration gotchas" section covering `default-run`, `.taurignore`, and the CI disk-pressure env-gate. `cookbook/tauri-integration.mdx` recipe now ships `default-run` in step 1 and a dedicated `.taurignore` step. Iron-log gains `.taurignore`, `default-run = "iron-log"`, and an `IRON_LOG_SKIP_SERVER_CODEGEN` env-gate in `build.rs`. README "Known Issues" carries a short summary that links to the full gotchas section. Three upstream fixes (idempotent side-car writes, emit outside `src/bin/`, first-class `disable_codegen` knob) deferred to OF-015 productionization.
 17. **OF-020** (low — hierarchical TS bindings output, per-module directory structure) — speculative future work, only earns its keep if a real consumer hits collision-fatigue with [OF-015](./OF-015-productionize-typescript-generation.md)'s phase-1 flat-bindings + `#[ontogen::ts_name]` approach. Filed 2026-05-14 alongside the OF-015 design pass; not on the OF-015 critical path.
+18. **OF-021** (low — first-class user-defined generics in `ontogen-ts`) — phase 1 rejects with the concrete-type-alias workaround (`pub type PaginatedWorkouts = Paginated<Workout>`). Future work captures the two design strategies (monomorphization-as-default vs TS-generic emission via `#[ontogen::ts_generic]` opt-in) and the bound/lifetime/default open questions. Filed 2026-05-14 alongside the OF-015 design pass; priority depends on Pumice's actual generic-use count.
 
 ## Resolved
 
