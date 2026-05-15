@@ -37,6 +37,7 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 | [OF-020](./OF-020-hierarchical-ts-bindings.md) | Low | Hierarchical TS bindings output (per-module directory) for codebases that outgrow flat `bindings.ts` + `#[ontogen::ts_name]` disambiguation |
 | [OF-021](./OF-021-user-defined-generics-in-ts-emitter.md) | Low | First-class support for user-defined generic types in `ontogen-ts` (phase 1 rejects them with the concrete-type-alias workaround) |
 | [OF-022](./OF-022-richer-external-type-renderings.md) | Low | Richer external-type renderings in `ontogen-ts` (imported TS types like `moment.Moment` in addition to phase-1's primitive-only `"string"` / `"unknown"`) |
+| [OF-023](./OF-023-relocate-workspace-members-under-crates.md) | Low | Move existing workspace members (`ontogen-core/`, `ontogen-macros/`) under a `crates/` subdirectory; OF-015's new `crates/ontogen-ts/` will land there directly |
 
 ## Pumice feedback round 2 (2026-05-14)
 
@@ -63,6 +64,7 @@ Source: [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md)
 17. **OF-020** (low — hierarchical TS bindings output, per-module directory structure) — speculative future work, only earns its keep if a real consumer hits collision-fatigue with [OF-015](./OF-015-productionize-typescript-generation.md)'s phase-1 flat-bindings + `#[ontogen::ts_name]` approach. Filed 2026-05-14 alongside the OF-015 design pass; not on the OF-015 critical path.
 18. **OF-021** (low — first-class user-defined generics in `ontogen-ts`) — phase 1 rejects with the concrete-type-alias workaround (`pub type PaginatedWorkouts = Paginated<Workout>`). Future work captures the two design strategies (monomorphization-as-default vs TS-generic emission via `#[ontogen::ts_generic]` opt-in) and the bound/lifetime/default open questions. Filed 2026-05-14 alongside the OF-015 design pass; priority depends on Pumice's actual generic-use count.
 19. **OF-022** (low — richer external-type renderings: imported TS types in addition to primitives). Phase 1's `external_types: HashMap<TypePath, &'static str>` handles `"string"`/`"unknown"`-style primitive renderings; OF-022 generalizes the value type to an enum that also supports `Imported { module, name, local_name }` for `moment.Moment` / `luxon.DateTime` / branded-string patterns. Purely additive when it lands. Filed 2026-05-14 alongside the OF-015 design pass.
+20. **OF-023** (low — relocate `ontogen-core/` and `ontogen-macros/` to `crates/`). Pure repo-hygiene cleanup; no behavioural impact. OF-015's new `crates/ontogen-ts/` lands at the conventional path; OF-023 brings the existing siblings in line. ~1-2 hours. Filed 2026-05-14 alongside the OF-015 design pass.
 
 ## Resolved
 
