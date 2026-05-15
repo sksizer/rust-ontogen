@@ -681,106 +681,84 @@ mod tests {
         syn::parse_str(src).unwrap_or_else(|err| panic!("failed to parse enum `{src}`: {err}"))
     }
 
-    fn emit_struct_default(src: &str) -> String {
-        let config = EmitConfig::default();
-        emit_struct(&struct_item(src), &config).unwrap_or_else(|err| panic!("emit_struct errored: {err}"))
-    }
+    /// Drive a positive-case emission test from `tests/fixtures/<scenario>.{rs,ts}`.
+    ///
+    /// The `.rs` file holds exactly one `pub struct` or `pub enum` declaration
+    /// (no `use`, no `mod`, no surrounding code). The `.ts` file holds the
+    /// expected emitted TypeScript output, IDE-readable (no YAML wrapping).
+    ///
+    /// Both sides are `trim`-compared so a single trailing newline in the `.ts`
+    /// fixture (the canonical POSIX-friendly form) doesn't trip the assert.
+    ///
+    /// Setting `UPDATE_TS_FIXTURES=1` regenerates the `.ts` files in place
+    /// (with a single trailing newline) and skips the assertion. Run twice in
+    /// a row and the working tree should stay clean.
+    fn assert_fixture_matches(scenario: &str) {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let rs_path = format!("{manifest}/tests/fixtures/{scenario}.rs");
+        let ts_path = format!("{manifest}/tests/fixtures/{scenario}.ts");
 
-    fn emit_enum_default(src: &str) -> String {
+        let rs = std::fs::read_to_string(&rs_path).unwrap_or_else(|e| panic!("read {rs_path}: {e}"));
+        let parsed: syn::File = syn::parse_str(&rs).unwrap_or_else(|e| panic!("parse {rs_path}: {e}"));
+        let item =
+            parsed.items.into_iter().next().unwrap_or_else(|| panic!("fixture {scenario} has no top-level item"));
+
         let config = EmitConfig::default();
-        emit_enum(&enum_item(src), &config).unwrap_or_else(|err| panic!("emit_enum errored: {err}"))
+        let actual = match &item {
+            syn::Item::Struct(s) => emit_struct(s, &config),
+            syn::Item::Enum(e) => emit_enum(e, &config),
+            _ => panic!("fixture {scenario} top-level item is not a struct or enum"),
+        }
+        .unwrap_or_else(|e| panic!("emit failed for {scenario}: {e}"));
+
+        if std::env::var("UPDATE_TS_FIXTURES").is_ok() {
+            // Canonical form on disk: trimmed body plus a single trailing newline.
+            let canonical = format!("{}\n", actual.trim_end());
+            std::fs::write(&ts_path, &canonical).unwrap_or_else(|e| panic!("write {ts_path}: {e}"));
+            return;
+        }
+
+        let expected = std::fs::read_to_string(&ts_path).unwrap_or_default();
+        assert_eq!(
+            actual.trim(),
+            expected.trim(),
+            "fixture {scenario} mismatch (run with UPDATE_TS_FIXTURES=1 to refresh)"
+        );
     }
 
     #[test]
     fn struct_named_fields_emit_export_type() {
-        let ts = emit_struct_default(
-            "pub struct Workout {
-                pub id: u32,
-                pub name: String,
-                pub duration_secs: u32,
-            }",
-        );
-        assert_eq!(ts, "export type Workout = {\n  id: number;\n  name: string;\n  duration_secs: number;\n};");
+        assert_fixture_matches("struct_named_fields_emit_export_type");
     }
 
     #[test]
     fn struct_with_all_primitive_field_types() {
-        let ts = emit_struct_default(
-            "pub struct AllPrims {
-                pub a: bool,
-                pub b: u8,
-                pub c: u16,
-                pub d: u32,
-                pub e: u64,
-                pub f: i8,
-                pub g: i16,
-                pub h: i32,
-                pub i: i64,
-                pub j: f32,
-                pub k: f64,
-                pub l: String,
-            }",
-        );
-        // Each field gets its own indented line.
-        assert!(ts.starts_with("export type AllPrims = {\n"));
-        assert!(ts.contains("  a: boolean;"));
-        assert!(ts.contains("  e: number;")); // u64 default → number
-        assert!(ts.contains("  l: string;"));
-        assert!(ts.ends_with("};"));
+        assert_fixture_matches("struct_with_all_primitive_field_types");
     }
 
     #[test]
     fn struct_field_ref_str() {
-        // A `&'a str` field renders the same as `String`.
-        let ts = emit_struct_default(
-            "pub struct WithBorrowed<'a> {
-                pub name: &'a str,
-            }",
-        );
-        assert_eq!(ts, "export type WithBorrowed = {\n  name: string;\n};");
+        assert_fixture_matches("struct_field_ref_str");
     }
 
     #[test]
     fn struct_field_containers() {
-        let ts = emit_struct_default(
-            "pub struct Mix {
-                pub tags: Vec<String>,
-                pub maybe_id: Option<u32>,
-                pub lookup: HashMap<String, u32>,
-            }",
-        );
-        assert!(ts.contains("  tags: string[];"));
-        assert!(ts.contains("  maybe_id: number | null;"));
-        assert!(ts.contains("  lookup: Record<string, number>;"));
+        assert_fixture_matches("struct_field_containers");
     }
 
     #[test]
     fn struct_field_smart_pointer_box_transparent() {
-        let ts = emit_struct_default(
-            "pub struct WithBox {
-                pub child: Box<u32>,
-            }",
-        );
-        assert_eq!(ts, "export type WithBox = {\n  child: number;\n};");
+        assert_fixture_matches("struct_field_smart_pointer_box_transparent");
     }
 
     #[test]
     fn struct_field_unknown_ident_falls_through() {
-        // User-defined types fall through to terminal ident — PR 3 wires
-        // pool lookup. For now, the emission is well-formed TS referencing
-        // the as-yet-unresolved name.
-        let ts = emit_struct_default(
-            "pub struct Workout {
-                pub owner: User,
-            }",
-        );
-        assert_eq!(ts, "export type Workout = {\n  owner: User;\n};");
+        assert_fixture_matches("struct_field_unknown_ident_falls_through");
     }
 
     #[test]
     fn struct_empty_named_fields() {
-        let ts = emit_struct_default("pub struct Empty {}");
-        assert_eq!(ts, "export type Empty = {};");
+        assert_fixture_matches("struct_empty_named_fields");
     }
 
     #[test]
@@ -825,61 +803,34 @@ mod tests {
 
     #[test]
     fn enum_c_style_emits_string_literal_union() {
-        let ts = emit_enum_default(
-            "pub enum Color {
-                Red,
-                Green,
-                Blue,
-            }",
-        );
-        assert_eq!(ts, "export type Color = 'Red' | 'Green' | 'Blue';");
+        assert_fixture_matches("enum_c_style_emits_string_literal_union");
     }
 
     #[test]
     fn enum_single_variant_c_style() {
-        let ts = emit_enum_default("pub enum Singleton { Only }");
-        assert_eq!(ts, "export type Singleton = 'Only';");
+        assert_fixture_matches("enum_single_variant_c_style");
     }
 
     #[test]
     fn enum_empty_emits_never() {
-        let ts = emit_enum_default("pub enum Void {}");
-        assert_eq!(ts, "export type Void = never;");
+        assert_fixture_matches("enum_empty_emits_never");
     }
 
     #[test]
     fn enum_tuple_variant_externally_tagged() {
         // Default serde emission for a tuple-payload variant is the
         // externally-tagged shape: `{"V": payload}`.
-        let ts = emit_enum_default(
-            "pub enum Msg {
-                Ping,
-                Click(ClickPayload),
-            }",
-        );
-        assert_eq!(ts, "export type Msg = 'Ping' | { Click: ClickPayload };");
+        assert_fixture_matches("enum_tuple_variant_externally_tagged");
     }
 
     #[test]
     fn enum_struct_variant_externally_tagged() {
-        let ts = emit_enum_default(
-            "pub enum Event {
-                Idle,
-                Move { x: u32, y: u32 },
-            }",
-        );
-        assert_eq!(ts, "export type Event = 'Idle' | { Move: { x: number; y: number } };");
+        assert_fixture_matches("enum_struct_variant_externally_tagged");
     }
 
     #[test]
     fn enum_tuple_variant_with_primitive_payload() {
-        let ts = emit_enum_default(
-            "pub enum Token {
-                Number(u32),
-                Word(String),
-            }",
-        );
-        assert_eq!(ts, "export type Token = { Number: number } | { Word: string };");
+        assert_fixture_matches("enum_tuple_variant_with_primitive_payload");
     }
 
     #[test]
