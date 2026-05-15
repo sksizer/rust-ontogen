@@ -1,6 +1,6 @@
 ---
-status: ready
-last_reviewed: 2026-05-14
+status: in-progress
+last_reviewed: 2026-05-15
 ---
 # OF-015 PR 1 — Scaffold `crates/ontogen-ts/` + per-type emission
 
