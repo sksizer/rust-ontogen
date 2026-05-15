@@ -1,6 +1,7 @@
 ---
-status: in-progress
-last_reviewed: 2026-05-14
+status: done
+last_reviewed: 2026-05-15
+relevance_note: Shipped via #54 — ontogen-core/ and ontogen-macros/ relocated to crates/ via git mv; merge commit 5944307.
 ---
 # OF-023 - Move workspace members under a `crates/` subdirectory
 
