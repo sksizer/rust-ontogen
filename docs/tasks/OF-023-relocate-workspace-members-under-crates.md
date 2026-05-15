@@ -1,5 +1,6 @@
 ---
-status: open
+status: in-progress
+last_reviewed: 2026-05-14
 ---
 # OF-023 - Move workspace members under a `crates/` subdirectory
 
@@ -54,6 +55,16 @@ Out:
 ## Effort
 
 Small. Probably 1-2 hours total — `git mv`, two `Cargo.toml` edits, a `grep -r "ontogen-core\|ontogen-macros" docs site README.md` to catch reference rot, `just full-check`, `cargo build` in iron-log, commit. The risk is incidental — easy to forget one path reference and have CI fail; the grep pass + `cargo check` catches both.
+
+## Acceptance criteria
+
+- [ ] AC-1: `ontogen-core/` is relocated to `crates/ontogen-core/` and `ontogen-macros/` is relocated to `crates/ontogen-macros/`, performed with `git mv` so history is preserved (`git log --follow crates/ontogen-core/Cargo.toml` and `git log --follow crates/ontogen-macros/Cargo.toml` both reach pre-move history).
+- [ ] AC-2: Root `Cargo.toml` workspace `members` becomes `[".", "crates/ontogen-core", "crates/ontogen-macros"]`, and its `[dependencies]` entries for `ontogen-core` / `ontogen-macros` point at `path = "crates/ontogen-core"` / `path = "crates/ontogen-macros"` (versions and other keys unchanged).
+- [ ] AC-3: `examples/iron-log/src-tauri/Cargo.toml`'s `ontogen-macros` path-dep updates from `../../../ontogen-macros` to `../../../crates/ontogen-macros`. The `ontogen` build-dep at `../../../` is left alone (root path is unchanged).
+- [ ] AC-4: A repo-wide search for the legacy paths (`grep -rIn --exclude-dir=target --exclude-dir=node_modules -e 'ontogen-core/' -e 'ontogen-macros/' .`) returns zero stale references in tracked files outside `docs/tasks/` (historical task entries may keep their pre-move wording).
+- [ ] AC-5: `just full-check` passes cleanly in the worktree after the move.
+- [ ] AC-6: `cargo build` succeeds in `examples/iron-log/src-tauri/` against the relocated path-deps (build script + crate compile end-to-end).
+- [ ] AC-7: Workspace root `ontogen` crate (`src/` at the repo root) is **not** moved — its package shape on crates.io is preserved per the "Out of scope" note.
 
 ## Open questions
 
