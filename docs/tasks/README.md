@@ -32,7 +32,7 @@ Items surfaced while integrating ontogen into Pumice. Source: [`docs/feedback.md
 | [OF-012](./OF-012-skip-marker-helpers.md) | Low | File-level skip marker for helper modules in `api/v1/` |
 | [OF-013](./OF-013-ast-param-to-owned-type.md) | Medium | AST-ify `param_to_owned_type` for unsized-DST inner types (follow-up from OF-011) |
 | [OF-014](./OF-014-redesign-ts-bindings-pipeline.md) | Medium | Redesign the TypeScript bindings / type-generation pipeline (spawned from OF-006) |
-| [OF-015](./OF-015-productionize-typescript-generation.md) | Medium-High | Productionize the TypeScript generation pipeline (OF-014 follow-up) |
+| [OF-015](./OF-015-productionize-typescript-generation.md) | Medium-High | Replace the OF-014 side-car with a new `ontogen-ts` crate (build-time AST → TS emission); obsoletes the OF-019 consumer-side workarounds |
 | [OF-018](./OF-018-ts-fallback-mistokenizes-generics.md) | Low | TS bindings fallback emitter mis-tokenizes generic return types |
 
 ## Pumice feedback round 2 (2026-05-14)
@@ -51,7 +51,7 @@ Source: [`docs/feedback/2026-05-14-pumice.md`](../feedback/2026-05-14-pumice.md)
 8. ~~**OF-007**~~ - resolved in `773d059` (2026-05-12); `#[ontogen::stateless]` no-op proc-macro opts a fn out of the state-first-param rule.
 9. ~~**OF-003**~~ - resolved in `ef63a0d` (2026-05-12); `#[ontogen(rename = "...")]` proc-macro attribute + `NamingConfig::command_overrides` config map, source-wins.
 10. ~~**OF-014**~~ - design pass + option 1 + option 3 hybrid spike landed `c87ba64` (2026-05-13) on `worktree-of-014-spike-option-3`; spawned [OF-015](./OF-015-productionize-typescript-generation.md) for productionization.
-11. **OF-015** (productionize the TS generation pipeline; closes spike-grade shortcuts, ships user-facing guide, decides OF-006 warning fate).
+11. **OF-015** (replace the OF-014 side-car with a new `ontogen-ts` crate doing build-time AST→TS emission, sibling to `ontogen-core`/`ontogen-macros`). Rewritten 2026-05-14 from "productionize the spike" to "replace the spike" after a design pass found that six of OF-014's eight punch-list items were side-car symptoms that evaporate under the new direction. Phase 1: pool-in API, supported-subset validation, serde rename family (`rename`/`rename_all`/`skip`), external-types table, `#[ontogen::ts_opaque]` escape hatch, side-car deletion + iron-log cleanup + OF-019 doc rollback. Phase 2 (deferred): `tag`/`content`/`untagged`/`flatten` shape attrs. Decides OF-006 warning fate alongside.
 12. ~~**OF-009**~~ - resolved in `2804753` (2026-05-13); docs-only -- `NamingConfig` rustdoc and the configuration reference now carry a verified "mass nouns and Latin plural-tantums" callout.
 13. ~~**OF-017**~~ - resolved in `207aa96` (2026-05-14); dropped the `Input`/`Query` substring gate at all three generator call sites and added the missing return-type walk in `mcp.rs`. The post-OF-008/10 AST walker filters primitives, qualified paths, and known containers on its own; the gate was a holdover from the pre-AST walker and no longer earned its keep.
 14. ~~**OF-016**~~ - resolved in `b2f882c` (2026-05-14); classifier now consults the first-param AST so `get_*` with a body-carrying custom struct routes as `CustomPost` instead of forcing a broken `GET /api/...:filter` with `Path<String>`. Also replaces the name-based `is_read_operation` with `is_read_op(&OpKind)` so the classification result is the single source of truth across the pipeline.
