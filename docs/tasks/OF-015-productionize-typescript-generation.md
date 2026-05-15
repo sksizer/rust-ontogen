@@ -1,5 +1,6 @@
 ---
 status: open
+last_reviewed: 2026-05-14
 ---
 # OF-015 - Replace the TS bindings side-car with `ontogen-ts`
 
@@ -135,6 +136,101 @@ Rough breakdown (single dev, focused weeks):
 | User-facing docs (new guide + revisions to existing pages)              | 1 day   |
 | Pumice integration validation                                           | 1 day   |
 | **Total**                                                               | ~8 days |
+
+## PR breakdown
+
+Phase-1 implementation lands as a sequence of 8 PRs, each against `main` from a branch in the `worktree-of-015-ontogen-ts` worktree. Each PR represents shippable state — CI green, workspace builds — and references the ACs below it satisfies. Earlier PRs are library scaffolding (no behavioural change to ontogen); PR 5 is the functional cutover (ontogen-ts replaces the side-car in `gen_servers`); PR 6 deletes the now-dead side-car code; PR 7 validates against Pumice; PR 8 ships docs.
+
+| PR | Scope | Stages | Satisfies ACs |
+|----|-------|--------|---------------|
+| 1  | `crates/ontogen-ts/` scaffold + per-type emission (struct + enum, primitives + hardcoded containers + smart-pointer peel) | 1 + 2 | AC-1, AC-2, AC-3 |
+| 2  | Serde rename engine (8 modes, our own transforms, property tests vs `serde_json::to_string`) | 3 | AC-4 |
+| 3  | Type collection, topological ordering, use-resolution, external-types table | 4 + 5 | AC-5, AC-6, AC-7 |
+| 4  | Top-level `emit` entry point + `#[ontogen::ts_opaque]` / `#[ontogen::ts_name]` proc-macro attrs | 6 + 7 | AC-8, AC-9, AC-10 |
+| 5  | Ontogen wiring — `gen_servers` calls `ontogen_ts::emit` instead of `ts_sidecar::generate`; side-car code still present but unused | 8 | AC-11 |
+| 6  | Side-car deletion + iron-log workaround cleanup + `FallbackRecord` removal | 9 | AC-12, AC-13, AC-14 |
+| 7  | Pumice integration validation + any subset-gap backports into earlier PRs | 10 | AC-15 |
+| 8  | User-facing docs (new TS-bindings guide, `client-generation.mdx` rewrite, OF-019 doc rollback) | 11 | AC-16 |
+
+## Acceptance criteria
+
+- [ ] **AC-1**: `crates/ontogen-ts/` exists as a workspace member with `Cargo.toml` registering `[lib]` and depending on `syn` + `quote` (and any other phase-1 deps). Root `Cargo.toml`'s `workspace.members` includes `"crates/ontogen-ts"`. `cargo build -p ontogen-ts` succeeds on a clean target dir.
+- [ ] **AC-2**: Public API surface matches the design pass:
+  - `pub fn emit(roots: &[TypePath], type_pool: &BTreeMap<TypePath, syn::Item>, config: &EmitConfig) -> Result<String, Vec<EmitError>>`
+  - `pub struct TypePath(Vec<String>)` newtype with constructor that rejects empty paths
+  - `pub struct EmitConfig { external_types, bigint_behavior, case_default, strict_unsupported }`
+  - `pub enum EmitError { UnsupportedShape, UnsupportedSerdeAttr, UnresolvedReference, NameCollision }` with structured fields per the design pass
+- [ ] **AC-3**: Per-type emission produces correct TS for the phase-1 supported subset:
+  - Named structs with primitive fields (all integers, `f32`/`f64`, `bool`, `String`, `&str`) emit `{ field: tsType, ... }`
+  - `Option<T>` → `T | null`; `Vec<T>` → `T[]`; `HashMap<K, V>` / `BTreeMap<K, V>` → `Record<K, V>` (K must be `String` or id-like primitive)
+  - C-style enums emit `'Variant1' | 'Variant2' | ...`
+  - Tagged enums (variant-name-only, no `#[serde(tag)]` yet) emit per phase-1 representation rules
+  - Smart-pointer wrappers (`Box`, `Rc`, `Arc`, `Cow`, `Pin`) peeled transparently
+  - Reference types (`&str`, `&[T]`) normalized through the same path as their owned counterparts
+- [ ] **AC-4**: Serde rename family works correctly, validated by property tests:
+  - `#[serde(rename = "wireName")]` on fields and enum variants substitutes the wire name
+  - `#[serde(rename_all = "...")]` on containers covers all 8 serde modes (`lowercase`, `UPPERCASE`, `PascalCase`, `camelCase`, `snake_case`, `SCREAMING_SNAKE_CASE`, `kebab-case`, `SCREAMING-KEBAB-CASE`)
+  - Field-level `rename` wins over container `rename_all` (precedence preserved)
+  - `#[serde(skip)]` drops the field from TS emission
+  - At least 20 fixture round-trips through `serde_json::to_string` confirm wire-name equality (acronym + digit edge cases included: `HTMLParser → htmlParser`, `parse_url_v2 → parseUrlV2`, etc.)
+- [ ] **AC-5**: External-types table works as designed:
+  - Default set shipped: `chrono::DateTime`, `chrono::NaiveDate`, `chrono::NaiveDateTime`, `chrono::NaiveTime`, `time::OffsetDateTime`, `time::PrimitiveDateTime`, `time::Date`, `time::Time`, `uuid::Uuid`, `url::Url`, `std::path::PathBuf`, `std::net::IpAddr`, `std::net::Ipv4Addr`, `std::net::Ipv6Addr` → `"string"`; `serde_json::Value` → `"unknown"`
+  - User-provided overrides via `EmitConfig.external_types` merge on top (user wins on conflict)
+  - Walker matches against canonical paths (`chrono::DateTime`), not terminal idents — generic args stripped at match time so `DateTime<Utc>`, `DateTime<Local>`, etc. all hit the same entry
+- [ ] **AC-6**: Type collection and ordering work as designed:
+  - `type_pool` keyed by canonical `TypePath`, value `syn::Item` (struct, enum, or alias)
+  - Pool walker collects every module-level `ItemStruct` / `ItemEnum` / `ItemType` under user's `src/`, regardless of visibility
+  - Roots reach transitive closure via field-type walking
+  - Cycles detected (self-referential types emit as `interface X { children: X[] }`-equivalent)
+  - Output ordering is deterministic: topological by reference, alphabetical-by-canonical-path within each topo level
+  - `BTreeMap` / `BTreeSet` used throughout — HashMap iteration order never leaks into output
+- [ ] **AC-7**: Use-resolution works correctly:
+  - Per-file `use` declarations parsed during `type_pool` construction
+  - One-segment refs (`DateTime`) resolve through the file's imports table to canonical paths (`chrono::DateTime`)
+  - Multi-segment refs (`chrono::DateTime`, `crate::foo::Bar`) taken as-qualified; `crate::` prefix stripped for local-type pool lookup
+  - Glob imports (`use chrono::*`) rejected at resolution time with `UnresolvedReference` carrying a hint pointing the user at qualification or explicit `use`
+  - Re-exports: canonical pool key is path-where-defined; re-export resolution happens before pool lookup
+- [ ] **AC-8**: Top-level `emit` function correctly composes collection + validation + emission:
+  - All errors collected into `Vec<EmitError>` before failing (no first-error fail-fast)
+  - Hard error on unsupported shapes — no `FallbackRecord` placeholder, no warning-and-continue
+  - Build-fail UX: each `EmitError` renders as a `cargo:warning` line, then `panic!` with summary
+  - End-to-end test on a synthetic crate covering primitives, containers, references, serde renames, external types, and at least one negative case (unsupported shape) all in one fixture
+- [ ] **AC-9**: Proc-macro attrs land in `crates/ontogen-macros/`:
+  - `#[ontogen::ts_opaque(target = "MyTsAlias")]` — walker treats the type as terminal; emits the target string at reference sites without recursing into the type's fields
+  - `#[ontogen::ts_name = "FooStats"]` — overrides the default terminal-ident TS name during emission and collision-detection; JSON wire unaffected (serde never sees the attr)
+  - Both attrs are no-ops at Rust compile time (no token generation; ontogen-ts reads them via syn AST inspection)
+- [ ] **AC-10**: Name-collision detection works:
+  - Two reachable types emitting to the same TS name (post-`ts_name` resolution) fail with `EmitError::NameCollision { name, paths }` listing all colliding canonical paths
+  - Error human-renders with fix-path hints in priority order: `#[ontogen::ts_name = "..."]`, `#[ontogen::ts_opaque(target = "...")]`, Rust-side rename
+  - Unreachable collisions (two same-named types in the pool that neither reach from a root) do not error
+- [ ] **AC-11**: Ontogen pipeline wiring uses ontogen-ts:
+  - `src/servers/mod.rs::generate_transport` calls `ontogen_ts::emit` instead of `ts_sidecar::generate` for the long-tail emission slice
+  - `type_pool` constructed by walking `.rs` files under the user's `src/` (path derived from build-script invocation context)
+  - Root names harvested from existing `ts_bindings::referenced_ts_types` / `ts_bindings::long_tail` partitions
+  - `EmitError`s surfaced as `cargo:warning` lines + panic, same shape as existing `CodegenError` handling
+  - `cargo:rerun-if-changed` emitted for every source file referenced during emission (one per file in the type_pool's reach-set)
+  - Iron-log builds clean: `cargo build` in `examples/iron-log/src-tauri/` succeeds; `bindings.ts` content equivalent or better than the side-car's output (no missing types, no extra noise)
+- [ ] **AC-12**: Side-car infrastructure fully deleted:
+  - `src/servers/generators/ts_sidecar.rs` removed
+  - `src/servers/mod.rs::sidecar_lib_crate_name` and `sidecar_types_module_path` helpers removed
+  - `ONTOGEN_TS_SIDECAR_INNER` env guard removed from `generate_transport`
+  - `FallbackRecord` type and warning-emission paths in `transport.rs` / `ts_client.rs` removed
+  - No `cargo run` of an inner build-script binary anywhere in `gen_servers`'s code path
+- [ ] **AC-13**: Iron-log example cleanup:
+  - `examples/iron-log/src-tauri/.taurignore` deleted (no longer needed without the side-car)
+  - `default-run = "iron-log"` removed from `examples/iron-log/src-tauri/Cargo.toml [package]` (the side-car bin no longer exists, so `cargo run` is unambiguous)
+  - `IRON_LOG_SKIP_SERVER_CODEGEN` env-gate removed from `examples/iron-log/src-tauri/build.rs` (no more CI disk-pressure concern)
+  - `specta-typescript = "=0.0.10"` removed from `[dependencies]` (the long-tail-emitter dep is gone). `specta` itself stays — Tauri IPC bridge uses it.
+- [ ] **AC-14**: End-to-end iron-log build is clean post-cleanup: `cargo build` in `examples/iron-log/src-tauri/` succeeds with zero fallback warnings; `src/bin/__ontogen_ts_export.rs` is no longer regenerated; `bindings.ts` (`examples/iron-log/src-nuxt/app/generated/types.ts`) contains all expected entity + DTO + long-tail types in deterministic order.
+- [ ] **AC-15**: Pumice integration validates phase-1's supported subset covers their full long-tail. Run ontogen-ts against Pumice's current branch before declaring phase 1 done; catalog any unsupported-shape errors; if any surface, backport fixes to PRs 1-4 *before* PR 6 (side-car deletion) lands, so Pumice retains a working fallback throughout. After fixes, Pumice's build is clean against the new pipeline.
+- [ ] **AC-16**: User-facing docs land:
+  - New `site/src/content/docs/guides/typescript-bindings.mdx` — the end-to-end TS-bindings guide OF-006 originally asked for, now describing the ontogen-ts model
+  - `site/src/content/docs/guides/client-generation.mdx` `bindings_path` section rewritten to reflect ontogen-ts (replaces the OF-019 spike-grade prose); "Integration gotchas" section removed (no longer applicable)
+  - `site/src/content/docs/cookbook/tauri-integration.mdx`: `.taurignore` step removed; `default-run` removed from recipe Cargo.toml; subsequent steps renumbered
+  - `README.md`: third "Known Issues" bullet (OF-019 summary) removed
+  - Supported subset documented (struct shapes, enum shapes, container handling, smart-pointer transparency, external-types table)
+  - `#[ontogen::ts_opaque]` and `#[ontogen::ts_name]` attrs documented with examples
+- [ ] **AC-17**: After all PRs land, `just full-check` passes on main; `cargo build` in `examples/iron-log/src-tauri/` succeeds; CI workflows pass.
 
 ## Decisions captured during the design pass (2026-05-14)
 
