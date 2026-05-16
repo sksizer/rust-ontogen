@@ -1,6 +1,6 @@
 ---
-status: closed
-resolution: fixed
+status: closed/done
+completion_note: "Shipped in 7c056fe on 2026-05-12 (sibling of OF-008, fixed together)."
 ---
 # OF-010 - `collect_type_import` should recurse into multi-arg generics
 

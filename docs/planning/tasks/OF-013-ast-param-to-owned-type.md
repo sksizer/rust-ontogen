@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-12
-resolution_commit: 71d76ce
+status: closed/done
+completion_note: "Shipped in 71d76ce on 2026-05-12."
 ---
 # OF-013 - AST-ify `param_to_owned_type` so unsized-DST inner types yield correct owned forms
 

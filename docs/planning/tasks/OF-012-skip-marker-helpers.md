@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-12
-resolution_commit: 84d76dd
+status: closed/done
+completion_note: "Shipped in 84d76dd on 2026-05-12."
 ---
 # OF-012 - File-level skip marker for helper modules in `api/v1/`
 

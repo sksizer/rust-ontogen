@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-12
-resolution_commit: d770838
+status: closed/done
+completion_note: "Shipped in d770838 on 2026-05-12."
 ---
 # OF-002 - Singleton module URL pluralization
 

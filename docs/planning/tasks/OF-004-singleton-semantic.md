@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-12
-resolution_commit: d770838
+status: closed/done
+completion_note: "Shipped in d770838 on 2026-05-12."
 ---
 # OF-004 - First-class singleton-module semantic for downstream generators
 

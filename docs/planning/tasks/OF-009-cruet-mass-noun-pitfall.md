@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-13
-resolution_commit: 2804753
+status: closed/done
+completion_note: "Shipped in 2804753 on 2026-05-13."
 ---
 # OF-009 - Document or default-override cruet mass-noun singularization
 

@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-12
-resolution_commit: 8bed7f7
+status: closed/done
+completion_note: "Shipped in 8bed7f7 on 2026-05-12."
 ---
 # OF-006 - Warn on TS bindings fallback to `Record<string, unknown>`
 

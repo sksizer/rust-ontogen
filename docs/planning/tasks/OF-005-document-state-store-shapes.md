@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-12
-resolution_commit: 919b74a
+status: closed/done
+completion_note: "Shipped in 919b74a on 2026-05-12."
 ---
 # OF-005 - Document accepted `state_type` / `store_type` first-param shapes
 

@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-12
-resolution_commit: 919b74a
+status: closed/done
+completion_note: "Shipped in 919b74a on 2026-05-12."
 ---
 # OF-001 - Emit diagnostic when parser skips a non-matching `pub fn`
 

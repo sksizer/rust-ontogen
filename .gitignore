@@ -6,3 +6,12 @@ target/
 .idea
 .darkfactory/worktrees/
 .darkfactory/transcripts/
+
+# obsidian
+.obsidian
+
+
+# claude
+.claude
+
+.DS_Store

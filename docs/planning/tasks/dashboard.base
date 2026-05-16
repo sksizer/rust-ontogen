@@ -3,7 +3,7 @@ views:
     name: Table
     filters:
       and:
-        - file.path.startsWith("tasks")
+        - file.path.startsWith("planning/tasks")
         - file.ext == "md"
         - file.name != "README"
     order:

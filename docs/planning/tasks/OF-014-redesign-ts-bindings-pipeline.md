@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-13
-resolution_commit: c87ba64
+status: closed/done
+completion_note: "Shipped in c87ba64 on 2026-05-13 (design-pass + spike; productionization tracked in OF-015)."
 ---
 # OF-014 - Redesign the TypeScript bindings / type-generation pipeline
 

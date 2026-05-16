@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-12
-resolution_commit: ef63a0d
+status: closed/done
+completion_note: "Shipped in ef63a0d on 2026-05-12."
 ---
 # OF-003 - Per-function command-name override
 

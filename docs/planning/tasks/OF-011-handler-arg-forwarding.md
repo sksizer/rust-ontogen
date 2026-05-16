@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-12
-resolution_commit: 387d460
+status: closed/done
+completion_note: "Shipped in 387d460 on 2026-05-12."
 ---
 # OF-011 - Make handler argument forwarding consistent and fix `.as_deref()` for non-Deref `Option<T>`
 

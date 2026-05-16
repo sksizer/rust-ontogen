@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-12
-resolution_commit: 773d059
+status: closed/done
+completion_note: "Shipped in 773d059 on 2026-05-12."
 ---
 # OF-007 - Support pure utility functions without a no-op state parameter
 

@@ -1,6 +1,6 @@
 ---
-status: closed
-resolution: fixed
+status: closed/done
+completion_note: "Shipped in 7c056fe on 2026-05-12 (sibling of OF-010, fixed together)."
 ---
 # OF-008 - `inner_type` should recursively strip `Option<T>` and other wrappers
 

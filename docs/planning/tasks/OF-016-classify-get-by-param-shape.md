@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-14
-resolution_commit: b2f882c
+status: closed/done
+completion_note: "Shipped in b2f882c on 2026-05-14."
 ---
 # OF-016 - `get_*` classifier ignores param shape, forces HTTP GET + `Path<String>`
 

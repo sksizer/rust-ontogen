@@ -1,8 +1,6 @@
 ---
-status: closed
-resolution: fixed
-resolution_date: 2026-05-14
-resolution_commit: 207aa96
+status: closed/done
+completion_note: "Shipped in 207aa96 on 2026-05-14."
 ---
 # OF-017 - Param type-import collector is gated by `Input`/`Query` substring filter
 
