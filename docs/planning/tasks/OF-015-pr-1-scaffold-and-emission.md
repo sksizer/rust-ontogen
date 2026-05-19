@@ -1,4 +1,5 @@
 ---
+schema_version: '1'
 status: in-progress
 last_reviewed: 2026-05-15
 epic: ts-pipeline

@@ -1,4 +1,5 @@
 ---
+schema_version: '1'
 status: open
 last_reviewed: 2026-05-14
 ---

@@ -1,4 +1,5 @@
 ---
+schema_version: '1'
 status: open
 ---
 # OF-018 - TS bindings fallback emitter mis-tokenizes generic return types

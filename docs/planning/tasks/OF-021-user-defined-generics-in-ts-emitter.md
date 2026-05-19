@@ -1,4 +1,5 @@
 ---
+schema_version: '1'
 status: open
 ---
 # OF-021 - Support user-defined generic types in `ontogen-ts`
