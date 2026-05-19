@@ -35,6 +35,7 @@
 //! `#[ontogen::ts_opaque]` / `#[ontogen::ts_name]` proc-macro attrs (PR 4)
 //! are not implemented here.
 
+mod attr;
 mod emit;
 mod rename;
 mod types;
