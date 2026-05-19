@@ -22,16 +22,21 @@
 //! See `docs/tasks/OF-015-productionize-typescript-generation.md` for the
 //! full design pass.
 //!
-//! # PR series state (PR 1 of 8)
+//! # PR series state (PR 2 of 8)
 //!
-//! PR 1 lands the crate scaffold, public API types, and per-type emission
-//! (`emit_type`, `emit_struct`, `emit_enum`). The top-level [`emit`] entry
-//! point's body is `todo!()`; PRs 2-4 wire it. Serde renames (PR 2), type
-//! collection / use-resolution / external-types lookup (PR 3), and
+//! PR 1 landed the crate scaffold, public API types, and per-type emission
+//! (`emit_type`, `emit_struct`, `emit_enum`). PR 2 adds the serde rename
+//! family — `#[serde(rename = "...")]` on fields/variants,
+//! `#[serde(rename_all = "...")]` on containers (all 8 modes),
+//! `#[serde(skip)]` on fields, and field-level-wins-over-container
+//! precedence — and wires it into struct/enum emission. The top-level
+//! [`emit`] entry point's body is still `todo!()`; PRs 3-4 wire it.
+//! Type collection / use-resolution / external-types lookup (PR 3) and
 //! `#[ontogen::ts_opaque]` / `#[ontogen::ts_name]` proc-macro attrs (PR 4)
 //! are not implemented here.
 
 mod emit;
+mod rename;
 mod types;
 
 pub use emit::emit;
