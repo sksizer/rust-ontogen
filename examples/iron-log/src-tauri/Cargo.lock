@@ -2596,6 +2596,7 @@ dependencies = [
  "cruet",
  "ontogen-core",
  "ontogen-macros",
+ "ontogen-ts",
  "quote",
  "syn 2.0.117",
 ]
@@ -2607,6 +2608,17 @@ version = "0.1.0"
 [[package]]
 name = "ontogen-macros"
 version = "0.1.0"
+dependencies = [
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "ontogen-ts"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "option-ext"
