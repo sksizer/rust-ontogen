@@ -22,6 +22,17 @@
 //!   [`EmitError::UnresolvedReference`] when a one-segment ref needs them
 //!   for resolution, since walking the imported crate's source is out of
 //!   phase-1 scope.
+//!
+//! `#[allow(dead_code)]` is module-wide: PR 3 lands these helpers behind a
+//! test-only surface; production callers (the `order::DepCollector` walker
+//! and `emit::emit_type`'s fall-through) use simpler conservative
+//! path-classification today. A later PR will thread per-file
+//! `FileImports` through the production dep extractor so single-segment
+//! references resolve to canonical paths. Tests exercise every function
+//! below; the allow exists only because production callers haven't been
+//! wired in yet.
+
+#![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
 

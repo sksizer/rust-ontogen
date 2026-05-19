@@ -198,6 +198,7 @@ dependencies = [
  "insta",
  "ontogen-core",
  "ontogen-macros",
+ "ontogen-ts",
  "quote",
  "syn",
  "tempfile",

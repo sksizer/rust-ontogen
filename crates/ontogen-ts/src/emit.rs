@@ -314,6 +314,7 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
 ///
 /// `#[serde(skip)]` (and the `skip_serializing` / `skip_deserializing` siblings)
 /// drops the field entirely.
+#[allow(dead_code)] // tests-only convenience wrapper; production calls _named directly.
 pub(crate) fn emit_struct(item: &ItemStruct, config: &EmitConfig) -> Result<String, EmitError> {
     emit_struct_named(item, config, None)
 }
@@ -444,6 +445,7 @@ fn is_valid_ts_ident(s: &str) -> bool {
 /// Empty enums (`enum Foo {}`) emit as `never` since they have no
 /// inhabitants — matches `serde_json::to_string`'s effective behavior
 /// (calling code can't ever construct a value).
+#[allow(dead_code)] // tests-only convenience wrapper; production calls _named directly.
 pub(crate) fn emit_enum(item: &ItemEnum, config: &EmitConfig) -> Result<String, EmitError> {
     emit_enum_named(item, config, None)
 }
