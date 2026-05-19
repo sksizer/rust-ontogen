@@ -22,22 +22,28 @@
 //! See `docs/tasks/OF-015-productionize-typescript-generation.md` for the
 //! full design pass.
 //!
-//! # PR series state (PR 2 of 8)
+//! # PR series state (PR 3 of 8)
 //!
-//! PR 1 landed the crate scaffold, public API types, and per-type emission
-//! (`emit_type`, `emit_struct`, `emit_enum`). PR 2 adds the serde rename
-//! family — `#[serde(rename = "...")]` on fields/variants,
-//! `#[serde(rename_all = "...")]` on containers (all 8 modes),
-//! `#[serde(skip)]` on fields, and field-level-wins-over-container
-//! precedence — and wires it into struct/enum emission. The top-level
-//! [`emit`] entry point's body is still `todo!()`; PRs 3-4 wire it.
-//! Type collection / use-resolution / external-types lookup (PR 3) and
-//! `#[ontogen::ts_opaque]` / `#[ontogen::ts_name]` proc-macro attrs (PR 4)
-//! are not implemented here.
+//! PR 1 landed the crate scaffold, public API types, and per-type emission.
+//! PR 2 added the serde rename family (rename / rename_all / skip across
+//! containers, fields, variants). PR 3 adds the type-pool walker, per-file
+//! `use`-resolution + canonical-path normalization, the external-types
+//! table (with shipped defaults + user override merge), and topological
+//! ordering over the dependency graph via Kahn's algorithm — every map and
+//! set used along the way is a `BTreeMap` / `BTreeSet` so emission order is
+//! deterministic by construction.
+//!
+//! The top-level [`emit`] entry point's body is still `todo!()`; PR 4 wires
+//! the pieces together. `#[ontogen::ts_opaque]` / `#[ontogen::ts_name]`
+//! proc-macro attrs (PR 4) are not implemented here.
 
 mod attr;
 mod emit;
+mod external;
+mod order;
+mod pool;
 mod rename;
+mod resolve;
 mod types;
 
 pub use emit::emit;
