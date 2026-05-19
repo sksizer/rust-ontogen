@@ -252,36 +252,72 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
         }
     }
 
-    // OF-014 spike (option 3 half): for the long tail, write a side-car
-    // binary into the user's crate, build+run it via cargo with a distinct
-    // CARGO_TARGET_DIR (avoids the parent cargo's target-dir lock — see
-    // rust-lang/cargo#8938), and append its stdout to bindings.ts. After
-    // this runs, the existing client generators below see a fully-populated
-    // bindings.ts and emit zero FallbackRecords.
-    //
-    // Env guard: the inner cargo invocation re-runs the user's build.rs,
-    // which would otherwise recurse into this block forever. The guard
-    // breaks the loop; the inner build still runs schema-known emission
-    // (idempotent) but skips re-invoking the side-car.
-    let in_sidecar_inner = std::env::var("ONTOGEN_TS_SIDECAR_INNER").is_ok();
+    // OF-015 (PR 5): replaces the OF-014 side-car spike with a build-time
+    // AST emission via the `ontogen-ts` crate. For the long tail, scan the
+    // user crate's `src/` into a type pool, resolve each long-tail name to
+    // a `TypePath`, and call `ontogen_ts::emit` to produce the TS for the
+    // reachable closure. Append the result to every bindings.ts. The
+    // ontogen-ts walker reads `syn::Item` directly — no cargo invocation,
+    // no side-car binary, no target-dir contention, no `ONTOGEN_TS_SIDECAR_INNER`
+    // recursion guard needed. The side-car code (`ts_sidecar.rs`,
+    // `sidecar_lib_crate_name`, `sidecar_types_module_path`, the guard
+    // env var) stays in-tree but unused; PR 6 deletes it.
     let long_tail = generators::ts_bindings::long_tail(&modules, config, &config.schema_entities);
-    if !in_sidecar_inner && !long_tail.is_empty() && !written_bindings.is_empty() {
+    if !long_tail.is_empty() && !written_bindings.is_empty() {
         let manifest_dir = std::path::PathBuf::from(
             std::env::var("CARGO_MANIFEST_DIR")
-                .map_err(|_| "CARGO_MANIFEST_DIR not set; ts_export side-car only runs from a build script")?,
+                .map_err(|_| "CARGO_MANIFEST_DIR not set; ontogen-ts only runs from a build script")?,
         );
-        let lib_crate_name = sidecar_lib_crate_name(&manifest_dir)?;
-        let types_module_path = sidecar_types_module_path(&config.types_import_path);
-        let source = generators::ts_sidecar::generate_sidecar_source(&lib_crate_name, &types_module_path, &long_tail);
-        generators::ts_sidecar::write_sidecar_source(&manifest_dir, &source);
-        let target_dir = std::path::PathBuf::from(
-            std::env::var("OUT_DIR").map_err(|_| "OUT_DIR not set; ts_export side-car needs build-script env")?,
-        )
-        .join("ontogen-ts-sidecar-target");
-        let ts = generators::ts_sidecar::run_sidecar(&manifest_dir, &target_dir)?;
+        let src_dir = manifest_dir.join("src");
+
+        // 1. Build the type pool from src/.
+        let pool = ontogen_ts::scan_src_dir(&src_dir).map_err(|e| format!("ontogen-ts pool scan failed: {e}"))?;
+
+        // 2. Resolve each long-tail name to a TypePath. Try a single-
+        //    segment match first (matches items defined in src/lib.rs);
+        //    fall back to any pool entry whose terminal segment matches
+        //    (covers items in nested modules).
+        let mut roots: Vec<ontogen_ts::TypePath> = Vec::with_capacity(long_tail.len());
+        let mut missing: Vec<String> = Vec::new();
+        for name in &long_tail {
+            let bare = ontogen_ts::TypePath::new(vec![name.clone()]).expect("long_tail names are non-empty idents");
+            if pool.contains_key(&bare) {
+                roots.push(bare);
+            } else if let Some(matched) = pool.keys().find(|p| p.terminal() == name.as_str()).cloned() {
+                roots.push(matched);
+            } else {
+                missing.push(name.clone());
+            }
+        }
+        if !missing.is_empty() {
+            for name in &missing {
+                println!("cargo:warning=ontogen-ts: long-tail type `{name}` not found in `{}`", src_dir.display());
+            }
+            return Err(format!("ontogen-ts: {} long-tail type(s) not found in pool", missing.len()));
+        }
+
+        // 3. Emit. Surface every error before failing so the build shows
+        //    the full punch-list, not just the first issue.
+        let emit_config = ontogen_ts::EmitConfig::default();
+        let ts = match ontogen_ts::emit(&roots, &pool, &emit_config) {
+            Ok(ts) => ts,
+            Err(errors) => {
+                for e in &errors {
+                    println!("cargo:warning=ontogen-ts: {e}");
+                }
+                return Err(format!("ontogen-ts emit failed with {} error(s)", errors.len()));
+            }
+        };
+
+        // 4. Append to every bindings file written above.
         for path in &written_bindings {
             generators::ts_sidecar::append_to_bindings(path, &ts)?;
         }
+
+        // 5. Tell cargo to rerun if any .rs under src/ changes. Coarse but
+        //    correct — the pool's reach-set is a subset of src/, so this
+        //    over-includes but never misses.
+        rerun_if_changed_under(&src_dir);
     }
 
     for generator in &config.generators {
@@ -321,10 +357,33 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
     Ok(modules)
 }
 
+/// Emit `cargo:rerun-if-changed=<path>` for every `.rs` file recursively
+/// under `dir`. Coarser than reading exactly the file set the pool walker
+/// touched, but correct — the reach-set is a subset of the file set, so
+/// this over-includes (extra rebuilds for unused files) but never misses
+/// (no stale bindings.ts after a real change).
+fn rerun_if_changed_under(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            rerun_if_changed_under(&path);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
+
 /// Read the user crate's Cargo.toml and return the lib crate name (the form
 /// used in `use foo::...` imports). Honours an explicit `[lib] name` if set;
 /// otherwise normalizes the package name (hyphens → underscores). Spike-grade
 /// regex-free parser — productionization should use `cargo metadata`.
+///
+/// Dead code as of OF-015 PR 5 (ontogen-ts replaced the side-car). PR 6
+/// removes the helper alongside the side-car module.
+#[allow(dead_code)]
 fn sidecar_lib_crate_name(manifest_dir: &std::path::Path) -> Result<String, String> {
     let manifest_path = manifest_dir.join("Cargo.toml");
     let content = std::fs::read_to_string(&manifest_path)
@@ -359,6 +418,10 @@ fn sidecar_lib_crate_name(manifest_dir: &std::path::Path) -> Result<String, Stri
 /// Convert a Rust import path of the form `crate::foo::bar` into the form
 /// usable from a sibling binary: `foo::bar`. The lib crate name will be
 /// prepended at side-car generation time.
+///
+/// Dead code as of OF-015 PR 5 (ontogen-ts replaced the side-car). PR 6
+/// removes the helper alongside the side-car module.
+#[allow(dead_code)]
 fn sidecar_types_module_path(types_import_path: &str) -> String {
     types_import_path.strip_prefix("crate::").unwrap_or(types_import_path).to_string()
 }
