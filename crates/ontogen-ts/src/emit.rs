@@ -19,7 +19,8 @@ use syn::{
     TypeReference, TypeSlice,
 };
 
-use crate::types::{BigIntBehavior, EmitConfig, EmitError, TypePath};
+use crate::attr::{FieldAttrs, VariantAttrs, extract_container_attrs, extract_field_attrs, extract_variant_attrs};
+use crate::types::{BigIntBehavior, EmitConfig, EmitError, RenameAll, TypePath};
 
 /// Emit TypeScript source for `roots` and everything they transitively reach
 /// in `type_pool`, honoring `config`.
@@ -152,24 +153,42 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
 /// without inventing field names. Users can wrap in a named-field struct or
 /// reach for `#[ontogen::ts_opaque]`.
 ///
-/// Serde renames are *not* yet applied — PR 2 wires the rename engine in.
-/// Field names emit verbatim for now; the emission format places them in
-/// the order declared.
+/// Serde renames ARE applied as of PR 2. Precedence (matching serde's own
+/// rules so wire names round-trip through `serde_json::to_string`):
+///
+/// 1. `#[serde(rename = "wireName")]` on the field — wins outright.
+/// 2. `#[serde(rename_all = "...")]` on the container — applied to the field
+///    ident.
+/// 3. `EmitConfig::case_default` — applied to the field ident if neither of
+///    the above is set.
+/// 4. Field ident verbatim.
+///
+/// `#[serde(skip)]` (and the `skip_serializing` / `skip_deserializing` siblings)
+/// drops the field entirely.
 pub(crate) fn emit_struct(item: &ItemStruct, config: &EmitConfig) -> Result<String, EmitError> {
     let name = item.ident.to_string();
     let referenced_by = TypePath::new(vec![name.clone()]).expect("single segment is non-empty");
+
+    let container = extract_container_attrs(&item.attrs, &referenced_by)?;
+    let effective_rename_all = container.rename_all.or(config.case_default);
 
     match &item.fields {
         Fields::Named(fields) => {
             let mut field_lines: Vec<String> = Vec::with_capacity(fields.named.len());
             for field in &fields.named {
-                let field_ident = field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
+                let field_attrs = extract_field_attrs(&field.attrs, &referenced_by)?;
+                if field_attrs.skip {
+                    continue;
+                }
+                let raw_ident = field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
+                let wire_name = field_wire_name(&raw_ident, &field_attrs, effective_rename_all);
+                let key = format_ts_key(&wire_name);
                 let ty_ts = emit_type(&field.ty, config, &referenced_by)?;
-                field_lines.push(format!("  {field_ident}: {ty_ts};"));
+                field_lines.push(format!("  {key}: {ty_ts};"));
             }
             if field_lines.is_empty() {
-                // `struct Foo {}` — legal but empty. Emit `{}` rather than
-                // multi-line empties for readability.
+                // `struct Foo {}` — or all fields skipped. Emit `{}` rather
+                // than multi-line empties for readability.
                 Ok(format!("export type {name} = {{}};"))
             } else {
                 let body = field_lines.join("\n");
@@ -188,6 +207,59 @@ pub(crate) fn emit_struct(item: &ItemStruct, config: &EmitConfig) -> Result<Stri
                 .to_string(),
         }),
     }
+}
+
+/// Compute the on-the-wire name for a struct field given the field's serde
+/// attrs and the container's effective rename_all mode.
+fn field_wire_name(raw_ident: &str, attrs: &FieldAttrs, rename_all: Option<RenameAll>) -> String {
+    if let Some(explicit) = &attrs.rename {
+        return explicit.clone();
+    }
+    if let Some(mode) = rename_all {
+        return mode.apply_to_field(raw_ident);
+    }
+    raw_ident.to_string()
+}
+
+/// Compute the on-the-wire name for an enum variant given its serde attrs
+/// and the container's effective rename_all mode.
+fn variant_wire_name(raw_ident: &str, attrs: &VariantAttrs, rename_all: Option<RenameAll>) -> String {
+    if let Some(explicit) = &attrs.rename {
+        return explicit.clone();
+    }
+    if let Some(mode) = rename_all {
+        return mode.apply_to_variant(raw_ident);
+    }
+    raw_ident.to_string()
+}
+
+/// Render `name` as a TypeScript object-literal key. Bare-ident if it's a
+/// valid JS/TS identifier, double-quoted-string otherwise.
+fn format_ts_key(name: &str) -> String {
+    if is_valid_ts_ident(name) {
+        name.to_string()
+    } else {
+        // Quote-escape: backslash and double-quote get escaped; other JSON
+        // escapes aren't necessary because serde rename targets in practice
+        // are well-behaved ASCII strings.
+        let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    }
+}
+
+/// True iff `s` is a valid TypeScript identifier (ASCII subset — `[A-Za-z_$]`
+/// followed by `[A-Za-z0-9_$]*`). Conservative — strict TS allows more
+/// Unicode in idents but for serde rename targets the ASCII subset is the
+/// realistic surface.
+fn is_valid_ts_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
 }
 
 /// Emit a `syn::ItemEnum` as a TypeScript union type.
@@ -216,17 +288,27 @@ pub(crate) fn emit_enum(item: &ItemEnum, config: &EmitConfig) -> Result<String, 
     let name = item.ident.to_string();
     let referenced_by = TypePath::new(vec![name.clone()]).expect("single segment is non-empty");
 
+    let container = extract_container_attrs(&item.attrs, &referenced_by)?;
+    let effective_rename_all = container.rename_all.or(config.case_default);
+
     if item.variants.is_empty() {
         return Ok(format!("export type {name} = never;"));
     }
 
     let mut variant_lines: Vec<String> = Vec::with_capacity(item.variants.len());
     for variant in &item.variants {
-        let variant_name = variant.ident.to_string();
+        let variant_attrs = extract_variant_attrs(&variant.attrs, &referenced_by)?;
+        if variant_attrs.skip {
+            continue;
+        }
+        let raw_ident = variant.ident.to_string();
+        let wire_name = variant_wire_name(&raw_ident, &variant_attrs, effective_rename_all);
         match &variant.fields {
             Fields::Unit => {
-                // C-style — string-literal variant.
-                variant_lines.push(format!("'{variant_name}'"));
+                // C-style — string-literal variant. Single-quote works for
+                // bare-ident wire names; non-ident ones still go inside the
+                // single quotes (TS string literal syntax accepts them).
+                variant_lines.push(format!("'{wire_name}'"));
             }
             Fields::Unnamed(fields) => {
                 // Tuple-style variant. Serde's default external-tag emission
@@ -235,19 +317,19 @@ pub(crate) fn emit_enum(item: &ItemEnum, config: &EmitConfig) -> Result<String, 
                 // single-payload case; multi-arg tuple variants are rejected
                 // as unsupported shape (users can refactor into a struct
                 // variant for clarity).
+                let key = format_ts_key(&wire_name);
                 match fields.unnamed.len() {
-                    0 => variant_lines.push(format!("'{variant_name}'")),
+                    0 => variant_lines.push(format!("'{wire_name}'")),
                     1 => {
                         let payload_ts = emit_type(&fields.unnamed[0].ty, config, &referenced_by)?;
-                        variant_lines.push(format!("{{ {variant_name}: {payload_ts} }}"));
+                        variant_lines.push(format!("{{ {key}: {payload_ts} }}"));
                     }
                     _ => {
                         return Err(EmitError::UnsupportedShape {
                             type_path: referenced_by,
                             reason: format!(
-                                "enum variant `{variant_name}` has {} tuple fields; phase-1 supports unit, \
-                                 single-tuple, or struct variants (refactor into a struct variant for multi-field \
-                                 payloads)",
+                                "enum variant `{raw_ident}` has {} tuple fields; phase-1 supports unit, single-tuple, \
+                                 or struct variants (refactor into a struct variant for multi-field payloads)",
                                 fields.unnamed.len()
                             ),
                         });
@@ -256,16 +338,33 @@ pub(crate) fn emit_enum(item: &ItemEnum, config: &EmitConfig) -> Result<String, 
             }
             Fields::Named(fields) => {
                 // Struct-style variant: serde emits `{"V": {field1: ..., field2: ...}}`.
+                // Renames inside a struct variant fall under the container's
+                // rename_all rules too (phase 1 doesn't distinguish; serde's
+                // `rename_all_fields` for inner-struct overrides is phase-2
+                // work).
+                let key = format_ts_key(&wire_name);
                 let mut field_lines: Vec<String> = Vec::with_capacity(fields.named.len());
                 for field in &fields.named {
-                    let field_ident = field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
+                    let field_attrs = extract_field_attrs(&field.attrs, &referenced_by)?;
+                    if field_attrs.skip {
+                        continue;
+                    }
+                    let raw_field_ident =
+                        field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
+                    let field_wire = field_wire_name(&raw_field_ident, &field_attrs, effective_rename_all);
+                    let field_key = format_ts_key(&field_wire);
                     let ty_ts = emit_type(&field.ty, config, &referenced_by)?;
-                    field_lines.push(format!("{field_ident}: {ty_ts}"));
+                    field_lines.push(format!("{field_key}: {ty_ts}"));
                 }
                 let body = field_lines.join("; ");
-                variant_lines.push(format!("{{ {variant_name}: {{ {body} }} }}"));
+                variant_lines.push(format!("{{ {key}: {{ {body} }} }}"));
             }
         }
+    }
+
+    // If every variant was `#[serde(skip)]`, fall back to `never`.
+    if variant_lines.is_empty() {
+        return Ok(format!("export type {name} = never;"));
     }
 
     let body = variant_lines.join(" | ");
@@ -860,5 +959,114 @@ mod tests {
         );
         let err = emit_enum(&item, &config).expect_err("Mutex variant payload should fail");
         assert!(matches!(err, EmitError::UnsupportedShape { .. }));
+    }
+
+    // ── Serde renames (PR 2) ───────────────────────────────────────────
+
+    #[test]
+    fn struct_rename_all_camel_case() {
+        assert_fixture_matches("struct_rename_all_camel_case");
+    }
+
+    #[test]
+    fn struct_field_rename_wins_over_container() {
+        assert_fixture_matches("struct_field_rename_wins_over_container");
+    }
+
+    #[test]
+    fn struct_field_serde_skip_drops_field() {
+        assert_fixture_matches("struct_field_serde_skip_drops_field");
+    }
+
+    #[test]
+    fn struct_field_rename_with_hyphen_quotes_key() {
+        // `kebab-case` mode produces field names with `-`, which aren't valid
+        // TS identifiers; they get quoted as object-literal keys.
+        assert_fixture_matches("struct_field_rename_with_hyphen_quotes_key");
+    }
+
+    #[test]
+    fn enum_rename_all_snake_case() {
+        assert_fixture_matches("enum_rename_all_snake_case");
+    }
+
+    #[test]
+    fn enum_variant_rename_wins_over_container() {
+        assert_fixture_matches("enum_variant_rename_wins_over_container");
+    }
+
+    #[test]
+    fn struct_rejects_split_rename_on_field() {
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"pub struct Foo {
+                #[serde(rename(serialize = "wireName", deserialize = "WIRE_NAME"))]
+                pub a: u32,
+            }"#,
+        );
+        let err = emit_struct(&item, &config).expect_err("split-rename should fail");
+        match err {
+            EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                assert!(attr.contains("split-rename"), "attr was: {attr}");
+            }
+            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_rejects_tag_attr_on_container() {
+        let config = EmitConfig::default();
+        let item = enum_item(
+            r#"
+            #[serde(tag = "type")]
+            pub enum Msg {
+                Click,
+                Hover,
+            }
+            "#,
+        );
+        let err = emit_enum(&item, &config).expect_err("tag-attr should fail");
+        match err {
+            EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                assert!(attr.contains("tag"), "attr was: {attr}");
+            }
+            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_case_default_applies_when_container_has_no_rename_all() {
+        // If EmitConfig::case_default is set and the container has no
+        // rename_all, fields get the config-level transform.
+        let config = EmitConfig { case_default: Some(crate::types::RenameAll::CamelCase), ..Default::default() };
+        let item = struct_item(
+            "pub struct Foo {
+                pub user_name: String,
+                pub age_years: u32,
+            }",
+        );
+        let ts = emit_struct(&item, &config).unwrap();
+        assert!(ts.contains("userName: string"), "ts was: {ts}");
+        assert!(ts.contains("ageYears: number"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn container_rename_all_wins_over_config_case_default() {
+        // The container's explicit rename_all overrides the config-level
+        // default — closer-scope wins.
+        let config = EmitConfig { case_default: Some(crate::types::RenameAll::CamelCase), ..Default::default() };
+        let item = struct_item(
+            r#"
+            #[serde(rename_all = "snake_case")]
+            pub struct Foo {
+                pub user_name: String,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).unwrap();
+        // user_name is already snake_case, so the container's mode is a no-op
+        // and we get `user_name`, NOT camelCased `userName`.
+        assert!(ts.contains("user_name: string"), "ts was: {ts}");
+        assert!(!ts.contains("userName"), "ts was: {ts}");
     }
 }
