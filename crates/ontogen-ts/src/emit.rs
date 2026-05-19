@@ -1,16 +1,12 @@
 //! Per-type and top-level emission entry points.
 //!
-//! PR 1 lands the per-type emission machinery (`emit_type`, `emit_struct`,
-//! `emit_enum`) for the phase-1 supported subset. The top-level [`emit`]
-//! entry point's body is a `todo!()` stub — PR 4 wires type collection,
-//! validation, and ordering through it.
-//!
-//! The `#![allow(dead_code)]` below is intentional: `emit_type`,
-//! `emit_struct`, `emit_enum`, and their helpers are `pub(crate)` and only
-//! exercised by unit tests in this PR. PR 4's `emit()` body will call them
-//! and the allow attribute is removed at that point.
-
-#![allow(dead_code)]
+//! - [`emit`] is the public entry point. It walks the type pool, resolves
+//!   names + ontogen attrs, runs Kahn's topological sort, and emits TS
+//!   for each reachable type via the per-type emitters below.
+//! - [`emit_type`] renders a `syn::Type` as TS.
+//! - [`emit_struct`] / [`emit_enum`] render a `syn::ItemStruct` /
+//!   `syn::ItemEnum`. Their `_named` siblings accept an explicit name
+//!   override (used when `#[ts_name = "..."]` is set on the type).
 
 use std::collections::BTreeMap;
 
@@ -19,22 +15,153 @@ use syn::{
     TypeReference, TypeSlice,
 };
 
-use crate::attr::{FieldAttrs, VariantAttrs, extract_container_attrs, extract_field_attrs, extract_variant_attrs};
+use crate::attr::{
+    FieldAttrs, VariantAttrs, extract_container_attrs, extract_field_attrs, extract_ontogen_attrs,
+    extract_variant_attrs,
+};
+use crate::order;
 use crate::types::{BigIntBehavior, EmitConfig, EmitError, RenameAll, TypePath};
 
 /// Emit TypeScript source for `roots` and everything they transitively reach
 /// in `type_pool`, honoring `config`.
 ///
-/// PR 1 leaves the body as `todo!()` — the full composition (collection →
-/// validation → ordering → emission → aggregation) lands in PR 4 (AC-8).
-/// The signature is fixed today so downstream consumers (and the rest of
-/// this PR series) compile against a stable shape.
+/// Pipeline (PR 4):
+///
+/// 1. Build the dependency graph over `type_pool`.
+/// 2. Compute transitive closure from `roots`.
+/// 3. Resolve a TS name for each reachable type (honoring
+///    `#[ts_name = "..."]` overrides).
+/// 4. Detect name collisions on the reachable set — two types resolving
+///    to the same TS name produce [`EmitError::NameCollision`].
+/// 5. Topologically order the reachable set (cycle members co-emit at the
+///    end; TS type aliases accept forward references).
+/// 6. For each type in order:
+///    - Read ontogen attrs. If `#[ts_opaque(target = "...")]` is set, emit
+///      `export type Name = <target>;` and skip recursion into fields.
+///    - Otherwise dispatch to [`emit_struct_named`] / [`emit_enum_named`]
+///      with the resolved name.
+///
+/// All errors are collected into `Vec<EmitError>` before failing — never
+/// first-error fail-fast, so a build surfaces every problem at once.
 pub fn emit(
-    _roots: &[TypePath],
-    _type_pool: &BTreeMap<TypePath, syn::Item>,
-    _config: &EmitConfig,
+    roots: &[TypePath],
+    type_pool: &BTreeMap<TypePath, syn::Item>,
+    config: &EmitConfig,
 ) -> Result<String, Vec<EmitError>> {
-    todo!("PR 4 implements the top-level emit composition (OF-015 AC-8)")
+    let mut errors: Vec<EmitError> = Vec::new();
+
+    // 1-2: dep graph + reachable closure.
+    let graph = order::dependency_graph(type_pool);
+    let reachable = order::reachable_from(roots, &graph);
+
+    // Surface any root that isn't in the pool — caller passed a TypePath
+    // we can't emit. Hard error; the build can't produce a meaningful
+    // output without it.
+    for root in roots {
+        if !type_pool.contains_key(root) {
+            errors.push(EmitError::UnresolvedReference {
+                name: format!("root type `{root}` is not present in the type pool"),
+                referenced_by: root.clone(),
+            });
+        }
+    }
+
+    // 3: resolve names. Walk reachable items; if extract_ontogen_attrs
+    // surfaces an EmitError (malformed attr), collect it and use the
+    // ident-derived fallback name.
+    let mut names: BTreeMap<TypePath, String> = BTreeMap::new();
+    for path in &reachable {
+        let Some(item) = type_pool.get(path) else {
+            continue;
+        };
+        let attrs = item_attrs(item);
+        match extract_ontogen_attrs(attrs, path) {
+            Ok(ontogen) => {
+                let name = ontogen.ts_name.unwrap_or_else(|| path.terminal().to_string());
+                names.insert(path.clone(), name);
+            }
+            Err(err) => {
+                errors.push(err);
+                names.insert(path.clone(), path.terminal().to_string());
+            }
+        }
+    }
+
+    // 4: name-collision detection (post-`ts_name` resolution).
+    {
+        let mut by_name: BTreeMap<String, Vec<TypePath>> = BTreeMap::new();
+        for (path, name) in &names {
+            by_name.entry(name.clone()).or_default().push(path.clone());
+        }
+        for (name, paths) in by_name {
+            if paths.len() > 1 {
+                errors.push(EmitError::NameCollision { name, paths });
+            }
+        }
+    }
+
+    // 5: topological order.
+    let ordered = order::topo_order(&graph, &reachable);
+
+    // 6: per-type emission.
+    let mut outputs: Vec<String> = Vec::with_capacity(ordered.len());
+    for path in &ordered {
+        let Some(item) = type_pool.get(path) else {
+            continue;
+        };
+
+        let ontogen_attrs = match extract_ontogen_attrs(item_attrs(item), path) {
+            Ok(a) => a,
+            Err(_) => continue, // already collected above
+        };
+        let resolved_name = names.get(path).cloned().unwrap_or_else(|| path.terminal().to_string());
+
+        if let Some(target) = ontogen_attrs.ts_opaque {
+            outputs.push(format!("export type {resolved_name} = {target};"));
+            continue;
+        }
+
+        match item {
+            syn::Item::Struct(s) => match emit_struct_named(s, config, Some(&resolved_name)) {
+                Ok(ts) => outputs.push(ts),
+                Err(e) => errors.push(e),
+            },
+            syn::Item::Enum(e) => match emit_enum_named(e, config, Some(&resolved_name)) {
+                Ok(ts) => outputs.push(ts),
+                Err(err) => errors.push(err),
+            },
+            syn::Item::Type(t) => {
+                // Type alias: emit as `export type Name = <inner_ts>;`.
+                // The walker would normally recurse, but for a top-level
+                // alias the surface is the inner type directly.
+                let synthetic_path = TypePath::new(vec![path.terminal().to_string()]).expect("non-empty");
+                match emit_type(&t.ty, config, &synthetic_path) {
+                    Ok(inner) => outputs.push(format!("export type {resolved_name} = {inner};")),
+                    Err(err) => errors.push(err),
+                }
+            }
+            _ => {
+                // Pool walker only inserts struct/enum/type aliases, so
+                // this branch shouldn't fire in practice.
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    Ok(outputs.join("\n\n"))
+}
+
+/// Pull the attribute list off any `syn::Item` shape the pool stores.
+fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::Struct(s) => &s.attrs,
+        syn::Item::Enum(e) => &e.attrs,
+        syn::Item::Type(t) => &t.attrs,
+        _ => &[],
+    }
 }
 
 /// Render a `syn::Type` as its TypeScript equivalent.
@@ -131,16 +258,38 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
         return Ok(rendered.to_string());
     }
 
-    // 6. Fall-through — render as the terminal ident. PR 3 replaces this
-    // with a pool / external-types lookup. Multi-segment paths (`foo::Bar`)
-    // collapse to their terminal ident here; PR 3's canonicalization will
-    // make that lookup honest.
-    let terminal =
-        path.path.segments.last().map(|s| s.ident.to_string()).ok_or_else(|| EmitError::UnsupportedShape {
+    // 6. Fall-through — check the external-types table first, then the
+    // terminal ident as a last resort. PR 3 added `crate::external` for
+    // the lookup; PR 4 wires it here. Multi-segment paths like
+    // `chrono::DateTime<Utc>` strip generic args and consult the table,
+    // returning `"string"` (the default for chrono::DateTime). Anything
+    // not in the table falls back to the terminal ident, leaving the
+    // top-level `emit` composition to look it up in the type pool.
+    let segments: Vec<String> = path.path.segments.iter().map(|s| s.ident.to_string()).collect();
+    if segments.is_empty() {
+        return Err(EmitError::UnsupportedShape {
             type_path: referenced_by.clone(),
             reason: "type path had no segments".to_string(),
-        })?;
-    Ok(terminal)
+        });
+    }
+
+    // Strip leading `crate::` so external-types lookup uses canonical form
+    // (the table keys are full canonical paths like `chrono::DateTime`).
+    let mut canonical_segs = segments.clone();
+    if canonical_segs.first().map(String::as_str) == Some("crate") {
+        canonical_segs.remove(0);
+    }
+    if let Ok(canonical) = TypePath::new(canonical_segs)
+        && let Some(rendering) = crate::external::resolve(&canonical, &config.external_types)
+    {
+        return Ok(rendering);
+    }
+
+    // Final fall-through: the terminal ident verbatim. emit's top-level
+    // composition handles pool lookup at the type-declaration level;
+    // here we just emit the name and trust that downstream renders cover
+    // the rest.
+    Ok(segments.last().expect("non-empty after the early return above").clone())
 }
 
 /// Emit a `syn::ItemStruct` as a TypeScript `export type Name = { ... };`
@@ -166,8 +315,19 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
 /// `#[serde(skip)]` (and the `skip_serializing` / `skip_deserializing` siblings)
 /// drops the field entirely.
 pub(crate) fn emit_struct(item: &ItemStruct, config: &EmitConfig) -> Result<String, EmitError> {
-    let name = item.ident.to_string();
-    let referenced_by = TypePath::new(vec![name.clone()]).expect("single segment is non-empty");
+    emit_struct_named(item, config, None)
+}
+
+/// Emit a struct with an optional TS name override (used by the top-level
+/// composition when `#[ts_name = "..."]` is present on the type).
+pub(crate) fn emit_struct_named(
+    item: &ItemStruct,
+    config: &EmitConfig,
+    name_override: Option<&str>,
+) -> Result<String, EmitError> {
+    let raw_name = item.ident.to_string();
+    let name = name_override.map(str::to_string).unwrap_or_else(|| raw_name.clone());
+    let referenced_by = TypePath::new(vec![raw_name]).expect("single segment is non-empty");
 
     let container = extract_container_attrs(&item.attrs, &referenced_by)?;
     let effective_rename_all = container.rename_all.or(config.case_default);
@@ -285,8 +445,18 @@ fn is_valid_ts_ident(s: &str) -> bool {
 /// inhabitants — matches `serde_json::to_string`'s effective behavior
 /// (calling code can't ever construct a value).
 pub(crate) fn emit_enum(item: &ItemEnum, config: &EmitConfig) -> Result<String, EmitError> {
-    let name = item.ident.to_string();
-    let referenced_by = TypePath::new(vec![name.clone()]).expect("single segment is non-empty");
+    emit_enum_named(item, config, None)
+}
+
+/// Emit an enum with an optional TS name override.
+pub(crate) fn emit_enum_named(
+    item: &ItemEnum,
+    config: &EmitConfig,
+    name_override: Option<&str>,
+) -> Result<String, EmitError> {
+    let raw_name = item.ident.to_string();
+    let name = name_override.map(str::to_string).unwrap_or_else(|| raw_name.clone());
+    let referenced_by = TypePath::new(vec![raw_name]).expect("single segment is non-empty");
 
     let container = extract_container_attrs(&item.attrs, &referenced_by)?;
     let effective_rename_all = container.rename_all.or(config.case_default);

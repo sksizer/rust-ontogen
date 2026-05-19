@@ -31,7 +31,7 @@ use crate::types::TypePath;
 
 /// Failure modes for [`scan_src_dir`].
 #[derive(Debug)]
-pub(crate) enum ScanError {
+pub enum ScanError {
     /// I/O error reading a file or directory.
     Io {
         /// The path the error happened at.
@@ -61,7 +61,7 @@ impl std::error::Error for ScanError {}
 
 /// Scan a `src/` directory and collect every module-level struct, enum, and
 /// type-alias into a pool keyed by canonical [`TypePath`].
-pub(crate) fn scan_src_dir(src_dir: &Path) -> Result<BTreeMap<TypePath, syn::Item>, ScanError> {
+pub fn scan_src_dir(src_dir: &Path) -> Result<BTreeMap<TypePath, syn::Item>, ScanError> {
     let mut pool = BTreeMap::new();
     scan_dir_recursive(src_dir, &[], &mut pool)?;
     Ok(pool)

@@ -11,3 +11,6 @@ categories = ["development-tools::build-utils"]
 
 [lib]
 proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "parsing"] }

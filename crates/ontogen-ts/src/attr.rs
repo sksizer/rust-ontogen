@@ -69,6 +69,92 @@ impl RenameAll {
 /// dedicated emission path (phase 2 / OF-015 phase 2).
 const REJECTED_SHAPE_ATTRS: &[&str] = &["tag", "content", "untagged", "flatten"];
 
+/// Ontogen-specific attributes on a type definition. Both attrs are
+/// no-ops at Rust compile time (the proc-macro implementations in
+/// `ontogen-macros` pass the annotated item through unchanged); ontogen-ts
+/// reads them via this extractor during scanning.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OntogenAttrs {
+    /// `#[ts_opaque(target = "...")]` — emitter treats the type as terminal
+    /// and emits `target` verbatim at every reference site.
+    pub ts_opaque: Option<String>,
+    /// `#[ts_name = "..."]` — overrides the TS name emitted for the type.
+    /// JSON wire is unaffected.
+    pub ts_name: Option<String>,
+}
+
+/// Extract `#[ts_opaque(target = "...")]` and `#[ts_name = "..."]` from a
+/// `&[syn::Attribute]`. Matches on the terminal segment of the attribute
+/// path so the attrs work whether imported bare, via `ontogen_macros::`,
+/// or via `ontogen::` (the umbrella re-export).
+pub(crate) fn extract_ontogen_attrs(
+    attrs: &[syn::Attribute],
+    referenced_by: &TypePath,
+) -> Result<OntogenAttrs, EmitError> {
+    let mut out = OntogenAttrs::default();
+    for attr in attrs {
+        let terminal = match attr.path().segments.last() {
+            Some(seg) => seg.ident.to_string(),
+            None => continue,
+        };
+        match terminal.as_str() {
+            "ts_opaque" => {
+                // Shape: `#[ts_opaque(target = "literal")]`. The macro
+                // validates this at Rust compile time, so we expect a
+                // well-formed input — but parse defensively.
+                let mut target: Option<String> = None;
+                attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("target") {
+                        let value = meta.value()?;
+                        let lit: syn::LitStr = value.parse()?;
+                        target = Some(lit.value());
+                        Ok(())
+                    } else {
+                        Err(meta.error("ts_opaque expects `target = \"...\"`"))
+                    }
+                })
+                .map_err(|err| EmitError::UnsupportedSerdeAttr {
+                    type_path: referenced_by.clone(),
+                    attr: format!("could not parse #[ts_opaque(...)]: {err}"),
+                })?;
+                out.ts_opaque = target;
+            }
+            "ts_name" => {
+                // Shape: `#[ts_name = "literal"]` (bare string literal arg).
+                let value = match &attr.meta {
+                    syn::Meta::NameValue(nv) => &nv.value,
+                    _ => {
+                        return Err(EmitError::UnsupportedSerdeAttr {
+                            type_path: referenced_by.clone(),
+                            attr: "#[ts_name = \"...\"] expects the `= \"literal\"` form".to_string(),
+                        });
+                    }
+                };
+                let lit = match value {
+                    syn::Expr::Lit(expr_lit) => match &expr_lit.lit {
+                        syn::Lit::Str(s) => s.value(),
+                        _ => {
+                            return Err(EmitError::UnsupportedSerdeAttr {
+                                type_path: referenced_by.clone(),
+                                attr: "#[ts_name = ...] value must be a string literal".to_string(),
+                            });
+                        }
+                    },
+                    _ => {
+                        return Err(EmitError::UnsupportedSerdeAttr {
+                            type_path: referenced_by.clone(),
+                            attr: "#[ts_name = ...] value must be a string literal".to_string(),
+                        });
+                    }
+                };
+                out.ts_name = Some(lit);
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
 /// Extract container-level serde attributes (struct or enum).
 pub(crate) fn extract_container_attrs(
     attrs: &[syn::Attribute],
