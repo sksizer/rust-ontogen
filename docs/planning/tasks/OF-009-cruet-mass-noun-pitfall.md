@@ -1,4 +1,5 @@
 ---
+schema_version: '0'
 status: closed/done
 completion_note: "Shipped in 2804753 on 2026-05-13."
 ---

@@ -1,4 +1,5 @@
 ---
+schema_version: '0'
 status: closed/done
 completion_note: "Shipped in c87ba64 on 2026-05-13 (design-pass + spike; productionization tracked in OF-015)."
 ---
