@@ -491,6 +491,12 @@ pub struct ServersConfig {
     /// [`Pipeline`] users do not need to set this; the builder forwards
     /// `schema.entities` automatically.
     pub schema_entities: Vec<EntityDef>,
+    /// Additional source roots to feed into ontogen-ts's long-tail type pool,
+    /// beyond the default `CARGO_MANIFEST_DIR/src`. Use when long-tail types
+    /// are defined in workspace-sibling crates and brought into the consuming
+    /// crate via `pub use`. Paths are resolved relative to
+    /// `CARGO_MANIFEST_DIR`. On key collision the main pool wins.
+    pub pool_extra_roots: Vec<PathBuf>,
 }
 
 // `AdminLayerConfig` and `install_admin_layer` are re-exported from the
