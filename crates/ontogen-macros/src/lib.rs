@@ -83,3 +83,81 @@ pub fn stateless(_attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn ontogen(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
 }
+
+/// Mark a type as opaque from ontogen-ts's perspective. The walker treats
+/// the annotated type as terminal — it doesn't recurse into the type's
+/// fields and emits the supplied `target` string verbatim at every
+/// reference site.
+///
+/// Usage:
+/// ```ignore
+/// use ontogen_macros::ts_opaque;
+///
+/// #[ts_opaque(target = "Date")]
+/// pub struct EpochSeconds(pub i64);
+/// ```
+///
+/// The macro itself is a no-op — the annotated item passes through
+/// unchanged at Rust compile time, and `ontogen-ts` reads the attribute
+/// via `syn` during build-time scanning. The expected argument shape is
+/// `target = "<ts rendering>"` (one mandatory key, value is a string
+/// literal); other forms cause a Rust compile error.
+#[proc_macro_attribute]
+pub fn ts_opaque(args: TokenStream, item: TokenStream) -> TokenStream {
+    // Parse + validate args at Rust compile time so a malformed attr
+    // surfaces here, not deep inside ontogen-ts's scanner.
+    let parsed: syn::Result<TsOpaqueArgs> = syn::parse(args);
+    match parsed {
+        Ok(_) => item,
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Override the TypeScript name emitted for an annotated type. The
+/// underlying JSON wire shape is unaffected (serde never sees this attr);
+/// only ontogen-ts's TS output uses the override.
+///
+/// Usage:
+/// ```ignore
+/// use ontogen_macros::ts_name;
+///
+/// #[ts_name = "FooStats"]
+/// pub struct FooStatistics {
+///     pub count: u64,
+/// }
+/// ```
+///
+/// The macro itself is a no-op — the annotated item passes through
+/// unchanged at Rust compile time. The expected argument shape is a
+/// single bare string literal (`= "FooStats"`).
+#[proc_macro_attribute]
+pub fn ts_name(args: TokenStream, item: TokenStream) -> TokenStream {
+    let parsed: syn::Result<syn::LitStr> = syn::parse(args);
+    match parsed {
+        Ok(_) => item,
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Internal: parser for `target = "..."` in `#[ts_opaque(...)]`.
+struct TsOpaqueArgs {
+    _target: syn::LitStr,
+}
+
+impl syn::parse::Parse for TsOpaqueArgs {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let ident: syn::Ident = input.parse()?;
+        if ident != "target" {
+            return Err(syn::Error::new(ident.span(), "ts_opaque expects `target = \"...\"`; unknown argument key"));
+        }
+        let _eq: syn::Token![=] = input.parse()?;
+        let value: syn::LitStr = input.parse()?;
+        if !input.is_empty() {
+            return Err(syn::Error::new(
+                input.span(),
+                "ts_opaque accepts a single `target = \"...\"` argument; trailing tokens not allowed",
+            ));
+        }
+        Ok(Self { _target: value })
+    }
+}

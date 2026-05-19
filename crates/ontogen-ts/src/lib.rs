@@ -22,20 +22,22 @@
 //! See `docs/tasks/OF-015-productionize-typescript-generation.md` for the
 //! full design pass.
 //!
-//! # PR series state (PR 3 of 8)
+//! # PR series state (PR 4 of 8)
 //!
-//! PR 1 landed the crate scaffold, public API types, and per-type emission.
-//! PR 2 added the serde rename family (rename / rename_all / skip across
-//! containers, fields, variants). PR 3 adds the type-pool walker, per-file
-//! `use`-resolution + canonical-path normalization, the external-types
-//! table (with shipped defaults + user override merge), and topological
-//! ordering over the dependency graph via Kahn's algorithm — every map and
-//! set used along the way is a `BTreeMap` / `BTreeSet` so emission order is
-//! deterministic by construction.
+//! PR 1-3 landed the crate scaffold, per-type emission, serde rename
+//! family, type-pool walker, use-resolution, external-types table, and
+//! topological ordering. PR 4 wires them together: the top-level [`emit`]
+//! function now composes collection → name resolution → collision
+//! detection → topological ordering → per-type emission → error
+//! aggregation, all in one pass. The `#[ts_opaque(target = "...")]` and
+//! `#[ts_name = "..."]` proc-macro attrs (shipped in `ontogen-macros`)
+//! are read here to short-circuit emission for opaque types and override
+//! TS names. External-types lookup is wired into `emit_type`'s
+//! fall-through so types like `chrono::DateTime` resolve to `string`
+//! per the shipped defaults.
 //!
-//! The top-level [`emit`] entry point's body is still `todo!()`; PR 4 wires
-//! the pieces together. `#[ontogen::ts_opaque]` / `#[ontogen::ts_name]`
-//! proc-macro attrs (PR 4) are not implemented here.
+//! PR 5 wires `ontogen` itself to call [`emit`] instead of the side-car
+//! emitter.
 
 mod attr;
 mod emit;
@@ -47,4 +49,5 @@ mod resolve;
 mod types;
 
 pub use emit::emit;
+pub use pool::{ScanError, scan_src_dir};
 pub use types::{BigIntBehavior, EmitConfig, EmitError, RenameAll, TypePath, TypePathError};

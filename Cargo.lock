@@ -210,6 +210,9 @@ version = "0.1.0"
 [[package]]
 name = "ontogen-macros"
 version = "0.1.0"
+dependencies = [
+ "syn",
+]
 
 [[package]]
 name = "ontogen-ts"
