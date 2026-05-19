@@ -1,13 +1,14 @@
 ---
 type: task
 schema_version: '1'
-status: ready
+status: closed/done
 created: 2026-05-19
 last_reviewed: 2026-05-19
 impact: high
 complexity: medium
 tags: [ontogen-ts, ts-pipeline]
 related: [OF-015, OF-015-pr-1]
+completion_note: "Shipped in #61 (merge f85e8f0, 2026-05-19). Commits d7a6def + ff463fe + e38a9e1 — serde rename engine (rename_all + rename + skip) covering AC-4."
 ---
 # OF-015 PR 2 — Serde rename engine (rename_all + rename + skip)
 

@@ -1,13 +1,14 @@
 ---
 type: task
 schema_version: '1'
-status: ready
+status: closed/done
 created: 2026-05-19
 last_reviewed: 2026-05-19
 impact: high
 complexity: medium
 tags: [ontogen-ts, ts-pipeline]
 related: [OF-015, OF-015-pr-2]
+completion_note: "Shipped in #62 (merge 4886d2e, 2026-05-19). Commit 1fda7be — type collection + use-resolution + external-types + topological ordering covering AC-5/6/7."
 ---
 # OF-015 PR 3 — Type collection, topological ordering, use-resolution, external-types
 

@@ -1,13 +1,14 @@
 ---
 type: task
 schema_version: '1'
-status: ready
+status: closed/done
 created: 2026-05-19
 last_reviewed: 2026-05-19
 impact: high
 complexity: medium
 tags: [ontogen-ts, ts-pipeline]
 related: [OF-015, OF-015-pr-3]
+completion_note: "Shipped in #63 (merge ceb18d3, 2026-05-19). Commit 8e4d4e2 — top-level emit() composition + #[ontogen::ts_opaque] / #[ontogen::ts_name] covering AC-8/9/10."
 ---
 # OF-015 PR 4 — Top-level `emit()` composition + `#[ontogen::ts_opaque]` / `#[ontogen::ts_name]`
 

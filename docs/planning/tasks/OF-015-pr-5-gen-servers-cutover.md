@@ -1,13 +1,14 @@
 ---
 type: task
 schema_version: '1'
-status: ready
+status: closed/done
 created: 2026-05-19
 last_reviewed: 2026-05-19
 impact: high
 complexity: medium
 tags: [ontogen-ts, ts-pipeline, gen_servers]
 related: [OF-015, OF-015-pr-4]
+completion_note: "Shipped in #64 (merge 06460b1, 2026-05-19). Commits ad41ab2 + 7195251 — gen_servers cutover to ontogen-ts covering AC-11."
 ---
 # OF-015 PR 5 — Wire `ontogen-ts::emit` into `gen_servers` (functional cutover)
 
