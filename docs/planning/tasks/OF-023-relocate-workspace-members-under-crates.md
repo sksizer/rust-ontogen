@@ -1,4 +1,5 @@
 ---
+schema_version: '0'
 status: closed/done
 last_reviewed: 2026-05-15
 completion_note: "Shipped via #54 (merge 5944307) on 2026-05-15 — ontogen-core/ and ontogen-macros/ relocated to crates/ via git mv."
