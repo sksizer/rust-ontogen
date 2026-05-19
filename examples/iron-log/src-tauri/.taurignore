@@ -1,7 +1,0 @@
-# tauri-cli's dev-mode file watcher honours this file (not .gitignore).
-# Without the entry below, the ontogen TS-bindings side-car write at the
-# end of the first `pnpm tauri dev` build trips the watcher and queues
-# another `cargo run`, presenting as a rebuild loop on dev-server startup.
-#
-# See: docs/tasks/OF-019-document-side-car-tauri-watcher.md
-src/bin/__ontogen_ts_export.rs

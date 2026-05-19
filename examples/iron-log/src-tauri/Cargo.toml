@@ -5,12 +5,6 @@ name = "iron-log"
 version = "0.1.0"
 edition = "2024"
 publish = false
-# Once ontogen's TS-bindings side-car generates `src/bin/__ontogen_ts_export.rs`,
-# Cargo sees two [[bin]] targets (the app + the side-car) and refuses `cargo run`
-# without `--bin`. `pnpm tauri dev` calls `cargo run` under the hood, so without
-# this key the dev server fails to start. Set it ahead of time so the first
-# build that introduces a long-tail type doesn't break the dev loop.
-default-run = "iron-log"
 
 [lib]
 name = "iron_log"
@@ -28,7 +22,6 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 specta = { version = "=2.0.0-rc.23", features = ["derive", "function"] }
-specta-typescript = "=0.0.10"
 schemars = "0.8"
 ontogen-macros = { path = "../../../crates/ontogen-macros" }
 thiserror = "2"

@@ -44,23 +44,18 @@ fn main() {
         schema_entities: Vec::new(),
     };
 
-    // CI disk-pressure escape hatch. The TS-bindings side-car compiles every
-    // transitive dep in an isolated CARGO_TARGET_DIR, which can exhaust disk
-    // on default GitHub Actions runners. Set IRON_LOG_SKIP_SERVER_CODEGEN=1
-    // to trust the committed generated files and skip the .servers() stage.
-    // A separate manual-dispatch "drift" CI job re-runs the full pipeline on
-    // a freed-disk runner and asserts `git diff --exit-code` on the generated
-    // paths.
-    let skip_servers = std::env::var("IRON_LOG_SKIP_SERVER_CODEGEN").is_ok();
+    // OF-015 PR 6: the IRON_LOG_SKIP_SERVER_CODEGEN escape hatch is gone.
+    // It existed to skip the OF-014 spike's specta side-car (which compiled
+    // every transitive dep in an isolated CARGO_TARGET_DIR and exhausted
+    // disk on default GitHub Actions runners). The side-car has been
+    // replaced by ontogen-ts's build-time AST walker, which has no extra
+    // compile cost — no escape hatch needed.
     let pipeline = Pipeline::new("src/schema")
-        .seaorm(
-            "src/persistence/db/entities/generated",
-            "src/persistence/db/conversions/generated",
-        )
+        .seaorm("src/persistence/db/entities/generated", "src/persistence/db/conversions/generated")
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
-        .api("src/api/v1/generated", "AppState");
-    let pipeline = if skip_servers { pipeline } else { pipeline.servers(servers_config) };
+        .api("src/api/v1/generated", "AppState")
+        .servers(servers_config);
     pipeline.build().unwrap_or_else(|e| {
         e.emit_cargo_warning();
         panic!("ontogen pipeline failed: {e}");

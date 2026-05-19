@@ -99,7 +99,7 @@ export type UpdateExerciseInput = {
   notes?: string | null | null
 }
 
-// Long-tail types (emitted via ontogen ts_export side-car).
+// Long-tail types (emitted via ontogen-ts AST walker).
 export type WorkoutStats = {
   total_count: number;
   total_duration_minutes: number;
