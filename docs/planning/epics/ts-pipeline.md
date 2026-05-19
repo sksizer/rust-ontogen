@@ -1,16 +1,17 @@
 ---
-status: in-progress
+type: epic
+schema_version: "1"
+id: E0001
+status: open/active
+title: TypeScript bindings pipeline
 created: 2026-05-14
-last_reviewed: 2026-05-15
-design_source: ../tasks/OF-015-productionize-typescript-generation.md
-tasks:
-  - OF-015-pr-1-scaffold-and-emission.md          # shipped via #55
-  # PR 2 onward filed under YYYY-MM-DD-<slug>.md as they are picked up
+last_reviewed: 2026-05-19
+tags: [ontogen-ts]
 ---
 # Epic — TypeScript bindings pipeline
 
 **Milestone:** M1 — code generation core
-**Status:** in-progress (PR 1 shipped; 7 PRs remaining)
+**Status:** open/active (PR 1 shipped; 7 PRs remaining)
 **Design source:** [OF-015](../tasks/OF-015-productionize-typescript-generation.md)
 — full design pass, supported subset, decisions, alternatives, AC catalog.
 
@@ -28,27 +29,35 @@ This epic doc is the active navigational hub — what ships in which PR, what's
 landed so far, what's queued. It does not re-state the design decisions; OF-015
 is the canonical record.
 
-## Scope summary
+## Today
 
-In:
-- New crate `crates/ontogen-ts/` with pool-in API
-  (`emit(roots, type_pool, config) -> Result<String, Vec<EmitError>>`)
-- Supported subset: named structs, C-style + externally-tagged enums,
-  primitives, hardcoded containers (`Option`/`Vec`/`HashMap`/`BTreeMap`),
-  smart-pointer transparency, references, external-types table
-- Serde rename family (`rename`/`rename_all`/`skip`, all 8 case modes,
-  our own transforms property-tested against `serde_json::to_string`)
-- Macro attrs (`#[ontogen::ts_opaque]`, `#[ontogen::ts_name]`)
-- Wire into `gen_servers`; delete side-car infrastructure; iron-log cleanup;
-  Pumice integration; user-facing docs
+TypeScript bindings for ontogen consumers are produced by the OF-014 specta
+side-car: a separate compilation that walks consumer source, emits a `.ts`
+file via `specta`, and writes it back into the consumer tree. The side-car
+imposes a recursive cargo invocation on every adopter build, pollutes the
+source tree with generated artefacts, drives watcher loops in Tauri/iron-log
+setups, and burns CI disk. `FallbackRecord` exists as a partial mitigation
+for unknown types but mis-tokenizes generics (OF-018).
 
-Out (spawned as follow-up tickets):
-- User-defined generics → [OF-021](../tasks/OF-021-user-defined-generics-in-ts-emitter.md)
-- Hierarchical TS output → [OF-020](../tasks/OF-020-hierarchical-ts-bindings.md)
-- Richer external-type renderings (`moment.Moment`-style imports) → [OF-022](../tasks/OF-022-richer-external-type-renderings.md)
-- Shape-changing serde attrs (`tag`, `content`, `untagged`, `flatten`) — phase 2
+## Proposed
 
-## PR sequence
+A new workspace member `crates/ontogen-ts/` exposes a pool-in API
+(`emit(roots, type_pool, config) -> Result<String, Vec<EmitError>>`) backed
+by `syn` AST inspection in `build.rs`. `gen_servers` calls into it; the
+specta side-car, the `FallbackRecord` emitter, and the iron-log workarounds
+are deleted. Phase-1 subset: named structs, C-style + externally-tagged
+enums, primitives, hardcoded containers (`Option`/`Vec`/`HashMap`/`BTreeMap`),
+smart-pointer transparency, references, external-types table; full serde
+rename family (8 case modes, property-tested against `serde_json::to_string`);
+`#[ontogen::ts_opaque]` and `#[ontogen::ts_name]` proc-macro attrs. Pumice
+is the integration validator. User-facing docs land in PR 8.
+
+## Tasks
+
+Member tasks are tracked under `../tasks/OF-015-pr-*.md`. The wikilink form
+the schema expects (`[[YYYY-MM-DD-slug]]`) does not match this project's
+`OF-NNN` task-id convention; the canonical list is the PR table below until
+the project renaming convention is reconciled with the SDLC schema.
 
 8 PRs, sequential. Each PR is reviewed and merged before the next is filed
 (per orchestrator preference — keeps review surface focused). PR 5 is the
@@ -91,19 +100,25 @@ that doc for the per-AC verification record.
 - [ ] **AC-16**: User-facing docs land  → PR 8
 - [ ] **AC-17**: `just full-check` + CI green after all PRs land  → spanning
 
-## Related follow-up tickets
+## Out of scope
 
-- [OF-018](../tasks/OF-018-ts-fallback-mistokenizes-generics.md) — TS fallback mis-tokenizes generics. **Closes naturally** when the `FallbackRecord` emitter is deleted in PR 6 (per OF-015's hard-error decision).
-- [OF-020](../tasks/OF-020-hierarchical-ts-bindings.md) — hierarchical TS output (per-module directory). Speculative; not on this epic's critical path.
-- [OF-021](../tasks/OF-021-user-defined-generics-in-ts-emitter.md) — first-class user-defined generics. Speculative; phase 1 rejects with the concrete-type-alias workaround.
-- [OF-022](../tasks/OF-022-richer-external-type-renderings.md) — richer external-type renderings (imported TS types). Speculative; phase-1 ships primitives only.
+Spawned as follow-up tickets, deferred past this epic:
 
-## Notes
+- User-defined generics → [OF-021](../tasks/OF-021-user-defined-generics-in-ts-emitter.md)
+- Hierarchical TS output → [OF-020](../tasks/OF-020-hierarchical-ts-bindings.md)
+- Richer external-type renderings (`moment.Moment`-style imports) → [OF-022](../tasks/OF-022-richer-external-type-renderings.md)
+- Shape-changing serde attrs (`tag`, `content`, `untagged`, `flatten`) — phase 2
+
+Naturally closes when this epic ships:
+
+- [OF-018](../tasks/OF-018-ts-fallback-mistokenizes-generics.md) — TS fallback mis-tokenizes generics. Resolved when the `FallbackRecord` emitter is deleted in PR 6 (per OF-015's hard-error decision).
+
+## Discovery context
 
 - OF-015 stays as a task in `tasks/` even though this epic supersedes it
   spiritually — the design-pass artefact is more useful preserved than
   consolidated into the epic doc.
-- The epic stays unnumbered (`ts-pipeline.md`, not `01-ts-pipeline.md`)
-  because the roadmap doesn't yet enumerate epic execution order. Add a
-  number prefix later if the roadmap formally schedules multiple epics in
-  M1.
+- The epic stays unnumbered (`ts-pipeline.md`, not `E0001.md`)
+  because inbound links across `docs/` and the planning README pin the
+  current filename; the immutable id `E0001` lives in frontmatter. Move
+  the file to `E0001.md` once a renaming sweep is scheduled.
