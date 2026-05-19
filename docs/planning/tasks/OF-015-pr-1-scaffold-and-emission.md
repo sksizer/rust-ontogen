@@ -1,16 +1,27 @@
 ---
 type: task
 schema_version: '1'
-status: ready
+status: closed/done
 created: 2026-05-15
 last_reviewed: 2026-05-19
-readiness_verified_at: '2026-05-19T13:48:10Z'
+completion_note: "Shipped in #55 (merge 13c2fcd, 2026-05-15). Commits 9ddfbc7 + 0633746 + 26d6c81 + 1e4abe2 — scaffold + per-type emission for AC-1/2/3."
 impact: high
 complexity: medium
 tags: [ontogen-ts, ts-pipeline]
 related: [OF-015]
 ---
 # OF-015 PR 1 — Scaffold `crates/ontogen-ts/` + per-type emission
+
+## Resolution
+
+Shipped in PR [#55](https://github.com/sksizer/rust-ontogen/pull/55), merged 2026-05-15 as `13c2fcd`. Four commits on `feat/OF-015-pr-1-scaffold-and-emission`:
+
+- `9ddfbc7` — scaffold crate with public API skeleton (`TypePath`, `EmitConfig`, `EmitError`, `BigIntBehavior`, `RenameAll`, `emit` as `todo!()` stub).
+- `0633746` — per-type emission for primitives, containers, smart-pointer peel.
+- `26d6c81` — emission for named structs and enums.
+- `1e4abe2` — convert per-type tests to on-disk fixture pairs (`tests/fixtures/*.rs` + `*.ts`).
+
+The body below is preserved as historical record of the task as scoped. The "Today" section described state-before-PR-55 (no `crates/ontogen-ts/` directory) — that state no longer holds; see `crates/ontogen-ts/src/` on `main` for the shipped surface.
 
 ## Goal
 
