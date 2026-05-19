@@ -252,16 +252,13 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
         }
     }
 
-    // OF-015 (PR 5): replaces the OF-014 side-car spike with a build-time
-    // AST emission via the `ontogen-ts` crate. For the long tail, scan the
-    // user crate's `src/` into a type pool, resolve each long-tail name to
-    // a `TypePath`, and call `ontogen_ts::emit` to produce the TS for the
-    // reachable closure. Append the result to every bindings.ts. The
-    // ontogen-ts walker reads `syn::Item` directly — no cargo invocation,
-    // no side-car binary, no target-dir contention, no `ONTOGEN_TS_SIDECAR_INNER`
-    // recursion guard needed. The side-car code (`ts_sidecar.rs`,
-    // `sidecar_lib_crate_name`, `sidecar_types_module_path`, the guard
-    // env var) stays in-tree but unused; PR 6 deletes it.
+    // OF-015 (PR 5+6): long-tail TS emission via the `ontogen-ts` crate.
+    // For the long tail, scan the user crate's `src/` into a type pool,
+    // resolve each long-tail name to a `TypePath`, and call
+    // `ontogen_ts::emit` to produce the TS for the reachable closure.
+    // Append the result to every bindings.ts. The walker reads `syn::Item`
+    // directly — no cargo invocation, no side-car binary, no target-dir
+    // contention, no recursion guard.
     let long_tail = generators::ts_bindings::long_tail(&modules, config, &config.schema_entities);
     if !long_tail.is_empty() && !written_bindings.is_empty() {
         let manifest_dir = std::path::PathBuf::from(
@@ -311,7 +308,7 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
 
         // 4. Append to every bindings file written above.
         for path in &written_bindings {
-            generators::ts_sidecar::append_to_bindings(path, &ts)?;
+            append_long_tail_to_bindings(path, &ts)?;
         }
 
         // 5. Tell cargo to rerun if any .rs under src/ changes. Coarse but
@@ -357,6 +354,19 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
     Ok(modules)
 }
 
+/// Append `ts` to the bindings file at `bindings_path`, prefixed with a
+/// short comment that identifies the source. Creates the file if missing
+/// (the schema-known emitter writes it first, but be defensive).
+fn append_long_tail_to_bindings(bindings_path: &std::path::Path, ts: &str) -> Result<(), String> {
+    let mut existing = std::fs::read_to_string(bindings_path).unwrap_or_default();
+    existing.push_str("\n// Long-tail types (emitted via ontogen-ts AST walker).\n");
+    existing.push_str(ts);
+    if !existing.ends_with('\n') {
+        existing.push('\n');
+    }
+    std::fs::write(bindings_path, existing).map_err(|e| format!("failed to append to {}: {e}", bindings_path.display()))
+}
+
 /// Emit `cargo:rerun-if-changed=<path>` for every `.rs` file recursively
 /// under `dir`. Coarser than reading exactly the file set the pool walker
 /// touched, but correct — the reach-set is a subset of the file set, so
@@ -374,54 +384,4 @@ fn rerun_if_changed_under(dir: &std::path::Path) {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
-}
-
-/// Read the user crate's Cargo.toml and return the lib crate name (the form
-/// used in `use foo::...` imports). Honours an explicit `[lib] name` if set;
-/// otherwise normalizes the package name (hyphens → underscores). Spike-grade
-/// regex-free parser — productionization should use `cargo metadata`.
-///
-/// Dead code as of OF-015 PR 5 (ontogen-ts replaced the side-car). PR 6
-/// removes the helper alongside the side-car module.
-#[allow(dead_code)]
-fn sidecar_lib_crate_name(manifest_dir: &std::path::Path) -> Result<String, String> {
-    let manifest_path = manifest_dir.join("Cargo.toml");
-    let content = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("failed to read {} for ts_export side-car: {e}", manifest_path.display()))?;
-    let mut in_section = "";
-    let mut package_name: Option<String> = None;
-    let mut lib_name: Option<String> = None;
-    for raw in content.lines() {
-        let line = raw.trim();
-        if let Some(rest) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            in_section = match rest {
-                "package" => "package",
-                "lib" => "lib",
-                _ => "",
-            };
-            continue;
-        }
-        if let Some((key, val)) = line.split_once('=') {
-            let k = key.trim();
-            let v = val.trim().trim_matches('"');
-            match (in_section, k) {
-                ("package", "name") => package_name = Some(v.to_string()),
-                ("lib", "name") => lib_name = Some(v.to_string()),
-                _ => {}
-            }
-        }
-    }
-    let name = lib_name.or_else(|| package_name.map(|n| n.replace('-', "_")));
-    name.ok_or_else(|| format!("could not determine lib crate name from {}", manifest_path.display()))
-}
-
-/// Convert a Rust import path of the form `crate::foo::bar` into the form
-/// usable from a sibling binary: `foo::bar`. The lib crate name will be
-/// prepended at side-car generation time.
-///
-/// Dead code as of OF-015 PR 5 (ontogen-ts replaced the side-car). PR 6
-/// removes the helper alongside the side-car module.
-#[allow(dead_code)]
-fn sidecar_types_module_path(types_import_path: &str) -> String {
-    types_import_path.strip_prefix("crate::").unwrap_or(types_import_path).to_string()
 }
