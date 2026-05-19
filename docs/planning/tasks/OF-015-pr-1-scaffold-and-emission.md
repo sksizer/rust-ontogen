@@ -1,21 +1,62 @@
 ---
+type: task
 schema_version: '1'
-status: in-progress
-last_reviewed: 2026-05-15
-epic: ts-pipeline
+status: closed/done
+created: 2026-05-15
+last_reviewed: 2026-05-19
+completion_note: "Shipped in #55 (merge 13c2fcd, 2026-05-15). Commits 9ddfbc7 + 0633746 + 26d6c81 + 1e4abe2 — scaffold + per-type emission for AC-1/2/3."
+impact: high
+complexity: medium
+tags: [ontogen-ts, ts-pipeline]
+related: [OF-015]
 ---
 # OF-015 PR 1 — Scaffold `crates/ontogen-ts/` + per-type emission
 
-- **Severity:** Medium-High (first phase-1 PR of [OF-015](./OF-015-productionize-typescript-generation.md); foundation for the other 7 PRs).
-- **Status:** Ready. Design decisions all captured in OF-015's "Decisions captured during the design pass (2026-05-14)" section; this PR is a focused implementation slice satisfying AC-1, AC-2, AC-3.
-- **Source:** OF-015 PR breakdown row 1 (stages 1 + 2 of the effort table).
-- **Related:** [OF-015](./OF-015-productionize-typescript-generation.md) (umbrella spec — read this first for context, decisions, and the full AC list).
+## Resolution
 
-## Problem
+Shipped in PR [#55](https://github.com/sksizer/rust-ontogen/pull/55), merged 2026-05-15 as `13c2fcd`. Four commits on `feat/OF-015-pr-1-scaffold-and-emission`:
 
-Phase-1 ontogen-ts needs to exist as a workspace member before any other PR in the 8-PR series can do useful work. PR 1 stands up the crate, defines the public API surface (`TypePath`, `EmitConfig`, `EmitError`, the `emit` signature — although `emit` itself is wired up in PR 4), and implements per-type emission for the phase-1 supported subset on hardcoded `syn::Item` fixtures.
+- `9ddfbc7` — scaffold crate with public API skeleton (`TypePath`, `EmitConfig`, `EmitError`, `BigIntBehavior`, `RenameAll`, `emit` as `todo!()` stub).
+- `0633746` — per-type emission for primitives, containers, smart-pointer peel.
+- `26d6c81` — emission for named structs and enums.
+- `1e4abe2` — convert per-type tests to on-disk fixture pairs (`tests/fixtures/*.rs` + `*.ts`).
 
-No serde renames yet (PR 2). No type collection or walking yet (PR 3). No top-level `emit()` composition yet (PR 4). No ontogen wiring yet (PR 5). This PR's deliverable is "the crate exists, its API shape is right, and you can pass it a `syn::ItemStruct` or `syn::ItemEnum` and get correct TS source for the supported subset."
+The body below is preserved as historical record of the task as scoped. The "Today" section described state-before-PR-55 (no `crates/ontogen-ts/` directory) — that state no longer holds; see `crates/ontogen-ts/src/` on `main` for the shipped surface.
+
+## Goal
+
+Stand up the `ontogen-ts` crate as a workspace member and define its public API surface (`TypePath`, `EmitConfig`, `EmitError`, the `emit` signature). Implement per-type emission for the phase-1 supported subset on hardcoded `syn::Item` fixtures so subsequent PRs (rename engine, type collection, wiring) have a foundation to build on. Satisfies AC-1, AC-2, AC-3 of [OF-015](./OF-015-productionize-typescript-generation.md).
+
+## Today
+
+The TypeScript bindings pipeline is currently a `specta` side-car (`src/servers/generators/ts_sidecar.rs`) that ontogen launches from `build.rs` context: it writes a binary into the user's crate (`src/bin/__ontogen_ts_export.rs`), compiles it through `cargo` with an isolated `CARGO_TARGET_DIR`, runs it, and captures stdout. OF-014's design spike documented the structural problems (recursion guard via `ONTOGEN_TS_SIDECAR_INNER`, target-dir lock contention, doubled cold-build time, source-tree pollution, watcher loops). The schema-known emitter in `src/servers/generators/ts_bindings.rs` (head: entities + generated DTOs) is unchanged by this PR; the long-tail emission is what ontogen-ts will eventually replace. There is no `crates/ontogen-ts/` directory today; the workspace's `Cargo.toml` lists `ontogen-core` and `ontogen-macros` as members.
+
+## Approach
+
+Three commits inside the worktree, in order:
+
+1. **Crate scaffold.** Add `crates/ontogen-ts/Cargo.toml` and `crates/ontogen-ts/src/lib.rs` registering the crate in the workspace. Wire it into the root `Cargo.toml`'s `workspace.members`. Add `syn` (with `full` + `extra-traits`) and `quote` as deps. Define the public types as skeletons:
+   - `TypePath(Vec<String>)` newtype with `new(path: Vec<String>) -> Result<Self, ...>` rejecting empty paths
+   - `EmitConfig` struct with phase-1 fields (`external_types`, `bigint_behavior`, `case_default`, `strict_unsupported`)
+   - `EmitError` enum with four variants (`UnsupportedShape`, `UnsupportedSerdeAttr`, `UnresolvedReference`, `NameCollision`)
+   - `pub fn emit(...) -> Result<String, Vec<EmitError>>` as a `todo!()` stub
+   - `cargo build -p ontogen-ts` succeeds.
+
+2. **Primitive + container + smart-pointer emission.** Add `pub(crate) fn emit_type(ty: &syn::Type, config: &EmitConfig) -> Result<String, EmitError>` that classifies a `syn::Type` and produces its TS rendering. Handle in this order:
+   - Smart-pointer peel: `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<'_, T>`, `Pin<P>` → recurse on inner
+   - Runtime-coordination primitives: `RefCell<T>`, `Mutex<T>`, `RwLock<T>` → `UnsupportedShape`
+   - Container generics: `Option<T>` → `T | null`; `Vec<T>` → `T[]`; `HashMap<K, V>` / `BTreeMap<K, V>` → `Record<K, V>` (K must be `String` or id-like primitive per validation)
+   - Reference types: `&T`, `&[T]` → unwrap to owned form (`&str` → `String` → `string`; `&[T]` → `Vec<T>` → `T[]`)
+   - Primitives: all integer types and `f32`/`f64` → `number`; `bool` → `boolean`; `String`/`&str` → `string`
+   - Anything else (single-segment ident not in the above) → defer with a placeholder pointing at the type's terminal ident (full pool/external-types lookup is PR 3 work; for now, return a fall-through that subsequent PRs build on)
+   - Unit tests covering each branch with hardcoded `syn::Type` fixtures parsed inline via `syn::parse_str`.
+
+3. **Struct + enum emission.** Add `pub(crate) fn emit_struct(item: &syn::ItemStruct, config: &EmitConfig) -> Result<String, EmitError>` and `emit_enum(item: &syn::ItemEnum, config: &EmitConfig) -> Result<String, EmitError>`.
+   - **Structs**: produce `export type Name = { field1: type1, field2: type2, ... };` over named fields. Tuple structs (`struct Foo(u32)`) and unit structs (`struct Bar;`) return `UnsupportedShape` with a clear reason.
+   - **Enums**: produce `export type Name = 'Variant1' | 'Variant2' | ...;` for C-style enums (variants without payloads). Variants with payloads under default (untagged-variant-name) representation get phase-1's representation (likely `{ type: 'V1', data: ... }` or similar — see Open questions below for spec). Enums where representation is contested or `#[serde(tag)]` is present return `UnsupportedSerdeAttr` for now (PR 2 will reject; full tagged-enum support is phase-2 work).
+   - Unit tests parse fixture structs and enums via `syn::parse_quote!` and assert the emitted TS strings.
+
+Each commit is self-contained: builds clean, `just full-check` passes, tests pass.
 
 ## Approach
 
