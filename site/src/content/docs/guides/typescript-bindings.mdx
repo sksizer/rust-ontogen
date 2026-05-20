@@ -1,0 +1,177 @@
+---
+title: TypeScript Bindings
+description: How Ontogen emits TypeScript type definitions from your Rust schema and long-tail types.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+When you configure a `ClientGenerator::HttpTs` or `HttpTauriIpcSplit` in your build script, Ontogen writes a TypeScript file (the `bindings_path`) containing every type your generated client surface references. Ontogen owns this file end-to-end — it rewrites it on each build.
+
+Two emitters cooperate to populate it:
+
+- **Schema-known emitter** — entity types from `src/schema/` plus the `Create{Entity}Input` / `Update{Entity}Input` DTOs Ontogen derives. Bounded mapping over `FieldType`; no AST walking. Always on.
+- **Long-tail emitter** — the [`ontogen-ts`](https://docs.rs/ontogen-ts) crate. A build-time AST walker that scans your `src/` for every struct, enum, and type alias referenced (transitively) by custom API endpoint signatures, then emits TypeScript for the reachable closure.
+
+Both emitters write to the same file: schema-known first, then long-tail appended.
+
+## How the long-tail emitter works
+
+`ontogen-ts` runs entirely inside `build.rs`. There is no separate compilation, no extra binary, no isolated `CARGO_TARGET_DIR`, no `cargo` invocation. The walker parses your `.rs` files with [`syn`](https://docs.rs/syn) and emits TypeScript directly from the AST.
+
+The pipeline:
+
+1. **Scan.** `scan_src_dir(CARGO_MANIFEST_DIR/src)` walks every `.rs` under `src/` and builds a pool keyed by canonical `TypePath` (`foo::bar::Baz`). All module-level structs, enums, and type aliases land in the pool regardless of visibility.
+2. **Root set.** The schema-known emitter computes a long-tail name list from the API surface — every type ident referenced by an endpoint's params or return that isn't an entity or generated DTO.
+3. **Resolve.** Each long-tail name is looked up in the pool: bare-ident match first, then any pool entry whose terminal segment matches.
+4. **Emit.** `ontogen_ts::emit(roots, &pool, &config)` walks the reachable closure of each root, renders the TS, and aggregates every error before returning.
+
+If any root is unresolved or any reachable type fails to emit, the build panics with the full punch-list rather than emitting partial output. See [Error model](#error-model).
+
+## Supported subset (phase 1)
+
+The phase-1 subset covers what's needed for typical CRUD + custom-endpoint surfaces. Shapes outside this set hard-error; see [Escape hatches](#escape-hatches) for how to handle them.
+
+**Composite shapes:**
+
+- Named structs with named fields (`pub struct Foo { pub a: i32, pub b: String }`).
+- C-style enums (`enum Status { Active, Archived }`) — render as TS union literals.
+- Externally-tagged enums where each variant's tag is its ident (the serde default).
+
+**Container types** (hardcoded):
+
+- `Option<T>` → `T | null`
+- `Vec<T>` → `T[]`
+- `HashMap<K, V>` / `BTreeMap<K, V>` → `Record<K, V>` where `K` is `String` or an id-like primitive.
+
+**Primitives:**
+
+- `bool` → `boolean`
+- All integer types and `f32` / `f64` → `number` (see [`BigIntBehavior`](#bigint-rendering) for 64-bit handling).
+- `String` / `&str` → `string`.
+
+**Smart-pointer transparency** — peeled silently, the inner type is what gets emitted:
+
+- `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<'_, T>`, `Pin<T>`.
+
+**Type aliases** — followed.
+
+## Serde rename support
+
+`ontogen-ts` reads `#[serde(...)]` attributes off your structs/enums and renames TS fields/variants accordingly. The supported attrs:
+
+- `#[serde(rename = "...")]` on a field or variant.
+- `#[serde(rename_all = "<mode>")]` on a struct or enum.
+- `#[serde(skip)]` on a field — drops from the TS rendering.
+
+The eight `rename_all` modes are all supported (`lowercase`, `UPPERCASE`, `PascalCase`, `camelCase`, `snake_case`, `SCREAMING_SNAKE_CASE`, `kebab-case`, `SCREAMING-KEBAB-CASE`). The case-transform implementations are property-tested against `serde_json::to_string` so the TS output matches the wire payload exactly.
+
+**Not supported in phase 1:**
+
+- Split rename (`rename(serialize = "...", deserialize = "...")`) — hard error.
+- Shape-changing attrs: `tag`, `content`, `untagged`, `flatten` — hard error. (Phase 2.)
+
+## BigInt rendering
+
+JavaScript `number` is a double-precision float; values above 2^53 lose precision. `EmitConfig::bigint_behavior` controls how Ontogen renders the 64-bit Rust integer types (`u64`, `i64`, `usize`, `isize`):
+
+- `BigIntBehavior::Number` *(default)* — TS `number`. Matches what most consumers expect; values above 2^53 silently truncate.
+- `BigIntBehavior::BigInt` — TS `bigint`. The wire format is JSON; your client code must use `bigint` literals.
+- `BigIntBehavior::String` — TS `string`. The wire payload is a JSON string; consumers parse it themselves.
+
+## External types
+
+Some types are defined outside your crate (chrono's `DateTime`, uuid's `Uuid`, etc.) but appear in your API signatures. `EmitConfig::external_types` is a canonical-path → TS-rendering map:
+
+```rust
+let mut external_types = std::collections::BTreeMap::new();
+external_types.insert("chrono::DateTime".to_string(), "string".to_string());
+external_types.insert("uuid::Uuid".to_string(), "string".to_string());
+```
+
+Ontogen ships sensible defaults for common crates; user overrides merge on top. When the walker encounters an unrecognized external type it produces an `UnresolvedReference` error — the fix is to add it to the table or annotate it with [`#[ontogen::ts_opaque]`](#escape-hatches).
+
+## Workspace-sibling types
+
+By default `ontogen-ts` only scans `CARGO_MANIFEST_DIR/src`. If your schema types live in workspace-sibling crates and are brought into the consuming crate via `pub use`, declare the sibling source roots in `ServersConfig`:
+
+```rust
+let servers_config = ServersConfig {
+    // ... other fields ...
+    pool_extra_roots: vec![
+        "../crates/my-schema/src".into(),
+        "../crates/my-config/src".into(),
+    ],
+};
+```
+
+Paths resolve relative to `CARGO_MANIFEST_DIR`. The walker scans the main `src/` first, then each extra root; the main pool wins on key collision.
+
+## Escape hatches
+
+Two proc-macro attrs let you steer the walker without touching its decision tree.
+
+### `#[ontogen::ts_opaque(target = "...")]`
+
+Mark a type as terminal. The walker stops recursing into the annotated type's fields and emits the supplied `target` string verbatim at every reference site.
+
+```rust
+use ontogen::ts_opaque;
+
+#[ts_opaque(target = "Date")]
+pub struct EpochSeconds(pub i64);
+```
+
+Every TS field of type `EpochSeconds` renders as `Date`. The attr is a no-op at Rust compile time; `ontogen-ts` reads it via `syn` during the scan.
+
+Useful for tuple structs (which the phase-1 subset doesn't otherwise support), newtypes wrapping primitives, and types whose TS rendering should match a JS library you import from outside the generated bundle.
+
+### `#[ontogen::ts_name = "..."]`
+
+Override the TS name emitted for an annotated type. The JSON wire shape is unaffected (serde never sees this attr); only `ontogen-ts`'s TS output uses the override.
+
+```rust
+use ontogen::ts_name;
+
+#[ts_name = "FooStats"]
+pub struct FooStatistics {
+    pub count: u64,
+}
+```
+
+Useful for breaking name collisions when two reachable types render to the same TS name (a `NameCollision` error otherwise), or for shortening verbose Rust idents in the TS surface.
+
+## Error model
+
+`ontogen-ts` is hard-error only. There is no fallback `Record<string, unknown>` placeholder, no warning-and-continue, no silent untyping. Either every type emits cleanly or the build fails.
+
+Errors aggregate: a single `ontogen_ts::emit` call collects every `EmitError` it encounters and returns the full `Vec` so one build surfaces every problem, not just the first.
+
+```text
+warning: ontogen-ts: long-tail type `CustomQueryResult` not found in `/.../src`
+warning: ontogen-ts: unsupported shape at `crate::api::TupleStruct`: tuple struct (use #[ontogen::ts_opaque] to override)
+error: failed to run custom build command for `my-app`
+  Pipeline build: server codegen error: ontogen-ts emit failed with 2 error(s)
+```
+
+The four error variants:
+
+- `UnsupportedShape` — the type's Rust shape isn't in the phase-1 subset. Fix: annotate with `#[ontogen::ts_opaque]`, refactor into a supported shape (e.g., named-field struct + `From` impl), or [file a phase-2 follow-up](https://github.com/sksizer/rust-ontogen/issues).
+- `UnsupportedSerdeAttr` — a serde attribute isn't supported in phase 1. Fix: drop the attribute, use a workaround (split-rename → two fields + `From` impl), or wait for phase 2 (`tag`/`content`/`untagged`/`flatten`).
+- `UnresolvedReference` — a referenced ident couldn't be resolved against the pool or the external-types table. Fix: add the type's crate to [`pool_extra_roots`](#workspace-sibling-types), add the canonical path to `EmitConfig::external_types`, or annotate the referencing type with `#[ts_opaque]`.
+- `NameCollision` — two reachable types render to the same TS name. Fix: annotate one with `#[ts_name = "..."]`.
+
+<Aside type="note">
+  Ontogen's downstream transport / client emitters (in `servers/generators/transport.rs` and `ts_client.rs`) carry their own fallback path that emits `Record<string, unknown>` for any type they can't find in `bindings.ts`. In the happy case `ontogen-ts` populates `bindings.ts` completely, so the fallback never fires. It exists as a defensive backstop against hand-edits to `bindings.ts` or root-set drift; if you see a `Record<string, unknown>` placeholder in the generated transport, it means the transport surface references a type `ontogen-ts` didn't include — usually a sign your `pool_extra_roots` or schema config needs adjusting.
+</Aside>
+
+## Migration from the OF-014 specta side-car
+
+Earlier versions of Ontogen used a separate `specta`-based binary (`src/bin/__ontogen_ts_export.rs`) to emit long-tail TS types. That side-car has been removed; the `ontogen-ts` build-time walker replaces it. Consumer-side cleanup:
+
+- Delete `src/bin/__ontogen_ts_export.rs` (and any `.gitignore` / `.taurignore` entry for it).
+- Drop `specta-typescript` from your `Cargo.toml` deps (no longer used).
+- Drop `default-run` from `[package]` if you added it for the side-car (it was a workaround for the side-car bin making `cargo run` ambiguous).
+- Drop any CI env-gate (`MY_APP_SKIP_SERVER_CODEGEN`-style) you added to dodge the side-car's CI disk pressure — the AST walker doesn't have that footprint.
+- Keep `specta = "..."`. The generated DTOs still derive `specta::Type`; the derive is independent of how Ontogen emits TS.
+
+The `bindings_path` you configured on `ClientGenerator::HttpTs` / `HttpTauriIpcSplit` keeps the same meaning. The file is still Ontogen-owned; only the emission mechanism behind it changed.
