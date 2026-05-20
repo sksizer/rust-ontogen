@@ -11,8 +11,8 @@ use std::path::Path;
 
 use ontogen_core::model::{EntityDef, FieldRole, FieldType, RelationKind};
 
-use crate::servers::config::Config;
-use crate::servers::generators::ipc::command_name;
+use crate::clients::config::Config;
+use crate::clients::generators::command_name;
 use crate::servers::parse::ApiModule;
 use crate::servers::types::{extract_input_type, inner_type, rust_type_to_ts, snake_to_camel};
 

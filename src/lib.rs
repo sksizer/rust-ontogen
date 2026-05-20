@@ -11,7 +11,8 @@
 //!     ├── gen_dtos        → ()
 //!     └── gen_store       → StoreOutput
 //!         └── gen_api     → ApiOutput
-//!             └── gen_servers → ServersOutput  (also emits TypeScript clients)
+//!             ├── gen_servers → ServersOutput  (Rust transports: Axum / Tauri IPC / MCP)
+//!             └── gen_clients → ()             (TS bindings, HTTP / IPC clients, admin registry)
 //! ```
 //!
 //! Each generator is a standalone function. Upstream outputs are `Option` parameters -
@@ -19,6 +20,7 @@
 
 pub mod admin;
 pub mod api;
+pub mod clients;
 pub mod persistence;
 pub mod pipeline;
 pub mod schema;
@@ -267,8 +269,8 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
     api::generate(entities, config)
 }
 
-/// Generate server transport handlers (Axum, Tauri, etc.) and TypeScript clients
-/// from API metadata.
+/// Generate server transport handlers (Axum HTTP routes, Tauri IPC commands,
+/// MCP tools) from API metadata.
 ///
 /// Currently, this function always scans `config.api_dir` with `syn`,
 /// regardless of `api` and `scan_dirs`. Both parameters are **reserved for
@@ -277,8 +279,10 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 /// `config.api_dir`. They have no effect today; pass `None` and `&[]`
 /// respectively. Both signatures are kept stable for forward compatibility.
 ///
-/// The set of transports emitted is controlled by
-/// [`ServersConfig::generators`] and [`ServersConfig::client_generators`].
+/// Client-side TypeScript and admin-registry generation lives in the sibling
+/// [`gen_clients`] entry point - this function only emits Rust server code.
+///
+/// The set of transports emitted is controlled by [`ServersConfig::generators`].
 ///
 /// # Errors
 ///
@@ -315,15 +319,12 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 ///         state_import: "crate::AppState".into(),
 ///         naming: Default::default(),
 ///         generators: vec![],
-///         client_generators: vec![],
 ///         rustfmt_edition: "2021".into(),
 ///         sse_route_overrides: HashMap::new(),
-///         ts_skip_commands: vec![],
 ///         route_prefix: None,
 ///         store_type: Some("Store".into()),
 ///         store_import: Some("crate::Store".into()),
 ///         pagination: None,
-///         schema_entities: schema.entities.clone(),
 ///     },
 /// )?;
 /// # Ok::<(), ontogen::CodegenError>(())
@@ -334,6 +335,60 @@ pub fn gen_servers(
     config: &ServersConfig,
 ) -> Result<ServersOutput, CodegenError> {
     servers::generate(api, scan_dirs, config)
+}
+
+/// Generate TypeScript clients (bindings, HTTP / IPC transports) and the
+/// admin-layer entity registry from API metadata.
+///
+/// Sibling of [`gen_servers`]: that function emits Rust transport handlers,
+/// this one emits the TypeScript surface the front-end consumes plus the
+/// admin-registry metadata file. Both consume the same parsed API surface;
+/// neither produces input for the other.
+///
+/// As with [`gen_servers`], the `api` and `scan_dirs` parameters are reserved
+/// for future enrichment - this function currently always scans
+/// `config.api_dir`. Pass `None` and `&[]`.
+///
+/// The set of client artefacts emitted is controlled by
+/// [`ClientsConfig::generators`].
+///
+/// # Errors
+///
+/// Returns [`CodegenError`] variants for parsing, I/O, or formatting failure.
+///
+/// # Example
+///
+/// ```ignore
+/// use ontogen::{gen_clients, ClientsConfig};
+/// use ontogen::clients::ClientGenerator;
+/// use std::collections::HashMap;
+/// use std::path::PathBuf;
+///
+/// gen_clients(
+///     None,
+///     &[],
+///     &ClientsConfig {
+///         api_dir: PathBuf::from("src/api/v1"),
+///         state_type: "AppState".into(),
+///         service_import_path: "crate::service".into(),
+///         types_import_path: "crate::schema".into(),
+///         state_import: "crate::AppState".into(),
+///         naming: Default::default(),
+///         generators: vec![],
+///         sse_route_overrides: HashMap::new(),
+///         ts_skip_commands: vec![],
+///         route_prefix: None,
+///         store_type: Some("Store".into()),
+///         store_import: Some("crate::Store".into()),
+///         pagination: None,
+///         schema_entities: vec![],
+///         pool_extra_roots: vec![],
+///     },
+/// )?;
+/// # Ok::<(), ontogen::CodegenError>(())
+/// ```
+pub fn gen_clients(api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError> {
+    clients::generate(api, scan_dirs, config)
 }
 
 // ── Configuration types ─────────────────────────────────────────────
@@ -438,11 +493,9 @@ pub struct ApiConfig {
 
 /// Configuration for [`gen_servers`].
 ///
-/// Controls both server-side transport handlers (Axum, Tauri IPC, etc.) and
-/// client-side artifacts (TypeScript transports, admin registry). The set of
-/// outputs is determined by [`generators`](Self::generators) and
-/// [`client_generators`](Self::client_generators); leave either empty to
-/// disable that side of generation.
+/// Controls the server-side transport handlers (Axum HTTP, Tauri IPC, MCP).
+/// Client-side TypeScript and admin-registry generation has its own config
+/// type, [`ClientsConfig`], paired with [`gen_clients`].
 pub struct ServersConfig {
     /// Directory to scan for API source files when no [`ApiOutput`] is supplied.
     pub api_dir: PathBuf,
@@ -459,12 +512,54 @@ pub struct ServersConfig {
     /// Naming overrides for plural and singular entity names. See
     /// [`servers::NamingConfig`].
     pub naming: servers::NamingConfig,
-    /// Which server transport generators to run (Axum, Tauri IPC, etc.).
+    /// Which server transport generators to run (Axum, Tauri IPC, MCP).
     pub generators: Vec<servers::ServerGeneratorConfig>,
-    /// Which client generators to run (TypeScript transports, admin registry, etc.).
-    pub client_generators: Vec<servers::ClientGenerator>,
     /// Rustfmt edition for formatting generated Rust (e.g., `"2021"`).
     pub rustfmt_edition: String,
+    /// SSE route overrides keyed by entity name; values are full URL paths.
+    pub sse_route_overrides: std::collections::HashMap<String, String>,
+    /// Optional route prefix applied to every generated route
+    /// (e.g., `/projects/:project_id`).
+    pub route_prefix: Option<servers::RoutePrefix>,
+    /// Store type name for entity-scoped handler functions (e.g., `"Store"`).
+    pub store_type: Option<String>,
+    /// Import path for the [`store_type`](Self::store_type) (e.g., `"crate::Store"`).
+    pub store_import: Option<String>,
+    /// Optional pagination configuration for list operations.
+    pub pagination: Option<servers::PaginationConfig>,
+}
+
+/// Configuration for [`gen_clients`].
+///
+/// Controls the client-side TypeScript output (schema-known bindings, the
+/// HTTP-only and HTTP+IPC unified transport clients, the admin entity
+/// registry). Server-side Rust transport generation has its own config type,
+/// [`ServersConfig`], paired with [`gen_servers`].
+///
+/// The two configs intentionally overlap on naming, state, and routing fields
+/// because those decisions drive both sides of the surface (URL pluralization,
+/// pagination wrappers, route prefixes). The `naming`, `route_prefix`, and
+/// `pagination` types are re-exported from [`servers`] for now; they may
+/// move to a shared module in a future refactor.
+pub struct ClientsConfig {
+    /// Directory to scan for API source files when no [`ApiOutput`] is supplied.
+    pub api_dir: PathBuf,
+    /// The application state type name used by route handlers (e.g., `"AppState"`).
+    pub state_type: String,
+    /// Import path for the service module that exposes business logic
+    /// (e.g., `"crate::service"`).
+    pub service_import_path: String,
+    /// Import path for schema types referenced by handlers
+    /// (e.g., `"crate::schema"`).
+    pub types_import_path: String,
+    /// Import path for the state type (e.g., `"crate::AppState"`).
+    pub state_import: String,
+    /// Naming overrides for plural and singular entity names. See
+    /// [`servers::NamingConfig`].
+    pub naming: servers::NamingConfig,
+    /// Which client-side generators to run (TS HTTP client, HTTP+IPC unified
+    /// transport, admin registry).
+    pub generators: Vec<clients::ClientGenerator>,
     /// SSE route overrides keyed by entity name; values are full URL paths.
     pub sse_route_overrides: std::collections::HashMap<String, String>,
     /// IPC commands to skip in TypeScript transport generation.
@@ -478,15 +573,14 @@ pub struct ServersConfig {
     pub store_import: Option<String>,
     /// Optional pagination configuration for list operations.
     pub pagination: Option<servers::PaginationConfig>,
-    /// Parsed schema entities, used by the admin-registry client generator
-    /// to derive per-field UI metadata (label, type, required, etc.).
+    /// Parsed schema entities, used by the admin-registry generator to
+    /// derive per-field UI metadata (label, type, required, etc.).
     ///
     /// Pass `schema.entities.clone()` from the [`SchemaOutput`] returned by
     /// [`parse_schema`]. Leaving this empty silently strips the field
     /// metadata from `admin-registry.ts` output, so the admin layer renders
-    /// blank tables. Server transports (Axum, Tauri IPC, MCP) and the
-    /// transport TypeScript clients do not consume this field - only the
-    /// admin-registry generator does.
+    /// blank tables. The HTTP and HTTP+IPC transport generators do not
+    /// consume this field - only the admin-registry generator does.
     ///
     /// [`Pipeline`] users do not need to set this; the builder forwards
     /// `schema.entities` automatically.
