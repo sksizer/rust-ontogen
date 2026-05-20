@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '2'
-status: planning/proposed
+status: in-progress
 created: '2026-05-19'
 last_reviewed: '2026-05-20'
 impact: medium
@@ -17,6 +17,17 @@ tags:
 related:
 - OF-015
 - OF-022
+relevance_note: |
+  Relevance check 2026-05-20: all cited files exist and structural
+  claims hold. Minor line drifts since 2026-05-19 (file growth in
+  servers/mod.rs, config.rs, lib.rs — ranges in the spec are now
+  approximate). One concrete staleness: the spec referenced
+  `client-generation.mdx:204` (the `disable_codegen` knob mention in
+  the Integration gotchas section) — that section was deleted in
+  OF-015 PR 8 (#68); the reference is dead. The new
+  `site/src/content/docs/guides/typescript-bindings.mdx` (also added
+  in PR 8) likely needs no edits — it describes ontogen-ts in
+  isolation. Spot-check during implementation.
 ---
 # Split client SDK generation out of the `servers` module
 
