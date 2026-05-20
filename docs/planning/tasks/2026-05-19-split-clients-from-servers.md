@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '2'
-status: done
+status: in-progress
 created: '2026-05-19'
 last_reviewed: '2026-05-20'
 readiness_verified_at: '2026-05-20T04:25:53Z'
