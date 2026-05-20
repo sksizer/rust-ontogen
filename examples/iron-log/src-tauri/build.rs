@@ -42,6 +42,7 @@ fn main() {
         store_import: Some("crate::store::Store".into()),
         pagination: None,
         schema_entities: Vec::new(),
+        pool_extra_roots: Vec::new(),
     };
 
     // OF-015 PR 6: the IRON_LOG_SKIP_SERVER_CODEGEN escape hatch is gone.

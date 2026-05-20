@@ -73,6 +73,7 @@ pub fn generate(
         store_import: config.store_import.clone(),
         schema_entities: config.schema_entities.clone(),
         pagination: config.pagination.clone(),
+        pool_extra_roots: config.pool_extra_roots.clone(),
     };
 
     // Run the transport generation pipeline
@@ -267,8 +268,20 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
         );
         let src_dir = manifest_dir.join("src");
 
-        // 1. Build the type pool from src/.
-        let pool = ontogen_ts::scan_src_dir(&src_dir).map_err(|e| format!("ontogen-ts pool scan failed: {e}"))?;
+        // 1. Build the type pool from src/, then merge in any configured
+        //    extra source roots (workspace-sibling crates the consuming crate
+        //    re-exports types from). Main pool wins on key collision so the
+        //    consuming crate's own definitions take precedence over a sibling
+        //    that happens to share a module path.
+        let mut pool = ontogen_ts::scan_src_dir(&src_dir).map_err(|e| format!("ontogen-ts pool scan failed: {e}"))?;
+        for extra in &config.pool_extra_roots {
+            let resolved = if extra.is_absolute() { extra.clone() } else { manifest_dir.join(extra) };
+            let sibling = ontogen_ts::scan_src_dir(&resolved)
+                .map_err(|e| format!("ontogen-ts pool scan failed for extra root `{}`: {e}", resolved.display()))?;
+            for (key, item) in sibling {
+                pool.entry(key).or_insert(item);
+            }
+        }
 
         // 2. Resolve each long-tail name to a TypePath. Try a single-
         //    segment match first (matches items defined in src/lib.rs);

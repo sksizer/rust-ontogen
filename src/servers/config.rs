@@ -72,6 +72,14 @@ pub struct Config {
     /// When set, all `OpKind::List` handlers add `limit`/`offset` query params
     /// and wrap return values in `PaginatedResult<T>`.
     pub pagination: Option<PaginationConfig>,
+
+    /// Additional source roots to merge into the ontogen-ts type pool, beyond
+    /// the default `CARGO_MANIFEST_DIR/src`. Use when long-tail types are
+    /// defined in workspace-sibling crates and brought into the consuming
+    /// crate via `pub use`. Paths are resolved relative to the running
+    /// `build.rs`'s `CARGO_MANIFEST_DIR`. On key collision, the main pool
+    /// (manifest_dir/src) wins; sibling-root entries fill in the gaps.
+    pub pool_extra_roots: Vec<PathBuf>,
 }
 
 /// Configuration for pagination support across all list endpoints.
@@ -101,6 +109,7 @@ impl Default for Config {
             store_import: None,
             schema_entities: Vec::new(),
             pagination: None,
+            pool_extra_roots: Vec::new(),
         }
     }
 }

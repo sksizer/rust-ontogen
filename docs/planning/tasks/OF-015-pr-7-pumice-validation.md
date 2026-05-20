@@ -1,12 +1,12 @@
 ---
 type: task
 schema_version: '1'
-status: ready
+status: in-progress
 created: 2026-05-19
 last_reviewed: 2026-05-19
 impact: high
 complexity: medium
-autonomy: human-only
+autonomy: supervised
 tags: [ontogen-ts, ts-pipeline, integration]
 related: [OF-015, OF-015-pr-6]
 ---
@@ -63,3 +63,56 @@ These are AC-15 from OF-015 — restated here for per-PR scope:
 ## Discovery context
 
 - OF-015 design pass (2026-05-14) flagged Pumice as the second real consumer of the long-tail emission path after iron-log; OF-015's migration-semantics decision explicitly relies on Pumice as a working-fallback bedrock during the cutover.
+
+## Validation run — 2026-05-19
+
+**Setup.** Pumice at `/Users/sksizer/Developer/Pumice` (branch `validate-ontogen-ts`). Added a temporary `[patch."https://github.com/sksizer/rust-ontogen.git"]` block to `src-tauri/Cargo.toml` pointing `ontogen` and `ontogen-macros` at the local rust-ontogen checkout. `PUMICE_SKIP_SERVER_CODEGEN` unset so the full pipeline ran.
+
+**First run — failed.** ontogen-ts panicked with 4 `UnresolvedReference` errors:
+- `ExportFilterConfig`
+- `ExportPresetConfig`
+- `NotificationPrefs`
+- `TimerProfile`
+
+All four are `pub use` re-exports in `src-tauri/src/schema/mod.rs:20-21`:
+
+```rust
+pub use pumice::types::{IntervalKind, SessionStatus, TimerProfile};
+pub use pumice_config::{ColumnConfig, ExportFilterConfig, ExportPresetConfig, NotificationPrefs};
+```
+
+ontogen-ts's pool walker (`scan_src_dir`) reads only `CARGO_MANIFEST_DIR/src` (`src-tauri/src/`); the actual type definitions live in `crates/pumice/src/types.rs` and `crates/pumice-config/src/...`. The resolver doesn't follow `pub use` declarations across crate boundaries.
+
+**Reconciliation.** One backport: category (a). Added `ServersConfig::pool_extra_roots: Vec<PathBuf>` so a consumer can declare additional source roots to merge into the pool. The walker scans the main `src/` first, then each extra root; on key collision the main pool wins. Iron-log unaffected (defaults to empty). Pumice's `build.rs` grows two lines:
+
+```rust
+pool_extra_roots: vec![
+    "../crates/pumice/src".into(),
+    "../crates/pumice-config/src".into(),
+],
+```
+
+**Second run — clean.** `cargo build` succeeded in 23.9s. Zero `cargo:warning` lines, zero `Record<string, unknown>` fallback placeholders in `src-nuxt/app/generated/types.ts`. All four previously-missing types now emitted natively by ontogen-ts.
+
+**Catalog of EmitError variants surfaced.**
+
+| Variant | Count | Pumice surface | Disposition |
+|---|---|---|---|
+| `UnresolvedReference` | 4 | Workspace-sibling types re-exported via `pub use` | Backport: `pool_extra_roots` |
+| `UnsupportedShape` | 0 | — | n/a |
+| `UnsupportedSerdeAttr` | 0 | — | n/a |
+| `NameCollision` | 0 | — | n/a |
+
+**Observed gaps not surfaced as errors.**
+
+- Pumice's `build.rs` still appends three TS enum aliases (`IntervalKind`, `SessionStatus`, `CompletionKind`) via `append_pumice_enum_aliases()` because ontogen-ts's root set is derived from API-endpoint long-tail types only, not from transitively-referenced field types of schema entities. Once `pool_extra_roots` lands, the type *bodies* are in the pool, but they aren't in the root set so ontogen-ts doesn't emit them. **Follow-up feature, not a PR-7 gap** — file as a new task: "ontogen-ts should include transitively-referenced field types of schema entities in the long-tail root set." Pumice can drop its workaround once that lands.
+- Pumice's `src-tauri/src/bin/__ontogen_ts_export.rs` (the leftover specta side-car bin) still compiles cleanly because Pumice's `src-tauri/Cargo.toml` still carries `specta` and `specta-typescript` as direct deps. Stale but benign; will be cleaned up when Pumice bumps its ontogen git pin past PR-6.
+
+**Acceptance criteria status.**
+
+- [x] AC-15.1: ontogen-ts run; catalog committed above (one variant, 4 instances).
+- [x] AC-15.2: Every gap classified: (a) backport for `UnresolvedReference`; no (b) or (c) needed.
+- [x] AC-15.3: Backport (`pool_extra_roots`) prepared as a follow-up to PR 6 since PR 6 already merged. Lands as a separate PR on rust-ontogen `main`.
+- [x] AC-15.4: After the backport + Pumice build.rs change, `cargo build` on Pumice's `validate-ontogen-ts` branch succeeds with zero `EmitError`s.
+
+**Follow-up.** A new task should track field-type closure (Pumice's `append_pumice_enum_aliases` workaround). It's a more invasive change to ontogen-ts (root-set derivation) and out of scope for PR-7.
