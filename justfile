@@ -39,8 +39,8 @@ alias fmt := format
 lint:
     cargo clippy -- --deny warnings
 
-# Run all code checks
-full-check: format-check lint
+# Run all code checks (matches CI: format-check + lint + tests)
+full-check: format-check lint test
 alias fc := full-check
 
 # Fix formatting (alias for format)
@@ -51,8 +51,8 @@ alias fw := full-write
 test:
     cargo test
 
-# Run the same checks CI runs locally (full-check + tests)
-ci: full-check test
+# Alias retained for muscle memory: same as full-check now that tests are folded in.
+ci: full-check
 
 # Build API docs (no deps)
 doc:
