@@ -1,8 +1,11 @@
-//! Schema-known half of the OF-014 hybrid: emit TS type aliases for entities
-//! and their generated Create/Update DTOs straight from `EntityDef`.
+//! Schema-known emitter: TS type aliases for entities and their generated
+//! Create/Update DTOs, written straight from `EntityDef`. Bounded mapping
+//! over `FieldType` — no AST walking, no external tooling.
 //!
 //! The long-tail (user-owned types referenced by custom API endpoints) is
-//! handled separately by `ts_sidecar` via a generated specta binary.
+//! handled separately by the `ontogen-ts` crate (built-in AST walker; see
+//! `crates/ontogen-ts/`). The two emitters write to the same `bindings.ts`
+//! file: this module first, then ontogen-ts appends.
 
 use std::collections::HashSet;
 
@@ -54,8 +57,9 @@ pub fn schema_known_names(entities: &[EntityDef]) -> HashSet<String> {
     set
 }
 
-/// Referenced types that are NOT covered by schema-known emission. Drives
-/// the specta side-car (option 3 half of the OF-014 hybrid).
+/// Referenced types that are NOT covered by schema-known emission. The
+/// returned names are the long-tail root set fed to `ontogen-ts::emit`
+/// in `generate_transport`.
 pub fn long_tail(modules: &[ApiModule], config: &Config, entities: &[EntityDef]) -> Vec<String> {
     let known = schema_known_names(entities);
     referenced_ts_types(modules, config).into_iter().filter(|t| !known.contains(t)).collect()

@@ -101,107 +101,22 @@ export async function taskGetOverdue(): Promise<Task[]> {
 
 ### The bindings_path option
 
-The `bindings_path` points to the TypeScript file that holds the type definitions the client imports. **Ontogen owns this file** -- on every build it rewrites the path with a fresh set of TS aliases. Two emitters cooperate:
+The `bindings_path` points to the TypeScript file that holds the type definitions the client imports. **Ontogen owns this file** -- on every build it rewrites the path with a fresh set of TS aliases. Two emitters cooperate to populate it:
 
-- **Schema-known types** (entity types from `src/schema/`, plus the `Create{Entity}Input` / `Update{Entity}Input` DTOs ontogen derives) are emitted directly from `EntityDef` via a bounded mapping over `FieldType`. No user setup required.
-- **Long-tail types** (user-owned types referenced by a custom API endpoint's input or return type -- anything that isn't an entity or a generated DTO) are emitted via a generated `specta` side-car binary. Ontogen writes `src/bin/__ontogen_ts_export.rs` into your crate, compiles and runs it in an isolated `CARGO_TARGET_DIR`, and appends its `specta_typescript::Typescript::export(...)` output to `bindings_path`.
+- **Schema-known emitter** -- entity types from `src/schema/` plus the `Create{Entity}Input` / `Update{Entity}Input` DTOs Ontogen derives are emitted directly from `EntityDef` via a bounded mapping over `FieldType`. No user setup required.
+- **Long-tail emitter** -- user-owned types referenced by a custom API endpoint's input or return type (anything that isn't an entity or a generated DTO) are emitted by the [`ontogen-ts`](https://docs.rs/ontogen-ts) crate. A build-time AST walker scans your `src/` for the reachable closure of every long-tail type and appends the result to `bindings_path`.
 
-The side-car only matters if you have long-tail types. To opt one in, add `#[derive(specta::Type)]` to it (and to any user-owned types it transitively references); specta walks them but each type still needs the derive. Schema-derived types don't need any annotation.
+The long-tail emitter runs entirely inside `build.rs`. There is no separate compilation, no extra binary, no `cargo` invocation, no `CARGO_TARGET_DIR` isolation. The walker reads `.rs` files with [`syn`](https://docs.rs/syn) and emits TypeScript directly from the AST.
 
-```toml
-# Cargo.toml -- required only when long-tail types are present
-[dependencies]
-specta = { version = "=2.0.0-rc.23", features = ["derive"] }
-specta-typescript = "=0.0.10"
-```
+You don't need to opt long-tail types in -- the walker discovers them automatically from your API signatures and recursively pulls in everything they reference. If a referenced type lives in a workspace-sibling crate, declare the sibling's source root in `pool_extra_roots`; see the [TypeScript bindings guide](/guides/typescript-bindings/#workspace-sibling-types).
 
-If a referenced type is *neither* schema-known *nor* registered with specta, ontogen falls back to a `Record<string, unknown>` placeholder and emits a `cargo:warning=`:
-
-```text
-warning: ontogen: type 'CustomQueryResult' not found in `…/bindings.ts` - using `Record<string, unknown>` placeholder in `…/transport.ts`
-```
-
-If you see this after the OF-014 model landed, the fix is the `#[derive(specta::Type)]` on the offending type, not a hand-curated `bindings.ts`.
+If a type's shape isn't in the supported subset, or a serde attribute isn't recognized, or a reference can't be resolved, the build hard-errors with the full punch-list. See the [error model](/guides/typescript-bindings/#error-model) for the four variants and how to handle each.
 
 <Aside type="caution">
-  `bindings_path` is an **output**, not an input. Any pre-existing manual `specta::export_ts!` binary that wrote to the same file should be deleted -- ontogen overwrites it on every build.
+  `bindings_path` is an **output**, not an input. Any pre-existing manual `specta::export_ts!` binary that wrote to the same file should be deleted -- Ontogen overwrites it on every build.
 </Aside>
 
-### Integration gotchas
-
-Once the side-car lands in your tree, three side-effects show up that aren't obvious from the ontogen API surface. Each one has a one-line fix; the issue is discoverability.
-
-#### `default-run` in `[package]`
-
-Once the side-car file exists at `src/bin/__ontogen_ts_export.rs`, Cargo sees **two** binary targets (your app plus the side-car) and refuses any `cargo run` invocation without `--bin`:
-
-```text
-error: `cargo run` could not determine which binary to run.
-Use the `--bin` option to specify a binary, or the `default-run`
-manifest key.
-```
-
-`pnpm tauri dev` calls `cargo run` under the hood, so the symptom is the dev server starting and immediately failing. Fix: add `default-run` to `[package]` in the consuming crate's `Cargo.toml`:
-
-```toml
-[package]
-name = "my-app"
-default-run = "my-app"   # whatever your app's binary is named
-```
-
-Any consumer with a single-binary crate that depends on ontogen will hit this the moment a long-tail type is added; setting `default-run` ahead of time costs nothing.
-
-#### `.taurignore` for Tauri consumers
-
-Tauri's dev-mode file watcher (verified in `tauri-cli` 2.10.x) uses a **custom `.taurignore`** filename and does **not** honour standard `.gitignore`. The side-car's write at the end of the first `tauri dev` build trips the watcher and queues another `cargo run`, which presents as a rebuild loop on dev-server startup.
-
-Create `src-tauri/.taurignore` (sibling of `Cargo.toml`):
-
-```text
-# src-tauri/.taurignore
-src/bin/__ontogen_ts_export.rs
-```
-
-`.gitignore` should also list the same path -- the file is regenerated on every build that has long-tail types and committing it adds noise without value -- but `.gitignore` alone does not silence tauri's watcher.
-
-#### CI disk pressure (and the opt-out env gate)
-
-The side-car uses a distinct `CARGO_TARGET_DIR` to dodge the parent cargo's target-dir lock (`rust-lang/cargo#8938`). That doubles the target-dir footprint and, on default GitHub Actions runners (~14 GB free), can exhaust disk during the second tree's compile -- typically surfacing as `No space left on device` from `rustls-webpki` or similar mid-graph crates.
-
-If your CI runs the full build, the working pattern is to **commit the generated client + bindings files** and gate ontogen's `.servers()` stage behind an env var. The default CI build trusts the committed output; a separate manual-dispatch "drift" job re-runs the full pipeline on a freed-disk runner and `git diff --exit-code`s the generated paths.
-
-```rust
-// build.rs
-let skip_servers = std::env::var("MY_APP_SKIP_SERVER_CODEGEN").is_ok();
-let pipeline = Pipeline::new("src/schema")
-    .seaorm(/* ... */)
-    .dtos(/* ... */)
-    .store(/* ... */)
-    .api(/* ... */);
-let pipeline = if skip_servers { pipeline } else { pipeline.servers(cfg) };
-pipeline.build().unwrap_or_else(|e| {
-    e.emit_cargo_warning();
-    panic!("ontogen pipeline failed: {e}");
-});
-```
-
-```yaml
-# .github/workflows/ci.yml -- default job
-- run: cargo build
-  env:
-    MY_APP_SKIP_SERVER_CODEGEN: "1"
-
-# .github/workflows/drift.yml -- manual dispatch
-on: workflow_dispatch
-jobs:
-  drift:
-    steps:
-      - run: rm -rf /usr/share/dotnet /usr/local/share/boost /opt/ghc   # free up disk
-      - run: cargo build
-      - run: git diff --exit-code -- 'src-nuxt/app/generated/**'
-```
-
-A first-class `disable_codegen` knob on `ServersConfig` is on the productionization punch-list; until that lands, the env-gate idiom above is the recommended pattern.
+For the full ontogen-ts story -- supported subset, serde rename family, BigInt rendering, external types, the `#[ontogen::ts_opaque]` / `#[ontogen::ts_name]` escape hatches -- see the dedicated [TypeScript bindings guide](/guides/typescript-bindings/).
 
 ## Split transport (HTTP + Tauri IPC)
 

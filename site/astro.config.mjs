@@ -58,6 +58,7 @@ export default defineConfig({
 						{ label: 'API Layer', slug: 'guides/api-layer' },
 						{ label: 'Server Transports', slug: 'guides/server-transports' },
 						{ label: 'Client Generation', slug: 'guides/client-generation' },
+						{ label: 'TypeScript Bindings', slug: 'guides/typescript-bindings' },
 						{ label: 'Markdown I/O', slug: 'guides/markdown-io' },
 						{ label: 'Build Script Setup', slug: 'guides/build-script-setup' },
 					],

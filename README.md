@@ -119,17 +119,6 @@ This generates 39 files across all layers from just 4 schema entity files.
   `crate::persistence::fs_markdown::parser::ontology::{strip_wikilink, strip_wikilink_opt, strip_wikilinks_vec}`.
   Projects without markdown persistence must provide stub implementations. See the iron-log example for a reference.
 
-- **TypeScript bindings side-car needs `default-run` (and `.taurignore` for Tauri).** Once a custom API endpoint
-  introduces a long-tail return type, ontogen writes `src/bin/__ontogen_ts_export.rs` into your crate and runs it
-  via `cargo` to produce TS aliases. Two side-effects every consumer hits:
-  - Cargo sees two `[[bin]]` targets and refuses `cargo run` without `--bin`. Add `default-run = "<app-bin-name>"`
-    to `[package]` in `Cargo.toml`.
-  - Tauri's dev watcher honours `.taurignore`, not `.gitignore`. Add `src/bin/__ontogen_ts_export.rs` to
-    `src-tauri/.taurignore` to silence a rebuild loop on `pnpm tauri dev` startup.
-  - On disk-constrained CI runners, the side-car's isolated `CARGO_TARGET_DIR` doubles the build footprint.
-    Env-gate the `.servers()` stage and commit the generated client files; see the integration gotchas section
-    of the [Client Generation guide](https://sksizer.github.io/rust-ontogen/guides/client-generation/#integration-gotchas).
-
 ## Project Status
 
 Ontogen is functional and in active development. Phases 1-5 of the pipeline are complete (schema parsing through client

@@ -14,10 +14,20 @@ use std::path::PathBuf;
 /// against the configured `bindings.ts` file and fell back to
 /// `Record<string, unknown>` for.
 ///
-/// The TS surface still compiles cleanly when this happens, but loses type
-/// safety on the affected calls. Consumers (notably `generate_transport` in
+/// Post-OF-015 this is a defensive backstop: `ontogen-ts` populates
+/// `bindings.ts` with the long-tail closure of types reachable from the
+/// configured API root set, and ontogen-ts itself hard-errors on
+/// unsupported shapes. In the happy path the transport / client emitter
+/// finds every type it needs in `bindings.ts` and produces zero records.
+/// The path still fires when: `bindings.ts` is hand-edited, ontogen-ts's
+/// root-set derivation doesn't reach a type the transport surface
+/// references (e.g. types pulled in by signature-only metadata), or the
+/// build observes a stale `bindings.ts` mid-pipeline.
+///
+/// The TS surface still compiles cleanly when this happens but loses type
+/// safety on the affected calls. Callers (notably `generate_transport` in
 /// `src/servers/mod.rs`) drain these records and emit one `cargo:warning=`
-/// per occurrence so the build surfaces the silent untyping.
+/// per occurrence so the silent untyping surfaces at build time.
 #[derive(Debug, Clone)]
 pub struct FallbackRecord {
     /// Output `.ts` file the placeholder type was emitted into.
