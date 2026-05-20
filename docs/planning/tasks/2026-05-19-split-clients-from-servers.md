@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '2'
-status: in-progress
+status: done
 created: '2026-05-19'
 last_reviewed: '2026-05-20'
 readiness_verified_at: '2026-05-20T04:25:53Z'
@@ -139,18 +139,18 @@ Pumice has the same `ServersConfig { client_generators: ... }` shape and will ne
 
 ## Acceptance criteria
 
-- [ ] **AC-1**: `src/clients/` exists as a sibling module to `src/servers/`. The four files `ts_bindings.rs`, `ts_client.rs`, `transport.rs`, `admin.rs` are relocated via `git mv` so `git log --follow` from each new path reaches pre-move history.
-- [ ] **AC-2**: `gen_clients(api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError>` is the public entry point for TypeScript and admin-registry generation. Signature mirrors `gen_servers`'s shape.
-- [ ] **AC-3**: `ServersConfig` no longer carries `client_generators`, `ts_skip_commands`, or `schema_entities`. Those move to `ClientsConfig`. `gen_servers` only ever emits Rust server transport handlers.
-- [ ] **AC-4**: `GeneratorConfig::Client` and the wrapping `GeneratorConfig` enum are deleted; `Config::generators` (in `servers/config.rs`) becomes `Vec<ServerGenerator>`.
-- [ ] **AC-5**: The `ontogen-ts` long-tail wiring (schema-known emission, `ontogen_ts::scan_src_dir`, `emit`, `append_long_tail_to_bindings`, `rerun_if_changed_under`) lives in `src/clients/mod.rs`, not `src/servers/mod.rs`.
-- [ ] **AC-6**: `Pipeline::clients(ClientsConfig)` exists and is invoked from `build()` after the servers stage. `Pipeline` auto-forwards `schema.entities` into `ClientsConfig.schema_entities` when empty, mirroring the current `ServersConfig.schema_entities` auto-forward.
-- [ ] **AC-7**: `examples/iron-log/src-tauri/build.rs` compiles and produces byte-identical output to the pre-split version. Snapshot files under `src/snapshots/` are unchanged. (`git diff` after the split run must show no edits to any generated file.)
-- [ ] **AC-8**: A repo-wide grep for the legacy surface (`grep -rIn --exclude-dir=target --exclude-dir=node_modules -e 'ServersConfig.*client_generators' -e 'gen_servers.*also.*TS' -e 'client_generators:' .`) returns hits only in: (a) `CHANGELOG.md`, (b) `docs/planning/tasks/2026-05-19-split-clients-from-servers.md` (this file), and (c) historical task entries in `docs/planning/tasks/OF-*` (legacy artefacts).
-- [ ] **AC-9**: Every site page that mentions "client generators run inside `gen_servers`" or "`ServersConfig.client_generators`" is rewritten to reference `gen_clients` / `ClientsConfig` / `Pipeline.clients(...)`. Specifically: `guides/client-generation.mdx`, `guides/server-transports.mdx`, `guides/api-layer.mdx`, `getting-started/your-first-entity.mdx`, `cookbook/tauri-integration.mdx`, `cookbook/mcp-integration.mdx`, `concepts/architecture.mdx`, `concepts/pipeline.mdx`. The site builds cleanly.
-- [ ] **AC-10**: The module-rustdoc pipeline diagram in `src/lib.rs:7-15` is updated. The new shape: `gen_api → ApiOutput → { gen_servers → ServersOutput, gen_clients → () }` (or equivalent — clients no longer hide behind servers).
-- [ ] **AC-11**: `just full-check` passes (fmt + clippy with `--deny warnings` + `cargo test`).
-- [ ] **AC-12**: `cargo build` succeeds in `examples/iron-log/src-tauri/` against the new API. Iron-log's end-to-end build (Rust + Nuxt) completes; the generated TS files (`generated/types.ts`, `generated/transport.ts`, `admin-registry.ts`) are byte-identical to the pre-split outputs.
+- [x] **AC-1**: `src/clients/` exists as a sibling module to `src/servers/`. The four files `ts_bindings.rs`, `ts_client.rs`, `transport.rs`, `admin.rs` are relocated via `git mv` so `git log --follow` from each new path reaches pre-move history.
+- [x] **AC-2**: `gen_clients(api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError>` is the public entry point for TypeScript and admin-registry generation. Signature mirrors `gen_servers`'s shape.
+- [x] **AC-3**: `ServersConfig` no longer carries `client_generators`, `ts_skip_commands`, or `schema_entities`. Those move to `ClientsConfig`. `gen_servers` only ever emits Rust server transport handlers.
+- [x] **AC-4**: `GeneratorConfig::Client` and the wrapping `GeneratorConfig` enum are deleted; `Config::generators` (in `servers/config.rs`) becomes `Vec<ServerGenerator>`.
+- [x] **AC-5**: The `ontogen-ts` long-tail wiring (schema-known emission, `ontogen_ts::scan_src_dir`, `emit`, `append_long_tail_to_bindings`, `rerun_if_changed_under`) lives in `src/clients/mod.rs`, not `src/servers/mod.rs`.
+- [x] **AC-6**: `Pipeline::clients(ClientsConfig)` exists and is invoked from `build()` after the servers stage. `Pipeline` auto-forwards `schema.entities` into `ClientsConfig.schema_entities` when empty, mirroring the current `ServersConfig.schema_entities` auto-forward.
+- [x] **AC-7**: `examples/iron-log/src-tauri/build.rs` compiles and produces byte-identical output to the pre-split version. Snapshot files under `src/snapshots/` are unchanged. (`git diff` after the split run must show no edits to any generated file.)
+- [x] **AC-8**: A repo-wide grep for the legacy surface (`grep -rIn --exclude-dir=target --exclude-dir=node_modules -e 'ServersConfig.*client_generators' -e 'gen_servers.*also.*TS' -e 'client_generators:' .`) returns hits only in: (a) `CHANGELOG.md`, (b) `docs/planning/tasks/2026-05-19-split-clients-from-servers.md` (this file), and (c) historical task entries in `docs/planning/tasks/OF-*` (legacy artefacts).
+- [x] **AC-9**: Every site page that mentions "client generators run inside `gen_servers`" or "`ServersConfig.client_generators`" is rewritten to reference `gen_clients` / `ClientsConfig` / `Pipeline.clients(...)`. Specifically: `guides/client-generation.mdx`, `guides/server-transports.mdx`, `guides/api-layer.mdx`, `getting-started/your-first-entity.mdx`, `cookbook/tauri-integration.mdx`, `cookbook/mcp-integration.mdx`, `concepts/architecture.mdx`, `concepts/pipeline.mdx`. The site builds cleanly.
+- [x] **AC-10**: The module-rustdoc pipeline diagram in `src/lib.rs:7-15` is updated. The new shape: `gen_api → ApiOutput → { gen_servers → ServersOutput, gen_clients → () }` (or equivalent — clients no longer hide behind servers).
+- [x] **AC-11**: `just full-check` passes (fmt + clippy with `--deny warnings` + `cargo test`).
+- [x] **AC-12**: `cargo build` succeeds in `examples/iron-log/src-tauri/` against the new API. Iron-log's end-to-end build (Rust + Nuxt) completes; the generated TS files (`generated/types.ts`, `generated/transport.ts`, `admin-registry.ts`) are byte-identical to the pre-split outputs.
 
 ## Out of scope
 
