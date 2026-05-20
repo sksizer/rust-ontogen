@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
-use ontogen::servers::{ClientGenerator, NamingConfig, ServerGenerator};
-use ontogen::{Pipeline, ServersConfig};
+use ontogen::clients::ClientGenerator;
+use ontogen::servers::{NamingConfig, ServerGenerator};
+use ontogen::{ClientsConfig, Pipeline, ServersConfig};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -25,7 +26,22 @@ fn main() {
                 output: "src/api/transport/ipc/generated.rs".into(),
             },
         ],
-        client_generators: vec![
+        rustfmt_edition: "2024".into(),
+        sse_route_overrides: Default::default(),
+        route_prefix: None,
+        store_type: Some("Store".into()),
+        store_import: Some("crate::store::Store".into()),
+        pagination: None,
+    };
+
+    let clients_config = ClientsConfig {
+        api_dir: "src/api/v1".into(),
+        state_type: "AppState".into(),
+        service_import_path: "crate::api::v1".into(),
+        types_import_path: "crate::schema".into(),
+        state_import: "crate::AppState".into(),
+        naming: NamingConfig::default(),
+        generators: vec![
             ClientGenerator::HttpTauriIpcSplit {
                 output: "../src-nuxt/app/generated/transport.ts".into(),
                 bindings_path: "../src-nuxt/app/generated/types.ts".into(),
@@ -34,7 +50,6 @@ fn main() {
                 output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
             },
         ],
-        rustfmt_edition: "2024".into(),
         sse_route_overrides: Default::default(),
         ts_skip_commands: vec![],
         route_prefix: None,
@@ -56,7 +71,8 @@ fn main() {
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
         .api("src/api/v1/generated", "AppState")
-        .servers(servers_config);
+        .servers(servers_config)
+        .clients(clients_config);
     pipeline.build().unwrap_or_else(|e| {
         e.emit_cargo_warning();
         panic!("ontogen pipeline failed: {e}");
