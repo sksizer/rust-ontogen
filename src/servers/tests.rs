@@ -9,8 +9,10 @@ use std::path::PathBuf;
 
 use ontogen_core::ir::OpKind;
 
+use crate::clients::ClientGenerator;
+use crate::clients::config::Config as ClientsInternalConfig;
 use crate::servers::classify::{classify_op, is_read_op};
-use crate::servers::config::{ClientGenerator, Config, GeneratorConfig, PrefixParam, RoutePrefix, ServerGenerator};
+use crate::servers::config::{Config, PrefixParam, RoutePrefix, ServerGenerator};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{
     NamingConfig, capitalize, collect_ts_import, collect_type_import, event_name, extract_input_type, forward_arg_expr,
@@ -19,7 +21,8 @@ use crate::servers::types::{
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
 
-/// Build a minimal Config for testing generators.
+/// Build a minimal server-side `Config` for testing the server generators
+/// (HTTP, IPC, MCP).
 fn test_config(api_dir: PathBuf) -> Config {
     Config {
         api_dir,
@@ -30,6 +33,26 @@ fn test_config(api_dir: PathBuf) -> Config {
         naming: NamingConfig::default(),
         generators: vec![],
         rustfmt_edition: "2024".to_string(),
+        sse_route_overrides: HashMap::new(),
+        route_prefix: None,
+        store_type: Some("Store".to_string()),
+        store_import: Some("crate::store::Store".to_string()),
+        pagination: None,
+    }
+}
+
+/// Build a minimal client-side internal `Config` for testing the client
+/// generators (TS transport, TS HTTP client, admin registry). Mirrors
+/// [`test_config`] but uses [`crate::clients::config::Config`].
+fn client_test_config(api_dir: PathBuf) -> ClientsInternalConfig {
+    ClientsInternalConfig {
+        api_dir,
+        state_type: "AppState".to_string(),
+        service_import_path: "crate::api::v1".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        state_import: "crate::AppState".to_string(),
+        naming: NamingConfig::default(),
+        generators: vec![],
         sse_route_overrides: HashMap::new(),
         ts_skip_commands: vec![],
         route_prefix: None,
@@ -44,6 +67,22 @@ fn test_config(api_dir: PathBuf) -> Config {
 /// Build a test config with route_prefix (project scoping).
 fn test_config_with_prefix(api_dir: PathBuf) -> Config {
     let mut config = test_config(api_dir);
+    config.route_prefix = Some(RoutePrefix {
+        segments: "projects/:project_id".to_string(),
+        state_accessor: "store_for".to_string(),
+        params: vec![PrefixParam {
+            name: "project_id".to_string(),
+            rust_type: "uuid::Uuid".to_string(),
+            ts_type: "string".to_string(),
+        }],
+    });
+    config
+}
+
+/// Build a client test config with route_prefix (project scoping).
+/// Mirrors [`test_config_with_prefix`] but for the client-side internal config.
+fn client_test_config_with_prefix(api_dir: PathBuf) -> ClientsInternalConfig {
+    let mut config = client_test_config(api_dir);
     config.route_prefix = Some(RoutePrefix {
         segments: "projects/:project_id".to_string(),
         state_accessor: "store_for".to_string(),
@@ -1773,10 +1812,10 @@ fn test_ts_transport_generator_crud_module() {
     )
     .unwrap();
 
-    let config = test_config_with_prefix(tmp.path().to_path_buf());
+    let config = client_test_config_with_prefix(tmp.path().to_path_buf());
     let modules = vec![make_crud_module("node", true)];
 
-    crate::servers::generators::transport::generate(&output, &bindings, &modules, &config);
+    crate::clients::generators::transport::generate(&output, &bindings, &modules, &config);
     let content = std::fs::read_to_string(&output).unwrap();
 
     // Transport interface (entity-first camelCase method names)
@@ -1823,10 +1862,10 @@ fn test_transport_returns_fallback_record_for_missing_type() {
     // Bindings file is empty - every referenced type will fall back.
     std::fs::write(&bindings, "").unwrap();
 
-    let config = test_config(tmp.path().to_path_buf());
+    let config = client_test_config(tmp.path().to_path_buf());
     let modules = vec![make_crud_module("workout", true)];
 
-    let fallbacks = crate::servers::generators::transport::generate(&output, &bindings, &modules, &config);
+    let fallbacks = crate::clients::generators::transport::generate(&output, &bindings, &modules, &config);
 
     let names: Vec<&str> = fallbacks.iter().map(|r| r.type_name.as_str()).collect();
     assert!(names.contains(&"Workout"), "expected Workout fallback, got {names:?}");
@@ -1860,10 +1899,10 @@ fn test_transport_no_fallback_when_all_types_exported() {
     )
     .unwrap();
 
-    let config = test_config(tmp.path().to_path_buf());
+    let config = client_test_config(tmp.path().to_path_buf());
     let modules = vec![make_crud_module("workout", true)];
 
-    let fallbacks = crate::servers::generators::transport::generate(&output, &bindings, &modules, &config);
+    let fallbacks = crate::clients::generators::transport::generate(&output, &bindings, &modules, &config);
     assert!(fallbacks.is_empty(), "expected no fallbacks when bindings exports every type, got {fallbacks:?}");
 }
 
@@ -1875,10 +1914,10 @@ fn test_ts_client_returns_fallback_record_for_missing_type() {
 
     std::fs::write(&bindings, "").unwrap();
 
-    let config = test_config(tmp.path().to_path_buf());
+    let config = client_test_config(tmp.path().to_path_buf());
     let modules = vec![make_crud_module("workout", true)];
 
-    let fallbacks = crate::servers::generators::ts_client::generate(&output, &bindings, &modules, &config);
+    let fallbacks = crate::clients::generators::ts_client::generate(&output, &bindings, &modules, &config);
 
     let names: Vec<&str> = fallbacks.iter().map(|r| r.type_name.as_str()).collect();
     assert!(names.contains(&"Workout"), "expected Workout fallback, got {names:?}");
@@ -1888,7 +1927,7 @@ fn test_ts_client_returns_fallback_record_for_missing_type() {
 
 #[test]
 fn test_fallback_record_display_format() {
-    use crate::servers::generators::FallbackRecord;
+    use crate::clients::generators::FallbackRecord;
     use std::path::PathBuf;
 
     let record = FallbackRecord {
@@ -1913,7 +1952,7 @@ fn test_admin_registry_generator() {
     // .prettierrc so it uses single quotes (matching the project convention).
     std::fs::write(tmp.path().join(".prettierrc"), r#"{ "singleQuote": true }"#).unwrap();
     let output = tmp.path().join("admin-registry.ts");
-    let config = test_config(tmp.path().to_path_buf());
+    let config = client_test_config(tmp.path().to_path_buf());
 
     let modules = vec![
         make_crud_module("node", true),
@@ -1921,7 +1960,7 @@ fn test_admin_registry_generator() {
         make_custom_module(), // non-CRUD should be excluded
     ];
 
-    crate::servers::generators::admin::generate(&output, &modules, &config);
+    crate::clients::generators::admin::generate(&output, &modules, &config);
     let content = std::fs::read_to_string(&output).unwrap();
 
     // Type import (definitions moved to @ontogen/admin-types)
@@ -2084,10 +2123,10 @@ fn test_ts_transport_junction_module() {
     )
     .unwrap();
 
-    let config = test_config(tmp.path().to_path_buf());
+    let config = client_test_config(tmp.path().to_path_buf());
     let modules = vec![make_junction_module()];
 
-    crate::servers::generators::transport::generate(&output, &bindings, &modules, &config);
+    crate::clients::generators::transport::generate(&output, &bindings, &modules, &config);
     let content = std::fs::read_to_string(&output).unwrap();
     // Prettier reformats the output, so assertions use individual tokens
     // rather than full signatures. The `normalized` view collapses all
@@ -2186,11 +2225,12 @@ fn test_junction_cross_transport_consistency() {
     .unwrap();
 
     let config = test_config(tmp.path().to_path_buf());
+    let client_config = client_test_config(tmp.path().to_path_buf());
     let modules = vec![make_junction_module()];
 
     crate::servers::generators::ipc::generate(&ipc_out, &modules, &config);
     crate::servers::generators::http::generate(&http_out, &modules, &config);
-    crate::servers::generators::transport::generate(&ts_out, &bindings, &modules, &config);
+    crate::clients::generators::transport::generate(&ts_out, &bindings, &modules, &client_config);
 
     let ipc = std::fs::read_to_string(&ipc_out).unwrap();
     let http = std::fs::read_to_string(&http_out).unwrap();
@@ -2275,7 +2315,41 @@ fn test_e2e_generate_transport_with_real_api() {
     naming.plural_overrides.insert("work_execution".to_string(), "work_executions".to_string());
     naming.plural_overrides.insert("workflow_template".to_string(), "workflow_templates".to_string());
 
-    let config = Config {
+    let route_prefix = Some(RoutePrefix {
+        segments: "projects/:project_id".to_string(),
+        state_accessor: "store_for".to_string(),
+        params: vec![PrefixParam {
+            name: "project_id".to_string(),
+            rust_type: "uuid::Uuid".to_string(),
+            ts_type: "string".to_string(),
+        }],
+    });
+
+    let server_config = Config {
+        api_dir: api_dir.clone(),
+        state_type: "AppState".to_string(),
+        service_import_path: "crate::api::v1".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        state_import: "crate::AppState".to_string(),
+        naming: naming.clone(),
+        generators: vec![
+            ServerGenerator::HttpAxum { output: http_out.clone() },
+            ServerGenerator::TauriIpc { output: ipc_out.clone() },
+            ServerGenerator::Mcp { output: mcp_out.clone() },
+        ],
+        rustfmt_edition: "2024".to_string(),
+        sse_route_overrides: HashMap::new(),
+        route_prefix: route_prefix.clone(),
+        store_type: Some("Store".to_string()),
+        store_import: Some("crate::store::Store".to_string()),
+        pagination: None,
+    };
+
+    let modules = crate::servers::generate_transport(&server_config).expect("generate_transport failed");
+
+    // Also run the client-side generators so the rest of the assertions
+    // (TS transport + admin registry outputs) still apply post-split.
+    let client_config = ClientsInternalConfig {
         api_dir: api_dir.clone(),
         state_type: "AppState".to_string(),
         service_import_path: "crate::api::v1".to_string(),
@@ -2283,35 +2357,20 @@ fn test_e2e_generate_transport_with_real_api() {
         state_import: "crate::AppState".to_string(),
         naming,
         generators: vec![
-            GeneratorConfig::Server(ServerGenerator::HttpAxum { output: http_out.clone() }),
-            GeneratorConfig::Server(ServerGenerator::TauriIpc { output: ipc_out.clone() }),
-            GeneratorConfig::Server(ServerGenerator::Mcp { output: mcp_out.clone() }),
-            GeneratorConfig::Client(ClientGenerator::HttpTauriIpcSplit {
-                output: ts_out.clone(),
-                bindings_path: bindings.clone(),
-            }),
-            GeneratorConfig::Client(ClientGenerator::AdminRegistry { output: admin_out.clone() }),
+            ClientGenerator::HttpTauriIpcSplit { output: ts_out.clone(), bindings_path: bindings.clone() },
+            ClientGenerator::AdminRegistry { output: admin_out.clone() },
         ],
-        rustfmt_edition: "2024".to_string(),
         sse_route_overrides: HashMap::new(),
         ts_skip_commands: vec![],
-        route_prefix: Some(RoutePrefix {
-            segments: "projects/:project_id".to_string(),
-            state_accessor: "store_for".to_string(),
-            params: vec![PrefixParam {
-                name: "project_id".to_string(),
-                rust_type: "uuid::Uuid".to_string(),
-                ts_type: "string".to_string(),
-            }],
-        }),
+        route_prefix,
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
-        schema_entities: Vec::new(),
         pagination: None,
+        schema_entities: Vec::new(),
         pool_extra_roots: Vec::new(),
     };
-
-    let modules = crate::servers::generate_transport(&config).expect("generate_transport failed");
+    crate::clients::generators::transport::generate(&ts_out, &bindings, &modules, &client_config);
+    crate::clients::generators::admin::generate(&admin_out, &modules, &client_config);
 
     // Should find a reasonable number of modules
     assert!(modules.len() >= 5, "Expected at least 5 API modules from real API dir, got {}", modules.len());
@@ -3431,10 +3490,10 @@ fn test_ts_client_uses_override_camelcased() {
     let bindings = tmp.path().join("bindings.ts");
     std::fs::write(&bindings, "export type HistoryEntry = { tag: string; ts: number; };\n").unwrap();
 
-    let config = test_config(tmp.path().to_path_buf());
+    let config = client_test_config(tmp.path().to_path_buf());
     let modules = vec![make_renamed_module(Some("tag_get_history"))];
 
-    crate::servers::generators::ts_client::generate(&output, &bindings, &modules, &config);
+    crate::clients::generators::ts_client::generate(&output, &bindings, &modules, &config);
 
     let content = std::fs::read_to_string(&output).unwrap();
     assert!(

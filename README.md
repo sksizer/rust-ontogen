@@ -22,8 +22,8 @@ parse_schema -> SchemaOutput
     |-- gen_dtos        -> ()
     `-- gen_store       -> StoreOutput
         `-- gen_api     -> ApiOutput
-            `-- gen_servers -> ServersOutput
-                `-- gen_clients -> ()
+            |-- gen_servers -> ServersOutput  (Rust transports: Axum / Tauri IPC / MCP)
+            `-- gen_clients -> ()             (TS bindings, HTTP / IPC clients, admin registry)
 ```
 
 Each generator is a standalone function. You can run the full pipeline or pick individual stages. Upstream outputs are

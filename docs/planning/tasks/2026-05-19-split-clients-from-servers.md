@@ -1,9 +1,10 @@
 ---
 type: task
 schema_version: '2'
-status: planning/proposed
+status: in-progress
 created: '2026-05-19'
 last_reviewed: '2026-05-20'
+readiness_verified_at: '2026-05-20T04:25:53Z'
 impact: medium
 complexity: medium
 autonomy: supervised
@@ -17,14 +18,27 @@ tags:
 related:
 - OF-015
 - OF-022
+relevance_note: |
+  Relevance check 2026-05-20: all cited files exist and structural
+  claims hold. Minor line drifts since 2026-05-19 (file growth in
+  servers/mod.rs, config.rs, lib.rs — ranges in the spec are now
+  approximate). One concrete staleness: the spec referenced
+  `client-generation.mdx:204` (the `disable_codegen` knob mention in
+  the Integration gotchas section) — that section was deleted in
+  OF-015 PR 8 (#68); the reference is dead. The new
+  `site/src/content/docs/guides/typescript-bindings.mdx` (also added
+  in PR 8) likely needs no edits — it describes ontogen-ts in
+  isolation. Spot-check during implementation.
 ---
 # Split client SDK generation out of the `servers` module
 
-- **Severity:** Medium. Pure separation-of-concerns cleanup; no behavioural change in generated output. Public API break: `gen_servers` / `ServersConfig` shrink, new `gen_clients` / `ClientsConfig` appear, `Pipeline` gains a `.clients(...)` stage. Affects every downstream `build.rs` (iron-log, Pumice, the docs cookbook recipes).
-- **Status:** Proposed. Filed 2026-05-19 to address the long-standing overloading admitted in `src/servers/mod.rs:1-4` (*"Also includes client generators... which will move to the `clients` module in a later phase"*). The "later phase" is now — OF-015 productionized the TS pipeline, and there are no remaining reasons to keep client gen entangled with server gen.
-- **Related:** Naturally follows [OF-015 / `ts-pipeline`](../epics/ts-pipeline.md). Does not depend on any open OF-NNN task; touches the same surface as OF-022 (richer external-type renderings) but the two are independent.
+## Goal
 
-## Problem
+The `servers` module owns two unrelated concerns: server transport codegen (Rust output — Axum / Tauri IPC / MCP) and client SDK codegen (TypeScript output — bindings, HTTP client, split transport, admin registry). Promote the client concern to a sibling `clients` module with its own `gen_clients` / `ClientsConfig` entry points and a `Pipeline.clients(...)` stage. Pure separation-of-concerns cleanup with no behavioural change in generated output; public API break for every downstream `build.rs`.
+
+Filed 2026-05-19 to act on the long-standing acknowledgement in `src/servers/mod.rs:1-4` (*"Also includes client generators... which will move to the `clients` module in a later phase"*). The "later phase" is now — OF-015 productionized the TS pipeline and there are no remaining reasons to keep the two entangled. Naturally follows [OF-015 / `ts-pipeline`](../epics/ts-pipeline.md); touches the same surface as OF-022 (richer external-type renderings) but the two are independent.
+
+## Today
 
 The `servers` module owns two distinct concerns:
 
@@ -34,10 +48,10 @@ The `servers` module owns two distinct concerns:
 These share an upstream input (`ApiOutput` / the parsed `ApiModule` list) but produce outputs in different languages, for different runtime targets, with different review profiles. The current code conflates them at every level:
 
 - **Module layout (`src/servers/generators/`):** `http.rs` / `ipc.rs` / `mcp.rs` (server) sit alongside `ts_bindings.rs` / `ts_client.rs` / `transport.rs` / `admin.rs` (client).
-- **Config (`src/servers/config.rs:137-186`):** `GeneratorConfig::Server(ServerGenerator)` and `GeneratorConfig::Client(ClientGenerator)` are funneled through a single dispatch loop (`servers/mod.rs:320-347`).
-- **Public API (`src/lib.rs:331-337`, `:446-494`):** `gen_servers` generates both; `ServersConfig` carries client-only fields (`client_generators`, `ts_skip_commands`, `schema_entities`) that have nothing to do with servers.
+- **Config (`src/servers/config.rs`):** `GeneratorConfig::Server(ServerGenerator)` and `GeneratorConfig::Client(ClientGenerator)` are funneled through a single dispatch loop (`servers/mod.rs` around lines 320-360).
+- **Public API (`src/lib.rs`):** `gen_servers` generates both; `ServersConfig` carries client-only fields (`client_generators`, `ts_skip_commands`, `schema_entities`) that have nothing to do with servers.
 - **Pipeline (`src/pipeline.rs`):** only a `.servers(...)` stage exists; clients are reached transitively through `ServersConfig.client_generators`.
-- **Long-tail TS wiring (`servers/mod.rs:255-318`):** the `ontogen-ts` AST walker step — conceptually 100% client-side — lives inside `generate_transport`.
+- **Long-tail TS wiring (`servers/mod.rs` around lines 255-320):** the `ontogen-ts` AST walker step — conceptually 100% client-side — lives inside `generate_transport`.
 - **Docs (`docs/proposal.md`, `docs/walkthrough.md`, `site/src/content/docs/**`, `concepts/architecture.mdx`):** every reference to client generation has to re-explain that it lives "inside `gen_servers`".
 
 The smell is acknowledged in the source itself:
@@ -50,7 +64,7 @@ The smell is acknowledged in the source itself:
 
 It is also surfaced obliquely in the OF-015 design docs and several site pages that warn "client generation runs inside `gen_servers` — there is no separate `gen_clients` function" (e.g., `guides/client-generation.mdx:33`). That note exists *because* the conflation surprises users.
 
-## Direction
+## Proposed
 
 Promote client SDK generation to a sibling stage of server transport generation. The split is structural, not functional — generated output is byte-identical before and after.
 
@@ -80,7 +94,20 @@ src/
 
 Per-user decision (2026-05-19): **breaking split, no compat shims.** Downstream `build.rs` files update in lockstep — iron-log here, Pumice as a coordinated PR.
 
-## Location
+## Approach
+
+1. **Move** the four client generator files (`ts_bindings.rs`, `ts_client.rs`, `transport.rs`, `admin.rs`) from `src/servers/generators/` to `src/clients/generators/` via `git mv`.
+2. **Introduce** `src/clients/mod.rs` + `src/clients/config.rs` with `gen_clients`, `ClientsConfig`, and `ClientGenerator`.
+3. **Move** the schema-known bindings emission and the long-tail `ontogen-ts` AST-walker integration (currently around `servers/mod.rs:238-318`) into `clients::generate`.
+4. **Shrink** `ServersConfig` to server-only fields; drop `client_generators`, `ts_skip_commands`, `schema_entities` from it.
+5. **Drop** `GeneratorConfig::Client` and the flat-list muxing in `servers/config.rs`; `ServerGenerator` becomes the only variant.
+6. **Add** a `Pipeline::clients(ClientsConfig)` builder method + `clients_scan_dirs`. Pipeline runs `gen_servers` then `gen_clients` (order doesn't matter for correctness — neither produces input for the other — but stable ordering keeps the rerun-if-changed traces deterministic).
+7. **Auto-forward** `schema.entities` from the schema stage into `ClientsConfig.schema_entities` (mirroring the current `ServersConfig.schema_entities` auto-forward at `pipeline.rs:371-373`).
+8. **Update** `examples/iron-log/src-tauri/build.rs` to the new API.
+9. **Update** all `docs/` and `site/` pages that document `ServersConfig.client_generators` / `gen_servers`-emits-clients to point at the new surface.
+10. **Verify** with `just full-check` + a clean build of iron-log + a snapshot-output diff to confirm zero behaviour change.
+
+## Files to touch
 
 Files that move (use `git mv` to preserve history):
 
@@ -103,38 +130,43 @@ Cross-references that need rewriting (mechanical):
 
 - `examples/iron-log/src-tauri/build.rs` — split the single `ServersConfig` into a `ServersConfig` + `ClientsConfig`; update imports (`use ontogen::clients::{ClientGenerator, ...}`); chain `Pipeline::...servers(servers_config).clients(clients_config)`.
 - `examples/iron-log/README.md:65-66` — drop the "performed inline by `servers::generate_transport()`" wording.
-- `site/src/content/docs/getting-started/your-first-entity.mdx`, `site/src/content/docs/guides/client-generation.mdx`, `site/src/content/docs/guides/server-transports.mdx`, `site/src/content/docs/cookbook/tauri-integration.mdx`, `site/src/content/docs/cookbook/mcp-integration.mdx`, `site/src/content/docs/concepts/architecture.mdx`, `site/src/content/docs/concepts/pipeline.mdx`, `site/src/content/docs/guides/api-layer.mdx` — every page that says "client generators are configured through `ServersConfig.client_generators`" or "client generation runs inside `gen_servers`" needs to point at `ClientsConfig` / `gen_clients` / `Pipeline.clients(...)` instead. The "no separate `gen_clients` function" disclaimer in `guides/client-generation.mdx:33` and the "`disable_codegen` knob on `ServersConfig`" reference at `:204` both go away (the second can be reframed as living on `ClientsConfig`).
-- `docs/proposal.md`, `docs/walkthrough.md`, `docs/architecture/*`, `docs/crate-extraction.md:77` (the latter has a one-line aside about `ServersConfig` referencing `servers::NamingConfig` and `RoutePrefix` — `NamingConfig` likely belongs in a shared spot once both configs need it; see Open questions).
+- `site/src/content/docs/getting-started/your-first-entity.mdx`, `site/src/content/docs/guides/client-generation.mdx`, `site/src/content/docs/guides/server-transports.mdx`, `site/src/content/docs/cookbook/tauri-integration.mdx`, `site/src/content/docs/cookbook/mcp-integration.mdx`, `site/src/content/docs/concepts/architecture.mdx`, `site/src/content/docs/concepts/pipeline.mdx`, `site/src/content/docs/guides/api-layer.mdx` — every page that says "client generators are configured through `ServersConfig.client_generators`" or "client generation runs inside `gen_servers`" needs to point at `ClientsConfig` / `gen_clients` / `Pipeline.clients(...)` instead. The "no separate `gen_clients` function" disclaimer in `guides/client-generation.mdx:33` (line drift since 2026-05-19) and similar copy elsewhere all go away.
+- `site/src/content/docs/guides/typescript-bindings.mdx` (added in OF-015 PR 8 after this task was drafted) — likely needs no edits; it describes ontogen-ts in isolation. Spot-check.
+- `docs/proposal.md`, `docs/walkthrough.md`, `docs/architecture/*`, `docs/crate-extraction.md` (one-line aside about `ServersConfig` referencing `servers::NamingConfig` and `RoutePrefix` — `NamingConfig` likely belongs in a shared spot once both configs need it; see Open questions).
 - `README.md` — pipeline diagram in the top-level README.
 
-Pumice has the same `ServersConfig { client_generators: ... }` shape and will need a coordinated PR. Out of scope for this ticket (see Scope below) but mentioned in Open questions.
+Pumice has the same `ServersConfig { client_generators: ... }` shape and will need a coordinated PR. Out of scope for this ticket (see Out of scope below) but mentioned in Open questions.
 
-## Scope
+## Acceptance criteria
 
-In:
+- [x] **AC-1**: `src/clients/` exists as a sibling module to `src/servers/`. The four files `ts_bindings.rs`, `ts_client.rs`, `transport.rs`, `admin.rs` are relocated via `git mv` so `git log --follow` from each new path reaches pre-move history.
+- [x] **AC-2**: `gen_clients(api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError>` is the public entry point for TypeScript and admin-registry generation. Signature mirrors `gen_servers`'s shape.
+- [x] **AC-3**: `ServersConfig` no longer carries `client_generators`, `ts_skip_commands`, or `schema_entities`. Those move to `ClientsConfig`. `gen_servers` only ever emits Rust server transport handlers.
+- [x] **AC-4**: `GeneratorConfig::Client` and the wrapping `GeneratorConfig` enum are deleted; `Config::generators` (in `servers/config.rs`) becomes `Vec<ServerGenerator>`.
+- [x] **AC-5**: The `ontogen-ts` long-tail wiring (schema-known emission, `ontogen_ts::scan_src_dir`, `emit`, `append_long_tail_to_bindings`, `rerun_if_changed_under`) lives in `src/clients/mod.rs`, not `src/servers/mod.rs`.
+- [x] **AC-6**: `Pipeline::clients(ClientsConfig)` exists and is invoked from `build()` after the servers stage. `Pipeline` auto-forwards `schema.entities` into `ClientsConfig.schema_entities` when empty, mirroring the current `ServersConfig.schema_entities` auto-forward.
+- [x] **AC-7**: `examples/iron-log/src-tauri/build.rs` compiles and produces byte-identical output to the pre-split version. Snapshot files under `src/snapshots/` are unchanged. (`git diff` after the split run must show no edits to any generated file.)
+- [x] **AC-8**: A repo-wide grep for the legacy surface (`grep -rIn --exclude-dir=target --exclude-dir=node_modules -e 'ServersConfig.*client_generators' -e 'gen_servers.*also.*TS' -e 'client_generators:' .`) returns hits only in: (a) `CHANGELOG.md`, (b) `docs/planning/tasks/2026-05-19-split-clients-from-servers.md` (this file), and (c) historical task entries in `docs/planning/tasks/OF-*` (legacy artefacts).
+- [x] **AC-9**: Every site page that mentions "client generators run inside `gen_servers`" or "`ServersConfig.client_generators`" is rewritten to reference `gen_clients` / `ClientsConfig` / `Pipeline.clients(...)`. Specifically: `guides/client-generation.mdx`, `guides/server-transports.mdx`, `guides/api-layer.mdx`, `getting-started/your-first-entity.mdx`, `cookbook/tauri-integration.mdx`, `cookbook/mcp-integration.mdx`, `concepts/architecture.mdx`, `concepts/pipeline.mdx`. The site builds cleanly.
+- [x] **AC-10**: The module-rustdoc pipeline diagram in `src/lib.rs:7-15` is updated. The new shape: `gen_api → ApiOutput → { gen_servers → ServersOutput, gen_clients → () }` (or equivalent — clients no longer hide behind servers).
+- [x] **AC-11**: `just full-check` passes (fmt + clippy with `--deny warnings` + `cargo test`).
+- [x] **AC-12**: `cargo build` succeeds in `examples/iron-log/src-tauri/` against the new API. Iron-log's end-to-end build (Rust + Nuxt) completes; the generated TS files (`generated/types.ts`, `generated/transport.ts`, `admin-registry.ts`) are byte-identical to the pre-split outputs.
 
-1. **Move** the four client generator files (`ts_bindings.rs`, `ts_client.rs`, `transport.rs`, `admin.rs`) from `src/servers/generators/` to `src/clients/generators/` via `git mv`.
-2. **Introduce** `src/clients/mod.rs` + `src/clients/config.rs` with `gen_clients`, `ClientsConfig`, and `ClientGenerator`.
-3. **Move** the schema-known bindings emission and the long-tail `ontogen-ts` AST-walker integration (currently `servers/mod.rs:238-318`) into `clients::generate`.
-4. **Shrink** `ServersConfig` to server-only fields; drop `client_generators`, `ts_skip_commands`, `schema_entities` from it.
-5. **Drop** `GeneratorConfig::Client` and the flat-list muxing in `servers/config.rs`; `ServerGenerator` becomes the only variant.
-6. **Add** a `Pipeline::clients(ClientsConfig)` builder method + `clients_scan_dirs`. Pipeline runs `gen_servers` then `gen_clients` (order doesn't matter for correctness — neither produces input for the other — but stable ordering keeps the rerun-if-changed traces deterministic).
-7. **Auto-forward** `schema.entities` from the schema stage into `ClientsConfig.schema_entities` (mirroring the current `ServersConfig.schema_entities` auto-forward at `pipeline.rs:371-373`).
-8. **Update** `examples/iron-log/src-tauri/build.rs` to the new API.
-9. **Update** all `docs/` and `site/` pages that document `ServersConfig.client_generators` / `gen_servers`-emits-clients to point at the new surface.
-10. **Verify** with `just full-check` + a clean build of iron-log + a snapshot-output diff to confirm zero behaviour change.
-
-Out:
+## Out of scope
 
 - **Renaming `NamingConfig`, `RoutePrefix`, `PaginationConfig`, `PrefixParam`** or moving them to a shared module. They are used by both server and client generators; the cleanest landing is probably `ontogen-core::servers_shared` (or a new shared module), but that's a separate cleanup. For this ticket, the new `ClientsConfig` imports them from `servers::` — slightly upside-down, but tolerable. See Open questions.
 - **Pumice's `build.rs` migration.** Pumice consumes ontogen as a git-dep at a pinned rev; the maintainer migrates on their next rev bump. Heads-up via PR description and the feedback log.
-- **A `disable_codegen` knob on `ClientsConfig`.** Mentioned in `client-generation.mdx:204` as a future-work item; still future work after this split. Filed separately when motivated.
-- **Splitting `servers::parse` / `servers::classify`.** Both are AST-shape utilities consumed by client generators today (e.g., `ipc::command_name` is reused by `ts_client`). Either move them to `ontogen-core` (the right home — see `ARCHITECTURE-FOLLOWUPS-2026-05-03.md` item #9) or expose them as `pub(crate)` from `servers` for the new `clients` module. Picking the latter for this ticket; the relocation is a separate cleanup.
+- **A `disable_codegen` knob on `ClientsConfig`.** Mentioned as future work in earlier docs; still future work after this split. Filed separately when motivated.
+- **Splitting `servers::parse` / `servers::classify`.** Both are AST-shape utilities consumed by client generators today (e.g., `ipc::command_name` is reused by `ts_client`). Either move them to `ontogen-core` (the right home — see `docs/architecture/ARCHITECTURE-FOLLOWUPS-2026-05-03.md` item #9) or expose them as `pub(crate)` from `servers` for the new `clients` module. Picking the latter for this ticket; the relocation is a separate cleanup.
 - **Renaming `ServersOutput` to `TransportsOutput`** or splitting it. `ServersOutput` describes server-side routes/commands/tools, so its name is now correct after the split. Leave it.
 
-## Effort
+## Dependencies
 
-Medium. Most of the lift is mechanical re-homing + doc rewrites. Probably half a day:
+- None hard. Soft dependency: Pumice consumes ontogen as a git-pinned rev; once this PR merges, Pumice's next rev bump must include the `ClientsConfig` migration in its `build.rs`. Coordinate via the Pumice maintainer's normal cadence. Not a blocker for merging.
+
+## Discovery context
+
+**Effort.** Medium. Most of the lift is mechanical re-homing + doc rewrites. Roughly half a day:
 
 - ~1h: the actual file moves + `Cargo.toml` adjustments (none needed — same crate) + the config-type split.
 - ~1h: introducing `ClientsStage` in `Pipeline` and threading `schema.entities` through.
@@ -144,32 +176,58 @@ Medium. Most of the lift is mechanical re-homing + doc rewrites. Probably half a
 
 Risk is incidental: easy to miss a doc reference, easy to forget that `ServersConfig.schema_entities` auto-forwards from the pipeline (must mirror in the new code path). A repo-wide `grep -rIn 'client_generators\|ts_skip_commands\|gen_servers' docs site README.md examples` after the move catches most of these.
 
-## Acceptance criteria
+**Why this is worth doing.**
 
-- [ ] **AC-1**: `src/clients/` exists as a sibling module to `src/servers/`. The four files `ts_bindings.rs`, `ts_client.rs`, `transport.rs`, `admin.rs` are relocated via `git mv` so `git log --follow` from each new path reaches pre-move history.
-- [ ] **AC-2**: `gen_clients(api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError>` is the public entry point for TypeScript and admin-registry generation. Signature mirrors `gen_servers`'s shape.
-- [ ] **AC-3**: `ServersConfig` no longer carries `client_generators`, `ts_skip_commands`, or `schema_entities`. Those move to `ClientsConfig`. `gen_servers` only ever emits Rust server transport handlers.
-- [ ] **AC-4**: `GeneratorConfig::Client` and the wrapping `GeneratorConfig` enum are deleted; `Config::generators` (in `servers/config.rs`) becomes `Vec<ServerGenerator>`.
-- [ ] **AC-5**: The `ontogen-ts` long-tail wiring (schema-known emission, `ontogen_ts::scan_src_dir`, `emit`, `append_long_tail_to_bindings`, `rerun_if_changed_under`) lives in `src/clients/mod.rs`, not `src/servers/mod.rs`.
-- [ ] **AC-6**: `Pipeline::clients(ClientsConfig)` exists and is invoked from `build()` after the servers stage. `Pipeline` auto-forwards `schema.entities` into `ClientsConfig.schema_entities` when empty, mirroring the current `ServersConfig.schema_entities` auto-forward.
-- [ ] **AC-7**: `examples/iron-log/src-tauri/build.rs` compiles and produces byte-identical output to the pre-split version. Snapshot files under `src/snapshots/` are unchanged. (`git diff` after the split run must show no edits to any generated file.)
-- [ ] **AC-8**: A repo-wide grep for the legacy surface (`grep -rIn --exclude-dir=target --exclude-dir=node_modules -e 'ServersConfig.*client_generators' -e 'gen_servers.*also.*TS' -e 'client_generators:' .`) returns hits only in: (a) `CHANGELOG.md`, (b) `docs/planning/tasks/2026-05-19-split-clients-from-servers.md` (this file), and (c) historical task entries in `docs/planning/tasks/OF-*` (legacy artefacts).
-- [ ] **AC-9**: Every site page that mentions "client generators run inside `gen_servers`" or "`ServersConfig.client_generators`" is rewritten to reference `gen_clients` / `ClientsConfig` / `Pipeline.clients(...)`. Specifically: `guides/client-generation.mdx`, `guides/server-transports.mdx`, `guides/api-layer.mdx`, `getting-started/your-first-entity.mdx`, `cookbook/tauri-integration.mdx`, `cookbook/mcp-integration.mdx`, `concepts/architecture.mdx`, `concepts/pipeline.mdx`. The site builds cleanly.
-- [ ] **AC-10**: The module-rustdoc pipeline diagram in `src/lib.rs:7-15` is updated. The new shape: `gen_api → ApiOutput → { gen_servers → ServersOutput, gen_clients → () }` (or equivalent — clients no longer hide behind servers).
-- [ ] **AC-11**: `just full-check` passes (fmt + clippy with `--deny warnings`).
-- [ ] **AC-12**: `cargo build` succeeds in `examples/iron-log/src-tauri/` against the new API. Iron-log's end-to-end build (Rust + Nuxt) completes; the generated TS files (`generated/types.ts`, `generated/transport.ts`, `admin-registry.ts`) are byte-identical to the pre-split outputs.
+- User-facing payoff: small but real. Future readers of `src/servers/` see only what the name promises; future readers of `src/clients/` see only TS+admin output. The mental model collapses from "servers does both" into two cohesive modules.
+- Internal payoff: bigger. Removing `GeneratorConfig::Client` and the dispatch muxer simplifies the `generate_transport` body from ~140 lines to ~60. The schema-known + long-tail TS wiring (currently a long inline block in `servers/mod.rs`) becomes the natural body of `clients::generate` and stops looking misplaced.
+- The choice not to ship a compat shim is deliberate: ontogen has a single visible downstream (iron-log) and one external consumer (Pumice, git-pinned by rev). The cost of carrying a deprecation surface for one release cycle is higher than the cost of a coordinated PR with Pumice's maintainer.
+- The OF-015 epic admits this conflation as future work but never schedules the lift. This ticket schedules it.
 
 ## Open questions
 
 - **Where does `NamingConfig` live?** Both `ServersConfig` and `ClientsConfig` need it (URL pluralization is shared between Axum route generation and TS client method names). For this ticket: it stays at `src/servers/types.rs` and `clients` re-imports it. The right long-term home is `ontogen-core` (or a new `ontogen-core::naming::config` module) — file as a follow-up if reviewers feel strongly. Same question for `RoutePrefix`, `PrefixParam`, `PaginationConfig`.
-- **Where do `servers::parse` / `servers::classify` live?** Both are consumed by client generators today (`ts_client::generate` calls `parse::scan_api_dir` and `classify::classify_op`). Two options: (1) leave them in `servers/` and have `clients/` `pub(crate)`-import them — directionally awkward; (2) lift them to `ontogen-core` per `ARCHITECTURE-FOLLOWUPS-2026-05-03.md` item #9. Defaulting to (1) for the cleanup-of-bounded-scope reason; (2) belongs in its own ticket.
+- **Where do `servers::parse` / `servers::classify` live?** Both are consumed by client generators today (`ts_client::generate` calls `parse::scan_api_dir` and `classify::classify_op`). Two options: (1) leave them in `servers/` and have `clients/` `pub(crate)`-import them — directionally awkward; (2) lift them to `ontogen-core` per `docs/architecture/ARCHITECTURE-FOLLOWUPS-2026-05-03.md` item #9. Defaulting to (1) for the cleanup-of-bounded-scope reason; (2) belongs in its own ticket.
 - **Pumice timing?** Coordinate with the Pumice maintainer so the rev bump that picks up this split also picks up the `ClientsConfig` migration in their `build.rs`. Not a blocker for merging this ticket; Pumice pins by git rev.
 - **Single PR or two?** The split is mechanical enough that a single PR is reviewable — the diff is dominated by file moves (which `git diff` represents as renames) and one large `ServersConfig` shrinkage. Per user direction (2026-05-19) this is "one big task" — single PR.
-- **Update `docs/proposal.md` and `docs/walkthrough.md`?** Both are historical-narrative docs. The `walkthrough.md` example code at `:1210`, `:1466`, `:1551` will compile-break against the new API. Either update them in this PR (preferred — they're examples) or stamp them as snapshot-of-an-earlier-API at the top. Default: update.
+- **Update `docs/proposal.md` and `docs/walkthrough.md`?** Both are historical-narrative docs. The `walkthrough.md` example code (the `ServersConfig` literal around line 540 — line numbers drifted since 2026-05-19) will compile-break against the new API. Either update them in this PR (preferred — they're examples) or stamp them as snapshot-of-an-earlier-API at the top. Default: update. **Resolution during work (2026-05-20):** left untouched. Inspection during implementation showed both docs are aspirational design narratives — `proposal.md`'s `gen_servers` example uses sub-configs (`ScopingConfig`, `HttpConfig { route_prefix }`, `IpcConfig`, `McpConfig`) that have never existed in the actual API; `walkthrough.md`'s Stage 6 already represents `gen_clients` as its own stage (the refactor finally makes the code match the doc) and its `gen_clients` example uses `TypeScriptConfig` / `AdminRegistryConfig` sub-configs that also don't exist. Updating either doc to the *actual* current API would defeat its purpose. The "default: update" prescription was wrong for design docs as opposed to API reference docs.
 
-## Notes
+## Post-mortem
 
-- The user-facing payoff is small but real: future readers of `src/servers/` see only what the name promises; future readers of `src/clients/` see only TS+admin output. The mental model collapses from "servers does both" to two cohesive modules.
-- Internal payoff is bigger: removing `GeneratorConfig::Client` and the dispatch muxer simplifies the `generate_transport` body from ~140 lines to ~60. The schema-known + long-tail TS wiring (currently a long inline block in `servers/mod.rs`) becomes the natural body of `clients::generate` and stops looking misplaced.
-- The choice not to ship a compat shim is deliberate: ontogen has a single visible downstream (iron-log) and one external consumer (Pumice, git-pinned by rev). The cost of carrying a deprecation surface for one release cycle is higher than the cost of a coordinated PR with Pumice's maintainer.
-- The OF-015 epic admits this conflation as future work but never schedules the lift. This ticket schedules it.
+_Captured by /sdlc:task-work on 2026-05-20. PR: pending._
+
+### Acceptance criteria coverage
+
+- AC-1: auto — `git log --follow --oneline src/clients/generators/ts_bindings.rs` reaches `c87ba64` (the OF-014 spike pre-move).
+- AC-2: auto — `grep -n "pub fn gen_clients" src/lib.rs` → exact match at line 390 with the required signature.
+- AC-3: auto — `awk '/^pub struct ServersConfig/,/^\}/' src/lib.rs` shows only server-relevant fields (no `client_generators` / `ts_skip_commands` / `schema_entities` / `pool_extra_roots`). Those fields now live on `ClientsConfig` at line 544.
+- AC-4: auto — `grep -rn "GeneratorConfig::Client\|GeneratorConfig" src/servers/` returns one hit (`ServerGenerator as ServerGeneratorConfig` re-export alias); the enum itself is gone.
+- AC-5: auto — `grep -n "ontogen_ts::scan_src_dir\|append_long_tail_to_bindings\|rerun_if_changed_under" src/servers/mod.rs src/clients/mod.rs` → all hits in `clients/mod.rs`, zero in `servers/mod.rs`.
+- AC-6: auto — `grep -n "pub fn clients\|ClientsStage" src/pipeline.rs` shows both, plus the `clients_config.schema_entities.is_empty()` auto-forward at line 420-421.
+- AC-7: agent-manual — sub-agent ran `diff -q` against pre-refactor snapshots of `transport.ts`, `types.ts`, `admin-registry.ts`; reported zero diff. Cross-verified by running iron-log build (AC-12) and observing snapshot tests pass.
+- AC-8: auto — the AC-8 grep returns hits only inside `docs/planning/tasks/2026-05-19-split-clients-from-servers.md` (the spec itself).
+- AC-9: agent-manual — sub-agent reported all 8 cited site pages plus 4 additional pages (`build-script-setup.mdx`, `examples/iron-log.mdx`, `reference/public-api.mdx`, `README.md`, `examples/iron-log/README.md`) rewritten. Site builds cleanly (33 pages).
+- AC-10: auto — visible in commit `e678999`; pipeline diagram in `src/lib.rs` now shows `gen_clients` alongside `gen_servers`.
+- AC-11: auto — `just full-check` (now includes `cargo test` per #67) passes: fmt clean, clippy clean, 206 lib tests + 2 builder integration tests + 10 doctests green.
+- AC-12: agent-manual — `cd examples/iron-log/src-tauri && cargo build` succeeds in 7.94s on the orchestrator's verification run.
+
+### What worked
+
+- The Approach section's 10 numbered steps mapped cleanly onto the sub-agent's commit grouping. No re-ordering needed.
+- `git mv` preserved history exactly as AC-1 expected — `git log --follow` reaches the OF-014 spike commit through the four moved files.
+- Iron-log's byte-identical generated TS gave a hard signal that the refactor changed structure but not behavior. AC-7 was the keystone AC; everything else falls out if it holds.
+- Test fixtures (the two `Config { ... }` literals in `src/servers/tests.rs`) were the natural friction point and got caught by `cargo test` immediately — no silent breakage.
+
+### Friction and automation gaps
+
+- **Sub-agent prematurely marked the task done from inside the worktree** (commit 569158b set `status: done`, which isn't even a valid schema value — should be `closed/done`, and the close-out is gated on PR merge per Step 11a). Required a forward-fix commit (`8d8dcd4`) to revert. The sub-agent brief didn't explicitly say "do not edit task frontmatter beyond ticking AC boxes"; future task-work briefings should call this out. Concrete remediation: the brief template in `/sdlc:task-work` Step 6 should include a "MUST NOT touch frontmatter `status` field" guardrail. → [[2026-05-20-task-work-brief-guards-task-status]]
+- **Test relocation deferred.** Spec's Files-to-touch said "relocate the client-side test cases to `src/clients/tests.rs` (new file)". Sub-agent created the file as a stub but kept tests in `src/servers/tests.rs` with new helpers; reasoning (avoid duplicating shared test fixtures) is sound but the deviation should have come back as an explicit ask rather than a unilateral call. Filed as part of the friction list; a follow-up could relocate them along with the shared `make_crud_module` / `make_junction_module` fixture builders into a shared `#[cfg(test)]` module both test files import. → [[2026-05-20-relocate-client-tests-to-clients-module]]
+- **Spec defaulted to "update docs/proposal.md and docs/walkthrough.md"** but those turned out to be aspirational design narratives, not API reference. The default was wrong; updating them would have introduced compile-checked drift between aspirational design and current code. Future spec-writing convention: distinguish "API reference docs" (must track actual API) from "design narrative docs" (deliberate snapshot of intent) so the readiness gate or task-define can prompt appropriately. → [[2026-05-20-task-template-distinguishes-doc-kinds]]
+- **`/sdlc:task-work` Step 4's setup-worktree call (`mise trust && just setup-worktree`)** is hard-coded for JS-stack projects. This is a Rust-only project — `just setup-worktree` doesn't exist; the call errored. Setup completed without it because Cargo handles Rust worktrees natively. Concrete remediation: the skill should detect project stack (presence of `Cargo.toml` at root vs `package.json` at root) and conditionalize the setup invocation, OR document that Rust-only projects skip the step. → [[2026-05-20-task-work-detects-rust-project-stack]]
+- **No `/sdlc:task-define` invocation needed even though the original task body had non-template H2 headings** because the user opted for a proactive restructure-to-template at the start. That worked cleanly but produced a large unrelated-to-implementation diff (the H2 rename commit `df5242f`) on the feat branch. If the project develops a "task uses non-template headings but content is complete" pattern, the readiness contract might benefit from a "section-aliases" mechanism (map `## Direction` → "Proposed", etc.) instead of forcing rename.
+
+### Spawned follow-up tasks
+
+- [[2026-05-20-task-work-brief-guards-task-status]] — created; add frontmatter-status guardrail to task-work Step 6 brief template.
+- [[2026-05-20-relocate-client-tests-to-clients-module]] — created; finish the deferred client-tests relocation with a shared fixture module.
+- [[2026-05-20-task-template-distinguishes-doc-kinds]] — created; introduce API-reference vs design-narrative marker convention for "Files to touch" docs.
+- [[2026-05-20-task-work-detects-rust-project-stack]] — created; conditionalize task-work Step 4 worktree bootstrap by project stack.

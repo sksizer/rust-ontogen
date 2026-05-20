@@ -252,7 +252,7 @@ pub struct McpToolMeta {
 }
 ```
 
-The same `ServersOutput` underpins client generation: the client generators that run inside `gen_servers` (controlled by `ServersConfig.client_generators`) produce TypeScript code that mirrors the server's API exactly. They know every route path, every command name, every parameter type -- because it's all in the IR.
+Client generation is `gen_servers`'s sibling stage: `gen_clients` (driven by `ClientsConfig.generators`) consumes the same parsed `ApiOutput` and produces TypeScript code that mirrors the server's API exactly. The two stages know every route path, every command name, every parameter type -- because it's all in the IR.
 
 ## Tracing an Entity Through the Pipeline
 

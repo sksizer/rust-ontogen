@@ -11,8 +11,8 @@ use std::collections::HashSet;
 
 use ontogen_core::model::{EntityDef, FieldRole, FieldType};
 
-use crate::servers::config::Config;
-use crate::servers::generators::ipc::command_name;
+use crate::clients::config::Config;
+use crate::clients::generators::command_name;
 use crate::servers::parse::ApiModule;
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts};
 

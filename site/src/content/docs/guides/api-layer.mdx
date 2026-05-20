@@ -90,7 +90,7 @@ Generated CRUD modules ──┐
 Scanned hand-written ────┘
 ```
 
-Downstream generation in `gen_servers` (which also drives client artifacts via `ServersConfig.client_generators`) receives the merged `ApiOutput` and sees no difference between generated and hand-written functions. A custom endpoint you wrote by hand gets HTTP routes, IPC commands, MCP tools, and TypeScript client functions just like the generated CRUD operations.
+Downstream generation in `gen_servers` (Rust transports) and `gen_clients` (TypeScript clients + admin registry) both receive the same merged `ApiOutput` and see no difference between generated and hand-written functions. A custom endpoint you wrote by hand gets HTTP routes, IPC commands, MCP tools, and TypeScript client functions just like the generated CRUD operations.
 
 ### How scan_dirs discovery works
 

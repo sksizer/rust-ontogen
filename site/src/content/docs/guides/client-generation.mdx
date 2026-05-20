@@ -9,31 +9,36 @@ Ontogen generates TypeScript client code that mirrors your server API surface. T
 
 ## Client generator variants
 
-Client generators are configured through the `client_generators` field on `ServersConfig`:
+Client generators are configured through the `generators` field on `ClientsConfig` and run by `gen_clients` (or, more commonly, `Pipeline::clients(...).build()`):
 
 ```rust
-use ontogen::servers::ClientGenerator;
+use ontogen::clients::ClientGenerator;
+use ontogen::ClientsConfig;
 
-client_generators: vec![
-    ClientGenerator::HttpTs {
-        output: "../src-nuxt/app/types/httpCommands.ts".into(),
-        bindings_path: "../src-nuxt/app/types/bindings.ts".into(),
-    },
-    ClientGenerator::HttpTauriIpcSplit {
-        output: "../src-nuxt/app/transport/generated.ts".into(),
-        bindings_path: "../src-nuxt/app/types/bindings.ts".into(),
-    },
-    ClientGenerator::AdminRegistry {
-        output: "../src-nuxt/layers/admin/generated/admin-registry.ts".into(),
-    },
-],
+let clients_config = ClientsConfig {
+    // ... api_dir, state_type, naming, etc.
+    generators: vec![
+        ClientGenerator::HttpTs {
+            output: "../src-nuxt/app/types/httpCommands.ts".into(),
+            bindings_path: "../src-nuxt/app/types/bindings.ts".into(),
+        },
+        ClientGenerator::HttpTauriIpcSplit {
+            output: "../src-nuxt/app/transport/generated.ts".into(),
+            bindings_path: "../src-nuxt/app/types/bindings.ts".into(),
+        },
+        ClientGenerator::AdminRegistry {
+            output: "../src-nuxt/layers/admin/generated/admin-registry.ts".into(),
+        },
+    ],
+    // ...
+};
 ```
 
 <Aside type="note">
-  Client generation runs inside `gen_servers` -- there is no separate `gen_clients` function. Add the generators above to `ServersConfig.client_generators` and call `gen_servers` (or, more commonly, `Pipeline::servers(...).build()`).
+  `gen_clients` is a sibling of `gen_servers`. Server-side transport generation (Axum / Tauri IPC / MCP) and client-side TypeScript generation no longer share a config struct; each has its own dedicated entry point and config type.
 </Aside>
 
-`ClientGenerator` lives at `ontogen::servers::ClientGenerator` (re-exported at the module level). The internal path `ontogen::servers::config::ClientGenerator` is `pub(crate)` and no longer accessible to downstream crates.
+`ClientGenerator` lives at `ontogen::clients::ClientGenerator` (re-exported at the module level). The internal path `ontogen::clients::config::ClientGenerator` is `pub(crate)` and no longer accessible to downstream crates.
 
 ## TypeScript HTTP client
 
@@ -218,7 +223,7 @@ The registry only includes modules that have all five CRUD functions (`list`, `g
 
 ### Per-field metadata
 
-When `schema_entities` is populated in the server config, the admin generator emits detailed field information:
+When `schema_entities` is populated on `ClientsConfig` (the `Pipeline` builder forwards this automatically from the schema stage), the admin generator emits detailed field information:
 
 - **type** -- the TypeScript type (`string`, `number`, `boolean`, arrays)
 - **role** -- the field's purpose (`id`, `plain`, `enum`, `relation`, `body`)
@@ -244,7 +249,7 @@ Admin UIs can use this to render pagination controls with sensible defaults.
 
 ## ts_skip_commands
 
-Some IPC commands shouldn't appear in the TypeScript client -- perhaps they're internal or handled through a different mechanism. The `ts_skip_commands` list excludes specific commands by their canonical name:
+Some IPC commands shouldn't appear in the TypeScript client -- perhaps they're internal or handled through a different mechanism. The `ts_skip_commands` list on `ClientsConfig` excludes specific commands by their canonical name:
 
 ```rust
 ts_skip_commands: vec![
@@ -253,7 +258,7 @@ ts_skip_commands: vec![
 ],
 ```
 
-Skipped commands are omitted from both the HTTP client and the split transport. They still get server-side handlers.
+Skipped commands are omitted from both the HTTP client and the split transport. They still get server-side handlers (those are controlled by `ServersConfig`, which has its own dispatch).
 
 ## How client functions mirror the server API
 

@@ -17,8 +17,9 @@ The canonical reference for a Pipeline-based `build.rs` is `examples/iron-log/sr
 // build.rs
 use std::path::PathBuf;
 
-use ontogen::servers::{ClientGenerator, NamingConfig, ServerGenerator};
-use ontogen::{Pipeline, ServersConfig};
+use ontogen::clients::ClientGenerator;
+use ontogen::servers::{NamingConfig, ServerGenerator};
+use ontogen::{ClientsConfig, Pipeline, ServersConfig};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -42,7 +43,22 @@ fn main() {
                 output: "src/api/transport/ipc/generated.rs".into(),
             },
         ],
-        client_generators: vec![
+        rustfmt_edition: "2024".into(),
+        sse_route_overrides: Default::default(),
+        route_prefix: None,
+        store_type: Some("Store".into()),
+        store_import: Some("crate::store::Store".into()),
+        pagination: None,
+    };
+
+    let clients_config = ClientsConfig {
+        api_dir: "src/api/v1".into(),
+        state_type: "AppState".into(),
+        service_import_path: "crate::api::v1".into(),
+        types_import_path: "crate::schema".into(),
+        state_import: "crate::AppState".into(),
+        naming: NamingConfig::default(),
+        generators: vec![
             ClientGenerator::HttpTauriIpcSplit {
                 output: "../src-nuxt/app/generated/transport.ts".into(),
                 bindings_path: "../src-nuxt/app/generated/types.ts".into(),
@@ -51,7 +67,6 @@ fn main() {
                 output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
             },
         ],
-        rustfmt_edition: "2024".into(),
         sse_route_overrides: Default::default(),
         ts_skip_commands: vec![],
         route_prefix: None,
@@ -60,6 +75,7 @@ fn main() {
         pagination: None,
         // Pipeline auto-fills this from parse_schema; leave empty.
         schema_entities: Vec::new(),
+        pool_extra_roots: Vec::new(),
     };
 
     Pipeline::new("src/schema")
@@ -71,6 +87,7 @@ fn main() {
         .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
         .api("src/api/v1/generated", "AppState")
         .servers(servers_config)
+        .clients(clients_config)
         .build()
         .unwrap_or_else(|e| {
             e.emit_cargo_warning();
@@ -178,7 +195,7 @@ fn main() {
         "gen_api",
     );
 
-    // ── 5. Server transports + client generators ─────────────────
+    // ── 5. Server transports ─────────────────────────────────────
     let _servers = unwrap_codegen(
         ontogen::gen_servers(
             Some(&api),
@@ -198,16 +215,38 @@ fn main() {
                         output: "src/api/transport/ipc/generated.rs".into(),
                     },
                 ],
-                client_generators: vec![
-                    ontogen::servers::ClientGenerator::HttpTauriIpcSplit {
+                rustfmt_edition: "2024".to_string(),
+                sse_route_overrides: HashMap::new(),
+                route_prefix: None,
+                store_type: Some("Store".to_string()),
+                store_import: Some("crate::store::Store".to_string()),
+                pagination: None,
+            },
+        ),
+        "gen_servers",
+    );
+
+    // ── 6. TypeScript clients + admin registry ───────────────────
+    unwrap_codegen(
+        ontogen::gen_clients(
+            Some(&api),
+            &["src/api/v1".into()],
+            &ontogen::ClientsConfig {
+                api_dir: "src/api/v1".into(),
+                state_type: "AppState".to_string(),
+                service_import_path: "crate::api::v1".to_string(),
+                types_import_path: "crate::schema".to_string(),
+                state_import: "crate::AppState".to_string(),
+                naming: ontogen::servers::NamingConfig::default(),
+                generators: vec![
+                    ontogen::clients::ClientGenerator::HttpTauriIpcSplit {
                         output: "../src-nuxt/app/transport/generated.ts".into(),
                         bindings_path: "../src-nuxt/app/types/bindings.ts".into(),
                     },
-                    ontogen::servers::ClientGenerator::AdminRegistry {
+                    ontogen::clients::ClientGenerator::AdminRegistry {
                         output: "../src-nuxt/layers/admin/generated/admin-registry.ts".into(),
                     },
                 ],
-                rustfmt_edition: "2024".to_string(),
                 sse_route_overrides: HashMap::new(),
                 ts_skip_commands: vec![],
                 route_prefix: None,
@@ -218,18 +257,19 @@ fn main() {
                 // this for you; the explicit form must pass it manually,
                 // otherwise admin-registry.ts ships with empty `fields: []`.
                 schema_entities: schema.entities.clone(),
+                pool_extra_roots: vec![],
             },
         ),
-        "gen_servers",
+        "gen_clients",
     );
 }
 ```
 
 <Aside type="caution">
-When calling `gen_servers` directly (not through `Pipeline`), you **must** populate `ServersConfig.schema_entities` if any of your client generators is `AdminRegistry`. Without it, the admin-registry generator silently emits empty `fields: []` for every entity and the admin UI has nothing to render. `Pipeline::servers(...)` fills this in automatically.
+When calling `gen_clients` directly (not through `Pipeline`), you **must** populate `ClientsConfig.schema_entities` if any of your generators is `AdminRegistry`. Without it, the admin-registry generator silently emits empty `fields: []` for every entity and the admin UI has nothing to render. `Pipeline::clients(...)` fills this in automatically.
 </Aside>
 
-The supporting types -- `NamingConfig`, `ServerGenerator`, `ClientGenerator`, `RoutePrefix`, `PaginationConfig` -- all live in `ontogen::servers::*` (re-exported at the module level). The internal paths `ontogen::servers::config::*` and `ontogen::servers::types::*` are `pub(crate)`; always import via `ontogen::servers::Foo`.
+Server-side supporting types -- `NamingConfig`, `ServerGenerator`, `RoutePrefix`, `PaginationConfig` -- live in `ontogen::servers::*` (re-exported at the module level). The client-side `ClientGenerator` lives in `ontogen::clients::*`. Both `ClientsConfig` and `ServersConfig` re-import the shared types (`NamingConfig`, `RoutePrefix`, etc.) from `ontogen::servers::*` -- a follow-up may relocate them to a shared module.
 
 ## The recommended ordering
 
@@ -246,13 +286,15 @@ parse_schema  ──────────────────────
               │
               └── gen_api  ─── uses entities, returns ApiOutput
                        │
-                       └── gen_servers  ─── uses ApiOutput; emits server
-                                            transports AND client artifacts
-                                            (controlled by ServersConfig
-                                            .client_generators)
+                       ├── gen_servers  ─── uses ApiOutput; emits Rust server
+                       │                    transports (Axum, Tauri IPC, MCP)
+                       │
+                       └── gen_clients  ─── uses ApiOutput; emits TS bindings,
+                                            HTTP / HTTP+IPC clients, and the
+                                            admin-UI registry
 ```
 
-`parse_schema` always comes first because every other generator needs `SchemaOutput.entities`. After that, `gen_seaorm`, `gen_markdown_io`, and `gen_dtos` are independent -- they only need the entity list. `gen_store` benefits from `SeaOrmOutput` but works without it. `gen_api` and `gen_servers` form a chain where each stage's output feeds the next. There is no separate `gen_clients` function -- client TypeScript and admin-registry generation is driven by `ServersConfig.client_generators` inside `gen_servers`.
+`parse_schema` always comes first because every other generator needs `SchemaOutput.entities`. After that, `gen_seaorm`, `gen_markdown_io`, and `gen_dtos` are independent -- they only need the entity list. `gen_store` benefits from `SeaOrmOutput` but works without it. `gen_api`, `gen_servers`, and `gen_clients` form a chain where `gen_api`'s output feeds both `gen_servers` (Rust transports) and `gen_clients` (TypeScript clients + admin registry); the latter two are siblings and run in stable order for deterministic rerun-if-changed traces.
 
 ## Partial pipelines
 

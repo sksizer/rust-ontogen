@@ -12,10 +12,9 @@ use std::path::Path;
 
 use ontogen_core::ir::OpKind;
 
+use crate::clients::config::Config;
+use crate::clients::generators::{FallbackRecord, command_name};
 use crate::servers::classify::{classify_op, is_read_op};
-use crate::servers::config::Config;
-use crate::servers::generators::FallbackRecord;
-use crate::servers::generators::ipc::command_name;
 use crate::servers::parse::{ApiModule, Param};
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 

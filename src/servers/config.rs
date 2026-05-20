@@ -1,4 +1,4 @@
-//! Configuration for the codegen pipeline.
+//! Configuration for the server-side transport codegen pipeline.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -6,6 +6,9 @@ use std::path::PathBuf;
 use crate::servers::types::NamingConfig;
 
 /// Top-level configuration for the server transport codegen pipeline.
+///
+/// Client-side TypeScript and admin-registry codegen has its own carrier in
+/// [`crate::clients::config`]; the two pipelines no longer share a config.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Directory containing API source files (e.g., `src/api/v1`).
@@ -28,8 +31,8 @@ pub struct Config {
     /// Naming configuration for pluralization, singularization, and labels.
     pub naming: NamingConfig,
 
-    /// Which generators to run and their output paths.
-    pub generators: Vec<GeneratorConfig>,
+    /// Which server-side generators to run and their output paths.
+    pub generators: Vec<ServerGenerator>,
 
     /// Rust edition for `rustfmt` (e.g., `"2021"`).
     pub rustfmt_edition: String,
@@ -37,9 +40,6 @@ pub struct Config {
     /// SSE route overrides: map from event function name to custom route path
     /// (e.g., `"graph_updated"` → `"/api/events/graph"`).
     pub sse_route_overrides: HashMap<String, String>,
-
-    /// Commands to skip in the TypeScript client (Tauri-only commands).
-    pub ts_skip_commands: Vec<String>,
 
     /// Optional route prefix for project scoping.
     ///
@@ -62,24 +62,11 @@ pub struct Config {
     /// Import path for the store type (e.g., `"crate::store::Store"`).
     pub store_import: Option<String>,
 
-    /// Schema entity definitions, used by the admin registry generator to emit
-    /// per-field metadata (type, role, relation targets, display hints).
-    /// When empty, the admin generator emits entity-level config only (no fields).
-    pub schema_entities: Vec<ontogen_core::model::EntityDef>,
-
     /// Optional pagination support for list operations.
     ///
     /// When set, all `OpKind::List` handlers add `limit`/`offset` query params
     /// and wrap return values in `PaginatedResult<T>`.
     pub pagination: Option<PaginationConfig>,
-
-    /// Additional source roots to merge into the ontogen-ts type pool, beyond
-    /// the default `CARGO_MANIFEST_DIR/src`. Use when long-tail types are
-    /// defined in workspace-sibling crates and brought into the consuming
-    /// crate via `pub use`. Paths are resolved relative to the running
-    /// `build.rs`'s `CARGO_MANIFEST_DIR`. On key collision, the main pool
-    /// (manifest_dir/src) wins; sibling-root entries fill in the gaps.
-    pub pool_extra_roots: Vec<PathBuf>,
 }
 
 /// Configuration for pagination support across all list endpoints.
@@ -103,13 +90,10 @@ impl Default for Config {
             generators: Vec::new(),
             rustfmt_edition: "2021".to_string(),
             sse_route_overrides: HashMap::new(),
-            ts_skip_commands: Vec::new(),
             route_prefix: None,
             store_type: None,
             store_import: None,
-            schema_entities: Vec::new(),
             pagination: None,
-            pool_extra_roots: Vec::new(),
         }
     }
 }
@@ -141,15 +125,6 @@ pub struct PrefixParam {
     pub ts_type: String,
 }
 
-/// Configuration for a specific generator.
-#[derive(Debug, Clone)]
-pub enum GeneratorConfig {
-    /// Generate server-side handler code (Rust).
-    Server(ServerGenerator),
-    /// Generate client-side code (TypeScript).
-    Client(ClientGenerator),
-}
-
 /// Server-side code generators (Rust).
 #[derive(Debug, Clone)]
 pub enum ServerGenerator {
@@ -166,30 +141,6 @@ pub enum ServerGenerator {
     /// Generate MCP (Model Context Protocol) tool registry.
     Mcp {
         /// Output file path (e.g., `src/api/transport/mcp/generated.rs`).
-        output: PathBuf,
-    },
-}
-
-/// Client-side code generators (TypeScript).
-#[derive(Debug, Clone)]
-pub enum ClientGenerator {
-    /// Generate unified TypeScript transport layer with both HTTP and IPC implementations.
-    HttpTauriIpcSplit {
-        /// Output file path (e.g., `../src-nuxt/app/transport/generated.ts`).
-        output: PathBuf,
-        /// Path to `bindings.ts` for type discovery.
-        bindings_path: PathBuf,
-    },
-    /// Generate TypeScript HTTP-only client.
-    HttpTs {
-        /// Output file path (e.g., `../src-nuxt/app/types/httpCommands.ts`).
-        output: PathBuf,
-        /// Path to `bindings.ts` for type discovery.
-        bindings_path: PathBuf,
-    },
-    /// Generate admin entity registry (TypeScript).
-    AdminRegistry {
-        /// Output file path (e.g., `../src-nuxt/layers/admin/generated/admin-registry.ts`).
         output: PathBuf,
     },
 }

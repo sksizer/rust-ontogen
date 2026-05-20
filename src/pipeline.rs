@@ -1,9 +1,9 @@
 //! Fluent builder API on top of the generator functions.
 //!
 //! `Pipeline` is opt-in sugar: it wires together `parse_schema`, `gen_seaorm`,
-//! `gen_markdown_io`, `gen_dtos`, `gen_store`, `gen_api`, and `gen_servers` with
-//! sensible defaults so simple `build.rs` files don't have to spell out every
-//! config struct field.
+//! `gen_markdown_io`, `gen_dtos`, `gen_store`, `gen_api`, `gen_servers`, and
+//! `gen_clients` with sensible defaults so simple `build.rs` files don't have
+//! to spell out every config struct field.
 //!
 //! The existing config structs and generator functions remain the canonical
 //! API - `Pipeline` is a thin wrapper that constructs them under the hood.
@@ -22,9 +22,11 @@
 //! # Stage order
 //!
 //! Method call order on the builder is irrelevant. `build()` always runs stages
-//! in the dependency order: `schema → seaorm/markdown_io/dtos → store → api → servers`.
+//! in the dependency order: `schema → seaorm/markdown_io/dtos → store → api → servers → clients`.
 //! Each stage's structured output (e.g., `SeaOrmOutput`, `ApiOutput`) is threaded
-//! through to the next stage automatically.
+//! through to the next stage automatically. The servers and clients stages are
+//! independent (neither produces input for the other); their relative ordering
+//! is stable for deterministic rerun-if-changed traces.
 //!
 //! # Defaults
 //!
@@ -41,8 +43,9 @@ use std::path::PathBuf;
 
 use crate::ir::{ApiOutput, SchemaOutput, SeaOrmOutput};
 use crate::{
-    ApiConfig, CodegenError, DEFAULT_SCHEMA_MODULE_PATH, DtoConfig, MarkdownIoConfig, SchemaConfig, SeaOrmConfig,
-    ServersConfig, StoreConfig, gen_api, gen_dtos, gen_markdown_io, gen_seaorm, gen_servers, gen_store, parse_schema,
+    ApiConfig, ClientsConfig, CodegenError, DEFAULT_SCHEMA_MODULE_PATH, DtoConfig, MarkdownIoConfig, SchemaConfig,
+    SeaOrmConfig, ServersConfig, StoreConfig, gen_api, gen_clients, gen_dtos, gen_markdown_io, gen_seaorm, gen_servers,
+    gen_store, parse_schema,
 };
 
 /// Default store type name used for the `api` and `servers` stages once a
@@ -89,6 +92,12 @@ struct ServersStage {
     scan_dirs: Vec<PathBuf>,
 }
 
+/// Internal state for the clients stage.
+struct ClientsStage {
+    config: ClientsConfig,
+    scan_dirs: Vec<PathBuf>,
+}
+
 // ── Builder ─────────────────────────────────────────────────────────
 
 /// Fluent builder over the ontogen generator pipeline.
@@ -107,6 +116,7 @@ pub struct Pipeline {
     store: Option<StoreStage>,
     api: Option<ApiStage>,
     servers: Option<ServersStage>,
+    clients: Option<ClientsStage>,
 }
 
 impl Pipeline {
@@ -124,6 +134,7 @@ impl Pipeline {
             store: None,
             api: None,
             servers: None,
+            clients: None,
         }
     }
 
@@ -262,11 +273,11 @@ impl Pipeline {
 
     /// Enable the servers stage with a fully-formed `ServersConfig`.
     ///
-    /// The servers config has a much wider surface than the other stages
-    /// (transport choice, naming overrides, client generators, route prefixes,
-    /// etc.), so the builder accepts it as-is rather than re-modelling each
-    /// knob. Use [`Pipeline::servers_scan_dirs`] to set the scan dirs passed
-    /// to `gen_servers`; defaults to `[]`.
+    /// The servers config has a wider surface than the other stages
+    /// (transport choice, naming overrides, route prefixes, pagination),
+    /// so the builder accepts it as-is rather than re-modelling each knob.
+    /// Use [`Pipeline::servers_scan_dirs`] to set the scan dirs passed to
+    /// `gen_servers`; defaults to `[]`.
     #[must_use]
     pub fn servers(mut self, config: ServersConfig) -> Self {
         self.servers = Some(ServersStage { config, scan_dirs: Vec::new() });
@@ -287,12 +298,45 @@ impl Pipeline {
         self
     }
 
+    // ── clients ─────────────────────────────────────────────────────
+
+    /// Enable the clients stage with a fully-formed `ClientsConfig`.
+    ///
+    /// Mirrors [`Pipeline::servers`]: the clients config controls the
+    /// TypeScript surface (schema-known bindings, HTTP / HTTP+IPC unified
+    /// transport clients) and the admin-registry generator. Use
+    /// [`Pipeline::clients_scan_dirs`] to set the scan dirs passed to
+    /// `gen_clients`; defaults to `[]`.
+    ///
+    /// The builder auto-forwards parsed schema entities into
+    /// [`ClientsConfig::schema_entities`] when empty, mirroring the existing
+    /// auto-forward for [`ServersConfig`] in pre-split builds.
+    #[must_use]
+    pub fn clients(mut self, config: ClientsConfig) -> Self {
+        self.clients = Some(ClientsStage { config, scan_dirs: Vec::new() });
+        self
+    }
+
+    /// Override the source directories scanned by `gen_clients` when no
+    /// `ApiOutput` is available.
+    ///
+    /// When the api stage is enabled, its `ApiOutput` is used and these scan
+    /// dirs are ignored. Has no effect unless [`Pipeline::clients`] has been
+    /// called.
+    #[must_use]
+    pub fn clients_scan_dirs(mut self, scan_dirs: Vec<PathBuf>) -> Self {
+        if let Some(stage) = self.clients.as_mut() {
+            stage.scan_dirs = scan_dirs;
+        }
+        self
+    }
+
     // ── execution ───────────────────────────────────────────────────
 
     /// Execute the pipeline.
     ///
     /// Stages run in the canonical order regardless of method call order:
-    /// `schema → seaorm → markdown_io → dtos → store → api → servers`.
+    /// `schema → seaorm → markdown_io → dtos → store → api → servers → clients`.
     /// Returns on the first error, with the originating stage's variant of
     /// [`CodegenError`].
     pub fn build(self) -> Result<(), CodegenError> {
@@ -362,16 +406,21 @@ impl Pipeline {
             None => None,
         };
 
-        // Stage 5: servers
+        // Stage 5: servers (Rust transports only)
         if let Some(stage) = self.servers {
+            gen_servers(api_out.as_ref(), &stage.scan_dirs, &stage.config)?;
+        }
+
+        // Stage 6: clients (TypeScript bindings + admin registry)
+        if let Some(stage) = self.clients {
             // Auto-forward parsed entities to the admin-registry generator,
             // unless the caller has already set them explicitly. Without this,
             // admin-registry.ts ships with empty `fields: []` for every entity.
-            let mut servers_config = stage.config;
-            if servers_config.schema_entities.is_empty() {
-                servers_config.schema_entities = schema.entities.clone();
+            let mut clients_config = stage.config;
+            if clients_config.schema_entities.is_empty() {
+                clients_config.schema_entities = schema.entities.clone();
             }
-            gen_servers(api_out.as_ref(), &stage.scan_dirs, &servers_config)?;
+            gen_clients(api_out.as_ref(), &stage.scan_dirs, &clients_config)?;
         }
 
         Ok(())
