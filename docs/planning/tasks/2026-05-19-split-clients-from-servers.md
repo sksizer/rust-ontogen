@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '2'
-status: in-progress
+status: closed/done
 created: '2026-05-19'
 last_reviewed: '2026-05-20'
 readiness_verified_at: '2026-05-20T04:25:53Z'
@@ -18,17 +18,34 @@ tags:
 related:
 - OF-015
 - OF-022
-relevance_note: |
-  Relevance check 2026-05-20: all cited files exist and structural
-  claims hold. Minor line drifts since 2026-05-19 (file growth in
-  servers/mod.rs, config.rs, lib.rs — ranges in the spec are now
-  approximate). One concrete staleness: the spec referenced
-  `client-generation.mdx:204` (the `disable_codegen` knob mention in
-  the Integration gotchas section) — that section was deleted in
-  OF-015 PR 8 (#68); the reference is dead. The new
-  `site/src/content/docs/guides/typescript-bindings.mdx` (also added
-  in PR 8) likely needs no edits — it describes ontogen-ts in
-  isolation. Spot-check during implementation.
+completion_note: |
+  Shipped via #69 (merge e9df71f, 2026-05-20). All 12 ACs verified —
+  src/clients/ exists as a sibling module to src/servers/ with four
+  generator files relocated via git mv (history preserved); new
+  gen_clients / ClientsConfig / Pipeline.clients(...) public API;
+  ServersConfig shrunk to server-only fields; GeneratorConfig::Client
+  removed; long-tail ontogen-ts wiring moved into clients/mod.rs;
+  iron-log build.rs adopted in-PR; site + READMEs rewritten;
+  generated TS byte-identical pre/post; just full-check + cargo build
+  for iron-log both clean.
+
+  Two deviations from spec: (1) client-side tests stayed in
+  src/servers/tests.rs with client_test_config* helpers instead of
+  physically moving to src/clients/tests.rs (stub remains); follow-up
+  filed at 2026-05-20-relocate-client-tests-to-clients-module.md.
+  (2) docs/proposal.md + docs/walkthrough.md left untouched —
+  identified during work as aspirational design narratives, not API
+  reference; updating to actual API would defeat their purpose.
+
+  Four follow-ups spawned from the post-mortem friction list:
+  2026-05-20-task-work-brief-guards-task-status,
+  2026-05-20-relocate-client-tests-to-clients-module,
+  2026-05-20-task-template-distinguishes-doc-kinds,
+  2026-05-20-task-work-detects-rust-project-stack.
+
+  Pumice next: bump rust-ontogen git pin past this merge, then
+  migrate src-tauri/Cargo.toml + build.rs to ClientsConfig in a
+  coordinated PR (Pumice maintainer's normal cadence).
 ---
 # Split client SDK generation out of the `servers` module
 
