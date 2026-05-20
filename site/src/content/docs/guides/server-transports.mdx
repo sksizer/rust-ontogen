@@ -41,24 +41,18 @@ let servers_output = ontogen::gen_servers(
                 output: "src/api/transport/mcp/generated.rs".into(),
             },
         ],
-        client_generators: vec![],
         rustfmt_edition: "2024".to_string(),
         sse_route_overrides: Default::default(),
-        ts_skip_commands: vec![],
         route_prefix: None,
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
-        // Required when using the AdminRegistry client generator. Pipeline
-        // forwards this from parse_schema automatically; explicit calls must
-        // pass it manually. Pass Vec::new() if not using admin-registry.
-        schema_entities: schema.entities.clone(),
     },
 )?;
 ```
 
 <Aside type="tip">
-The [`Pipeline`](/concepts/pipeline/) builder constructs and runs `gen_servers` for you. Among other things, it auto-forwards `schema.entities` into `ServersConfig.schema_entities`, so you don't need to remember to pass it through. The explicit call shown here exists for the cases where you need that level of control.
+The [`Pipeline`](/concepts/pipeline/) builder constructs and runs `gen_servers` for you. Client-side TypeScript generation is a separate stage now -- see [Client Generation](/guides/client-generation/) for the matching `ClientsConfig` and `gen_clients` surface.
 </Aside>
 
 Let's walk through the important fields:

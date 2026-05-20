@@ -61,9 +61,6 @@ iron-log/
 
 ## Known Limitations
 
-- Client generation (TypeScript transport, HTTP client, admin registry) is
-  performed inline by `servers::generate_transport()`, which dispatches both
-  server and client variants through `ServersConfig::client_generators`.
 - The `strip_wikilink` stubs in `persistence/fs_markdown/` are no-ops required
   by generated store code for `belongs_to` / `many_to_many` fields. Projects
   without markdown persistence still need these.

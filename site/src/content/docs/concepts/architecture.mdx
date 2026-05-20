@@ -45,13 +45,16 @@ The central architectural concept is a layered pipeline of independent generator
           └─────────────────┘    { modules: Vec<ApiModule> }
                     │
                     ▼
-          ┌─────────────────┐
-          │  gen_servers()  │──► ServersOutput
-          └─────────────────┘    { http_routes, ipc_commands, mcp_tools }
-                                 (also emits TypeScript clients
-                                  and admin registry, controlled
-                                  by ServersConfig.client_generators)
+          ┌─────────────────┐    ┌─────────────────┐
+          │  gen_servers()  │    │  gen_clients()  │
+          └─────────────────┘    └─────────────────┘
+              ServersOutput          () (TS bindings,
+              { http_routes,         HTTP/IPC clients,
+                ipc_commands,        admin registry)
+                mcp_tools }
 ```
+
+The servers and clients stages are siblings: both consume the same `ApiOutput` and neither produces input for the other. The pipeline runs them in stable order (`servers` then `clients`) for deterministic rerun-if-changed traces.
 
 Data flows top to bottom. Each arrow is a plain Rust struct -- no framework types, no trait objects, no magic. Just data.
 
@@ -83,7 +86,7 @@ This means you can use generators independently:
 
 - **Just persistence**: Call `parse_schema` and `gen_seaorm` to get SeaORM entities. Stop there.
 - **Persistence + store**: Add `gen_store` for CRUD methods with lifecycle hooks.
-- **Full stack**: Chain everything through `gen_servers` (with `client_generators` populated) for HTTP, IPC, MCP, and TypeScript clients.
+- **Full stack**: Chain everything through `gen_servers` for HTTP / IPC / MCP, plus `gen_clients` for TypeScript clients and the admin registry.
 - **Skip the middle**: Use `gen_markdown_io` alongside `gen_seaorm` without involving the store or API layers at all.
 
 The generators at the top of the pipeline (seaorm, markdown_io, dtos) are siblings -- they all consume `SchemaOutput` independently and don't depend on each other. The lower layers form a chain, where each stage enriches the next.
@@ -141,7 +144,9 @@ The `generated/` directories are cleaned on each build -- stale files from renam
 
 **`gen_api()`** generates forwarding functions that bridge the store layer to transport handlers. Scans hand-written API directories and merges custom endpoints with generated CRUD into a unified `ApiOutput`.
 
-**`gen_servers()`** generates transport-specific handlers: Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions. It also drives client-side generation -- the same call emits TypeScript clients and the admin-UI registry, controlled by `ServersConfig.client_generators`. Each transport reads the same `ApiOutput` and produces output appropriate for its protocol.
+**`gen_servers()`** generates server-side transport handlers: Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions. Each transport reads the same `ApiOutput` and produces output appropriate for its protocol.
+
+**`gen_clients()`** is `gen_servers`'s sibling for the client-side surface: TypeScript bindings, the HTTP-only and HTTP+IPC unified transport clients, and the admin-UI registry. It consumes the same `ApiOutput` but emits TypeScript instead of Rust.
 
 ## How It Comes Together in build.rs
 
