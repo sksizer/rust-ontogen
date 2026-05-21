@@ -1,6 +1,6 @@
 ---
-schema_version: '1'
-status: open
+schema_version: '2'
+status: planning/proposed
 ---
 # OF-020 - Hierarchical TS bindings output for codebases with name collisions at scale
 

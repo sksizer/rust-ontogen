@@ -1,6 +1,6 @@
 ---
-schema_version: '1'
-status: open
+schema_version: '2'
+status: planning/proposed
 last_reviewed: 2026-05-14
 ---
 # OF-015 - Replace the TS bindings side-car with `ontogen-ts`

@@ -1,6 +1,6 @@
 ---
 type: task
-schema_version: '1'
+schema_version: '2'
 status: closed/done
 created: 2026-05-19
 last_reviewed: 2026-05-19

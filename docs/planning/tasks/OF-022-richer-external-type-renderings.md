@@ -1,6 +1,6 @@
 ---
-schema_version: '1'
-status: open
+schema_version: '2'
+status: planning/proposed
 ---
 # OF-022 - Richer external-type renderings in `ontogen-ts` (imported TS types, not just primitives)
 
