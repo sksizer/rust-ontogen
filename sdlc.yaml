@@ -2,4 +2,5 @@
 # Shape reference: ~/.claude/plugins/sdlc/conventions/sdlc-yaml.md
 # Populate `quality_checks:` via /sdlc:find-quality-checks, or by hand.
 
-quality_checks: []
+quality_checks:
+  - just full-check
