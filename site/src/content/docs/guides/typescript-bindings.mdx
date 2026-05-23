@@ -21,7 +21,9 @@ Both emitters write to the same file: schema-known first, then long-tail appende
 The pipeline:
 
 1. **Scan.** `scan_src_dir(CARGO_MANIFEST_DIR/src)` walks every `.rs` under `src/` and builds a pool keyed by canonical `TypePath` (`foo::bar::Baz`). All module-level structs, enums, and type aliases land in the pool regardless of visibility.
-2. **Root set.** The schema-known emitter computes a long-tail name list from the API surface — every type ident referenced by an endpoint's params or return that isn't an entity or generated DTO.
+2. **Root set.** The schema-known emitter computes a long-tail name list from two sources, unioned and de-duped:
+   - **API surface** — every type ident referenced by an endpoint's params or return that isn't an entity or generated DTO.
+   - **Schema-entity fields** — every type ident referenced by an `EntityDef.field`'s type that isn't itself a primitive, container, or another entity / generated DTO. This is what makes a field like `interval_kind: Option<IntervalKind>` on a schema entity pull `IntervalKind` into emission even if no API endpoint mentions it.
 3. **Resolve.** Each long-tail name is looked up in the pool: bare-ident match first, then any pool entry whose terminal segment matches.
 4. **Emit.** `ontogen_ts::emit(roots, &pool, &config)` walks the reachable closure of each root, renders the TS, and aggregates every error before returning.
 
