@@ -1,7 +1,23 @@
 ---
 schema_version: '3'
-status: planning/proposed
-last_reviewed: 2026-05-14
+status: closed/done
+last_reviewed: 2026-05-23
+completion_note: |
+  Shipped end-to-end as epic E0001 (TypeScript bindings pipeline) — 8
+  implementation PRs + 1 backport merged between 2026-05-15 and
+  2026-05-20. The OF-014 specta side-car is gone; long-tail TS emission
+  flows through the `ontogen-ts` build-time AST walker. Member PR
+  tasks (`OF-015-pr-1` through `OF-015-pr-8`) are all closed/done. See
+  `docs/planning/epics/ts-pipeline.md` for the per-PR shipping log and
+  follow-up tickets (OF-020/021/022 deferred; OF-018 closes naturally
+  with FallbackRecord removal).
+
+  This task file is preserved as the canonical design-pass artefact
+  (Direction / Scope / Decisions / Open questions) per the epic's
+  "Discovery context" note — the design record is more useful kept
+  separate than consolidated into the epic doc. Reading order: epic for
+  what shipped per PR; this task for why the design looks the way it
+  does.
 ---
 # OF-015 - Replace the TS bindings side-car with `ontogen-ts`
 
