@@ -1,6 +1,6 @@
 ---
 type: task
-schema_version: '2'
+schema_version: '3'
 status: planning/draft
 created: '2026-05-20'
 impact: medium
@@ -66,8 +66,10 @@ flips stop happening at the source rather than getting caught by post-hoc review
 
 ## Files to touch
 
-- `plugin/skills/sdlc/task-work/SKILL.md` — add the frontmatter-status guardrail to
-  the Step 6 brief template.
+| Location | Kind | Change |
+|---|---|---|
+| `plugin/skills/sdlc/task-work/SKILL.md` | modify | add the frontmatter-status guardrail to |
+
 
 ## Acceptance criteria
 

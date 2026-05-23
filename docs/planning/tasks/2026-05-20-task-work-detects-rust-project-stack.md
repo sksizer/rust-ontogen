@@ -1,6 +1,6 @@
 ---
 type: task
-schema_version: '2'
+schema_version: '3'
 status: planning/draft
 created: '2026-05-20'
 impact: medium
@@ -63,8 +63,10 @@ bootstrap invocation:
 
 ## Files to touch
 
-- `plugin/skills/sdlc/task-work/SKILL.md` — add stack-detection logic to Step 4
-  worktree-bootstrap invocation.
+| Location | Kind | Change |
+|---|---|---|
+| `plugin/skills/sdlc/task-work/SKILL.md` | modify | add stack-detection logic to Step 4 |
+
 
 ## Acceptance criteria
 

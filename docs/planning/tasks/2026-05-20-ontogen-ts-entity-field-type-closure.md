@@ -1,10 +1,11 @@
 ---
 type: task
-schema_version: '2'
+schema_version: '3'
 status: planning/proposed
 created: '2026-05-20'
 impact: medium
 complexity: medium
+autonomy: supervised
 tags:
 - follow-up
 - ontogen-ts
@@ -12,7 +13,6 @@ tags:
 related:
 - OF-015
 - OF-015-pr-7
-autonomy: supervised
 ---
 # ontogen-ts: include transitively-referenced field types of schema entities in the long-tail root set
 
@@ -48,10 +48,13 @@ Behavior for iron-log: unchanged (iron-log doesn't have entity fields pointing a
 
 ## Files to touch
 
-- `src/servers/generators/ts_bindings.rs` — extend `long_tail` (or add a sibling pass) to include the field-type closure of `EntityDef`s.
-- `src/servers/mod.rs` — confirm the field-type-derived names flow through to the existing `roots`/`pool` plumbing in `generate_transport`. Likely no edit needed if `long_tail` returns the merged set.
-- `tests/` — add a fixture entity with a typed-enum field referencing a non-schema-known type and assert the emitted bindings include both the entity and the enum definition.
-- `docs/planning/tasks/OF-015-pr-8-user-facing-docs.md` — once PR 8 ships, note this in the supported-subset section of the new TS-bindings guide.
+| Location | Kind | Change |
+|---|---|---|
+| `src/servers/generators/ts_bindings.rs` | modify | extend `long_tail` (or add a sibling pass) to include the field-type closure of `EntityDef`s. |
+| `src/servers/mod.rs` | modify | confirm the field-type-derived names flow through to the existing `roots`/`pool` plumbing in `generate_transport`. Likely no edit needed if `long_tail` returns the merged set. |
+| `tests/` | modify | add a fixture entity with a typed-enum field referencing a non-schema-known type and assert the emitted bindings include both the entity and the enum definition. |
+| `docs/planning/tasks/OF-015-pr-8-user-facing-docs.md` | new | once PR 8 ships, note this in the supported-subset section of the new TS-bindings guide. |
+
 
 ## Acceptance criteria
 
