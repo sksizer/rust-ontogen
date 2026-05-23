@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: planning/proposed
+status: in-progress
 created: '2026-05-20'
 impact: medium
 complexity: medium
@@ -13,6 +13,8 @@ tags:
 related:
 - OF-015
 - OF-015-pr-7
+readiness_verified_at: '2026-05-23T21:09:40Z'
+last_reviewed: '2026-05-23'
 ---
 # ontogen-ts: include transitively-referenced field types of schema entities in the long-tail root set
 
@@ -22,7 +24,7 @@ Schema entities can reference user-defined types in their fields (e.g. `TimerSes
 
 ## Today
 
-`src/servers/mod.rs::generate_transport` (around line 262 — `generators::ts_bindings::long_tail(...)`) computes the long-tail set from the parsed API modules and the schema-entities table. The function inspects API signatures only — entity field types whose definitions live outside the schema-known surface are never added to the root set. The pool now contains them (after OF-015 PR 7's `pool_extra_roots`), but they don't get emitted because they aren't roots.
+`src/clients/mod.rs::generate_clients` (around line 123 — `generators::ts_bindings::long_tail(&modules, config, &config.schema_entities)`) computes the long-tail set from the parsed API modules and the schema-entities table. The `long_tail` function (now at `src/clients/generators/ts_bindings.rs:63` after the clients/servers split in #69) inspects API signatures only — entity field types whose definitions live outside the schema-known surface are never added to the root set. The pool now contains them (after OF-015 PR 7's `pool_extra_roots`), but they don't get emitted because they aren't roots.
 
 Observed in Pumice (`/Users/sksizer/Developer/Pumice/src-tauri/build.rs`, function `append_pumice_enum_aliases`): three enum aliases (`IntervalKind`, `SessionStatus`, `CompletionKind`) referenced by `TimerSession` fields are appended to the generated `types.ts` by hand because ontogen-ts doesn't emit them. The same workaround would be needed by any consumer whose entity fields point at non-trivial sibling-crate types.
 
@@ -34,11 +36,11 @@ Behavior for iron-log: unchanged (iron-log doesn't have entity fields pointing a
 
 ## Approach
 
-1. **Identify the gap site.** Read `src/servers/generators/ts_bindings.rs::long_tail` and confirm the input set it currently computes. Note any existing handling of schema-known types so the new pass doesn't double-emit.
+1. **Identify the gap site.** Read `src/clients/generators/ts_bindings.rs::long_tail` and confirm the input set it currently computes. Note any existing handling of schema-known types so the new pass doesn't double-emit. (Pre-#69 this file lived under `src/servers/generators/`; the clients/servers split relocated it.)
 
 2. **Walk schema entity fields.** For each `EntityDef` in `config.schema_entities`, iterate `entity.fields`. For each field whose `FieldType` references a non-primitive, non-schema-known ident, add that ident to a candidate set. The classifier already knows what counts as schema-known (it's the existing partition that drives `ts_bindings::emit`); reuse that boundary.
 
-3. **Merge candidates into the long-tail root set.** The result of step 2 is unioned with the existing API-derived long-tail set before `ontogen_ts::emit` runs. Pool membership is verified the same way the existing long-tail names are (bare-ident match, then terminal-segment fallback). Unresolved candidates surface as `UnresolvedReference` errors with the same hard-error semantics PR 4 established.
+3. **Merge candidates into the long-tail root set.** The result of step 2 is unioned with the existing API-derived long-tail set before `ontogen_ts::emit` runs (call-site: `src/clients/mod.rs::generate_clients` around line 123, where the returned `long_tail` vec drives the `roots` construction). Pool membership is verified the same way the existing long-tail names are (bare-ident match, then terminal-segment fallback). Unresolved candidates surface as `UnresolvedReference` errors with the same hard-error semantics PR 4 established.
 
 4. **Verify against iron-log.** `cd examples/iron-log/src-tauri && cargo build` must succeed unchanged — no new types should appear in `examples/iron-log/src-nuxt/app/generated/types.ts` because iron-log's entity fields are all primitives / schema-known types.
 
@@ -50,8 +52,8 @@ Behavior for iron-log: unchanged (iron-log doesn't have entity fields pointing a
 
 | Location | Kind | Change |
 |---|---|---|
-| `src/servers/generators/ts_bindings.rs` | modify | extend `long_tail` (or add a sibling pass) to include the field-type closure of `EntityDef`s. |
-| `src/servers/mod.rs` | modify | confirm the field-type-derived names flow through to the existing `roots`/`pool` plumbing in `generate_transport`. Likely no edit needed if `long_tail` returns the merged set. |
+| `src/clients/generators/ts_bindings.rs` | modify | extend `long_tail` (or add a sibling pass) to include the field-type closure of `EntityDef`s. |
+| `src/clients/mod.rs` | modify | confirm the field-type-derived names flow through to the existing `roots`/`pool` plumbing in `generate_clients` (line ~123). Likely no edit needed if `long_tail` returns the merged set. |
 | `tests/` | modify | add a fixture entity with a typed-enum field referencing a non-schema-known type and assert the emitted bindings include both the entity and the enum definition. |
 | `docs/planning/tasks/OF-015-pr-8-user-facing-docs.md` | new | once PR 8 ships, note this in the supported-subset section of the new TS-bindings guide. |
 
