@@ -18,6 +18,22 @@ mod tests;
 // `ontogen::clients::ClientsConfig`.
 pub use config::ClientGenerator;
 
+/// Render the schema-known TypeScript surface (entity types + generated
+/// Create/Update DTOs) for the given entities.
+///
+/// This is a thin pass-through to the crate-internal
+/// `generators::ts_bindings::emit`, exposed publicly so integration tests
+/// (in `tests/`) can assert against the body the schema-known emitter
+/// writes to `bindings.ts` without going through the full
+/// [`generate`] pipeline. The crate-internal module stays
+/// `pub(crate)` — this helper is the only public surface area for the
+/// schema-known render.
+#[doc(hidden)]
+#[must_use]
+pub fn emit_schema_known_ts_for_tests(entities: &[ontogen_core::model::EntityDef]) -> String {
+    generators::ts_bindings::emit(entities)
+}
+
 use std::path::PathBuf;
 
 use crate::CodegenError;
