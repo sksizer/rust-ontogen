@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-05-20'
 impact: medium
 complexity: medium
@@ -13,8 +13,21 @@ tags:
 related:
 - OF-015
 - OF-015-pr-7
-readiness_verified_at: '2026-05-23T21:09:40Z'
 last_reviewed: '2026-05-23'
+completion_note: |
+  Shipped via #72 (merge 0f771c9, 2026-05-23). ACs 1/2/4 verified
+  programmatically; AC-3 (Pumice cross-repo validation) deferred to
+  follow-up Pumice work. `long_tail()` in
+  src/clients/generators/ts_bindings.rs now walks every
+  `EntityDef.fields` and unions the closure of non-schema-known,
+  non-primitive type idents into the long-tail root set, removing
+  the need for consumers to maintain hand-written
+  `append_pumice_enum_aliases`-style build.rs workarounds. New
+  integration test `tests/ts_entity_field_type_closure.rs` plus
+  10 in-module unit tests pin the contract. iron-log generated TS
+  was byte-identical pre/post. Three upstream-plugin follow-ups
+  spawned (sksizer/dev#110/#111/#112) to close friction-list gaps
+  surfaced by the run.
 ---
 # ontogen-ts: include transitively-referenced field types of schema entities in the long-tail root set
 
