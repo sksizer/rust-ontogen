@@ -1,6 +1,6 @@
 ---
 type: task
-schema_version: '2'
+schema_version: '3'
 status: planning/draft
 created: '2026-05-20'
 impact: low
@@ -75,13 +75,12 @@ the spec explicitly says otherwise.
 
 ## Files to touch
 
-- `plugin/entities/task/template.md` (API reference) — add the doc-kind
-  marker convention to the "Files to touch" inline guidance.
-- `plugin/skills/sdlc/task-define/SKILL.md` (API reference) — prompt to
-  classify each doc-shaped path during interactive definition.
-- `plugin/entities/task/implementation-ready.md` (API reference) — optional;
-  reference the convention so the readiness gate can warn on un-marked
-  doc-shaped entries.
+| Location | Kind | Change |
+|---|---|---|
+| `plugin/entities/task/template.md` | modify | add the doc-kind |
+| `plugin/skills/sdlc/task-define/SKILL.md` | modify | prompt to |
+| `plugin/entities/task/implementation-ready.md` | modify | optional; |
+
 
 ## Acceptance criteria
 

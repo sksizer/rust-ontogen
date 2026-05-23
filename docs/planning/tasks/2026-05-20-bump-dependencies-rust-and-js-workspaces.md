@@ -1,6 +1,6 @@
 ---
 type: task
-schema_version: '2'
+schema_version: '3'
 status: open/ready
 created: '2026-05-20'
 impact: medium
@@ -28,32 +28,17 @@ against work that touches multiple stacks and lockfiles.
 
 ## Today
 
-The repo has two Cargo workspaces and five JS/pnpm projects, all with
-hand-pinned minor-version ranges:
+| Location | Role today |
+|---|---|
+| `Root: `Cargo.toml` (workspace members: `.`, `crates/ontogen-core`,` | <migrated from v2 — no role recorded> |
+| `examples/iron-log/src-tauri/Cargo.toml` | Tauri 2 / sea-orm 1 / axum 0.8 |
+| `**JS/pnpm projects**` | <migrated from v2 — no role recorded> |
+| `site/package.json` | Astro 6 + Starlight 0.38 docs site. |
+| `packages/admin-types/package.json` | framework-agnostic types, no deps. |
+| `packages/nuxt_admin_layer/package.json` | Nuxt 4 admin layer |
+| `examples/iron-log/package.json` | iron-log root (lefthook, commitlint, |
+| `examples/iron-log/src-nuxt/package.json` | Nuxt 4 frontend, Vue 3.5, |
 
-- **Rust workspaces**
-  - Root: `Cargo.toml` (workspace members: `.`, `crates/ontogen-core`,
-    `crates/ontogen-macros`, `crates/ontogen-ts`). Toolchain pinned to
-    `stable` via `rust-toolchain.toml`, MSRV `1.85`, edition `2024`,
-    resolver `3`.
-  - `examples/iron-log/src-tauri/Cargo.toml` — Tauri 2 / sea-orm 1 / axum 0.8
-    standalone (not a member of the root workspace).
-- **JS/pnpm projects** (all use pnpm; no repo-wide pnpm-workspace.yaml)
-  - `site/package.json` — Astro 6 + Starlight 0.38 docs site.
-  - `packages/admin-types/package.json` — framework-agnostic types, no deps.
-  - `packages/nuxt_admin_layer/package.json` — Nuxt 4 admin layer
-    (has its own `pnpm-lock.yaml`).
-  - `examples/iron-log/package.json` — iron-log root (lefthook, commitlint,
-    release-it, `@tauri-apps/cli`).
-  - `examples/iron-log/src-nuxt/package.json` — Nuxt 4 frontend, Vue 3.5,
-    Tailwind 4, Storybook 10, Vitest 4, ESLint 9, TypeScript 5.9.
-
-`justfile` already exposes `just outdated` (cargo-outdated) and
-`just audit` (cargo-audit) for the root workspace. No analogous wrappers
-exist for the iron-log Cargo workspace or for the JS projects.
-
-When the work begins, capture the baseline state of `Cargo.lock`s and each
-`pnpm-lock.yaml` so the post-bump diff is reviewable.
 
 ## Proposed
 
@@ -138,27 +123,25 @@ Each commit:
 
 ## Files to touch
 
-All paths are manifests + their lockfiles. New files only if a project
-gains a fresh `pnpm-lock.yaml` (none expected — all are already present
-where applicable).
+| Location | Kind | Change |
+|---|---|---|
+| `Cargo.toml` | modify | root workspace deps (cruet, syn, quote, insta, tempfile). |
+| `Cargo.lock` | modify | regenerated. |
+| `crates/ontogen-core/Cargo.toml` | modify | crate deps. |
+| `crates/ontogen-macros/Cargo.toml` | modify | crate deps. |
+| `crates/ontogen-ts/Cargo.toml` | modify | crate deps. |
+| `examples/iron-log/src-tauri/Cargo.toml` | modify | Tauri/sea-orm/axum stack. |
+| `examples/iron-log/src-tauri/Cargo.lock` | modify | regenerated. |
+| `site/package.json` | modify | Astro/Starlight. |
+| `site/pnpm-lock.yaml` | new | regenerated (create if missing). |
+| `packages/admin-types/package.json` | modify | likely no-op (no deps), include for |
+| `packages/nuxt_admin_layer/package.json` | modify | Nuxt admin layer deps. |
+| `packages/nuxt_admin_layer/pnpm-lock.yaml` | modify | regenerated. |
+| `examples/iron-log/package.json` | modify | pnpm/lefthook/commitlint/release-it/tauri-cli. |
+| `examples/iron-log/pnpm-lock.yaml` | new | regenerated (create if missing). |
+| `examples/iron-log/src-nuxt/package.json` | modify | Nuxt frontend. |
+| `examples/iron-log/src-nuxt/pnpm-lock.yaml` | new | regenerated (create if missing). |
 
-- `Cargo.toml` — root workspace deps (cruet, syn, quote, insta, tempfile).
-- `Cargo.lock` — regenerated.
-- `crates/ontogen-core/Cargo.toml` — crate deps.
-- `crates/ontogen-macros/Cargo.toml` — crate deps.
-- `crates/ontogen-ts/Cargo.toml` — crate deps.
-- `examples/iron-log/src-tauri/Cargo.toml` — Tauri/sea-orm/axum stack.
-- `examples/iron-log/src-tauri/Cargo.lock` — regenerated.
-- `site/package.json` — Astro/Starlight.
-- `site/pnpm-lock.yaml` — regenerated (create if missing).
-- `packages/admin-types/package.json` — likely no-op (no deps), include for
-  completeness only if `pnpm outdated` flags `pathe` etc.
-- `packages/nuxt_admin_layer/package.json` — Nuxt admin layer deps.
-- `packages/nuxt_admin_layer/pnpm-lock.yaml` — regenerated.
-- `examples/iron-log/package.json` — pnpm/lefthook/commitlint/release-it/tauri-cli.
-- `examples/iron-log/pnpm-lock.yaml` — regenerated (create if missing).
-- `examples/iron-log/src-nuxt/package.json` — Nuxt frontend.
-- `examples/iron-log/src-nuxt/pnpm-lock.yaml` — regenerated (create if missing).
 
 ## Acceptance criteria
 

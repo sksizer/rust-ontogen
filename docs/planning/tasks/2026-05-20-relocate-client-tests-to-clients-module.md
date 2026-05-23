@@ -1,7 +1,7 @@
 ---
 type: task
-schema_version: '2'
-status: planning/draft
+schema_version: '3'
+status: planning/needs-definition
 created: '2026-05-20'
 impact: low
 complexity: small
@@ -11,6 +11,8 @@ tags:
 - tests
 related:
 - 2026-05-19-split-clients-from-servers
+definition_gap: 'v2-to-v3 migration flagged ambiguous touchpoint row(s): row ``src/servers/tests.rs``
+  carries removal/rename language (''remove'') — v3 kind cannot be inferred mechanically'
 ---
 # Relocate client-side tests from src/servers/tests.rs to src/clients/tests.rs with shared fixtures
 
@@ -73,14 +75,13 @@ change in test coverage.
 
 ## Files to touch
 
-- `src/servers/tests.rs` — remove client-side test cases; update imports for
-  any fixtures that moved.
-- `src/clients/tests.rs` — replace the stub with the relocated client-side
-  tests; import shared fixtures.
-- `src/test_support.rs` (new, or equivalent location) — extracted shared
-  fixture builders.
-- `src/lib.rs` — register the new `#[cfg(test)] mod test_support;` if that
-  location is chosen.
+| Location | Kind | Change |
+|---|---|---|
+| `src/servers/tests.rs` | modify | remove client-side test cases; update imports for |
+| `src/clients/tests.rs` | modify | replace the stub with the relocated client-side |
+| `src/test_support.rs` | new | extracted shared |
+| `src/lib.rs` | new | register the new `#[cfg(test)] mod test_support;` if that |
+
 
 ## Acceptance criteria
 
