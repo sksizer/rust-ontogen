@@ -14,6 +14,22 @@ use crate::servers::types::norm_type;
 
 // ─── Extracted function metadata ──────────────────────────────────────────────
 
+/// Which HTTP method an `#[ontogen::http::*]` attribute forces on a handler.
+///
+/// Today only `Post` is consumed (via `#[ontogen::http::post]`). Future
+/// method overrides extend the variant set without touching `ApiFn`'s
+/// shape — adding `Get` / `Put` / `Delete` / `Patch` is purely additive
+/// once their consumers and corresponding proc-macros land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForcedMethod {
+    /// Force `OpKind::CustomPost` classification regardless of name or
+    /// param shape. Populated from any attribute whose final path segment
+    /// is `post` (so `#[ontogen::http::post]`, `#[post]` after a
+    /// `use ontogen::http::post;`, and any other path ending in `::post`
+    /// all map here).
+    Post,
+}
+
 /// A parsed API function signature.
 #[derive(Debug, Clone)]
 pub struct ApiFn {
@@ -46,6 +62,22 @@ pub struct ApiFn {
     /// positional state/store forward. `params` then contains every
     /// declared input rather than skipping a leading state argument.
     pub is_stateless: bool,
+    /// HTTP method to force on the emitted route, if the source carried
+    /// an `#[ontogen::http::*]` attribute.
+    ///
+    /// When `Some(ForcedMethod::Post)`, the classifier returns
+    /// `OpKind::CustomPost` unconditionally, overriding the name/param
+    /// heuristic. This is the user-driven escape hatch for action-verb
+    /// functions whose zero-user-param shape would otherwise route as GET
+    /// (e.g. `pause(state)`, `resume(state)`, `reset_all(state)`).
+    ///
+    /// The enum exists so future HTTP-method overrides
+    /// (`#[ontogen::http::get]`, `#[ontogen::http::put]`, etc.) can extend
+    /// the variant set without changing `ApiFn`'s shape. A `#[…::get]`
+    /// override is anticipated by the companion classifier-reverse-default
+    /// task — when the zero-param default flips to POST, any false-positive
+    /// reads will need an explicit GET opt-in.
+    pub force_method: Option<ForcedMethod>,
     /// Optional override for the emitted IPC command / TS method name.
     ///
     /// Populated by either the source-side `#[ontogen(rename = "...")]`
@@ -277,6 +309,37 @@ fn has_stateless_attr(func: &syn::ItemFn) -> bool {
     })
 }
 
+/// Inspect attributes on `func` and return the forced HTTP method, if any
+/// `#[ontogen::http::*]` marker is present.
+///
+/// Matched on the final path segment of each attribute path. Today the
+/// only recognized form is `post` → `Some(ForcedMethod::Post)`, which
+/// accepts the canonical `#[ontogen::http::post]`, the bare `#[post]` (after
+/// `use ontogen::http::post;`), or any other path ending in `::post`. The
+/// match is purely syntactic; the proc-macro itself is a no-op pass-through,
+/// so the parser is the only consumer of the marker. A foreign `post`
+/// attribute from an unrelated crate would also match; users hitting that
+/// collision should rename the foreign attribute or omit it from API
+/// modules.
+///
+/// Returns `None` when no recognized HTTP-method-override attribute is
+/// present. Future method overrides extend this function by adding a
+/// match arm for each new ident (`get` → `Some(ForcedMethod::Get)`, etc.).
+fn parse_force_method(func: &syn::ItemFn) -> Option<ForcedMethod> {
+    for attr in &func.attrs {
+        if !matches!(attr.meta, syn::Meta::Path(_) | syn::Meta::List(_)) {
+            continue;
+        }
+        let Some(last) = attr.path().segments.last() else {
+            continue;
+        };
+        if last.ident == "post" {
+            return Some(ForcedMethod::Post);
+        }
+    }
+    None
+}
+
 /// Parse a single API source file into a `ModuleParseResult`.
 ///
 /// `module` is populated when the file holds at least one accepted function or
@@ -329,6 +392,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
             }
 
             let is_stateless = has_stateless_attr(func);
+            let force_method = parse_force_method(func);
 
             // For state-bearing fns, inspect the first param. Three drop cases
             // produce a SkipRecord; the accepting case sets `is_store` (false
@@ -466,6 +530,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 return_type_ast,
                 first_param_is_store: is_store,
                 is_stateless,
+                force_method,
                 command_override,
             });
         }

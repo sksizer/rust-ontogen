@@ -44,7 +44,24 @@ pub use ontogen_core::utils;
 // The `ontogen` attribute is the umbrella for per-function directives
 // (mirrors the `serde::Serialize` re-export precedent: `use ontogen::ontogen;`
 // and then `#[ontogen(rename = "...")]` on a function).
+//
+// Routing-shape-agnostic attributes (`OntologyEntity`, `ontogen`, `stateless`)
+// stay at the top level — they apply regardless of output target. HTTP-method-
+// shape overrides (today: `post`; future: `get`, `put`, `delete`, `patch`)
+// live under `http::*` because their scope is specifically HTTP-method
+// classification.
 pub use ontogen_macros::{OntologyEntity, ontogen, stateless};
+
+/// HTTP-method-shape attributes for forcing an `ApiFn`'s classification.
+///
+/// Today this is just `#[ontogen::http::post]`; future overrides
+/// (`get`, `put`, `delete`, `patch`) will land here as their consumers
+/// surface. The namespace is explicit so non-HTTP output targets
+/// (a hypothetical gRPC or CLI surface) wouldn't need to retro-namespace
+/// these markers.
+pub mod http {
+    pub use ontogen_macros::post;
+}
 
 // Re-export key types for ergonomic use in build.rs
 pub use ontogen_core::CodegenError;
