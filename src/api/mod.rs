@@ -21,7 +21,7 @@ use std::path::Path;
 
 use crate::ir::{ApiFnMeta, ApiModule, ApiOutput, OpKind, ParamMeta, Source, StateKind};
 use crate::schema::model::EntityDef;
-use crate::servers::classify::classify_by_name_and_params;
+use crate::servers::classify::classify_op;
 use crate::servers::parse;
 use crate::store::helpers;
 use crate::{ApiConfig, CodegenError};
@@ -97,7 +97,7 @@ fn convert_scanned_fn(func: &parse::ApiFn, scan_dir: &Path, module_name: &str) -
     let params: Vec<ParamMeta> =
         func.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
 
-    let classified_op = classify_by_name_and_params(&func.name, &func.params);
+    let classified_op = classify_op(func);
 
     ApiFnMeta {
         name: func.name.clone(),

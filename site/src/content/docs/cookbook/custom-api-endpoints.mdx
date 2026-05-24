@@ -248,6 +248,25 @@ pub fn copy(text: &str) -> Result<(), AppError> {
 
 See [Stateless utility functions](/guides/api-layer/#stateless-utility-functions-ontogenstateless) for the full behaviour.
 
+**Force POST classification with `#[ontogen::post]`:**
+
+The auto-classifier routes zero-user-param custom functions as `GET` (the empty-params branch in `classify_by_name_and_params` — no body to carry). That heuristic is wrong for action-verb mutating handlers like `pause(state)`, `resume(state)`, or `reset_all(state)` — they mutate state but emit as `GET` because they have no input. Use `#[ontogen::post]` to flip a single handler to `POST` without changing the global default:
+
+```rust
+use ontogen::post;
+
+// Without the attribute, `pause(state)` would emit as `get(...)` because
+// after the state strip it has zero user-input params.
+#[post]
+pub async fn pause(state: &AppState) -> Result<(), AppError> {
+    state.engine.pause().await
+}
+```
+
+The attribute is purely additive: omit it and the existing classifier behaviour applies (zero-param custom fns → `CustomGet`, named-CRUD by name, body-carrying first params → `CustomPost`, etc.). The macro itself is a no-op; the ontogen parser reads it via `syn` during build-time scanning and short-circuits `classify_op` to return `OpKind::CustomPost`.
+
+Combine freely with `#[ontogen::stateless]` and `#[ontogen(rename = "…")]` — order doesn't matter, the parser inspects each attribute independently.
+
 ## Rerun directives
 
 Don't forget to set up `cargo:rerun-if-changed` for your custom API directory. In your `build.rs`:

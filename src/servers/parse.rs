@@ -46,6 +46,14 @@ pub struct ApiFn {
     /// positional state/store forward. `params` then contains every
     /// declared input rather than skipping a leading state argument.
     pub is_stateless: bool,
+    /// Whether the function was marked `#[ontogen::post]`.
+    ///
+    /// When true, the classifier returns `OpKind::CustomPost`
+    /// unconditionally, overriding the name/param heuristic. This is the
+    /// user-driven escape hatch for action-verb functions whose
+    /// zero-user-param shape would otherwise route as GET (e.g.
+    /// `pause(state)`, `resume(state)`, `reset_all(state)`).
+    pub force_post: bool,
     /// Optional override for the emitted IPC command / TS method name.
     ///
     /// Populated by either the source-side `#[ontogen(rename = "...")]`
@@ -277,6 +285,22 @@ fn has_stateless_attr(func: &syn::ItemFn) -> bool {
     })
 }
 
+/// Returns true when any attribute on `func` is the `post` attribute from
+/// `ontogen-macros` — matched by the final path segment ident.
+///
+/// Accepts `#[post]`, `#[ontogen::post]`, or any other path that ends in
+/// `::post`. The match is purely syntactic; the proc-macro itself is a
+/// no-op pass-through, so the parser is the only consumer of the marker.
+/// A foreign `post` attribute from an unrelated crate would also match;
+/// users hitting that collision should rename the foreign attribute or
+/// omit it from API modules.
+fn has_post_attr(func: &syn::ItemFn) -> bool {
+    func.attrs.iter().any(|attr| {
+        matches!(attr.meta, syn::Meta::Path(_) | syn::Meta::List(_))
+            && attr.path().segments.last().is_some_and(|seg| seg.ident == "post")
+    })
+}
+
 /// Parse a single API source file into a `ModuleParseResult`.
 ///
 /// `module` is populated when the file holds at least one accepted function or
@@ -329,6 +353,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
             }
 
             let is_stateless = has_stateless_attr(func);
+            let force_post = has_post_attr(func);
 
             // For state-bearing fns, inspect the first param. Three drop cases
             // produce a SkipRecord; the accepting case sets `is_store` (false
@@ -466,6 +491,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 return_type_ast,
                 first_param_is_store: is_store,
                 is_stateless,
+                force_post,
                 command_override,
             });
         }

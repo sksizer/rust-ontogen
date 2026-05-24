@@ -55,6 +55,41 @@ pub fn stateless(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
+/// Attribute macro that forces an annotated `pub fn` to classify as
+/// `OpKind::CustomPost`, overriding the auto-classifier.
+///
+/// The attribute itself expands to a no-op pass-through of the annotated
+/// item; the ontogen parser (`servers::parse`) reads the attribute via `syn`
+/// during build-time scanning and stamps a `force_post` flag on the resulting
+/// `ApiFn`. The classifier consults that flag before running its heuristic
+/// and returns `OpKind::CustomPost` unconditionally when set.
+///
+/// Use this on action-verb functions whose zero-user-param shape would
+/// otherwise route as GET — e.g. `pause(state)`, `resume(state)`,
+/// `reset_all(state)` — even though they mutate state. The classifier
+/// can't tell these apart from genuine read-shaped zero-param fns; the
+/// attribute is the user-driven escape hatch.
+///
+/// Usage:
+/// ```ignore
+/// use ontogen::post;
+///
+/// // Without the attribute, `pause(state)` would emit as `get(...)`
+/// // because it has zero user-input params after the state strip.
+/// #[post]
+/// pub async fn pause(state: &AppState) -> Result<(), AppError> {
+///     // ...
+/// }
+/// ```
+///
+/// Without this marker, the existing auto-classifier applies (zero-user-
+/// param fns route as `CustomGet`, named-CRUD operations route by name,
+/// `get_*` with a body-carrying first param routes as `CustomPost`, etc.).
+#[proc_macro_attribute]
+pub fn post(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
 /// Pass-through attribute macro for per-function ontogen directives.
 ///
 /// The macro itself is a no-op - the annotated item is returned unchanged so the

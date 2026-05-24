@@ -44,7 +44,7 @@ pub use ontogen_core::utils;
 // The `ontogen` attribute is the umbrella for per-function directives
 // (mirrors the `serde::Serialize` re-export precedent: `use ontogen::ontogen;`
 // and then `#[ontogen(rename = "...")]` on a function).
-pub use ontogen_macros::{OntologyEntity, ontogen, stateless};
+pub use ontogen_macros::{OntologyEntity, ontogen, post, stateless};
 
 // Re-export key types for ergonomic use in build.rs
 pub use ontogen_core::CodegenError;
