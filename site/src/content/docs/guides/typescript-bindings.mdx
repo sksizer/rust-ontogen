@@ -80,6 +80,22 @@ JavaScript `number` is a double-precision float; values above 2^53 lose precisio
 - `BigIntBehavior::BigInt` — TS `bigint`. The wire format is JSON; your client code must use `bigint` literals.
 - `BigIntBehavior::String` — TS `string`. The wire payload is a JSON string; consumers parse it themselves.
 
+## String-literal quote style
+
+The TS string literals Ontogen emits — most visibly enum variant wire names in string-literal unions — default to single quotes (`'Red' | 'Green' | 'Blue'`). `EmitConfig::quote_style` swaps the delimiter without otherwise changing the wire shape:
+
+- `QuoteStyle::Single` *(default)* — `'foo' | 'bar'`. Matches eslint's `quotes: ['error', 'single']` style and preserves byte-identical output for pre-knob consumers.
+- `QuoteStyle::Double` — `"foo" | "bar"`. Matches Prettier's default and what the older specta-based emitter produced.
+
+```rust
+EmitConfig {
+    quote_style: ontogen_ts::QuoteStyle::Double,
+    ..Default::default()
+}
+```
+
+This is purely a generated-source style toggle — the JSON wire payload is unchanged. Pick whichever lines up with your project's existing quote convention so the generated file blends into your formatter / lint setup without per-bump diff noise.
+
 ## External types
 
 Some types are defined outside your crate (chrono's `DateTime`, uuid's `Uuid`, etc.) but appear in your API signatures. `EmitConfig::external_types` is a canonical-path → TS-rendering map:

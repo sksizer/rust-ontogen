@@ -440,6 +440,24 @@ fn format_ts_key(name: &str) -> String {
     }
 }
 
+/// Render `s` as a TS string literal using the [`QuoteStyle`] declared on
+/// `config`. Single-quoted by default; consumers wanting double-quoted
+/// output (e.g. to match Prettier's default or pre-ontogen-ts specta
+/// emission) flip [`EmitConfig::quote_style`] to [`QuoteStyle::Double`].
+///
+/// Centralizes the one-place-to-change for every quoted-literal emit site
+/// in the emitter — today that's enum variant wire names in string-literal
+/// unions. Wire names are bare-ident-shaped in the supported phase-1
+/// subset (or `#[serde(rename = "...")]` outputs that we already format
+/// via [`format_ts_key`] for keys); embedded matching quote characters
+/// don't appear in practice, so no escaping is performed here. If a
+/// future phase admits arbitrary user-controlled strings into a literal
+/// position, escaping belongs here.
+fn quote(config: &EmitConfig, s: &str) -> String {
+    let d = config.quote_style.delimiter();
+    format!("{d}{s}{d}")
+}
+
 /// True iff `s` is a valid TypeScript identifier (ASCII subset — `[A-Za-z_$]`
 /// followed by `[A-Za-z0-9_$]*`). Conservative — strict TS allows more
 /// Unicode in idents but for serde rename targets the ASCII subset is the
@@ -509,10 +527,13 @@ pub(crate) fn emit_enum_named(
         let wire_name = variant_wire_name(&raw_ident, &variant_attrs, effective_rename_all);
         match &variant.fields {
             Fields::Unit => {
-                // C-style — string-literal variant. Single-quote works for
-                // bare-ident wire names; non-ident ones still go inside the
-                // single quotes (TS string literal syntax accepts them).
-                variant_lines.push(format!("'{wire_name}'"));
+                // C-style — string-literal variant. Quote style follows
+                // `config.quote_style` (single by default; consumers flip
+                // to double via `EmitConfig::quote_style`). Bare-ident wire
+                // names need no escaping; non-ident ones still fit inside
+                // the chosen delimiter (TS string literal syntax accepts
+                // them).
+                variant_lines.push(quote(config, &wire_name));
             }
             Fields::Unnamed(fields) => {
                 // Tuple-style variant. Serde's default external-tag emission
@@ -523,7 +544,7 @@ pub(crate) fn emit_enum_named(
                 // variant for clarity).
                 let key = format_ts_key(&wire_name);
                 match fields.unnamed.len() {
-                    0 => variant_lines.push(format!("'{wire_name}'")),
+                    0 => variant_lines.push(quote(config, &wire_name)),
                     1 => {
                         let payload_ts = emit_type(&fields.unnamed[0].ty, config, &referenced_by)?;
                         variant_lines.push(format!("{{ {key}: {payload_ts} }}"));
@@ -748,6 +769,7 @@ fn bigint_rendering(behavior: BigIntBehavior) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::QuoteStyle;
 
     /// Convenience: build a single-segment `TypePath` for `referenced_by`.
     fn tp(name: &str) -> TypePath {
@@ -1107,6 +1129,61 @@ mod tests {
     #[test]
     fn enum_c_style_emits_string_literal_union() {
         assert_fixture_matches("enum_c_style_emits_string_literal_union");
+    }
+
+    #[test]
+    fn enum_c_style_quote_style_single_default() {
+        // AC-1 (default arm): the existing single-quoted shape is preserved
+        // under `EmitConfig::default()` with the `#[serde(rename_all)]`
+        // transform applied.
+        let config = EmitConfig::default();
+        assert_eq!(config.quote_style, QuoteStyle::Single);
+        let item = enum_item(
+            "#[serde(rename_all = \"lowercase\")]
+            pub enum Letter {
+                A,
+                B,
+            }",
+        );
+        let ts = emit_enum(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Letter = 'a' | 'b';");
+    }
+
+    #[test]
+    fn enum_c_style_quote_style_double() {
+        // AC-1 (opt-in arm): flipping `quote_style` to `Double` swaps
+        // delimiters without touching anything else.
+        let config = EmitConfig { quote_style: QuoteStyle::Double, ..EmitConfig::default() };
+        let item = enum_item(
+            "#[serde(rename_all = \"lowercase\")]
+            pub enum Letter {
+                A,
+                B,
+            }",
+        );
+        let ts = emit_enum(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Letter = \"a\" | \"b\";");
+    }
+
+    #[test]
+    fn enum_tuple_zero_arg_variant_respects_quote_style() {
+        // The `Fields::Unnamed` 0-arg arm goes through the same `quote()`
+        // helper as the `Fields::Unit` arm — assert both delimiter branches
+        // there too. `Foo()` (tuple with no inner types) is unusual but
+        // syntactically valid and the emitter renders it as a string
+        // literal of the variant name.
+        let single = EmitConfig::default();
+        let item = enum_item(
+            "pub enum E {
+                Foo(),
+            }",
+        );
+        let ts = emit_enum(&item, &single).expect("emit ok");
+        assert_eq!(ts, "export type E = 'Foo';");
+
+        let double = EmitConfig { quote_style: QuoteStyle::Double, ..EmitConfig::default() };
+        let ts = emit_enum(&item, &double).expect("emit ok");
+        assert_eq!(ts, "export type E = \"Foo\";");
     }
 
     #[test]

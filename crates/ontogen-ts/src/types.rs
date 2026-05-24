@@ -103,6 +103,41 @@ pub enum BigIntBehavior {
     String,
 }
 
+/// How TypeScript string literals are quoted in emitted source.
+///
+/// Affects every place the emitter renders a quoted string literal — today
+/// that's enum variant wire names in string-literal unions (`'Red'` vs.
+/// `"Red"`). The choice has no effect on the wire shape; it's purely a
+/// generated-source style toggle that lets consumers match their project's
+/// existing quote convention (eslint's `quotes: ['error', 'single']` style
+/// vs. Prettier's default of `"..."`).
+///
+/// Default is [`QuoteStyle::Single`] to preserve byte-identical emission
+/// for current ontogen-ts consumers; new consumers wanting double quotes
+/// (e.g. to match what specta emitted before the ontogen-ts cut-over) set
+/// it explicitly on their [`EmitConfig`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuoteStyle {
+    /// `'foo' | 'bar'` — matches ontogen-ts's default and eslint's
+    /// `quotes: ['error', 'single']` style.
+    #[default]
+    Single,
+    /// `"foo" | "bar"` — matches Prettier's default and TypeScript's own
+    /// documentation examples; what specta emitted before the ontogen-ts
+    /// cut-over.
+    Double,
+}
+
+impl QuoteStyle {
+    /// The delimiter character this style uses for TS string literals.
+    pub(crate) fn delimiter(self) -> char {
+        match self {
+            Self::Single => '\'',
+            Self::Double => '"',
+        }
+    }
+}
+
 /// Serde's eight `rename_all` modes.
 ///
 /// PR 1 declares the enum shape so [`EmitConfig::case_default`] type-checks;
@@ -160,6 +195,10 @@ pub struct EmitConfig {
     /// hard-error only; this flag is currently a no-op and exists to keep
     /// the public shape stable across the PR series.
     pub strict_unsupported: bool,
+    /// Quote style applied to every TS string literal the emitter renders.
+    /// Defaults to [`QuoteStyle::Single`] for byte-identical output with
+    /// pre-knob consumers.
+    pub quote_style: QuoteStyle,
 }
 
 /// Every way emission can fail.
@@ -275,6 +314,14 @@ mod tests {
         assert_eq!(config.bigint_behavior, BigIntBehavior::Number);
         assert_eq!(config.case_default, None);
         assert!(!config.strict_unsupported);
+        assert_eq!(config.quote_style, QuoteStyle::Single);
+    }
+
+    #[test]
+    fn quote_style_default_is_single() {
+        assert_eq!(QuoteStyle::default(), QuoteStyle::Single);
+        assert_eq!(QuoteStyle::Single.delimiter(), '\'');
+        assert_eq!(QuoteStyle::Double.delimiter(), '"');
     }
 
     #[test]
