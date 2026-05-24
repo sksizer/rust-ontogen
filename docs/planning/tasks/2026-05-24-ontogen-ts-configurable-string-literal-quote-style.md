@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: open/ready
+status: in-progress
 created: '2026-05-24'
 impact: low
 complexity: small
@@ -11,6 +11,8 @@ tags:
 - pumice-follow-up
 related: []
 autonomy: supervised
+readiness_verified_at: '2026-05-24T17:18:57Z'
+last_reviewed: '2026-05-24'
 ---
 # ontogen-ts: make string-literal quote style configurable via EmitConfig (currently always single-quoted)
 
