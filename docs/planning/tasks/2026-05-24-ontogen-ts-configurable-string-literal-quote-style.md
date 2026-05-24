@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-05-24'
 impact: low
 complexity: small
@@ -11,8 +11,14 @@ tags:
 - pumice-follow-up
 related: []
 autonomy: supervised
-readiness_verified_at: '2026-05-24T17:18:57Z'
 last_reviewed: '2026-05-24'
+completion_note: |
+  Shipped via #79 (merge f652501, 2026-05-24). Added
+  `EmitConfig::quote_style: QuoteStyle` (default `Single` preserves
+  current single-quoted emission; `Double` flips to `"..."` to match
+  Prettier-default consumers like Pumice). Threaded the variant
+  through all string-literal emit sites via a single `quote(c, s)`
+  helper. AC-3 (Pumice rebump) tracked in the companion Pumice PR.
 ---
 # ontogen-ts: make string-literal quote style configurable via EmitConfig (currently always single-quoted)
 
