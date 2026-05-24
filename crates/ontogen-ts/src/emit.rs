@@ -314,6 +314,11 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
 ///
 /// `#[serde(skip)]` (and the `skip_serializing` / `skip_deserializing` siblings)
 /// drops the field entirely.
+///
+/// `#[serde(default)]` (bare or the `default = "path"` form) renders the field
+/// as TS-optional (`field?: T`) — the deserializer accepts partial JSON for
+/// the field, so the emitted contract matches the wire. It composes with
+/// `Option<T>` → `T | null` to produce `field?: T | null`.
 #[allow(dead_code)] // tests-only convenience wrapper; production calls _named directly.
 pub(crate) fn emit_struct(item: &ItemStruct, config: &EmitConfig) -> Result<String, EmitError> {
     emit_struct_named(item, config, None)
@@ -345,7 +350,13 @@ pub(crate) fn emit_struct_named(
                 let wire_name = field_wire_name(&raw_ident, &field_attrs, effective_rename_all);
                 let key = format_ts_key(&wire_name);
                 let ty_ts = emit_type(&field.ty, config, &referenced_by)?;
-                field_lines.push(format!("  {key}: {ty_ts};"));
+                // `#[serde(default)]` (bare or path form) means the field may
+                // be absent on the wire — the deserializer fills in a default.
+                // Emit it as TS-optional. Composes with `Option<T>` → `T |
+                // null` to give `field?: T | null` for an optional, nullable
+                // field.
+                let opt = if field_attrs.default { "?" } else { "" };
+                field_lines.push(format!("  {key}{opt}: {ty_ts};"));
             }
             if field_lines.is_empty() {
                 // `struct Foo {}` — or all fields skipped. Emit `{}` rather
@@ -1148,6 +1159,14 @@ mod tests {
     #[test]
     fn struct_field_serde_skip_drops_field() {
         assert_fixture_matches("struct_field_serde_skip_drops_field");
+    }
+
+    #[test]
+    fn struct_field_serde_default_optional() {
+        // `#[serde(default)]` (bare and path form) renders TS-optional `?`;
+        // composes with `Option<T>` for `field?: T | null`. A plain `Option<T>`
+        // without default stays required (`field: T | null`).
+        assert_fixture_matches("struct_field_serde_default_optional");
     }
 
     #[test]
