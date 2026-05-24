@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-05-24'
 impact: medium
 complexity: small
@@ -12,8 +12,19 @@ tags:
 - pumice-follow-up
 related: []
 autonomy: supervised
-readiness_verified_at: '2026-05-24T15:36:32Z'
 last_reviewed: '2026-05-24'
+completion_note: |
+  Shipped via #77 (merge 1881f50, 2026-05-24). Initial implementation
+  used `force_post: bool` and a top-level `#[ontogen::post]`; in response
+  to PR review the design was reworked (commit 9530164) to use
+  `force_method: Option<ForcedMethod>` and the namespaced
+  `#[ontogen::http::post]` form. The enum accommodates the anticipated
+  `#[ontogen::http::get]` follow-up without changing `ApiFn`'s shape,
+  and the namespace separates HTTP-method-shape attributes from
+  routing-shape-agnostic markers (`stateless`, `rename`, `skip`). Bare
+  `#[post]` (after `use ontogen::http::post;`) still accepted; parser
+  matches on final path segment. AC-3 (Pumice rebump) tracked in the
+  companion Pumice PR.
 ---
 # ontogen-macros: add #[ontogen::post] to force POST classification on zero-user-param mutating handlers
 
