@@ -7,25 +7,31 @@
 //! the cycle's topo level, since TS type aliases accept forward references
 //! freely).
 //!
-//! Edge-extraction strategy (phase 1, intentionally simple):
+//! Edge-extraction strategy (phase 1):
 //!
 //! - For each pool item, recursively walk its fields/variants via
 //!   [`syn::visit::Visit`].
 //! - For each `syn::Type::Path` encountered, drop generic args, strip a
 //!   leading `crate::` segment, and synthesize a candidate [`TypePath`]
 //!   from the remaining segments.
-//! - Filter candidates against pool keys — only edges to types we already
-//!   know about become part of the graph. Anything else (primitives,
-//!   external types, unresolved one-segment idents) is silently ignored
-//!   here; the per-type emitter handles those at render time.
+//! - Match candidates against pool keys. A multi-segment candidate matches
+//!   only on an exact pool key. A single-segment candidate (`BackupManifest`,
+//!   typically brought in via `use`) matches an exact top-level key first,
+//!   then falls back to any pool entry whose terminal segment matches — the
+//!   same resolution the long-tail *root* resolver uses in
+//!   `src/clients/mod.rs`. Anything still unmatched (primitives, external
+//!   types) is ignored here; the per-type emitter handles those at render
+//!   time.
 //!
-//! This is a deliberately conservative dep extractor: any one-segment
-//! ident in a user file that's actually resolved via `use foo::Bar` won't
-//! be recognized as a dep on `foo::Bar` without consulting that file's
-//! imports table. PR 4 will tighten this when it composes pool + resolve
-//! into the top-level `emit()`. For now, missing edges in the order graph
-//! degrade readability (a forward TS reference) but not correctness — TS
-//! type aliases accept forward references.
+//! The single-segment fallback matters for **correctness**, not just
+//! ordering: [`reachable_from`] walks this same graph to decide *which*
+//! types get emitted. A nested-only type — one never named directly in an
+//! API signature, only reached through a sibling field by bare ident — would
+//! otherwise be dropped from the closure entirely and emitted as an
+//! undefined reference. (Earlier phase-1 revisions resolved only exact pool
+//! keys here, on the assumption that a missing edge merely produced a
+//! forward TS reference; that assumption held for ordering but not for the
+//! reachable set.)
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -168,16 +174,31 @@ impl<'ast> Visit<'ast> for DepCollector<'_> {
                 if canonical.first().map(String::as_str) == Some("crate") {
                     canonical.remove(0);
                 }
-                if let Ok(path) = TypePath::new(canonical)
-                    && self.pool.contains_key(&path)
-                {
-                    self.deps.insert(path);
+                if let Ok(path) = TypePath::new(canonical.clone()) {
+                    if self.pool.contains_key(&path) {
+                        self.deps.insert(path);
+                    } else if canonical.len() == 1 {
+                        // Single-segment reference (`BackupManifest`) that
+                        // isn't itself a top-level pool key. The referenced
+                        // type may be defined in a nested module — pool key
+                        // `["schema", "backup", "BackupManifest"]` — and reach
+                        // this field via a `use`. Fall back to terminal-segment
+                        // matching: the same resolution the long-tail *root*
+                        // resolver already uses (`src/clients/mod.rs`).
+                        //
+                        // This edge matters for correctness, not just ordering:
+                        // `reachable_from` walks this same graph to decide
+                        // *which* types get emitted. A missing edge to a
+                        // nested-only type (one never named directly in an API
+                        // signature, only reached through a sibling field) drops
+                        // it from the closure entirely, so it's referenced in
+                        // the emitted output but never declared.
+                        let ident = canonical[0].as_str();
+                        if let Some(matched) = self.pool.keys().find(|p| p.terminal() == ident).cloned() {
+                            self.deps.insert(matched);
+                        }
+                    }
                 }
-                // Also try the un-prefixed form for single-segment idents
-                // — covers `use crate::models::Workout` then ref'd as
-                // `Workout`. If the pool has `["Workout"]` it's already
-                // matched; if pool has `["models", "Workout"]` we miss
-                // this edge, see module docs.
             }
         }
         // Recurse into generic args so `Vec<Workout>` records the
@@ -261,6 +282,37 @@ mod tests {
         assert!(graph.get(&tp(&["Foo"])).unwrap().contains(&tp(&["models", "Workout"])));
     }
 
+    #[test]
+    fn single_segment_ref_resolves_to_nested_module_key() {
+        // `RestoreCandidate` references `BackupManifest` by bare ident (the
+        // type is `use`d, not written with a module path), but the pool keys
+        // `BackupManifest` under its defining module. The exact-key lookup
+        // (`["BackupManifest"]`) misses; the terminal-segment fallback finds
+        // `["schema", "backup", "BackupManifest"]`.
+        let pool = pool_from(vec![
+            (tp(&["schema", "backup", "BackupManifest"]), "pub struct BackupManifest { pub version: u32 }"),
+            (
+                tp(&["schema", "backup", "RestoreCandidate"]),
+                "pub struct RestoreCandidate { pub manifest: Option<BackupManifest> }",
+            ),
+        ]);
+        let graph = dependency_graph(&pool);
+        let deps = graph.get(&tp(&["schema", "backup", "RestoreCandidate"])).expect("RestoreCandidate edges");
+        assert!(
+            deps.contains(&tp(&["schema", "backup", "BackupManifest"])),
+            "expected a terminal-segment-matched edge to the nested BackupManifest key, got {deps:?}"
+        );
+    }
+
+    #[test]
+    fn single_segment_ref_with_no_terminal_match_creates_no_edge() {
+        // A bare ident that matches no pool key's terminal segment must not
+        // fabricate an edge — `MysteryType` isn't in the pool at all.
+        let pool = pool_from(vec![(tp(&["Foo"]), "pub struct Foo { pub x: MysteryType }")]);
+        let graph = dependency_graph(&pool);
+        assert!(graph.get(&tp(&["Foo"])).unwrap().is_empty());
+    }
+
     // ── reachable_from ───────────────────────────────────────────────────
 
     #[test]
@@ -277,6 +329,29 @@ mod tests {
         assert!(reach.contains(&tp(&["B"])));
         assert!(reach.contains(&tp(&["C"])));
         assert!(!reach.contains(&tp(&["Unrelated"])));
+    }
+
+    #[test]
+    fn nested_only_type_is_reachable_from_root_via_terminal_match() {
+        // Regression guard: the root (`RestoreCandidate`) reaches a
+        // nested-only type (`BackupManifest`) solely through a bare-ident
+        // field reference. Before the single-segment terminal-segment
+        // fallback, the missing graph edge dropped `BackupManifest` from the
+        // reachable set — so it was referenced in the emitted TS but never
+        // declared (a `TS2304: Cannot find name` at the consumer).
+        let pool = pool_from(vec![
+            (tp(&["schema", "backup", "BackupManifest"]), "pub struct BackupManifest { pub version: u32 }"),
+            (
+                tp(&["schema", "backup", "RestoreCandidate"]),
+                "pub struct RestoreCandidate { pub manifest: Option<BackupManifest> }",
+            ),
+        ]);
+        let graph = dependency_graph(&pool);
+        let reach = reachable_from(&[tp(&["schema", "backup", "RestoreCandidate"])], &graph);
+        assert!(
+            reach.contains(&tp(&["schema", "backup", "BackupManifest"])),
+            "BackupManifest must be reachable from RestoreCandidate so it gets emitted"
+        );
     }
 
     // ── topo_order ───────────────────────────────────────────────────────
