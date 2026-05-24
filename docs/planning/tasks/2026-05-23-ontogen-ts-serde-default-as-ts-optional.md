@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: open/ready
+status: closed/done
 created: '2026-05-23'
 impact: medium
 complexity: medium
@@ -11,6 +11,13 @@ tags:
 - serde-shape
 related: []
 autonomy: supervised
+last_reviewed: '2026-05-24'
+completion_note: |
+  Shipped via #75 (merge 5001844, 2026-05-24). PR was opened on
+  feat/ontogen-ts-serde-default-optional rather than the
+  task/<basename> convention, so /sdlc:task-close-out's auto-detect
+  didn't catch it during /sdlc:orchestrate tick #1 — closed out
+  manually here.
 ---
 # ontogen-ts: render fields with #[serde(default)] as TS-optional (?) to match the wire contract
 
