@@ -163,27 +163,47 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
             imports.merge(sibling_imports);
         }
 
-        // 2. Resolve each long-tail name to a TypePath. Try a single-
-        //    segment match first (matches items defined in src/lib.rs), then
-        //    a terminal-segment match for items in nested modules — but only
-        //    when that terminal match is unambiguous. Two pool entries
-        //    sharing a terminal (`a::Manifest` and `b::Manifest`) make the
-        //    bare name ambiguous; we error rather than silently pick one.
+        // 2. Resolve each long-tail name to a TypePath via ontogen-ts's
+        //    import-aware resolver. A bare name (`VaultConfig`) is resolved
+        //    through the `use` table of the module that referenced it —
+        //    following re-export chains — so it lands on the type the source
+        //    actually meant, even when two crates define the same name. The
+        //    resolver only reports `Ambiguous` when nothing disambiguates; we
+        //    error in that case rather than guess.
+        //
+        //    To resolve through the right `use` table we need each referenced
+        //    name's *referencing module*. For API-surface names that's the API
+        //    file's module path relative to the scanned `src/` (e.g.
+        //    `src/api/v1/vault.rs` → `api::v1::vault`). Names with no API
+        //    referencing site (e.g. schema entity-field types) resolve with no
+        //    module hint — same-module + unique-terminal, which suffices for
+        //    those.
+        let api_prefix: Vec<String> = config
+            .api_dir
+            .canonicalize()
+            .ok()
+            .zip(src_dir.canonicalize().ok())
+            .and_then(|(api, src)| api.strip_prefix(&src).ok().map(|rel| rel.to_path_buf()))
+            .map(|rel| rel.components().filter_map(|c| c.as_os_str().to_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        let mut name_module: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for m in &modules {
+            let mut module_path = api_prefix.clone();
+            module_path.push(m.name.clone());
+            for name in generators::ts_bindings::module_referenced_ts_types(m, config) {
+                name_module.entry(name).or_insert_with(|| module_path.clone());
+            }
+        }
+
         let mut roots: Vec<ontogen_ts::TypePath> = Vec::with_capacity(long_tail.len());
         let mut missing: Vec<String> = Vec::new();
         let mut ambiguous: Vec<(String, Vec<ontogen_ts::TypePath>)> = Vec::new();
         for name in &long_tail {
-            let bare = ontogen_ts::TypePath::new(vec![name.clone()]).expect("long_tail names are non-empty idents");
-            if pool.contains_key(&bare) {
-                roots.push(bare);
-                continue;
-            }
-            let matches: Vec<ontogen_ts::TypePath> =
-                pool.keys().filter(|p| p.terminal() == name.as_str()).cloned().collect();
-            match matches.as_slice() {
-                [only] => roots.push(only.clone()),
-                [] => missing.push(name.clone()),
-                _ => ambiguous.push((name.clone(), matches)),
+            let module: &[String] = name_module.get(name).map_or(&[], Vec::as_slice);
+            match ontogen_ts::resolve_reference(std::slice::from_ref(name), module, &pool, &imports) {
+                ontogen_ts::Resolution::Resolved(key) => roots.push(key),
+                ontogen_ts::Resolution::NotInPool => missing.push(name.clone()),
+                ontogen_ts::Resolution::Ambiguous(candidates) => ambiguous.push((name.clone(), candidates)),
             }
         }
         if !missing.is_empty() {
