@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: open/ready
+status: in-progress
 created: '2026-05-24'
 impact: medium
 complexity: medium
@@ -12,6 +12,8 @@ tags:
 - pumice-follow-up
 related: []
 autonomy: supervised
+readiness_verified_at: '2026-05-24T17:17:51Z'
+last_reviewed: '2026-05-24'
 ---
 # ontogen: reverse the zero-user-param classifier default from CustomGet to CustomPost, opt-in to GET via known-read prefixes
 
