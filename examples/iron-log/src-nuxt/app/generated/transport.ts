@@ -42,7 +42,7 @@ export interface Transport {
   workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet>
   workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet>
   workoutSetDelete(id: string): Promise<null>
-  statWorkout(): Promise<WorkoutStats>
+  statGetWorkout(): Promise<WorkoutStats>
 }
 
 // ── HTTP Helpers ──
@@ -176,7 +176,7 @@ export function createHttpTransport(): Transport {
       await httpDelete(`/workout-sets/${encodeURIComponent(id)}`)
       return null
     },
-    async statWorkout(): Promise<WorkoutStats> {
+    async statGetWorkout(): Promise<WorkoutStats> {
       return httpGet('/stats/workout')
     },
   }
@@ -250,8 +250,8 @@ export function createIpcTransport(): Transport {
       await invoke('workout_set_delete', { id })
       return null
     },
-    async statWorkout(): Promise<WorkoutStats> {
-      return invoke('stat_workout')
+    async statGetWorkout(): Promise<WorkoutStats> {
+      return invoke('stat_get_workout')
     },
   }
 }
