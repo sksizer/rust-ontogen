@@ -37,7 +37,7 @@ export type ThemePreference = "light" | "dark" | "system";
 | Location | Role today |
 |---|---|
 | `crates/ontogen-ts/src/` | The emitter that renders `syn::Variant` and `syn::Lit` into TS literals. Likely a small `render_string_literal` helper or inline `format!` call producing `'...'`. |
-| `crates/ontogen-ts/src/lib.rs::EmitConfig` | Carries config knobs (`external_types`, `bigint_behavior`, `case_default`, `strict_unsupported`). No `quote_style` field today. |
+| `crates/ontogen-ts/src/lib.rs#EmitConfig` | Carries config knobs (`external_types`, `bigint_behavior`, `case_default`, `strict_unsupported`). No `quote_style` field today. |
 | `crates/ontogen-ts/tests/` | Existing fixtures and golden-file tests pin the single-quoted output as the canonical shape. Reversing or making this configurable will touch every fixture that checks string-literal output. |
 
 ## Proposed
