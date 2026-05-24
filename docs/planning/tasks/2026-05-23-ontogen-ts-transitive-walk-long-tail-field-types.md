@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: planning/draft
+status: open/ready
 created: '2026-05-23'
 impact: medium
 complexity: medium
