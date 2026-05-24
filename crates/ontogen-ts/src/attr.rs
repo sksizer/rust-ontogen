@@ -1,12 +1,12 @@
 //! Serde-attribute extraction on `syn::Attribute` lists.
 //!
-//! Phase-1 supports the rename family (`rename`, `rename_all`, `skip`) and
-//! rejects shape-changing attrs (`tag`, `content`, `untagged`, `flatten`) plus
+//! Phase-1 supports the rename family (`rename`, `rename_all`, `skip`) plus
+//! field-level `default` (which maps to a TS-optional `?`), and rejects
+//! shape-changing attrs (`tag`, `content`, `untagged`, `flatten`) plus
 //! split-rename (`rename(serialize = "...", deserialize = "...")`) with an
 //! [`EmitError::UnsupportedSerdeAttr`] carrying a hint at the symmetric form
 //! or `#[ontogen::ts_opaque]`. Other serde attrs that don't change TS shape
-//! (`borrow`, `default`, `bound`, `with`, `serialize_with`, etc.) are silently
-//! ignored.
+//! (`borrow`, `bound`, `with`, `serialize_with`, etc.) are silently ignored.
 //!
 //! Parsing uses [`syn::Attribute::parse_nested_meta`] — the same primitive
 //! `serde_derive`'s own parser uses — so the exact syntax we accept matches
@@ -34,6 +34,11 @@ pub(crate) struct FieldAttrs {
     /// the three drops the field from TS emission since we can't represent a
     /// field that's serialized but not deserialized as a single TS type).
     pub skip: bool,
+    /// `#[serde(default)]` or `#[serde(default = "path::to::fn")]`. The
+    /// deserializer substitutes a default when the field is absent, so the
+    /// wire contract treats the field as optional — the emitter renders it as
+    /// a TS-optional `field?: T`.
+    pub default: bool,
 }
 
 /// Attributes on an enum variant.
@@ -195,6 +200,10 @@ pub(crate) fn extract_container_attrs(
                     ),
                 }),
                 MetaKind::Skip => Ok(()), // ignore at container level
+                // Container-level `#[serde(default)]` is out of scope (it would
+                // make every field optional); only field-level default maps to
+                // a TS `?`. Ignore here.
+                MetaKind::Default => Ok(()),
                 MetaKind::Unknown => Ok(()),
             }
         })?;
@@ -218,6 +227,10 @@ pub(crate) fn extract_field_attrs(attrs: &[syn::Attribute], referenced_by: &Type
                 MetaKind::RenameAllLit(_) => Ok(()), // not meaningful on a field
                 MetaKind::Skip => {
                     out.skip = true;
+                    Ok(())
+                }
+                MetaKind::Default => {
+                    out.default = true;
                     Ok(())
                 }
                 MetaKind::SplitRename => Err(EmitError::UnsupportedSerdeAttr {
@@ -259,9 +272,11 @@ pub(crate) fn extract_variant_attrs(
                            #[serde(rename = \"...\")]"
                     .to_string(),
             }),
-            MetaKind::RenameAllLit(_) | MetaKind::SplitRenameAll | MetaKind::RejectedShape(_) | MetaKind::Unknown => {
-                Ok(())
-            }
+            MetaKind::RenameAllLit(_)
+            | MetaKind::SplitRenameAll
+            | MetaKind::RejectedShape(_)
+            | MetaKind::Default
+            | MetaKind::Unknown => Ok(()),
         })?;
     }
     Ok(out)
@@ -281,6 +296,8 @@ enum MetaKind {
     RejectedShape(String),
     /// `skip`, `skip_serializing`, `skip_deserializing` — fold all three.
     Skip,
+    /// `default` or `default = "path::to::fn"` — field is optional on the wire.
+    Default,
     /// Anything we don't recognize is silently ignored.
     Unknown,
 }
@@ -350,6 +367,17 @@ where
             }
             "skip" | "skip_serializing" | "skip_deserializing" => {
                 callbacks.push(MetaKind::Skip);
+                Ok(())
+            }
+            "default" => {
+                // Two shapes: bare `default` (no value) or the path form
+                // `default = "module::fn"`. Both mean the same thing for TS
+                // emission — the field may be absent on the wire — so consume
+                // the value if present and classify both as `Default`.
+                if let Ok(value) = meta.value() {
+                    let _: syn::LitStr = value.parse().map_err(|_| meta.error("expected string literal"))?;
+                }
+                callbacks.push(MetaKind::Default);
                 Ok(())
             }
             other if REJECTED_SHAPE_ATTRS.contains(&other) => {
@@ -606,8 +634,8 @@ mod tests {
     }
 
     #[test]
-    fn field_unrelated_serde_attrs_ignored() {
-        // `default` doesn't affect TS shape — ignore silently.
+    fn field_default_bare_sets_flag() {
+        // `#[serde(default)]` marks the field optional on the wire.
         let attrs = first_field_attrs(
             r#"
             struct Foo {
@@ -617,8 +645,51 @@ mod tests {
             "#,
         );
         let out = extract_field_attrs(&attrs, &tp("Foo")).unwrap();
+        assert!(out.default, "bare #[serde(default)] should set the default flag");
         assert!(out.rename.is_none());
         assert!(!out.skip);
+    }
+
+    #[test]
+    fn field_default_path_form_sets_flag() {
+        // `#[serde(default = "path")]` means the same thing for TS emission.
+        let attrs = first_field_attrs(
+            r#"
+            struct Foo {
+                #[serde(default = "defaults::a")]
+                pub a: u32,
+            }
+            "#,
+        );
+        let out = extract_field_attrs(&attrs, &tp("Foo")).unwrap();
+        assert!(out.default, "path-form #[serde(default = \"...\")] should set the default flag");
+    }
+
+    #[test]
+    fn field_without_default_leaves_flag_unset() {
+        let attrs = first_field_attrs(
+            r#"
+            struct Foo {
+                pub a: u32,
+            }
+            "#,
+        );
+        let out = extract_field_attrs(&attrs, &tp("Foo")).unwrap();
+        assert!(!out.default);
+    }
+
+    #[test]
+    fn container_default_is_ignored() {
+        // Container-level `#[serde(default)]` is out of scope — it doesn't make
+        // every field individually optional in our emission.
+        let attrs = struct_attrs(
+            r#"
+            #[serde(default)]
+            struct Foo { a: u32 }
+            "#,
+        );
+        // Parses without error; no field-level effect to assert here.
+        extract_container_attrs(&attrs, &tp("Foo")).unwrap();
     }
 
     // ── Variant: rename ───────────────────────────────────────────────────
