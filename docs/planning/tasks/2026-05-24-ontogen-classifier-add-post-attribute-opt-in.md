@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: open/ready
+status: in-progress
 created: '2026-05-24'
 impact: medium
 complexity: small
@@ -12,6 +12,8 @@ tags:
 - pumice-follow-up
 related: []
 autonomy: supervised
+readiness_verified_at: '2026-05-24T15:36:32Z'
+last_reviewed: '2026-05-24'
 ---
 # ontogen-macros: add #[ontogen::post] to force POST classification on zero-user-param mutating handlers
 
