@@ -4,21 +4,24 @@ use ontogen_core::ir::OpKind;
 use ontogen_core::naming::pluralize;
 use syn::{PathArguments, Type};
 
-use crate::servers::parse::{ApiFn, Param};
+use crate::servers::parse::{ApiFn, ForcedMethod, Param};
 
 /// Classify a function into an operation kind.
 ///
-/// Source-side `#[ontogen::post]` short-circuits the heuristic and returns
-/// `OpKind::CustomPost` unconditionally. The escape hatch lets consumers
-/// force POST routing on action-verb functions whose zero-user-param shape
-/// would otherwise route as GET (e.g. `pause(state)`, `reset_all(state)`).
-/// No-op for any function without the attribute — the default classifier
-/// behaviour is unchanged.
+/// Source-side `#[ontogen::http::*]` attributes short-circuit the heuristic
+/// and return the forced classification unconditionally. Today the only
+/// recognized override is `#[ontogen::http::post]`
+/// (`ApiFn::force_method == Some(ForcedMethod::Post)`), which forces
+/// `OpKind::CustomPost`. The escape hatch lets consumers force POST routing
+/// on action-verb functions whose zero-user-param shape would otherwise
+/// route as GET (e.g. `pause(state)`, `reset_all(state)`).
+/// No-op for any function without an HTTP-method attribute — the default
+/// classifier behaviour is unchanged.
 pub fn classify_op(func: &ApiFn) -> OpKind {
-    if func.force_post {
-        return OpKind::CustomPost;
+    match func.force_method {
+        Some(ForcedMethod::Post) => OpKind::CustomPost,
+        None => classify_by_name_and_params(&func.name, &func.params),
     }
-    classify_by_name_and_params(&func.name, &func.params)
 }
 
 /// Classify a function by name and parameters.

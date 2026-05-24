@@ -58,11 +58,18 @@ pub fn stateless(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Attribute macro that forces an annotated `pub fn` to classify as
 /// `OpKind::CustomPost`, overriding the auto-classifier.
 ///
+/// Canonical user-facing path is `#[ontogen::http::post]` — the `http`
+/// namespace exists in the consumer-side `ontogen` crate (which
+/// re-exports `pub mod http { pub use ontogen_macros::post; }`) to
+/// separate HTTP-method-shape attributes from routing-shape-agnostic
+/// markers (`stateless`, `rename`, `skip`).
+///
 /// The attribute itself expands to a no-op pass-through of the annotated
 /// item; the ontogen parser (`servers::parse`) reads the attribute via `syn`
-/// during build-time scanning and stamps a `force_post` flag on the resulting
-/// `ApiFn`. The classifier consults that flag before running its heuristic
-/// and returns `OpKind::CustomPost` unconditionally when set.
+/// during build-time scanning and stamps
+/// `ApiFn::force_method = Some(ForcedMethod::Post)`. The classifier
+/// consults that field before running its heuristic and returns
+/// `OpKind::CustomPost` unconditionally when set.
 ///
 /// Use this on action-verb functions whose zero-user-param shape would
 /// otherwise route as GET — e.g. `pause(state)`, `resume(state)`,
@@ -72,7 +79,7 @@ pub fn stateless(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Usage:
 /// ```ignore
-/// use ontogen::post;
+/// use ontogen::http::post;
 ///
 /// // Without the attribute, `pause(state)` would emit as `get(...)`
 /// // because it has zero user-input params after the state strip.
@@ -81,6 +88,20 @@ pub fn stateless(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     // ...
 /// }
 /// ```
+///
+/// Or with the fully-qualified path inline (no `use` needed):
+/// ```ignore
+/// #[ontogen::http::post]
+/// pub async fn pause(state: &AppState) -> Result<(), AppError> { /* ... */ }
+/// ```
+///
+/// Note: proc-macros must be defined at the crate root (Rust limitation),
+/// so this function lives at `ontogen_macros::post`. The `http::*`
+/// namespace is achieved via the consumer-side re-export in
+/// `ontogen::http::post`. The parser matches on the final path segment,
+/// so `#[ontogen::http::post]`, `#[ontogen_macros::post]`, and the bare
+/// `#[post]` (after a `use`) all resolve to the same `ForcedMethod::Post`
+/// classification.
 ///
 /// Without this marker, the existing auto-classifier applies (zero-user-
 /// param fns route as `CustomGet`, named-CRUD operations route by name,

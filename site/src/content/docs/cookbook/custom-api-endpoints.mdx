@@ -139,7 +139,7 @@ For custom functions, the module name becomes part of the route path. The functi
 <Aside type="tip">
 **`get_*` with a body.** A function named `get_filtered_sessions(store, filter: &ExportFilterRequest)` reads as a "get" semantically, but the filter is too complex to fit in a URL. Classification handles this automatically: because `ExportFilterRequest` is a custom struct, the function emits a `POST /api/{module}/filtered-sessions` route with the filter as the JSON body. The HTTP method is `POST` but the operation remains read-only on the IPC and MCP sides (those transports don't distinguish GET from POST).
 
-If you need to force a method regardless of param shape, file an issue — the source-side attribute (`#[ontogen::post]` / `#[ontogen::get]`) is on the roadmap.
+If you need to force a method regardless of param shape, use the source-side `#[ontogen::http::post]` attribute (see the "Force POST classification" section below). A symmetric `#[ontogen::http::get]` is anticipated but not yet shipped.
 </Aside>
 
 ## Organizing custom endpoints
@@ -248,12 +248,12 @@ pub fn copy(text: &str) -> Result<(), AppError> {
 
 See [Stateless utility functions](/guides/api-layer/#stateless-utility-functions-ontogenstateless) for the full behaviour.
 
-**Force POST classification with `#[ontogen::post]`:**
+**Force POST classification with `#[ontogen::http::post]`:**
 
-The auto-classifier routes zero-user-param custom functions as `GET` (the empty-params branch in `classify_by_name_and_params` — no body to carry). That heuristic is wrong for action-verb mutating handlers like `pause(state)`, `resume(state)`, or `reset_all(state)` — they mutate state but emit as `GET` because they have no input. Use `#[ontogen::post]` to flip a single handler to `POST` without changing the global default:
+The auto-classifier routes zero-user-param custom functions as `GET` (the empty-params branch in `classify_by_name_and_params` — no body to carry). That heuristic is wrong for action-verb mutating handlers like `pause(state)`, `resume(state)`, or `reset_all(state)` — they mutate state but emit as `GET` because they have no input. Use `#[ontogen::http::post]` to flip a single handler to `POST` without changing the global default:
 
 ```rust
-use ontogen::post;
+use ontogen::http::post;
 
 // Without the attribute, `pause(state)` would emit as `get(...)` because
 // after the state strip it has zero user-input params.
@@ -263,7 +263,9 @@ pub async fn pause(state: &AppState) -> Result<(), AppError> {
 }
 ```
 
-The attribute is purely additive: omit it and the existing classifier behaviour applies (zero-param custom fns → `CustomGet`, named-CRUD by name, body-carrying first params → `CustomPost`, etc.). The macro itself is a no-op; the ontogen parser reads it via `syn` during build-time scanning and short-circuits `classify_op` to return `OpKind::CustomPost`.
+The attribute lives under the `http::*` namespace because the override is specifically HTTP-method-shape; routing-shape-agnostic attributes (`stateless`, `rename`, `skip`) stay at the top of the `ontogen::` namespace. The same attribute parser also accepts the bare `#[post]` form (after a `use ontogen::http::post;`) or any path ending in `::post` — match is on the final path segment.
+
+The attribute is purely additive: omit it and the existing classifier behaviour applies (zero-param custom fns → `CustomGet`, named-CRUD by name, body-carrying first params → `CustomPost`, etc.). The macro itself is a no-op; the ontogen parser reads it via `syn` during build-time scanning and stamps `ApiFn::force_method = Some(ForcedMethod::Post)`, which `classify_op` short-circuits on to return `OpKind::CustomPost`.
 
 Combine freely with `#[ontogen::stateless]` and `#[ontogen(rename = "…")]` — order doesn't matter, the parser inspects each attribute independently.
 

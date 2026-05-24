@@ -44,41 +44,50 @@ The repro: Pumice's `pub async fn pause(state: &PumiceState) -> Result<(), AppEr
 
 ## Proposed
 
-Add a no-op `#[ontogen::post]` proc-macro attribute to `ontogen-macros`. The parser recognizes the attribute on a `pub async fn` and sets a flag on the resulting `ApiFn`. `classify_by_name_and_params` (or its caller) consults the flag BEFORE running the existing heuristic — if present, the classifier returns `OpKind::CustomPost` unconditionally.
+Add a no-op `post` proc-macro attribute to `ontogen-macros`, re-exported through the consumer-side `ontogen` crate as `pub mod http { pub use ontogen_macros::post; }` so the canonical user-facing form is `#[ontogen::http::post]`. The parser recognizes the attribute on a `pub async fn` by final-path-segment match and stamps `force_method: Option<ForcedMethod>` on the resulting `ApiFn`. `classify_op` consults that field BEFORE running the existing heuristic — if `Some(ForcedMethod::Post)`, the classifier returns `OpKind::CustomPost` unconditionally.
 
-End state: Pumice annotates `pause`, `resume`, `reset`, `cancel`, `end`, `skip_break`, `stop`, `backup`, `pick_restore`, `clear_sessions`, `reset_all` with `#[ontogen::post]` and the next codegen emits POST routes. No change for any current consumer that doesn't add the attribute.
+Two architectural choices folded into this rev (over the initial PR #77 implementation):
+
+1. **Enum, not bool.** `force_method: Option<ForcedMethod>` instead of `force_post: bool`. The enum starts with one variant (`Post`) but accommodates the anticipated `#[ontogen::http::get]` follow-up (see the companion `[[2026-05-24-ontogen-classifier-reverse-zero-param-default-to-post]]` task — when the zero-param default flips to POST, any false-positive reads will need an explicit GET opt-in) without changing `ApiFn`'s shape. The migration shape is also future-additive: adding `Get` / `Put` / `Delete` / `Patch` variants is purely additive.
+2. **Namespaced under `http::*`.** The bare `#[ontogen::post]` collapses two unrelated taxonomies: routing-shape-agnostic markers (`stateless`, `rename`, `skip` — these apply regardless of output target) and HTTP-method-shape overrides (this one). Putting HTTP overrides under `http::*` makes the scope explicit and leaves room for non-HTTP output targets (hypothetical gRPC/CLI surfaces) without retro-namespacing the existing flat attributes.
+
+End state: Pumice annotates `pause`, `resume`, `reset`, `cancel`, `end`, `skip_break`, `stop`, `backup`, `pick_restore`, `clear_sessions`, `reset_all` with `#[ontogen::http::post]` and the next codegen emits POST routes. No change for any current consumer that doesn't add the attribute.
 
 ## Approach
 
-1. **Add the proc-macro definition** in `crates/ontogen-macros/src/lib.rs` alongside `#[ontogen::stateless]` and the other existing no-op markers. Same shape: an `#[proc_macro_attribute]` that returns its input unchanged (the macro is a parsing hint, not a real expansion).
-2. **Extend the AST parser** in `src/servers/parse.rs` to recognize the attribute and stamp a per-fn boolean (`force_post: bool` or similar) on the resulting `ApiFn`.
-3. **Thread the flag into the classifier.** In `classify_op` (or wherever the flag is most naturally consulted — call-site at `classify_by_name_and_params` may be cleanest), return `OpKind::CustomPost` early when the flag is true.
-4. **Test fixture.** Add a fixture with a function annotated `#[ontogen::post]` and zero user params; assert the emitted HTTP route uses `post(...)` not `get(...)`.
-5. **Document** the attribute alongside `#[ontogen::stateless]` and the other markers in the parser's attribute table / site docs (typescript-bindings.mdx or the appropriate page).
+1. **Add the proc-macro definition** in `crates/ontogen-macros/src/lib.rs` alongside `#[ontogen::stateless]` and the other existing no-op markers. Same shape: an `#[proc_macro_attribute] pub fn post(...)` that returns its input unchanged (the macro is a parsing hint, not a real expansion). Note: proc-macros in Rust must be defined at the crate root, so the `http::*` namespacing lives in the consumer-side crate's re-export, not inside `ontogen-macros`.
+2. **Re-export under `pub mod http`** in the main `ontogen` crate (`src/lib.rs`): replace `pub use ontogen_macros::post;` at the top level with `pub mod http { pub use ontogen_macros::post; }`. Routing-shape-agnostic attributes (`OntologyEntity`, `ontogen`, `stateless`) stay at the top level.
+3. **Add the `ForcedMethod` enum** to `src/servers/parse.rs` (where `ApiFn` lives). Single variant today: `Post`.
+4. **Extend the AST parser** in `src/servers/parse.rs` with `parse_force_method(func: &syn::ItemFn) -> Option<ForcedMethod>` — matches the final path segment of each attribute. Today returns `Some(ForcedMethod::Post)` when the segment is `post`. Future method overrides extend by adding a match arm per ident.
+5. **Add the field** `force_method: Option<ForcedMethod>` to `ApiFn` and stamp it from the parser's construction site.
+6. **Update `classify_op`** in `src/servers/classify.rs` to match on `func.force_method` — `Some(ForcedMethod::Post)` returns `OpKind::CustomPost` early; `None` falls through to the existing heuristic.
+7. **Tests.** Three unit tests cover the new path: parser-stamps-the-field, end-to-end HTTP-route-emission, and bare `#[post]`-form-still-accepted. Plus the orthogonal `test_force_method_post_overrides_classifier` covering the classifier short-circuit logic directly.
+8. **Document** the attribute under `site/src/content/docs/cookbook/custom-api-endpoints.mdx`. Cite the canonical `#[ontogen::http::post]` form, the bare-import alternative, and explain the namespace separation rationale.
 
 ## Files to touch
 
 | Location | Kind | Change |
 |---|---|---|
 | `crates/ontogen-macros/src/lib.rs` | modify | add the `#[proc_macro_attribute] pub fn post(...)` no-op macro. |
-| `src/servers/parse.rs` | modify | recognize the attribute, stamp a `force_post` flag on `ApiFn`. |
-| `src/servers/classify.rs` | modify | consult the flag at the entry point of the classifier and return `OpKind::CustomPost` early when set. |
-| `src/servers/types.rs` | modify | add the `force_post: bool` (or equivalent) field to `ApiFn`. |
-| `tests/` | modify | fixture function annotated `#[ontogen::post]` with zero user params; assert POST emission. |
-| `site/src/content/docs/reference/` | modify | document the attribute alongside the existing `#[ontogen::stateless]` reference. |
+| `src/lib.rs` | modify | wrap the re-exported `post` in `pub mod http { pub use ontogen_macros::post; }`; leave routing-shape-agnostic attrs (`OntologyEntity`, `ontogen`, `stateless`) at the top level. |
+| `src/servers/parse.rs` | modify | add `ForcedMethod` enum; add `force_method: Option<ForcedMethod>` field on `ApiFn`; add `parse_force_method()` that matches on final path segment and returns `Some(ForcedMethod::Post)` for `post`. |
+| `src/servers/classify.rs` | modify | match on `func.force_method` at the entry point of `classify_op`; return `OpKind::CustomPost` early for `Some(ForcedMethod::Post)`. |
+| `src/servers/tests.rs` | modify | new tests cover parser-stamps-field, end-to-end HTTP emission, and bare `#[post]` form. Existing fixtures updated to use `force_method: None` (default). |
+| `site/src/content/docs/cookbook/custom-api-endpoints.mdx` | modify | document `#[ontogen::http::post]` (canonical form) and the bare-import variant alongside the namespace-rationale prose. |
 
 ## Acceptance criteria
 
-- [ ] AC-1: Unit/integration test: a function annotated `#[ontogen::post]` emits as `post(...)` in the generated `entity_routes()`, regardless of whether the name or params would otherwise route to GET.
+- [ ] AC-1: Unit/integration test: a function annotated `#[ontogen::http::post]` emits as `post(...)` in the generated `entity_routes()`, regardless of whether the name or params would otherwise route to GET.
 - [ ] AC-2: `cargo build` in `examples/iron-log/src-tauri/` succeeds with byte-identical generated TS/Rust — no behavioral regression on consumers that don't use the attribute.
-- [ ] AC-3: Pumice (sksizer/pumice#225 follow-up): can annotate at least one currently-routing-as-GET mutating handler (e.g. `engine::pause`) with `#[ontogen::post]` and regenerated TS/Rust show the route as POST.
+- [ ] AC-3: Pumice (sksizer/pumice#225 follow-up): can annotate at least one currently-routing-as-GET mutating handler (e.g. `engine::pause`) with `#[ontogen::http::post]` and regenerated TS/Rust show the route as POST.
 - [ ] AC-4: `just full-check` passes on the rust-ontogen branch.
+- [ ] AC-5: The bare `#[post]` form (after `use ontogen::http::post;`) is also accepted — parser matches on final path segment.
 
 ## Out of scope
 
 - **Changing the default classifier behavior** — that lives in `[[2026-05-24-ontogen-classifier-reverse-zero-param-default-to-post]]`. This task is the conservative, additive, never-breaks-anyone fix; the default-reversal is the principled long-term fix and can land independently.
-- **A symmetric `#[ontogen::get]` attribute** — possibly useful but no real-world repro today. File a follow-up if a consumer surfaces a need.
-- **Method-specific attributes** for PUT, DELETE, PATCH — same shape (`#[ontogen::put]` etc.) is plausible but again deferred until motivated. Today named-CRUD (`update`, `delete`) covers most cases.
+- **A symmetric `#[ontogen::http::get]` attribute** — anticipated by the reverse-default task as a likely need (force GET on a function whose name happens to look mutating but actually reads). Trivially added by extending the `ForcedMethod` enum + the `parse_force_method` match. Deferred until a real-world repro motivates the variant.
+- **Method-specific attributes** for PUT, DELETE, PATCH — same shape (`#[ontogen::http::put]` etc.) is plausible. Today named-CRUD (`update`, `delete`) covers most cases; explicit `http::*` overrides for these methods are added when their consumers surface.
 
 ## Dependencies
 
@@ -96,7 +105,7 @@ _Captured by /sdlc:task-work on 2026-05-24. PR: pending._
 
 ### Acceptance criteria coverage
 
-- AC-1: auto — new tests `test_force_post_overrides_classifier`, `test_post_attr_zero_param_classifies_as_custom_post`, `test_post_attr_bare_path_form_accepted`, `test_post_attr_emits_post_http_route` in `src/servers/tests.rs` all green under `cargo test`.
+- AC-1: auto — new tests `test_force_method_post_overrides_classifier`, `test_post_attr_zero_param_classifies_as_custom_post`, `test_post_attr_bare_path_form_accepted`, `test_post_attr_emits_post_http_route` in `src/servers/tests.rs` all green under `cargo test`.
 - AC-2: agent-manual — `cargo build` in `examples/iron-log/src-tauri/` succeeded. No consumer code uses the attribute so the generated transport is byte-identical for that example.
 - AC-3: deferred-user — verification lives in the Pumice consumer repo (sksizer/pumice#225 follow-up). Once this PR lands and Pumice bumps the ontogen dependency, the user can annotate `engine::pause` (and the 10 sibling action verbs listed in the spec) with `#[ontogen::post]` and confirm the regenerated `transport/http/generated.rs` shows `post(engine_pause)` instead of `get(engine_pause)`.
 - AC-4: auto — `just full-check` passes (fmt-check, clippy with `--deny warnings`, full test suite, 220 unit tests + 3 integration tests all green). Baseline-gated quality-check runner reports `OK 1/1`.

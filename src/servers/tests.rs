@@ -13,7 +13,7 @@ use crate::clients::ClientGenerator;
 use crate::clients::config::Config as ClientsInternalConfig;
 use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::config::{Config, PrefixParam, RoutePrefix, ServerGenerator};
-use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
+use crate::servers::parse::{ApiFn, ApiModule, EventFn, ForcedMethod, Param};
 use crate::servers::types::{
     NamingConfig, capitalize, collect_ts_import, collect_type_import, event_name, extract_input_type, forward_arg_expr,
     inner_type, normalize_spaces, param_to_owned_type, rust_type_to_ts, snake_to_camel, strip_ref, to_pascal_case,
@@ -125,7 +125,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type_ast: ty_ast(&list_ret),
                 first_param_is_store: is_store_based,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
             ApiFn {
@@ -137,7 +137,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
             ApiFn {
@@ -149,7 +149,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
             ApiFn {
@@ -161,7 +161,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
             ApiFn {
@@ -173,7 +173,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type_ast: ty_ast("()"),
                 first_param_is_store: is_store_based,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
         ],
@@ -196,7 +196,7 @@ fn make_custom_module() -> ApiModule {
                 return_type_ast: ty_ast("GraphSnapshot"),
                 first_param_is_store: false,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
             ApiFn {
@@ -208,7 +208,7 @@ fn make_custom_module() -> ApiModule {
                 return_type_ast: ty_ast("NodeDetail"),
                 first_param_is_store: false,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
         ],
@@ -247,7 +247,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("()"),
                 first_param_is_store: false,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
             // Junction remove: remove_skill(destination_id, skill_id)
@@ -260,7 +260,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("()"),
                 first_param_is_store: false,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
             // Junction list (children-of-parent): list_skills(destination_id)
@@ -273,7 +273,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("Vec<Skill>"),
                 first_param_is_store: false,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
             // Junction list (reverse): list_destinations(skill_id)
@@ -286,7 +286,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("Vec<DestinationSkill>"),
                 first_param_is_store: false,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
             // Custom post: publish(destination_id, skill_id, version)
@@ -299,7 +299,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("PublishResult"),
                 first_param_is_store: false,
                 is_stateless: false,
-                force_post: false,
+                force_method: None,
                 command_override: None,
             },
         ],
@@ -719,7 +719,7 @@ fn test_classify_custom_operations() {
         return_type_ast: ty_ast("()"),
         first_param_is_store: false,
         is_stateless: false,
-        force_post: false,
+        force_method: None,
         command_override: None,
     };
     assert!(matches!(classify_op(&post_fn), OpKind::CustomPost));
@@ -736,7 +736,7 @@ fn test_classify_no_params_is_get() {
         return_type_ast: ty_ast("Vec<String>"),
         first_param_is_store: false,
         is_stateless: false,
-        force_post: false,
+        force_method: None,
         command_override: None,
     };
     assert!(matches!(classify_op(&no_param_fn), OpKind::CustomGet));
@@ -784,7 +784,7 @@ fn test_of016_classify_get_with_first_param_ast() {
             return_type_ast: ty_ast("String"),
             first_param_is_store: false,
             is_stateless: false,
-            force_post: false,
+            force_method: None,
             command_override: None,
         }
     }
@@ -831,25 +831,26 @@ fn test_of016_classify_get_with_first_param_ast() {
         return_type_ast: ty_ast("Summary"),
         first_param_is_store: false,
         is_stateless: false,
-        force_post: false,
+        force_method: None,
         command_override: None,
     };
     assert!(matches!(classify_op(&zero), OpKind::CustomGet));
 }
 
-/// `force_post: true` short-circuits the classifier and returns
-/// `OpKind::CustomPost` regardless of name/param shape.
+/// `force_method: Some(ForcedMethod::Post)` short-circuits the classifier
+/// and returns `OpKind::CustomPost` regardless of name/param shape.
 ///
 /// Covers the user-driven escape hatch wired up by the
-/// `#[ontogen::post]` attribute: zero-user-param mutating verbs
+/// `#[ontogen::http::post]` attribute: zero-user-param mutating verbs
 /// (`pause(state)`, `reset_all(state)`, …) would otherwise route as
 /// `CustomGet` because they hit the empty-params branch of the
 /// auto-classifier. With the attribute, the parser stamps
-/// `force_post = true` on the `ApiFn` and `classify_op` returns
-/// `CustomPost` early, so the HTTP generator emits a `post(...)` route.
+/// `force_method = Some(ForcedMethod::Post)` on the `ApiFn` and
+/// `classify_op` returns `CustomPost` early, so the HTTP generator emits a
+/// `post(...)` route.
 #[test]
-fn test_force_post_overrides_classifier() {
-    fn make_fn(name: &str, params: Vec<Param>, force_post: bool) -> ApiFn {
+fn test_force_method_post_overrides_classifier() {
+    fn make_fn(name: &str, params: Vec<Param>, force_method: Option<ForcedMethod>) -> ApiFn {
         ApiFn {
             name: name.to_string(),
             is_async: true,
@@ -859,27 +860,27 @@ fn test_force_post_overrides_classifier() {
             return_type_ast: ty_ast("()"),
             first_param_is_store: false,
             is_stateless: true,
-            force_post,
+            force_method,
             command_override: None,
         }
     }
 
-    // Zero-param: default classifier says CustomGet; force_post flips to CustomPost.
-    let pause_unforced = make_fn("pause", vec![], false);
+    // Zero-param: default classifier says CustomGet; ForcedMethod::Post flips to CustomPost.
+    let pause_unforced = make_fn("pause", vec![], None);
     assert!(matches!(classify_op(&pause_unforced), OpKind::CustomGet));
-    let pause_forced = make_fn("pause", vec![], true);
+    let pause_forced = make_fn("pause", vec![], Some(ForcedMethod::Post));
     assert!(matches!(classify_op(&pause_forced), OpKind::CustomPost));
 
-    // The flag overrides the named-CRUD branch too: `list` would normally
-    // route as OpKind::List, but force_post short-circuits before name
-    // matching runs.
-    let list_forced = make_fn("list", vec![], true);
+    // The override beats the named-CRUD branch too: `list` would normally
+    // route as OpKind::List, but ForcedMethod::Post short-circuits before
+    // name matching runs.
+    let list_forced = make_fn("list", vec![], Some(ForcedMethod::Post));
     assert!(matches!(classify_op(&list_forced), OpKind::CustomPost));
 
     // Unrelated case: function that would already classify as CustomPost
-    // (zero-prefix name with id-like params) — force_post is a no-op
+    // (zero-prefix name with id-like params) — ForcedMethod::Post is a no-op
     // because the result is the same.
-    let switch_forced = make_fn("switch_project", vec![param("path", "&str")], true);
+    let switch_forced = make_fn("switch_project", vec![param("path", "&str")], Some(ForcedMethod::Post));
     assert!(matches!(classify_op(&switch_forced), OpKind::CustomPost));
 
     // `is_read_op` agrees: forcing POST makes the op non-read.
@@ -3325,12 +3326,13 @@ pub fn echo(text: &str) -> Result<String, anyhow::Error> { todo!() }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// parse.rs + generators - #[ontogen::post] (attribute-driven POST opt-in)
+// parse.rs + generators - #[ontogen::http::post] (attribute-driven POST opt-in)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// `#[ontogen::post]` on a zero-user-param stateless fn flips classification
-/// to `OpKind::CustomPost`. The default classifier would route the same fn
-/// as `OpKind::CustomGet` because it has no params to carry a body.
+/// `#[ontogen::http::post]` on a zero-user-param stateless fn flips
+/// classification to `OpKind::CustomPost`. The default classifier would
+/// route the same fn as `OpKind::CustomGet` because it has no params to
+/// carry a body.
 #[test]
 fn test_post_attr_zero_param_classifies_as_custom_post() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3341,7 +3343,7 @@ fn test_post_attr_zero_param_classifies_as_custom_post() {
         "engine.rs",
         r#"
 #[ontogen::stateless]
-#[ontogen::post]
+#[ontogen::http::post]
 pub fn pause() -> Result<(), anyhow::Error> { todo!() }
 
 // Sibling fn without the attribute — should stay CustomGet.
@@ -3355,19 +3357,23 @@ pub fn status() -> Result<String, anyhow::Error> { todo!() }
     let module = scan.modules.iter().find(|m| m.name == "engine").expect("engine module must be parsed");
 
     let pause_fn = module.functions.iter().find(|f| f.name == "pause").expect("pause fn must be present");
-    assert!(pause_fn.force_post, "#[ontogen::post] must stamp force_post=true");
-    assert!(matches!(classify_op(pause_fn), OpKind::CustomPost), "force_post must produce CustomPost");
+    assert!(
+        matches!(pause_fn.force_method, Some(ForcedMethod::Post)),
+        "#[ontogen::http::post] must stamp force_method=Some(ForcedMethod::Post)"
+    );
+    assert!(matches!(classify_op(pause_fn), OpKind::CustomPost), "ForcedMethod::Post must produce CustomPost");
 
     let status_fn = module.functions.iter().find(|f| f.name == "status").unwrap();
-    assert!(!status_fn.force_post, "unmarked fn must keep force_post=false");
+    assert!(status_fn.force_method.is_none(), "unmarked fn must keep force_method=None");
     assert!(
         matches!(classify_op(status_fn), OpKind::CustomGet),
         "unmarked zero-param fn must stay CustomGet (no default change)"
     );
 }
 
-/// The bare `#[post]` path form (after `use ontogen::post`) is also accepted —
-/// parser matches on the final path segment, mirroring `has_stateless_attr`.
+/// The bare `#[post]` path form (after `use ontogen::http::post`) is also
+/// accepted — parser matches on the final path segment, mirroring
+/// `has_stateless_attr`.
 #[test]
 fn test_post_attr_bare_path_form_accepted() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3377,7 +3383,8 @@ fn test_post_attr_bare_path_form_accepted() {
         &api_dir,
         "data.rs",
         r#"
-use ontogen::{post, stateless};
+use ontogen::http::post;
+use ontogen::stateless;
 
 #[stateless]
 #[post]
@@ -3389,13 +3396,17 @@ pub fn backup() -> Result<(), anyhow::Error> { todo!() }
     assert!(scan.skips.is_empty(), "bare #[post] must be accepted: {:?}", scan.skips);
     let module = scan.modules.iter().find(|m| m.name == "data").unwrap();
     let backup_fn = module.functions.iter().find(|f| f.name == "backup").unwrap();
-    assert!(backup_fn.force_post, "bare #[post] must stamp force_post=true");
+    assert!(
+        matches!(backup_fn.force_method, Some(ForcedMethod::Post)),
+        "bare #[post] must stamp force_method=Some(ForcedMethod::Post)"
+    );
     assert!(matches!(classify_op(backup_fn), OpKind::CustomPost));
 }
 
-/// End-to-end HTTP: a `#[ontogen::post]`-annotated zero-param stateless fn
-/// emits a `post(...)` route in `entity_routes()`, not `get(...)`. Without
-/// the attribute the same fn would route as GET (zero-param custom).
+/// End-to-end HTTP: a `#[ontogen::http::post]`-annotated zero-param
+/// stateless fn emits a `post(...)` route in `entity_routes()`, not
+/// `get(...)`. Without the attribute the same fn would route as GET
+/// (zero-param custom).
 #[test]
 fn test_post_attr_emits_post_http_route() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3406,7 +3417,7 @@ fn test_post_attr_emits_post_http_route() {
         "engine.rs",
         r#"
 #[ontogen::stateless]
-#[ontogen::post]
+#[ontogen::http::post]
 pub fn pause() -> Result<(), anyhow::Error> { todo!() }
 
 #[ontogen::stateless]
@@ -3432,7 +3443,7 @@ pub fn status() -> Result<String, anyhow::Error> { todo!() }
     );
     assert!(
         !content.contains("get(engine_pause)"),
-        "pause route must not use get(...) — force_post should win:\n{content}"
+        "pause route must not use get(...) — ForcedMethod::Post should win:\n{content}"
     );
 
     // The `status` sibling stays GET (no attribute) — proves the attribute
@@ -3462,7 +3473,7 @@ fn make_renamed_module(override_value: Option<&str>) -> ApiModule {
             return_type_ast: ty_ast("Vec<HistoryEntry>"),
             first_param_is_store: true,
             is_stateless: false,
-            force_post: false,
+            force_method: None,
             command_override: override_value.map(|s| s.to_string()),
         }],
         events: vec![],
