@@ -89,3 +89,28 @@ End state: Pumice annotates `pause`, `resume`, `reset`, `cancel`, `end`, `skip_b
 - Surfaced by sksizer/pumice#225's inline review comment from sksizer at `src-tauri/src/api/transport/http/generated.rs:590`: "a lot of these should probably be posts since they mutate data not gets. what are the ontogen generation rules in that regard?"
 - The OF-016 task spec (2026-05-14 work, merged via rust-ontogen #b2f882c) explicitly deferred this attribute: "Source-attribute escape hatch (`#[ontogen::post]`) deferred until a real-world repro motivates it." Pumice #225 is the motivating repro.
 - Companion to `[[2026-05-24-ontogen-classifier-reverse-zero-param-default-to-post]]`: this task is the user-driven opt-in; that task changes the default. Either ships alone or both ship together.
+
+## Post-mortem
+
+_Captured by /sdlc:task-work on 2026-05-24. PR: pending._
+
+### Acceptance criteria coverage
+
+- AC-1: auto — new tests `test_force_post_overrides_classifier`, `test_post_attr_zero_param_classifies_as_custom_post`, `test_post_attr_bare_path_form_accepted`, `test_post_attr_emits_post_http_route` in `src/servers/tests.rs` all green under `cargo test`.
+- AC-2: agent-manual — `cargo build` in `examples/iron-log/src-tauri/` succeeded. No consumer code uses the attribute so the generated transport is byte-identical for that example.
+- AC-3: deferred-user — verification lives in the Pumice consumer repo (sksizer/pumice#225 follow-up). Once this PR lands and Pumice bumps the ontogen dependency, the user can annotate `engine::pause` (and the 10 sibling action verbs listed in the spec) with `#[ontogen::post]` and confirm the regenerated `transport/http/generated.rs` shows `post(engine_pause)` instead of `get(engine_pause)`.
+- AC-4: auto — `just full-check` passes (fmt-check, clippy with `--deny warnings`, full test suite, 220 unit tests + 3 integration tests all green). Baseline-gated quality-check runner reports `OK 1/1`.
+
+### What worked
+
+- The existing `has_stateless_attr` helper and `is_stateless` field on `ApiFn` gave a direct template for the new `has_post_attr` / `force_post` path. Symmetric naming and structure kept the diff small.
+- The `write_synthetic_api` test scaffold made end-to-end HTTP route assertion straightforward — the new test scans a synthetic module and inspects emitted route strings directly.
+- Quality-check baseline subtraction worked correctly: zero pre-existing findings on the captured SHA, zero new drift on HEAD.
+
+### Friction and automation gaps
+
+- start_task.py rebase conflicted because the verify-stamp commit and the start-commit both modified the task frontmatter. The conflict was mechanical (just a YAML key union: keep `readiness_verified_at:` from one side plus `last_reviewed:` from the other), but start_task.py exited with code 3 and the operator had to resolve manually. A targeted resolution heuristic in start_task.py — "if the only conflict is in the task file's frontmatter, union the two sides' frontmatter keys and continue" — would close this without operator intervention. The pattern is reproducible: any task that runs ensure-ready before start-commit will hit it.
+- The task spec listed `src/servers/types.rs` as the home for the new `force_post` field on `ApiFn`, but `ApiFn` actually lives in `src/servers/parse.rs` (types.rs holds normalization helpers, not the IR struct). The implementer had to grep to discover this. A pre-implementation step — "for every `Files to touch` row, confirm the cited symbol actually lives in the cited file before committing to the path" — would surface this kind of spec drift during the readiness gate, not during implementation.
+- Adding a new field to `ApiFn` required updating 18 struct-literal call sites across `tests.rs` and `parse.rs`. The Edit tool's `replace_all` worked at the same-indent-level granularity, but three different indent levels (4/8/12-space leads) required three separate Edit calls. A `#[derive(Default)]` on `ApiFn` combined with `..Default::default()` in test literals would make field additions backward-compatible without touching every fixture. This is a Rust idiom recommendation, not a skill change.
+- The 5a→5b conflict-on-rebase failure mode is reproducible enough that the test runner should encode it as a regression: a synthetic task whose verify-stamp lands on the branch, then a start-commit lands on main, then rebase. The skill's resume-detection branch handles the post-failure recovery path; the targeted-resolution patch above would prevent the failure in the first place.
+
