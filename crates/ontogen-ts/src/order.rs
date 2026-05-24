@@ -7,48 +7,83 @@
 //! the cycle's topo level, since TS type aliases accept forward references
 //! freely).
 //!
-//! Edge-extraction strategy (phase 1):
+//! Edge-extraction strategy:
 //!
 //! - For each pool item, recursively walk its fields/variants via
 //!   [`syn::visit::Visit`].
 //! - For each `syn::Type::Path` encountered, drop generic args, strip a
 //!   leading `crate::` segment, and synthesize a candidate [`TypePath`]
 //!   from the remaining segments.
-//! - Match candidates against pool keys. A multi-segment candidate matches
-//!   only on an exact pool key. A single-segment candidate (`BackupManifest`,
-//!   typically brought in via `use`) matches an exact top-level key first,
-//!   then falls back to any pool entry whose terminal segment matches — the
-//!   same resolution the long-tail *root* resolver uses in
-//!   `src/clients/mod.rs`. Anything still unmatched (primitives, external
-//!   types) is ignored here; the per-type emitter handles those at render
-//!   time.
+//! - A multi-segment candidate matches only on an exact pool key.
+//! - A single-segment candidate (`BackupManifest`, typically brought in via
+//!   `use`) is resolved in priority order:
+//!     1. **The referencing module's `use` table.** If a `use` names the
+//!        ident, that import is authoritative — Rust name resolution gives it
+//!        precedence — so we link to exactly that path (and to nothing, if
+//!        the import points outside the pool). This is what disambiguates
+//!        `BackupManifest` when both `a::BackupManifest` and
+//!        `b::BackupManifest` exist: the `use` says which one.
+//!     2. **A same-module sibling** (`module + [ident]`), for types defined
+//!        alongside the referrer with no `use` needed.
+//!     3. **A unique terminal-segment match** across the whole pool, used
+//!        only when exactly one pool key ends in `ident`. With zero or more
+//!        than one candidate we record no edge rather than guess — a wrong
+//!        edge would emit the wrong type's body under the shared TS name.
+//! - Anything still unmatched (primitives, external types) is ignored here;
+//!   the per-type emitter handles those at render time.
 //!
-//! The single-segment fallback matters for **correctness**, not just
-//! ordering: [`reachable_from`] walks this same graph to decide *which*
-//! types get emitted. A nested-only type — one never named directly in an
-//! API signature, only reached through a sibling field by bare ident — would
-//! otherwise be dropped from the closure entirely and emitted as an
-//! undefined reference. (Earlier phase-1 revisions resolved only exact pool
-//! keys here, on the assumption that a missing edge merely produced a
-//! forward TS reference; that assumption held for ordering but not for the
-//! reachable set.)
+//! Single-segment resolution matters for **correctness**, not just ordering:
+//! [`reachable_from`] walks this same graph to decide *which* types get
+//! emitted. A nested-only type — one never named directly in an API
+//! signature, only reached through a sibling field by bare ident — would
+//! otherwise be dropped from the closure entirely and emitted as an undefined
+//! reference. (Earlier revisions resolved only exact pool keys here, on the
+//! assumption that a missing edge merely produced a forward TS reference;
+//! that assumption held for ordering but not for the reachable set.)
+//!
+//! The `use`-aware path requires per-module imports ([`ModuleImports`], from
+//! [`crate::pool::scan_src_dir_with_imports`]). The bare [`dependency_graph`]
+//! entry point passes none and so relies on the same-module and
+//! unique-terminal rules — still safe (it never mislinks), just blind to
+//! cross-module `use` imports; [`dependency_graph_with_imports`] is the
+//! import-aware production entry point.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use syn::visit::{self, Visit};
 
+use crate::resolve::ModuleImports;
 use crate::types::TypePath;
 
-/// Build the dependency graph from a pool. Each node is a pool key; each
-/// edge `a → b` means item `a` references item `b` in its fields/variants.
+/// Build the dependency graph from a pool without per-module import tables.
 ///
-/// The graph is restricted to in-pool edges only: an item that references
-/// an external type (e.g. `chrono::DateTime`) or an unresolved
-/// one-segment ident doesn't get an edge to it.
+/// Single-segment references resolve via same-module and unique-terminal
+/// matching only (see the module docs); cross-module `use` imports aren't
+/// consulted. Production always has imports and goes through
+/// [`dependency_graph_with_imports`]; this no-imports wrapper exists for the
+/// unit tests that build synthetic pools with no `use` context.
+#[cfg(test)]
 pub(crate) fn dependency_graph(pool: &BTreeMap<TypePath, syn::Item>) -> BTreeMap<TypePath, BTreeSet<TypePath>> {
+    dependency_graph_with_imports(pool, &ModuleImports::default())
+}
+
+/// Build the dependency graph from a pool, resolving bare single-segment
+/// references through each referencing module's `use` table (`imports`).
+///
+/// Each node is a pool key; each edge `a → b` means item `a` references item
+/// `b` in its fields/variants. The graph is restricted to in-pool edges
+/// only: a reference to an external type (e.g. `chrono::DateTime`) or an
+/// unresolvable ident doesn't get an edge.
+pub(crate) fn dependency_graph_with_imports(
+    pool: &BTreeMap<TypePath, syn::Item>,
+    imports: &ModuleImports,
+) -> BTreeMap<TypePath, BTreeSet<TypePath>> {
     let mut graph: BTreeMap<TypePath, BTreeSet<TypePath>> = BTreeMap::new();
     for (key, item) in pool {
-        let mut visitor = DepCollector::new(pool);
+        // The referencing item's module is its pool key with the terminal
+        // (the type's own ident) dropped.
+        let module = &key.segments()[..key.segments().len() - 1];
+        let mut visitor = DepCollector::new(pool, module, imports);
         visitor.visit_item(item);
         graph.insert(key.clone(), visitor.deps);
     }
@@ -152,15 +187,133 @@ pub(crate) fn topo_order(
     output
 }
 
+/// Re-export chains can in principle loop (`a` re-exports from `b`, `b` from
+/// `a`). Bound the `use`-chain walk so a pathological cycle terminates.
+const MAX_IMPORT_DEPTH: u8 = 16;
+
 /// `syn::visit::Visit` that records every in-pool type referenced by an item.
 struct DepCollector<'a> {
     pool: &'a BTreeMap<TypePath, syn::Item>,
+    /// Canonical path of the module the referencing item lives in (its pool
+    /// key with the terminal dropped). Roots the `use`-table and same-module
+    /// lookups for bare single-segment references.
+    module: &'a [String],
+    /// Per-module `use` tables for the whole scanned tree. Empty when the
+    /// caller went through the bare [`dependency_graph`] entry point.
+    imports: &'a ModuleImports,
     deps: BTreeSet<TypePath>,
 }
 
 impl<'a> DepCollector<'a> {
-    fn new(pool: &'a BTreeMap<TypePath, syn::Item>) -> Self {
-        Self { pool, deps: BTreeSet::new() }
+    fn new(pool: &'a BTreeMap<TypePath, syn::Item>, module: &'a [String], imports: &'a ModuleImports) -> Self {
+        Self { pool, module, imports, deps: BTreeSet::new() }
+    }
+
+    /// Resolve a bare single-segment reference (`BackupManifest`) to a pool
+    /// key, recording an edge if one is found. Resolution order matches Rust
+    /// name resolution closely enough for wire types: an explicit `use`
+    /// wins outright, then a same-module sibling, then a unique
+    /// terminal-segment match.
+    fn resolve_single_segment(&mut self, ident: &str) {
+        // 1. The referencing module's `use` table (authoritative).
+        match self.resolve_import_chain(self.module, ident, 0) {
+            // `use` names the ident and it lands on a pool key.
+            Some(Some(key)) => {
+                self.deps.insert(key);
+                return;
+            }
+            // `use` names the ident but it resolves outside the pool (an
+            // external crate, or an unresolvable/ambiguous re-export). The
+            // import is authoritative — Rust would never look past it — so we
+            // do NOT fall through to same-module or terminal guessing.
+            Some(None) => return,
+            // No `use` for this ident here; keep going.
+            None => {}
+        }
+
+        // 2. A sibling defined in the same module, referenced without a `use`.
+        let mut same_module = self.module.to_vec();
+        same_module.push(ident.to_string());
+        if let Ok(path) = TypePath::new(same_module)
+            && self.pool.contains_key(&path)
+        {
+            self.deps.insert(path);
+            return;
+        }
+
+        // 3. A unique terminal-segment match across the whole pool — the
+        //    nested-only-type case with no `use` recorded (e.g. the bare
+        //    [`dependency_graph`] path, or a glob import). Only when exactly
+        //    one pool key ends in `ident`: with zero we leave it to the
+        //    emitter (external type), and with more than one we refuse to
+        //    guess rather than mislink to the wrong same-terminal type.
+        if let Some(key) = self.unique_terminal(ident) {
+            self.deps.insert(key);
+        }
+    }
+
+    /// Resolve `ident` through `module`'s `use` table, following re-export
+    /// chains across modules (`use crate::facade::Foo` where `facade` does
+    /// `pub use crate::core::Foo`) until the trail lands on a pool key.
+    ///
+    /// Returns:
+    /// - `None` — `module` has no `use` bringing `ident` into scope.
+    /// - `Some(None)` — `ident` IS imported, but the trail leads outside the
+    ///   pool (external crate, or an ambiguous/unresolvable re-export).
+    /// - `Some(Some(key))` — `ident` is imported and resolves to pool `key`.
+    fn resolve_import_chain(&self, module: &[String], ident: &str, depth: u8) -> Option<Option<TypePath>> {
+        let file_imports = self.imports.get(module)?;
+        let target = file_imports.resolve_ident(ident)?;
+        Some(self.resolve_import_target(&target, depth))
+    }
+
+    /// Resolve the path a `use` points at (`target`) to a pool key, following
+    /// one more hop of re-export if needed.
+    fn resolve_import_target(&self, target: &TypePath, depth: u8) -> Option<TypePath> {
+        // Only crate-rooted paths (`use crate::a::Foo`) can name a pool type.
+        // A path led by an external crate (`use chrono::DateTime`) — or by the
+        // relative `self`/`super`, which we don't track precisely — resolves
+        // outside the pool. The import is authoritative, so return `None`
+        // (no edge) WITHOUT a terminal-fallback guess that could mislink to a
+        // same-named pool type.
+        if target.segments().first().map(String::as_str) != Some("crate") {
+            return None;
+        }
+        // Strip the leading `crate`; pool keys are crate-relative.
+        let canonical = TypePath::new(target.segments()[1..].to_vec()).ok()?;
+
+        // Direct hit: the import names the definition's own module path.
+        if self.pool.contains_key(&canonical) {
+            return Some(canonical);
+        }
+
+        // Not a definition key, but crate-internal — the named module must be
+        // re-exporting it. Follow the chain one hop further (`crate::facade::Foo`
+        // where `facade` does `pub use crate::core::Foo`).
+        let leaf = canonical.terminal();
+        if depth < MAX_IMPORT_DEPTH && canonical.segments().len() >= 2 {
+            let reexport_module = &canonical.segments()[..canonical.segments().len() - 1];
+            if let Some(resolved) = self.resolve_import_chain(reexport_module, leaf, depth + 1) {
+                return resolved;
+            }
+        }
+
+        // The re-exporting module doesn't name `leaf` with an explicit `use`
+        // (a glob re-export, say) or we ran out of hops. Last resort, and only
+        // because the path was crate-internal: a unique terminal match.
+        self.unique_terminal(leaf)
+    }
+
+    /// The single pool key whose terminal segment equals `ident`, or `None`
+    /// when there are zero or more than one — i.e. only when the match is
+    /// unambiguous.
+    fn unique_terminal(&self, ident: &str) -> Option<TypePath> {
+        let mut matches = self.pool.keys().filter(|p| p.terminal() == ident);
+        let first = matches.next()?;
+        match matches.next() {
+            Some(_) => None,
+            None => Some(first.clone()),
+        }
     }
 }
 
@@ -176,28 +329,16 @@ impl<'ast> Visit<'ast> for DepCollector<'_> {
                 }
                 if let Ok(path) = TypePath::new(canonical.clone()) {
                     if self.pool.contains_key(&path) {
+                        // Exact pool key — an in-module type or a fully
+                        // qualified multi-segment reference.
                         self.deps.insert(path);
                     } else if canonical.len() == 1 {
-                        // Single-segment reference (`BackupManifest`) that
-                        // isn't itself a top-level pool key. The referenced
-                        // type may be defined in a nested module — pool key
-                        // `["schema", "backup", "BackupManifest"]` — and reach
-                        // this field via a `use`. Fall back to terminal-segment
-                        // matching: the same resolution the long-tail *root*
-                        // resolver already uses (`src/clients/mod.rs`).
-                        //
-                        // This edge matters for correctness, not just ordering:
-                        // `reachable_from` walks this same graph to decide
-                        // *which* types get emitted. A missing edge to a
-                        // nested-only type (one never named directly in an API
-                        // signature, only reached through a sibling field) drops
-                        // it from the closure entirely, so it's referenced in
-                        // the emitted output but never declared.
-                        let ident = canonical[0].as_str();
-                        if let Some(matched) = self.pool.keys().find(|p| p.terminal() == ident).cloned() {
-                            self.deps.insert(matched);
-                        }
+                        // A bare ident: resolve through imports / same-module /
+                        // unique-terminal (see `resolve_single_segment`).
+                        self.resolve_single_segment(&canonical[0]);
                     }
+                    // Multi-segment non-pool paths (e.g. `chrono::DateTime`)
+                    // are external — no edge; the emitter renders them.
                 }
             }
         }
@@ -221,6 +362,19 @@ mod tests {
 
     fn pool_from(entries: Vec<(TypePath, &str)>) -> BTreeMap<TypePath, syn::Item> {
         entries.into_iter().map(|(k, src)| (k, parse_item(src))).collect()
+    }
+
+    /// Build per-module `use` tables from `(module_path, source)` pairs,
+    /// running the real `collect_module_imports` parser so the tests exercise
+    /// the production import-extraction path.
+    fn imports_from(entries: &[(&[&str], &str)]) -> ModuleImports {
+        let mut imports = ModuleImports::default();
+        for (module, src) in entries {
+            let file: syn::File = syn::parse_str(src).expect("parse module source");
+            let prefix: Vec<String> = module.iter().map(|s| (*s).to_string()).collect();
+            crate::resolve::collect_module_imports(&file, &prefix, &mut imports);
+        }
+        imports
     }
 
     // ── dependency_graph ──────────────────────────────────────────────────
@@ -311,6 +465,89 @@ mod tests {
         let pool = pool_from(vec![(tp(&["Foo"]), "pub struct Foo { pub x: MysteryType }")]);
         let graph = dependency_graph(&pool);
         assert!(graph.get(&tp(&["Foo"])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ambiguous_terminal_with_no_imports_creates_no_edge() {
+        // Two modules define `Manifest`. A bare `Manifest` reference with no
+        // `use` table to disambiguate must NOT silently pick one — the wrong
+        // pick would emit the wrong type's body under the shared TS name.
+        let pool = pool_from(vec![
+            (tp(&["a", "Manifest"]), "pub struct Manifest { pub v: u32 }"),
+            (tp(&["b", "Manifest"]), "pub struct Manifest { pub w: u32 }"),
+            (tp(&["c", "RestoreCandidate"]), "pub struct RestoreCandidate { pub m: Manifest }"),
+        ]);
+        let graph = dependency_graph(&pool);
+        let deps = graph.get(&tp(&["c", "RestoreCandidate"])).expect("RestoreCandidate edges");
+        assert!(
+            deps.is_empty(),
+            "ambiguous bare `Manifest` must resolve to no edge without a disambiguating `use`, got {deps:?}"
+        );
+    }
+
+    #[test]
+    fn import_disambiguates_between_same_terminal_types() {
+        // Same ambiguous pool as above, but module `c` has an explicit
+        // `use crate::b::Manifest;`. The import is authoritative: the edge
+        // must point at `b::Manifest`, never `a::Manifest`.
+        let pool = pool_from(vec![
+            (tp(&["a", "Manifest"]), "pub struct Manifest { pub v: u32 }"),
+            (tp(&["b", "Manifest"]), "pub struct Manifest { pub w: u32 }"),
+            (tp(&["c", "RestoreCandidate"]), "pub struct RestoreCandidate { pub m: Manifest }"),
+        ]);
+        let imports = imports_from(&[(&["c"], "use crate::b::Manifest;")]);
+        let graph = dependency_graph_with_imports(&pool, &imports);
+        let deps = graph.get(&tp(&["c", "RestoreCandidate"])).expect("RestoreCandidate edges");
+        assert!(deps.contains(&tp(&["b", "Manifest"])), "expected edge to b::Manifest, got {deps:?}");
+        assert!(!deps.contains(&tp(&["a", "Manifest"])), "must not link to a::Manifest, got {deps:?}");
+    }
+
+    #[test]
+    fn import_to_external_crate_creates_no_edge_and_blocks_fallback() {
+        // `c` does `use chrono::Manifest;` (hypothetical external). Even
+        // though a pool `Manifest` exists, the import is authoritative and
+        // points outside the pool → no edge, and no terminal-fallback guess.
+        let pool = pool_from(vec![
+            (tp(&["a", "Manifest"]), "pub struct Manifest { pub v: u32 }"),
+            (tp(&["c", "Thing"]), "pub struct Thing { pub m: Manifest }"),
+        ]);
+        let imports = imports_from(&[(&["c"], "use chrono::Manifest;")]);
+        let graph = dependency_graph_with_imports(&pool, &imports);
+        let deps = graph.get(&tp(&["c", "Thing"])).expect("Thing edges");
+        assert!(deps.is_empty(), "external import must block the pool edge, got {deps:?}");
+    }
+
+    #[test]
+    fn multi_level_reexport_chain_resolves_to_definition_key() {
+        // `c` imports `Foo` from a facade module that itself re-exports it
+        // from where it's defined:
+        //   c:      use crate::facade::Foo;
+        //   facade: pub use crate::core::Foo;   (defines no `Foo` of its own)
+        //   core:   pub struct Foo { ... }       (the only real definition)
+        // The resolver must follow the chain c → facade → core and edge to
+        // `core::Foo`.
+        let pool = pool_from(vec![
+            (tp(&["core", "Foo"]), "pub struct Foo { pub x: u32 }"),
+            (tp(&["c", "User"]), "pub struct User { pub f: Foo }"),
+        ]);
+        let imports = imports_from(&[(&["c"], "use crate::facade::Foo;"), (&["facade"], "pub use crate::core::Foo;")]);
+        let graph = dependency_graph_with_imports(&pool, &imports);
+        let deps = graph.get(&tp(&["c", "User"])).expect("User edges");
+        assert!(deps.contains(&tp(&["core", "Foo"])), "multi-level re-export must resolve to core::Foo, got {deps:?}");
+    }
+
+    #[test]
+    fn aliased_import_resolves_to_canonical_key() {
+        // `use crate::backup::Manifest as Mani;` then a field typed `Mani`.
+        // The alias resolves to the canonical pool key.
+        let pool = pool_from(vec![
+            (tp(&["backup", "Manifest"]), "pub struct Manifest { pub v: u32 }"),
+            (tp(&["c", "Thing"]), "pub struct Thing { pub m: Mani }"),
+        ]);
+        let imports = imports_from(&[(&["c"], "use crate::backup::Manifest as Mani;")]);
+        let graph = dependency_graph_with_imports(&pool, &imports);
+        let deps = graph.get(&tp(&["c", "Thing"])).expect("Thing edges");
+        assert!(deps.contains(&tp(&["backup", "Manifest"])), "alias must resolve to backup::Manifest, got {deps:?}");
     }
 
     // ── reachable_from ───────────────────────────────────────────────────

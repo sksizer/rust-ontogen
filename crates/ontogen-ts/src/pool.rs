@@ -27,6 +27,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::resolve::{ModuleImports, collect_module_imports};
 use crate::types::TypePath;
 
 /// Failure modes for [`scan_src_dir`].
@@ -61,20 +62,38 @@ impl std::error::Error for ScanError {}
 
 /// Scan a `src/` directory and collect every module-level struct, enum, and
 /// type-alias into a pool keyed by canonical [`TypePath`].
+///
+/// This discards the per-module `use` tables. Callers that need bare
+/// single-segment references resolved through their defining module's
+/// imports (the dep extractor in `order`) should use
+/// [`scan_src_dir_with_imports`] instead.
 pub fn scan_src_dir(src_dir: &Path) -> Result<BTreeMap<TypePath, syn::Item>, ScanError> {
+    scan_src_dir_with_imports(src_dir).map(|(pool, _imports)| pool)
+}
+
+/// Scan a `src/` directory, returning both the type pool and the per-module
+/// [`ModuleImports`] tables built from each module's `use` declarations.
+///
+/// The imports table lets the dependency extractor resolve a bare
+/// single-segment reference (`BackupManifest`) through the actual `use` that
+/// brought it into scope, instead of guessing by terminal segment — which is
+/// ambiguous when two modules define same-named types.
+pub fn scan_src_dir_with_imports(src_dir: &Path) -> Result<(BTreeMap<TypePath, syn::Item>, ModuleImports), ScanError> {
     let mut pool = BTreeMap::new();
-    scan_dir_recursive(src_dir, &[], &mut pool)?;
-    Ok(pool)
+    let mut imports = ModuleImports::default();
+    scan_dir_recursive(src_dir, &[], &mut pool, &mut imports)?;
+    Ok((pool, imports))
 }
 
 /// Recursive directory walker. `module_prefix` is the canonical path of the
 /// current Rust module (empty at the crate root). Each `.rs` file
 /// contributes its items (and items nested inside `mod` blocks) under that
-/// prefix.
+/// prefix, plus its `use` declarations into `imports`.
 fn scan_dir_recursive(
     dir: &Path,
     module_prefix: &[String],
     pool: &mut BTreeMap<TypePath, syn::Item>,
+    imports: &mut ModuleImports,
 ) -> Result<(), ScanError> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| ScanError::Io { path: dir.to_path_buf(), message: e.to_string() })?;
@@ -97,7 +116,7 @@ fn scan_dir_recursive(
             // always have one or the other).
             let mut next_prefix = module_prefix.to_vec();
             next_prefix.push(file_name);
-            scan_dir_recursive(&path, &next_prefix, pool)?;
+            scan_dir_recursive(&path, &next_prefix, pool, imports)?;
             continue;
         }
 
@@ -130,6 +149,7 @@ fn scan_dir_recursive(
             syn::parse_file(&src).map_err(|e| ScanError::Parse { path: path.clone(), message: e.to_string() })?;
 
         collect_items(&parsed.items, &file_prefix, pool);
+        collect_module_imports(&parsed, &file_prefix, imports);
     }
 
     Ok(())

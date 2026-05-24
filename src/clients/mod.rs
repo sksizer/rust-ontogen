@@ -149,30 +149,41 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         //    re-exports types from). Main pool wins on key collision so the
         //    consuming crate's own definitions take precedence over a sibling
         //    that happens to share a module path.
-        let mut pool = ontogen_ts::scan_src_dir(&src_dir).map_err(|e| format!("ontogen-ts pool scan failed: {e}"))?;
+        let (mut pool, mut imports) =
+            ontogen_ts::scan_src_dir_with_imports(&src_dir).map_err(|e| format!("ontogen-ts pool scan failed: {e}"))?;
         for extra in &config.pool_extra_roots {
             let resolved = if extra.is_absolute() { extra.clone() } else { manifest_dir.join(extra) };
-            let sibling = ontogen_ts::scan_src_dir(&resolved)
+            let (sibling, sibling_imports) = ontogen_ts::scan_src_dir_with_imports(&resolved)
                 .map_err(|e| format!("ontogen-ts pool scan failed for extra root `{}`: {e}", resolved.display()))?;
             for (key, item) in sibling {
                 pool.entry(key).or_insert(item);
             }
+            // Main root's `use` tables win on a module-path collision, same as
+            // the pool above.
+            imports.merge(sibling_imports);
         }
 
         // 2. Resolve each long-tail name to a TypePath. Try a single-
-        //    segment match first (matches items defined in src/lib.rs);
-        //    fall back to any pool entry whose terminal segment matches
-        //    (covers items in nested modules).
+        //    segment match first (matches items defined in src/lib.rs), then
+        //    a terminal-segment match for items in nested modules — but only
+        //    when that terminal match is unambiguous. Two pool entries
+        //    sharing a terminal (`a::Manifest` and `b::Manifest`) make the
+        //    bare name ambiguous; we error rather than silently pick one.
         let mut roots: Vec<ontogen_ts::TypePath> = Vec::with_capacity(long_tail.len());
         let mut missing: Vec<String> = Vec::new();
+        let mut ambiguous: Vec<(String, Vec<ontogen_ts::TypePath>)> = Vec::new();
         for name in &long_tail {
             let bare = ontogen_ts::TypePath::new(vec![name.clone()]).expect("long_tail names are non-empty idents");
             if pool.contains_key(&bare) {
                 roots.push(bare);
-            } else if let Some(matched) = pool.keys().find(|p| p.terminal() == name.as_str()).cloned() {
-                roots.push(matched);
-            } else {
-                missing.push(name.clone());
+                continue;
+            }
+            let matches: Vec<ontogen_ts::TypePath> =
+                pool.keys().filter(|p| p.terminal() == name.as_str()).cloned().collect();
+            match matches.as_slice() {
+                [only] => roots.push(only.clone()),
+                [] => missing.push(name.clone()),
+                _ => ambiguous.push((name.clone(), matches)),
             }
         }
         if !missing.is_empty() {
@@ -181,11 +192,24 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
             }
             return Err(format!("ontogen-ts: {} long-tail type(s) not found in pool", missing.len()));
         }
+        if !ambiguous.is_empty() {
+            for (name, candidates) in &ambiguous {
+                let rendered: Vec<String> = candidates.iter().map(|p| p.to_string()).collect();
+                println!(
+                    "cargo:warning=ontogen-ts: long-tail type `{name}` is ambiguous — multiple pool entries share \
+                     that name: {}; qualify it or rename one",
+                    rendered.join(", ")
+                );
+            }
+            return Err(format!("ontogen-ts: {} ambiguous long-tail type name(s)", ambiguous.len()));
+        }
 
         // 3. Emit. Surface every error before failing so the build shows
-        //    the full punch-list, not just the first issue.
+        //    the full punch-list, not just the first issue. Pass the
+        //    per-module `use` tables so bare field-type references resolve
+        //    through their actual imports (including re-export chains).
         let emit_config = ontogen_ts::EmitConfig::default();
-        let ts = match ontogen_ts::emit(&roots, &pool, &emit_config) {
+        let ts = match ontogen_ts::emit_with_imports(&roots, &pool, &imports, &emit_config) {
             Ok(ts) => ts,
             Err(errors) => {
                 for e in &errors {

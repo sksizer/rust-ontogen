@@ -48,6 +48,7 @@ mod rename;
 mod resolve;
 mod types;
 
-pub use emit::emit;
-pub use pool::{ScanError, scan_src_dir};
+pub use emit::{emit, emit_with_imports};
+pub use pool::{ScanError, scan_src_dir, scan_src_dir_with_imports};
+pub use resolve::ModuleImports;
 pub use types::{BigIntBehavior, EmitConfig, EmitError, RenameAll, TypePath, TypePathError};
