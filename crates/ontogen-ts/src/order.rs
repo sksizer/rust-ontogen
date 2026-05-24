@@ -52,7 +52,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use syn::visit::{self, Visit};
 
-use crate::resolve::ModuleImports;
+use crate::resolve::{ModuleImports, Resolution, resolve_reference};
 use crate::types::TypePath;
 
 /// Build the dependency graph from a pool without per-module import tables.
@@ -187,10 +187,6 @@ pub(crate) fn topo_order(
     output
 }
 
-/// Re-export chains can in principle loop (`a` re-exports from `b`, `b` from
-/// `a`). Bound the `use`-chain walk so a pathological cycle terminates.
-const MAX_IMPORT_DEPTH: u8 = 16;
-
 /// `syn::visit::Visit` that records every in-pool type referenced by an item.
 struct DepCollector<'a> {
     pool: &'a BTreeMap<TypePath, syn::Item>,
@@ -208,138 +204,18 @@ impl<'a> DepCollector<'a> {
     fn new(pool: &'a BTreeMap<TypePath, syn::Item>, module: &'a [String], imports: &'a ModuleImports) -> Self {
         Self { pool, module, imports, deps: BTreeSet::new() }
     }
-
-    /// Resolve a bare single-segment reference (`BackupManifest`) to a pool
-    /// key, recording an edge if one is found. Resolution order matches Rust
-    /// name resolution closely enough for wire types: an explicit `use`
-    /// wins outright, then a same-module sibling, then a unique
-    /// terminal-segment match.
-    fn resolve_single_segment(&mut self, ident: &str) {
-        // 1. The referencing module's `use` table (authoritative).
-        match self.resolve_import_chain(self.module, ident, 0) {
-            // `use` names the ident and it lands on a pool key.
-            Some(Some(key)) => {
-                self.deps.insert(key);
-                return;
-            }
-            // `use` names the ident but it resolves outside the pool (an
-            // external crate, or an unresolvable/ambiguous re-export). The
-            // import is authoritative — Rust would never look past it — so we
-            // do NOT fall through to same-module or terminal guessing.
-            Some(None) => return,
-            // No `use` for this ident here; keep going.
-            None => {}
-        }
-
-        // 2. A sibling defined in the same module, referenced without a `use`.
-        let mut same_module = self.module.to_vec();
-        same_module.push(ident.to_string());
-        if let Ok(path) = TypePath::new(same_module)
-            && self.pool.contains_key(&path)
-        {
-            self.deps.insert(path);
-            return;
-        }
-
-        // 3. A unique terminal-segment match across the whole pool — the
-        //    nested-only-type case with no `use` recorded (e.g. the bare
-        //    [`dependency_graph`] path, or a glob import). Only when exactly
-        //    one pool key ends in `ident`: with zero we leave it to the
-        //    emitter (external type), and with more than one we refuse to
-        //    guess rather than mislink to the wrong same-terminal type.
-        if let Some(key) = self.unique_terminal(ident) {
-            self.deps.insert(key);
-        }
-    }
-
-    /// Resolve `ident` through `module`'s `use` table, following re-export
-    /// chains across modules (`use crate::facade::Foo` where `facade` does
-    /// `pub use crate::core::Foo`) until the trail lands on a pool key.
-    ///
-    /// Returns:
-    /// - `None` — `module` has no `use` bringing `ident` into scope.
-    /// - `Some(None)` — `ident` IS imported, but the trail leads outside the
-    ///   pool (external crate, or an ambiguous/unresolvable re-export).
-    /// - `Some(Some(key))` — `ident` is imported and resolves to pool `key`.
-    fn resolve_import_chain(&self, module: &[String], ident: &str, depth: u8) -> Option<Option<TypePath>> {
-        let file_imports = self.imports.get(module)?;
-        let target = file_imports.resolve_ident(ident)?;
-        Some(self.resolve_import_target(&target, depth))
-    }
-
-    /// Resolve the path a `use` points at (`target`) to a pool key, following
-    /// one more hop of re-export if needed.
-    fn resolve_import_target(&self, target: &TypePath, depth: u8) -> Option<TypePath> {
-        // Only crate-rooted paths (`use crate::a::Foo`) can name a pool type.
-        // A path led by an external crate (`use chrono::DateTime`) — or by the
-        // relative `self`/`super`, which we don't track precisely — resolves
-        // outside the pool. The import is authoritative, so return `None`
-        // (no edge) WITHOUT a terminal-fallback guess that could mislink to a
-        // same-named pool type.
-        if target.segments().first().map(String::as_str) != Some("crate") {
-            return None;
-        }
-        // Strip the leading `crate`; pool keys are crate-relative.
-        let canonical = TypePath::new(target.segments()[1..].to_vec()).ok()?;
-
-        // Direct hit: the import names the definition's own module path.
-        if self.pool.contains_key(&canonical) {
-            return Some(canonical);
-        }
-
-        // Not a definition key, but crate-internal — the named module must be
-        // re-exporting it. Follow the chain one hop further (`crate::facade::Foo`
-        // where `facade` does `pub use crate::core::Foo`).
-        let leaf = canonical.terminal();
-        if depth < MAX_IMPORT_DEPTH && canonical.segments().len() >= 2 {
-            let reexport_module = &canonical.segments()[..canonical.segments().len() - 1];
-            if let Some(resolved) = self.resolve_import_chain(reexport_module, leaf, depth + 1) {
-                return resolved;
-            }
-        }
-
-        // The re-exporting module doesn't name `leaf` with an explicit `use`
-        // (a glob re-export, say) or we ran out of hops. Last resort, and only
-        // because the path was crate-internal: a unique terminal match.
-        self.unique_terminal(leaf)
-    }
-
-    /// The single pool key whose terminal segment equals `ident`, or `None`
-    /// when there are zero or more than one — i.e. only when the match is
-    /// unambiguous.
-    fn unique_terminal(&self, ident: &str) -> Option<TypePath> {
-        let mut matches = self.pool.keys().filter(|p| p.terminal() == ident);
-        let first = matches.next()?;
-        match matches.next() {
-            Some(_) => None,
-            None => Some(first.clone()),
-        }
-    }
 }
 
 impl<'ast> Visit<'ast> for DepCollector<'_> {
     fn visit_type_path(&mut self, node: &'ast syn::TypePath) {
         if node.qself.is_none() {
             let segments: Vec<String> = node.path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if !segments.is_empty() {
-                // Strip leading `crate::` so the key matches pool conventions.
-                let mut canonical = segments.clone();
-                if canonical.first().map(String::as_str) == Some("crate") {
-                    canonical.remove(0);
-                }
-                if let Ok(path) = TypePath::new(canonical.clone()) {
-                    if self.pool.contains_key(&path) {
-                        // Exact pool key — an in-module type or a fully
-                        // qualified multi-segment reference.
-                        self.deps.insert(path);
-                    } else if canonical.len() == 1 {
-                        // A bare ident: resolve through imports / same-module /
-                        // unique-terminal (see `resolve_single_segment`).
-                        self.resolve_single_segment(&canonical[0]);
-                    }
-                    // Multi-segment non-pool paths (e.g. `chrono::DateTime`)
-                    // are external — no edge; the emitter renders them.
-                }
+            // Resolve via the shared resolver. A closure edge records only a
+            // unique resolution: `NotInPool` (external/primitive) and
+            // `Ambiguous` (a same-terminal collision with no disambiguating
+            // `use`) both record no edge — never a mislink.
+            if let Resolution::Resolved(key) = resolve_reference(&segments, self.module, self.pool, self.imports) {
+                self.deps.insert(key);
             }
         }
         // Recurse into generic args so `Vec<Workout>` records the
@@ -503,18 +379,29 @@ mod tests {
     }
 
     #[test]
-    fn import_to_external_crate_creates_no_edge_and_blocks_fallback() {
-        // `c` does `use chrono::Manifest;` (hypothetical external). Even
-        // though a pool `Manifest` exists, the import is authoritative and
-        // points outside the pool → no edge, and no terminal-fallback guess.
+    fn cross_crate_import_resolves_via_unique_terminal() {
+        // `c` does `use pumice_config::Manifest;` — a `pool_extra_roots`
+        // sibling crate whose type is in the pool under its own module
+        // (`cfg::Manifest`, crate name stripped). The flat pool can't tell it
+        // from a true-external crate, so a unique terminal match resolves it.
         let pool = pool_from(vec![
-            (tp(&["a", "Manifest"]), "pub struct Manifest { pub v: u32 }"),
+            (tp(&["cfg", "Manifest"]), "pub struct Manifest { pub v: u32 }"),
             (tp(&["c", "Thing"]), "pub struct Thing { pub m: Manifest }"),
         ]);
-        let imports = imports_from(&[(&["c"], "use chrono::Manifest;")]);
+        let imports = imports_from(&[(&["c"], "use pumice_config::Manifest;")]);
         let graph = dependency_graph_with_imports(&pool, &imports);
         let deps = graph.get(&tp(&["c", "Thing"])).expect("Thing edges");
-        assert!(deps.is_empty(), "external import must block the pool edge, got {deps:?}");
+        assert!(deps.contains(&tp(&["cfg", "Manifest"])), "expected cross-crate edge to cfg::Manifest, got {deps:?}");
+    }
+
+    #[test]
+    fn external_import_with_no_pool_terminal_creates_no_edge() {
+        // `use chrono::DateTime;` with no pool type sharing the terminal —
+        // genuinely external, so no edge.
+        let pool = pool_from(vec![(tp(&["c", "Thing"]), "pub struct Thing { pub when: DateTime }")]);
+        let imports = imports_from(&[(&["c"], "use chrono::DateTime;")]);
+        let graph = dependency_graph_with_imports(&pool, &imports);
+        assert!(graph.get(&tp(&["c", "Thing"])).unwrap().is_empty());
     }
 
     #[test]

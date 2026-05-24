@@ -23,25 +23,37 @@ use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_
 pub fn referenced_ts_types(modules: &[ApiModule], config: &Config) -> Vec<String> {
     let mut import_types: Vec<String> = Vec::new();
     for m in modules {
-        if m.functions.is_empty() {
-            continue;
-        }
-        for f in &m.functions {
-            let cmd_name = command_name(&m.name, f, config);
-            if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
-                continue;
-            }
-            let ts_ret = rust_type_to_ts(&f.return_type);
-            collect_ts_import(&ts_ret, &mut import_types);
-            for p in &f.params {
-                let ty = extract_input_type(&p.ty);
-                let ts_ty = rust_type_to_ts(&ty);
-                collect_ts_import(&ts_ty, &mut import_types);
-            }
-        }
+        import_types.extend(module_referenced_ts_types(m, config));
     }
     import_types.sort();
     import_types.dedup();
+    import_types
+}
+
+/// The TS type names referenced by a single module's command signatures.
+///
+/// Split out from [`referenced_ts_types`] so the long-tail resolver can map
+/// each referenced name back to the module that referenced it — needed to
+/// resolve a bare name (`VaultConfig`) through *that* module's `use` imports
+/// rather than guessing by terminal segment.
+pub fn module_referenced_ts_types(m: &ApiModule, config: &Config) -> Vec<String> {
+    let mut import_types: Vec<String> = Vec::new();
+    if m.functions.is_empty() {
+        return import_types;
+    }
+    for f in &m.functions {
+        let cmd_name = command_name(&m.name, f, config);
+        if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
+            continue;
+        }
+        let ts_ret = rust_type_to_ts(&f.return_type);
+        collect_ts_import(&ts_ret, &mut import_types);
+        for p in &f.params {
+            let ty = extract_input_type(&p.ty);
+            let ts_ty = rust_type_to_ts(&ty);
+            collect_ts_import(&ts_ty, &mut import_types);
+        }
+    }
     import_types
 }
 
