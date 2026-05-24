@@ -23,14 +23,15 @@
 //!   for resolution, since walking the imported crate's source is out of
 //!   phase-1 scope.
 //!
-//! `#[allow(dead_code)]` is module-wide: PR 3 lands these helpers behind a
-//! test-only surface; production callers (the `order::DepCollector` walker
-//! and `emit::emit_type`'s fall-through) use simpler conservative
-//! path-classification today. A later PR will thread per-file
-//! `FileImports` through the production dep extractor so single-segment
-//! references resolve to canonical paths. Tests exercise every function
-//! below; the allow exists only because production callers haven't been
-//! wired in yet.
+//! `#[allow(dead_code)]` is module-wide. As of the closure-edge fix,
+//! [`ModuleImports`] / [`collect_module_imports`] / [`FileImports::resolve_ident`]
+//! ARE wired into the production dep extractor (`order::DepCollector`): a
+//! bare single-segment reference is resolved through its module's `use`
+//! table before any terminal-segment guessing, so a type imported from one
+//! of several same-terminal modules links to the right pool key. The
+//! render-side resolver (`emit::emit_type`'s fall-through) and the
+//! [`canonicalize`] / glob-hint helpers remain staged for a later pass; the
+//! module-wide allow covers those still-unused surfaces.
 
 #![allow(dead_code)]
 
@@ -65,12 +66,66 @@ impl FileImports {
 /// imports table.
 pub(crate) fn parse_imports(file: &syn::File) -> FileImports {
     let mut out = FileImports::default();
-    for item in &file.items {
+    imports_from_items(&file.items, &mut out);
+    out
+}
+
+/// Accumulate the `use` declarations directly contained in `items` into
+/// `out`. Does not descend into inline `mod` blocks — those define their own
+/// scope (see [`collect_module_imports`]).
+fn imports_from_items(items: &[Item], out: &mut FileImports) {
+    for item in items {
         if let Item::Use(item_use) = item {
-            walk_use_tree(&item_use.tree, &mut Vec::new(), &mut out);
+            walk_use_tree(&item_use.tree, &mut Vec::new(), out);
         }
     }
-    out
+}
+
+/// Per-module `use` tables for a scanned source tree, keyed by the module's
+/// canonical path segments (empty = crate root). The keys mirror the type
+/// pool's key prefixes, so a referencing item's module — the pool key with
+/// its terminal dropped — looks up directly.
+#[derive(Debug, Clone, Default)]
+pub struct ModuleImports {
+    by_module: BTreeMap<Vec<String>, FileImports>,
+}
+
+impl ModuleImports {
+    /// The `use` table in scope for `module`, if any were recorded.
+    pub(crate) fn get(&self, module: &[String]) -> Option<&FileImports> {
+        self.by_module.get(module)
+    }
+
+    /// Fold another tree's tables in. On a module-path collision the existing
+    /// entry wins, matching the pool's "first root wins" merge policy in
+    /// `src/clients/mod.rs`.
+    pub fn merge(&mut self, other: ModuleImports) {
+        for (module, imports) in other.by_module {
+            self.by_module.entry(module).or_insert(imports);
+        }
+    }
+}
+
+/// Walk a parsed file's `use` declarations — including those inside inline
+/// `mod foo { ... }` blocks — into `out`, keyed by module path. `prefix` is
+/// the canonical path of the file's own module (empty at the crate root),
+/// matching the pool walker's `module_prefix`.
+pub(crate) fn collect_module_imports(file: &syn::File, prefix: &[String], out: &mut ModuleImports) {
+    collect_items_into(&file.items, prefix, out);
+}
+
+fn collect_items_into(items: &[Item], prefix: &[String], out: &mut ModuleImports) {
+    let entry = out.by_module.entry(prefix.to_vec()).or_default();
+    imports_from_items(items, entry);
+    for item in items {
+        if let Item::Mod(m) = item
+            && let Some((_, inner)) = &m.content
+        {
+            let mut sub = prefix.to_vec();
+            sub.push(m.ident.to_string());
+            collect_items_into(inner, &sub, out);
+        }
+    }
 }
 
 /// Recursive walker over `syn::UseTree` — the shape `use a::{b, c::d as e, f::*}`

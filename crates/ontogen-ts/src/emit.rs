@@ -20,6 +20,7 @@ use crate::attr::{
     extract_variant_attrs,
 };
 use crate::order;
+use crate::resolve::ModuleImports;
 use crate::types::{BigIntBehavior, EmitConfig, EmitError, RenameAll, TypePath};
 
 /// Emit TypeScript source for `roots` and everything they transitively reach
@@ -43,15 +44,35 @@ use crate::types::{BigIntBehavior, EmitConfig, EmitError, RenameAll, TypePath};
 ///
 /// All errors are collected into `Vec<EmitError>` before failing — never
 /// first-error fail-fast, so a build surfaces every problem at once.
+///
+/// This convenience entry point resolves bare single-segment references
+/// without per-module `use` tables (same-module and unique-terminal matching
+/// only). To resolve references that come in through cross-module `use`
+/// imports — including multi-level re-export chains — call
+/// [`emit_with_imports`] with the [`ModuleImports`] returned by
+/// [`crate::pool::scan_src_dir_with_imports`].
 pub fn emit(
     roots: &[TypePath],
     type_pool: &BTreeMap<TypePath, syn::Item>,
     config: &EmitConfig,
 ) -> Result<String, Vec<EmitError>> {
+    emit_with_imports(roots, type_pool, &ModuleImports::default(), config)
+}
+
+/// Like [`emit`], but resolves bare single-segment references through
+/// `imports` — each referencing module's `use` table — so a type pulled in
+/// via `use` (possibly through several re-export hops) links to the right
+/// pool key even when several modules define same-terminal types.
+pub fn emit_with_imports(
+    roots: &[TypePath],
+    type_pool: &BTreeMap<TypePath, syn::Item>,
+    imports: &ModuleImports,
+    config: &EmitConfig,
+) -> Result<String, Vec<EmitError>> {
     let mut errors: Vec<EmitError> = Vec::new();
 
     // 1-2: dep graph + reachable closure.
-    let graph = order::dependency_graph(type_pool);
+    let graph = order::dependency_graph_with_imports(type_pool, imports);
     let reachable = order::reachable_from(roots, &graph);
 
     // Surface any root that isn't in the pool — caller passed a TypePath
