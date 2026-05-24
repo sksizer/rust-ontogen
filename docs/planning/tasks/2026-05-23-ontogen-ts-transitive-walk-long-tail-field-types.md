@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: open/ready
+status: closed/done
 created: '2026-05-23'
 impact: medium
 complexity: medium
@@ -12,6 +12,23 @@ tags:
 related:
 - 2026-05-20-ontogen-ts-entity-field-type-closure
 autonomy: supervised
+last_reviewed: '2026-05-24'
+completion_note: |
+  Shipped via #74 (merge 6c3db20, 2026-05-24). Deviated from the
+  proposed call-site fixed-point loop: fixed the dependency graph in
+  crates/ontogen-ts/src/order.rs instead, so `reachable_from` already
+  computes the transitive closure at arbitrary depth — no re-iteration
+  to write or terminate. A bare single-segment field reference now
+  resolves through its module's actual `use` table (threaded via the
+  new `scan_src_dir_with_imports` / `ModuleImports`), following
+  re-export chains to the defining pool key, then same-module sibling,
+  then a terminal match only when unambiguous. This also closes the
+  same-terminal-collision hole raised in review (a::Manifest vs
+  b::Manifest): a `use` disambiguates; without one, ambiguous terminals
+  yield no edge rather than a silent mislink. ACs 1/2/4 verified
+  (`just full-check` green, iron-log byte-identical, new `order` tests).
+  AC-3 (Pumice drops `append_ontogen_compat_stubs`) tracked in the
+  companion Pumice PR, re-pointed to main now that this merged.
 ---
 # ontogen-ts: walker should recurse through long-tail types' field references into the root set
 
@@ -53,10 +70,10 @@ End state: emitting `RestoreCandidate` also emits `BackupManifest`; emitting `Th
 
 ## Acceptance criteria
 
-- [ ] AC-1: Integration test exercising a long-tail type with a field whose type is defined only in the pool (not in the schema-known surface AND not directly an API param/return) — the emitted bindings include both the parent type body and the referenced type body.
-- [ ] AC-2: `cargo build` in `examples/iron-log/src-tauri/` succeeds with byte-identical generated TS — no behavioral regression.
-- [ ] AC-3: Pumice's `append_ontogen_compat_stubs` (filed in sksizer/pumice#225) can be deleted, with `BackupManifest` and `ThemePreference` now emitted natively by ontogen-ts and `pnpm typecheck` clean.
-- [ ] AC-4: `just full-check` passes on the rust-ontogen branch.
+- [x] AC-1: Integration test exercising a long-tail type with a field whose type is defined only in the pool (not in the schema-known surface AND not directly an API param/return) — the emitted bindings include both the parent type body and the referenced type body. (`tests/ts_entity_field_type_closure.rs` plus `crates/ontogen-ts/src/order.rs` unit tests, incl. `multi_level_reexport_chain_resolves_to_definition_key`.)
+- [x] AC-2: `cargo build` in `examples/iron-log/src-tauri/` succeeds with byte-identical generated TS — no behavioral regression.
+- [ ] AC-3: Pumice's `append_ontogen_compat_stubs` (filed in sksizer/pumice#225) can be deleted, with `BackupManifest` and `ThemePreference` now emitted natively by ontogen-ts and `pnpm typecheck` clean. _(Tracked in the companion Pumice PR, re-pointed to main post-merge.)_
+- [x] AC-4: `just full-check` passes on the rust-ontogen branch.
 
 ## Out of scope
 
