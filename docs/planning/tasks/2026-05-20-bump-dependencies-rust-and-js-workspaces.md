@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: open/ready
+status: closed/wontdo
 created: '2026-05-20'
 impact: medium
 complexity: medium
@@ -12,6 +12,15 @@ tags:
 - node
 - pnpm
 related: []
+last_reviewed: '2026-05-24'
+completion_note: |
+  Dropped during /sdlc:orchestrate tick #1 cleanup. The task spec
+  shipped with v2 migration placeholders in the Today table and
+  malformed Location rows that didn't survive the v2-to-v3 migration
+  cleanly; /sdlc:task-ensure-ready flagged it as needs-definition.
+  Rather than re-spec the placeholder rows for a routine-hygiene
+  task, dropping outright. Re-file fresh when a dep bump becomes
+  time-critical (security advisory, breaking upstream, etc.).
 ---
 # Bump Rust and JS/pnpm dependencies across all workspaces
 
