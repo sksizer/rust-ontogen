@@ -100,3 +100,31 @@ This is a **breaking change** for any consumer relying on the current default. T
 - Surfaced by sksizer/pumice#225's inline review comment at `src-tauri/src/api/transport/http/generated.rs:590` (sksizer, 2026-05-24): "a lot of these should probably be posts since they mutate data not gets. what are the ontogen generation rules in that regard?"
 - The current behavior is documented at `src/servers/classify.rs:61-64`: "Zero-param custom fns are always read-shaped (no body to carry)." That comment captures the old reasoning — "no body, must be a read" — which conflates "syntactic body-presence" with "HTTP semantic safety." A function with no body can still mutate state (any zero-param action verb does this).
 - Companion to `[[2026-05-24-ontogen-classifier-add-post-attribute-opt-in]]`: the conservative opt-in lands first; this principled default lands second once consumers have had a chance to annotate.
+
+## Post-mortem
+
+_Captured 2026-05-24. PR: pending._
+
+### Acceptance criteria coverage
+
+- AC-1: auto — new test `test_classify_zero_param_prefix_matrix` in `src/servers/tests.rs` covers all 7 known-read prefixes plus 7 action-verb counterexamples; `test_classify_no_params_defaults_to_post` covers the directional flip; the existing `test_force_method_post_overrides_classifier` and `test_post_attr_*` were updated to use `get_status()` (read prefix) where they previously used `status()` (would now default to POST).
+- AC-2: agent-manual — `cargo build` in `examples/iron-log/src-tauri/` succeeds. One route diff surfaced: `stats::workout(_store)` was renamed to `stats::get_workout(_store)` so it keeps `get(stat_get_workout)` classification (the URL `/api/stats/workout` is preserved because the naming convention strips the `get_` prefix when computing the URL slug). No frontend code referenced the camelCase generated function, so the rename is non-breaking at the consumer surface.
+- AC-3: deferred-user — verification lives in the Pumice consumer repo (sksizer/pumice#225 follow-up). Once this PR lands and Pumice bumps the ontogen dependency, the user can drop the `#[ontogen::http::post]` annotations from the action-verb handlers (`pause`, `resume`, `backup`, etc.) and confirm the regenerated transport emits POST without the explicit attribute.
+- AC-4: auto — `just full-check` passes (fmt, clippy with `--deny warnings`, 221 unit tests + 3 integration tests + 1 doctest all green). Baseline-gated quality-check runner reports `OK`.
+- AC-5: partial — CHANGELOG.md has the breaking-change entry under `[Unreleased]` (cites the new prefix allowlist, the consumer-side migration story, and the companion-task sequencing). The alpha tag bump itself is a release-prep step rather than a code change and will be cut as part of the next `alpha0.0.3` tag alongside any other queued breaking changes.
+
+### What worked
+
+- The companion task `[[2026-05-24-ontogen-classifier-add-post-attribute-opt-in]]` shipping the `#[ontogen::http::post]` opt-in first was the right sequencing — consumers had a forward-compatible escape hatch before the default flipped.
+- The `KNOWN_READ_PREFIXES` const slice + `name_implies_read()` helper keeps the prefix allowlist in one place; future additions (or the symmetric `#[ontogen::http::get]` if it ever lands) extend the same surface.
+- The `get_*`-with-body-carrying-param branch (OF-016) was deliberately left UNCHANGED — `name_implies_read` only gates the zero-param branch, not the body-carrying reclassification. Avoided scope creep and a separate semantic question (should `list_things(filter: FilterInput)` reclassify too?).
+
+### Friction and automation gaps
+
+- The `/sdlc:task-work` sub-agent dispatch stalled for ~50 minutes on Step 2's resume-detection `AskUserQuestion`, which sub-agents can't interactively answer. The operator had to `TaskStop` the sub-agent and carry the work forward directly. This is the same verdict-contract escape pattern that motivated `[[2026-05-24-task-work-sub-agent-verdict-contract-escape-recurrence]]`, but with a different proximate cause (interactive prompt vs. intermediate marker leak). Worth a follow-up: when sub-agents hit `AskUserQuestion` they should fail with a structured ERROR rather than spin indefinitely. (Upstream-plugin: sdlc — cross-repo dispatch not invoked from this orchestrator context.)
+- The pre-flight permissions probe didn't catch missing permissions for the SDLC plugin's own scripts (`classify_pr.py`, `start_task.py`, `quality_baseline.py`, etc.); a dispatched sub-agent hit those denials mid-flow. Already tracked in `[[2026-05-24-task-work-preflight-permissions-probe-extension-for-skill-internal-scripts]]`; this incident is one more data point.
+- The sub-agent did meaningful work on the implementation (classify.rs, tests.rs, iron-log rename) but never committed before stalling. After `TaskStop`, the operator inherited a dirty worktree with 175 lines of unstaged changes. Recoverable, but the failure mode is "uncommitted progress lost to anomaly state" which is a worse end-state than "verdict surfaced cleanly with the work captured."
+
+### Spawned follow-up tasks
+
+- none — the friction items above are already tracked in existing tickets (`[[2026-05-24-task-work-sub-agent-verdict-contract-escape-recurrence]]`, `[[2026-05-24-task-work-preflight-permissions-probe-extension-for-skill-internal-scripts]]`).
