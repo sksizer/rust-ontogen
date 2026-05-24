@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: open/ready
+status: in-progress
 created: '2026-05-24'
 impact: low
 complexity: small
@@ -11,6 +11,8 @@ tags:
 - pumice-follow-up
 related: []
 autonomy: supervised
+readiness_verified_at: '2026-05-24T17:18:57Z'
+last_reviewed: '2026-05-24'
 ---
 # ontogen-ts: make string-literal quote style configurable via EmitConfig (currently always single-quoted)
 
@@ -97,3 +99,30 @@ End state: Pumice (sksizer/pumice#225 follow-up) can pass `quote_style: QuoteSty
 
 - Surfaced during the assessment of sksizer/pumice#225. The pre-bump (specta-emitted) `types.ts` had double-quoted enum literals; the post-bump (ontogen-ts) emission switched to single-quoted. The Pumice bump's review diff carries a chunk of pure-style noise as a result, which made the substantive changes harder to review. Making the quote style configurable lets consumers eliminate that noise on bumps.
 - Companion to `[[2026-05-23-ontogen-ts-transitive-walk-long-tail-field-types]]` and `[[2026-05-23-ontogen-ts-serde-default-as-ts-optional]]` — the third ontogen-ts gap surfaced by the Pumice bump. All three should be tackled together when prioritizing the ontogen-ts emit-shape backlog.
+
+## Post-mortem
+
+_Captured by /sdlc:task-work on 2026-05-24. PR: pending._
+
+### Acceptance criteria coverage
+
+- AC-1: auto — `cargo test -p ontogen-ts` (`enum_c_style_quote_style_single_default` + `enum_c_style_quote_style_double` in `emit.rs`; `emit_quote_style_default_single_quoted` + `emit_quote_style_double_double_quoted` in `tests/end_to_end.rs`). Both delimiter arms asserted against a `#[serde(rename_all = "lowercase")]` enum.
+- AC-2: auto — `cargo build` in `examples/iron-log/src-tauri/` succeeded; `git status examples/` reported no diff, confirming byte-identical TS under the unchanged `Single` default.
+- AC-3: deferred-user — Pumice consumer-side verification (sksizer/pumice#225 follow-up). The knob is wired and re-exported (`ontogen_ts::QuoteStyle`); Pumice's follow-up PR will set `quote_style: QuoteStyle::Double` on its `ClientsConfig` and confirm the resulting `types.ts` matches the pre-bump shape. Not exercisable from this repo without a Pumice checkout.
+- AC-4: auto — `just full-check` exit 0 on the worktree.
+
+### What worked
+
+- The Step-2 grep for `format!("'{...}", ...)` patterns landed both call sites in one shot — the emit surface is genuinely tiny here (two lines in `emit_enum_named`).
+- The `quote()` helper kept the dispatch in one place; the call-site edits were one-liners that compile and read cleanly.
+- The existing `EmitConfig::default()` test made it easy to assert the new field defaults correctly without a fresh test scaffold.
+
+### Friction and automation gaps
+
+- The Step-3a quality-check baseline capture (`quality_baseline.py capture ...`) hit a sandbox denial in this run despite the project's `sdlc.yaml` declaring `just full-check`. The runner had to skip the baseline and proceed without `--diff-against-baseline` at Step 7; in this case it didn't matter (no pre-existing drift), but a runner that hits actual drift on a fresh main would have to triage manually. The sandbox grant for `Bash(/Users/sksizer2/.claude/plugins/sdlc/scripts/quality_baseline.py *)` needs to be added to project `.claude/settings.local.json` (or the helper invoked via an already-permitted wrapper) so the baseline path can run without intervention. → [[2026-05-24-task-work-baseline-capture-sandbox-grant]]
+- Step 5b's rebase surfaced a conflict on the task file because the start-commit added `last_reviewed:` after the verify-stamp commit had already touched the frontmatter on the task branch. The conflict was trivial (keep both fields) but cost a manual edit + `git rebase --continue`. `start_task.py`'s rebase could either (a) auto-resolve the trivial frontmatter-merge case via a YAML-aware merge driver, or (b) reorder so the verify-stamp lands on top of the start-commit, removing the conflict entirely. → upstream/sdlc (cross-repo dispatch unavailable in this run; classification-failed, see report)
+
+### Spawned follow-up tasks
+
+- [[2026-05-24-task-work-baseline-capture-sandbox-grant]] — sandbox permission for `quality_baseline.py`, created
+- upstream-plugin (sdlc): `start_task.py` rebase trivial-frontmatter conflict — classification-failed (cross-repo PR dispatch not exercisable from this run)

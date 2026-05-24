@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use ontogen_ts::{EmitConfig, EmitError, TypePath, emit, scan_src_dir};
+use ontogen_ts::{EmitConfig, EmitError, QuoteStyle, TypePath, emit, scan_src_dir};
 
 /// Convenience: build a tempdir from `files` (each `(rel_path, content)`).
 fn make_tempdir(files: &[(&str, &str)]) -> tempfile::TempDir {
@@ -240,4 +240,41 @@ fn emit_empty_pool_with_no_roots_returns_empty_string() {
     let pool = scan_src_dir(dir.path()).unwrap();
     let ts = emit(&[], &pool, &EmitConfig::default()).unwrap();
     assert_eq!(ts, "");
+}
+
+#[test]
+fn emit_quote_style_default_single_quoted() {
+    // End-to-end coverage of the `EmitConfig::quote_style` knob via the
+    // public `emit()` entry point. Default behavior (Single) matches the
+    // pre-knob byte shape.
+    let dir = make_tempdir(&[(
+        "lib.rs",
+        "#[serde(rename_all = \"lowercase\")]
+        pub enum Color { Red, Green, Blue }",
+    )]);
+    let pool = scan_src_dir(dir.path()).unwrap();
+    let ts = emit(&[tp(&["Color"])], &pool, &EmitConfig::default()).unwrap();
+    assert!(ts.contains("'red'"), "ts was:\n{ts}");
+    assert!(ts.contains("'green'"), "ts was:\n{ts}");
+    assert!(ts.contains("'blue'"), "ts was:\n{ts}");
+    assert!(!ts.contains("\"red\""), "double-quoted leaked into single mode:\n{ts}");
+}
+
+#[test]
+fn emit_quote_style_double_double_quoted() {
+    // Flipping `quote_style: QuoteStyle::Double` swaps every variant
+    // delimiter without touching anything else. Same fixture as the
+    // Single test above — only the delimiter changes.
+    let dir = make_tempdir(&[(
+        "lib.rs",
+        "#[serde(rename_all = \"lowercase\")]
+        pub enum Color { Red, Green, Blue }",
+    )]);
+    let pool = scan_src_dir(dir.path()).unwrap();
+    let config = EmitConfig { quote_style: QuoteStyle::Double, ..EmitConfig::default() };
+    let ts = emit(&[tp(&["Color"])], &pool, &config).unwrap();
+    assert!(ts.contains("\"red\""), "ts was:\n{ts}");
+    assert!(ts.contains("\"green\""), "ts was:\n{ts}");
+    assert!(ts.contains("\"blue\""), "ts was:\n{ts}");
+    assert!(!ts.contains("'red'"), "single-quoted leaked into double mode:\n{ts}");
 }
