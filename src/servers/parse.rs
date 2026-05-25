@@ -31,6 +31,13 @@ pub enum ForcedMethod {
 }
 
 /// A parsed API function signature.
+///
+/// `Default` is provided so test fixtures can use `..Default::default()`
+/// to opt out of naming every field — see the unit tests in
+/// `src/servers/tests.rs`. The real parser path in this file populates
+/// every field explicitly and never relies on the default. Default values
+/// model an empty stateful fn (`name: ""`, `is_async: false`, no params,
+/// `return_type: "()"`, `force_method: None`, no command override).
 #[derive(Debug, Clone)]
 pub struct ApiFn {
     /// Function name (e.g., `list`, `get_by_id`, `create`).
@@ -92,6 +99,11 @@ pub struct ApiFn {
 }
 
 /// A single function parameter.
+///
+/// `Default` is provided so test fixtures can use `..Default::default()`
+/// — the real parser path always populates every field explicitly.
+/// `ty_ast` defaults to the unit type (`()`) because `syn::Type` does
+/// not impl `Default` directly.
 #[derive(Debug, Clone)]
 pub struct Param {
     /// Parameter name.
@@ -103,6 +115,38 @@ pub struct Param {
     /// Used by `collect_type_import` to walk into generic arguments
     /// instead of relying on substring checks against `ty`.
     pub ty_ast: syn::Type,
+}
+
+impl Default for ApiFn {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            is_async: false,
+            doc: String::new(),
+            params: Vec::new(),
+            return_type: "()".to_string(),
+            // `syn::Type` does not impl `Default`; the unit type is the
+            // most neutral stand-in and matches what `extract_result_ok_type`
+            // produces for fns with no `Result<_, _>` return.
+            return_type_ast: syn::parse_quote!(()),
+            first_param_is_store: false,
+            is_stateless: false,
+            force_method: None,
+            command_override: None,
+        }
+    }
+}
+
+impl Default for Param {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            ty: "()".to_string(),
+            // See `ApiFn`'s Default impl for why we hand-write this instead
+            // of deriving — `syn::Type` does not impl `Default`.
+            ty_ast: syn::parse_quote!(()),
+        }
+    }
 }
 
 /// An event function that returns a `broadcast::Receiver<T>`.
