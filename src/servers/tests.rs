@@ -99,7 +99,7 @@ fn client_test_config_with_prefix(api_dir: PathBuf) -> ClientsInternalConfig {
 /// parse as a `syn::Type`.
 fn param(name: &str, ty: &str) -> Param {
     let ty_ast: syn::Type = syn::parse_str(ty).expect("test param type must parse as syn::Type");
-    Param { name: name.to_string(), ty: ty.to_string(), ty_ast }
+    Param { name: name.to_string(), ty: ty.to_string(), ty_ast, ..Default::default() }
 }
 
 /// Parse a type string into a `syn::Type` for `ApiFn::return_type_ast` in tests.
@@ -670,14 +670,8 @@ fn test_classify_custom_operations() {
     let post_fn = ApiFn {
         name: "switch_project".to_string(),
         is_async: true,
-        doc: String::new(),
         params: vec![param("path", "&str")],
-        return_type: "()".to_string(),
-        return_type_ast: ty_ast("()"),
-        first_param_is_store: false,
-        is_stateless: false,
-        force_method: None,
-        command_override: None,
+        ..Default::default()
     };
     assert!(matches!(classify_op(&post_fn), OpKind::CustomPost));
 }
@@ -698,14 +692,9 @@ fn test_classify_no_params_defaults_to_post() {
     let action_fn = ApiFn {
         name: "detect_installed_openers".to_string(),
         is_async: true,
-        doc: String::new(),
-        params: vec![],
         return_type: "Vec<String>".to_string(),
         return_type_ast: ty_ast("Vec<String>"),
-        first_param_is_store: false,
-        is_stateless: false,
-        force_method: None,
-        command_override: None,
+        ..Default::default()
     };
     assert!(matches!(classify_op(&action_fn), OpKind::CustomPost));
 
@@ -713,14 +702,9 @@ fn test_classify_no_params_defaults_to_post() {
     let read_fn = ApiFn {
         name: "list_installed_openers".to_string(),
         is_async: true,
-        doc: String::new(),
-        params: vec![],
         return_type: "Vec<String>".to_string(),
         return_type_ast: ty_ast("Vec<String>"),
-        first_param_is_store: false,
-        is_stateless: false,
-        force_method: None,
-        command_override: None,
+        ..Default::default()
     };
     assert!(matches!(classify_op(&read_fn), OpKind::CustomGet));
 }
@@ -734,18 +718,7 @@ fn test_classify_no_params_defaults_to_post() {
 #[test]
 fn test_classify_zero_param_prefix_matrix() {
     fn zero_param(name: &str) -> ApiFn {
-        ApiFn {
-            name: name.to_string(),
-            is_async: true,
-            doc: String::new(),
-            params: vec![],
-            return_type: "()".to_string(),
-            return_type_ast: ty_ast("()"),
-            first_param_is_store: false,
-            is_stateless: true,
-            force_method: None,
-            command_override: None,
-        }
+        ApiFn { name: name.to_string(), is_async: true, is_stateless: true, ..Default::default() }
     }
 
     // Each row: (name, expect_get).
@@ -824,14 +797,10 @@ fn test_of016_classify_get_with_first_param_ast() {
         ApiFn {
             name: name.to_string(),
             is_async: true,
-            doc: String::new(),
             params: vec![param("arg", ty)],
             return_type: "String".to_string(),
             return_type_ast: ty_ast("String"),
-            first_param_is_store: false,
-            is_stateless: false,
-            force_method: None,
-            command_override: None,
+            ..Default::default()
         }
     }
 
@@ -871,14 +840,9 @@ fn test_of016_classify_get_with_first_param_ast() {
     let zero = ApiFn {
         name: "get_summary".to_string(),
         is_async: true,
-        doc: String::new(),
-        params: vec![],
         return_type: "Summary".to_string(),
         return_type_ast: ty_ast("Summary"),
-        first_param_is_store: false,
-        is_stateless: false,
-        force_method: None,
-        command_override: None,
+        ..Default::default()
     };
     assert!(matches!(classify_op(&zero), OpKind::CustomGet));
 }
@@ -898,18 +862,7 @@ fn test_of016_classify_get_with_first_param_ast() {
 #[test]
 fn test_force_method_post_overrides_classifier() {
     fn make_fn(name: &str, params: Vec<Param>, force_method: Option<ForcedMethod>) -> ApiFn {
-        ApiFn {
-            name: name.to_string(),
-            is_async: true,
-            doc: String::new(),
-            params,
-            return_type: "()".to_string(),
-            return_type_ast: ty_ast("()"),
-            first_param_is_store: false,
-            is_stateless: true,
-            force_method,
-            command_override: None,
-        }
+        ApiFn { name: name.to_string(), is_async: true, params, is_stateless: true, force_method, ..Default::default() }
     }
 
     // Zero-param non-read-prefix: default classifier and forced both produce CustomPost.
@@ -3525,15 +3478,13 @@ fn make_renamed_module(override_value: Option<&str>) -> ApiModule {
         name: "journal".to_string(),
         functions: vec![ApiFn {
             name: "get_tag_history".to_string(),
-            is_async: false,
             doc: "Get the tag history.".to_string(),
             params: vec![param("tag", "&str")],
             return_type: "Vec<HistoryEntry>".to_string(),
             return_type_ast: ty_ast("Vec<HistoryEntry>"),
             first_param_is_store: true,
-            is_stateless: false,
-            force_method: None,
             command_override: override_value.map(|s| s.to_string()),
+            ..Default::default()
         }],
         events: vec![],
         is_singleton: false,
