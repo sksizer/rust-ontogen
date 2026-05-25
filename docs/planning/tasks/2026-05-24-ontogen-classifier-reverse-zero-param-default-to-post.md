@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-05-24'
 impact: medium
 complexity: medium
@@ -12,8 +12,21 @@ tags:
 - pumice-follow-up
 related: []
 autonomy: supervised
-readiness_verified_at: '2026-05-24T17:17:51Z'
-last_reviewed: '2026-05-24'
+last_reviewed: '2026-05-25'
+completion_note: |
+  Shipped via #80 (merge 614e226, 2026-05-25). Breaking-change flip of
+  the zero-user-param classifier default from CustomGet to CustomPost,
+  with opt-back-into-GET via the new KNOWN_READ_PREFIXES allowlist
+  (`get_`, `list_`, `count_`, `exists_`, `find_`, `is_`, `has_`).
+  Iron-log's `stats::workout` was renamed to `stats::get_workout` to
+  keep GET classification (URL `/api/stats/workout` preserved by the
+  naming convention's get_-prefix strip). CHANGELOG flagged the
+  breaking change under [Unreleased]; alpha tag bump deferred to next
+  release cut. AC-3 (Pumice rebump dropping #[ontogen::http::post]
+  annotations) tracked in the companion Pumice PR. Implementation
+  started by a stalled task-work sub-agent (resume-detection
+  AskUserQuestion hang); operator carried forward directly — friction
+  captured in post-mortem and tracked in sksizer/dev#119's tickets.
 ---
 # ontogen: reverse the zero-user-param classifier default from CustomGet to CustomPost, opt-in to GET via known-read prefixes
 
