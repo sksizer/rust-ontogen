@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-05-24'
 last_reviewed: '2026-05-25'
 impact: low
@@ -11,7 +11,16 @@ tags:
 - apifn
 related:
 - 2026-05-24-ontogen-classifier-add-post-attribute-opt-in
-readiness_verified_at: '2026-05-25T00:46:13Z'
+completion_note: |
+  Shipped via #81. Manual `impl Default` on `ApiFn` and `Param` in
+  `src/servers/parse.rs` (derive failed because `syn::Type` has no
+  `Default`; impls fall back to `syn::parse_quote!(())` matching the
+  existing `extract_result_ok_type` pattern). 20 `ApiFn { ... }`
+  fixtures and the single `Param`-constructing test helper in
+  `src/servers/tests.rs` rewritten to use `..Default::default()`
+  tails. `parse_api_module` (the one real construction site) left
+  fully explicit per the task body's contract. Changelog follow-up
+  in #82 (raced the original merge).
 ---
 # rust-ontogen: derive Default on ApiFn so new fields don't require updating every test literal
 
