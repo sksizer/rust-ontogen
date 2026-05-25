@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING:** Reversed the HTTP-method classifier default for
+  zero-user-param custom functions. Previously, any zero-user-param fn
+  classified unconditionally as `OpKind::CustomGet` and routed as `GET`;
+  now, only names matching a known-read prefix (`get_`, `list_`, `count_`,
+  `exists_`, `find_`, `is_`, `has_`) opt back into `CustomGet`. Everything
+  else defaults to `OpKind::CustomPost` (routes as `POST`), per RFC 7231
+  §4.2.1 (GET is for retrieval, not action). Action-verb handlers like
+  `pause(state)`, `backup(state)`, `reset_all(state)` now correctly emit as
+  `POST` without needing an explicit `#[ontogen::http::post]` annotation.
+  Consumer-side migration: rename false-positive zero-user-param read
+  handlers to a known-read prefix (e.g. `workout` → `get_workout`), or
+  carry a forced-method override (today: `#[ontogen::http::post]` to keep
+  an action verb's POST routing explicit; a symmetric `::get` opt-in is
+  filed as a follow-up if false positives accumulate). The companion
+  task `2026-05-24-ontogen-classifier-add-post-attribute-opt-in` shipped
+  the POST override one alpha tag ahead so consumers could pre-annotate
+  on the old default.
+
 ## [0.1.0] - 2026-04-07
 
 ### Added

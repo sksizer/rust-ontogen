@@ -161,9 +161,9 @@ pub async fn workout_set_delete(id: String, state: State<'_, Arc<AppState>>) -> 
 // ── Stats IPC Commands ──
 
 #[tauri::command]
-pub async fn stat_workout(state: State<'_, Arc<AppState>>) -> Result<WorkoutStats, String> {
+pub async fn stat_get_workout(state: State<'_, Arc<AppState>>) -> Result<WorkoutStats, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    stats::workout(store).await.map_err(|e| e.to_string())
+    stats::get_workout(store).await.map_err(|e| e.to_string())
 }
 
 /// Generated IPC handler. Wire this into `tauri::Builder::invoke_handler()`.
@@ -189,6 +189,6 @@ pub fn ipc_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'sta
         workout_set_create,
         workout_set_update,
         workout_set_delete,
-        stat_workout,
+        stat_get_workout,
     ]
 }

@@ -725,9 +725,20 @@ fn test_classify_custom_operations() {
     assert!(matches!(classify_op(&post_fn), OpKind::CustomPost));
 }
 
+/// Zero-user-param functions now classify based on the name-prefix
+/// allowlist (see `KNOWN_READ_PREFIXES`): names matching a known-read
+/// prefix (`get_`, `list_`, `count_`, `exists_`, `find_`, `is_`, `has_`)
+/// classify as `CustomGet`; everything else defaults to `CustomPost`
+/// (RFC 7231 §4.2.1 — GET is for retrieval, not action).
+///
+/// Earlier behaviour: any zero-user-param fn unconditionally classified as
+/// `CustomGet`, which silently routed mutating action verbs (`pause`,
+/// `backup`, `reset_all`) as cacheable, retryable GETs. The default
+/// reversed in the task that introduced this test.
 #[test]
-fn test_classify_no_params_is_get() {
-    let no_param_fn = ApiFn {
+fn test_classify_no_params_defaults_to_post() {
+    // Non-read-prefixed name → CustomPost.
+    let action_fn = ApiFn {
         name: "detect_installed_openers".to_string(),
         is_async: true,
         doc: String::new(),
@@ -739,7 +750,85 @@ fn test_classify_no_params_is_get() {
         force_method: None,
         command_override: None,
     };
-    assert!(matches!(classify_op(&no_param_fn), OpKind::CustomGet));
+    assert!(matches!(classify_op(&action_fn), OpKind::CustomPost));
+
+    // Read-prefixed name → CustomGet.
+    let read_fn = ApiFn {
+        name: "list_installed_openers".to_string(),
+        is_async: true,
+        doc: String::new(),
+        params: vec![],
+        return_type: "Vec<String>".to_string(),
+        return_type_ast: ty_ast("Vec<String>"),
+        first_param_is_store: false,
+        is_stateless: false,
+        force_method: None,
+        command_override: None,
+    };
+    assert!(matches!(classify_op(&read_fn), OpKind::CustomGet));
+}
+
+/// Cover the full known-read-prefix allowlist for zero-user-param fns,
+/// plus a sampling of action-verb names that must now route as POST.
+///
+/// AC-1 of the task that introduced this test: `fn pause(state)` → POST;
+/// `fn get_state(state)` → GET; `fn list_items()` → GET; `fn backup(state)`
+/// → POST.
+#[test]
+fn test_classify_zero_param_prefix_matrix() {
+    fn zero_param(name: &str) -> ApiFn {
+        ApiFn {
+            name: name.to_string(),
+            is_async: true,
+            doc: String::new(),
+            params: vec![],
+            return_type: "()".to_string(),
+            return_type_ast: ty_ast("()"),
+            first_param_is_store: false,
+            is_stateless: true,
+            force_method: None,
+            command_override: None,
+        }
+    }
+
+    // Each row: (name, expect_get).
+    let cases: &[(&str, bool)] = &[
+        // Every known-read prefix → CustomGet.
+        ("get_state", true),
+        ("list_items", true),
+        ("count_widgets", true),
+        ("exists_user", true),
+        ("find_neighbors", true),
+        ("is_ready", true),
+        ("has_pending", true),
+        // Bare-prefix matches (`get_` alone is unusual but ought to match).
+        // We don't construct that case here because the name would be empty
+        // after the prefix; the production caller never sees such a fn.
+        // Action verbs / mutating handlers → CustomPost (the bug this
+        // task closes — previously these silently routed as GET).
+        ("pause", false),
+        ("resume", false),
+        ("backup", false),
+        ("reset_all", false),
+        ("rebuild_index", false),
+        ("publish", false),
+        ("snapshot", false), // noun, not a read prefix
+        ("workout", false),  // noun stats handler — should rename if it's a read
+    ];
+
+    for (name, expect_get) in cases {
+        let f = zero_param(name);
+        let op = classify_op(&f);
+        let got_get = matches!(op, OpKind::CustomGet);
+        assert_eq!(
+            got_get,
+            *expect_get,
+            "name=`{name}` got op={op:?} (expected {})",
+            if *expect_get { "CustomGet" } else { "CustomPost" }
+        );
+        // Cross-check: is_read_op must agree with the classifier.
+        assert_eq!(is_read_op(&op), *expect_get, "is_read_op must agree with classifier for `{name}`");
+    }
 }
 
 /// `is_read_op` checks an already-classified `OpKind`. Single source of
@@ -840,14 +929,15 @@ fn test_of016_classify_get_with_first_param_ast() {
 /// `force_method: Some(ForcedMethod::Post)` short-circuits the classifier
 /// and returns `OpKind::CustomPost` regardless of name/param shape.
 ///
-/// Covers the user-driven escape hatch wired up by the
-/// `#[ontogen::http::post]` attribute: zero-user-param mutating verbs
-/// (`pause(state)`, `reset_all(state)`, …) would otherwise route as
-/// `CustomGet` because they hit the empty-params branch of the
-/// auto-classifier. With the attribute, the parser stamps
-/// `force_method = Some(ForcedMethod::Post)` on the `ApiFn` and
-/// `classify_op` returns `CustomPost` early, so the HTTP generator emits a
-/// `post(...)` route.
+/// Historical context: the `#[ontogen::http::post]` escape hatch landed in
+/// the same milestone that flipped the zero-user-param classifier default
+/// from `CustomGet` to `CustomPost`. The attribute was the conservative
+/// opt-in that shipped first, letting consumers annotate mutating
+/// action-verb handlers (`pause(state)`, `reset_all(state)`, …) on the
+/// OLD default. With the default now flipped, the attribute is only
+/// needed to force POST on a name that DOES match a known-read prefix —
+/// the zero-param-without-read-prefix case the attribute originally
+/// targeted now POSTs by default.
 #[test]
 fn test_force_method_post_overrides_classifier() {
     fn make_fn(name: &str, params: Vec<Param>, force_method: Option<ForcedMethod>) -> ApiFn {
@@ -865,11 +955,19 @@ fn test_force_method_post_overrides_classifier() {
         }
     }
 
-    // Zero-param: default classifier says CustomGet; ForcedMethod::Post flips to CustomPost.
+    // Zero-param non-read-prefix: default classifier and forced both produce CustomPost.
     let pause_unforced = make_fn("pause", vec![], None);
-    assert!(matches!(classify_op(&pause_unforced), OpKind::CustomGet));
+    assert!(matches!(classify_op(&pause_unforced), OpKind::CustomPost));
     let pause_forced = make_fn("pause", vec![], Some(ForcedMethod::Post));
     assert!(matches!(classify_op(&pause_forced), OpKind::CustomPost));
+
+    // Zero-param read-prefix: default classifier says CustomGet;
+    // ForcedMethod::Post flips it to CustomPost. This is the path where
+    // the attribute remains load-bearing.
+    let get_unforced = make_fn("get_state", vec![], None);
+    assert!(matches!(classify_op(&get_unforced), OpKind::CustomGet));
+    let get_forced = make_fn("get_state", vec![], Some(ForcedMethod::Post));
+    assert!(matches!(classify_op(&get_forced), OpKind::CustomPost));
 
     // The override beats the named-CRUD branch too: `list` would normally
     // route as OpKind::List, but ForcedMethod::Post short-circuits before
@@ -878,13 +976,14 @@ fn test_force_method_post_overrides_classifier() {
     assert!(matches!(classify_op(&list_forced), OpKind::CustomPost));
 
     // Unrelated case: function that would already classify as CustomPost
-    // (zero-prefix name with id-like params) — ForcedMethod::Post is a no-op
-    // because the result is the same.
+    // (non-read-prefix name with id-like params) — ForcedMethod::Post is a
+    // no-op because the result is the same.
     let switch_forced = make_fn("switch_project", vec![param("path", "&str")], Some(ForcedMethod::Post));
     assert!(matches!(classify_op(&switch_forced), OpKind::CustomPost));
 
     // `is_read_op` agrees: forcing POST makes the op non-read.
     assert!(!is_read_op(&classify_op(&pause_forced)));
+    assert!(!is_read_op(&classify_op(&get_forced)));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3346,9 +3445,11 @@ fn test_post_attr_zero_param_classifies_as_custom_post() {
 #[ontogen::http::post]
 pub fn pause() -> Result<(), anyhow::Error> { todo!() }
 
-// Sibling fn without the attribute — should stay CustomGet.
+// Sibling fn without the attribute — uses a known-read prefix so it
+// classifies as CustomGet via the prefix allowlist (post zero-param
+// default flip; non-prefix names like `status` would default to POST).
 #[ontogen::stateless]
-pub fn status() -> Result<String, anyhow::Error> { todo!() }
+pub fn get_status() -> Result<String, anyhow::Error> { todo!() }
 "#,
     );
 
@@ -3363,11 +3464,11 @@ pub fn status() -> Result<String, anyhow::Error> { todo!() }
     );
     assert!(matches!(classify_op(pause_fn), OpKind::CustomPost), "ForcedMethod::Post must produce CustomPost");
 
-    let status_fn = module.functions.iter().find(|f| f.name == "status").unwrap();
-    assert!(status_fn.force_method.is_none(), "unmarked fn must keep force_method=None");
+    let get_status_fn = module.functions.iter().find(|f| f.name == "get_status").unwrap();
+    assert!(get_status_fn.force_method.is_none(), "unmarked fn must keep force_method=None");
     assert!(
-        matches!(classify_op(status_fn), OpKind::CustomGet),
-        "unmarked zero-param fn must stay CustomGet (no default change)"
+        matches!(classify_op(get_status_fn), OpKind::CustomGet),
+        "unmarked zero-param fn with known-read prefix must classify as CustomGet"
     );
 }
 
@@ -3421,7 +3522,7 @@ fn test_post_attr_emits_post_http_route() {
 pub fn pause() -> Result<(), anyhow::Error> { todo!() }
 
 #[ontogen::stateless]
-pub fn status() -> Result<String, anyhow::Error> { todo!() }
+pub fn get_status() -> Result<String, anyhow::Error> { todo!() }
 "#,
     );
 
@@ -3446,11 +3547,12 @@ pub fn status() -> Result<String, anyhow::Error> { todo!() }
         "pause route must not use get(...) — ForcedMethod::Post should win:\n{content}"
     );
 
-    // The `status` sibling stays GET (no attribute) — proves the attribute
-    // is opt-in, not a blanket module default.
+    // The `get_status` sibling routes as GET via the known-read prefix
+    // allowlist (without the attribute, non-prefix names would default to
+    // POST post zero-param default flip — `get_` opts back into GET).
     assert!(
-        content.contains("get(engine_status)"),
-        "unmarked status fn must still route as GET (default unchanged):\n{content}"
+        content.contains("get(engine_get_status)"),
+        "get_status fn must route as GET via known-read prefix:\n{content}"
     );
 }
 

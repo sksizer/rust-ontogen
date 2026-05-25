@@ -193,9 +193,9 @@ async fn workout_set_delete(
 
 // ── Stats Handlers ──
 
-async fn stat_workout(State(state): State<Arc<AppState>>) -> Result<Json<WorkoutStats>, ApiError> {
+async fn stat_get_workout(State(state): State<Arc<AppState>>) -> Result<Json<WorkoutStats>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    stats::workout(store).await.map(Json).map_err(|e| err(e.to_string()))
+    stats::get_workout(store).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 /// Generated routes. Call this from your main router.
@@ -209,5 +209,5 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
         .route("/api/workouts/:id", get(workout_get_by_id).put(workout_update).delete(workout_delete))
         .route("/api/workout-sets", get(workout_set_list).post(workout_set_create))
         .route("/api/workout-sets/:id", get(workout_set_get_by_id).put(workout_set_update).delete(workout_set_delete))
-        .route("/api/stats/workout", get(stat_workout))
+        .route("/api/stats/workout", get(stat_get_workout))
 }
