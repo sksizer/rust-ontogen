@@ -1,8 +1,9 @@
 ---
 type: task
 schema_version: '3'
-status: planning/draft
+status: in-progress
 created: '2026-05-24'
+last_reviewed: '2026-05-25'
 impact: low
 complexity: small
 tags:
@@ -10,6 +11,7 @@ tags:
 - apifn
 related:
 - 2026-05-24-ontogen-classifier-add-post-attribute-opt-in
+readiness_verified_at: '2026-05-25T00:46:13Z'
 ---
 # rust-ontogen: derive Default on ApiFn so new fields don't require updating every test literal
 
