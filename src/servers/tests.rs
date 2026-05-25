@@ -120,13 +120,10 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 name: "list".to_string(),
                 is_async: true,
                 doc: format!("List all {}s.", name),
-                params: vec![],
                 return_type: list_ret.clone(),
                 return_type_ast: ty_ast(&list_ret),
                 first_param_is_store: is_store_based,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
             ApiFn {
                 name: "get_by_id".to_string(),
@@ -136,9 +133,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type: single_ret.clone(),
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
             ApiFn {
                 name: "create".to_string(),
@@ -148,9 +143,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type: single_ret.clone(),
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
             ApiFn {
                 name: "update".to_string(),
@@ -160,21 +153,15 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
                 return_type: single_ret.clone(),
                 return_type_ast: ty_ast(&single_ret),
                 first_param_is_store: is_store_based,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
             ApiFn {
                 name: "delete".to_string(),
                 is_async: true,
                 doc: format!("Delete a {}.", name),
                 params: vec![param("id", "&str")],
-                return_type: "()".to_string(),
-                return_type_ast: ty_ast("()"),
                 first_param_is_store: is_store_based,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
         ],
         events: vec![],
@@ -194,10 +181,7 @@ fn make_custom_module() -> ApiModule {
                 params: vec![param("parent_id", "Option<&str>")],
                 return_type: "GraphSnapshot".to_string(),
                 return_type_ast: ty_ast("GraphSnapshot"),
-                first_param_is_store: false,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
             ApiFn {
                 name: "get_node_detail".to_string(),
@@ -206,10 +190,7 @@ fn make_custom_module() -> ApiModule {
                 params: vec![param("node_id", "&str")],
                 return_type: "NodeDetail".to_string(),
                 return_type_ast: ty_ast("NodeDetail"),
-                first_param_is_store: false,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
         ],
         events: vec![],
@@ -240,67 +221,43 @@ fn make_junction_module() -> ApiModule {
             // Junction add: add_skill(destination_id, skill_id)
             ApiFn {
                 name: "add_skill".to_string(),
-                is_async: false,
                 doc: "Link a skill to a destination.".to_string(),
                 params: vec![param("destination_id", "&str"), param("skill_id", "&str")],
-                return_type: "()".to_string(),
-                return_type_ast: ty_ast("()"),
-                first_param_is_store: false,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
             // Junction remove: remove_skill(destination_id, skill_id)
             ApiFn {
                 name: "remove_skill".to_string(),
-                is_async: false,
                 doc: "Unlink a skill from a destination.".to_string(),
                 params: vec![param("destination_id", "&str"), param("skill_id", "&str")],
-                return_type: "()".to_string(),
-                return_type_ast: ty_ast("()"),
-                first_param_is_store: false,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
             // Junction list (children-of-parent): list_skills(destination_id)
             ApiFn {
                 name: "list_skills".to_string(),
-                is_async: false,
                 doc: "List skills linked to a destination.".to_string(),
                 params: vec![param("destination_id", "&str")],
                 return_type: "Vec<Skill>".to_string(),
                 return_type_ast: ty_ast("Vec<Skill>"),
-                first_param_is_store: false,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
             // Junction list (reverse): list_destinations(skill_id)
             ApiFn {
                 name: "list_destinations".to_string(),
-                is_async: false,
                 doc: "List destinations linked to a skill.".to_string(),
                 params: vec![param("skill_id", "&str")],
                 return_type: "Vec<DestinationSkill>".to_string(),
                 return_type_ast: ty_ast("Vec<DestinationSkill>"),
-                first_param_is_store: false,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
             // Custom post: publish(destination_id, skill_id, version)
             ApiFn {
                 name: "publish".to_string(),
-                is_async: false,
                 doc: "Publish a skill to a destination.".to_string(),
                 params: vec![param("destination_id", "&str"), param("skill_id", "&str"), param("version", "i64")],
                 return_type: "PublishResult".to_string(),
                 return_type_ast: ty_ast("PublishResult"),
-                first_param_is_store: false,
-                is_stateless: false,
-                force_method: None,
-                command_override: None,
+                ..Default::default()
             },
         ],
         events: vec![],
