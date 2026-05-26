@@ -1,6 +1,19 @@
 ---
 schema_version: '3'
 status: planning/proposed
+impact: low
+complexity: small
+last_reviewed: 2026-05-24
+definition_gap: |
+  Design pass is rich but not implementation-ready. Missing required sections per the
+  task contract: no `## Today` table (current state of `crates/ontogen-ts/src/external.rs`
+  + `EmitConfig::external_types` in `src/types.rs`), no `## Files to touch` table with
+  Location/Kind/Change columns, no `## Acceptance criteria` checklist (only prose `## Scope`
+  In/Out lists), and explicit "Direction (sketch, not commitment)" wording defers the
+  final shape decision. Also unresolved: open questions around default-set evolution,
+  default-export support, and per-file dedup when OF-020 hierarchical layout lands. Task
+  is intentionally deferred speculative work — promote to ready only after a real consumer
+  asks for Moment/Luxon-style imported renderings.
 ---
 # OF-022 - Richer external-type renderings in `ontogen-ts` (imported TS types, not just primitives)
 

@@ -10,6 +10,9 @@ views:
       - file.name
       - status
       - resolution
+    sort:
+      - property: status
+        direction: DESC
     columnSize:
-      file.name: 271
-      note.status: 113
+      file.name: 421
+      note.status: 369

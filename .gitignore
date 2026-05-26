@@ -30,3 +30,5 @@ target/
 
 # Worktrees produced by /sdlc:task-work — never committed
 .claude/worktrees/
+
+.sdlc

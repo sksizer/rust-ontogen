@@ -5,6 +5,7 @@ status: planning/draft
 created: '2026-05-24'
 impact: medium
 complexity: small
+last_reviewed: '2026-05-24'
 tags: []
 related:
 - 2026-05-24-ontogen-ts-configurable-string-literal-quote-style

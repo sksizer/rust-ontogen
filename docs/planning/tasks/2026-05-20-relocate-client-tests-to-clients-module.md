@@ -11,8 +11,7 @@ tags:
 - tests
 related:
 - 2026-05-19-split-clients-from-servers
-definition_gap: 'v2-to-v3 migration flagged ambiguous touchpoint row(s): row ``src/servers/tests.rs``
-  carries removal/rename language (''remove'') — v3 kind cannot be inferred mechanically'
+last_reviewed: '2026-05-24'
 ---
 # Relocate client-side tests from src/servers/tests.rs to src/clients/tests.rs with shared fixtures
 

@@ -5,6 +5,12 @@ status: planning/draft
 created: '2026-05-20'
 impact: medium
 complexity: small
+last_reviewed: '2026-05-24'
+definition_gap: 'Files-to-touch row cites `plugin/skills/sdlc/task-work/SKILL.md`,
+  but the actual path is `plugin/skills/task-work/SKILL.md` (no `sdlc/` segment).
+  Approach Step 1 also cites the wrong path. Implementation-ready ``kind: modify``
+  rows require the path to resolve in the codebase — this one does not. Fix
+  the path in both Approach and Files to touch.'
 tags:
 - sdlc
 - task-work

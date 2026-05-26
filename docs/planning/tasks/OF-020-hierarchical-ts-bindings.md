@@ -1,6 +1,20 @@
 ---
 schema_version: '3'
 status: planning/proposed
+impact: low
+complexity: large
+last_reviewed: 2026-05-24
+definition_gap: |
+  Speculative follow-up. Body is a direction sketch, not an implementation
+  plan. Missing required implementation-ready sections: no `## Today`
+  table (current state of ontogen-ts flat emission), no `## Files to
+  touch` table (Location | Kind | Change), no `## Acceptance criteria`
+  checklist, no `## Out of scope` section in the required shape. Three
+  open questions remain unresolved (`_entities/` location, re-export
+  canonicalization, backward-compat strategy). Do not promote to
+  open/ready until a real consumer hits collision-fatigue with the
+  flat + `#[ts_name]` workflow shipped by OF-015 — at which point
+  these gaps need to be filled by a design pass.
 ---
 # OF-020 - Hierarchical TS bindings output for codebases with name collisions at scale
 

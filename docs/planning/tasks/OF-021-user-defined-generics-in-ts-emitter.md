@@ -1,6 +1,11 @@
 ---
 schema_version: '3'
 status: planning/proposed
+impact: low
+complexity: large
+last_reviewed: 2026-05-24
+definition_gap: |
+  Missing implementation-ready sections (## Today, ## Files to touch table, ## Acceptance criteria, ## Out of scope) and several unresolved design decisions: name-mangler spec for nested generics (terminal-ident-vs-full-path), bound-handling policy for strategy B (drop silently vs error), and whether strategies A and B can coexist on the same type. Also no `created:` frontmatter. Speculative follow-up to OF-015; should stay parked until a real consumer (Pumice empirical question in Notes) demonstrates the concrete-type-alias workaround is no longer acceptable.
 ---
 # OF-021 - Support user-defined generic types in `ontogen-ts`
 

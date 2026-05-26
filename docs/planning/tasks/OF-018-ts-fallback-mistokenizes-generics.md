@@ -1,6 +1,10 @@
 ---
 schema_version: '3'
 status: planning/proposed
+impact: low
+complexity: small
+last_reviewed: '2026-05-24'
+definition_gap: 'Stale file paths: transport.rs moved from src/servers/generators/ to src/clients/generators/ (commit e678999). FallbackRecord is now a defensive backstop post-OF-015 (commit 15664f9) but the buggy rust_type_to_ts/collect_ts_import in src/servers/types.rs:393,430 still feed ts_client.rs. Bug surface reduced but not eliminated. Missing Today / Files to touch sections.'
 ---
 # OF-018 - TS bindings fallback emitter mis-tokenizes generic return types
 
