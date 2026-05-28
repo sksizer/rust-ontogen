@@ -327,8 +327,14 @@ fn classify_type(ty: &Type) -> FieldType {
 
             match segments.last().map(String::as_str) {
                 Some("String") if segments.len() == 1 => FieldType::String,
-                Some("i32") if segments.len() == 1 => FieldType::I32,
-                Some("i64" | "u64") if segments.len() == 1 => FieldType::I64,
+                // Fold the wider Rust int set into the existing I32 / I64
+                // variants. u8/u16/u32 fit in i32; u64/u128/usize/isize/i128
+                // follow the established u64 → i64 convention ("SQLite has no
+                // unsigned integers"). Without this, a field like
+                // `step_index: u32` falls through to `Other("u32")` and ships
+                // the bare Rust ident into bindings.ts.
+                Some("i32" | "i8" | "i16" | "u8" | "u16" | "u32") if segments.len() == 1 => FieldType::I32,
+                Some("i64" | "u64" | "i128" | "u128" | "isize" | "usize") if segments.len() == 1 => FieldType::I64,
                 Some("f32") if segments.len() == 1 => FieldType::F32,
                 Some("f64") if segments.len() == 1 => FieldType::F64,
                 Some("bool") if segments.len() == 1 => FieldType::Bool,
@@ -336,8 +342,8 @@ fn classify_type(ty: &Type) -> FieldType {
                     let inner = extract_generic_arg(last_segment);
                     match inner.as_deref() {
                         Some("String") => FieldType::OptionString,
-                        Some("i32") => FieldType::OptionI32,
-                        Some("i64" | "u64") => FieldType::OptionI64,
+                        Some("i32" | "i8" | "i16" | "u8" | "u16" | "u32") => FieldType::OptionI32,
+                        Some("i64" | "u64" | "i128" | "u128" | "isize" | "usize") => FieldType::OptionI64,
                         Some("f32") => FieldType::OptionF32,
                         Some("f64") => FieldType::OptionF64,
                         Some("bool") => FieldType::OptionBool,
