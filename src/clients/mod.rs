@@ -208,7 +208,9 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
             if !exclude_prefixes.is_empty() {
                 pool.retain(|tp, _| {
                     let segs = tp.segments();
-                    !exclude_prefixes.iter().any(|prefix| segs.len() >= prefix.len() && &segs[..prefix.len()] == prefix.as_slice())
+                    !exclude_prefixes
+                        .iter()
+                        .any(|prefix| segs.len() >= prefix.len() && &segs[..prefix.len()] == prefix.as_slice())
                 });
             }
         }

@@ -4,3 +4,5 @@
 
 quality_checks:
   - just full-check
+
+lease_authority: origin
