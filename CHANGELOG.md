@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `Default` impl on `ApiFn` and `Param` in `src/servers/parse.rs`. Hand-written rather than derived because `syn::Type` (the `return_type_ast` / `ty_ast` fields) has no `Default`; both impls fall back to `syn::parse_quote!(())` for the AST fields, matching the existing pattern in `extract_result_ok_type`. The real parser path in `parse_api_module` still populates every field explicitly — `parse.rs` remains the unambiguous source of truth — but unit-test fixtures in `src/servers/tests.rs` now use `..Default::default()` tails. Adding a new field to either struct no longer cascades into editing every fixture (~20 sites previously); only the fixtures that exercise the new field's value need to change.
+
 ### Changed
 
 - **BREAKING:** Reversed the HTTP-method classifier default for
