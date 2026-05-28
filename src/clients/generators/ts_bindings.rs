@@ -289,7 +289,37 @@ fn field_to_ts(ft: &FieldType) -> String {
         FieldType::VecString => "string[]".into(),
         FieldType::VecStruct(name) => format!("{name}[]"),
         FieldType::OptionEnum(name) => format!("{name} | null"),
-        FieldType::Other(name) => name.clone(),
+        FieldType::Other(name) => {
+            // Map the wider Rust primitive set to TS. The typed FieldType
+            // variants above cover String / bool / i32 / i64 / f32 / f64 (and
+            // their Option<...> forms — the macro folds u64 into i64 since
+            // SQLite has no unsigned integers), but everything else —
+            // u8 / u16 / u32 / u128 / usize / i8 / i16 / i128 / isize and
+            // their `Option<...>` wrappers — falls through to `Other(...)`
+            // here. Without this we'd ship bare Rust idents to TS bindings
+            // (e.g. `step_index: u32`), which the consuming TS sees as an
+            // unresolved type and refuses to compile.
+            let trimmed = name.trim();
+            if let Some(p) = rust_primitive_to_ts(trimmed) {
+                return p.to_string();
+            }
+            if let Some(inner) = trimmed.strip_prefix("Option<").and_then(|s| s.strip_suffix('>'))
+                && let Some(p) = rust_primitive_to_ts(inner.trim())
+            {
+                return format!("{p} | null");
+            }
+            name.clone()
+        }
+    }
+}
+
+/// Map a single-ident Rust primitive scalar to the TS equivalent.
+fn rust_primitive_to_ts(name: &str) -> Option<&'static str> {
+    match name {
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32"
+        | "f64" => Some("number"),
+        "bool" => Some("boolean"),
+        _ => None,
     }
 }
 
