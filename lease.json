@@ -1,0 +1,1 @@
+{"min_client_version":"1.0.0","policies":{"allow_multiple_orchestrators":true,"default_lease_ttl_seconds":3600,"offline_mode":"speculative-only"},"sdlc_tooling":{"required_commit":"unknown","required_ref":"refs/heads/main","version":"0.0.0-migrated"},"sdlc_version":"1.0.0"}
