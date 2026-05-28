@@ -288,7 +288,14 @@ fn field_to_ts(ft: &FieldType) -> String {
         FieldType::OptionBool => "boolean | null".into(),
         FieldType::VecString => "string[]".into(),
         FieldType::VecStruct(name) => format!("{name}[]"),
-        FieldType::OptionEnum(name) => format!("{name} | null"),
+        FieldType::OptionEnum(name) => {
+            // The catch-all in the Option<...> classifier (parse.rs) routes
+            // any unknown inner ident here, including Rust primitives that
+            // don't have a dedicated typed variant (u8/u16/u32/i8/i16/isize/
+            // u128/i128/etc.). Map those to their TS equivalent so we don't
+            // ship bare Rust idents into bindings.ts.
+            if let Some(p) = rust_primitive_to_ts(name) { format!("{p} | null") } else { format!("{name} | null") }
+        }
         FieldType::Other(name) => {
             // Map the wider Rust primitive set to TS. The typed FieldType
             // variants above cover String / bool / i32 / i64 / f32 / f64 (and
