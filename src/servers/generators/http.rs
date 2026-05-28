@@ -182,8 +182,9 @@ pub struct PaginationParams {
         } else {
             ""
         };
-        // `store` is already `&Store`, so pass it directly; `state` needs `&`.
-        let first_arg = if is_store_module { "store" } else { "&state" };
+        // The constructed `store` is an owned `Store`; service fns take `&Store`,
+        // so borrow it. App-state fns take `&AppState`, so `state` also needs `&`.
+        let first_arg = if is_store_module { "&store" } else { "&state" };
 
         for f in &m.functions {
             let op = classify_op(f);
@@ -644,13 +645,13 @@ fn generate_generic_http_handler(
     }
 
     // Store construction for store-based functions without route_prefix.
-    // `store` is already `&Store`, so pass directly; `state` needs `&`.
+    // The constructed `store` is owned; service fns take `&Store`, so borrow it.
     // Stateless handlers pass no state/store and skip construction entirely.
     let first_arg: Option<&str> = if f.is_stateless {
         None
     } else if f.first_param_is_store && config.route_prefix.is_none() {
         out.push_str("    let store = state.store().await.map_err(|e| err(e.to_string()))?;\n");
-        Some("store")
+        Some("&store")
     } else {
         Some("&state")
     };

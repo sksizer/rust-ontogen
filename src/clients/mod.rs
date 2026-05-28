@@ -81,6 +81,7 @@ pub fn generate(
         schema_entities: config.schema_entities.clone(),
         pagination: config.pagination.clone(),
         pool_extra_roots: config.pool_extra_roots.clone(),
+        pool_exclude_paths: config.pool_exclude_paths.clone(),
     };
 
     generate_clients(&internal).map(|_| ()).map_err(CodegenError::Server)
@@ -161,6 +162,55 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
             // Main root's `use` tables win on a module-path collision, same as
             // the pool above.
             imports.merge(sibling_imports);
+        }
+
+        // 1b. Drop pool entries that fall under any configured exclude path.
+        //
+        //     Each `pool_exclude_paths` entry is interpreted as a filesystem
+        //     directory rooted at `CARGO_MANIFEST_DIR` (relative paths are
+        //     joined; absolute paths are used as-is). We canonicalise once and
+        //     translate the path to the module-segment prefix it corresponds
+        //     to under `<manifest>/src/`, then strip every pool key whose
+        //     segments start with that prefix.
+        //
+        //     Canonical use: ontogen's own `gen_seaorm` output. SeaORM emits
+        //     a `Relation` enum per entity by convention; in a project with
+        //     many entities those enums collide with any domain type also
+        //     named `Relation` and the resolver below reports Ambiguous.
+        //     Excluding the seaorm output directory removes the noise without
+        //     touching the consumer's types.
+        if !config.pool_exclude_paths.is_empty() {
+            let src_canon = std::fs::canonicalize(&src_dir).unwrap_or_else(|_| src_dir.clone());
+            let mut exclude_prefixes: Vec<Vec<String>> = Vec::new();
+            for excl in &config.pool_exclude_paths {
+                let resolved = if excl.is_absolute() { excl.clone() } else { manifest_dir.join(excl) };
+                let abs = std::fs::canonicalize(&resolved).unwrap_or(resolved);
+                let Ok(rel) = abs.strip_prefix(&src_canon) else {
+                    println!(
+                        "cargo:warning=ontogen-ts: pool_exclude_paths entry `{}` is not under \
+                         `{}/src/` after canonicalisation; ignoring",
+                        abs.display(),
+                        manifest_dir.display(),
+                    );
+                    continue;
+                };
+                let segments: Vec<String> = rel
+                    .components()
+                    .filter_map(|c| match c {
+                        std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+                        _ => None,
+                    })
+                    .collect();
+                if !segments.is_empty() {
+                    exclude_prefixes.push(segments);
+                }
+            }
+            if !exclude_prefixes.is_empty() {
+                pool.retain(|tp, _| {
+                    let segs = tp.segments();
+                    !exclude_prefixes.iter().any(|prefix| segs.len() >= prefix.len() && &segs[..prefix.len()] == prefix.as_slice())
+                });
+            }
         }
 
         // 2. Resolve each long-tail name to a TypePath via ontogen-ts's

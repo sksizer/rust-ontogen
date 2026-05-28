@@ -379,7 +379,11 @@ fn with_pagination_schema(mut schema: Value) -> Value {
 "
                         ));
                     } else {
-                        let args_param = if extraction.is_empty() { "_args" } else { "args" };
+                        // The closure body references `args` when it extracts params
+                        // (`extraction`) OR when a route prefix is configured (the prefix /
+                        // store-construction snippets read `args.get("project_id")`).
+                        let args_param =
+                            if extraction.is_empty() && config.route_prefix.is_none() { "_args" } else { "args" };
                         out.push_str(&format!(
                             "\
         McpToolDef {{

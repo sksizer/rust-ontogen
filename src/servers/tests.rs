@@ -61,6 +61,7 @@ fn client_test_config(api_dir: PathBuf) -> ClientsInternalConfig {
         schema_entities: Vec::new(),
         pagination: None,
         pool_extra_roots: Vec::new(),
+        pool_exclude_paths: Vec::new(),
     }
 }
 
@@ -1732,12 +1733,13 @@ fn test_http_generator_store_module_no_prefix() {
     // Should construct store from state
     assert!(content.contains("state.store().await"), "should construct store from state");
 
-    // Should pass store (already &Store) directly to service functions
-    assert!(content.contains("node::list(store)"), "should pass store to list");
-    assert!(content.contains("node::get_by_id(store, &id)"), "should pass store to get_by_id");
-    assert!(content.contains("node::create(store, input)"), "should pass store to create");
-    assert!(content.contains("node::update(store, &id, input)"), "should pass store to update");
-    assert!(content.contains("node::delete(store, &id)"), "should pass store to delete");
+    // Should borrow the constructed store (owned `Store`) to the `&Store`-taking
+    // service functions.
+    assert!(content.contains("node::list(&store)"), "should pass &store to list");
+    assert!(content.contains("node::get_by_id(&store, &id)"), "should pass &store to get_by_id");
+    assert!(content.contains("node::create(&store, input)"), "should pass &store to create");
+    assert!(content.contains("node::update(&store, &id, input)"), "should pass &store to update");
+    assert!(content.contains("node::delete(&store, &id)"), "should pass &store to delete");
 
     // Should have CRUD routes
     assert!(content.contains("/api/nodes"), "should have list route");
@@ -2443,6 +2445,7 @@ fn test_e2e_generate_transport_with_real_api() {
         pagination: None,
         schema_entities: Vec::new(),
         pool_extra_roots: Vec::new(),
+        pool_exclude_paths: Vec::new(),
     };
     crate::clients::generators::transport::generate(&ts_out, &bindings, &modules, &client_config);
     crate::clients::generators::admin::generate(&admin_out, &modules, &client_config);
@@ -2752,23 +2755,23 @@ pub async fn case_option_vec(store: &Store, tags: Option<Vec<String>>) -> Result
     // generated output get the entity prefix (`shape_`), so we match on the
     // bare service-fn portion: `shapes::case_..._args)`.
     let cases: &[(&str, &str)] = &[
-        ("case_ref_str", "shapes::case_ref_str(store, &text)"),
-        ("case_owned_string", "shapes::case_owned_string(store, id)"),
-        ("case_owned_bool", "shapes::case_owned_bool(store, enabled)"),
-        ("case_owned_u8", "shapes::case_owned_u8(store, count)"),
-        ("case_ref_struct", "shapes::case_ref_struct(store, profile_id)"),
-        ("case_input_struct", "shapes::case_input_struct(store, input)"),
-        ("case_owned_qualified", "shapes::case_owned_qualified(store, prefs)"),
-        ("case_ref_qualified", "shapes::case_ref_qualified(store, &prefs)"),
+        ("case_ref_str", "shapes::case_ref_str(&store, &text)"),
+        ("case_owned_string", "shapes::case_owned_string(&store, id)"),
+        ("case_owned_bool", "shapes::case_owned_bool(&store, enabled)"),
+        ("case_owned_u8", "shapes::case_owned_u8(&store, count)"),
+        ("case_ref_struct", "shapes::case_ref_struct(&store, profile_id)"),
+        ("case_input_struct", "shapes::case_input_struct(&store, input)"),
+        ("case_owned_qualified", "shapes::case_owned_qualified(&store, prefs)"),
+        ("case_ref_qualified", "shapes::case_ref_qualified(&store, &prefs)"),
         // The OF-011 regression: Option<u8> must pass `rating`, NOT
         // `rating.as_deref()`.
-        ("case_option_u8", "shapes::case_option_u8(store, rating)"),
-        ("case_option_owned_string", "shapes::case_option_owned_string(store, name)"),
-        ("case_option_ref_str", "shapes::case_option_ref_str(store, name.as_deref())"),
-        ("case_option_ref_struct", "shapes::case_option_ref_struct(store, profile.as_ref())"),
-        ("case_option_ref_slice", "shapes::case_option_ref_slice(store, bytes.as_deref())"),
-        ("case_option_ref_path", "shapes::case_option_ref_path(store, p.as_deref())"),
-        ("case_option_vec", "shapes::case_option_vec(store, tags)"),
+        ("case_option_u8", "shapes::case_option_u8(&store, rating)"),
+        ("case_option_owned_string", "shapes::case_option_owned_string(&store, name)"),
+        ("case_option_ref_str", "shapes::case_option_ref_str(&store, name.as_deref())"),
+        ("case_option_ref_struct", "shapes::case_option_ref_struct(&store, profile.as_ref())"),
+        ("case_option_ref_slice", "shapes::case_option_ref_slice(&store, bytes.as_deref())"),
+        ("case_option_ref_path", "shapes::case_option_ref_path(&store, p.as_deref())"),
+        ("case_option_vec", "shapes::case_option_vec(&store, tags)"),
     ];
 
     for (fn_name, expected_call) in cases {
@@ -2832,12 +2835,12 @@ pub async fn case_ref_bytes(store: &Store, payload: &[u8]) -> Result<(), anyhow:
     // declaration uses `param_to_owned_type`; the forwarding uses
     // `forward_arg_expr`. Both must agree.
     let cases: &[(&str, &str)] = &[
-        ("payload: Option<Vec<u8>>", "dst_shapes::case_opt_bytes(store, payload.as_deref())"),
-        ("p: Option<PathBuf>", "dst_shapes::case_opt_path(store, p.as_deref())"),
-        ("s: Option<CString>", "dst_shapes::case_opt_cstr(store, s.as_deref())"),
-        ("s: Option<OsString>", "dst_shapes::case_opt_osstr(store, s.as_deref())"),
-        ("s: Option<String>", "dst_shapes::case_opt_str(store, s.as_deref())"),
-        ("payload: Vec<u8>", "dst_shapes::case_ref_bytes(store, &payload)"),
+        ("payload: Option<Vec<u8>>", "dst_shapes::case_opt_bytes(&store, payload.as_deref())"),
+        ("p: Option<PathBuf>", "dst_shapes::case_opt_path(&store, p.as_deref())"),
+        ("s: Option<CString>", "dst_shapes::case_opt_cstr(&store, s.as_deref())"),
+        ("s: Option<OsString>", "dst_shapes::case_opt_osstr(&store, s.as_deref())"),
+        ("s: Option<String>", "dst_shapes::case_opt_str(&store, s.as_deref())"),
+        ("payload: Vec<u8>", "dst_shapes::case_ref_bytes(&store, &payload)"),
     ];
 
     for (decl, forward_call) in cases {

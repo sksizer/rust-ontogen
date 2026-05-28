@@ -400,6 +400,7 @@ pub fn gen_servers(
 ///         pagination: None,
 ///         schema_entities: vec![],
 ///         pool_extra_roots: vec![],
+///         pool_exclude_paths: vec![],
 ///     },
 /// )?;
 /// # Ok::<(), ontogen::CodegenError>(())
@@ -608,6 +609,20 @@ pub struct ClientsConfig {
     /// crate via `pub use`. Paths are resolved relative to
     /// `CARGO_MANIFEST_DIR`. On key collision the main pool wins.
     pub pool_extra_roots: Vec<PathBuf>,
+
+    /// Source paths to omit from the ontogen-ts type pool after scanning.
+    /// Each path is rooted at `CARGO_MANIFEST_DIR`, mirroring
+    /// [`pool_extra_roots`](Self::pool_extra_roots). Pool entries whose
+    /// module path lies under any excluded path are dropped before the
+    /// long-tail resolver runs.
+    ///
+    /// Canonical use: exclude the directory `gen_seaorm` was configured to
+    /// write to (e.g. `src/persistence/db/entities/generated`). SeaORM emits
+    /// a `Relation` enum per entity by convention, and any consumer with a
+    /// domain type also named `Relation` would otherwise see ambiguous
+    /// matches and abort. Pipeline users get this populated automatically
+    /// from their `seaorm()` step; direct callers set it explicitly.
+    pub pool_exclude_paths: Vec<PathBuf>,
 }
 
 // `AdminLayerConfig` and `install_admin_layer` are re-exported from the

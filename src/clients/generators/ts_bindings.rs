@@ -317,6 +317,7 @@ mod tests {
             schema_entities: Vec::new(),
             pagination: None,
             pool_extra_roots: Vec::new(),
+            pool_exclude_paths: Vec::new(),
         }
     }
 
