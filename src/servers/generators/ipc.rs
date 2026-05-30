@@ -192,7 +192,7 @@ pub struct PaginatedResult<T: Serialize> {
 
             // Determine per-function prefix and first-arg behavior
             let (fn_pp_line, fn_pp_body, first_arg) = if f.first_param_is_store {
-                (pp_line.clone(), store_construct.clone(), "store")
+                (pp_line.clone(), store_construct.clone(), "&store")
             } else {
                 (pp_line.clone(), pp_validate.clone(), "&state")
             };
@@ -459,7 +459,7 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
     let (fn_pp_body, first_arg) = if f.is_stateless {
         (String::new(), None)
     } else if f.first_param_is_store {
-        (store_construction_line(config), Some("store"))
+        (store_construction_line(config), Some("&store"))
     } else {
         (prefix_validation_line(config), Some("&state"))
     };
@@ -517,7 +517,7 @@ fn generate_paginated_ipc_handler(out: &mut String, module: &str, f: &ApiFn, con
     let (fn_pp_body, first_arg) = if f.is_stateless {
         (String::new(), None)
     } else if f.first_param_is_store {
-        (store_construction_line(config), Some("store"))
+        (store_construction_line(config), Some("&store"))
     } else {
         (prefix_validation_line(config), Some("&state"))
     };

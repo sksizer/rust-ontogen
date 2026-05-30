@@ -35,7 +35,17 @@ pub(crate) const DEFAULT_EXTERNAL_TYPES: &[(&str, &str)] = &[
     // IDs / strings
     ("uuid::Uuid", "string"),
     ("url::Url", "string"),
+    // std string-like types — all serde-serialize as JSON strings on the
+    // wire. The terminal-ident forms (`PathBuf`, `Path`, etc.) are also
+    // matched at the primitive layer in `emit::primitive_ts`; these
+    // multi-segment entries catch references written with the full
+    // `std::path::PathBuf` (etc.) canonical path.
     ("std::path::PathBuf", "string"),
+    ("std::path::Path", "string"),
+    ("std::ffi::OsString", "string"),
+    ("std::ffi::OsStr", "string"),
+    ("std::ffi::CString", "string"),
+    ("std::ffi::CStr", "string"),
     // Networking
     ("std::net::IpAddr", "string"),
     ("std::net::Ipv4Addr", "string"),

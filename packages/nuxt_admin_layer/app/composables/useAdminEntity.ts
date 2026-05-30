@@ -56,12 +56,17 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
       const method = config.value.listMethod as keyof typeof transport
       if (config.value.paginated) {
         const offset = (page.value - 1) * limit.value
-        const fn = transport[method] as (...args: unknown[]) => Promise<{ items: EntityRecord[]; total: number }>
+        // The Transport union spans CRUD + event-subscription method shapes;
+        // narrowing to the list-call signature requires going through
+        // `unknown` because the union has signatures (e.g. event
+        // subscriptions returning `Promise<() => void>`) that don't overlap
+        // with this paginated return type.
+        const fn = transport[method] as unknown as (...args: unknown[]) => Promise<{ items: EntityRecord[]; total: number }>
         const result = await fn(undefined, limit.value, offset)
         items.value = result.items
         total.value = result.total
       } else {
-        const fn = transport[method] as (...args: unknown[]) => Promise<EntityRecord[]>
+        const fn = transport[method] as unknown as (...args: unknown[]) => Promise<EntityRecord[]>
         items.value = await fn()
       }
     } catch (e) {

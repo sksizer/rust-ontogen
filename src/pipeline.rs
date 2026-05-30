@@ -343,6 +343,13 @@ impl Pipeline {
         // Stage 1: parse schema (always)
         let schema: SchemaOutput = parse_schema(&SchemaConfig { schema_dir: self.schema_dir.clone() })?;
 
+        // Remember the SeaORM `entity_output` directory (if configured) so we
+        // can auto-exclude it from the ontogen-ts type pool at the clients
+        // stage. SeaORM emits a `Relation` enum per entity by convention;
+        // those collide with any domain type also named `Relation` and would
+        // otherwise abort the long-tail resolver.
+        let seaorm_entity_output: Option<PathBuf> = self.seaorm.as_ref().map(|s| s.entity_output.clone());
+
         // Stage 2a: SeaORM
         let seaorm_out: Option<SeaOrmOutput> = match self.seaorm {
             Some(stage) => Some(gen_seaorm(
@@ -419,6 +426,14 @@ impl Pipeline {
             let mut clients_config = stage.config;
             if clients_config.schema_entities.is_empty() {
                 clients_config.schema_entities = schema.entities.clone();
+            }
+            // Auto-exclude the SeaORM `entity_output` directory from the
+            // ontogen-ts pool (see comment near the capture above). Only
+            // append when the caller hasn't already listed it.
+            if let Some(entity_output) = &seaorm_entity_output
+                && !clients_config.pool_exclude_paths.iter().any(|p| p == entity_output)
+            {
+                clients_config.pool_exclude_paths.push(entity_output.clone());
             }
             gen_clients(api_out.as_ref(), &stage.scan_dirs, &clients_config)?;
         }

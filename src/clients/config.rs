@@ -73,6 +73,15 @@ pub(crate) struct Config {
 
     /// Additional source roots to merge into the ontogen-ts type pool.
     pub pool_extra_roots: Vec<PathBuf>,
+
+    /// Source paths to omit from the ontogen-ts type pool after scanning.
+    /// Each path is rooted at `CARGO_MANIFEST_DIR`, mirroring
+    /// [`pool_extra_roots`](Self::pool_extra_roots). Pool entries whose
+    /// module path lies under any excluded path are dropped before the
+    /// long-tail resolver runs — the canonical use case is excluding
+    /// ontogen's own `gen_seaorm` output, whose per-entity `Relation`
+    /// enums otherwise collide with any domain type named `Relation`.
+    pub pool_exclude_paths: Vec<PathBuf>,
 }
 
 /// Client-side code generators (TypeScript + admin registry).

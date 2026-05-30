@@ -752,7 +752,16 @@ fn primitive_ts(name: &str, config: &EmitConfig) -> Option<&'static str> {
         // `String` and string slices — `&str` reaches us via the reference
         // arm above, but its inner type is `str` (a bare ident), which we
         // catch here.
-        "String" | "str" => Some("string"),
+        //
+        // The remaining entries cover the rest of std's string-like family:
+        // owned `PathBuf` / `OsString` / `CString` and their unsized borrow
+        // forms `Path` / `OsStr` / `CStr`. All six serde-serialize as JSON
+        // strings on the wire, so they render as TS `string`. Matching on
+        // the terminal ident (rather than the full canonical path) catches
+        // the common `use std::path::PathBuf;` + bare-name reference; the
+        // multi-segment forms (`std::path::PathBuf`, etc.) are also covered
+        // in `crate::external::DEFAULT_EXTERNAL_TYPES`.
+        "String" | "str" | "PathBuf" | "Path" | "OsString" | "OsStr" | "CString" | "CStr" => Some("string"),
         _ => None,
     }
 }
@@ -838,6 +847,35 @@ mod tests {
     #[test]
     fn primitive_char_renders_as_string() {
         assert_eq!(emit("char"), "string");
+    }
+
+    #[test]
+    fn primitive_std_string_like_types_render_as_string() {
+        // Owned variants — common in DTO field positions.
+        assert_eq!(emit("PathBuf"), "string");
+        assert_eq!(emit("OsString"), "string");
+        assert_eq!(emit("CString"), "string");
+        // Unsized borrow forms — show up via Option<&Path>, etc.
+        assert_eq!(emit("Path"), "string");
+        assert_eq!(emit("OsStr"), "string");
+        assert_eq!(emit("CStr"), "string");
+        // Reference forms compose with the reference arm.
+        assert_eq!(emit("&Path"), "string");
+        assert_eq!(emit("Option<PathBuf>"), "string | null");
+        assert_eq!(emit("Vec<PathBuf>"), "string[]");
+    }
+
+    #[test]
+    fn std_string_like_full_path_resolves_through_external_table() {
+        // The fall-through arm canonicalizes multi-segment paths against
+        // the external-types table — confirm the `std::path::PathBuf`
+        // (etc.) entries resolve to `string`.
+        assert_eq!(emit("std::path::PathBuf"), "string");
+        assert_eq!(emit("std::path::Path"), "string");
+        assert_eq!(emit("std::ffi::OsString"), "string");
+        assert_eq!(emit("std::ffi::OsStr"), "string");
+        assert_eq!(emit("std::ffi::CString"), "string");
+        assert_eq!(emit("std::ffi::CStr"), "string");
     }
 
     // ── Containers ──────────────────────────────────────────────────────

@@ -148,6 +148,37 @@ fn emit_external_type_resolves_to_default_rendering() {
 }
 
 #[test]
+fn emit_std_string_like_field_types_render_as_string() {
+    // Regression: prior to the std-type mapping, a struct field typed as
+    // `PathBuf` (or any of the std string-like family) emitted a bare TS
+    // identifier (`p: PathBuf;`), leaving consumers to ship an ambient
+    // `type PathBuf = string` shim. Confirm the full family renders as
+    // `string` — owned forms via the primitive layer, multi-segment forms
+    // via the external-types table.
+    let dir = make_tempdir(&[(
+        "lib.rs",
+        r#"
+        pub struct Paths {
+            pub bare_path_buf: PathBuf,
+            pub full_path_buf: std::path::PathBuf,
+            pub os_string: OsString,
+            pub c_string: CString,
+        }
+        "#,
+    )]);
+    let pool = scan_src_dir(dir.path()).unwrap();
+    let ts = emit(&[tp(&["Paths"])], &pool, &EmitConfig::default()).unwrap();
+    assert!(ts.contains("bare_path_buf: string"), "ts was:\n{ts}");
+    assert!(ts.contains("full_path_buf: string"), "ts was:\n{ts}");
+    assert!(ts.contains("os_string: string"), "ts was:\n{ts}");
+    assert!(ts.contains("c_string: string"), "ts was:\n{ts}");
+    // Make sure no bare identifier leaks through as a TS type reference.
+    assert!(!ts.contains(": PathBuf"), "PathBuf leaked as ident:\n{ts}");
+    assert!(!ts.contains(": OsString"), "OsString leaked as ident:\n{ts}");
+    assert!(!ts.contains(": CString"), "CString leaked as ident:\n{ts}");
+}
+
+#[test]
 fn emit_user_override_wins_on_external_types() {
     // User passes a per-call override; it should beat the shipped default.
     let dir = make_tempdir(&[(
