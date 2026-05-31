@@ -2188,6 +2188,32 @@ fn test_http_generator_junction_module() {
 }
 
 #[test]
+fn test_http_generator_junction_routes_deterministic_across_runs() {
+    // Junction routes are collected into a map keyed by URL path, then
+    // iterated to emit `.route(...)` lines. If that map is a HashMap, the
+    // iteration order changes between runs (per-instance RandomState), which
+    // makes consumers of `write_if_changed` rewrite the output every cargo
+    // invocation — and on `tauri dev`, that causes an infinite rebuild
+    // loop because the file watcher sees the new mtime.
+    //
+    // Generate twice (two separate map instances inside one process) and
+    // assert the byte-for-byte output is identical. Pre-fix this fails on
+    // every other run; post-fix (BTreeMap) it holds.
+    let tmp = tempfile::tempdir().unwrap();
+    let out_a = tmp.path().join("a.rs");
+    let out_b = tmp.path().join("b.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    let modules = vec![make_junction_module()];
+
+    crate::servers::generators::http::generate(&out_a, &modules, &config);
+    crate::servers::generators::http::generate(&out_b, &modules, &config);
+
+    let a = std::fs::read_to_string(&out_a).unwrap();
+    let b = std::fs::read_to_string(&out_b).unwrap();
+    assert_eq!(a, b, "http.rs generator output must be byte-identical across runs with identical input");
+}
+
+#[test]
 fn test_ts_transport_junction_module() {
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("generated.ts");
