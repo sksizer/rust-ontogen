@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.1.1] - 2026-06-01
+## [0.2.1] - 2026-06-01
 
 ### Added
 
@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - flip zero-param classifier default to CustomPost; opt back into CustomGet via known-read prefix allowlist
 - map Rust std string-like types to TS `string`
 - classify wider Rust int set into I32/I64 (and their Option<...>) The parser only matched i32 / i64 / u64 against the typed FieldType variants. Anything else (u8 / u16 / u32 / u128 / usize / i8 / i16 / i128 / isize) fell through to FieldType::Other(...) — for bare types — or FieldType::OptionEnum(...) — for Option<...> wrappers (since the catch-all in the Option arm misclassifies any unknown inner as an enum). Both eventually emit the raw Rust ident into bindings.ts, which the consuming TS sees as an unresolved type name. Fold u8/u16/u32 into I32 (they fit), and u64/u128/usize/isize/i128 into I64, following the established u64 → i64 convention ('SQLite has no unsigned integers'). Same treatment for the Option<...> arm. The previous commit's ts_bindings.rs fallback in the Other(...) arm stays as defense in depth.
+- cut 0.2.0
 
 ### Changed
 
