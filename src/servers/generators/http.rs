@@ -145,9 +145,19 @@ pub struct PaginationParams {
         );
     }
 
-    // Generate handlers and collect routes
+    // Generate handlers and collect routes.
+    //
+    // `junction_routes` uses BTreeMap so the emit order is the natural sort
+    // of route paths, not HashMap iteration order. Iteration order matters
+    // because the generated `http.rs` is written via `write_if_changed`:
+    // if the bytes differ between cargo invocations, the file gets rewritten
+    // even when no API surface changed — and on consumers running
+    // `tauri dev`, that triggers an infinite rebuild loop (the file
+    // watcher sees the new mtime, kicks off another `cargo run`, which
+    // re-runs build.rs, which re-emits with a fresh per-process RandomState
+    // seed, etc.).
     let mut route_entries: Vec<String> = Vec::new();
-    let mut junction_routes: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut junction_routes: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
 
     for m in modules {
         let module = &m.name;
