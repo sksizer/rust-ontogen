@@ -11,10 +11,10 @@
     "admin-fields.ts"
   ],
   "dependencies": {
-    "@ontogen/admin-types": "file:../admin-types",
     "pathe": "^2.0.0"
   },
   "peerDependencies": {
+    "@ontogen/admin-types": "*",
     "nuxt": "^4.0.0",
     "@nuxt/icon": "^1.0.0 || ^2.0.0",
     "dompurify": "^3.0.0",
@@ -32,6 +32,7 @@
     }
   },
   "devDependencies": {
+    "@ontogen/admin-types": "workspace:*",
     "nuxt": "^4.0.0",
     "vue": "^3.5.0"
   }

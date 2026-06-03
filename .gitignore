@@ -1,5 +1,6 @@
 # directories
 target/
+node_modules/
 
 # files
 **/*.rs.bk
