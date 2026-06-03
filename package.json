@@ -1,0 +1,7 @@
+{
+  "name": "rust-ontogen-workspace-root",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Workspace root for rust-ontogen npm packages (admin-types, nuxt_admin_layer). Not published.",
+  "packageManager": "pnpm@10.24.0"
+}
