@@ -141,28 +141,66 @@ pub fn write_and_format_ts(path: &Path, content: impl AsRef<str>) -> Result<(), 
         .map_err(|e| CodegenError::Client(format!("Failed to write {}: {e}", path.display())))
 }
 
+/// Walk up from `start` looking for the nearest ancestor directory that
+/// contains a `node_modules` subdirectory. Returns that ancestor (where a
+/// node-package-manager binary like `pnpm exec` / `npx` can resolve a
+/// project-local install).
+fn find_node_modules_root(start: &Path) -> Option<PathBuf> {
+    let mut cur: PathBuf = start.to_path_buf();
+    loop {
+        if cur.join("node_modules").is_dir() {
+            return Some(cur);
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
 /// Run `prettier` on a string in memory, returning the formatted result.
 ///
 /// `virtual_path` tells prettier where the file will live so it can
 /// resolve the nearest `.prettierrc` config automatically.
 ///
-/// Returns `CodegenError::ExternalTool` if `npx` cannot be spawned.
+/// We prefer `pnpm exec prettier` rooted at the nearest `node_modules`
+/// above the output file. That handles the build-script case where CWD
+/// (e.g. `src-tauri/`) has no `node_modules` of its own but the TS file
+/// is being written under one (e.g. `src-nuxt/app/transport/`) — the
+/// previous unconditional `npx` from the inherited CWD couldn't reach
+/// the project-local install and consistently exited 127, emitting a
+/// fallback warning per generated file.
+///
+/// If no `node_modules` is reachable from `virtual_path` (e.g. tests
+/// writing to a tempdir), we fall back to `npx prettier` with the
+/// inherited CWD — preserves the previous behaviour for that path so
+/// existing tests that rely on the cargo-test runner's CWD still find a
+/// prettier install.
+///
+/// Returns `CodegenError::ExternalTool` if neither launcher can spawn.
 fn prettier_string(input: &str, virtual_path: &Path) -> Result<String, CodegenError> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new("npx")
-        .arg("prettier")
+    let nm_root = virtual_path.parent().and_then(find_node_modules_root);
+    let (launcher, sub) = if nm_root.is_some() { ("pnpm", Some("exec")) } else { ("npx", None) };
+
+    let mut cmd = Command::new(launcher);
+    if let Some(s) = sub {
+        cmd.arg(s);
+    }
+    cmd.arg("prettier")
         .arg("--stdin-filepath")
         .arg(virtual_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| CodegenError::ExternalTool {
-            tool: "npx (prettier)",
-            detail: format!("failed to spawn: {e}. Is Node.js installed? Try: npm install -g prettier"),
-        })?;
+        .stderr(Stdio::null());
+    if let Some(ref cwd) = nm_root {
+        cmd.current_dir(cwd);
+    }
+    let mut child = cmd.spawn().map_err(|e| CodegenError::ExternalTool {
+        tool: if nm_root.is_some() { "pnpm (prettier)" } else { "npx (prettier)" },
+        detail: format!("failed to spawn: {e}. Is Node.js installed? Try: npm install -g pnpm prettier"),
+    })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(input.as_bytes());
