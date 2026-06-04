@@ -5,7 +5,7 @@ resolver = "3"
 
 [package]
 name = "ontogen"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Build-time code generator for ontology-driven applications: schema → persistence → store → API → servers → clients"
