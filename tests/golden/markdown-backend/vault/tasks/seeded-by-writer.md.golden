@@ -1,0 +1,14 @@
+---
+title: Seeded by the typed writer
+status: open
+created: 2026-06-06
+epic: '[[markdown-backend]]'
+tags:
+- '[[codegen]]'
+---
+This record pins the TYPED-WRITE shape: what generated create/update code
+produces when it serializes entity values through the emitter (note the
+date is unquoted — a String value that happens to look like a date emits
+as a bare scalar; it round-trips as a string regardless). The sibling
+`ship-the-emitter` golden pins the HAND-AUTHORED parse shape instead;
+the two roles are deliberately separate files.

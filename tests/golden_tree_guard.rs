@@ -17,6 +17,7 @@ fn golden_spec_tree_is_present_and_nonempty() {
         "store/note.rs.golden",
         "vault/notes/welcome.md.golden",
         "vault/tasks/ship-the-emitter.md.golden",
+        "vault/tasks/seeded-by-writer.md.golden",
         "vault/epics/markdown-backend.md.golden",
     ];
     for rel in expected {

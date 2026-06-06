@@ -37,7 +37,14 @@ assertions (09); the emitter (08) is adjusted until green.
    by `tests/backend_parity.rs` (09) with a committed negative control.
    `StoreMethodMeta` collection never branches on backend.
 4. **Hook lifecycle and `emit_change` points fire identically** on both
-   backends, with identical signatures.
+   backends, with identical signatures — **and identical values**: on
+   entities with `has_many`/derived relations, markdown `get` and the
+   `current` passed to `before_update` are populated via the reverse walk
+   *before* hooks fire, matching SeaORM's populate-before-hooks ordering
+   (G1 finding; the cost is the documented O(N)-walk trade, cap-guarded).
+   One known, declared divergence: `set_*_parent` on a missing child is a
+   silent 0-row no-op on SeaORM but NotFound-shaped on markdown — recorded
+   for the parity gate and the ADR amendment.
 5. **Markdown consumer contract** (the whole delta vs SeaORM):
    `Store { vault: markdown_store::VaultHandle, change_tx }` + `vault()`
    accessor; `AppError::Md(String)` + `From<markdown_store::Error>`;
@@ -49,9 +56,12 @@ assertions (09); the emitter (08) is adjusted until green.
    paths, no hidden/trailing-dot-or-space stems).
 7. **List semantics**: lexicographic by id (extension-stripped path sort —
    raw path order diverges at suffix boundaries), in-memory
-   `skip(offset).take(limit)`, loud `list_cap` (default 10k). **No `OrderBy`
-   parameter**: ADR contract item 3 promises one, item 5 forbids the
-   signature change that would deliver it; item 5 wins (amendment item).
+   `skip(offset).take(limit)`, loud `list_cap` (default 10k). The cap fires
+   on the directory *total*, before pagination — past the cap even page 1
+   errors; that is the deliberate "wrong backend for this N" signal
+   (G1-confirmed, documented). **No `OrderBy` parameter**: ADR contract
+   item 3 promises one, item 5 forbids the signature change that would
+   deliver it; item 5 wins (amendment item).
 8. **Atomicity**: single-record only — same-dir tempfile + fsync + rename.
    No multi-record transactions; no batch ops in v1, so the ADR's
    `AtomicityError`-vs-`BatchPartialFailure` naming conflict is resolved by
@@ -59,8 +69,10 @@ assertions (09); the emitter (08) is adjusted until green.
 9. **Byte-stability over hand-authored corpora** (program requirement
    T-Z0PE, folded in mid-campaign): a parsed `Document` renders its original
    source **byte-for-byte while semantically untouched**; all mutators are
-   change-aware, so no-op updates are zero-diff writes. A real mutation
-   currently re-emits the whole frontmatter block (the explicit interim
+   change-aware; and a no-op read-modify-write **skips the write entirely**
+   (no tempfile/fsync/rename, no mtime or inode churn — G1 hardening). A
+   real mutation currently re-emits the whole frontmatter block (the
+   explicit interim
    normalization whitelist; YAML comments in that block are lost). Narrowing
    to surgical per-key rewrites is scheduled with the fidelity harness —
    release-blocking for the data plane, per T-Z0PE.
@@ -78,6 +90,21 @@ assertions (09); the emitter (08) is adjusted until green.
     markdown-vault's `serde_yml`/`libyml` are archived and RUSTSEC-flagged
     unsound (2025-0068/-0067, serializer segfault path, no patch); the
     crates-merge alignment flips direction — markdown-vault migrates.
+13. **Create-with-derived-id** (G1 resolution): `CreateInput.id` stays
+    `String`, DTO output stays backend-identical, and **empty id means
+    derive** — generated create filters emptiness into
+    `create_record_derived(provided=None, …)`. The `From<CreateInput>` impl
+    is the unmodified shared `gen_update` passthrough (`id: input.id`).
+    Whether Create DTOs gain `#[serde(default)]` on `id` (JSON clients may
+    omit the field, both backends identically) is decided in the
+    wikilink-policy PR as a declared shared change.
+14. **Conformance normalization** (G1 resolution): goldens are committed in
+    edition-2024 rustfmt-normal form with no non-emitter content; the
+    harness compares `rustfmt(generated, repo config, consumer edition)`
+    against the golden bytes **as committed** — nothing stripped at test
+    time. Vault goldens carry two declared roles in separate files:
+    hand-authored parse exemplars (byte-stable round-trip) vs typed-write
+    exemplars (emitter scalar cosmetics, e.g. unquoted date-like strings).
 
 ## Crate extraction survey (user ask: "other general functional crates")
 
