@@ -82,6 +82,12 @@ pub fn remove(path: &Path) -> Result<(), Error> {
 /// Read-modify-write one record atomically: read → parse [`Document`] →
 /// caller mutates it → render → [`write_atomic`].
 ///
+/// **No-op cycles never touch the file**: if the closure leaves the
+/// document semantically unchanged ([`Document::is_dirty`] is false), the
+/// write is skipped entirely — no tempfile, no fsync, no rename, no
+/// mtime/inode churn. A no-op update over a git-tracked vault is literally
+/// nothing, not a byte-identical rewrite.
+///
 /// This is the single-record update primitive (`update`, `set_parent`).
 /// Note it is atomic against *readers* (rename), not against a concurrent
 /// writer — intra-process write serialization is the vault handle's job,
@@ -102,6 +108,9 @@ where
     let raw = read(path)?;
     let mut doc = Document::parse(&raw).map_err(|e| Error::parse_at(path, e))?;
     f(&mut doc)?;
+    if !doc.is_dirty() {
+        return Ok(());
+    }
     let rendered = doc.render()?;
     write_atomic(path, &rendered)
 }
@@ -189,6 +198,29 @@ mod tests {
         assert!(after.contains("status: closed"));
         assert!(after.contains("extra: kept"));
         assert!(after.ends_with("---\nBody stays.\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn noop_rmw_never_touches_the_file() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tmp();
+        let path = dir.path().join("t.md");
+        write_atomic(&path, "---\nstatus: open\n---\nbody\n").unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+
+        // A no-op cycle: read, set the same value, write back.
+        read_modify_write(&path, |doc| {
+            doc.set("status", "open");
+            Ok(())
+        })
+        .unwrap();
+
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(before.ino(), after.ino(), "no-op RMW must not replace the file (inode changed)");
+        assert_eq!(before.mtime_nsec(), after.mtime_nsec(), "no-op RMW must not bump mtime");
+        assert_eq!(before.mtime(), after.mtime());
     }
 
     #[test]
