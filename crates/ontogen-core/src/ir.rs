@@ -170,6 +170,7 @@ pub enum Backend {
 
 /// Store layer output. Methods from both generated and scanned sources,
 /// normalized into the same `StoreMethodMeta` type.
+#[derive(Debug)]
 pub struct StoreOutput {
     /// Generated + scanned store methods, same type.
     pub methods: Vec<StoreMethodMeta>,

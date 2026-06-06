@@ -25,7 +25,7 @@ use std::fs;
 
 use crate::ir::{CrudOp, ParamMeta, ScaffoldMeta, Source, StoreMethodKind, StoreMethodMeta, StoreOutput};
 use crate::schema::model::EntityDef;
-use crate::{CodegenError, SeaOrmOutput, StoreConfig};
+use crate::{CodegenError, StoreConfig};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -33,12 +33,13 @@ use crate::{CodegenError, SeaOrmOutput, StoreConfig};
 ///
 /// Writes generated CRUD files to `config.output_dir` and scaffolds hook files
 /// in `config.hooks_dir`. Returns `StoreOutput` metadata for downstream
-/// generators (gen_api, gen_servers).
-pub fn generate(
-    entities: &[EntityDef],
-    _seaorm: Option<&SeaOrmOutput>,
-    config: &StoreConfig,
-) -> Result<StoreOutput, CodegenError> {
+/// generators (gen_api, gen_servers). The persistence backend is selected by
+/// `config.backend` (ADR 0001).
+pub fn generate(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOutput, CodegenError> {
+    // Resolve the backend up front so an unimplemented choice fails loudly
+    // before any files are written.
+    let backend = backends::for_backend(&config.backend)?;
+
     let output_dir = &config.output_dir;
     fs::create_dir_all(output_dir)
         .map_err(|e| CodegenError::Store(format!("Failed to create {}: {e}", output_dir.display())))?;
@@ -58,7 +59,7 @@ pub fn generate(
         let snake = helpers::to_snake_case(&entity.name);
 
         // Generate the entity's store module
-        let code = generate_entity_store(entity, config);
+        let code = generate_entity_store(backend, entity, config);
 
         let path = output_dir.join(format!("{snake}.rs"));
         crate::write_and_format(&path, &code)?;
@@ -114,8 +115,7 @@ pub fn generate(
 /// [`collect_method_meta`] never branching on backend, that is what makes
 /// the downstream `gen_api`/`gen_servers`/`gen_clients` output byte-identical
 /// across backends (ADR 0001, contract item 5).
-fn generate_entity_store(entity: &EntityDef, config: &StoreConfig) -> String {
-    let backend = backends::active();
+fn generate_entity_store(backend: &dyn backends::StoreBackend, entity: &EntityDef, config: &StoreConfig) -> String {
     let snake = helpers::to_snake_case(&entity.name);
     let schema_path = &config.schema_module_path;
     let mut code = String::with_capacity(4096);
