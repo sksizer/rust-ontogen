@@ -12,11 +12,11 @@ The store layer sits between your persistence layer and your API. For each entit
 ```rust
 let store_output = ontogen::gen_store(
     &schema.entities,
-    Some(&seaorm_output),  // optional SeaORM metadata
     &ontogen::StoreConfig {
         output_dir: PathBuf::from("src/store/generated"),
         hooks_dir: Some(PathBuf::from("src/store/hooks")),
         schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+        backend: ontogen::Backend::Seaorm(Some(seaorm_output)),
     },
 )?;
 ```
@@ -28,6 +28,7 @@ let store_output = ontogen::gen_store(
 | `output_dir` | `PathBuf` | Directory for generated store modules |
 | `hooks_dir` | `Option<PathBuf>` | Directory for scaffolded hook files. `None` skips hook scaffolding. |
 | `schema_module_path` | `String` | Rust import path for the schema module in generated code. Use [`ontogen::DEFAULT_SCHEMA_MODULE_PATH`](/reference/public-api/#default_schema_module_path) (`"crate::schema"`) for the canonical default. |
+| `backend` | `Backend` | The persistence backend the generated CRUD bodies are wired to (ADR 0001): `Backend::Seaorm(Option<SeaOrmOutput>)` or `Backend::Markdown(MarkdownIoOutput)` — see [the markdown backend guide](/guides/markdown-backend/). Everything above the store is byte-identical between backends. |
 
 When `hooks_dir` is `Some`, the generator creates hook files for new entities (never overwrites existing ones). When `None`, hook scaffolding is skipped entirely, but the generated CRUD code still calls hook functions -- you're responsible for providing the modules yourself.
 
@@ -491,19 +492,27 @@ The five standard methods per entity are:
 | `update_{entity}` | `Crud(Update)` | `Entity` |
 | `delete_{entity}` | `Crud(Delete)` | `()` |
 
-### How SeaOrmOutput Enriches Generation
+### Backend Selection
 
-The `seaorm` parameter to `gen_store` is optional:
+The persistence backend is carried by `StoreConfig::backend` (ADR 0001):
 
 ```rust
-// With SeaORM metadata (preferred)
-let store = ontogen::gen_store(&entities, Some(&seaorm_output), &config)?;
+// SeaORM, with metadata (the payload is reserved for future enrichment;
+// today both forms derive junction/FK names by the same conventions):
+backend: ontogen::Backend::Seaorm(Some(seaorm_output)),
+backend: ontogen::Backend::Seaorm(None),
 
-// Without -- infers junction table names from conventions
-let store = ontogen::gen_store(&entities, None, &config)?;
+// Markdown: always carries the metadata gen_markdown_io returned —
+// vault layout, id strategy, and per-entity directory mapping.
+backend: ontogen::Backend::Markdown(markdown_output),
 ```
 
-When `SeaOrmOutput` is provided, the store generator uses the exact junction table names and FK column names from the SeaORM layer. When absent, it derives them using the same naming conventions (`{entity}_{field}` for junction tables, `{entity}_id` for FK columns). In practice, both paths produce the same names, but passing the output makes the dependency explicit and catches naming mismatches early.
+`Pipeline` users rarely set this directly: with exactly one persistence
+stage configured the backend is inferred, and `.store_backend(...)`
+disambiguates when both are enabled. See [the markdown backend
+guide](/guides/markdown-backend/) for everything that differs below the
+store boundary — and the one thing that doesn't: `gen_api`, `gen_servers`,
+and `gen_clients` output is byte-identical between backends.
 
 ## Method Naming
 
