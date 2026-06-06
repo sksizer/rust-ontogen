@@ -328,14 +328,33 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
 /// Append `ts` to the bindings file at `bindings_path`, prefixed with a
 /// short comment that identifies the source. Creates the file if missing
 /// (the schema-known emitter writes it first, but be defensive).
+///
+/// Idempotent across reruns:
+///   1. Strip any previously-appended long-tail block (the marker comment
+///      anchors the boundary) so re-running doesn't double the section.
+///   2. Write the recombined content via `write_if_changed` so identical
+///      output across runs doesn't bump the file's mtime — without this,
+///      file watchers (e.g. `tauri dev`) see the touch and trigger an
+///      infinite rebuild loop.
 fn append_long_tail_to_bindings(bindings_path: &std::path::Path, ts: &str) -> Result<(), String> {
-    let mut existing = std::fs::read_to_string(bindings_path).unwrap_or_default();
-    existing.push_str("\n// Long-tail types (emitted via ontogen-ts AST walker).\n");
-    existing.push_str(ts);
-    if !existing.ends_with('\n') {
-        existing.push('\n');
+    const MARKER: &str = "\n// Long-tail types (emitted via ontogen-ts AST walker).\n";
+
+    let existing = std::fs::read_to_string(bindings_path).unwrap_or_default();
+    let base = match existing.find(MARKER) {
+        Some(idx) => &existing[..idx],
+        None => existing.as_str(),
+    };
+
+    let mut content = String::with_capacity(base.len() + MARKER.len() + ts.len() + 1);
+    content.push_str(base);
+    content.push_str(MARKER);
+    content.push_str(ts);
+    if !content.ends_with('\n') {
+        content.push('\n');
     }
-    std::fs::write(bindings_path, existing).map_err(|e| format!("failed to append to {}: {e}", bindings_path.display()))
+
+    ontogen_core::utils::write_if_changed(bindings_path, content.as_bytes())
+        .map_err(|e| format!("failed to write {}: {e}", bindings_path.display()))
 }
 
 /// Emit `cargo:rerun-if-changed=<path>` for every `.rs` file recursively
