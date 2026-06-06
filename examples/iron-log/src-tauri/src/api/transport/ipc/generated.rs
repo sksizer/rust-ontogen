@@ -20,19 +20,19 @@ use crate::store::Store;
 #[tauri::command]
 pub async fn exercise_list(state: State<'_, Arc<AppState>>) -> Result<Vec<Exercise>, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    exercise::list(store).await.map_err(|e| e.to_string())
+    exercise::list(&store).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn exercise_get_by_id(id: String, state: State<'_, Arc<AppState>>) -> Result<Exercise, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    exercise::get_by_id(store, &id).await.map_err(|e| e.to_string())
+    exercise::get_by_id(&store, &id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn exercise_create(input: CreateExerciseInput, state: State<'_, Arc<AppState>>) -> Result<Exercise, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    exercise::create(store, input).await.map_err(|e| e.to_string())
+    exercise::create(&store, input).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -42,13 +42,13 @@ pub async fn exercise_update(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Exercise, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    exercise::update(store, &id, input).await.map_err(|e| e.to_string())
+    exercise::update(&store, &id, input).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn exercise_delete(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    exercise::delete(store, &id).await.map_err(|e| e.to_string())
+    exercise::delete(&store, &id).await.map_err(|e| e.to_string())
 }
 
 // ── Tag IPC Commands ──
@@ -56,31 +56,31 @@ pub async fn exercise_delete(id: String, state: State<'_, Arc<AppState>>) -> Res
 #[tauri::command]
 pub async fn tag_list(state: State<'_, Arc<AppState>>) -> Result<Vec<Tag>, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    tag::list(store).await.map_err(|e| e.to_string())
+    tag::list(&store).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn tag_get_by_id(id: String, state: State<'_, Arc<AppState>>) -> Result<Tag, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    tag::get_by_id(store, &id).await.map_err(|e| e.to_string())
+    tag::get_by_id(&store, &id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn tag_create(input: CreateTagInput, state: State<'_, Arc<AppState>>) -> Result<Tag, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    tag::create(store, input).await.map_err(|e| e.to_string())
+    tag::create(&store, input).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn tag_update(id: String, input: UpdateTagInput, state: State<'_, Arc<AppState>>) -> Result<Tag, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    tag::update(store, &id, input).await.map_err(|e| e.to_string())
+    tag::update(&store, &id, input).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn tag_delete(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    tag::delete(store, &id).await.map_err(|e| e.to_string())
+    tag::delete(&store, &id).await.map_err(|e| e.to_string())
 }
 
 // ── Workout IPC Commands ──
@@ -88,19 +88,19 @@ pub async fn tag_delete(id: String, state: State<'_, Arc<AppState>>) -> Result<(
 #[tauri::command]
 pub async fn workout_list(state: State<'_, Arc<AppState>>) -> Result<Vec<Workout>, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    workout::list(store).await.map_err(|e| e.to_string())
+    workout::list(&store).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn workout_get_by_id(id: String, state: State<'_, Arc<AppState>>) -> Result<Workout, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    workout::get_by_id(store, &id).await.map_err(|e| e.to_string())
+    workout::get_by_id(&store, &id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn workout_create(input: CreateWorkoutInput, state: State<'_, Arc<AppState>>) -> Result<Workout, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    workout::create(store, input).await.map_err(|e| e.to_string())
+    workout::create(&store, input).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -110,13 +110,13 @@ pub async fn workout_update(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Workout, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    workout::update(store, &id, input).await.map_err(|e| e.to_string())
+    workout::update(&store, &id, input).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn workout_delete(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    workout::delete(store, &id).await.map_err(|e| e.to_string())
+    workout::delete(&store, &id).await.map_err(|e| e.to_string())
 }
 
 // ── Workout_set IPC Commands ──
@@ -124,13 +124,13 @@ pub async fn workout_delete(id: String, state: State<'_, Arc<AppState>>) -> Resu
 #[tauri::command]
 pub async fn workout_set_list(state: State<'_, Arc<AppState>>) -> Result<Vec<WorkoutSet>, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    workout_set::list(store).await.map_err(|e| e.to_string())
+    workout_set::list(&store).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn workout_set_get_by_id(id: String, state: State<'_, Arc<AppState>>) -> Result<WorkoutSet, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    workout_set::get_by_id(store, &id).await.map_err(|e| e.to_string())
+    workout_set::get_by_id(&store, &id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -139,7 +139,7 @@ pub async fn workout_set_create(
     state: State<'_, Arc<AppState>>,
 ) -> Result<WorkoutSet, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    workout_set::create(store, input).await.map_err(|e| e.to_string())
+    workout_set::create(&store, input).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -149,13 +149,13 @@ pub async fn workout_set_update(
     state: State<'_, Arc<AppState>>,
 ) -> Result<WorkoutSet, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    workout_set::update(store, &id, input).await.map_err(|e| e.to_string())
+    workout_set::update(&store, &id, input).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn workout_set_delete(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    workout_set::delete(store, &id).await.map_err(|e| e.to_string())
+    workout_set::delete(&store, &id).await.map_err(|e| e.to_string())
 }
 
 // ── Stats IPC Commands ──
@@ -163,7 +163,7 @@ pub async fn workout_set_delete(id: String, state: State<'_, Arc<AppState>>) -> 
 #[tauri::command]
 pub async fn stat_get_workout(state: State<'_, Arc<AppState>>) -> Result<WorkoutStats, String> {
     let store = state.store().await.map_err(|e| e.to_string())?;
-    stats::get_workout(store).await.map_err(|e| e.to_string())
+    stats::get_workout(&store).await.map_err(|e| e.to_string())
 }
 
 /// Generated IPC handler. Wire this into `tauri::Builder::invoke_handler()`.
