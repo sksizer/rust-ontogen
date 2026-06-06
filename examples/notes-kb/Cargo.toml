@@ -1,0 +1,32 @@
+# An Obsidian-vault-shaped knowledge base: notes whose `links` are wikilinks
+# to other notes, served by the generated API with a zero-dependency graph
+# view. Own workspace (outside root CI); examples-ci.yml builds it.
+[workspace]
+
+[package]
+name = "notes-kb"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+# Compose the sibling rust-markdown workspace's markdown-vault crate for tag
+# extraction over the same files — the two-crate boundary demo (markdown-store
+# writes/round-trips; markdown-vault reads/extracts). Off by default: the
+# path dependency requires ../../../rust-markdown to be checked out.
+vault-tags = ["dep:markdown-vault"]
+
+[dependencies]
+markdown-store = { path = "../../crates/markdown-store" }
+markdown-vault = { path = "../../../rust-markdown/crates/markdown-vault", optional = true }
+ontogen-macros = { path = "../../crates/ontogen-macros" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+specta = { version = "=2.0.0-rc.23", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
+axum = "0.7"
+tower-http = { version = "0.6", features = ["fs"] }
+
+[build-dependencies]
+ontogen = { path = "../../" }

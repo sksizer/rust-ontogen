@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>notes-kb — wikilink graph</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 14px/1.5 ui-monospace, monospace; background: #14161a; color: #d7dae0; }
+  header { padding: 12px 16px; border-bottom: 1px solid #2a2e35; display: flex; gap: 16px; align-items: baseline; }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+  header span { color: #8b93a1; font-size: 12px; }
+  #graph { width: 100vw; height: calc(100vh - 45px); display: block; }
+  line { stroke: #3b4250; stroke-width: 1.2; }
+  circle { fill: #8ab4f8; cursor: grab; }
+  text { fill: #aeb6c2; font-size: 11px; pointer-events: none; }
+  #detail { position: fixed; right: 12px; top: 57px; width: 320px; max-height: 70vh; overflow: auto;
+            background: #1b1e24; border: 1px solid #2a2e35; border-radius: 6px; padding: 12px 14px;
+            white-space: pre-wrap; display: none; }
+  #detail h2 { font-size: 13px; margin: 0 0 8px; color: #8ab4f8; }
+</style>
+</head>
+<body>
+<header>
+  <h1>notes-kb</h1>
+  <span>each node is a markdown file in <code>data/vault/notes/</code>; each edge a <code>[[wikilink]]</code>. Click a node.</span>
+</header>
+<svg id="graph"></svg>
+<div id="detail"><h2 id="d-title"></h2><div id="d-body"></div></div>
+<script type="module">
+// Talks to the generated HTTP API (see generated-ts/ for the typed client;
+// this page stays framework-free on purpose — the full app frontend is the
+// consumer's to shape).
+const notes = await (await fetch('/api/notes')).json();
+const svg = document.getElementById('graph');
+const W = svg.clientWidth, H = svg.clientHeight;
+const idx = new Map(notes.map((n, i) => [n.id, i]));
+const N = notes.length || 1;
+const pos = notes.map((_, i) => ({
+  x: W / 2 + Math.cos(2 * Math.PI * i / N) * Math.min(W, H) * 0.33,
+  y: H / 2 + Math.sin(2 * Math.PI * i / N) * Math.min(W, H) * 0.33,
+}));
+
+// A few relaxation passes pull linked notes together.
+for (let pass = 0; pass < 120; pass++) {
+  for (const n of notes) {
+    const a = pos[idx.get(n.id)];
+    for (const target of n.links) {
+      const j = idx.get(target);
+      if (j === undefined) continue;
+      const b = pos[j];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      a.x += dx * 0.005; a.y += dy * 0.005;
+      b.x -= dx * 0.005; b.y -= dy * 0.005;
+    }
+  }
+  for (let i = 0; i < notes.length; i++) for (let j = i + 1; j < notes.length; j++) {
+    const a = pos[i], b = pos[j];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d2 = Math.max(dx * dx + dy * dy, 1);
+    if (d2 < 220 * 220) { const f = 1800 / d2; a.x -= dx * f; a.y -= dy * f; b.x += dx * f; b.y += dy * f; }
+  }
+}
+
+const ns = 'http://www.w3.org/2000/svg';
+for (const n of notes) {
+  const a = pos[idx.get(n.id)];
+  for (const target of n.links) {
+    const j = idx.get(target);
+    if (j === undefined) continue;
+    const line = document.createElementNS(ns, 'line');
+    line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+    line.setAttribute('x2', pos[j].x); line.setAttribute('y2', pos[j].y);
+    svg.appendChild(line);
+  }
+}
+for (const n of notes) {
+  const p = pos[idx.get(n.id)];
+  const c = document.createElementNS(ns, 'circle');
+  c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 7 + 2 * n.links.length);
+  c.addEventListener('click', () => {
+    document.getElementById('d-title').textContent = n.title;
+    document.getElementById('d-body').textContent = n.body;
+    document.getElementById('detail').style.display = 'block';
+  });
+  svg.appendChild(c);
+  const t = document.createElementNS(ns, 'text');
+  t.setAttribute('x', p.x + 12); t.setAttribute('y', p.y + 4);
+  t.textContent = n.title;
+  svg.appendChild(t);
+}
+</script>
+</body>
+</html>
