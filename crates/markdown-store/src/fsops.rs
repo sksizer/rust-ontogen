@@ -15,6 +15,13 @@ use std::{fs, io, path::Path};
 use crate::{error::Error, frontmatter::Document};
 
 /// Read a file to a string. A missing file is [`Error::NotFound`].
+///
+/// Follows symlinks (plain `std::fs` semantics): a vault file that is a
+/// symlink reads its target, wherever it points. Writes and deletes do NOT
+/// follow (rename replaces the link itself; remove unlinks the link), so a
+/// hostile link can't redirect mutations — but under the single-user threat
+/// model, link-following reads are accepted and documented rather than
+/// blocked.
 pub fn read(path: &Path) -> Result<String, Error> {
     fs::read_to_string(path).map_err(|e| match e.kind() {
         io::ErrorKind::NotFound => Error::NotFound { path: path.to_path_buf() },
@@ -41,6 +48,15 @@ pub fn exists(path: &Path) -> bool {
 /// Writes to a `tempfile::NamedTempFile` created in `path`'s parent
 /// directory, fsyncs it, then persists (renames) it over `path`. Parent
 /// directories are created as needed.
+///
+/// Scope of the guarantee: readers see the old or the new complete file,
+/// never a torn write (rename visibility). The parent directory is not
+/// fsynced after the rename, so crash-*durability* of the rename itself is
+/// filesystem-dependent — neither this crate nor ADR 0001 promises it.
+/// Replacing an existing target follows `rename(2)` semantics: on Unix a
+/// read-only target is replaced (only the directory's permissions matter);
+/// on Windows, rename over a read-only file fails — a caveat for the
+/// eventual cross-platform pass.
 pub fn write_atomic(path: &Path, content: &str) -> Result<(), Error> {
     let io_err = |e: io::Error| Error::Io { path: path.to_path_buf(), source: e };
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
@@ -116,9 +132,12 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_write_leaves_old_content_intact() {
-        // Simulate a crash between temp-write and rename: the temp file is
-        // written but never persisted. The target must be untouched.
+    fn unpersisted_temp_never_touches_target() {
+        // An honest, narrow claim: temp-file activity in the same directory
+        // (the write path's staging area) is invisible to the target until
+        // persist(). This does NOT fault-inject write_atomic internally —
+        // that needs a failure seam and is tracked as a hardening follow-up;
+        // the atomicity argument otherwise rests on rename(2) semantics.
         let dir = tmp();
         let path = dir.path().join("f.md");
         write_atomic(&path, "original\n").unwrap();
@@ -128,6 +147,20 @@ mod tests {
         drop(tmp_file); // "crash": temp cleaned up, no rename happened
 
         assert_eq!(read(&path).unwrap(), "original\n");
+    }
+
+    #[test]
+    fn write_atomic_leaves_no_temp_residue() {
+        let dir = tmp();
+        let path = dir.path().join("f.md");
+        write_atomic(&path, "one\n").unwrap();
+        write_atomic(&path, "two\n").unwrap();
+
+        let entries: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["f.md"], "no stray temp files after writes: {entries:?}");
     }
 
     #[test]

@@ -122,6 +122,10 @@ pub use crate::store::VaultHandle;
 
 /// Bulk import of the common surface:
 /// `use markdown_store::prelude::*;`
+///
+/// Rule of thumb: applications use the prelude; libraries (and generated
+/// code) spell out module paths (`markdown_store::wikilink::strip`) so call
+/// sites stay greppable.
 pub mod prelude {
     pub use crate::{frontmatter::Document, id::IdStrategy, layout::VaultLayout, wikilink, Error};
 

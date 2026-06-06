@@ -32,11 +32,10 @@ fn create_task(vault: &VaultHandle, title: &str, epic: Option<&str>, tags: &[&st
         epic: epic.map(wikilink::encode),
         tags: tags.iter().map(|t| wikilink::encode(t)).collect(),
     };
-    let id = vault.make_record_id("tasks", None, Some(title))?;
     let mut doc = Document::new();
     doc.merge_serialize(&task, TASK_FIELDS)?;
-    vault.create_record("tasks", &id, &doc)?;
-    Ok(id)
+    // Id derivation + dedup + write happen atomically under the write lock.
+    vault.create_record_derived("tasks", None, Some(title), &doc)
 }
 
 fn main() -> Result<(), Error> {

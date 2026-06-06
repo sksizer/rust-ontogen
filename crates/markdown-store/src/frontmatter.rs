@@ -131,7 +131,7 @@ pub fn split(src: &str) -> (Option<&str>, &str) {
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Document {
-    fm: serde_yml::Mapping,
+    fm: serde_norway::Mapping,
     body: String,
     had_frontmatter: bool,
 }
@@ -152,16 +152,16 @@ impl Document {
     pub fn parse(src: &str) -> Result<Self, Error> {
         let (yaml, body) = split(src);
         match yaml {
-            None => Ok(Self { fm: serde_yml::Mapping::new(), body: body.to_string(), had_frontmatter: false }),
+            None => Ok(Self { fm: serde_norway::Mapping::new(), body: body.to_string(), had_frontmatter: false }),
             Some(yaml) if yaml.trim().is_empty() => {
-                Ok(Self { fm: serde_yml::Mapping::new(), body: body.to_string(), had_frontmatter: true })
+                Ok(Self { fm: serde_norway::Mapping::new(), body: body.to_string(), had_frontmatter: true })
             }
             Some(yaml) => {
-                let value: serde_yml::Value =
-                    serde_yml::from_str(yaml).map_err(|e| Error::Parse { message: e.to_string() })?;
+                let value: serde_norway::Value =
+                    serde_norway::from_str(yaml).map_err(|e| Error::Parse { message: e.to_string() })?;
                 let fm = match value {
-                    serde_yml::Value::Mapping(m) => m,
-                    serde_yml::Value::Null => serde_yml::Mapping::new(),
+                    serde_norway::Value::Mapping(m) => m,
+                    serde_norway::Value::Null => serde_norway::Mapping::new(),
                     other => {
                         return Err(Error::Parse {
                             message: format!("frontmatter must be a YAML mapping, found {}", yaml_kind(&other)),
@@ -190,37 +190,37 @@ impl Document {
     }
 
     /// Borrow the raw frontmatter mapping.
-    pub fn mapping(&self) -> &serde_yml::Mapping {
+    pub fn mapping(&self) -> &serde_norway::Mapping {
         &self.fm
     }
 
     /// Mutably borrow the raw frontmatter mapping — the escape hatch for
     /// manipulation the typed API doesn't cover.
-    pub fn mapping_mut(&mut self) -> &mut serde_yml::Mapping {
+    pub fn mapping_mut(&mut self) -> &mut serde_norway::Mapping {
         &mut self.fm
     }
 
     /// Look up a single frontmatter value by string key.
-    pub fn get(&self, key: &str) -> Option<&serde_yml::Value> {
+    pub fn get(&self, key: &str) -> Option<&serde_norway::Value> {
         self.fm.get(key)
     }
 
     /// Insert or overwrite a single frontmatter value. Existing keys keep
     /// their position; new keys append.
-    pub fn set(&mut self, key: impl Into<String>, value: impl Into<serde_yml::Value>) {
-        self.fm.insert(serde_yml::Value::String(key.into()), value.into());
+    pub fn set(&mut self, key: impl Into<String>, value: impl Into<serde_norway::Value>) {
+        self.fm.insert(serde_norway::Value::String(key.into()), value.into());
     }
 
     /// Remove a key, preserving the order of the remaining keys. Returns the
     /// removed value, if any.
-    pub fn remove(&mut self, key: &str) -> Option<serde_yml::Value> {
-        self.fm.shift_remove(serde_yml::Value::String(key.to_string()))
+    pub fn remove(&mut self, key: &str) -> Option<serde_norway::Value> {
+        self.fm.shift_remove(serde_norway::Value::String(key.to_string()))
     }
 
     /// Deserialize the frontmatter mapping into a typed value. Keys the type
     /// doesn't model are ignored here but retained in the document.
     pub fn deserialize<T: DeserializeOwned>(&self) -> Result<T, Error> {
-        serde_yml::from_value(serde_yml::Value::Mapping(self.fm.clone()))
+        serde_norway::from_value(serde_norway::Value::Mapping(self.fm.clone()))
             .map_err(|e| Error::Parse { message: e.to_string() })
     }
 
@@ -234,18 +234,21 @@ impl Document {
     /// (existing keys keep their position; new keys append). Keys outside
     /// `owned_keys` — hand-added extras — are untouched.
     ///
-    /// Callers that serialize every field unconditionally can pass the full
-    /// field list (or even `&[]` if they never skip-serialize) — generated
-    /// code passes its statically-known field set.
+    /// **`owned_keys` must list every key the type can emit *or skip*.**
+    /// Generated code passes its statically-known field set. Passing a
+    /// shorter list silently breaks the cleared-`Option` removal guarantee:
+    /// a field that skip-serializes to nothing leaves its stale key on disk
+    /// if it isn't owned. There is no safe shortcut here — when in doubt,
+    /// list every field.
     pub fn merge_serialize<T: Serialize>(&mut self, value: &T, owned_keys: &[&str]) -> Result<(), Error> {
-        let serialized = serde_yml::to_value(value).map_err(|e| Error::Serialize { message: e.to_string() })?;
-        let serde_yml::Value::Mapping(new_map) = serialized else {
+        let serialized = serde_norway::to_value(value).map_err(|e| Error::Serialize { message: e.to_string() })?;
+        let serde_norway::Value::Mapping(new_map) = serialized else {
             return Err(Error::Serialize {
                 message: format!("value serialized to {}, expected a YAML mapping", yaml_kind(&serialized)),
             });
         };
         for key in owned_keys {
-            let k = serde_yml::Value::String((*key).to_string());
+            let k = serde_norway::Value::String((*key).to_string());
             if !new_map.contains_key(&k) {
                 self.fm.shift_remove(&k);
             }
@@ -264,7 +267,7 @@ impl Document {
     ///   stable).
     /// - Empty mapping, never had one ⇒ the body alone.
     ///
-    /// The YAML rendering is serde_yml's emitter output: deterministic and
+    /// The YAML rendering is serde_norway's emitter output: deterministic and
     /// Obsidian-readable, but not guaranteed byte-identical to arbitrary
     /// hand-authored input (quoting style, list layout). Round-trip
     /// *meaning* is preserved; cosmetic normalization can occur on rewrite.
@@ -275,7 +278,7 @@ impl Document {
             }
             return Ok(self.body.clone());
         }
-        let mut yaml = serde_yml::to_string(&self.fm).map_err(|e| Error::Serialize { message: e.to_string() })?;
+        let mut yaml = serde_norway::to_string(&self.fm).map_err(|e| Error::Serialize { message: e.to_string() })?;
         if !yaml.ends_with('\n') {
             yaml.push('\n');
         }
@@ -311,15 +314,15 @@ pub fn to_string<T: Serialize>(value: &T, body: &str) -> Result<String, Error> {
 }
 
 /// Human-readable YAML value kind, for error messages.
-fn yaml_kind(value: &serde_yml::Value) -> &'static str {
+fn yaml_kind(value: &serde_norway::Value) -> &'static str {
     match value {
-        serde_yml::Value::Null => "null",
-        serde_yml::Value::Bool(_) => "a boolean",
-        serde_yml::Value::Number(_) => "a number",
-        serde_yml::Value::String(_) => "a string",
-        serde_yml::Value::Sequence(_) => "a sequence",
-        serde_yml::Value::Mapping(_) => "a mapping",
-        serde_yml::Value::Tagged(_) => "a tagged value",
+        serde_norway::Value::Null => "null",
+        serde_norway::Value::Bool(_) => "a boolean",
+        serde_norway::Value::Number(_) => "a number",
+        serde_norway::Value::String(_) => "a string",
+        serde_norway::Value::Sequence(_) => "a sequence",
+        serde_norway::Value::Mapping(_) => "a mapping",
+        serde_norway::Value::Tagged(_) => "a tagged value",
     }
 }
 

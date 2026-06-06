@@ -31,7 +31,7 @@ uuid = ["dep:uuid"]
 
 [dependencies]
 serde = "1"
-serde_yml = "0.0.12"
+serde_norway = "0.9"
 thiserror = "1"
 tempfile = { version = "3", optional = true }
 ignore = { version = "0.4", optional = true }

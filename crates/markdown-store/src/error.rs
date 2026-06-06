@@ -96,6 +96,9 @@ pub enum Error {
 
 impl Error {
     /// Construct a [`Error::Parse`] with a path prefix in the message.
+    /// (Only the file-operation layers attach paths, hence the gate —
+    /// without it, `--no-default-features` builds flag dead code.)
+    #[cfg(feature = "fsops")]
     pub(crate) fn parse_at(path: &std::path::Path, message: impl std::fmt::Display) -> Self {
         Error::Parse { message: format!("{}: {message}", path.display()) }
     }

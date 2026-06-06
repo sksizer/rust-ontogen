@@ -1,8 +1,9 @@
 //! Obsidian-style wikilink encoding, stripping, and parsing.
 //!
 //! In a markdown store, relation fields carry their foreign ids as wikilinks
-//! (`epic: "[[E0042]]"`), which makes the same files render as a navigable
-//! graph in Obsidian. The store's typed boundary encodes ids into wikilinks
+//! (`epic: '[[E0042]]'` — the emitter single-quotes them; single and double
+//! quotes are equivalent YAML and both parse in Obsidian), which makes the
+//! same files render as a navigable graph in Obsidian. The store's typed boundary encodes ids into wikilinks
 //! on write and strips them back to plain ids on read; these are the
 //! primitives that boundary is generated against.
 //!

@@ -64,9 +64,13 @@ impl VaultLayout {
 
 /// Validate a record id for use as a filename stem.
 ///
-/// Rejected: empty ids, path separators (`/`, `\`), NUL, `.` and `..`, and
-/// a leading `.` (hidden files are skipped by the default walk, so a
-/// dot-leading record would be written but never listed).
+/// Rejected: empty ids; path separators (`/`, `\`); `:` (a Windows drive
+/// prefix like `C:evil` makes `Path::join` *replace* the base — a vault
+/// escape — and `:` also addresses NTFS alternate data streams); NUL;
+/// `.` and `..`; a leading `.` (hidden files are skipped by the default
+/// walk, so a dot-leading record would be written but never listed); and a
+/// trailing `.` or space (silently stripped by Windows, aliasing two ids
+/// onto one file).
 pub fn validate_id(id: &str) -> Result<(), Error> {
     let reject =
         |reason: &str| -> Result<(), Error> { Err(Error::InvalidId { id: id.to_string(), reason: reason.into() }) };
@@ -79,8 +83,14 @@ pub fn validate_id(id: &str) -> Result<(), Error> {
     if id.starts_with('.') {
         return reject("must not start with '.' (hidden files are not listed)");
     }
+    if id.ends_with('.') || id.ends_with(' ') {
+        return reject("must not end with '.' or a space (stripped by Windows, aliasing ids)");
+    }
     if id.contains('/') || id.contains('\\') {
         return reject("must not contain path separators");
+    }
+    if id.contains(':') {
+        return reject("must not contain ':' (a Windows drive prefix like C: escapes the vault root)");
     }
     if id.contains('\0') {
         return reject("must not contain NUL");
@@ -121,7 +131,9 @@ mod tests {
     #[test]
     fn traversal_attempts_rejected() {
         let layout = VaultLayout::PerEntityDir;
-        for bad in ["../escape", "..", "a/b", "a\\b", "", ".", ".hidden", "x\0y"] {
+        for bad in
+            ["../escape", "..", "a/b", "a\\b", "", ".", ".hidden", "x\0y", "C:evil", "a:stream", "dotted.", "spaced "]
+        {
             assert!(layout.record_path(Path::new("v"), "tasks", bad).is_err(), "id {bad:?} must be rejected");
         }
         for bad in ["../up", "a/b", "", "."] {

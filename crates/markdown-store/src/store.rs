@@ -139,7 +139,9 @@ impl VaultHandle {
 
     /// Create a record. Fails with [`Error::AlreadyExists`] if the file is
     /// already present — creation never overwrites. The existence check and
-    /// write happen under the vault's write lock.
+    /// write happen under the vault's write lock. (The check is racy against
+    /// writers in *other processes*; single-process ownership of a vault is
+    /// the documented stance.)
     pub fn create_record(&self, dir_segment: &str, id: &str, doc: &Document) -> Result<(), Error> {
         let path = self.record_path(dir_segment, id)?;
         let _guard = self.lock();
@@ -149,13 +151,36 @@ impl VaultHandle {
         fsops::write_atomic(&path, &doc.render()?)
     }
 
-    /// Write a record unconditionally (create-or-replace), atomically and
-    /// under the write lock. Prefer [`create_record`](Self::create_record)
-    /// for inserts so duplicate ids fail loudly.
-    pub fn write_record(&self, dir_segment: &str, id: &str, doc: &Document) -> Result<(), Error> {
-        let path = self.record_path(dir_segment, id)?;
+    /// Create a record whose id is derived by the vault's [`IdStrategy`],
+    /// atomically: id derivation, slug de-duplication, and the write all
+    /// happen under one hold of the write lock, so two concurrent creates of
+    /// the same slug yield `base` and `base-2` instead of racing into
+    /// [`Error::AlreadyExists`]. **This is the create path generated store
+    /// code uses.** Returns the id the record was created under.
+    ///
+    /// `provided` follows [`IdStrategy::make_id`] semantics: a non-empty
+    /// caller-supplied id always wins and is *not* de-duplicated — an
+    /// explicit duplicate fails with [`Error::AlreadyExists`], because
+    /// silently renaming an explicit id would be worse than failing.
+    /// `source_value` feeds [`IdStrategy::SlugFromField`].
+    pub fn create_record_derived(
+        &self,
+        dir_segment: &str,
+        provided: Option<&str>,
+        source_value: Option<&str>,
+        doc: &Document,
+    ) -> Result<String, Error> {
         let _guard = self.lock();
-        fsops::write_atomic(&path, &doc.render()?)
+        let had_provided = provided.is_some_and(|p| !p.trim().is_empty());
+        let base = self.id_strategy.make_id(provided, source_value)?;
+        crate::layout::validate_id(&base)?;
+        let id = if had_provided { base } else { self.next_free_id(dir_segment, &base)? };
+        let path = self.record_path(dir_segment, &id)?;
+        if fsops::exists(&path) {
+            return Err(Error::AlreadyExists { path });
+        }
+        fsops::write_atomic(&path, &doc.render()?)?;
+        Ok(id)
     }
 
     /// Read-modify-write one record under the write lock. The mutation
@@ -219,12 +244,16 @@ impl VaultHandle {
 
     // ── id derivation ───────────────────────────────────────────────────
 
-    /// Derive an id for a new record via the vault's [`IdStrategy`], then
-    /// (for derived ids) de-duplicate against existing records by appending
-    /// `-2`, `-3`, … . Caller-supplied ids are returned as-is — a duplicate
-    /// surfaces later as [`Error::AlreadyExists`] from
-    /// [`create_record`](Self::create_record), because silently renaming an
-    /// explicit id would be worse than failing.
+    /// Preview the id a new record would get via the vault's [`IdStrategy`],
+    /// de-duplicating derived ids (`base-2`, `base-3`, …) against existing
+    /// records. Caller-supplied ids are returned as-is.
+    ///
+    /// **Not atomic with a subsequent create**: between this call and
+    /// [`create_record`](Self::create_record), another task can take the id.
+    /// Use [`create_record_derived`](Self::create_record_derived) — which
+    /// holds the write lock across derivation *and* write — whenever the
+    /// record is actually being created; this method is for previews and
+    /// dry runs.
     pub fn make_record_id(
         &self,
         dir_segment: &str,
@@ -237,12 +266,23 @@ impl VaultHandle {
         if had_provided {
             return Ok(base);
         }
-        self.ensure_unique_id(dir_segment, &base)
+        self.next_free_id(dir_segment, &base)
     }
 
     /// Return `base` if no record with that id exists, otherwise the first
-    /// free `base-2`, `base-3`, … .
+    /// free `base-2`, `base-3`, … . Same non-atomicity caveat as
+    /// [`make_record_id`](Self::make_record_id): pair with
+    /// [`create_record_derived`](Self::create_record_derived) for the
+    /// race-free create path.
     pub fn ensure_unique_id(&self, dir_segment: &str, base: &str) -> Result<String, Error> {
+        self.next_free_id(dir_segment, base)
+    }
+
+    /// Suffix search shared by the public previews and the locked create
+    /// path. Named for how [`create_record_derived`] uses it — the *caller*
+    /// is responsible for holding the lock when atomicity matters; the
+    /// probe itself is just existence checks.
+    fn next_free_id(&self, dir_segment: &str, base: &str) -> Result<String, Error> {
         if !self.record_exists(dir_segment, base)? {
             return Ok(base.to_string());
         }
@@ -342,6 +382,41 @@ mod tests {
         fsops::write_atomic(&bad, "---\n: : : broken\n---\n").unwrap();
         let err = vault.read_all("tasks").unwrap_err();
         assert!(matches!(err, Error::Parse { .. }));
+    }
+
+    #[test]
+    fn concurrent_same_slug_creates_dedupe_atomically() {
+        // Regression: derivation + dedup + write must share one lock hold.
+        // The pre-fix shape (make_record_id outside the lock, then
+        // create_record) lost the race every time: both threads derived the
+        // same id and one got AlreadyExists instead of `-2`.
+        for _ in 0..25 {
+            let (_dir, vault) = vault(IdStrategy::SlugFromField("title".into()));
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let spawn = |v: VaultHandle, b: std::sync::Arc<std::sync::Barrier>| {
+                std::thread::spawn(move || {
+                    let mut d = Document::new();
+                    d.set("title", "Same Title");
+                    b.wait();
+                    v.create_record_derived("tasks", None, Some("Same Title"), &d).unwrap()
+                })
+            };
+            let h1 = spawn(vault.clone(), barrier.clone());
+            let h2 = spawn(vault.clone(), barrier.clone());
+            let mut ids = vec![h1.join().unwrap(), h2.join().unwrap()];
+            ids.sort();
+            assert_eq!(ids, vec!["same-title", "same-title-2"], "both racers must land, deduped");
+        }
+    }
+
+    #[test]
+    fn create_record_derived_with_explicit_id_never_renames() {
+        let (_dir, vault) = vault(IdStrategy::SlugFromField("title".into()));
+        let id = vault.create_record_derived("tasks", Some("fixed"), Some("ignored"), &doc("x")).unwrap();
+        assert_eq!(id, "fixed");
+        // An explicit duplicate fails rather than silently suffixing.
+        let err = vault.create_record_derived("tasks", Some("fixed"), None, &doc("y")).unwrap_err();
+        assert!(matches!(err, Error::AlreadyExists { .. }));
     }
 
     #[test]

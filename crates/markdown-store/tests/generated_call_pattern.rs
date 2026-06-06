@@ -78,19 +78,21 @@ impl Store {
         &self.vault
     }
 
-    /// Shape of generated `create_task`.
-    fn create_task(&self, mut task: Task) -> Result<Task, Error> {
+    /// Shape of generated `create_task`. Frontmatter is id-independent (the
+    /// id is the filename stem), so the document is built first and
+    /// `create_record_derived` performs id derivation + slug dedup + write
+    /// atomically under the vault's write lock.
+    fn create_task(&self, task: Task) -> Result<Task, Error> {
         // hooks::before_create(self, &mut task) — fires here, identically to SeaORM.
-        let id = self.vault().make_record_id(
-            TASKS_DIR,
-            Some(&task.id).filter(|s| !s.is_empty()).map(String::as_str),
-            Some(&task.title),
-        )?;
-        task.id = id.clone();
         let mut doc = Document::new();
         doc.merge_serialize(&TaskFrontmatter::from_task(&task), TASK_FM_FIELDS)?;
         doc.set_body(task.body.clone());
-        self.vault().create_record(TASKS_DIR, &id, &doc)?;
+        let id = self.vault().create_record_derived(
+            TASKS_DIR,
+            Some(&task.id).filter(|s| !s.is_empty()).map(String::as_str),
+            Some(&task.title),
+            &doc,
+        )?;
         let created = self.get_task(&id)?;
         // self.emit_change(ChangeOp::Created, EntityKind::Task, id) — fires here.
         // hooks::after_create(self, &created) — fires here.

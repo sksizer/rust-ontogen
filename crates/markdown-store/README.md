@@ -95,8 +95,14 @@ extraction) and is expected to migrate into that workspace once stable:
 - the fence-splitting contract is kept byte-compatible with
   markdown-vault's `frontmatter::split` (its edge-case tests are mirrored
   here case for case);
-- the YAML stack matches (`serde_yml 0.0.12`) so the eventual merge carries
-  one YAML dependency;
+- the YAML stack is `serde_norway` (maintained `serde_yaml` fork) — **not**
+  markdown-vault's `serde_yml 0.0.12`, deliberately: serde_yml and its
+  libyml backend are archived and RUSTSEC-flagged unsound
+  (RUSTSEC-2025-0068 / -0067, segfault path in the serializer this crate
+  exercises on every write) with no patched release. The alignment goal
+  flips direction: markdown-vault should migrate to serde_norway when the
+  crates merge, not the other way around. Both are serde_yaml-0.9-lineage
+  forks, so the API surface is identical;
 - tag extraction is deliberately **not** duplicated here — compose the two
   crates (the ontogen notes-kb example does exactly that).
 
