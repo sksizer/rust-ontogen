@@ -1,0 +1,23 @@
+# iron-log's schema on the markdown backend (ADR 0001). Like iron-log, this
+# example is its OWN workspace, outside the repo's root workspace — root CI
+# does not build it (the in-workspace proofs live in crates/markdown-pilot
+# and tests/backend_parity.rs); examples-ci.yml builds it on PRs touching it.
+[workspace]
+
+[package]
+name = "iron-log-md"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+markdown-store = { path = "../../crates/markdown-store" }
+ontogen-macros = { path = "../../crates/ontogen-macros" }
+serde = { version = "1", features = ["derive"] }
+schemars = "0.8"
+specta = { version = "=2.0.0-rc.23", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
+axum = "0.7"
+
+[build-dependencies]
+ontogen = { path = "../../" }

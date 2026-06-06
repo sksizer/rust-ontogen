@@ -1,0 +1,35 @@
+# Builds example apps when a PR touches them. Examples live OUTSIDE the root
+# cargo workspace, so the main CI never compiles them; this path-filtered
+# workflow is the guard. NOT a required check (a path-filtered required
+# check would permanently block PRs that don't touch examples).
+name: "Examples"
+
+on:
+  pull_request:
+    paths:
+      - "examples/**"
+      - "crates/markdown-store/**"
+      - "src/**"
+
+concurrency:
+  group: "examples-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  iron-log-md:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v4"
+      - uses: "actions-rust-lang/setup-rust-toolchain@v1"
+        with:
+          toolchain: "stable"
+      - run: "cargo build --manifest-path examples/iron-log-md/Cargo.toml"
+
+  iron-log:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v4"
+      - uses: "actions-rust-lang/setup-rust-toolchain@v1"
+        with:
+          toolchain: "stable"
+      - run: "cargo check --manifest-path examples/iron-log/src-tauri/Cargo.toml"
