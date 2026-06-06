@@ -25,3 +25,6 @@ quote = "1"
 [dev-dependencies]
 insta = { version = "1", features = ["yaml"] }
 tempfile = "3"
+# Used by the markdown-backend golden/conformance tests to validate spec
+# artifacts against the real runtime crate.
+markdown-store = { path = "crates/markdown-store" }

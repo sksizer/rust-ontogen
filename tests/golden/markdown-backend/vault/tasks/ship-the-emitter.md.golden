@@ -1,0 +1,15 @@
+---
+title: Ship the emitter
+status: open
+created: '2026-06-06'
+epic: '[[markdown-backend]]'
+tags:
+- '[[codegen]]'
+- '[[storage]]'
+---
+Implement the markdown CRUD emitter against the runtime crate.
+
+The `epic` field is a `belongs_to` foreign key and the `tags` list is the
+authoritative side of a many-to-many — both stored as Obsidian wikilinks,
+so this file is a graph node in any vault tool. Generated code strips the
+brackets at its typed boundary; on disk they stay link-shaped.
