@@ -83,9 +83,14 @@
 //! - **Stable list order**: lexicographic by filename (= by id).
 //! - **Single-process stance**: clones of a [`VaultHandle`] share a write
 //!   lock; concurrent writers in *other* processes are out of scope.
-//! - **Lossless round-trip of meaning, not bytes**: unknown keys, key
-//!   order, and the body survive; YAML cosmetics (quoting style, list
-//!   layout) are normalized to the emitter's deterministic output.
+//! - **Byte-stable while untouched**: a parsed document renders as its
+//!   original source byte-for-byte (comments, quoting style, spacing)
+//!   until a *semantic* change occurs — mutators are change-aware, so
+//!   no-op writes are zero-diff. A real mutation re-emits the frontmatter
+//!   block (deterministic, Obsidian-readable; comments in that block are
+//!   lost) — narrowing this to surgical per-key rewrites is planned with
+//!   the corpus fidelity harness. Unknown keys, key order, and the body
+//!   always survive.
 //! - **Scale ceiling**: listing parses every record; the configurable
 //!   [`store::DEFAULT_LIST_CAP`] makes overgrowth a loud error. This crate
 //!   is for small-N, human-editable, read-heavy data — not a database.

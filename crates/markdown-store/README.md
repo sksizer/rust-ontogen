@@ -61,9 +61,15 @@ Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
 - **Creation never overwrites** (`create_record` → `AlreadyExists`), and
   **ids cannot escape the vault** (path construction validates ids and
   segments — no separators, no `..`, no hidden-file stems).
-- **Meaning-lossless, not byte-lossless.** Unknown keys, key order, and the
-  body survive rewrites; YAML cosmetics (quoting style, list layout) are
-  normalized to the emitter's deterministic output.
+- **Byte-stable while untouched.** A parsed document renders as its original
+  source byte-for-byte — comments, quoting style, spacing — until a
+  *semantic* change occurs; mutators are change-aware, so no-op writes are
+  zero-diff (`parse → render` over a hand-authored corpus is a zero-diff
+  sweep by construction). A real mutation currently re-emits the whole
+  frontmatter block through the deterministic emitter (comments in that
+  block are lost); narrowing that to surgical per-key rewrites is planned
+  alongside the corpus fidelity harness. Unknown keys, key order, and the
+  body always survive.
 - **Scale ceiling.** Listing parses every record; the configurable list cap
   (default 10k) turns overgrowth into a loud error. This crate is for
   small-N, human-editable, read-heavy data — not a database.

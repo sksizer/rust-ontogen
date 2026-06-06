@@ -129,11 +129,29 @@ pub fn split(src: &str) -> (Option<&str>, &str) {
 /// assert!(out.ends_with("---\nSome body.\n"));
 /// # Ok::<(), markdown_store::Error>(())
 /// ```
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct Document {
     fm: serde_norway::Mapping,
     body: String,
     had_frontmatter: bool,
+    /// The verbatim source this document was parsed from, when it came from
+    /// [`parse`](Self::parse). While the document is semantically untouched,
+    /// [`render`](Self::render) returns this exact text — the byte-stability
+    /// guarantee hand-authored corpora depend on.
+    raw: Option<String>,
+    /// Whether any *semantic* change (a key's value actually differing, a
+    /// key added/removed, the body changing) has occurred since parse.
+    /// Writes that change nothing keep the document clean.
+    dirty: bool,
+}
+
+/// Equality is semantic: two documents are equal when their frontmatter
+/// mapping, body, and fence-presence agree — regardless of the raw text
+/// they were parsed from or their dirty state.
+impl PartialEq for Document {
+    fn eq(&self, other: &Self) -> bool {
+        self.fm == other.fm && self.body == other.body && self.had_frontmatter == other.had_frontmatter
+    }
 }
 
 impl Document {
@@ -149,13 +167,28 @@ impl Document {
     /// - A fence block that is not valid YAML, or whose top level is not a
     ///   mapping, is an [`Error::Parse`] — never silently dropped, because a
     ///   later render would destroy it.
+    ///
+    /// The original source is retained: while the document stays
+    /// semantically untouched, [`render`](Self::render) reproduces it
+    /// byte-for-byte (comments, quoting style, list layout and all).
     pub fn parse(src: &str) -> Result<Self, Error> {
         let (yaml, body) = split(src);
+        let raw = Some(src.to_string());
         match yaml {
-            None => Ok(Self { fm: serde_norway::Mapping::new(), body: body.to_string(), had_frontmatter: false }),
-            Some(yaml) if yaml.trim().is_empty() => {
-                Ok(Self { fm: serde_norway::Mapping::new(), body: body.to_string(), had_frontmatter: true })
-            }
+            None => Ok(Self {
+                fm: serde_norway::Mapping::new(),
+                body: body.to_string(),
+                had_frontmatter: false,
+                raw,
+                dirty: false,
+            }),
+            Some(yaml) if yaml.trim().is_empty() => Ok(Self {
+                fm: serde_norway::Mapping::new(),
+                body: body.to_string(),
+                had_frontmatter: true,
+                raw,
+                dirty: false,
+            }),
             Some(yaml) => {
                 let value: serde_norway::Value =
                     serde_norway::from_str(yaml).map_err(|e| Error::Parse { message: e.to_string() })?;
@@ -168,7 +201,7 @@ impl Document {
                         });
                     }
                 };
-                Ok(Self { fm, body: body.to_string(), had_frontmatter: true })
+                Ok(Self { fm, body: body.to_string(), had_frontmatter: true, raw, dirty: false })
             }
         }
     }
@@ -178,9 +211,22 @@ impl Document {
         &self.body
     }
 
-    /// Replace the body.
+    /// Replace the body. A no-op replacement (identical text) keeps the
+    /// document clean, preserving verbatim render.
     pub fn set_body(&mut self, body: impl Into<String>) {
-        self.body = body.into();
+        let body = body.into();
+        if body != self.body {
+            self.body = body;
+            self.dirty = true;
+        }
+    }
+
+    /// Whether any semantic change has occurred since [`parse`](Self::parse).
+    /// A clean document renders as its original source, byte for byte.
+    /// Documents built via [`new`](Self::new) are always considered dirty
+    /// (there is no original to reproduce).
+    pub fn is_dirty(&self) -> bool {
+        self.dirty || self.raw.is_none()
     }
 
     /// Whether the parsed source had a frontmatter block at all. A document
@@ -195,8 +241,13 @@ impl Document {
     }
 
     /// Mutably borrow the raw frontmatter mapping — the escape hatch for
-    /// manipulation the typed API doesn't cover.
+    /// manipulation the typed API doesn't cover. Conservatively marks the
+    /// document dirty (mutations through the raw mapping can't be observed),
+    /// so verbatim render is forfeited even if nothing actually changes;
+    /// prefer [`set`](Self::set)/[`remove`](Self::remove)/
+    /// [`merge_serialize`](Self::merge_serialize), which are change-aware.
     pub fn mapping_mut(&mut self) -> &mut serde_norway::Mapping {
+        self.dirty = true;
         &mut self.fm
     }
 
@@ -206,15 +257,26 @@ impl Document {
     }
 
     /// Insert or overwrite a single frontmatter value. Existing keys keep
-    /// their position; new keys append.
+    /// their position; new keys append. Setting a key to the value it
+    /// already holds is a no-op and keeps the document clean.
     pub fn set(&mut self, key: impl Into<String>, value: impl Into<serde_norway::Value>) {
-        self.fm.insert(serde_norway::Value::String(key.into()), value.into());
+        let key = serde_norway::Value::String(key.into());
+        let value = value.into();
+        if self.fm.get(&key) != Some(&value) {
+            self.fm.insert(key, value);
+            self.dirty = true;
+        }
     }
 
     /// Remove a key, preserving the order of the remaining keys. Returns the
-    /// removed value, if any.
+    /// removed value, if any. Removing an absent key keeps the document
+    /// clean.
     pub fn remove(&mut self, key: &str) -> Option<serde_norway::Value> {
-        self.fm.shift_remove(serde_norway::Value::String(key.to_string()))
+        let removed = self.fm.shift_remove(serde_norway::Value::String(key.to_string()));
+        if removed.is_some() {
+            self.dirty = true;
+        }
+        removed
     }
 
     /// Deserialize the frontmatter mapping into a typed value. Keys the type
@@ -249,29 +311,47 @@ impl Document {
         };
         for key in owned_keys {
             let k = serde_norway::Value::String((*key).to_string());
-            if !new_map.contains_key(&k) {
-                self.fm.shift_remove(&k);
+            if !new_map.contains_key(&k) && self.fm.shift_remove(&k).is_some() {
+                self.dirty = true;
             }
         }
         for (k, v) in new_map {
-            self.fm.insert(k, v);
+            // Change-aware insert: writing back the value a key already
+            // holds keeps the document clean, so a no-op update round-trips
+            // the file byte-for-byte.
+            if self.fm.get(&k) != Some(&v) {
+                self.fm.insert(k, v);
+                self.dirty = true;
+            }
         }
         Ok(())
     }
 
     /// Render the document back to a full markdown string.
     ///
+    /// **A clean document renders as its original source, byte for byte** —
+    /// comments, quoting style, list layout, everything. "Clean" means it
+    /// came from [`parse`](Self::parse) and no semantic change has occurred
+    /// since (see [`is_dirty`](Self::is_dirty)); change-aware mutators keep
+    /// no-op writes clean. This is the property that makes a
+    /// parse→render sweep over a hand-authored corpus a zero-diff
+    /// operation.
+    ///
+    /// A dirty document re-emits its frontmatter through the YAML emitter:
     /// - Non-empty mapping ⇒ `---\n<yaml>---\n<body>`.
-    /// - Empty mapping that *had* a fence block ⇒ `---\n---\n<body>` (the
-    ///   block is kept so round-tripping an empty-frontmatter file is
-    ///   stable).
+    /// - Empty mapping that *had* a fence block ⇒ `---\n---\n<body>`.
     /// - Empty mapping, never had one ⇒ the body alone.
     ///
-    /// The YAML rendering is serde_norway's emitter output: deterministic and
-    /// Obsidian-readable, but not guaranteed byte-identical to arbitrary
-    /// hand-authored input (quoting style, list layout). Round-trip
-    /// *meaning* is preserved; cosmetic normalization can occur on rewrite.
+    /// The emitter output is deterministic and Obsidian-readable but
+    /// normalizes hand-authored cosmetics of the whole block (quoting
+    /// style, list layout) and drops YAML comments. Narrowing that to
+    /// surgical per-key rewrites is planned alongside the corpus fidelity
+    /// harness; until then, "mutating a record normalizes its frontmatter
+    /// block" is the explicit, documented extent of rewrite lossiness.
     pub fn render(&self) -> Result<String, Error> {
+        if let (false, Some(raw)) = (self.is_dirty(), self.raw.as_ref()) {
+            return Ok(raw.clone());
+        }
         if self.fm.is_empty() {
             if self.had_frontmatter {
                 return Ok(format!("---\n---\n{}", self.body));
@@ -488,6 +568,103 @@ mod tests {
         let rendered = to_string(&original, "").unwrap();
         let (back, _) = from_str::<Ref>(&rendered).unwrap();
         assert_eq!(back, original, "bracket-leading strings must be quoted by the emitter: {rendered}");
+    }
+
+    // ── byte-stability over hand-authored sources ───────────────────────
+    // The zero-diff guarantee a hand+LLM-authored corpus depends on: a
+    // parse→render sweep (and a no-op typed update) must reproduce the
+    // source EXACTLY — comments, quoting variety, odd spacing, block
+    // scalars, everything.
+
+    const HAND_AUTHORED: &str = "---\n\
+# pinned by the planning tooling\n\
+type: task\n\
+schema_version: '5'\n\
+id: T-XMPL\n\
+status: open/ready\n\
+created: '2026-06-06'\n\
+reviewed_at: 2026-06-06T09:30:00Z\n\
+tags:\n\
+- ontological-integration\n\
+-     store\n\
+depends_on: ['[[T-66TG]]', \"[[T-Z0PE]]\"]\n\
+weird_quoting: \"double\"\n\
+completion_note: |\n\
+\x20 Shipped via #N.\n\
+\n\
+\x20 Two paragraphs, block scalar.\n\
+---\n\
+\n\
+# A hand-authored task\n\
+\n\
+Some prose with a block id. ^summary\n\
+\n\
+## Goal\n\
+\n\
+Body text stays byte-stable.\n";
+
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct SdlcTask {
+        id: String,
+        status: String,
+        tags: Vec<String>,
+        depends_on: Vec<String>,
+    }
+    const SDLC_FIELDS: &[&str] = &["id", "status", "tags", "depends_on"];
+
+    #[test]
+    fn untouched_parse_renders_verbatim() {
+        let doc = Document::parse(HAND_AUTHORED).unwrap();
+        assert!(!doc.is_dirty());
+        assert_eq!(doc.render().unwrap(), HAND_AUTHORED, "comments, quoting, spacing — all byte-stable");
+    }
+
+    #[test]
+    fn noop_typed_update_keeps_verbatim_render() {
+        // The generated-update shape with nothing actually changing: read,
+        // deserialize, merge the SAME values back, re-set the same body.
+        // The document must stay clean and render byte-identically.
+        let mut doc = Document::parse(HAND_AUTHORED).unwrap();
+        let task: SdlcTask = doc.deserialize().unwrap();
+        doc.merge_serialize(&task, SDLC_FIELDS).unwrap();
+        doc.set_body(doc.body().to_string());
+        assert!(!doc.is_dirty(), "no-op writes must not dirty the document");
+        assert_eq!(doc.render().unwrap(), HAND_AUTHORED, "no-op update is a zero-diff write");
+    }
+
+    #[test]
+    fn real_mutation_normalizes_and_is_flagged() {
+        let mut doc = Document::parse(HAND_AUTHORED).unwrap();
+        let mut task: SdlcTask = doc.deserialize().unwrap();
+        task.status = "closed/done".into();
+        doc.merge_serialize(&task, SDLC_FIELDS).unwrap();
+        assert!(doc.is_dirty());
+        let out = doc.render().unwrap();
+        assert_ne!(out, HAND_AUTHORED);
+        assert!(out.contains("closed/done"));
+        // Body is still verbatim even on the normalized path.
+        assert!(out.contains("Some prose with a block id. ^summary"));
+        assert!(out.contains("## Goal"));
+        // Unknown keys still present (values preserved; cosmetics may not be).
+        assert!(out.contains("completion_note:"));
+        assert!(out.contains("Two paragraphs, block scalar."));
+    }
+
+    #[test]
+    fn escape_hatch_mapping_mut_forfeits_verbatim() {
+        let mut doc = Document::parse(HAND_AUTHORED).unwrap();
+        let _ = doc.mapping_mut(); // can't observe what happens in here
+        assert!(doc.is_dirty(), "raw-mapping access must conservatively dirty the document");
+    }
+
+    #[test]
+    fn change_aware_set_and_remove() {
+        let mut doc = Document::parse(HAND_AUTHORED).unwrap();
+        doc.set("id", "T-XMPL"); // same value
+        assert!(doc.remove("nonexistent").is_none());
+        assert!(!doc.is_dirty(), "no-op set/remove stay clean");
+        doc.set("id", "T-OTHR");
+        assert!(doc.is_dirty());
     }
 
     #[test]
