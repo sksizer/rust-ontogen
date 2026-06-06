@@ -100,7 +100,7 @@ fn client_test_config_with_prefix(api_dir: PathBuf) -> ClientsInternalConfig {
 /// parse as a `syn::Type`.
 fn param(name: &str, ty: &str) -> Param {
     let ty_ast: syn::Type = syn::parse_str(ty).expect("test param type must parse as syn::Type");
-    Param { name: name.to_string(), ty: ty.to_string(), ty_ast, ..Default::default() }
+    Param { name: name.to_string(), ty: ty.to_string(), ty_ast }
 }
 
 /// Parse a type string into a `syn::Type` for `ApiFn::return_type_ast` in tests.

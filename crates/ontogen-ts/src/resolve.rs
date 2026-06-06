@@ -565,7 +565,7 @@ mod tests {
         let imports = parse_imports(&f);
         assert_eq!(imports.simple.get("Moment"), Some(&tp(&["chrono", "DateTime"])));
         // The original ident isn't re-mapped.
-        assert!(imports.simple.get("DateTime").is_none());
+        assert!(!imports.simple.contains_key("DateTime"));
     }
 
     #[test]

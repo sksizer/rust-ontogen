@@ -1,6 +1,10 @@
 //! Integration tests for API generation against real schema files.
 
+// The file is already the `tests` module (declared `#[cfg(test)] mod tests;`
+// in mod.rs); the inner wrapper is long-standing layout, kept to avoid a
+// whole-file reindent. Surfaced when clippy went workspace/all-targets-wide.
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use std::path::PathBuf;
 
@@ -76,7 +80,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = base_config(tmp.path().to_path_buf());
 
-        api::generate(&[tag.clone()], &config).expect("gen_api failed");
+        api::generate(std::slice::from_ref(tag), &config).expect("gen_api failed");
 
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
@@ -114,7 +118,7 @@ mod tests {
         let mut config = base_config(tmp.path().to_path_buf());
         config.schema_module_path = "my_crate::domain".to_string();
 
-        api::generate(&[tag.clone()], &config).expect("gen_api failed");
+        api::generate(std::slice::from_ref(tag), &config).expect("gen_api failed");
 
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
         assert!(
@@ -159,7 +163,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = base_config(tmp.path().to_path_buf());
 
-        let output = api::generate(&[tag.clone()], &config).expect("gen_api failed");
+        let output = api::generate(std::slice::from_ref(tag), &config).expect("gen_api failed");
         let module = &output.modules[0];
 
         let find_fn = |name: &str| module.fns.iter().find(|f| f.name == name).unwrap();
@@ -272,7 +276,7 @@ mod tests {
         let mut config = base_config(tmp.path().to_path_buf());
         config.scan_dirs = vec![adir];
 
-        let output = api::generate(&[agent.clone()], &config).expect("gen_api failed");
+        let output = api::generate(std::slice::from_ref(agent), &config).expect("gen_api failed");
 
         let agent_module = output.modules.iter().find(|m| m.name == "agent").expect("agent module");
 
