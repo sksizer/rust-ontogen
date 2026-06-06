@@ -60,41 +60,23 @@ pub fn generate_from_update_input(code: &mut String, entity: &EntityDef, policy:
     let name = &entity.name;
     let fields = updatable_fields(entity);
     let strip = policy == WikilinkPolicy::Strip;
-    let needs_strip = strip && needs_wikilink_stripping(&fields);
 
     code.push_str(&format!("impl From<crate::schema::Update{name}Input> for {name}Update {{\n"));
     code.push_str(&format!("    fn from(input: crate::schema::Update{name}Input) -> Self {{\n"));
-
-    // Import only the wikilink stripping functions actually needed
-    if needs_strip {
-        let mut imports = Vec::new();
-        if fields.iter().any(|f| is_relation_string(f)) {
-            imports.push("strip_wikilink");
-        }
-        if fields.iter().any(|f| is_relation_opt_string(f)) {
-            imports.push("strip_wikilink_opt");
-        }
-        if fields.iter().any(|f| is_relation_vec(f)) {
-            imports.push("strip_wikilinks_vec");
-        }
-        code.push_str(&format!(
-            "        use crate::persistence::fs_markdown::parser::ontology::{{{}}};\n\n",
-            imports.join(", ")
-        ));
-    }
-
     code.push_str("        Self {\n");
 
     for field in &fields {
         let fname = &field.name;
         if strip && is_relation_vec(field) {
-            code.push_str(&format!("            {fname}: input.{fname}.map(strip_wikilinks_vec),\n"));
+            code.push_str(&format!("            {fname}: input.{fname}.map(markdown_store::wikilink::strip_vec),\n"));
         } else if strip && is_relation_opt_string(field) {
             // Option<Option<String>> in Update: outer Option = "present?", inner = value
-            code.push_str(&format!("            {fname}: input.{fname}.map(strip_wikilink_opt),\n"));
+            code.push_str(&format!("            {fname}: input.{fname}.map(markdown_store::wikilink::strip_opt),\n"));
         } else if strip && is_relation_string(field) {
             // Option<String> in Update: outer Option = "present?", inner = the string
-            code.push_str(&format!("            {fname}: input.{fname}.map(|v| strip_wikilink(&v)),\n"));
+            code.push_str(&format!(
+                "            {fname}: input.{fname}.map(|v| markdown_store::wikilink::strip(&v)),\n"
+            ));
         } else {
             code.push_str(&format!("            {fname}: input.{fname},\n"));
         }
@@ -119,39 +101,19 @@ pub fn generate_from_create_input(code: &mut String, entity: &EntityDef, policy:
         .filter(|f| !matches!(f.role, FieldRole::Skip) && f.name != "wikilinks" && f.name != "source_file")
         .collect();
     let strip = policy == WikilinkPolicy::Strip;
-    let needs_strip =
-        strip && create_fields.iter().any(|f| is_relation_vec(f) || is_relation_opt_string(f) || is_relation_string(f));
 
     code.push_str(&format!("impl From<crate::schema::Create{name}Input> for {name} {{\n"));
     code.push_str(&format!("    fn from(input: crate::schema::Create{name}Input) -> Self {{\n"));
-
-    if needs_strip {
-        let mut imports = Vec::new();
-        if create_fields.iter().any(|f| is_relation_string(f)) {
-            imports.push("strip_wikilink");
-        }
-        if create_fields.iter().any(|f| is_relation_opt_string(f)) {
-            imports.push("strip_wikilink_opt");
-        }
-        if create_fields.iter().any(|f| is_relation_vec(f)) {
-            imports.push("strip_wikilinks_vec");
-        }
-        code.push_str(&format!(
-            "        use crate::persistence::fs_markdown::parser::ontology::{{{}}};\n\n",
-            imports.join(", ")
-        ));
-    }
-
     code.push_str("        Self {\n");
 
     for field in &create_fields {
         let fname = &field.name;
         if strip && is_relation_vec(field) {
-            code.push_str(&format!("            {fname}: strip_wikilinks_vec(input.{fname}),\n"));
+            code.push_str(&format!("            {fname}: markdown_store::wikilink::strip_vec(input.{fname}),\n"));
         } else if strip && is_relation_opt_string(field) {
-            code.push_str(&format!("            {fname}: strip_wikilink_opt(input.{fname}),\n"));
+            code.push_str(&format!("            {fname}: markdown_store::wikilink::strip_opt(input.{fname}),\n"));
         } else if strip && is_relation_string(field) {
-            code.push_str(&format!("            {fname}: strip_wikilink(&input.{fname}),\n"));
+            code.push_str(&format!("            {fname}: markdown_store::wikilink::strip(&input.{fname}),\n"));
         } else {
             code.push_str(&format!("            {fname}: input.{fname},\n"));
         }
@@ -243,11 +205,6 @@ fn is_relation_string(field: &FieldDef) -> bool {
     )
 }
 
-/// Check if any field needs wikilink stripping.
-fn needs_wikilink_stripping(fields: &[&FieldDef]) -> bool {
-    fields.iter().any(|f| is_relation_vec(f) || is_relation_opt_string(f) || is_relation_string(f))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,19 +257,21 @@ mod tests {
 
         let mut strip = String::new();
         generate_from_create_input(&mut strip, &entity, WikilinkPolicy::Strip);
-        assert!(strip.contains("strip_wikilinks_vec(input.tags)"), "Strip must strip: {strip}");
-        assert!(strip.contains("use crate::persistence::fs_markdown::parser::ontology"), "Strip imports: {strip}");
+        assert!(
+            strip.contains("markdown_store::wikilink::strip_vec(input.tags)"),
+            "Strip routes through the runtime crate: {strip}"
+        );
+        assert!(!strip.contains("fs_markdown"), "the legacy consumer-stub path is gone: {strip}");
 
         let mut passthrough = String::new();
         generate_from_create_input(&mut passthrough, &entity, WikilinkPolicy::Passthrough);
         assert!(passthrough.contains("tags: input.tags,"), "Passthrough is plain: {passthrough}");
-        assert!(!passthrough.contains("strip_wikilink"), "no strip calls: {passthrough}");
-        assert!(!passthrough.contains("fs_markdown"), "no consumer-stub import: {passthrough}");
+        assert!(!passthrough.contains("wikilink"), "no strip calls: {passthrough}");
 
         let mut upd = String::new();
         generate_from_update_input(&mut upd, &entity, WikilinkPolicy::Passthrough);
         assert!(upd.contains("tags: input.tags,"), "update passthrough: {upd}");
-        assert!(!upd.contains("strip_wikilink"), "update has no strip: {upd}");
+        assert!(!upd.contains("wikilink"), "update has no strip: {upd}");
     }
 
     #[test]

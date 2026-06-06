@@ -71,32 +71,41 @@ fn markdown_options() -> MarkdownIoOptions {
     MarkdownIoOptions {
         vault_root: "data/vault".into(),
         layout: MarkdownLayout::PerEntityDir,
-        id_strategy: IdStrategy::SlugFromField("name".into()),
+        // The fixture schema has no slug-able String field shared by every
+        // entity (Workout.name is Option<String>, which SlugFromField
+        // rejects at generation time), so the builder tests use caller-
+        // supplied ids; slug derivation is covered by the store unit tests.
+        id_strategy: IdStrategy::Provided,
         list_cap: 10_000,
     }
 }
 
 #[test]
-fn builder_markdown_io_runs_and_store_inference_reports_pending_emitter() {
-    // The markdown persistence stage runs and threads its output into the
-    // store stage by inference (exactly one persistence stage configured).
-    // The markdown CRUD emitter itself lands later in the ADR-0001 campaign,
-    // so today the inferred-markdown store fails with the campaign's
-    // wired-but-not-implemented error — pinning both the inference and the
-    // loud failure.
+fn builder_markdown_pipeline_generates_store_and_api() {
+    // Exactly one persistence stage configured ⇒ the store backend is
+    // inferred: markdown_io output threads into a markdown-backed store, and
+    // the API layer generates on top exactly as it does for SeaORM.
     let tmp = tempfile::tempdir().expect("tempdir");
     let md_out = tmp.path().join("markdown");
     let store_out = tmp.path().join("store");
+    let hooks = tmp.path().join("hooks");
+    let api_out = tmp.path().join("api");
 
-    let err = Pipeline::new(fixture_schema_dir())
+    Pipeline::new(fixture_schema_dir())
         .markdown_io(&md_out, markdown_options())
-        .store(&store_out, None::<PathBuf>)
+        .store(&store_out, Some(&hooks))
+        .api(&api_out, "AppState")
         .build()
-        .expect_err("markdown store emission has not landed yet");
+        .expect("markdown pipeline failed");
 
-    assert!(format!("{err}").contains("Backend::Markdown"), "expected the campaign's pending-emitter error: {err}");
-    // The persistence stage itself ran before the store stage failed.
-    assert!(md_out.join("mod.rs").exists(), "markdown_io stage should have produced output");
+    assert!(md_out.join("mod.rs").exists(), "missing markdown generated mod.rs");
+    assert!(md_out.join("exercise.rs").exists(), "missing frontmatter module");
+    assert!(store_out.join("mod.rs").exists(), "missing store mod.rs");
+    let store_code = std::fs::read_to_string(store_out.join("exercise.rs")).unwrap();
+    assert!(store_code.contains("self.vault()"), "markdown store talks to the vault:\n{store_code}");
+    assert!(!store_code.contains("sea_orm"), "no SeaORM in a markdown store:\n{store_code}");
+    assert!(hooks.exists(), "hooks scaffolded");
+    assert!(api_out.join("exercise.rs").exists(), "missing api module");
 }
 
 #[test]

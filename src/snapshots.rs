@@ -191,6 +191,90 @@ fn store_crud_complex_entity() {
     insta::assert_snapshot!(code);
 }
 
+/// Self-referential `has_many` entity (the in-tree set_parent shape):
+/// `Node { id, label, parent_id -> Node, contains: has_many(parent_id), body }`.
+fn node_has_many_entity() -> EntityDef {
+    EntityDef {
+        name: "Node".to_string(),
+        directory: "nodes".to_string(),
+        table: "nodes".to_string(),
+        type_name: "node".to_string(),
+        prefix: "node".to_string(),
+        fields: vec![
+            FieldDef::new("id", FieldType::String, FieldRole::Id),
+            FieldDef::new("label", FieldType::String, FieldRole::Plain),
+            FieldDef::new(
+                "parent_id",
+                FieldType::OptionString,
+                FieldRole::Relation(RelationInfo {
+                    kind: RelationKind::BelongsTo,
+                    target: "Node".to_string(),
+                    junction: None,
+                    foreign_key: None,
+                }),
+            ),
+            FieldDef::new(
+                "contains",
+                FieldType::VecString,
+                FieldRole::Relation(RelationInfo {
+                    kind: RelationKind::HasMany,
+                    target: "Node".to_string(),
+                    junction: None,
+                    foreign_key: Some("parent_id".to_string()),
+                }),
+            ),
+            FieldDef::new("body", FieldType::String, FieldRole::Body),
+        ],
+    }
+}
+
+/// Generate a MARKDOWN-backed store file for `entity` and read it back.
+fn generate_markdown_store_file(entity: &EntityDef) -> String {
+    use crate::ir::{Backend, IdStrategy, MarkdownEntityMeta, MarkdownIoOutput, MarkdownLayout};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = StoreConfig {
+        output_dir: tmp.path().to_path_buf(),
+        hooks_dir: None,
+        schema_module_path: "crate::schema".to_string(),
+        backend: Backend::Markdown(MarkdownIoOutput {
+            vault_root: "data/vault".into(),
+            layout: MarkdownLayout::PerEntityDir,
+            id_strategy: IdStrategy::Provided,
+            list_cap: 10_000,
+            module_path: "crate::persistence::markdown::generated".into(),
+            entities: vec![MarkdownEntityMeta {
+                entity_name: entity.name.clone(),
+                type_name: entity.type_name.clone(),
+                dir_segment: entity.directory.clone(),
+                body_field: entity.body_field().map(|f| f.name.clone()),
+                authoritative_m2m: entity.junction_relations().map(|(f, _)| f.name.clone()).collect(),
+            }],
+        }),
+    };
+    crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store(markdown) failed");
+
+    let snake = to_snake_case(&entity.name);
+    read_file(&tmp.path().join(format!("{snake}.rs")))
+}
+
+#[test]
+fn markdown_store_complex_entity() {
+    // The m2m twin of store_crud_complex_entity: the authoritative wikilink
+    // list persists with the record itself — no junction sync step exists.
+    let code = generate_markdown_store_file(&article_mtm_tags_entity());
+    insta::assert_snapshot!(code);
+}
+
+#[test]
+fn markdown_store_has_many_entity() {
+    // Exercises the derived-view paths: reverse-walk populate and the
+    // read-mutate-rewrite set_parent helper (SeaORM's raw-SQL fast path
+    // replacement).
+    let code = generate_markdown_store_file(&node_has_many_entity());
+    insta::assert_snapshot!(code);
+}
+
 #[test]
 fn markdown_frontmatter_complex_entity() {
     // Article's m2m relation exercises the wikilink-encode/strip boundary

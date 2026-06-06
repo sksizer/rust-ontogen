@@ -226,34 +226,85 @@ mod tests {
         assert_eq!(delete.params[0].name, "id");
     }
 
-    /// Backend::Markdown is wired through the dispatcher but its emitter has
-    /// not landed yet; selecting it must fail loudly BEFORE any files are
-    /// written, with a message pointing at the campaign.
+    fn markdown_backend(id_strategy: crate::ir::IdStrategy) -> crate::ir::Backend {
+        use crate::ir::{Backend, MarkdownIoOutput, MarkdownLayout};
+        Backend::Markdown(MarkdownIoOutput {
+            vault_root: "data/vault".into(),
+            layout: MarkdownLayout::PerEntityDir,
+            id_strategy,
+            list_cap: 10_000,
+            module_path: "crate::persistence::markdown::generated".into(),
+            entities: Vec::new(),
+        })
+    }
+
+    /// The markdown backend generates a store module shaped like the SeaORM
+    /// one: same method names, hook call sites, and emit_change points —
+    /// only the persistence primitives differ.
     #[test]
-    fn markdown_backend_fails_loudly_before_writing() {
-        use crate::ir::{Backend, IdStrategy, MarkdownIoOutput, MarkdownLayout};
+    fn markdown_backend_generates_crud_with_lifecycle_parity() {
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        let tag = entities.iter().find(|e| e.name == "Tag").expect("Tag entity not found");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = StoreConfig {
+            output_dir: tmp.path().to_path_buf(),
+            hooks_dir: None,
+            schema_module_path: "crate::schema".to_string(),
+            backend: markdown_backend(crate::ir::IdStrategy::SlugFromField("name".into())),
+        };
+
+        store::generate(std::slice::from_ref(tag), &config).expect("gen_store(markdown) failed");
+        let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
+
+        // Lifecycle parity with the SeaORM emission.
+        for needle in [
+            "list_tags",
+            "get_tag",
+            "create_tag",
+            "update_tag",
+            "delete_tag",
+            "hooks::before_create(",
+            "hooks::after_create(",
+            "hooks::before_update(",
+            "hooks::after_update(",
+            "hooks::before_delete(",
+            "hooks::after_delete(",
+            "emit_change(ChangeOp::Created",
+            "emit_change(ChangeOp::Updated",
+            "emit_change(ChangeOp::Deleted",
+            "TagNotFound",
+        ] {
+            assert!(content.contains(needle), "missing {needle}:\n{content}");
+        }
+        // Markdown primitives, not SeaORM ones.
+        assert!(content.contains("self.vault()"), "markdown store talks to the vault: {content}");
+        assert!(content.contains("create_record_derived"), "create derives ids: {content}");
+        assert!(!content.contains("sea_orm"), "no SeaORM in a markdown module: {content}");
+        assert!(!content.contains("self.db()"), "no db() in a markdown module: {content}");
+    }
+
+    /// SlugFromField must name a String field on every entity — validated at
+    /// generation time, before any file is written.
+    #[test]
+    fn markdown_slug_strategy_validates_source_field() {
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        let tag = entities.iter().find(|e| e.name == "Tag").expect("Tag entity not found");
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let out_dir = tmp.path().join("generated");
-        let hooks_dir = tmp.path().join("hooks");
         let config = StoreConfig {
             output_dir: out_dir.clone(),
-            hooks_dir: Some(hooks_dir.clone()),
+            hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
-            backend: Backend::Markdown(MarkdownIoOutput {
-                vault_root: "data/vault".into(),
-                layout: MarkdownLayout::PerEntityDir,
-                id_strategy: IdStrategy::Provided,
-                list_cap: 10_000,
-                module_path: "crate::persistence::markdown::generated".into(),
-                entities: Vec::new(),
-            }),
+            backend: markdown_backend(crate::ir::IdStrategy::SlugFromField("no_such_field".into())),
         };
 
-        let err = store::generate(&[], &config).expect_err("markdown emitter must not be silently usable yet");
+        let err = store::generate(std::slice::from_ref(tag), &config).expect_err("missing slug field must fail");
         let msg = format!("{err}");
-        assert!(msg.contains("Backend::Markdown"), "error should name the backend: {msg}");
-        assert!(!out_dir.exists(), "no files may be written before the backend resolves");
-        assert!(!hooks_dir.exists(), "hook scaffolding must not fire before the backend resolves");
+        assert!(msg.contains("no_such_field"), "error names the field: {msg}");
+        assert!(!out_dir.exists(), "validation failures must not write files");
     }
 }

@@ -1,0 +1,26 @@
+[package]
+name = "markdown-pilot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "In-workspace pilot consumer: compiles AND executes the generated markdown store in CI (ADR 0001)"
+license = "MIT"
+repository = "https://github.com/sksizer/rust-ontogen"
+# Never published: this crate exists so the root workspace's CI proves the
+# markdown backend's generated output compiles and behaves — examples/ are
+# outside the workspace and invisible to CI.
+publish = false
+
+[dependencies]
+markdown-store = { path = "../markdown-store" }
+ontogen-macros = { path = "../ontogen-macros" }
+serde = { version = "1", features = ["derive"] }
+schemars = "0.8"
+specta = { version = "=2.0.0-rc.23", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
+
+[build-dependencies]
+ontogen = { path = "../.." }
+
+[dev-dependencies]
+tempfile = "3"
