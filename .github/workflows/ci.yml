@@ -21,8 +21,9 @@ jobs:
           components: "clippy,rustfmt"
           toolchain: "stable"
       - uses: "extractions/setup-just@v3"
+      # full-check already includes `test` (format-check + lint + test);
+      # the previous standalone `just test` step ran the whole suite twice.
       - run: "just full-check"
-      - run: "just test"
       - run: | # shell
           echo "## CI result" >> $GITHUB_STEP_SUMMARY
           echo "✅ Passed" >> $GITHUB_STEP_SUMMARY
