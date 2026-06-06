@@ -1,0 +1,24 @@
+# A planning tracker whose vault mirrors the shape of this repo's own
+# docs/planning corpus — ADR 0001's flagship use case, served over HTTP and
+# exposed as an MCP tool registry. Own workspace (outside root CI);
+# examples-ci.yml builds it on PRs touching examples.
+[workspace]
+
+[package]
+name = "tasks-tracker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+markdown-store = { path = "../../crates/markdown-store" }
+ontogen-macros = { path = "../../crates/ontogen-macros" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+specta = { version = "=2.0.0-rc.23", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
+axum = "0.7"
+
+[build-dependencies]
+ontogen = { path = "../../" }
