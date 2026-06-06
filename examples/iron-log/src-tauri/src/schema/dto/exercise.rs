@@ -6,6 +6,7 @@ use serde::Deserialize;
 /// Input for creating a new Exercise.
 #[derive(Debug, Clone, Deserialize, JsonSchema, specta::Type)]
 pub struct CreateExerciseInput {
+    #[serde(default)]
     pub id: String,
     pub name: String,
     pub muscle_group: String,

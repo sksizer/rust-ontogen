@@ -6,6 +6,7 @@
 //! - `From<Update{Entity}Input> for {Entity}Update` - DTO → patch struct
 //! - `From<Create{Entity}Input> for {Entity}` - DTO → domain entity
 
+use super::backends::WikilinkPolicy;
 use super::helpers::to_snake_case;
 use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationKind};
 
@@ -51,10 +52,15 @@ pub fn generate_apply_method(code: &mut String, entity: &EntityDef) {
 // ─── From<UpdateInput> ──────────────────────────────────────────────────────
 
 /// Generate `From<Update{Entity}Input> for {Entity}Update`.
-pub fn generate_from_update_input(code: &mut String, entity: &EntityDef) {
+///
+/// `policy` decides how relation-id fields cross the boundary: the markdown
+/// backend strips wikilink syntax (`[[id]]` → `id`); SQL backends pass ids
+/// through untouched (they never carried brackets).
+pub fn generate_from_update_input(code: &mut String, entity: &EntityDef, policy: WikilinkPolicy) {
     let name = &entity.name;
     let fields = updatable_fields(entity);
-    let needs_strip = needs_wikilink_stripping(&fields);
+    let strip = policy == WikilinkPolicy::Strip;
+    let needs_strip = strip && needs_wikilink_stripping(&fields);
 
     code.push_str(&format!("impl From<crate::schema::Update{name}Input> for {name}Update {{\n"));
     code.push_str(&format!("    fn from(input: crate::schema::Update{name}Input) -> Self {{\n"));
@@ -81,12 +87,12 @@ pub fn generate_from_update_input(code: &mut String, entity: &EntityDef) {
 
     for field in &fields {
         let fname = &field.name;
-        if is_relation_vec(field) {
+        if strip && is_relation_vec(field) {
             code.push_str(&format!("            {fname}: input.{fname}.map(strip_wikilinks_vec),\n"));
-        } else if is_relation_opt_string(field) {
+        } else if strip && is_relation_opt_string(field) {
             // Option<Option<String>> in Update: outer Option = "present?", inner = value
             code.push_str(&format!("            {fname}: input.{fname}.map(strip_wikilink_opt),\n"));
-        } else if is_relation_string(field) {
+        } else if strip && is_relation_string(field) {
             // Option<String> in Update: outer Option = "present?", inner = the string
             code.push_str(&format!("            {fname}: input.{fname}.map(|v| strip_wikilink(&v)),\n"));
         } else {
@@ -102,15 +108,19 @@ pub fn generate_from_update_input(code: &mut String, entity: &EntityDef) {
 // ─── From<CreateInput> ──────────────────────────────────────────────────────
 
 /// Generate `From<Create{Entity}Input> for {Entity}`.
-pub fn generate_from_create_input(code: &mut String, entity: &EntityDef) {
+///
+/// `policy` decides how relation-id fields cross the boundary — see
+/// [`generate_from_update_input`].
+pub fn generate_from_create_input(code: &mut String, entity: &EntityDef, policy: WikilinkPolicy) {
     let name = &entity.name;
     let create_fields: Vec<_> = entity
         .fields
         .iter()
         .filter(|f| !matches!(f.role, FieldRole::Skip) && f.name != "wikilinks" && f.name != "source_file")
         .collect();
+    let strip = policy == WikilinkPolicy::Strip;
     let needs_strip =
-        create_fields.iter().any(|f| is_relation_vec(f) || is_relation_opt_string(f) || is_relation_string(f));
+        strip && create_fields.iter().any(|f| is_relation_vec(f) || is_relation_opt_string(f) || is_relation_string(f));
 
     code.push_str(&format!("impl From<crate::schema::Create{name}Input> for {name} {{\n"));
     code.push_str(&format!("    fn from(input: crate::schema::Create{name}Input) -> Self {{\n"));
@@ -136,11 +146,11 @@ pub fn generate_from_create_input(code: &mut String, entity: &EntityDef) {
 
     for field in &create_fields {
         let fname = &field.name;
-        if is_relation_vec(field) {
+        if strip && is_relation_vec(field) {
             code.push_str(&format!("            {fname}: strip_wikilinks_vec(input.{fname}),\n"));
-        } else if is_relation_opt_string(field) {
+        } else if strip && is_relation_opt_string(field) {
             code.push_str(&format!("            {fname}: strip_wikilink_opt(input.{fname}),\n"));
-        } else if is_relation_string(field) {
+        } else if strip && is_relation_string(field) {
             code.push_str(&format!("            {fname}: strip_wikilink(&input.{fname}),\n"));
         } else {
             code.push_str(&format!("            {fname}: input.{fname},\n"));
@@ -257,6 +267,54 @@ mod tests {
         }
     }
 
+    fn make_tagged_entity() -> EntityDef {
+        use crate::schema::model::{RelationInfo, RelationKind};
+        EntityDef {
+            name: "Article".to_string(),
+            directory: "articles".to_string(),
+            table: "articles".to_string(),
+            type_name: "article".to_string(),
+            prefix: "article".to_string(),
+            fields: vec![
+                FieldDef::new("id", FieldType::String, FieldRole::Id),
+                FieldDef::new(
+                    "tags",
+                    FieldType::VecString,
+                    FieldRole::Relation(RelationInfo {
+                        kind: RelationKind::ManyToMany,
+                        target: "Tag".to_string(),
+                        junction: Some("article_tags".to_string()),
+                        foreign_key: None,
+                    }),
+                ),
+            ],
+        }
+    }
+
+    /// The wikilink policy is the backend seam in the shared From impls:
+    /// markdown strips `[[id]]` at the boundary, SQL backends pass relation
+    /// ids through untouched (no strip import, no consumer stub obligation).
+    #[test]
+    fn wikilink_policy_controls_relation_stripping() {
+        let entity = make_tagged_entity();
+
+        let mut strip = String::new();
+        generate_from_create_input(&mut strip, &entity, WikilinkPolicy::Strip);
+        assert!(strip.contains("strip_wikilinks_vec(input.tags)"), "Strip must strip: {strip}");
+        assert!(strip.contains("use crate::persistence::fs_markdown::parser::ontology"), "Strip imports: {strip}");
+
+        let mut passthrough = String::new();
+        generate_from_create_input(&mut passthrough, &entity, WikilinkPolicy::Passthrough);
+        assert!(passthrough.contains("tags: input.tags,"), "Passthrough is plain: {passthrough}");
+        assert!(!passthrough.contains("strip_wikilink"), "no strip calls: {passthrough}");
+        assert!(!passthrough.contains("fs_markdown"), "no consumer-stub import: {passthrough}");
+
+        let mut upd = String::new();
+        generate_from_update_input(&mut upd, &entity, WikilinkPolicy::Passthrough);
+        assert!(upd.contains("tags: input.tags,"), "update passthrough: {upd}");
+        assert!(!upd.contains("strip_wikilink"), "update has no strip: {upd}");
+    }
+
     #[test]
     fn test_update_struct_has_correct_fields() {
         let entity = make_role_entity();
@@ -283,7 +341,7 @@ mod tests {
     fn test_from_create_input() {
         let entity = make_role_entity();
         let mut code = String::new();
-        generate_from_create_input(&mut code, &entity);
+        generate_from_create_input(&mut code, &entity, WikilinkPolicy::Strip);
 
         assert!(code.contains("impl From<crate::schema::CreateRoleInput> for Role"));
         assert!(code.contains("id: input.id"));
@@ -294,7 +352,7 @@ mod tests {
     fn test_from_update_input() {
         let entity = make_role_entity();
         let mut code = String::new();
-        generate_from_update_input(&mut code, &entity);
+        generate_from_update_input(&mut code, &entity, WikilinkPolicy::Strip);
 
         assert!(code.contains("impl From<crate::schema::UpdateRoleInput> for RoleUpdate"));
         assert!(code.contains("body: input.body"));
@@ -308,8 +366,8 @@ mod tests {
         let mut code = String::new();
         generate_update_struct(&mut code, &entity);
         generate_apply_method(&mut code, &entity);
-        generate_from_update_input(&mut code, &entity);
-        generate_from_create_input(&mut code, &entity);
+        generate_from_update_input(&mut code, &entity, WikilinkPolicy::Strip);
+        generate_from_create_input(&mut code, &entity, WikilinkPolicy::Strip);
 
         syn::parse_file(&code).unwrap_or_else(|e| {
             panic!("store::gen_update generators produced invalid Rust: {e}\n--- code ---\n{code}")

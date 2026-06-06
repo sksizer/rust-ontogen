@@ -45,14 +45,12 @@ impl WorkoutUpdate {
 
 impl From<crate::schema::UpdateWorkoutInput> for WorkoutUpdate {
     fn from(input: crate::schema::UpdateWorkoutInput) -> Self {
-        use crate::persistence::fs_markdown::parser::ontology::strip_wikilinks_vec;
-
         Self {
             name: input.name,
             date: input.date,
             duration_minutes: input.duration_minutes,
             notes: input.notes,
-            tags: input.tags.map(strip_wikilinks_vec),
+            tags: input.tags,
             created_at: input.created_at,
         }
     }
@@ -60,15 +58,13 @@ impl From<crate::schema::UpdateWorkoutInput> for WorkoutUpdate {
 
 impl From<crate::schema::CreateWorkoutInput> for Workout {
     fn from(input: crate::schema::CreateWorkoutInput) -> Self {
-        use crate::persistence::fs_markdown::parser::ontology::strip_wikilinks_vec;
-
         Self {
             id: input.id,
             name: input.name,
             date: input.date,
             duration_minutes: input.duration_minutes,
             notes: input.notes,
-            tags: strip_wikilinks_vec(input.tags),
+            tags: input.tags,
             created_at: input.created_at,
         }
     }

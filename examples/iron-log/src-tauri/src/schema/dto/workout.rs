@@ -6,6 +6,7 @@ use serde::Deserialize;
 /// Input for creating a new Workout.
 #[derive(Debug, Clone, Deserialize, JsonSchema, specta::Type)]
 pub struct CreateWorkoutInput {
+    #[serde(default)]
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,

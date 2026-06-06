@@ -6,6 +6,7 @@ use serde::Deserialize;
 /// Input for creating a new Tag.
 #[derive(Debug, Clone, Deserialize, JsonSchema, specta::Type)]
 pub struct CreateTagInput {
+    #[serde(default)]
     pub id: String,
     pub name: String,
 }

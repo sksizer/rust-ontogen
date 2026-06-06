@@ -235,9 +235,10 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let out_dir = tmp.path().join("generated");
+        let hooks_dir = tmp.path().join("hooks");
         let config = StoreConfig {
             output_dir: out_dir.clone(),
-            hooks_dir: None,
+            hooks_dir: Some(hooks_dir.clone()),
             schema_module_path: "crate::schema".to_string(),
             backend: Backend::Markdown(MarkdownIoOutput {
                 vault_root: "data/vault".into(),
@@ -253,5 +254,6 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("Backend::Markdown"), "error should name the backend: {msg}");
         assert!(!out_dir.exists(), "no files may be written before the backend resolves");
+        assert!(!hooks_dir.exists(), "hook scaffolding must not fire before the backend resolves");
     }
 }

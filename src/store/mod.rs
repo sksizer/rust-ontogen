@@ -129,11 +129,14 @@ fn generate_entity_store(backend: &dyn backends::StoreBackend, entity: &EntityDe
     code.push_str(&format!("use crate::store::hooks::{snake} as hooks;\n"));
     code.push_str("use crate::store::Store;\n\n");
 
-    // Update struct + apply + From impls (shared across backends)
+    // Update struct + apply + From impls. The struct/apply shape is shared
+    // across backends; the From impls' wikilink handling follows the
+    // backend's policy (markdown strips `[[id]]` at the boundary, SQL
+    // backends pass ids through untouched).
     gen_update::generate_update_struct(&mut code, entity);
     gen_update::generate_apply_method(&mut code, entity);
-    gen_update::generate_from_update_input(&mut code, entity);
-    gen_update::generate_from_create_input(&mut code, entity);
+    gen_update::generate_from_update_input(&mut code, entity, backend.wikilink_policy());
+    gen_update::generate_from_create_input(&mut code, entity, backend.wikilink_policy());
 
     // CRUD impl block (with hook calls) — backend-specific bodies
     backend.emit_crud_impl(&mut code, entity);
