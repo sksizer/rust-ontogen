@@ -1,0 +1,42 @@
+[package]
+name = "markdown-store"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Typed, lossless YAML-frontmatter markdown store: round-trip documents, wikilinks, and atomic vault file operations"
+license = "MIT"
+repository = "https://github.com/sksizer/rust-ontogen"
+keywords = ["markdown", "frontmatter", "yaml", "obsidian", "vault"]
+categories = ["filesystem", "parser-implementations"]
+# Born unpublished. Flipped deliberately when the crate joins the release set
+# (ADR 0001 campaign, site-docs PR). Long-term this crate is destined to
+# migrate into the rust-markdown workspace alongside markdown-vault, which is
+# also why it is edition 2021 (matching that workspace) and dependency-free of
+# every ontogen crate.
+publish = false
+
+[lib]
+name = "markdown_store"
+
+[features]
+default = ["store"]
+# Atomic file primitives (write_atomic, read_modify_write). Pulls tempfile.
+fsops = ["dep:tempfile"]
+# Directory walking (gitignore-aware record listing). Pulls ignore.
+walk = ["dep:ignore"]
+# The vault store layer (VaultHandle). Implies fsops + walk.
+store = ["fsops", "walk"]
+# IdStrategy::Uuid support. Off by default to keep the dependency tree lean.
+uuid = ["dep:uuid"]
+
+[dependencies]
+serde = "1"
+serde_norway = "0.9"
+thiserror = "1"
+tempfile = { version = "3", optional = true }
+ignore = { version = "0.4", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"

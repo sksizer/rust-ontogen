@@ -1,6 +1,10 @@
 //! Integration tests for store generation against real schema files.
 
+// The file is already the `tests` module (declared `#[cfg(test)] mod tests;`
+// in mod.rs); the inner wrapper is long-standing layout, kept to avoid a
+// whole-file reindent. Surfaced when clippy went workspace/all-targets-wide.
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use std::path::PathBuf;
 
@@ -43,11 +47,11 @@ mod tests {
             let content = std::fs::read_to_string(&path).unwrap();
 
             // Every generated file should have the CRUD methods
-            assert!(content.contains(&format!("fn list_")), "Missing list for {}", entity.name);
-            assert!(content.contains(&format!("fn get_")), "Missing get for {}", entity.name);
-            assert!(content.contains(&format!("fn create_")), "Missing create for {}", entity.name);
-            assert!(content.contains(&format!("fn update_")), "Missing update for {}", entity.name);
-            assert!(content.contains(&format!("fn delete_")), "Missing delete for {}", entity.name);
+            assert!(content.contains(&"fn list_".to_string()), "Missing list for {}", entity.name);
+            assert!(content.contains(&"fn get_".to_string()), "Missing get for {}", entity.name);
+            assert!(content.contains(&"fn create_".to_string()), "Missing create for {}", entity.name);
+            assert!(content.contains(&"fn update_".to_string()), "Missing update for {}", entity.name);
+            assert!(content.contains(&"fn delete_".to_string()), "Missing delete for {}", entity.name);
 
             // Every entity should have Update struct + From impls
             assert!(
@@ -78,7 +82,7 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
         };
 
-        store::generate(&[tag.clone()], None, &config).expect("gen_store failed");
+        store::generate(std::slice::from_ref(tag), None, &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
@@ -124,7 +128,7 @@ mod tests {
             schema_module_path: "my_crate::domain".to_string(),
         };
 
-        store::generate(&[tag.clone()], None, &config).expect("gen_store failed");
+        store::generate(std::slice::from_ref(tag), None, &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
         assert!(content.contains("use my_crate::domain::Tag;"), "Expected custom schema path import, got:\n{content}");
@@ -157,7 +161,7 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
         };
 
-        store::generate(&[workout.clone()], None, &config).expect("gen_store failed");
+        store::generate(std::slice::from_ref(workout), None, &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("workout.rs")).unwrap();
 
@@ -185,7 +189,7 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
         };
 
-        let output = store::generate(&[role.clone()], None, &config).expect("gen_store failed");
+        let output = store::generate(std::slice::from_ref(role), None, &config).expect("gen_store failed");
 
         let by_name =
             |n: &str| output.methods.iter().find(|m| m.name == n).unwrap_or_else(|| panic!("missing method {n}"));

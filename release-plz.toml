@@ -20,3 +20,12 @@ name = "ontogen-macros"
 
 [[package]]
 name = "ontogen"
+
+# markdown-store is born unpublished: release-plz processes every workspace
+# member by default ([[package]] blocks are overrides, not an allowlist), so
+# the new crate is excluded explicitly until its API stabilizes and it is
+# deliberately added to the release set (ADR 0001 campaign, site-docs PR).
+# Cargo.toml's `publish = false` is the second half of the same guard.
+[[package]]
+name = "markdown-store"
+release = false

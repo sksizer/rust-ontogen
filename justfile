@@ -35,9 +35,12 @@ format:
     cargo fmt --all
 alias fmt := format
 
-# Run clippy lints
+# Run clippy lints (whole workspace, all targets, so every member crate is gated).
+# markdown-store gets an extra no-default-features pass: its feature-gated
+# modules can hide dead code from the default-features workspace lint.
 lint:
-    cargo clippy -- --deny warnings
+    cargo clippy --workspace --all-targets -- --deny warnings
+    cargo clippy -p markdown-store --no-default-features -- --deny warnings
 
 # Run all code checks (matches CI: format-check + lint + tests)
 full-check: format-check lint test
@@ -47,9 +50,9 @@ alias fc := full-check
 full-write: format
 alias fw := full-write
 
-# Run tests
+# Run tests (whole workspace, so every member crate is gated)
 test:
-    cargo test
+    cargo test --workspace
 
 # Alias retained for muscle memory: same as full-check now that tests are folded in.
 ci: full-check
