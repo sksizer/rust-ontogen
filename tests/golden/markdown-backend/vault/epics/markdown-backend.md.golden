@@ -1,0 +1,8 @@
+---
+title: Markdown backend
+status: in-progress
+---
+The reverse side of `belongs_to` is never stored: which tasks belong to
+this epic is answered by walking `tasks/` and filtering on their `epic`
+field (O(N) over the folder — the trade this backend makes on purpose).
+No junction tables, no derived lists to drift out of sync.

@@ -1,0 +1,95 @@
+// ═══════════════════════════════════════════════════════════════════════
+// GOLDEN SPEC — target consumer build.rs for a markdown-backed ontogen app.
+//
+// This file is the contract for the backend-cutover PR (config/builder
+// surface) and is NOT compiled yet. Edit it to steer the implementation:
+// the conformance harness grades the real generators against this tree.
+// ═══════════════════════════════════════════════════════════════════════
+
+use ontogen::{Backend, IdStrategy, MarkdownIoOptions, MarkdownLayout, Pipeline};
+
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    ontogen::emit_rerun_directives_excluding(&std::path::PathBuf::from("src/api/v1"), &["generated"]);
+
+    // ── Pipeline form (recommended) ─────────────────────────────────────
+    //
+    // Exactly one persistence stage ⇒ the store backend is inferred; with
+    // both `.seaorm(...)` and `.markdown_io(...)` configured, an explicit
+    // `.store_backend(...)` call is required and its absence is an error.
+    Pipeline::new("src/schema")
+        .markdown_io(
+            "src/persistence/markdown/generated",
+            MarkdownIoOptions {
+                // Where the .md records live, relative to the consumer crate root.
+                vault_root: "data/vault".into(),
+                // data/vault/<entity-dir>/<id>.md
+                layout: MarkdownLayout::PerEntityDir,
+                // New records without a caller-supplied id slugify this field.
+                id_strategy: IdStrategy::SlugFromField("title".into()),
+                // Loud error past this many records per list() (ADR scale ceiling).
+                list_cap: 10_000,
+            },
+        )
+        .dtos("src/schema/dto")
+        .store("src/store/generated", Some("src/store/hooks"))
+        .api("src/api/v1/generated", "AppState")
+        .build()
+        .unwrap_or_else(|e| {
+            e.emit_cargo_warning();
+            panic!("ontogen pipeline failed: {e}");
+        });
+}
+
+// ── Raw-function form (the canonical API the builder wraps) ─────────────
+//
+// fn raw_form() -> Result<(), ontogen::CodegenError> {
+//     let schema = ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: "src/schema".into() })?;
+//
+//     let md = ontogen::gen_markdown_io(
+//         &schema.entities,
+//         &ontogen::MarkdownIoConfig {
+//             output_dir: "src/persistence/markdown/generated".into(),
+//             vault_root: "data/vault".into(),
+//             layout: MarkdownLayout::PerEntityDir,
+//             id_strategy: IdStrategy::SlugFromField("title".into()),
+//             list_cap: 10_000,
+//         },
+//     )?; // ← now returns MarkdownIoOutput (was `()`)
+//
+//     let store = ontogen::gen_store(
+//         &schema.entities, // ← the old 2nd `seaorm` param is gone
+//         &ontogen::StoreConfig {
+//             output_dir: "src/store/generated".into(),
+//             hooks_dir: Some("src/store/hooks".into()),
+//             schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+//             backend: Backend::Markdown(md), // ← the generation-time choice (owned, no lifetime)
+//         },
+//     )?;
+//
+//     let api = ontogen::gen_api(&schema.entities, /* ApiConfig — unchanged */)?;
+//     // gen_servers / gen_clients: byte-identical to the SeaORM path. That
+//     // invariant is enforced by tests/backend_parity.rs later in the stack.
+//     let _ = (store, api);
+//     Ok(())
+// }
+
+// ── What the consumer crate provides by hand (markdown backend) ─────────
+//
+// pub struct Store {
+//     vault: markdown_store::VaultHandle,         // replaces db: Arc<DatabaseConnection>
+//     change_tx: tokio::sync::broadcast::Sender<EntityChange>,
+// }
+// impl Store {
+//     pub fn vault(&self) -> &markdown_store::VaultHandle { &self.vault }  // analog of db()
+//     // emit_change()/subscribe(): identical to the SeaORM consumer.
+//     // NO sync_junction / load_junction_ids — m2m lives in frontmatter.
+// }
+//
+// AppError gains exactly one markdown-specific variant + conversion:
+//     Md(String),
+//     impl From<markdown_store::Error> for AppError {
+//         fn from(e: markdown_store::Error) -> Self { AppError::Md(e.to_string()) }
+//     }
+// {Entity}NotFound variants are reused as on SeaORM. DbError is never
+// referenced by markdown-generated code.

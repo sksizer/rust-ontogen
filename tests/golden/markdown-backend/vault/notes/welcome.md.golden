@@ -1,0 +1,8 @@
+---
+title: Welcome
+---
+This vault is a datastore.
+
+Every record is a plain markdown file: YAML frontmatter for the typed
+fields, the body for prose. Edit it in any editor — generated code
+preserves what you write here.

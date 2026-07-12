@@ -314,6 +314,7 @@ version = "0.2.2"
 dependencies = [
  "cruet",
  "insta",
+ "markdown-store",
  "ontogen-core",
  "ontogen-macros",
  "ontogen-ts",
