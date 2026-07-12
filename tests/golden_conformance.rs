@@ -73,3 +73,99 @@ fn markdown_store_emission_matches_note_golden() {
         );
     }
 }
+
+/// The full-entity-set conformance (generate-then-review, per G1): the
+/// pilot's COMMITTED generated trees are the reviewed spec for the
+/// relation-complete schema — regenerate from the same schema and assert
+/// byte equality. Catches emitter drift against reviewed output AND stale
+/// committed files in one direction-agnostic check, with no duplicated
+/// golden tree to rot.
+#[test]
+fn pilot_committed_generated_trees_match_a_fresh_generation() {
+    let pilot = repo().join("crates/markdown-pilot");
+    let entities = ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: pilot.join("src/schema") })
+        .expect("parse pilot schema")
+        .entities;
+    assert_eq!(entities.len(), 3, "pilot schema: Note, Tag, Task");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let md = ontogen::gen_markdown_io(
+        &entities,
+        &ontogen::MarkdownIoConfig {
+            output_dir: tmp.path().join("persistence"),
+            vault_root: "data/vault".into(),
+            layout: ontogen::MarkdownLayout::PerEntityDir,
+            id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
+            list_cap: 10_000,
+        },
+    )
+    .expect("gen_markdown_io");
+    ontogen::gen_store(
+        &entities,
+        &ontogen::StoreConfig {
+            output_dir: tmp.path().join("store"),
+            hooks_dir: None,
+            schema_module_path: "crate::schema".into(),
+            backend: ontogen::Backend::Markdown(md),
+        },
+    )
+    .expect("gen_store");
+
+    for (fresh_dir, committed_dir) in [
+        (tmp.path().join("persistence"), pilot.join("src/persistence/markdown/generated")),
+        (tmp.path().join("store"), pilot.join("src/store/generated")),
+    ] {
+        for entry in std::fs::read_dir(&fresh_dir).expect("read_dir") {
+            let path = entry.expect("entry").path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let fresh = read(&path);
+            let committed = read(&committed_dir.join(&name));
+            assert_eq!(
+                fresh, committed,
+                "{name}: pilot's committed generated file diverges from a fresh generation \
+                 (re-run the pilot build and review the diff)"
+            );
+        }
+    }
+}
+
+/// The typed-write vault exemplar: building the seeded record through the
+/// runtime's typed path must reproduce `seeded-by-writer.md.golden` byte for
+/// byte — pinning the emitter-side scalar cosmetics (unquoted date-like
+/// strings, single-quoted wikilinks, block lists).
+#[test]
+fn typed_write_reproduces_the_seeded_vault_golden() {
+    #[derive(serde::Serialize)]
+    struct SeededFm {
+        title: String,
+        status: String,
+        created: String,
+        epic: String,
+        tags: Vec<String>,
+    }
+
+    let mut doc = markdown_store::Document::new();
+    doc.merge_serialize(
+        &SeededFm {
+            title: "Seeded by the typed writer".into(),
+            status: "open".into(),
+            created: "2026-06-06".into(),
+            epic: markdown_store::wikilink::encode("markdown-backend"),
+            tags: vec![markdown_store::wikilink::encode("codegen")],
+        },
+        &["title", "status", "created", "epic", "tags"],
+    )
+    .expect("merge");
+    doc.set_body(
+        "This record pins the TYPED-WRITE shape: what generated create/update code\n\
+         produces when it serializes entity values through the emitter (note the\n\
+         date is unquoted — a String value that happens to look like a date emits\n\
+         as a bare scalar; it round-trips as a string regardless). The sibling\n\
+         `ship-the-emitter` golden pins the HAND-AUTHORED parse shape instead;\n\
+         the two roles are deliberately separate files.\n",
+    );
+
+    let rendered = doc.render().expect("render");
+    let golden = read(&repo().join("tests/golden/markdown-backend/vault/tasks/seeded-by-writer.md.golden"));
+    assert_eq!(rendered, golden, "typed-write output must match the seeded vault golden byte for byte");
+}

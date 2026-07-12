@@ -345,6 +345,7 @@ dependencies = [
  "ontogen-macros",
  "ontogen-ts",
  "quote",
+ "serde",
  "syn",
  "tempfile",
 ]
