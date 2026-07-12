@@ -53,6 +53,7 @@ export default defineConfig({
 						{ label: 'Field Types & Roles', slug: 'guides/field-types-and-roles' },
 						{ label: 'Relationships', slug: 'guides/relationships' },
 						{ label: 'Persistence (SeaORM)', slug: 'guides/persistence-seaorm' },
+						{ label: 'The Markdown Backend', slug: 'guides/markdown-backend' },
 						{ label: 'Store Layer', slug: 'guides/store-layer' },
 						{ label: 'Lifecycle Hooks', slug: 'guides/lifecycle-hooks' },
 						{ label: 'API Layer', slug: 'guides/api-layer' },

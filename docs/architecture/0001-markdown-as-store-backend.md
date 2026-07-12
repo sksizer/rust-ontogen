@@ -2,7 +2,11 @@
 
 ## Status
 
-**proposed** (2026-05-29)
+**accepted** (2026-06-06) — implemented by the `md-backend/` stacked-PR
+campaign (task T-YO00); see *Amendments* at the end of this document for
+where the shipped design deliberately deviates from the text below, and
+`docs/planning/epics/markdown-backend.md` for the shipping log.
+Originally proposed 2026-05-29.
 
 ## Context
 
@@ -211,10 +215,13 @@ doesn't need to know which backend it talks to:
    transactional semantics; markdown can't; the trait doesn't promise
    what the weaker backend can't deliver.)
 
-3. **`list()` returns records in some stable order**, but the order
-   is unspecified at the trait level. Backends document their own
-   default. Consumers needing a specific order pass an explicit
-   `OrderBy` argument.
+3. **`list()` returns records in some stable order**, but the order is
+   unspecified at the contract level. Backends document their own default
+   (markdown: lexicographic by record id). *(Amended: the originally
+   proposed `OrderBy` argument is deliberately absent — adding it would
+   change the generated `list_*` signature and violate item 5's
+   byte-identical invariant, which wins. An ordering parameter, if ever
+   needed, is a future ADR that changes both backends together.)*
 
 4. **Hook lifecycle (`before_create`, `after_create`, etc.) fires
    identically on both backends.** The hook surface stays exactly as
@@ -398,3 +405,59 @@ The path of least resistance. Rejected because:
   real or whether SeaORM-only is fine for the projects this codebase
   actually serves. Architecture decisions made too far ahead of
   consumers tend to rot.
+
+## Amendments (2026-06-06, at acceptance)
+
+The implementation campaign (PRs #95, #97–#110; design record:
+`docs/markdown-backend-campaign.md`) shipped the Decision above with the
+following deliberate deviations, each reviewed at the campaign's design
+gates. Where the body text conflicts with this list, this list wins.
+
+1. **`Backend` is owned, not borrowed.** The examples above write
+   `Backend::Markdown(&md)`; the shipped enum owns its payload
+   (`Seaorm(Option<SeaOrmOutput>) | Markdown(MarkdownIoOutput)`) — a
+   borrow would force a viral lifetime through `StoreConfig` and the
+   `Pipeline` builder for no benefit.
+2. **There is no `Store` trait and no `gen_store_trait()`.** Backends are
+   unified by emitting identical *inherent* `impl Store` blocks against a
+   consumer-supplied struct exposing `db()` (SeaORM) / `vault()`
+   (markdown). Nothing in the contract requires a nominal trait: the
+   downstream layers never name the backend, and the byte-identical
+   invariant (item 5) is enforced mechanically by `tests/backend_parity.rs`
+   — including a negative control proving the check can fail.
+3. **Error naming resolved.** The text uses both `store::AtomicityError`
+   (relationship table) and `BatchPartialFailure` (contract item 2) for a
+   batch-failure variant. v1 ships **no batch operations**, so neither
+   exists; the consumer contract is one `AppError::Md(String)` variant plus
+   `From<markdown_store::Error>`, with per-entity `{Entity}NotFound` reused
+   as on SeaORM. The two names stay reserved for a future batch ADR.
+4. **`OrderBy` is deliberately absent** (see amended contract item 3).
+5. **Deferred, not configured:** delete-time cascade link-cleanup (the
+   relationship table's "if configured" has no config in v1 — dangling
+   wikilinks are tolerated and visible in Obsidian) and the derived
+   (non-authoritative) side of `many_to_many` (the authoritative wikilink
+   list shipped; the reverse view is the same walk `has_many` uses, wired
+   on demand). `has_many` lists are additionally **never stored** in
+   frontmatter — derived views only — which the body text left open.
+6. **A guarantee the text never asked for, now load-bearing:** the runtime
+   `Document` renders untouched files **byte-for-byte** (comments, quoting,
+   spacing), every mutator is change-aware, and a no-op update performs no
+   write at all. This is the substrate for the SDLC corpus zero-diff gate
+   (T-Z0PE); a real mutation currently re-emits the frontmatter block
+   (comments in that block are lost), with surgical per-key rewriting
+   scheduled alongside the fidelity harness.
+7. **Leaf-only ergonomics cost, accepted:** `gen_markdown_io` requires the
+   vault fields even for consumers who only want the typed frontmatter
+   boundary and discard the returned metadata — the deliberate price of
+   rejecting alternative D rather than an oversight.
+8. **Corrections to the text:** the macro syntax in the example is
+   `#[ontology(entity, directory = "tasks", table = "tasks")]` (the
+   `#[ontogen::entity]` form never existed); explicit `directory`
+   attributes are required for markdown consumers (the default is the
+   singular type name, which walks the wrong folder); the "see *Out of
+   scope*" references point at *Consequences* (no such section exists);
+   and the Notes' id-audit demand was satisfied **before** implementation
+   in `docs/id-string-constraint.md` — every in-tree schema already used
+   `String` ids, closing the Consequences' migration worry affirmatively.
+   The revisit-cadence note is moot: the implementation landed within one
+   milestone of the proposal.
