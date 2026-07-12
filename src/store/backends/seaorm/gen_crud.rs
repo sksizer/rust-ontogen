@@ -6,8 +6,8 @@
 //! - **Junction** (many_to_many / has_many): CRUD + populate_relations + sync_junction
 //! - Both tiers emit events via `self.emit_change()`
 
-use super::helpers::{junction_source_col, junction_table_name, junction_target_col, pluralize, to_snake_case};
 use crate::schema::model::EntityDef;
+use crate::store::helpers::{junction_source_col, junction_table_name, junction_target_col, pluralize, to_snake_case};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
