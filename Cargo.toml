@@ -21,6 +21,22 @@ repository = "https://github.com/sksizer/rust-ontogen"
 keywords = ["codegen", "orm", "code-generation", "build-script"]
 categories = ["development-tools::build-utils"]
 
+# The ontogen crate lives at the workspace root, so cargo would otherwise sweep
+# every sibling directory (docs/, examples/, site/, ...) into the published
+# .crate. Denylist the non-crate paths. NOTE: this is a denylist — a whitelist
+# (`include`) forces cargo into a filesystem walker that ignores .gitignore in
+# this workspace and packages node_modules/, so exclude is the working approach.
+# Add new top-level, non-crate files/dirs here.
+exclude = [
+    "/docs", "/examples", "/site", "/scripts", "/packages", "/tests",
+    "/.github", "/.claude", "/.vscode", "/AGENTS.md", "/CLAUDE.md",
+    "/RELEASE.md", "/justfile", "/cliff.toml", "/release-plz.toml",
+    "/sdlc.yaml", "/package.json", "/pnpm-lock.yaml", "/pnpm-workspace.yaml",
+    "/rust-toolchain.toml", "/rustfmt.toml", "/.prettierrc.yml",
+    "/ARCHITECTURE-FOLLOWUPS-2026-05-03.md",
+    "/ARCHITECTURE-ASSESSMENT-2026-04-25-014130.md",
+]
+
 [dependencies]
 ontogen-core = { path = "crates/ontogen-core", version = "=0.1.0" }
 ontogen-macros = { path = "crates/ontogen-macros", version = "=0.1.0" }
