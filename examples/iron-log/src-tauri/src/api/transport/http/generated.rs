@@ -38,7 +38,7 @@ fn err(msg: String) -> ApiError {
 
 async fn exercise_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Exercise>>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    exercise::list(store).await.map(Json).map_err(|e| err(e.to_string()))
+    exercise::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn exercise_get_by_id(
@@ -46,7 +46,7 @@ async fn exercise_get_by_id(
     Path(id): Path<String>,
 ) -> Result<Json<Exercise>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    exercise::get_by_id(store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+    exercise::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn exercise_create(
@@ -54,7 +54,7 @@ async fn exercise_create(
     Json(input): Json<CreateExerciseInput>,
 ) -> Result<(StatusCode, Json<Exercise>), ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    exercise::create(store, input)
+    exercise::create(&store, input)
         .await
         .map(|entity| (StatusCode::CREATED, Json(entity)))
         .map_err(|e| err(e.to_string()))
@@ -66,24 +66,24 @@ async fn exercise_update(
     Json(input): Json<UpdateExerciseInput>,
 ) -> Result<Json<Exercise>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    exercise::update(store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    exercise::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn exercise_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    exercise::delete(store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+    exercise::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
 }
 
 // ── Tag Handlers ──
 
 async fn tag_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Tag>>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::list(store).await.map(Json).map_err(|e| err(e.to_string()))
+    tag::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn tag_get_by_id(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Tag>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::get_by_id(store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+    tag::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn tag_create(
@@ -91,7 +91,7 @@ async fn tag_create(
     Json(input): Json<CreateTagInput>,
 ) -> Result<(StatusCode, Json<Tag>), ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::create(store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(|e| err(e.to_string()))
+    tag::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(|e| err(e.to_string()))
 }
 
 async fn tag_update(
@@ -100,19 +100,19 @@ async fn tag_update(
     Json(input): Json<UpdateTagInput>,
 ) -> Result<Json<Tag>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::update(store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    tag::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn tag_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::delete(store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+    tag::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
 }
 
 // ── Workout Handlers ──
 
 async fn workout_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Workout>>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout::list(store).await.map(Json).map_err(|e| err(e.to_string()))
+    workout::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn workout_get_by_id(
@@ -120,7 +120,7 @@ async fn workout_get_by_id(
     Path(id): Path<String>,
 ) -> Result<Json<Workout>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout::get_by_id(store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+    workout::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn workout_create(
@@ -128,7 +128,7 @@ async fn workout_create(
     Json(input): Json<CreateWorkoutInput>,
 ) -> Result<(StatusCode, Json<Workout>), ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout::create(store, input)
+    workout::create(&store, input)
         .await
         .map(|entity| (StatusCode::CREATED, Json(entity)))
         .map_err(|e| err(e.to_string()))
@@ -140,19 +140,19 @@ async fn workout_update(
     Json(input): Json<UpdateWorkoutInput>,
 ) -> Result<Json<Workout>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout::update(store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    workout::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn workout_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout::delete(store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+    workout::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
 }
 
 // ── Workout_set Handlers ──
 
 async fn workout_set_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<WorkoutSet>>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout_set::list(store).await.map(Json).map_err(|e| err(e.to_string()))
+    workout_set::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn workout_set_get_by_id(
@@ -160,7 +160,7 @@ async fn workout_set_get_by_id(
     Path(id): Path<String>,
 ) -> Result<Json<WorkoutSet>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout_set::get_by_id(store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+    workout_set::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn workout_set_create(
@@ -168,7 +168,7 @@ async fn workout_set_create(
     Json(input): Json<CreateWorkoutSetInput>,
 ) -> Result<(StatusCode, Json<WorkoutSet>), ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout_set::create(store, input)
+    workout_set::create(&store, input)
         .await
         .map(|entity| (StatusCode::CREATED, Json(entity)))
         .map_err(|e| err(e.to_string()))
@@ -180,7 +180,7 @@ async fn workout_set_update(
     Json(input): Json<UpdateWorkoutSetInput>,
 ) -> Result<Json<WorkoutSet>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout_set::update(store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    workout_set::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 async fn workout_set_delete(
@@ -188,14 +188,14 @@ async fn workout_set_delete(
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout_set::delete(store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+    workout_set::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
 }
 
 // ── Stats Handlers ──
 
 async fn stat_get_workout(State(state): State<Arc<AppState>>) -> Result<Json<WorkoutStats>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    stats::get_workout(store).await.map(Json).map_err(|e| err(e.to_string()))
+    stats::get_workout(&store).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
 /// Generated routes. Call this from your main router.

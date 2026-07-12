@@ -5,6 +5,12 @@ on:
   push:
     branches: ["main"]
 
+# Cancel superseded runs on the same ref - stacked-branch force-pushes
+# otherwise queue a full duplicate run per push.
+concurrency:
+  group: "ci-${{ github.ref }}"
+  cancel-in-progress: true
+
 jobs:
   ci:
     runs-on: "ubuntu-latest"
