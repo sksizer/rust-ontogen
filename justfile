@@ -89,13 +89,11 @@ changelog:
 semver-check:
     cargo semver-checks --baseline-rev "$(git describe --tags --abbrev=0)"
 
-# Dry-run a release (default: patch bump)
-release-dry-run level="patch":
-    cargo release {{level}} --no-confirm
-
-# Perform a release (patch, minor, or major)
-release level="patch":
-    cargo release {{level}} --execute
+# NOTE: releases are automated by the release-plz CI workflow
+# (.github/workflows/release-plz.yml). On every push to main it opens/updates a
+# "chore: release" PR; merging that PR tags, publishes to crates.io, and creates
+# the GitHub Release. See RELEASE.md. The `changelog` and `semver-check` recipes
+# above stay for local previewing; there is no local "run a release" recipe.
 
 # ---------------------------------------------------------------------------- #
 #                               QUALITY CHECK                                  #
