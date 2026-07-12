@@ -1025,6 +1025,13 @@ fn generate_http_custom_method(
              \x20   }},\n",
         ));
     } else if is_get && !query_params.is_empty() {
+        // Path segments come before the query string — http.rs registers the
+        // route as `/{plural}/{action}/:path_param`, so a fn mixing a required
+        // path param with optional query params must keep both.
+        let mut url = route_path.clone();
+        for p in &path_params {
+            url.push_str(&format!("/${{encodeURIComponent({})}}", snake_to_camel(&p.name)));
+        }
         let mut query_parts = Vec::new();
         for qp in &query_params {
             let camel_name = snake_to_camel(&qp.name);
@@ -1032,7 +1039,11 @@ fn generate_http_custom_method(
                 .push(format!("{camel_name} != null ? `{}=${{encodeURIComponent({camel_name})}}` : ''", qp.name));
         }
         let query_build = if query_parts.len() == 1 {
-            format!("const params = {} ? `?${{{}}}` : ''", snake_to_camel(&query_params[0].name), query_parts[0])
+            format!(
+                "const params = {} != null ? `?${{{}}}` : ''",
+                snake_to_camel(&query_params[0].name),
+                query_parts[0]
+            )
         } else {
             format!(
                 "const parts = [{}].filter(Boolean);\n\
@@ -1040,7 +1051,7 @@ fn generate_http_custom_method(
                 query_parts.join(", ")
             )
         };
-        let path_expr = sp_template(&format!("{}${{params}}", route_path));
+        let path_expr = sp_template(&format!("{}${{params}}", url));
         out.push_str(&format!(
             "    async {camel}({params_str}): Promise<{ret_str}> {{\n\
              \x20     {query_build};\n\
@@ -1136,19 +1147,10 @@ fn generate_ipc_custom_method(out: &mut String, f: &crate::servers::parse::ApiFn
         }
     } else {
         // Build param list and invoke args
-        let mut ts_params: Vec<String> = f
-            .params
-            .iter()
-            .map(|p| {
-                let ts_ty = rust_type_to_ts(&p.ty);
-                let owned_ty = if p.ty.starts_with("Option<") {
-                    format!("{} | null", ts_ty.trim_start_matches("Option<").trim_end_matches('>'))
-                } else {
-                    ts_ty
-                };
-                format!("{}: {}", snake_to_camel(&p.name), owned_ty)
-            })
-            .collect();
+        // `rust_type_to_ts` already maps `Option<T>` to `T | null`, matching
+        // the Transport interface signature built by `build_ts_params`.
+        let mut ts_params: Vec<String> =
+            f.params.iter().map(|p| format!("{}: {}", snake_to_camel(&p.name), rust_type_to_ts(&p.ty))).collect();
         if has_prefix {
             ts_params.push(pp_only.clone());
         }
@@ -1203,7 +1205,10 @@ fn build_ts_params(f: &crate::servers::parse::ApiFn, config: &Config) -> Vec<Str
         ts_params.push(format!("{}: {}", snake_to_camel(&p.name), ts_ty));
     }
     for qp in &query_params {
-        ts_params.push(format!("{}: string | null", snake_to_camel(&qp.name)));
+        // Derive from the Option's inner type: `Option<u64>` → `number | null`.
+        // Hardcoding `string | null` here desyncs the interface from the IPC
+        // handler, which deserializes the invoke payload as `Option<u64>`.
+        ts_params.push(format!("{}: {}", snake_to_camel(&qp.name), rust_type_to_ts(&qp.ty)));
     }
     if let Some(bs) = body_struct {
         let input_type = rust_type_to_ts(&extract_input_type(&bs.ty));
