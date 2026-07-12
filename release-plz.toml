@@ -29,8 +29,12 @@ name = "ontogen"
 [[package]]
 name = "markdown-store"
 release = false
+# Match Cargo.toml's `publish = false`; without this, release-plz inherits the
+# workspace `publish = true` and aborts on the config mismatch.
+publish = false
 
 # Same guard for the CI pilot consumer — never released, never published.
 [[package]]
 name = "markdown-pilot"
 release = false
+publish = false
