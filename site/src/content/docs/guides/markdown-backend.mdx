@@ -1,0 +1,134 @@
+---
+title: The Markdown Store Backend
+description: Route the generated CRUD layer at a vault of markdown files instead of a SQL database.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The store layer is a **generation-time choice** (ADR 0001): `gen_store` takes a
+`Backend` discriminant and emits one CRUD module per entity wired to that
+backend's primitives. With `Backend::Markdown`, your records are plain
+markdown files with YAML frontmatter — editable in any editor, diffable in
+git, navigable in Obsidian — and the generated store reads and writes them
+through the [`markdown-store`](https://github.com/sksizer/rust-ontogen/tree/main/crates/markdown-store)
+runtime crate.
+
+The load-bearing invariant: **everything above the store is byte-identical
+between backends.** `gen_api`, `gen_servers`, and `gen_clients` output the
+same code whether the store talks to SQLite or to a folder of `.md` files —
+enforced in CI by `tests/backend_parity.rs`.
+
+## When to pick which backend
+
+| | SeaORM | Markdown |
+|---|---|---|
+| Sweet spot | transactional, high-write, large-N | small-N, human-editable, read-heavy |
+| Records | rows | `vault/<entity>/<id>.md` |
+| Co-editing | via the app | any editor, Obsidian, sed, an agent |
+| List cost | indexed SQL | parse-the-folder, capped (default 10k) |
+| Multi-record atomicity | transactions | **none** — single-record only |
+| Ids | your call | **`String`, always** (the id is the filename) |
+
+Knowledge bases, planning trackers, configuration vaults: markdown. Anything
+that needs joins at scale or batch transactions: SeaORM.
+
+## Wiring it
+
+```rust
+// build.rs
+Pipeline::new("src/schema")
+    .markdown_io(
+        "src/persistence/markdown/generated",
+        MarkdownIoOptions {
+            vault_root: "data/vault".into(),
+            layout: MarkdownLayout::PerEntityDir,
+            id_strategy: IdStrategy::SlugFromField("title".into()),
+            list_cap: 10_000,
+        },
+    )
+    .dtos("src/schema/dto")
+    .store("src/store/generated", Some("src/store/hooks"))
+    .api("src/api/v1/generated", "AppState")
+    .build()?;
+```
+
+With exactly one persistence stage configured, the store backend is
+inferred. Enable both `seaorm(...)` and `markdown_io(...)` and you must call
+`.store_backend(StoreBackendChoice::…)` to disambiguate.
+
+<Aside type="caution" title="Give every entity an explicit directory">
+The vault folder for an entity comes from `#[ontology(entity, directory =
+"tasks", …)]`. Without it the segment defaults to the singular type name and
+the store walks a folder your records aren't in.
+</Aside>
+
+## What the consumer writes by hand
+
+The entire delta from a SeaORM consumer:
+
+```rust
+pub struct Store {
+    vault: markdown_store::VaultHandle,   // was: db: Arc<DatabaseConnection>
+    change_tx: broadcast::Sender<EntityChange>,
+}
+impl Store {
+    pub fn vault(&self) -> &markdown_store::VaultHandle { &self.vault }  // was: db()
+    // emit_change()/subscribe(): identical. No sync_junction/load_junction_ids —
+    // many-to-many lives in frontmatter.
+}
+```
+
+…and one error variant:
+
+```rust
+pub enum AppError {
+    TaskNotFound(String),   // per-entity NotFound: same as SeaORM
+    Md(String),             // replaces DbError
+}
+impl From<markdown_store::Error> for AppError { /* Md(e.to_string()) */ }
+```
+
+Construct the vault at startup:
+
+```rust
+let vault = VaultHandle::new("data/vault", VaultLayout::PerEntityDir,
+                             IdStrategy::SlugFromField("title".into()));
+let state = AppState::new(vault);
+```
+
+## Semantics worth knowing
+
+- **Relations are wikilinks.** A `belongs_to` is `epic_id: '[[E0042]]'` in
+  frontmatter; a `many_to_many` is a wikilink list on the owning record (the
+  authoritative side — no junction tables). `has_many` is **never stored**:
+  it's a derived view, answered by walking the child folder and filtering on
+  the foreign key. Generated code strips brackets at its typed boundary;
+  your JSON API never sees them.
+- **Creates can derive ids.** POST without an id (Create DTOs carry
+  `#[serde(default)]` on `id`) and `SlugFromField` slugifies the configured
+  field, de-duplicating with `-2`, `-3`, … — atomically with the write.
+- **Hand edits survive.** The runtime's `Document` round-trip preserves
+  unknown keys, key order, and the body; untouched files re-render
+  byte-for-byte, and a no-op update doesn't even touch the file.
+- **Stable order, loud ceiling.** `list` returns lexicographic-by-id and
+  errors past `list_cap` — the deliberate "wrong backend for this N" signal.
+- **Single-record atomicity only** (same-dir tempfile + fsync + rename).
+  Need batch transactions? That's the other backend.
+
+## See it running
+
+Three examples, smallest to richest:
+
+- [`examples/iron-log-md`](https://github.com/sksizer/rust-ontogen/tree/main/examples/iron-log-md) —
+  iron-log's exact schema on markdown; `diff -r` its generated `api/v1`
+  against iron-log's to watch the byte-identical invariant hold.
+- [`examples/tasks-tracker`](https://github.com/sksizer/rust-ontogen/tree/main/examples/tasks-tracker) —
+  a planning vault (this repo's own docs/planning shape) over HTTP **and the
+  generated MCP tool registry**.
+- [`examples/notes-kb`](https://github.com/sksizer/rust-ontogen/tree/main/examples/notes-kb) —
+  wikilinked notes rendered as a graph.
+
+The CI-enforced reference consumer is
+[`crates/markdown-pilot`](https://github.com/sksizer/rust-ontogen/tree/main/crates/markdown-pilot):
+every workspace test run compiles **and executes** the generated markdown
+store.
