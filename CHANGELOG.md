@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-07-12
+
+### Added
+
+- runtime markdown vault crate with worked API examples
+- byte-stable verbatim render for untouched documents
+- Backend enum and markdown IR (additive)
+- markdown CRUD emitter, golden conformance, and a CI-executed pilot
+- iron-log-md - iron-log's schema on the markdown backend
+- tasks-tracker - a planning vault over HTTP and MCP
+- notes-kb - the vault as a graph
+
+### Changed
+
+- lift SeaORM emission behind a pub(crate) StoreBackend seam
+- wikilink stripping becomes a backend policy; SeaORM goes passthrough
+- retarget markdown generation onto the markdown-store runtime
+
+### Fixed
+
+- make bindings append idempotent across reruns
+- invoke prettier via pnpm exec rooted at output dir
+- keep path segment and numeric typing on custom GETs with query params
+- repair iron-log build and resync generated output
+- address adversarial review — atomic derived create, maintained YAML stack
+- no-op read-modify-write skips the write entirely
+- apply Gate G1 findings to the golden spec
+- keep path segment and numeric typing on custom GETs with query params
+
 ## [0.2.1] - 2026-06-01
 
 ### Added
