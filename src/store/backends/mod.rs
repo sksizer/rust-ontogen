@@ -33,11 +33,18 @@ pub(crate) trait StoreBackend {
     fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef);
 }
 
-/// The backend the generator is currently wired to.
+/// Resolve the emitter for a configured [`crate::ir::Backend`].
 ///
-/// Interim: hardcoded to SeaORM until `StoreConfig` carries the `Backend`
-/// discriminant (the cutover PR), at which point this becomes a match on
-/// that enum.
-pub(crate) fn active() -> &'static dyn StoreBackend {
-    &seaorm::SeaormBackend
+/// The markdown arm is wired but deliberately unimplemented until the
+/// emitter PR of the ADR-0001 campaign lands — failing here, before any
+/// files are written, beats emitting half a backend.
+pub(crate) fn for_backend(backend: &crate::ir::Backend) -> Result<&'static dyn StoreBackend, crate::CodegenError> {
+    match backend {
+        crate::ir::Backend::Seaorm(_) => Ok(&seaorm::SeaormBackend),
+        crate::ir::Backend::Markdown(_) => Err(crate::CodegenError::Store(
+            "Backend::Markdown is wired but its CRUD emitter has not landed yet \
+             (ADR-0001 campaign, markdown-codegen PR); use Backend::Seaorm meanwhile"
+                .into(),
+        )),
+    }
 }

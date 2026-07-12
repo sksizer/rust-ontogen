@@ -41,7 +41,7 @@
 
 use std::path::PathBuf;
 
-use crate::ir::{ApiOutput, SchemaOutput, SeaOrmOutput};
+use crate::ir::{ApiOutput, Backend, IdStrategy, MarkdownIoOutput, MarkdownLayout, SchemaOutput, SeaOrmOutput};
 use crate::{
     ApiConfig, ClientsConfig, CodegenError, DEFAULT_SCHEMA_MODULE_PATH, DtoConfig, MarkdownIoConfig, SchemaConfig,
     SeaOrmConfig, ServersConfig, StoreConfig, gen_api, gen_clients, gen_dtos, gen_markdown_io, gen_seaorm, gen_servers,
@@ -64,6 +64,32 @@ struct SeaOrmStage {
 /// Internal state for the markdown-io stage.
 struct MarkdownIoStage {
     output_dir: PathBuf,
+    options: MarkdownIoOptions,
+}
+
+/// Vault options for the markdown-io stage (the builder-facing subset of
+/// [`MarkdownIoConfig`] — `output_dir` is passed positionally).
+#[derive(Debug, Clone)]
+pub struct MarkdownIoOptions {
+    /// Where the `.md` records live at runtime, relative to the consumer
+    /// crate root (e.g. `data/vault`).
+    pub vault_root: PathBuf,
+    /// On-disk arrangement of record files under the vault root.
+    pub layout: MarkdownLayout,
+    /// How new records derive an id when the caller didn't supply one.
+    pub id_strategy: IdStrategy,
+    /// Hard cap on records parsed per `list()` before the runtime errors.
+    pub list_cap: usize,
+}
+
+/// Explicit store-backend choice for pipelines with BOTH persistence stages
+/// enabled. (With exactly one, the backend is inferred.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreBackendChoice {
+    /// Wire the generated store to SeaORM.
+    Seaorm,
+    /// Wire the generated store to the markdown vault runtime.
+    Markdown,
 }
 
 /// Internal state for the standalone DTO stage.
@@ -114,6 +140,7 @@ pub struct Pipeline {
     markdown_io: Option<MarkdownIoStage>,
     dtos: Option<DtoStage>,
     store: Option<StoreStage>,
+    store_backend: Option<StoreBackendChoice>,
     api: Option<ApiStage>,
     servers: Option<ServersStage>,
     clients: Option<ClientsStage>,
@@ -132,6 +159,7 @@ impl Pipeline {
             markdown_io: None,
             dtos: None,
             store: None,
+            store_backend: None,
             api: None,
             servers: None,
             clients: None,
@@ -177,10 +205,26 @@ impl Pipeline {
 
     // ── markdown_io ─────────────────────────────────────────────────
 
-    /// Enable markdown I/O generation (parser dispatch, writers, fs ops).
+    /// Enable markdown I/O generation (parser dispatch, writers, fs ops) and
+    /// describe the vault the generated store will operate on.
+    ///
+    /// When the store stage is also enabled and SeaORM is not, the store is
+    /// automatically wired to the markdown backend (see
+    /// [`Pipeline::store_backend`] for the explicit override when both
+    /// persistence stages are present).
     #[must_use]
-    pub fn markdown_io(mut self, output_dir: impl Into<PathBuf>) -> Self {
-        self.markdown_io = Some(MarkdownIoStage { output_dir: output_dir.into() });
+    pub fn markdown_io(mut self, output_dir: impl Into<PathBuf>, options: MarkdownIoOptions) -> Self {
+        self.markdown_io = Some(MarkdownIoStage { output_dir: output_dir.into(), options });
+        self
+    }
+
+    /// Choose the store backend explicitly when both persistence stages
+    /// (SeaORM and markdown I/O) are enabled. With exactly one persistence
+    /// stage configured, the backend is inferred and this call is
+    /// unnecessary.
+    #[must_use]
+    pub fn store_backend(mut self, choice: StoreBackendChoice) -> Self {
+        self.store_backend = Some(choice);
         self
     }
 
@@ -363,26 +407,64 @@ impl Pipeline {
             None => None,
         };
 
-        // Stage 2b: markdown I/O (independent of seaorm/store)
-        if let Some(stage) = self.markdown_io {
-            gen_markdown_io(&schema.entities, &MarkdownIoConfig { output_dir: stage.output_dir })?;
-        }
+        // Stage 2b: markdown I/O — its output feeds the store stage when the
+        // markdown backend is selected (ADR 0001).
+        let markdown_out: Option<MarkdownIoOutput> = match self.markdown_io {
+            Some(stage) => Some(gen_markdown_io(
+                &schema.entities,
+                &MarkdownIoConfig {
+                    output_dir: stage.output_dir,
+                    vault_root: stage.options.vault_root,
+                    layout: stage.options.layout,
+                    id_strategy: stage.options.id_strategy,
+                    list_cap: stage.options.list_cap,
+                },
+            )?),
+            None => None,
+        };
 
         // Stage 2c: standalone DTOs (independent of store)
         if let Some(stage) = self.dtos {
             gen_dtos(&schema.entities, &DtoConfig { output_dir: stage.output_dir })?;
         }
 
-        // Stage 3: store
+        // Stage 3: store. The backend is the configured persistence stage;
+        // with both enabled, `store_backend(...)` must disambiguate.
         let store_enabled = self.store.is_some();
         if let Some(stage) = self.store {
+            let backend = match (self.store_backend, seaorm_out, markdown_out) {
+                (Some(StoreBackendChoice::Seaorm), seaorm, _) => Backend::Seaorm(seaorm),
+                (Some(StoreBackendChoice::Markdown), _, Some(md)) => Backend::Markdown(md),
+                (Some(StoreBackendChoice::Markdown), _, None) => {
+                    return Err(CodegenError::Store(
+                        "store_backend(Markdown) requires the markdown_io stage to be enabled".into(),
+                    ));
+                }
+                (None, seaorm @ Some(_), None) => Backend::Seaorm(seaorm),
+                (None, None, Some(md)) => Backend::Markdown(md),
+                (None, Some(_), Some(_)) => {
+                    return Err(CodegenError::Store(
+                        "both seaorm and markdown_io stages are enabled: call store_backend(...) \
+                         to choose which one the generated store is wired to"
+                            .into(),
+                    ));
+                }
+                (None, None, None) => {
+                    return Err(CodegenError::Store(
+                        "the store stage needs a persistence backend: enable seaorm(...) or \
+                         markdown_io(...)"
+                            .into(),
+                    ));
+                }
+            };
+
             gen_store(
                 &schema.entities,
-                seaorm_out.as_ref(),
                 &StoreConfig {
                     output_dir: stage.output_dir,
                     hooks_dir: stage.hooks_dir,
                     schema_module_path: self.schema_module_path.clone(),
+                    backend,
                 },
             )?;
         }

@@ -128,8 +128,9 @@ fn generate_store_file(entity: &EntityDef) -> String {
         output_dir: tmp.path().to_path_buf(),
         hooks_dir: None,
         schema_module_path: "crate::schema".to_string(),
+        backend: crate::ir::Backend::Seaorm(None),
     };
-    crate::gen_store(std::slice::from_ref(entity), None, &config).expect("gen_store failed");
+    crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store failed");
 
     let snake = to_snake_case(&entity.name);
     read_file(&tmp.path().join(format!("{snake}.rs")))

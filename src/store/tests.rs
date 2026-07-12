@@ -24,9 +24,10 @@ mod tests {
             output_dir: tmp.path().to_path_buf(),
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
+            backend: crate::ir::Backend::Seaorm(None),
         };
 
-        let result = store::generate(&entities, None, &config);
+        let result = store::generate(&entities, &config);
         assert!(result.is_ok(), "gen_store failed: {:?}", result.err());
 
         let output = result.unwrap();
@@ -80,9 +81,10 @@ mod tests {
             output_dir: tmp.path().to_path_buf(),
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
+            backend: crate::ir::Backend::Seaorm(None),
         };
 
-        store::generate(std::slice::from_ref(tag), None, &config).expect("gen_store failed");
+        store::generate(std::slice::from_ref(tag), &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
@@ -126,9 +128,10 @@ mod tests {
             output_dir: tmp.path().to_path_buf(),
             hooks_dir: Some(hooks.clone()),
             schema_module_path: "my_crate::domain".to_string(),
+            backend: crate::ir::Backend::Seaorm(None),
         };
 
-        store::generate(std::slice::from_ref(tag), None, &config).expect("gen_store failed");
+        store::generate(std::slice::from_ref(tag), &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
         assert!(content.contains("use my_crate::domain::Tag;"), "Expected custom schema path import, got:\n{content}");
@@ -159,9 +162,10 @@ mod tests {
             output_dir: tmp.path().to_path_buf(),
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
+            backend: crate::ir::Backend::Seaorm(None),
         };
 
-        store::generate(std::slice::from_ref(workout), None, &config).expect("gen_store failed");
+        store::generate(std::slice::from_ref(workout), &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("workout.rs")).unwrap();
 
@@ -187,9 +191,10 @@ mod tests {
             output_dir: tmp.path().to_path_buf(),
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
+            backend: crate::ir::Backend::Seaorm(None),
         };
 
-        let output = store::generate(std::slice::from_ref(role), None, &config).expect("gen_store failed");
+        let output = store::generate(std::slice::from_ref(role), &config).expect("gen_store failed");
 
         let by_name =
             |n: &str| output.methods.iter().find(|m| m.name == n).unwrap_or_else(|| panic!("missing method {n}"));
@@ -219,5 +224,34 @@ mod tests {
         let delete = by_name("delete_role");
         assert_eq!(delete.params.len(), 1);
         assert_eq!(delete.params[0].name, "id");
+    }
+
+    /// Backend::Markdown is wired through the dispatcher but its emitter has
+    /// not landed yet; selecting it must fail loudly BEFORE any files are
+    /// written, with a message pointing at the campaign.
+    #[test]
+    fn markdown_backend_fails_loudly_before_writing() {
+        use crate::ir::{Backend, IdStrategy, MarkdownIoOutput, MarkdownLayout};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let out_dir = tmp.path().join("generated");
+        let config = StoreConfig {
+            output_dir: out_dir.clone(),
+            hooks_dir: None,
+            schema_module_path: "crate::schema".to_string(),
+            backend: Backend::Markdown(MarkdownIoOutput {
+                vault_root: "data/vault".into(),
+                layout: MarkdownLayout::PerEntityDir,
+                id_strategy: IdStrategy::Provided,
+                list_cap: 10_000,
+                module_path: "crate::persistence::markdown::generated".into(),
+                entities: Vec::new(),
+            }),
+        };
+
+        let err = store::generate(&[], &config).expect_err("markdown emitter must not be silently usable yet");
+        let msg = format!("{err}");
+        assert!(msg.contains("Backend::Markdown"), "error should name the backend: {msg}");
+        assert!(!out_dir.exists(), "no files may be written before the backend resolves");
     }
 }

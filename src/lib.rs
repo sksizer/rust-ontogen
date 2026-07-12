@@ -27,7 +27,7 @@ pub mod schema;
 pub mod servers;
 pub mod store;
 
-pub use pipeline::Pipeline;
+pub use pipeline::{MarkdownIoOptions, Pipeline, StoreBackendChoice};
 
 #[cfg(test)]
 mod snapshots;
@@ -157,6 +157,10 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 /// Use this when entities round-trip through markdown files on disk. The generated
 /// code provides per-entity read and write functions plus a generic dispatcher.
 ///
+/// Returns [`MarkdownIoOutput`]: the vault configuration plus per-entity
+/// metadata. Pass it to [`gen_store`] via [`Backend::Markdown`] to route the
+/// generated CRUD layer at this persistence backend (ADR 0001).
+///
 /// # Errors
 ///
 /// Returns [`CodegenError::Persistence`] on I/O or formatting failure.
@@ -164,19 +168,24 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 /// # Example
 ///
 /// ```ignore
-/// use ontogen::{gen_markdown_io, parse_schema, MarkdownIoConfig, SchemaConfig};
+/// use ontogen::{gen_markdown_io, parse_schema, IdStrategy, MarkdownIoConfig, MarkdownLayout, SchemaConfig};
 /// use std::path::PathBuf;
 ///
 /// let schema = parse_schema(&SchemaConfig {
 ///     schema_dir: PathBuf::from("src/schema"),
 /// })?;
 ///
-/// gen_markdown_io(&schema.entities, &MarkdownIoConfig {
+/// let md = gen_markdown_io(&schema.entities, &MarkdownIoConfig {
 ///     output_dir: PathBuf::from("src/persistence/markdown/generated"),
+///     vault_root: PathBuf::from("data/vault"),
+///     layout: MarkdownLayout::PerEntityDir,
+///     id_strategy: IdStrategy::SlugFromField("title".into()),
+///     list_cap: 10_000,
 /// })?;
+/// # let _ = md;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
-pub fn gen_markdown_io(entities: &[EntityDef], config: &MarkdownIoConfig) -> Result<(), CodegenError> {
+pub fn gen_markdown_io(entities: &[EntityDef], config: &MarkdownIoConfig) -> Result<MarkdownIoOutput, CodegenError> {
     persistence::markdown::generate(entities, config)
 }
 
@@ -212,10 +221,11 @@ pub fn gen_dtos(entities: &[EntityDef], config: &DtoConfig) -> Result<(), Codege
 /// Generate the store layer: CRUD methods, `Update` structs, `From` impls,
 /// and `populate_relations` helpers.
 ///
-/// The `seaorm` parameter is **reserved for future enrichment** (e.g., using
-/// exact column names from [`SeaOrmOutput`] instead of deriving them by
-/// convention) and currently has no effect on generated output. Pass `None`
-/// today; passing `Some(_)` is forward-compatible but produces identical code.
+/// The persistence backend is a generation-time choice carried by
+/// [`StoreConfig::backend`] (ADR 0001): [`Backend::Seaorm`] emits CRUD
+/// bodies against SeaORM, [`Backend::Markdown`] against the markdown vault
+/// runtime. Everything above the store — `gen_api`, `gen_servers`,
+/// `gen_clients` — is byte-identical between backends for the same schema.
 ///
 /// # Errors
 ///
@@ -224,7 +234,7 @@ pub fn gen_dtos(entities: &[EntityDef], config: &DtoConfig) -> Result<(), Codege
 /// # Example
 ///
 /// ```ignore
-/// use ontogen::{gen_seaorm, gen_store, parse_schema, SchemaConfig, SeaOrmConfig, StoreConfig};
+/// use ontogen::{gen_seaorm, gen_store, parse_schema, Backend, SchemaConfig, SeaOrmConfig, StoreConfig};
 /// use std::path::PathBuf;
 ///
 /// let schema = parse_schema(&SchemaConfig {
@@ -237,19 +247,16 @@ pub fn gen_dtos(entities: &[EntityDef], config: &DtoConfig) -> Result<(), Codege
 ///     skip_conversions: vec![],
 /// })?;
 ///
-/// let store = gen_store(&schema.entities, Some(&seaorm), &StoreConfig {
+/// let store = gen_store(&schema.entities, &StoreConfig {
 ///     output_dir: PathBuf::from("src/store/generated"),
 ///     hooks_dir: Some(PathBuf::from("src/store/hooks")),
 ///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+///     backend: Backend::Seaorm(Some(seaorm)),
 /// })?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
-pub fn gen_store(
-    entities: &[EntityDef],
-    seaorm: Option<&SeaOrmOutput>,
-    config: &StoreConfig,
-) -> Result<StoreOutput, CodegenError> {
-    store::generate(entities, seaorm, config)
+pub fn gen_store(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOutput, CodegenError> {
+    store::generate(entities, config)
 }
 
 /// Generate the API layer: CRUD forwarding functions that delegate to store methods.
@@ -442,11 +449,24 @@ pub struct SeaOrmConfig {
 ///
 /// All markdown helpers (parser dispatch, writers, path helpers, and the
 /// `fs_ops` module) land under a single output directory; downstream code
-/// imports them as one cohesive module.
+/// imports them as one cohesive module. The vault fields describe the
+/// markdown store's runtime shape (ADR 0001) and flow into the returned
+/// [`MarkdownIoOutput`] that [`gen_store`] consumes via
+/// [`Backend::Markdown`].
 pub struct MarkdownIoConfig {
     /// Output directory for generated writer, parser dispatch, and `fs_ops`
     /// (e.g., `src/persistence/markdown/generated`).
     pub output_dir: PathBuf,
+    /// Where the `.md` records live at runtime, relative to the consumer
+    /// crate root (e.g., `data/vault`).
+    pub vault_root: PathBuf,
+    /// On-disk arrangement of record files under the vault root.
+    pub layout: MarkdownLayout,
+    /// How new records derive an id when the caller didn't supply one.
+    pub id_strategy: IdStrategy,
+    /// Hard cap on records parsed per `list()` before the runtime errors —
+    /// the ADR's explicit scale ceiling.
+    pub list_cap: usize,
 }
 
 /// Configuration for [`gen_dtos`].
@@ -479,6 +499,11 @@ pub struct StoreConfig {
     /// Use [`DEFAULT_SCHEMA_MODULE_PATH`] for the canonical default; the same
     /// constant is referenced by [`ApiConfig::schema_module_path`].
     pub schema_module_path: String,
+    /// The persistence backend the generated CRUD bodies are wired to
+    /// (ADR 0001). [`Backend::Seaorm`] preserves the pre-ADR emission;
+    /// [`Backend::Markdown`] routes at the markdown vault runtime and
+    /// consumes the metadata returned by [`gen_markdown_io`].
+    pub backend: Backend,
 }
 
 /// Configuration for [`gen_api`].

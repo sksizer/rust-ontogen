@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ontogen::Pipeline;
+use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout, Pipeline, StoreBackendChoice};
 
 /// Returns the path to the embedded schema fixture directory.
 fn fixture_schema_dir() -> PathBuf {
@@ -65,4 +65,70 @@ fn builder_realistic_schema_seaorm_store_api() {
     // CRUD module for one of the fixture entities.
     let exercise_api = api_out.join("exercise.rs");
     assert!(exercise_api.exists(), "missing api/exercise.rs at {}", exercise_api.display());
+}
+
+fn markdown_options() -> MarkdownIoOptions {
+    MarkdownIoOptions {
+        vault_root: "data/vault".into(),
+        layout: MarkdownLayout::PerEntityDir,
+        id_strategy: IdStrategy::SlugFromField("name".into()),
+        list_cap: 10_000,
+    }
+}
+
+#[test]
+fn builder_markdown_io_runs_and_store_inference_reports_pending_emitter() {
+    // The markdown persistence stage runs and threads its output into the
+    // store stage by inference (exactly one persistence stage configured).
+    // The markdown CRUD emitter itself lands later in the ADR-0001 campaign,
+    // so today the inferred-markdown store fails with the campaign's
+    // wired-but-not-implemented error — pinning both the inference and the
+    // loud failure.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let md_out = tmp.path().join("markdown");
+    let store_out = tmp.path().join("store");
+
+    let err = Pipeline::new(fixture_schema_dir())
+        .markdown_io(&md_out, markdown_options())
+        .store(&store_out, None::<PathBuf>)
+        .build()
+        .expect_err("markdown store emission has not landed yet");
+
+    assert!(format!("{err}").contains("Backend::Markdown"), "expected the campaign's pending-emitter error: {err}");
+    // The persistence stage itself ran before the store stage failed.
+    assert!(md_out.join("mod.rs").exists(), "markdown_io stage should have produced output");
+}
+
+#[test]
+fn builder_with_both_persistence_stages_requires_explicit_backend() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+
+    let err = Pipeline::new(fixture_schema_dir())
+        .seaorm(tmp.path().join("entities"), tmp.path().join("conversions"))
+        .markdown_io(tmp.path().join("markdown"), markdown_options())
+        .store(tmp.path().join("store"), None::<PathBuf>)
+        .build()
+        .expect_err("ambiguous backend must be an error");
+    assert!(format!("{err}").contains("store_backend"), "error should point at the disambiguator: {err}");
+
+    // Explicitly choosing SeaORM resolves the ambiguity.
+    let tmp2 = tempfile::tempdir().expect("tempdir");
+    Pipeline::new(fixture_schema_dir())
+        .seaorm(tmp2.path().join("entities"), tmp2.path().join("conversions"))
+        .markdown_io(tmp2.path().join("markdown"), markdown_options())
+        .store(tmp2.path().join("store"), None::<PathBuf>)
+        .store_backend(StoreBackendChoice::Seaorm)
+        .build()
+        .expect("explicit seaorm choice should build");
+    assert!(tmp2.path().join("store/mod.rs").exists());
+}
+
+#[test]
+fn builder_store_without_persistence_stage_errors() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let err = Pipeline::new(fixture_schema_dir())
+        .store(tmp.path().join("store"), None::<PathBuf>)
+        .build()
+        .expect_err("store without a persistence backend must be an error");
+    assert!(format!("{err}").contains("persistence backend"), "got: {err}");
 }
