@@ -2385,6 +2385,95 @@ fn test_junction_cross_transport_consistency() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Custom GET mixing a path param with query params
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Build a module with a custom GET that mixes a required path param with an
+/// optional numeric query param. Models `jobs::get_log(app, lines)`: http.rs
+/// registers `/api/jobs/log/:app` with `lines` in the query string, so the TS
+/// clients must emit the path segment AND type `lines` from the Option's
+/// inner type (`number | null`), matching what the IPC handler deserializes.
+fn make_mixed_path_query_module() -> ApiModule {
+    ApiModule {
+        name: "jobs".to_string(),
+        functions: vec![ApiFn {
+            name: "get_log".to_string(),
+            is_async: true,
+            doc: "Tail the captured log for an app.".to_string(),
+            params: vec![param("app", "&str"), param("lines", "Option<u64>")],
+            return_type: "JobLog".to_string(),
+            return_type_ast: ty_ast("JobLog"),
+            ..Default::default()
+        }],
+        events: vec![],
+        is_singleton: false,
+    }
+}
+
+#[test]
+fn test_custom_get_mixed_path_and_query_cross_transport() {
+    // Pre-fix, the TS emitters dropped the `:app` path segment whenever a
+    // custom GET also had query params, fetching `/jobs/log?lines=N` against
+    // a server route registered as `/api/jobs/log/:app`.
+    let tmp = tempfile::tempdir().unwrap();
+    let http_out = tmp.path().join("http.rs");
+    let transport_out = tmp.path().join("transport.ts");
+    let client_out = tmp.path().join("client.ts");
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "export type JobLog = { lines: string[] };\n").unwrap();
+
+    let config = test_config(tmp.path().to_path_buf());
+    let client_config = client_test_config(tmp.path().to_path_buf());
+    let modules = vec![make_mixed_path_query_module()];
+
+    crate::servers::generators::http::generate(&http_out, &modules, &config);
+    crate::clients::generators::transport::generate(&transport_out, &bindings, &modules, &client_config);
+    crate::clients::generators::ts_client::generate(&client_out, &bindings, &modules, &client_config);
+
+    let http = std::fs::read_to_string(&http_out).unwrap();
+    let transport = std::fs::read_to_string(&transport_out).unwrap();
+    let client = std::fs::read_to_string(&client_out).unwrap();
+
+    // Server side: path param after the action segment, query param extracted
+    // as the Option's inner type.
+    assert!(http.contains("\"/api/jobs/log/:app\""), "http.rs should register the path param after the action");
+    assert!(http.contains("lines: Option<u64>"), "http.rs query struct should keep the numeric inner type");
+
+    // Both TS emitters must keep the path segment ahead of the query string.
+    for (name, content) in [("transport.ts", &transport), ("ts_client.ts", &client)] {
+        assert!(
+            content.contains("/jobs/log/${encodeURIComponent(app)}${params}"),
+            "{name} must fetch the path segment the server routes on, got neither in:\n{content}"
+        );
+        assert!(
+            !content.contains("`/jobs/log${params}`"),
+            "regression: {name} dropped the `:app` path segment from the custom GET URL"
+        );
+    }
+
+    // Query param typing must derive from the Option's inner type everywhere
+    // (Transport interface, HTTP impl, IPC impl, HTTP-only client) - the IPC
+    // handler deserializes `Option<u64>`, so `string | null` breaks at runtime.
+    for (name, content) in [("transport.ts", &transport), ("ts_client.ts", &client)] {
+        assert!(content.contains("lines: number | null"), "{name} should type the numeric query param as number");
+        assert!(
+            !content.contains("lines: string | null"),
+            "regression: {name} typed the Option<u64> query param as string"
+        );
+    }
+    assert!(!transport.contains("null | null"), "IPC transport should not double-append `| null` to Option params");
+
+    // `0` is a valid value for a numeric query param - the emitted guard must
+    // be a null check, not a truthiness check that drops it.
+    for (name, content) in [("transport.ts", &transport), ("ts_client.ts", &client)] {
+        assert!(
+            content.contains("lines != null"),
+            "{name} should null-check the numeric query param so `0` still serializes"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // E2E pipeline - scan real API modules → generate all outputs
 // ═══════════════════════════════════════════════════════════════════════════════
 
