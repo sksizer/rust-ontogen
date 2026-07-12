@@ -31,6 +31,21 @@ pub(crate) trait StoreBackend {
     /// must match across backends — that contract is enforced by the
     /// backend-parity test, not by this trait.
     fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef);
+
+    /// How the shared DTO `From` impls treat wikilink-shaped relation ids.
+    /// Wikilinks are a markdown-vault concern: that backend strips `[[id]]`
+    /// down to `id` at its typed boundary, while SQL-backed stores pass
+    /// relation ids through untouched (they never carried brackets).
+    fn wikilink_policy(&self) -> WikilinkPolicy;
+}
+
+/// Whether DTO `From` impls strip wikilink syntax from relation id fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WikilinkPolicy {
+    /// Strip `[[id]]` → `id` on every relation field (markdown backend).
+    Strip,
+    /// Pass relation ids through untouched (SQL backends).
+    Passthrough,
 }
 
 /// Resolve the emitter for a configured [`crate::ir::Backend`].

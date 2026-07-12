@@ -49,11 +49,9 @@ impl WorkoutSetUpdate {
 
 impl From<crate::schema::UpdateWorkoutSetInput> for WorkoutSetUpdate {
     fn from(input: crate::schema::UpdateWorkoutSetInput) -> Self {
-        use crate::persistence::fs_markdown::parser::ontology::strip_wikilink;
-
         Self {
-            workout_id: input.workout_id.map(|v| strip_wikilink(&v)),
-            exercise_id: input.exercise_id.map(|v| strip_wikilink(&v)),
+            workout_id: input.workout_id,
+            exercise_id: input.exercise_id,
             set_number: input.set_number,
             weight_grams: input.weight_grams,
             reps: input.reps,
@@ -65,12 +63,10 @@ impl From<crate::schema::UpdateWorkoutSetInput> for WorkoutSetUpdate {
 
 impl From<crate::schema::CreateWorkoutSetInput> for WorkoutSet {
     fn from(input: crate::schema::CreateWorkoutSetInput) -> Self {
-        use crate::persistence::fs_markdown::parser::ontology::strip_wikilink;
-
         Self {
             id: input.id,
-            workout_id: strip_wikilink(&input.workout_id),
-            exercise_id: strip_wikilink(&input.exercise_id),
+            workout_id: input.workout_id,
+            exercise_id: input.exercise_id,
             set_number: input.set_number,
             weight_grams: input.weight_grams,
             reps: input.reps,

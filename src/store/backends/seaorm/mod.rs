@@ -28,4 +28,11 @@ impl StoreBackend for SeaormBackend {
     fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef) {
         gen_crud::generate_crud_impl(code, entity);
     }
+
+    fn wikilink_policy(&self) -> super::WikilinkPolicy {
+        // SQL stores never carried wikilink-shaped ids; the historical strip
+        // calls (and the no-op consumer stubs they forced) were a markdown
+        // concern leaking across backends.
+        super::WikilinkPolicy::Passthrough
+    }
 }

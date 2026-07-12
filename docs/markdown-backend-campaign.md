@@ -141,5 +141,9 @@ assertions (09); the emitter (08) is adjusted until green.
 - [ ] Mark cascade link-cleanup and m2m derived views **deferred** (the "if
       configured" cascade has no config).
 - [ ] Record the byte-stability guarantee (T-Z0PE) the ADR never asked for.
+- [ ] Record the leaf-only `gen_markdown_io` ergonomics cost (G2): the four
+      vault fields are required even for consumers who only want the
+      writers/parsers and discard the returned metadata — the deliberate
+      price of rejecting alternative D, not an oversight.
 - [ ] Fix the dangling "Out of scope" self-references; strike the
       revisit-cadence note; record the id-audit closing affirmatively.

@@ -177,7 +177,12 @@ fn qualify_type(t: &str) -> String {
 /// Generate the `#[serde(default)]` or `#[serde(default = "fn_name")]` attribute for a Create field.
 fn generate_serde_default_attr(field: &FieldDef) -> String {
     match &field.role {
-        FieldRole::Id => String::new(),
+        // Create inputs may omit the id: an empty id means "derive one"
+        // under the markdown backend's id strategy (ADR 0001,
+        // create-with-derived-id contract). Emitted identically for every
+        // backend so DTO output stays backend-identical; SeaORM consumers
+        // that require caller-supplied ids keep passing them.
+        FieldRole::Id => "    #[serde(default)]\n".to_string(),
         _ => {
             let needs_default = field.serde_default
                 || matches!(
