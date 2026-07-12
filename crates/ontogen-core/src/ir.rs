@@ -30,6 +30,7 @@ pub struct SchemaOutput {
 // ── Persistence output ──────────────────────────────────────────────
 
 /// SeaORM-specific output. Produced by `gen_seaorm`.
+#[derive(Debug, Clone)]
 pub struct SeaOrmOutput {
     /// Table names and column mappings per entity.
     pub entity_tables: Vec<EntityTableMeta>,
@@ -71,6 +72,98 @@ pub struct JunctionMeta {
 pub struct ConversionMeta {
     pub entity_name: String,
     pub module_path: String,
+}
+
+/// Markdown-backend output. Produced by `gen_markdown_io`; consumed by
+/// `gen_store` when emitting CRUD bodies against the markdown runtime
+/// (ADR 0001). Carries the vault configuration plus the per-entity
+/// metadata the store emitter needs to resolve paths, frontmatter type
+/// discriminators, and id derivation.
+#[derive(Debug, Clone)]
+pub struct MarkdownIoOutput {
+    /// Where the `.md` records live, relative to the consumer crate root
+    /// (e.g. `data/vault`).
+    pub vault_root: PathBuf,
+    /// On-disk arrangement of record files under the vault root.
+    pub layout: MarkdownLayout,
+    /// How new records derive an id when the caller didn't supply one.
+    pub id_strategy: IdStrategy,
+    /// Hard cap on records parsed per `list()` before the runtime errors —
+    /// the ADR's explicit scale ceiling, threaded into the generated
+    /// vault construction.
+    pub list_cap: usize,
+    /// Module path (in the consumer crate) of the markdown-io generated
+    /// module the store emitter imports `{Entity}Frontmatter` types from,
+    /// e.g. `crate::persistence::markdown::generated`.
+    pub module_path: String,
+    /// Per-entity metadata, one row per schema entity.
+    pub entities: Vec<MarkdownEntityMeta>,
+}
+
+/// Per-entity markdown metadata the store emitter indexes by entity name.
+#[derive(Debug, Clone)]
+pub struct MarkdownEntityMeta {
+    /// Entity type name, e.g. `Workout`.
+    pub entity_name: String,
+    /// Frontmatter `type:` discriminator, e.g. `workout` — how records of
+    /// this entity are recognized under [`MarkdownLayout::Flat`].
+    pub type_name: String,
+    /// Directory segment for [`MarkdownLayout::PerEntityDir`], e.g.
+    /// `workouts`.
+    pub dir_segment: String,
+    /// The field carrying the markdown body (after the frontmatter fence),
+    /// if the entity declares one via `#[ontology(body)]`.
+    pub body_field: Option<String>,
+    /// many_to_many fields whose authoritative side is THIS entity's
+    /// frontmatter (the other side is a derived reverse-walk view).
+    pub authoritative_m2m: Vec<String>,
+}
+
+/// On-disk arrangement of record files under the vault root.
+///
+/// Generator-side mirror of the markdown runtime crate's `VaultLayout` —
+/// the runtime crate stays free of ontogen dependencies, so the generator
+/// bridges by emitting the runtime variant literally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkdownLayout {
+    /// `vault_root/<dir_segment>/<id>.md` — the default.
+    PerEntityDir,
+    /// `vault_root/<id>.md`, all entities flat; relies on the frontmatter
+    /// `type:` discriminator and id prefixes for disambiguation.
+    Flat,
+}
+
+/// Id-derivation strategy for new markdown records.
+///
+/// Generator-side mirror of the markdown runtime crate's `IdStrategy`
+/// (same bridging rationale as [`MarkdownLayout`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdStrategy {
+    /// The caller must supply the id; an empty one is a runtime error.
+    Provided,
+    /// Slugify the value of the named field (e.g. `title`) when the id is
+    /// absent, de-duplicating with `-2`, `-3`, … suffixes.
+    SlugFromField(String),
+    /// A fresh UUID v4 (requires the runtime crate's `uuid` feature).
+    Uuid,
+}
+
+/// Generation-time persistence backend selector for `gen_store` (ADR 0001).
+///
+/// Owned (no lifetime) so it can sit in `StoreConfig` and be threaded
+/// through the `Pipeline` builder without viral borrows. A closed enum by
+/// design: ADR 0001 (alternative C) rejects an out-of-tree backend trait —
+/// new backends are added here, by upstream PR.
+#[derive(Debug, Clone)]
+pub enum Backend {
+    /// SeaORM/SQL backend. The payload is reserved for future enrichment
+    /// (the SeaORM emitter currently derives everything by convention);
+    /// `None` is accepted wherever the metadata isn't available.
+    Seaorm(Option<SeaOrmOutput>),
+    /// Markdown-file backend. Always carries metadata: the markdown
+    /// emitter genuinely needs the vault layout, id strategy, and
+    /// per-entity mapping to emit correct code.
+    Markdown(MarkdownIoOutput),
 }
 
 // ── Store output ────────────────────────────────────────────────────
