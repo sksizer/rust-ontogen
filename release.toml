@@ -1,4 +1,10 @@
 allow-branch = ["main"]
+# This is a workspace root that is also a package. cargo-release defaults to
+# consolidate-commits = true for workspaces, which makes {{version}} unavailable
+# in pre-release-commit-message (it stays literal). We only ever release the one
+# root `ontogen` crate, so a per-package commit is correct and re-enables
+# {{version}}. {{version}} is unaffected in tag-name either way (it is per-crate).
+consolidate-commits = false
 pre-release-commit-message = "chore: release v{{version}}"
 publish = false
 push = true
