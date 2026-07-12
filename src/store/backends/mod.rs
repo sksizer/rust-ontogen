@@ -15,15 +15,31 @@
 //! stable enough to promise anything about. Backends are added by upstream
 //! PR, not by implementing a public trait.
 
+pub(crate) mod markdown;
 pub(crate) mod seaorm;
 
 use crate::schema::model::EntityDef;
 
 /// One persistence backend's contribution to a generated store module.
 pub(crate) trait StoreBackend {
+    /// Validate the schema against backend constraints before anything is
+    /// written (e.g. the markdown slug strategy requires its source field on
+    /// every entity). Default: no constraints.
+    fn validate(&self, entities: &[EntityDef]) -> Result<(), String> {
+        let _ = entities;
+        Ok(())
+    }
+
     /// Emit the backend-specific file preamble: the persistence-layer `use`
     /// lines (and nothing else — shared imports are the orchestrator's).
     fn emit_preamble(&self, code: &mut String, entity: &EntityDef);
+
+    /// Emit backend-specific module-level declarations (after the shared
+    /// imports, before the Update struct) — e.g. the markdown backend's
+    /// entity-directory constant. Default: nothing.
+    fn emit_declarations(&self, code: &mut String, entity: &EntityDef) {
+        let _ = (code, entity);
+    }
 
     /// Emit the complete `impl Store { ... }` block: CRUD methods, relation
     /// population, and any backend-specific helpers (e.g. `set_*_parent`).
@@ -49,17 +65,9 @@ pub(crate) enum WikilinkPolicy {
 }
 
 /// Resolve the emitter for a configured [`crate::ir::Backend`].
-///
-/// The markdown arm is wired but deliberately unimplemented until the
-/// emitter PR of the ADR-0001 campaign lands — failing here, before any
-/// files are written, beats emitting half a backend.
-pub(crate) fn for_backend(backend: &crate::ir::Backend) -> Result<&'static dyn StoreBackend, crate::CodegenError> {
+pub(crate) fn for_backend(backend: &crate::ir::Backend) -> Result<Box<dyn StoreBackend>, crate::CodegenError> {
     match backend {
-        crate::ir::Backend::Seaorm(_) => Ok(&seaorm::SeaormBackend),
-        crate::ir::Backend::Markdown(_) => Err(crate::CodegenError::Store(
-            "Backend::Markdown is wired but its CRUD emitter has not landed yet \
-             (ADR-0001 campaign, markdown-codegen PR); use Backend::Seaorm meanwhile"
-                .into(),
-        )),
+        crate::ir::Backend::Seaorm(_) => Ok(Box::new(seaorm::SeaormBackend)),
+        crate::ir::Backend::Markdown(md) => Ok(Box::new(markdown::MarkdownBackend { md: md.clone() })),
     }
 }

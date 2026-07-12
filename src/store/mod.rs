@@ -36,9 +36,10 @@ use crate::{CodegenError, StoreConfig};
 /// generators (gen_api, gen_servers). The persistence backend is selected by
 /// `config.backend` (ADR 0001).
 pub fn generate(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOutput, CodegenError> {
-    // Resolve the backend up front so an unimplemented choice fails loudly
-    // before any files are written.
+    // Resolve and validate the backend up front so misconfiguration fails
+    // loudly before any files are written.
     let backend = backends::for_backend(&config.backend)?;
+    backend.validate(entities).map_err(CodegenError::Store)?;
 
     let output_dir = &config.output_dir;
     fs::create_dir_all(output_dir)
@@ -59,7 +60,7 @@ pub fn generate(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOut
         let snake = helpers::to_snake_case(&entity.name);
 
         // Generate the entity's store module
-        let code = generate_entity_store(backend, entity, config);
+        let code = generate_entity_store(&*backend, entity, config);
 
         let path = output_dir.join(format!("{snake}.rs"));
         crate::write_and_format(&path, &code)?;
@@ -128,6 +129,10 @@ fn generate_entity_store(backend: &dyn backends::StoreBackend, entity: &EntityDe
     code.push_str(&format!("use {schema_path}::{{AppError, ChangeOp, EntityKind}};\n\n"));
     code.push_str(&format!("use crate::store::hooks::{snake} as hooks;\n"));
     code.push_str("use crate::store::Store;\n\n");
+
+    // Backend-specific module-level declarations (e.g. the markdown
+    // entity-directory constant) — nothing for SeaORM.
+    backend.emit_declarations(&mut code, entity);
 
     // Update struct + apply + From impls. The struct/apply shape is shared
     // across backends; the From impls' wikilink handling follows the

@@ -29,3 +29,8 @@ name = "ontogen"
 [[package]]
 name = "markdown-store"
 release = false
+
+# Same guard for the CI pilot consumer — never released, never published.
+[[package]]
+name = "markdown-pilot"
+release = false
