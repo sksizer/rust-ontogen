@@ -248,7 +248,8 @@ fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config
         ts_params.push(format!("{}: {}", snake_to_camel(&p.name), ts_ty));
     }
     for qp in &query_params {
-        ts_params.push(format!("{}: string | null", snake_to_camel(&qp.name)));
+        // Derive from the Option's inner type: `Option<u64>` → `number | null`.
+        ts_params.push(format!("{}: {}", snake_to_camel(&qp.name), rust_type_to_ts(&qp.ty)));
     }
     if let Some(bs) = body_struct {
         let input_type = rust_type_to_ts(&extract_input_type(&bs.ty));
@@ -279,6 +280,13 @@ fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config
              \x20 }},\n\n",
         ));
     } else if is_get && !query_params.is_empty() {
+        // Path segments come before the query string — the HTTP server
+        // registers the route as `/{plural}/{action}/:path_param`, so a fn
+        // mixing a required path param with optional query params keeps both.
+        let mut url = route_path.clone();
+        for p in &path_params {
+            url.push_str(&format!("/${{encodeURIComponent({})}}", snake_to_camel(&p.name)));
+        }
         let params_str = ts_params.join(", ");
         let mut query_parts = Vec::new();
         for qp in &query_params {
@@ -287,7 +295,11 @@ fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config
                 .push(format!("{camel_name} != null ? `{}=${{encodeURIComponent({camel_name})}}` : ''", qp.name));
         }
         let query_build = if query_parts.len() == 1 {
-            format!("const params = {} ? `?${{{}}}` : ''", snake_to_camel(&query_params[0].name), query_parts[0])
+            format!(
+                "const params = {} != null ? `?${{{}}}` : ''",
+                snake_to_camel(&query_params[0].name),
+                query_parts[0]
+            )
         } else {
             format!(
                 "const parts = [{}].filter(Boolean);\n\
@@ -298,7 +310,7 @@ fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config
         out.push_str(&format!(
             "  async {camel}({params_str}): Promise<{ts_ret_str}> {{\n\
              \x20   {query_build};\n\
-             \x20   return httpGet(`{route_path}${{params}}`);\n\
+             \x20   return httpGet(`{url}${{params}}`);\n\
              \x20 }},\n\n",
         ));
     } else if body_struct.is_some() {
