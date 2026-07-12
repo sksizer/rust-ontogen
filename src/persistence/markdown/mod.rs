@@ -1,23 +1,30 @@
-//! Markdown filesystem persistence generator - writers, parser dispatch, fs helpers.
+//! Markdown filesystem persistence generator.
+//!
+//! Emits one `{Entity}Frontmatter` module per entity — the typed boundary
+//! between schema entities and on-disk YAML frontmatter, built on the
+//! `markdown-store` runtime crate. This replaced the former emit-everything
+//! model (hand-rolled YAML writers, a `serde_yaml_ng` parser dispatcher and
+//! `fs_ops` helpers bound to module paths nothing generated): file I/O,
+//! atomic writes, walking, and the lossless `Document` round-trip are the
+//! runtime crate's job now; the generated code is a thin typed shim. The
+//! old vault-scan dispatcher (`OntologyElement`/`ParseResult`) had no
+//! generic consumer and was retired with it — bulk scanning returns as a
+//! follow-up on top of `VaultHandle` if a consumer earns it.
 
-pub mod gen_fs_ops;
-pub mod gen_parser;
-pub mod gen_writer;
+pub mod gen_frontmatter;
 
 use crate::ir::{MarkdownEntityMeta, MarkdownIoOutput};
 use crate::schema::EntityDef;
 use crate::{CodegenError, MarkdownIoConfig};
 
-/// Generate all markdown I/O code: writers, parser dispatch, and fs_ops.
+/// Generate the markdown I/O code: per-entity `{Entity}Frontmatter` modules.
 ///
 /// Returns the [`MarkdownIoOutput`] metadata `gen_store` consumes when the
 /// store backend is [`crate::ir::Backend::Markdown`] (ADR 0001): the vault
 /// configuration verbatim from `config`, plus one [`MarkdownEntityMeta`]
 /// row per entity derived from the schema IR.
 pub fn generate(entities: &[EntityDef], config: &MarkdownIoConfig) -> Result<MarkdownIoOutput, CodegenError> {
-    gen_fs_ops::generate(entities, &config.output_dir).map_err(CodegenError::Persistence)?;
-    gen_writer::generate(entities, &config.output_dir).map_err(CodegenError::Persistence)?;
-    gen_parser::generate(entities, &config.output_dir).map_err(CodegenError::Persistence)?;
+    gen_frontmatter::generate(entities, &config.output_dir).map_err(CodegenError::Persistence)?;
 
     let entity_meta = entities
         .iter()

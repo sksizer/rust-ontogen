@@ -190,3 +190,12 @@ fn store_crud_complex_entity() {
     let code = generate_store_file(&article_mtm_tags_entity());
     insta::assert_snapshot!(code);
 }
+
+#[test]
+fn markdown_frontmatter_complex_entity() {
+    // Article's m2m relation exercises the wikilink-encode/strip boundary
+    // and the owned-keys constant; body field exercises the conversion
+    // signature.
+    let code = crate::persistence::markdown::gen_frontmatter::generate_frontmatter_module(&article_mtm_tags_entity());
+    insta::assert_snapshot!(code);
+}
