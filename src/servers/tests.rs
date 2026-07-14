@@ -1662,8 +1662,8 @@ fn test_http_generator_crud_module() {
     assert!(content.contains("pub fn entity_routes()"));
     assert!(content.contains("Router::new()"));
 
-    // Should have scoped route paths
-    assert!(content.contains("/api/projects/:project_id/nodes"));
+    // Should have scoped route paths (axum 0.8 `{param}` syntax)
+    assert!(content.contains("/api/projects/{project_id}/nodes"));
 
     // Should have store construction
     assert!(content.contains("state.store_for(&project_id)"));
@@ -1743,10 +1743,23 @@ fn test_http_generator_store_module_no_prefix() {
 
     // Should have CRUD routes
     assert!(content.contains("/api/nodes"), "should have list route");
-    assert!(content.contains("/api/nodes/:id"), "should have detail route");
+    assert!(content.contains("/api/nodes/{id}"), "should have detail route");
 
     // Should NOT have scoped routes (no route_prefix)
     assert!(!content.contains("_scoped"), "should not have scoped handlers");
+}
+
+#[test]
+fn test_axum_path_converts_colon_params_to_braces() {
+    use crate::servers::generators::http::axum_path;
+
+    // Config-facing `:name` segments become axum 0.8 `{name}` segments.
+    assert_eq!(axum_path("projects/:project_id"), "projects/{project_id}");
+    assert_eq!(axum_path("/api/projects/:project_id/nodes/:id"), "/api/projects/{project_id}/nodes/{id}");
+    // Paths without params pass through untouched.
+    assert_eq!(axum_path("/api/events/graph-updated"), "/api/events/graph-updated");
+    // Already-brace-style paths pass through untouched.
+    assert_eq!(axum_path("/api/nodes/{id}"), "/api/nodes/{id}");
 }
 
 #[test]
@@ -2160,15 +2173,15 @@ fn test_http_generator_junction_module() {
     // and the child segment (`skills` / `destinations`), NOT the snake_case
     // module name or action-style URLs (`/destination_skills/add-skill`).
     assert!(
-        content.contains("/api/destination-skills/:parent_id/skills"),
+        content.contains("/api/destination-skills/{parent_id}/skills"),
         "junction URL should use kebab-case plural and child segment"
     );
     assert!(
-        content.contains("/api/destination-skills/:parent_id/destinations"),
+        content.contains("/api/destination-skills/{parent_id}/destinations"),
         "reverse junction list URL should use kebab-case plural and reverse child segment"
     );
     assert!(
-        content.contains("/api/destination-skills/:parent_id/skills/:child_id"),
+        content.contains("/api/destination-skills/{parent_id}/skills/{child_id}"),
         "junction remove URL should include child_id path segment"
     );
 
@@ -2370,11 +2383,11 @@ fn test_junction_cross_transport_consistency() {
     // http.rs adds but the TS helper BASE constant prepends on the TS side).
     let expected_http_junctions = [
         (
-            "/api/destination-skills/:parent_id/skills",
+            "/api/destination-skills/{parent_id}/skills",
             "/destination-skills/${encodeURIComponent(destinationId)}/skills",
         ),
         (
-            "/api/destination-skills/:parent_id/destinations",
+            "/api/destination-skills/{parent_id}/destinations",
             "/destination-skills/${encodeURIComponent(skillId)}/destinations",
         ),
     ];
@@ -2390,7 +2403,7 @@ fn test_junction_cross_transport_consistency() {
 
 /// Build a module with a custom GET that mixes a required path param with an
 /// optional numeric query param. Models `jobs::get_log(app, lines)`: http.rs
-/// registers `/api/jobs/log/:app` with `lines` in the query string, so the TS
+/// registers `/api/jobs/log/{app}` with `lines` in the query string, so the TS
 /// clients must emit the path segment AND type `lines` from the Option's
 /// inner type (`number | null`), matching what the IPC handler deserializes.
 fn make_mixed_path_query_module() -> ApiModule {
@@ -2412,9 +2425,9 @@ fn make_mixed_path_query_module() -> ApiModule {
 
 #[test]
 fn test_custom_get_mixed_path_and_query_cross_transport() {
-    // Pre-fix, the TS emitters dropped the `:app` path segment whenever a
+    // Pre-fix, the TS emitters dropped the `app` path segment whenever a
     // custom GET also had query params, fetching `/jobs/log?lines=N` against
-    // a server route registered as `/api/jobs/log/:app`.
+    // a server route registered as `/api/jobs/log/{app}`.
     let tmp = tempfile::tempdir().unwrap();
     let http_out = tmp.path().join("http.rs");
     let transport_out = tmp.path().join("transport.ts");
@@ -2436,7 +2449,7 @@ fn test_custom_get_mixed_path_and_query_cross_transport() {
 
     // Server side: path param after the action segment, query param extracted
     // as the Option's inner type.
-    assert!(http.contains("\"/api/jobs/log/:app\""), "http.rs should register the path param after the action");
+    assert!(http.contains("\"/api/jobs/log/{app}\""), "http.rs should register the path param after the action");
     assert!(http.contains("lines: Option<u64>"), "http.rs query struct should keep the numeric inner type");
 
     // Both TS emitters must keep the path segment ahead of the query string.
@@ -2686,10 +2699,10 @@ fn test_extract_metadata_crud_routes() {
     let by_method = |m: &str| nodes.iter().find(|r| r.method == m).expect(m);
     assert_eq!(by_method("GET").path, "/api/nodes");
     assert_eq!(by_method("POST").path, "/api/nodes");
-    assert_eq!(by_method("PUT").path, "/api/nodes/:id");
-    assert_eq!(by_method("DELETE").path, "/api/nodes/:id");
+    assert_eq!(by_method("PUT").path, "/api/nodes/{id}");
+    assert_eq!(by_method("DELETE").path, "/api/nodes/{id}");
     let gets: Vec<_> = nodes.iter().filter(|r| r.method == "GET").collect();
-    assert!(gets.iter().any(|r| r.path == "/api/nodes/:id"), "Expected get_by_id route");
+    assert!(gets.iter().any(|r| r.path == "/api/nodes/{id}"), "Expected get_by_id route");
 }
 
 #[test]
@@ -2723,7 +2736,7 @@ fn test_extract_metadata_scopes_store_modules_with_prefix() {
 
     for r in &output.http_routes {
         if r.module_name == "node" {
-            assert!(r.path.starts_with("/api/projects/:project_id/nodes"), "Expected scoped path, got {}", r.path);
+            assert!(r.path.starts_with("/api/projects/{project_id}/nodes"), "Expected scoped path, got {}", r.path);
         }
     }
 }
@@ -2755,11 +2768,11 @@ fn test_extract_metadata_custom_get_includes_path_params() {
     let snapshot = output.http_routes.iter().find(|r| r.handler_name.contains("get_graph_snapshot")).expect("snapshot");
     assert_eq!(snapshot.method, "GET");
     // get_graph_snapshot has only an Option<&str> param → no path params
-    assert!(!snapshot.path.contains(":parent_id"), "Optional params should not be path-params: {}", snapshot.path);
+    assert!(!snapshot.path.contains("{parent_id}"), "Optional params should not be path-params: {}", snapshot.path);
 
     let detail = output.http_routes.iter().find(|r| r.handler_name.contains("get_node_detail")).expect("detail");
     assert_eq!(detail.method, "GET");
-    assert!(detail.path.contains(":node_id"), "Required param should be path-param: {}", detail.path);
+    assert!(detail.path.contains("{node_id}"), "Required param should be path-param: {}", detail.path);
 }
 
 /// Regression test for OF-008 and OF-010.

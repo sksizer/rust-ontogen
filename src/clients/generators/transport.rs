@@ -1026,7 +1026,7 @@ fn generate_http_custom_method(
         ));
     } else if is_get && !query_params.is_empty() {
         // Path segments come before the query string — http.rs registers the
-        // route as `/{plural}/{action}/:path_param`, so a fn mixing a required
+        // route as `/{plural}/{action}/{path_param}`, so a fn mixing a required
         // path param with optional query params must keep both.
         let mut url = route_path.clone();
         for p in &path_params {

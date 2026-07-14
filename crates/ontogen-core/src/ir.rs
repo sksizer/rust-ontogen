@@ -308,19 +308,19 @@ pub enum OpKind {
     Update,
     Delete,
     /// `list_{children}(parent_id)` - list child entities of a parent.
-    /// Generates `GET /api/{parents}/:parent_id/{children}`.
+    /// Generates `GET /api/<parents>/{parent_id}/<children>`.
     JunctionList {
         /// URL segment for the child collection, e.g. "roles".
         child_segment: String,
     },
     /// `add_{child}(parent_id, child_id)` - add a child to a parent.
-    /// Generates `POST /api/{parents}/:parent_id/{children}`.
+    /// Generates `POST /api/<parents>/{parent_id}/<children>`.
     JunctionAdd {
         /// URL segment for the child collection, e.g. "roles".
         child_segment: String,
     },
     /// `remove_{child}(parent_id, child_id)` - remove a child from a parent.
-    /// Generates `DELETE /api/{parents}/:parent_id/{children}/:child_id`.
+    /// Generates `DELETE /api/<parents>/{parent_id}/<children>/{child_id}`.
     JunctionRemove {
         /// URL segment for the child collection, e.g. "roles".
         child_segment: String,

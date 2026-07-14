@@ -12,6 +12,7 @@ repository = "https://github.com/sksizer/rust-ontogen"
 publish = false
 
 [dependencies]
+axum = "0.8"
 markdown-store = { path = "../markdown-store" }
 ontogen-macros = { path = "../ontogen-macros" }
 serde = { version = "1", features = ["derive"] }
@@ -24,3 +25,4 @@ ontogen = { path = "../.." }
 
 [dev-dependencies]
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

@@ -16,9 +16,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-use crate::api::v1::{epic, tag, task};
+use crate::api::{note, tag, task};
 use crate::schema::{
-    CreateEpicInput, CreateTagInput, CreateTaskInput, Epic, Tag, Task, UpdateEpicInput, UpdateTagInput, UpdateTaskInput,
+    CreateNoteInput, CreateTagInput, CreateTaskInput, Note, Tag, Task, UpdateNoteInput, UpdateTagInput, UpdateTaskInput,
 };
 use crate::store::Store;
 
@@ -33,38 +33,38 @@ fn err(msg: String) -> ApiError {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: msg }))
 }
 
-// ── Epic Handlers ──
+// ── Note Handlers ──
 
-async fn epic_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Epic>>, ApiError> {
+async fn note_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Note>>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    epic::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+    note::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
-async fn epic_get_by_id(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Epic>, ApiError> {
+async fn note_get_by_id(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Note>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    epic::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+    note::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
-async fn epic_create(
+async fn note_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateEpicInput>,
-) -> Result<(StatusCode, Json<Epic>), ApiError> {
+    Json(input): Json<CreateNoteInput>,
+) -> Result<(StatusCode, Json<Note>), ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    epic::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(|e| err(e.to_string()))
+    note::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(|e| err(e.to_string()))
 }
 
-async fn epic_update(
+async fn note_update(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(input): Json<UpdateEpicInput>,
-) -> Result<Json<Epic>, ApiError> {
+    Json(input): Json<UpdateNoteInput>,
+) -> Result<Json<Note>, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    epic::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    note::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
-async fn epic_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
+async fn note_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    epic::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+    note::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
 }
 
 // ── Tag Handlers ──
@@ -138,8 +138,8 @@ async fn task_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>)
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/epics", get(epic_list).post(epic_create))
-        .route("/api/epics/{id}", get(epic_get_by_id).put(epic_update).delete(epic_delete))
+        .route("/api/notes", get(note_list).post(note_create))
+        .route("/api/notes/{id}", get(note_get_by_id).put(note_update).delete(note_delete))
         .route("/api/tags", get(tag_list).post(tag_create))
         .route("/api/tags/{id}", get(tag_get_by_id).put(tag_update).delete(tag_delete))
         .route("/api/tasks", get(task_list).post(task_create))

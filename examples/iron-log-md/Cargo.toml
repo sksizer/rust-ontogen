@@ -17,7 +17,7 @@ serde = { version = "1", features = ["derive"] }
 schemars = "0.8"
 specta = { version = "=2.0.0-rc.23", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
-axum = "0.7"
+axum = "0.8"
 
 [build-dependencies]
 ontogen = { path = "../../" }

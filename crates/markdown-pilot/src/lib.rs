@@ -19,3 +19,10 @@ pub use store::Store;
 pub struct AppState {
     pub store: Store,
 }
+
+impl AppState {
+    /// Store accessor the generated HTTP handlers call (`state.store().await`).
+    pub async fn store(&self) -> Result<&Store, schema::AppError> {
+        Ok(&self.store)
+    }
+}

@@ -1037,10 +1037,10 @@ The scanner produces `StoreMethodMeta` entries with `entity_name: "Widget"` and 
                                  │
                                  ▼
                gen_servers ──► GET /api/v1/widgets
-                               GET /api/v1/widgets/:id
+                               GET /api/v1/widgets/{id}
                                POST /api/v1/widgets
-                               PUT /api/v1/widgets/:id
-                               DELETE /api/v1/widgets/:id
+                               PUT /api/v1/widgets/{id}
+                               DELETE /api/v1/widgets/{id}
                                  ↓
                gen_clients ──► TypeScript: widgetApi.list(), .get(), .create(), ...
 ```
@@ -1237,7 +1237,7 @@ Iterates over every `ApiModule` in `ApiOutput` and generates server-side handler
 - `Scanned` → `use crate::api::v1::task;`
 
 Each transport handles project scoping differently based on `ScopingConfig`:
-- **HTTP**: URL path prefix (`/projects/:project_id/tasks`)
+- **HTTP**: URL path prefix (`/projects/{project_id}/tasks`)
 - **IPC**: Optional camelCase param (`projectId?: string`)
 - **MCP**: Injected into tool JSON schema
 
@@ -1250,9 +1250,9 @@ Each transport handles project scoping differently based on `ScopingConfig`:
 pub fn task_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/tasks", get(list_tasks))
-        .route("/task/:id", get(get_task).put(update_task).delete(delete_task))
+        .route("/task/{id}", get(get_task).put(update_task).delete(delete_task))
         .route("/task", post(create_task))
-        .route("/task/:id/archive", post(archive_task))  // from scanned custom fn
+        .route("/task/{id}/archive", post(archive_task))  // from scanned custom fn
 }
 
 async fn list_tasks(
@@ -1304,12 +1304,12 @@ pub async fn archive_task(
 ```rust
 ServersOutput {
     http_routes: vec![
-        HttpRouteMeta { method: "GET", path: "/projects/:project_id/tasks", handler: "list_tasks", module: "task" },
-        HttpRouteMeta { method: "GET", path: "/projects/:project_id/task/:id", handler: "get_task", module: "task" },
-        HttpRouteMeta { method: "POST", path: "/projects/:project_id/task", handler: "create_task", module: "task" },
-        HttpRouteMeta { method: "PUT", path: "/projects/:project_id/task/:id", handler: "update_task", module: "task" },
-        HttpRouteMeta { method: "DELETE", path: "/projects/:project_id/task/:id", handler: "delete_task", module: "task" },
-        HttpRouteMeta { method: "POST", path: "/projects/:project_id/task/:id/archive", handler: "archive_task", module: "task" },
+        HttpRouteMeta { method: "GET", path: "/projects/{project_id}/tasks", handler: "list_tasks", module: "task" },
+        HttpRouteMeta { method: "GET", path: "/projects/{project_id}/task/{id}", handler: "get_task", module: "task" },
+        HttpRouteMeta { method: "POST", path: "/projects/{project_id}/task", handler: "create_task", module: "task" },
+        HttpRouteMeta { method: "PUT", path: "/projects/{project_id}/task/{id}", handler: "update_task", module: "task" },
+        HttpRouteMeta { method: "DELETE", path: "/projects/{project_id}/task/{id}", handler: "delete_task", module: "task" },
+        HttpRouteMeta { method: "POST", path: "/projects/{project_id}/task/{id}/archive", handler: "archive_task", module: "task" },
         // ... all other entities + custom modules
     ],
     ipc_commands: vec![

@@ -81,7 +81,7 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
         // HTTP base path: store-based modules get scoped under route_prefix
         // when configured (mirroring http.rs:166-170 + generate_scoped_handlers).
         let http_base = match (&config.route_prefix, is_store_module) {
-            (Some(prefix), true) => format!("/api/{}", prefix.segments),
+            (Some(prefix), true) => format!("/api/{}", generators::http::axum_path(&prefix.segments)),
             _ => "/api".to_string(),
         };
 
@@ -114,8 +114,11 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
         // and the scoped handler block).
         for ev in &m.events {
             let ev_name = crate::servers::types::event_name(&ev.name);
-            let unscoped =
-                config.sse_route_overrides.get(&ev.name).cloned().unwrap_or_else(|| format!("/api/events/{}", ev_name));
+            let unscoped = config
+                .sse_route_overrides
+                .get(&ev.name)
+                .map(|p| generators::http::axum_path(p))
+                .unwrap_or_else(|| format!("/api/events/{}", ev_name));
             http_routes.push(HttpRouteMeta {
                 method: "GET".to_string(),
                 path: unscoped.clone(),
@@ -133,7 +136,7 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
                 };
                 http_routes.push(HttpRouteMeta {
                     method: "GET".to_string(),
-                    path: scoped_path,
+                    path: generators::http::axum_path(&scoped_path),
                     handler_name: format!("{}_sse_scoped", ev.name),
                     module_name: m.name.clone(),
                 });
@@ -158,13 +161,13 @@ fn http_route_for(
     let route = match op {
         OpKind::List => ("GET", format!("{base}/{plural}")),
         OpKind::Create => ("POST", format!("{base}/{plural}")),
-        OpKind::GetById => ("GET", format!("{base}/{plural}/:id")),
-        OpKind::Update => ("PUT", format!("{base}/{plural}/:id")),
-        OpKind::Delete => ("DELETE", format!("{base}/{plural}/:id")),
-        OpKind::JunctionList { child_segment } => ("GET", format!("{base}/{plural}/:parent_id/{child_segment}")),
-        OpKind::JunctionAdd { child_segment } => ("POST", format!("{base}/{plural}/:parent_id/{child_segment}")),
+        OpKind::GetById => ("GET", format!("{base}/{plural}/{{id}}")),
+        OpKind::Update => ("PUT", format!("{base}/{plural}/{{id}}")),
+        OpKind::Delete => ("DELETE", format!("{base}/{plural}/{{id}}")),
+        OpKind::JunctionList { child_segment } => ("GET", format!("{base}/{plural}/{{parent_id}}/{child_segment}")),
+        OpKind::JunctionAdd { child_segment } => ("POST", format!("{base}/{plural}/{{parent_id}}/{child_segment}")),
         OpKind::JunctionRemove { child_segment } => {
-            ("DELETE", format!("{base}/{plural}/:parent_id/{child_segment}/:child_id"))
+            ("DELETE", format!("{base}/{plural}/{{parent_id}}/{child_segment}/{{child_id}}"))
         }
         OpKind::CustomGet | OpKind::CustomPost => {
             let is_get = classify::is_read_op(op);
@@ -179,7 +182,7 @@ fn http_route_for(
             if is_get {
                 for p in &f.params {
                     if !p.ty.starts_with("Option<") && !p.ty.contains("Input") {
-                        path.push_str(&format!("/:{}", p.name));
+                        path.push_str(&format!("/{{{}}}", p.name));
                     }
                 }
             }

@@ -43,7 +43,7 @@ pub struct Config {
 
     /// Optional route prefix for project scoping.
     ///
-    /// When set, generates project-scoped routes (e.g., `/api/projects/:project_id/nodes`)
+    /// When set, generates project-scoped routes (e.g., `/api/projects/{project_id}/nodes`)
     /// alongside the existing unscoped routes. The prefix params are extracted and used
     /// to validate the project context via the configured state accessor method.
     pub route_prefix: Option<RoutePrefix>,
@@ -101,11 +101,13 @@ impl Default for Config {
 /// A path prefix inserted before entity routes, with extractable parameters.
 ///
 /// For example, `"projects/:project_id"` produces routes like
-/// `/api/projects/:project_id/nodes` and generates handlers that extract
-/// `project_id` from the path.
+/// `/api/projects/{project_id}/nodes` (axum 0.8 syntax) and generates
+/// handlers that extract `project_id` from the path.
 #[derive(Debug, Clone)]
 pub struct RoutePrefix {
-    /// The path segment(s) to insert (e.g., `"projects/:project_id"`).
+    /// The path segment(s) to insert, with params in `:name` form
+    /// (e.g., `"projects/:project_id"`). Normalized to axum's `{name}`
+    /// form when routes are emitted.
     pub segments: String,
     /// The state accessor method to call for validation
     /// (e.g., `"store_for"` → `state.store_for(&project_id)?`).
