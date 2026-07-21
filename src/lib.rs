@@ -60,6 +60,7 @@ pub use ontogen_macros::{OntologyEntity, ontogen, stateless};
 /// (a hypothetical gRPC or CLI surface) wouldn't need to retro-namespace
 /// these markers.
 pub mod http {
+    pub use ontogen_macros::get;
     pub use ontogen_macros::post;
 }
 
