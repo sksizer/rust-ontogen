@@ -9,18 +9,35 @@ use crate::servers::parse::{ApiFn, ForcedMethod, Param};
 /// Classify a function into an operation kind.
 ///
 /// Source-side `#[ontogen::http::*]` attributes short-circuit the heuristic
-/// and return the forced classification unconditionally. Today the only
-/// recognized override is `#[ontogen::http::post]`
-/// (`ApiFn::force_method == Some(ForcedMethod::Post)`), which forces
-/// `OpKind::CustomPost`. The override now overlaps with the default for
-/// zero-user-param functions outside the known-read prefix allowlist —
-/// since those default to `CustomPost` already, an explicit annotation on
-/// such a function is redundant but harmless. The override remains useful
+/// and return the forced classification unconditionally.
+///
+/// `#[ontogen::http::post]` forces `OpKind::CustomPost`. It overlaps with the
+/// default for zero-user-param functions outside the known-read prefix
+/// allowlist — since those default to `CustomPost` already, an explicit
+/// annotation on such a function is redundant but harmless. It remains useful
 /// for forcing POST on a `get_*`/`list_*`/`is_*`-prefixed handler that
 /// actually mutates state.
+///
+/// `#[ontogen::http::get]` forces `OpKind::CustomGet`, and exists because the
+/// name heuristic is asymmetric: [`KNOWN_READ_PREFIXES`] is consulted **only**
+/// in the zero-user-param branch, and among functions that carry params only
+/// `get_` has a path back into `CustomGet`. A read *with arguments* named
+/// `count_*`, `exists_*`, `find_*`, `is_*` or `has_*` therefore classifies
+/// `CustomPost` no matter how side-effect-free it is. Before this override the
+/// only remedy was renaming to `get_*`, which is a real cost: it bends a
+/// handler's name to satisfy the router rather than to describe what it does,
+/// and the resulting `get_matching_file_count`-style names read as
+/// workarounds without a comment explaining why.
+///
+/// Both overrides win outright. Forcing GET is the author asserting the
+/// param shape suits a GET; it deliberately does **not** re-run the
+/// body-carrying-first-param check the `get_*` branch applies, for the same
+/// reason `Post` does not re-run anything — an explicit override that
+/// second-guesses the author is not an override.
 pub fn classify_op(func: &ApiFn) -> OpKind {
     match func.force_method {
         Some(ForcedMethod::Post) => OpKind::CustomPost,
+        Some(ForcedMethod::Get) => OpKind::CustomGet,
         None => classify_by_name_and_params(&func.name, &func.params),
     }
 }
@@ -33,6 +50,15 @@ pub fn classify_op(func: &ApiFn) -> OpKind {
 /// `CustomGet` after the classifier's default flipped to `CustomPost`
 /// (RFC 7231 §4.2.1: GET is for retrieval, not action). Named-CRUD
 /// (`list`, `get_by_id`) is matched earlier and does not need to live here.
+///
+/// **Scope: zero-user-param functions only.** `classify_by_name_and_params`
+/// consults this list in the `params.is_empty()` branch and nowhere else, so
+/// among functions that carry params only `get_` routes as a read — the other
+/// six prefixes here have no effect at all once a handler takes an argument.
+/// That is deliberate rather than an oversight (a read with arguments may want
+/// a body, which GET cannot carry), but it does mean the list is narrower than
+/// its name suggests. `#[ontogen::http::get]` is how a params-carrying read
+/// opts in explicitly.
 ///
 /// Extension policy: add a prefix here only if it unambiguously denotes a
 /// read in every plausible domain. Borderline cases (`load_`, `read_`,
