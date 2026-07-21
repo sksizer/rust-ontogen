@@ -991,6 +991,52 @@ fn generate_http_custom_method(
         route_path.push_str(&format!("/{}", action));
     }
 
+    // A POST that carries query params needs the templated path (so `${params}`
+    // interpolates); one that does not keeps the plain literal.
+    fn post_path_expr(
+        sp: &dyn Fn(&str) -> String,
+        sp_template: &dyn Fn(&str) -> String,
+        route_path: &str,
+        has_query: bool,
+    ) -> String {
+        if has_query { sp_template(&format!("{route_path}${{params}}")) } else { sp(route_path) }
+    }
+
+    // Optional params ride the QUERY STRING on both methods, not just GET.
+    // `http.rs` emits a `Query(...)` extractor whenever any param is
+    // `Option<T>`, regardless of the route's method — so a POST whose params
+    // are all optional has a server reading them from a query string the
+    // client never sends. Every argument arrives `None`, with no compile
+    // error and no runtime error: the call simply does nothing, quietly.
+    //
+    // This builder is therefore shared by the GET and POST arms below rather
+    // than living inside the GET one.
+    let build_query = |query_params: &[&Param]| -> Option<String> {
+        if query_params.is_empty() {
+            return None;
+        }
+        let query_parts: Vec<String> = query_params
+            .iter()
+            .map(|qp| {
+                let camel_name = snake_to_camel(&qp.name);
+                format!("{camel_name} != null ? `{}=${{encodeURIComponent({camel_name})}}` : ''", qp.name)
+            })
+            .collect();
+        Some(if query_parts.len() == 1 {
+            format!(
+                "const params = {} != null ? `?${{{}}}` : ''",
+                snake_to_camel(&query_params[0].name),
+                query_parts[0]
+            )
+        } else {
+            format!(
+                "const parts = [{}].filter(Boolean);\n\
+                 \x20       const params = parts.length > 0 ? `?${{parts.join('&')}}` : ''",
+                query_parts.join(", ")
+            )
+        })
+    };
+
     // Helper closures for scoped paths
     let sp = |path: &str| -> String {
         if has_prefix { format!("scopedPath({}, '{}')", pp_camel, path) } else { format!("'{}'", path) }
@@ -1032,25 +1078,7 @@ fn generate_http_custom_method(
         for p in &path_params {
             url.push_str(&format!("/${{encodeURIComponent({})}}", snake_to_camel(&p.name)));
         }
-        let mut query_parts = Vec::new();
-        for qp in &query_params {
-            let camel_name = snake_to_camel(&qp.name);
-            query_parts
-                .push(format!("{camel_name} != null ? `{}=${{encodeURIComponent({camel_name})}}` : ''", qp.name));
-        }
-        let query_build = if query_parts.len() == 1 {
-            format!(
-                "const params = {} != null ? `?${{{}}}` : ''",
-                snake_to_camel(&query_params[0].name),
-                query_parts[0]
-            )
-        } else {
-            format!(
-                "const parts = [{}].filter(Boolean);\n\
-                 \x20       const params = parts.length > 0 ? `?${{parts.join('&')}}` : ''",
-                query_parts.join(", ")
-            )
-        };
+        let query_build = build_query(&query_params).expect("branch guarded on non-empty query_params");
         let path_expr = sp_template(&format!("{}${{params}}", url));
         out.push_str(&format!(
             "    async {camel}({params_str}): Promise<{ret_str}> {{\n\
@@ -1059,22 +1087,26 @@ fn generate_http_custom_method(
              \x20   }},\n",
         ));
     } else if body_struct.is_some() {
-        let path_expr = sp(&route_path);
+        let post_query = build_query(&query_params);
+        let path_expr = post_path_expr(&sp, &sp_template, &route_path, post_query.is_some());
+        let prelude = post_query.as_ref().map(|q| format!("      {q};\n")).unwrap_or_default();
         if returns_unit {
             out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<null> {{\n\
+                "    async {camel}({params_str}): Promise<null> {{\n{prelude}\
                  \x20     await httpPost({path_expr}, input);\n\
                  \x20     return null;\n\
                  \x20   }},\n",
             ));
         } else {
             out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<{ret_str}> {{\n\
+                "    async {camel}({params_str}): Promise<{ret_str}> {{\n{prelude}\
                  \x20     return httpPost<{ret_str}>({path_expr}, input);\n\
                  \x20   }},\n",
             ));
         }
     } else if !body_fields.is_empty() {
+        let post_query = build_query(&query_params);
+        let prelude = post_query.as_ref().map(|q| format!("      {q};\n")).unwrap_or_default();
         let body_obj: Vec<String> = body_fields
             .iter()
             .map(|bf| {
@@ -1083,34 +1115,37 @@ fn generate_http_custom_method(
             })
             .collect();
         let body_str = format!("{{ {} }}", body_obj.join(", "));
-        let path_expr = sp(&route_path);
+        let path_expr = post_path_expr(&sp, &sp_template, &route_path, post_query.is_some());
         if returns_unit {
             out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<null> {{\n\
+                "    async {camel}({params_str}): Promise<null> {{\n{prelude}\
                  \x20     await httpPost({path_expr}, {body_str});\n\
                  \x20     return null;\n\
                  \x20   }},\n",
             ));
         } else {
             out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<{ret_str}> {{\n\
+                "    async {camel}({params_str}): Promise<{ret_str}> {{\n{prelude}\
                  \x20     return httpPost<{ret_str}>({path_expr}, {body_str});\n\
                  \x20   }},\n",
             ));
         }
     } else {
-        // POST with no params
-        let path_expr = sp(&route_path);
+        // POST whose only params, if any, are optional — they ride the query
+        // string, exactly as the server's `Query(...)` extractor expects.
+        let post_query = build_query(&query_params);
+        let prelude = post_query.as_ref().map(|q| format!("      {q};\n")).unwrap_or_default();
+        let path_expr = post_path_expr(&sp, &sp_template, &route_path, post_query.is_some());
         if returns_unit {
             out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<null> {{\n\
+                "    async {camel}({params_str}): Promise<null> {{\n{prelude}\
                  \x20     await httpPost({path_expr});\n\
                  \x20     return null;\n\
                  \x20   }},\n",
             ));
         } else {
             out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<{ret_str}> {{\n\
+                "    async {camel}({params_str}): Promise<{ret_str}> {{\n{prelude}\
                  \x20     return httpPost<{ret_str}>({path_expr});\n\
                  \x20   }},\n",
             ));

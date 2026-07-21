@@ -111,6 +111,59 @@ pub fn post(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
+/// Attribute macro that forces an annotated `pub fn` to classify as
+/// `OpKind::CustomGet`, overriding the auto-classifier.
+///
+/// The counterpart to [`post`], and canonical path `#[ontogen::http::get]`.
+/// Like `post`, it expands to a no-op pass-through; the ontogen parser
+/// (`servers::parse`) reads it via `syn` during build-time scanning and
+/// stamps `ApiFn::force_method = Some(ForcedMethod::Get)`.
+///
+/// Use it on a read that carries parameters and is not named `get_*`. The
+/// classifier's read-prefix allowlist (`get_`, `list_`, `count_`, `exists_`,
+/// `find_`, `is_`, `has_`) is consulted **only** for functions with no
+/// user-facing params; among functions that take arguments, only `get_` has a
+/// branch back into `CustomGet`. So `count_matching_files(collection, glob)`
+/// classifies `CustomPost` however read-only it is, and until this attribute
+/// the only fix was renaming it `get_matching_file_count` — bending the
+/// handler's name to satisfy the router rather than to describe what it does.
+///
+/// The override wins outright. It deliberately does not re-run the
+/// body-carrying-first-param check that the `get_*` branch applies, so the
+/// author is asserting the params suit a GET: scalars and `Option<T>` that
+/// can ride the query string or a path segment, not a struct that needs a
+/// body. GET cannot carry one.
+///
+/// Usage:
+/// ```ignore
+/// use ontogen::http::get;
+///
+/// // Without the attribute this routes POST, because it has params and is
+/// // not named `get_*` — despite `count_` being in the read allowlist.
+/// #[get]
+/// pub async fn count_matching_files(
+///     state: &AppState,
+///     collection_path: Option<String>,
+///     glob_pattern: Option<String>,
+/// ) -> Result<u64, AppError> {
+///     // ...
+/// }
+/// ```
+///
+/// Or fully qualified, with no `use`:
+/// ```ignore
+/// #[ontogen::http::get]
+/// pub async fn count_matching_files(/* ... */) -> Result<u64, AppError> { /* ... */ }
+/// ```
+///
+/// The parser matches on the final path segment, so `#[ontogen::http::get]`,
+/// `#[ontogen_macros::get]`, and the bare `#[get]` (after a `use`) all resolve
+/// to the same `ForcedMethod::Get` classification.
+#[proc_macro_attribute]
+pub fn get(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
 /// Pass-through attribute macro for per-function ontogen directives.
 ///
 /// The macro itself is a no-op - the annotated item is returned unchanged so the
