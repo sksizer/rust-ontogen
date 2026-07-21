@@ -16,10 +16,10 @@ use crate::servers::types::norm_type;
 
 /// Which HTTP method an `#[ontogen::http::*]` attribute forces on a handler.
 ///
-/// Today only `Post` is consumed (via `#[ontogen::http::post]`). Future
-/// method overrides extend the variant set without touching `ApiFn`'s
-/// shape — adding `Get` / `Put` / `Delete` / `Patch` is purely additive
-/// once their consumers and corresponding proc-macros land.
+/// `Post` and `Get` are consumed today (via `#[ontogen::http::post]` and
+/// `#[ontogen::http::get]`). Further method overrides extend the variant set
+/// without touching `ApiFn`'s shape — adding `Put` / `Delete` / `Patch` is
+/// purely additive once their consumers and corresponding proc-macros land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForcedMethod {
     /// Force `OpKind::CustomPost` classification regardless of name or
@@ -28,6 +28,23 @@ pub enum ForcedMethod {
     /// `use ontogen::http::post;`, and any other path ending in `::post`
     /// all map here).
     Post,
+    /// Force `OpKind::CustomGet` classification regardless of name or param
+    /// shape. Populated from any attribute whose final path segment is `get`.
+    ///
+    /// The counterpart to `Post`, and the escape hatch for the asymmetry in
+    /// the name heuristic: [`KNOWN_READ_PREFIXES`] is consulted **only** for
+    /// functions with no user-facing params, and among functions that do have
+    /// params only `get_` has a branch back into `CustomGet`. So a read with
+    /// arguments named `count_*`, `exists_*`, `find_*`, `is_*` or `has_*`
+    /// routes `CustomPost` however read-only it is, and renaming it to `get_*`
+    /// was the only way back. This is the other way back.
+    ///
+    /// Forcing GET is the author asserting the param shape suits a GET — the
+    /// override wins outright, exactly as `Post` does, and does not re-run the
+    /// body-carrying-first-param check that the `get_*` branch applies.
+    ///
+    /// [`KNOWN_READ_PREFIXES`]: crate::servers::classify
+    Get,
 }
 
 /// A parsed API function signature.
@@ -356,10 +373,12 @@ fn has_stateless_attr(func: &syn::ItemFn) -> bool {
 /// Inspect attributes on `func` and return the forced HTTP method, if any
 /// `#[ontogen::http::*]` marker is present.
 ///
-/// Matched on the final path segment of each attribute path. Today the
-/// only recognized form is `post` → `Some(ForcedMethod::Post)`, which
-/// accepts the canonical `#[ontogen::http::post]`, the bare `#[post]` (after
-/// `use ontogen::http::post;`), or any other path ending in `::post`. The
+/// Matched on the final path segment of each attribute path. The recognized
+/// forms are `post` → `Some(ForcedMethod::Post)` and `get` →
+/// `Some(ForcedMethod::Get)`, each accepting the canonical
+/// `#[ontogen::http::<method>]`, the bare `#[<method>]` (after
+/// `use ontogen::http::<method>;`), or any other path ending in
+/// `::<method>`. The
 /// match is purely syntactic; the proc-macro itself is a no-op pass-through,
 /// so the parser is the only consumer of the marker. A foreign `post`
 /// attribute from an unrelated crate would also match; users hitting that
@@ -367,8 +386,8 @@ fn has_stateless_attr(func: &syn::ItemFn) -> bool {
 /// modules.
 ///
 /// Returns `None` when no recognized HTTP-method-override attribute is
-/// present. Future method overrides extend this function by adding a
-/// match arm for each new ident (`get` → `Some(ForcedMethod::Get)`, etc.).
+/// present. Further method overrides extend this function by adding a
+/// match arm for each new ident (`put` → `Some(ForcedMethod::Put)`, etc.).
 fn parse_force_method(func: &syn::ItemFn) -> Option<ForcedMethod> {
     for attr in &func.attrs {
         if !matches!(attr.meta, syn::Meta::Path(_) | syn::Meta::List(_)) {
@@ -379,6 +398,9 @@ fn parse_force_method(func: &syn::ItemFn) -> Option<ForcedMethod> {
         };
         if last.ident == "post" {
             return Some(ForcedMethod::Post);
+        }
+        if last.ident == "get" {
+            return Some(ForcedMethod::Get);
         }
     }
     None

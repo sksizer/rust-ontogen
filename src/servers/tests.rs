@@ -897,6 +897,72 @@ fn test_force_method_post_overrides_classifier() {
     assert!(!is_read_op(&classify_op(&get_forced)));
 }
 
+/// `force_method: Some(ForcedMethod::Get)` short-circuits the classifier and
+/// returns `OpKind::CustomGet` regardless of name/param shape.
+///
+/// The case it exists for is the asymmetry in the name heuristic:
+/// `KNOWN_READ_PREFIXES` is consulted only in the `params.is_empty()` branch,
+/// so among functions that take arguments only `get_` routes as a read. Six of
+/// the seven read prefixes are inert the moment a handler gains a parameter,
+/// which is surprising precisely because the allowlist names them.
+#[test]
+fn test_force_method_get_overrides_classifier() {
+    fn make_fn(name: &str, params: Vec<Param>, force_method: Option<ForcedMethod>) -> ApiFn {
+        ApiFn { name: name.to_string(), is_async: true, params, is_stateless: true, force_method, ..Default::default() }
+    }
+
+    // The motivating shape: a read that carries params and is named with a
+    // read prefix that is not `get_`. Unforced it POSTs despite `count_`
+    // being in the allowlist, because the allowlist is zero-param-only.
+    let count_params = vec![param("collection_path", "Option<String>"), param("glob_pattern", "Option<String>")];
+    let count_unforced = make_fn("count_matching_files", count_params.clone(), None);
+    assert!(matches!(classify_op(&count_unforced), OpKind::CustomPost));
+    let count_forced = make_fn("count_matching_files", count_params, Some(ForcedMethod::Get));
+    assert!(matches!(classify_op(&count_forced), OpKind::CustomGet));
+
+    // The same holds for the other four inert prefixes.
+    for name in ["exists_note", "find_by_tag", "is_indexed", "has_children"] {
+        let unforced = make_fn(name, vec![param("id", "String")], None);
+        assert!(matches!(classify_op(&unforced), OpKind::CustomPost), "{name} unforced");
+        let forced = make_fn(name, vec![param("id", "String")], Some(ForcedMethod::Get));
+        assert!(matches!(classify_op(&forced), OpKind::CustomGet), "{name} forced");
+    }
+
+    // The override beats the named-CRUD branch, mirroring `Post`: `create`
+    // would normally route as OpKind::Create.
+    let create_forced = make_fn("create", vec![param("body", "NoteDoc")], Some(ForcedMethod::Get));
+    assert!(matches!(classify_op(&create_forced), OpKind::CustomGet));
+
+    // It also beats the body-carrying-first-param check that demotes a
+    // `get_*` to CustomPost. The override does not re-run that check — the
+    // author is asserting the shape suits a GET.
+    let get_body_unforced = make_fn("get_report", vec![param("req", "ReportRequest")], None);
+    assert!(matches!(classify_op(&get_body_unforced), OpKind::CustomPost));
+    let get_body_forced = make_fn("get_report", vec![param("req", "ReportRequest")], Some(ForcedMethod::Get));
+    assert!(matches!(classify_op(&get_body_forced), OpKind::CustomGet));
+
+    // No-op where the result already matches.
+    let already = make_fn("get_state", vec![], Some(ForcedMethod::Get));
+    assert!(matches!(classify_op(&already), OpKind::CustomGet));
+
+    // `is_read_op` agrees: forcing GET makes the op a read.
+    assert!(is_read_op(&classify_op(&count_forced)));
+    assert!(is_read_op(&classify_op(&create_forced)));
+}
+
+/// The two overrides are independent and each wins outright, so a handler
+/// annotated one way never drifts into the other's classification.
+#[test]
+fn test_force_method_get_and_post_are_symmetric() {
+    fn make_fn(name: &str, force_method: Option<ForcedMethod>) -> ApiFn {
+        ApiFn { name: name.to_string(), is_async: true, params: vec![param("id", "String")], is_stateless: true, force_method, ..Default::default() }
+    }
+    let name = "count_things";
+    assert!(matches!(classify_op(&make_fn(name, None)), OpKind::CustomPost));
+    assert!(matches!(classify_op(&make_fn(name, Some(ForcedMethod::Get))), OpKind::CustomGet));
+    assert!(matches!(classify_op(&make_fn(name, Some(ForcedMethod::Post))), OpKind::CustomPost));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // parse.rs - API module parsing
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1973,6 +2039,59 @@ fn test_transport_returns_fallback_record_for_missing_type() {
     // The placeholder is still emitted in the generated TS so callers can compile.
     let content = std::fs::read_to_string(&output).unwrap();
     assert!(content.contains("type Workout = Record<string, unknown>"));
+}
+
+/// A POST whose parameters are all `Option<T>` must still send them.
+///
+/// This is the regression that motivated the fix. `http.rs` emits a
+/// `Query(...)` extractor whenever any param is `Option<T>`, regardless of the
+/// route's method — but the transport's POST arms only ever sent a body, and
+/// an all-optional signature produces no body fields at all. Server read from
+/// a query string; client sent none; every argument arrived `None`.
+///
+/// Nothing failed loudly. No compile error, no runtime error, no 4xx — the
+/// call just quietly did nothing, which is why it survived review and shipped.
+#[test]
+fn test_transport_post_with_only_optional_params_sends_them_as_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("generated.ts");
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "").unwrap();
+
+    // `count_matching_files` is a read, but it carries params and is not named
+    // `get_*`, so it classifies CustomPost — the read-prefix allowlist is only
+    // consulted for zero-param fns.
+    let module = ApiModule {
+        name: "doc".to_string(),
+        events: vec![],
+        is_singleton: false,
+        functions: vec![ApiFn {
+            name: "count_matching_files".to_string(),
+            is_async: true,
+            params: vec![param("collection_path", "Option<String>"), param("glob_pattern", "Option<String>")],
+            return_type: "u64".to_string(),
+            return_type_ast: ty_ast("u64"),
+            is_stateless: true,
+            ..Default::default()
+        }],
+    };
+    assert!(
+        matches!(classify_op(&module.functions[0]), OpKind::CustomPost),
+        "precondition: this shape classifies POST, which is the whole problem"
+    );
+
+    let config = client_test_config(tmp.path().to_path_buf());
+    crate::clients::generators::transport::generate(&output, &bindings, &[module], &config);
+    let content = std::fs::read_to_string(&output).unwrap();
+
+    assert!(
+        content.contains("collection_path=") && content.contains("glob_pattern="),
+        "both optional params must reach the query string; emitted:\n{content}"
+    );
+    assert!(
+        content.contains("${params}"),
+        "the POST path must interpolate the built query string; emitted:\n{content}"
+    );
 }
 
 #[test]
