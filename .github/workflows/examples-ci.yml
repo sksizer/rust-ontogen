@@ -50,4 +50,18 @@ jobs:
       - uses: "actions-rust-lang/setup-rust-toolchain@v1"
         with:
           toolchain: "stable"
+      # iron-log is a Tauri app; `cargo check` builds native GTK/WebKit crates
+      # (gobject-sys, webkit2gtk-sys, …) that need system -dev libraries the
+      # GitHub image doesn't ship. Without these it fails with e.g.
+      # "system library `gobject-2.0` … was not found".
+      - name: "Install Tauri system dependencies"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libsoup-3.0-dev \
+            librsvg2-dev \
+            patchelf
       - run: "cargo check --manifest-path examples/iron-log/src-tauri/Cargo.toml"
