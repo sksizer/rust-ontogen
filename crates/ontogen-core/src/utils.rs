@@ -117,17 +117,53 @@ pub fn rustfmt(path: &Path) {
     let _ = std::process::Command::new("rustfmt").arg("--edition").arg("2024").arg(path).status();
 }
 
-/// Format TypeScript content in memory via prettier, then write only if changed.
+/// How to format generated TypeScript before writing it.
 ///
-/// Mirrors `write_and_format` for Rust - formats in memory first so
+/// Default is [`TsFormatter::Biome`] — hermetic, in-process, no external tool.
+#[derive(Debug, Clone, Default)]
+pub enum TsFormatter {
+    /// Format in-process with biome (requires ontogen-core's `biome` feature).
+    ///
+    /// This is the default and the recommended mode: no Node, no `npx`, no
+    /// external process — it can never fail on a missing or version-mismatched
+    /// tool. If ontogen-core was built WITHOUT the `biome` feature, this
+    /// degrades to unformatted output plus a `cargo:warning`.
+    #[default]
+    Biome,
+    /// Emit the generated TypeScript unformatted — skip the formatting pass.
+    None,
+    /// Run an external formatter, piping the TS through the child's stdin and
+    /// reading the formatted result from its stdout. The output file's resolved
+    /// path is appended as the final argument (so e.g. prettier's
+    /// `--stdin-filepath` can resolve config). Runs from the nearest ancestor
+    /// `node_modules` directory when one exists.
+    ///
+    /// e.g. `TsFormatter::Command(vec!["prettier".into(), "--stdin-filepath".into()])`.
+    Command(Vec<String>),
+}
+
+/// Format TypeScript content in memory per `formatter`, then write only if
+/// changed.
+///
+/// Mirrors `write_and_format` for Rust — formats in memory first so
 /// `write_if_changed` can skip the write when content is identical,
 /// preventing unnecessary mtime changes that trigger file-watchers.
-///
-/// Returns `CodegenError::ExternalTool` if `npx` / `prettier` is not installed.
-pub fn write_and_format_ts(path: &Path, content: impl AsRef<str>) -> Result<(), CodegenError> {
-    // Canonicalize the path so prettier can resolve `.prettierrc` from the
-    // output file's directory, not the CWD (which is typically `src-tauri/`).
-    let resolved = if let Some(parent) = path.parent() {
+pub fn write_and_format_ts(path: &Path, content: impl AsRef<str>, formatter: &TsFormatter) -> Result<(), CodegenError> {
+    let content = content.as_ref();
+    let formatted = match formatter {
+        TsFormatter::None => content.to_string(),
+        TsFormatter::Biome => biome_format_ts(content),
+        TsFormatter::Command(cmd) => command_format_ts(content, cmd, &resolve_ts_path(path))?,
+    };
+    write_if_changed(path, formatted)
+        .map_err(|e| CodegenError::Client(format!("Failed to write {}: {e}", path.display())))
+}
+
+/// Canonicalize the output path so an external formatter can resolve config
+/// (e.g. `.prettierrc`) from the file's own directory rather than the build
+/// script's CWD (typically `src-tauri/`). Creates the parent if needed.
+fn resolve_ts_path(path: &Path) -> PathBuf {
+    if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
         match std::fs::canonicalize(parent) {
             Ok(abs_parent) => abs_parent.join(path.file_name().unwrap_or_default()),
@@ -135,10 +171,29 @@ pub fn write_and_format_ts(path: &Path, content: impl AsRef<str>) -> Result<(), 
         }
     } else {
         path.to_path_buf()
-    };
-    let formatted = prettier_string(content.as_ref(), &resolved)?;
-    write_if_changed(path, formatted)
-        .map_err(|e| CodegenError::Client(format!("Failed to write {}: {e}", path.display())))
+    }
+}
+
+/// Format via the in-process biome formatter. Falls back to unformatted output
+/// (with a `cargo:warning`) on a parse failure, or when the `biome` feature is
+/// not enabled.
+#[cfg(feature = "biome")]
+fn biome_format_ts(content: &str) -> String {
+    match crate::biome_fmt::format_ts(content) {
+        Ok(formatted) => formatted,
+        Err(e) => {
+            println!("cargo:warning=ontogen: biome could not format generated TS ({e}); emitting unformatted output");
+            content.to_string()
+        }
+    }
+}
+
+#[cfg(not(feature = "biome"))]
+fn biome_format_ts(content: &str) -> String {
+    println!(
+        "cargo:warning=ontogen: TsFormatter::Biome selected but ontogen-core was built without the `biome` feature; emitting unformatted TS. Enable the `biome` feature on ontogen-core (via the consuming crate's build-dependencies)."
+    );
+    content.to_string()
 }
 
 /// Walk up from `start` looking for the nearest ancestor directory that
@@ -157,49 +212,38 @@ fn find_node_modules_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Run `prettier` on a string in memory, returning the formatted result.
+/// Run an external formatter command on a string in memory, returning the
+/// formatted result. The command is `cmd[0]` invoked with `cmd[1..]` as
+/// arguments; `virtual_path` is appended as the final argument (so e.g.
+/// prettier's `--stdin-filepath` receives the file path) and used to root the
+/// child at the nearest ancestor `node_modules` when one exists — which lets a
+/// project-local `prettier` resolve from a build script whose CWD (typically
+/// `src-tauri/`) has no `node_modules` of its own.
 ///
-/// `virtual_path` tells prettier where the file will live so it can
-/// resolve the nearest `.prettierrc` config automatically.
-///
-/// We prefer `pnpm exec prettier` rooted at the nearest `node_modules`
-/// above the output file. That handles the build-script case where CWD
-/// (e.g. `src-tauri/`) has no `node_modules` of its own but the TS file
-/// is being written under one (e.g. `src-nuxt/app/transport/`) — the
-/// previous unconditional `npx` from the inherited CWD couldn't reach
-/// the project-local install and consistently exited 127, emitting a
-/// fallback warning per generated file.
-///
-/// If no `node_modules` is reachable from `virtual_path` (e.g. tests
-/// writing to a tempdir), we fall back to `npx prettier` with the
-/// inherited CWD — preserves the previous behaviour for that path so
-/// existing tests that rely on the cargo-test runner's CWD still find a
-/// prettier install.
-///
-/// Returns `CodegenError::ExternalTool` if neither launcher can spawn.
-fn prettier_string(input: &str, virtual_path: &Path) -> Result<String, CodegenError> {
+/// On a non-zero exit or wait failure, emits a `cargo:warning` and falls back
+/// to the unformatted input. Returns `CodegenError::ExternalTool` only when the
+/// command cannot be spawned at all.
+fn command_format_ts(input: &str, cmd: &[String], virtual_path: &Path) -> Result<String, CodegenError> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let nm_root = virtual_path.parent().and_then(find_node_modules_root);
-    let (launcher, sub) = if nm_root.is_some() { ("pnpm", Some("exec")) } else { ("npx", None) };
+    let Some((program, args)) = cmd.split_first() else {
+        return Err(CodegenError::ExternalTool {
+            tool: "ts formatter command",
+            detail: "TsFormatter::Command was given an empty command".to_string(),
+        });
+    };
 
-    let mut cmd = Command::new(launcher);
-    if let Some(s) = sub {
-        cmd.arg(s);
-    }
-    cmd.arg("prettier")
-        .arg("--stdin-filepath")
-        .arg(virtual_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    let nm_root = virtual_path.parent().and_then(find_node_modules_root);
+
+    let mut command = Command::new(program);
+    command.args(args).arg(virtual_path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     if let Some(ref cwd) = nm_root {
-        cmd.current_dir(cwd);
+        command.current_dir(cwd);
     }
-    let mut child = cmd.spawn().map_err(|e| CodegenError::ExternalTool {
-        tool: if nm_root.is_some() { "pnpm (prettier)" } else { "npx (prettier)" },
-        detail: format!("failed to spawn: {e}. Is Node.js installed? Try: npm install -g pnpm prettier"),
+    let mut child = command.spawn().map_err(|e| CodegenError::ExternalTool {
+        tool: "ts formatter command",
+        detail: format!("failed to spawn `{program}`: {e}"),
     })?;
 
     if let Some(mut stdin) = child.stdin.take() {
@@ -213,13 +257,15 @@ fn prettier_string(input: &str, virtual_path: &Path) -> Result<String, CodegenEr
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             println!(
-                "cargo:warning=ontogen: prettier exited with {}, falling back to unformatted output: {stderr}",
+                "cargo:warning=ontogen: ts formatter `{program}` exited with {}, falling back to unformatted output: {stderr}",
                 output.status
             );
             Ok(input.to_string())
         }
         Err(e) => {
-            println!("cargo:warning=ontogen: prettier wait failed: {e}, falling back to unformatted output");
+            println!(
+                "cargo:warning=ontogen: ts formatter `{program}` wait failed: {e}, falling back to unformatted output"
+            );
             Ok(input.to_string())
         }
     }

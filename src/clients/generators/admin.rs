@@ -130,7 +130,7 @@ export const adminFieldDefs: Record<string, AdminFieldDef[]> = Object.fromEntrie
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
-    crate::write_and_format_ts(output, out).expect("Failed to write admin registry");
+    crate::write_and_format_ts(output, out, &config.ts_formatter).expect("Failed to write admin registry");
 }
 
 /// Generate TypeScript field definition array for a single entity.

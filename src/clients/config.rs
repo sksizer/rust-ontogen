@@ -12,6 +12,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use ontogen_core::utils::TsFormatter;
+
 use crate::servers::types::NamingConfig;
 use crate::servers::{PaginationConfig, RoutePrefix};
 
@@ -48,6 +50,9 @@ pub(crate) struct Config {
 
     /// Which client generators to run and their output paths.
     pub generators: Vec<ClientGenerator>,
+
+    /// How to format generated TypeScript (biome / none / external command).
+    pub ts_formatter: TsFormatter,
 
     /// SSE route overrides: map from event function name to custom route path.
     pub sse_route_overrides: HashMap<String, String>,

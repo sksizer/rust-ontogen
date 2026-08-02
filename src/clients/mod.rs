@@ -73,6 +73,7 @@ pub fn generate(
         state_import: config.state_import.clone(),
         naming: config.naming.clone(),
         generators: config.generators.clone(),
+        ts_formatter: config.ts_formatter.clone(),
         sse_route_overrides: config.sse_route_overrides.clone(),
         ts_skip_commands: config.ts_skip_commands.clone(),
         route_prefix: config.route_prefix.clone(),
@@ -126,7 +127,8 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
             && written_bindings.insert(path.clone())
         {
             let body = generators::ts_bindings::emit(&config.schema_entities);
-            crate::write_and_format_ts(&path, body).expect("Failed to write schema-known bindings");
+            crate::write_and_format_ts(&path, body, &config.ts_formatter)
+                .expect("Failed to write schema-known bindings");
         }
     }
 
