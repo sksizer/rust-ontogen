@@ -346,6 +346,7 @@ mod tests {
             state_import: String::new(),
             naming: Default::default(),
             generators: Vec::new(),
+            ts_formatter: crate::TsFormatter::None,
             sse_route_overrides: Default::default(),
             ts_skip_commands: Default::default(),
             route_prefix: None,

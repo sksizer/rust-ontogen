@@ -50,6 +50,7 @@ fn main() {
                 output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
             },
         ],
+        ts_formatter: ontogen::TsFormatter::None,
         sse_route_overrides: Default::default(),
         ts_skip_commands: vec![],
         route_prefix: None,

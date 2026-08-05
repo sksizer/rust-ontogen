@@ -37,6 +37,7 @@ fn main() {
             output: "generated-ts/transport.ts".into(),
             bindings_path: "generated-ts/types.ts".into(),
         }],
+        ts_formatter: ontogen::TsFormatter::None,
         sse_route_overrides: Default::default(),
         ts_skip_commands: vec![],
         route_prefix: None,

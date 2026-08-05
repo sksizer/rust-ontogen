@@ -7,9 +7,11 @@
 //! - Entity schema model types (`EntityDef`, `FieldDef`, etc.)
 //! - Intermediate representation types that flow between generators
 //! - Naming utilities (`to_snake_case`, `to_pascal_case`, `pluralize`)
-//! - Build-time utilities (`rustfmt`, `prettier`, `clean_generated_dir`)
+//! - Build-time utilities (`rustfmt`, TypeScript formatting via `TsFormatter`, `clean_generated_dir`)
 //! - The shared `CodegenError` type
 
+#[cfg(feature = "biome")]
+pub mod biome_fmt;
 pub mod ir;
 pub mod model;
 pub mod naming;

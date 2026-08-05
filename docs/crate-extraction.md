@@ -8,7 +8,7 @@ Tracking the incremental extraction of `ontogen` into a workspace of focused cra
   - [x] `model.rs` -- `EntityDef`, `FieldDef`, `FieldRole`, `FieldType`, `RelationInfo`, `RelationKind`
   - [x] `ir.rs` -- all intermediate representation types (`SchemaOutput`, `SeaOrmOutput`, `StoreOutput`, `ApiOutput`, `ServersOutput`, and their inner types)
   - [x] `naming.rs` -- `to_snake_case`, `to_pascal_case`, `pluralize`, junction table naming helpers
-  - [x] `utils.rs` -- `rustfmt`, `prettier`, `clean_generated_dir`, `emit_rerun_directives`
+  - [x] `utils.rs` -- `rustfmt`, TypeScript formatting (`TsFormatter`), `clean_generated_dir`, `emit_rerun_directives`
   - [x] `CodegenError` enum
 - [x] **Deduplicate `to_snake_case`** -- was defined identically in `persistence/seaorm/gen_entity.rs` and `store/helpers.rs`; both now delegate to `ontogen_core::naming::to_snake_case`
 - [x] **Deduplicate `to_pascal_case`** -- was defined independently in `persistence/seaorm/gen_entity.rs` and `servers/types.rs`; gen_entity now delegates to `ontogen_core::naming::to_pascal_case` (servers/types keeps its own since it depends on its local `capitalize` function and has slightly different usage patterns)
@@ -28,7 +28,7 @@ ontogen/                    (workspace root)
 │       ├── model.rs        (EntityDef, FieldDef, etc.)
 │       ├── ir.rs           (all *Output and *Meta types)
 │       ├── naming.rs       (to_snake_case, pluralize, junction helpers)
-│       └── utils.rs        (rustfmt, prettier, clean_generated_dir)
+│       └── utils.rs        (rustfmt, TsFormatter, clean_generated_dir)
 └── crates/ontogen-macros/  (proc-macro for #[derive(OntologyEntity)])
 ```
 

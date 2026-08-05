@@ -37,6 +37,13 @@ exclude = [
     "/ARCHITECTURE-ASSESSMENT-2026-04-25-014130.md",
 ]
 
+[features]
+# Format generated TypeScript in-process with biome. Forwards to ontogen-core's
+# `biome` feature (which pulls the biome formatter crates via git). Enable this
+# in the consuming crate's build-dependencies to make `TsFormatter::Biome`
+# actually format; without it, `Biome` degrades to unformatted output + a warning.
+biome = ["ontogen-core/biome"]
+
 [dependencies]
 ontogen-core = { path = "crates/ontogen-core", version = "=0.2.0" }
 ontogen-macros = { path = "crates/ontogen-macros", version = "=0.1.0" }

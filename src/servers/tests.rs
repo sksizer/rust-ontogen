@@ -53,6 +53,7 @@ fn client_test_config(api_dir: PathBuf) -> ClientsInternalConfig {
         state_import: "crate::AppState".to_string(),
         naming: NamingConfig::default(),
         generators: vec![],
+        ts_formatter: crate::TsFormatter::None,
         sse_route_overrides: HashMap::new(),
         ts_skip_commands: vec![],
         route_prefix: None,
@@ -2038,9 +2039,6 @@ fn test_fallback_record_display_format() {
 #[test]
 fn test_admin_registry_generator() {
     let tmp = tempfile::tempdir().unwrap();
-    // Prettier resolves config from the output file's directory; drop a
-    // .prettierrc so it uses single quotes (matching the project convention).
-    std::fs::write(tmp.path().join(".prettierrc"), r#"{ "singleQuote": true }"#).unwrap();
     let output = tmp.path().join("admin-registry.ts");
     let config = client_test_config(tmp.path().to_path_buf());
 
@@ -2244,25 +2242,19 @@ fn test_ts_transport_junction_module() {
 
     crate::clients::generators::transport::generate(&output, &bindings, &modules, &config);
     let content = std::fs::read_to_string(&output).unwrap();
-    // Prettier reformats the output, so assertions use individual tokens
-    // rather than full signatures. The `normalized` view collapses all
-    // whitespace runs to single spaces so we can match across line wraps.
-    let normalized: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Assertions are formatter-agnostic: collapse ALL whitespace so they hold
+    // whether the output is unformatted, prettier-wrapped, or biome-formatted.
+    let compact: String = content.split_whitespace().collect();
 
-    // Transport interface method names (entity-first camelCase).
-    // Post-prettier the params may wrap across lines, so match on the name
-    // followed by the first param in the normalized view.
-    assert!(normalized.contains("destinationSkillAddSkill( destinationId: string,"));
-    assert!(normalized.contains("destinationSkillRemoveSkill( destinationId: string,"));
-    assert!(content.contains("destinationSkillListSkills(destinationId: string)"));
-    assert!(
-        normalized.contains("destinationSkillListDestinations( skillId: string,")
-            || content.contains("destinationSkillListDestinations(skillId: string)")
-    );
+    // Transport interface method names (entity-first camelCase) + first param.
+    assert!(compact.contains("destinationSkillAddSkill(destinationId:string,"));
+    assert!(compact.contains("destinationSkillRemoveSkill(destinationId:string,"));
+    assert!(compact.contains("destinationSkillListSkills(destinationId:string)"));
+    assert!(compact.contains("destinationSkillListDestinations(skillId:string"));
 
     // HTTP transport must use junction URL pattern matching http.rs, NOT the
-    // old action-style URLs. Prettier may quote with either ' or " depending
-    // on its config, so test the core path template.
+    // old action-style URLs. Formatter quote style varies, so test the core
+    // path template (a backtick template literal, quote-agnostic).
     assert!(
         content.contains("/destination-skills/${encodeURIComponent(destinationId)}/skills`"),
         "HTTP junction add should POST to /destination-skills/:id/skills (kebab-case plural, encoded parent)"
@@ -2283,8 +2275,7 @@ fn test_ts_transport_junction_module() {
     );
 
     // IPC transport must invoke the singular entity-first command names that
-    // ipc.rs actually registers. Prettier may use either ' or " quotes, so
-    // accept both.
+    // ipc.rs actually registers. Formatter quote style varies, so accept both.
     for cmd in [
         "destination_skill_add_skill",
         "destination_skill_remove_skill",
@@ -2368,7 +2359,7 @@ fn test_junction_cross_transport_consistency() {
             "IPC output missing Rust handler `{}` - TS transport would fail to invoke",
             cmd
         );
-        // Prettier may quote invoke arg with either ' or " - accept either.
+        // The formatter may quote the invoke arg with ' or " - accept either.
         let ts_single = format!("invoke('{}'", cmd);
         let ts_double = format!("invoke(\"{}\"", cmd);
         assert!(
@@ -2565,6 +2556,7 @@ fn test_e2e_generate_transport_with_real_api() {
             ClientGenerator::HttpTauriIpcSplit { output: ts_out.clone(), bindings_path: bindings.clone() },
             ClientGenerator::AdminRegistry { output: admin_out.clone() },
         ],
+        ts_formatter: crate::TsFormatter::None,
         sse_route_overrides: HashMap::new(),
         ts_skip_commands: vec![],
         route_prefix,
