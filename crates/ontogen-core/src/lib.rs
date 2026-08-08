@@ -10,8 +10,6 @@
 //! - Build-time utilities (`rustfmt`, TypeScript formatting via `TsFormatter`, `clean_generated_dir`)
 //! - The shared `CodegenError` type
 
-#[cfg(feature = "biome")]
-pub mod biome_fmt;
 pub mod ir;
 pub mod model;
 pub mod naming;

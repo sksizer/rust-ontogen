@@ -117,21 +117,27 @@ pub fn rustfmt(path: &Path) {
     let _ = std::process::Command::new("rustfmt").arg("--edition").arg("2024").arg(path).status();
 }
 
+/// Signature of an in-process TypeScript formatting hook: full generated
+/// source in, formatted source out (or a human-readable error).
+pub type TsFormatFn = dyn Fn(&str) -> Result<String, String> + Send + Sync;
+
 /// How to format generated TypeScript before writing it.
 ///
-/// Default is [`TsFormatter::Biome`] — hermetic, in-process, no external tool.
-#[derive(Debug, Clone, Default)]
+/// Default is [`TsFormatter::None`] — the generated output is written as-is.
+/// Wire up [`TsFormatter::custom`] to format in-process with a library of your
+/// choice, or [`TsFormatter::Command`] to shell out to an external tool.
+#[derive(Clone, Default)]
 pub enum TsFormatter {
-    /// Format in-process with biome (requires ontogen-core's `biome` feature).
-    ///
-    /// This is the default and the recommended mode: no Node, no `npx`, no
-    /// external process — it can never fail on a missing or version-mismatched
-    /// tool. If ontogen-core was built WITHOUT the `biome` feature, this
-    /// degrades to unformatted output plus a `cargo:warning`.
-    #[default]
-    Biome,
     /// Emit the generated TypeScript unformatted — skip the formatting pass.
+    #[default]
     None,
+    /// Format in-process with a caller-supplied function: full generated
+    /// source in, formatted source out. Construct via [`TsFormatter::custom`].
+    ///
+    /// An `Err` from the hook aborts the write and surfaces as a
+    /// [`CodegenError`]; hooks that prefer emitting unformatted output on
+    /// failure should catch internally and return `Ok(input.to_string())`.
+    Custom(std::sync::Arc<TsFormatFn>),
     /// Run an external formatter, piping the TS through the child's stdin and
     /// reading the formatted result from its stdout. The output file's resolved
     /// path is appended as the final argument (so e.g. prettier's
@@ -140,6 +146,25 @@ pub enum TsFormatter {
     ///
     /// e.g. `TsFormatter::Command(vec!["prettier".into(), "--stdin-filepath".into()])`.
     Command(Vec<String>),
+}
+
+impl TsFormatter {
+    /// Wrap an in-process formatting function as [`TsFormatter::Custom`].
+    ///
+    /// e.g. `TsFormatter::custom(|src| my_fmt::format(src).map_err(|e| e.to_string()))`.
+    pub fn custom(f: impl Fn(&str) -> Result<String, String> + Send + Sync + 'static) -> Self {
+        Self::Custom(std::sync::Arc::new(f))
+    }
+}
+
+impl std::fmt::Debug for TsFormatter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::Custom(_) => f.write_str("Custom(..)"),
+            Self::Command(cmd) => f.debug_tuple("Command").field(cmd).finish(),
+        }
+    }
 }
 
 /// Format TypeScript content in memory per `formatter`, then write only if
@@ -152,7 +177,8 @@ pub fn write_and_format_ts(path: &Path, content: impl AsRef<str>, formatter: &Ts
     let content = content.as_ref();
     let formatted = match formatter {
         TsFormatter::None => content.to_string(),
-        TsFormatter::Biome => biome_format_ts(content),
+        TsFormatter::Custom(format) => format(content)
+            .map_err(|e| CodegenError::Client(format!("custom TS formatter failed for {}: {e}", path.display())))?,
         TsFormatter::Command(cmd) => command_format_ts(content, cmd, &resolve_ts_path(path))?,
     };
     write_if_changed(path, formatted)
@@ -172,28 +198,6 @@ fn resolve_ts_path(path: &Path) -> PathBuf {
     } else {
         path.to_path_buf()
     }
-}
-
-/// Format via the in-process biome formatter. Falls back to unformatted output
-/// (with a `cargo:warning`) on a parse failure, or when the `biome` feature is
-/// not enabled.
-#[cfg(feature = "biome")]
-fn biome_format_ts(content: &str) -> String {
-    match crate::biome_fmt::format_ts(content) {
-        Ok(formatted) => formatted,
-        Err(e) => {
-            println!("cargo:warning=ontogen: biome could not format generated TS ({e}); emitting unformatted output");
-            content.to_string()
-        }
-    }
-}
-
-#[cfg(not(feature = "biome"))]
-fn biome_format_ts(content: &str) -> String {
-    println!(
-        "cargo:warning=ontogen: TsFormatter::Biome selected but ontogen-core was built without the `biome` feature; emitting unformatted TS. Enable the `biome` feature on ontogen-core (via the consuming crate's build-dependencies)."
-    );
-    content.to_string()
 }
 
 /// Walk up from `start` looking for the nearest ancestor directory that
@@ -359,4 +363,36 @@ pub fn relative_path(base: &Path, target: &Path) -> PathBuf {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TsFormatter, write_and_format_ts};
+
+    #[test]
+    fn custom_formatter_shapes_output() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("out.ts");
+        let formatter = TsFormatter::custom(|src| Ok(src.to_uppercase()));
+        write_and_format_ts(&path, "const x = 1;\n", &formatter).expect("write");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "CONST X = 1;\n");
+    }
+
+    #[test]
+    fn custom_formatter_error_aborts_write() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("out.ts");
+        let formatter = TsFormatter::custom(|_| Err("nope".to_string()));
+        let err = write_and_format_ts(&path, "const x = 1;\n", &formatter).expect_err("must fail");
+        assert!(err.to_string().contains("nope"), "hook error surfaces; got: {err}");
+        assert!(!path.exists(), "nothing written on formatter failure");
+    }
+
+    #[test]
+    fn none_formatter_passes_through() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("out.ts");
+        write_and_format_ts(&path, "const  x=1\n", &TsFormatter::None).expect("write");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "const  x=1\n");
+    }
 }
