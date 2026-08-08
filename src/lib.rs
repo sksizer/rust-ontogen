@@ -252,6 +252,7 @@ pub fn gen_dtos(entities: &[EntityDef], config: &DtoConfig) -> Result<(), Codege
 ///     hooks_dir: Some(PathBuf::from("src/store/hooks")),
 ///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
 ///     backend: Backend::Seaorm(Some(seaorm)),
+///     wikilink_policy: None,
 /// })?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
@@ -504,6 +505,15 @@ pub struct StoreConfig {
     /// [`Backend::Markdown`] routes at the markdown vault runtime and
     /// consumes the metadata returned by [`gen_markdown_io`].
     pub backend: Backend,
+    /// How the DTO `From` impls treat wikilink-shaped relation ids
+    /// (`[[id]]`). `None` uses the backend's default: the markdown backend
+    /// strips, SQL backends pass through. Set `Some(WikilinkPolicy::Strip)`
+    /// on a SQL-backed store whose wire contract still accepts wikilinked
+    /// ids — e.g. an app whose API is fed from markdown-authoring agents.
+    /// The emitted strip calls resolve to `markdown_store::wikilink`, so a
+    /// consumer that opts in must depend on the `markdown-store` runtime
+    /// crate.
+    pub wikilink_policy: Option<WikilinkPolicy>,
 }
 
 /// Configuration for [`gen_api`].

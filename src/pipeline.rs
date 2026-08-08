@@ -465,6 +465,7 @@ impl Pipeline {
                     hooks_dir: stage.hooks_dir,
                     schema_module_path: self.schema_module_path.clone(),
                     backend,
+                    wikilink_policy: None,
                 },
             )?;
         }

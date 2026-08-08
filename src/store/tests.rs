@@ -25,6 +25,7 @@ mod tests {
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
+            wikilink_policy: None,
         };
 
         let result = store::generate(&entities, &config);
@@ -82,6 +83,7 @@ mod tests {
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
+            wikilink_policy: None,
         };
 
         store::generate(std::slice::from_ref(tag), &config).expect("gen_store failed");
@@ -129,6 +131,7 @@ mod tests {
             hooks_dir: Some(hooks.clone()),
             schema_module_path: "my_crate::domain".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
+            wikilink_policy: None,
         };
 
         store::generate(std::slice::from_ref(tag), &config).expect("gen_store failed");
@@ -163,6 +166,7 @@ mod tests {
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
+            wikilink_policy: None,
         };
 
         store::generate(std::slice::from_ref(workout), &config).expect("gen_store failed");
@@ -192,6 +196,7 @@ mod tests {
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
+            wikilink_policy: None,
         };
 
         let output = store::generate(std::slice::from_ref(role), &config).expect("gen_store failed");
@@ -253,6 +258,7 @@ mod tests {
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
             backend: markdown_backend(crate::ir::IdStrategy::SlugFromField("name".into())),
+            wikilink_policy: None,
         };
 
         store::generate(std::slice::from_ref(tag), &config).expect("gen_store(markdown) failed");
@@ -300,11 +306,43 @@ mod tests {
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
             backend: markdown_backend(crate::ir::IdStrategy::SlugFromField("no_such_field".into())),
+            wikilink_policy: None,
         };
 
         let err = store::generate(std::slice::from_ref(tag), &config).expect_err("missing slug field must fail");
         let msg = format!("{err}");
         assert!(msg.contains("no_such_field"), "error names the field: {msg}");
         assert!(!out_dir.exists(), "validation failures must not write files");
+    }
+
+    /// `wikilink_policy: Some(Strip)` overrides the SQL backend's default
+    /// Passthrough: the DTO `From` impls strip `[[id]]` on relation fields
+    /// even though the CRUD bodies stay SeaORM. This is the hybrid contract
+    /// of a SQL-backed store whose wire inputs come from markdown-authoring
+    /// agents.
+    #[test]
+    fn seaorm_backend_honors_wikilink_strip_override() {
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        // Workout carries belongs_to + many_to_many relation fields.
+        let workout = entities.iter().find(|e| e.name == "Workout").expect("Workout entity not found");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = StoreConfig {
+            output_dir: tmp.path().to_path_buf(),
+            hooks_dir: None,
+            schema_module_path: "crate::schema".to_string(),
+            backend: crate::ir::Backend::Seaorm(None),
+            wikilink_policy: Some(crate::ir::WikilinkPolicy::Strip),
+        };
+
+        store::generate(std::slice::from_ref(workout), &config).expect("gen_store failed");
+        let content = std::fs::read_to_string(tmp.path().join("workout.rs")).unwrap();
+
+        assert!(
+            content.contains("markdown_store::wikilink::strip"),
+            "Strip override must emit wikilink stripping in From impls: {content}"
+        );
+        assert!(content.contains("sea_orm"), "CRUD bodies stay SeaORM under the override: {content}");
     }
 }

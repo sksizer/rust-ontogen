@@ -55,6 +55,7 @@ fn gen_store_with(entities: &[EntityDef], backend: Backend, out: &Path) -> Store
             hooks_dir: None,
             schema_module_path: "crate::schema".into(),
             backend,
+            wikilink_policy: None,
         },
     )
     .expect("gen_store failed")

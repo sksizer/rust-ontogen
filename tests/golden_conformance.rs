@@ -49,6 +49,7 @@ fn markdown_store_emission_matches_note_golden() {
             hooks_dir: None,
             schema_module_path: "crate::schema".into(),
             backend: ontogen::Backend::Markdown(md),
+            wikilink_policy: None,
         },
     )
     .expect("gen_store(markdown) failed");
@@ -107,6 +108,7 @@ fn pilot_committed_generated_trees_match_a_fresh_generation() {
             hooks_dir: None,
             schema_module_path: "crate::schema".into(),
             backend: ontogen::Backend::Markdown(md),
+            wikilink_policy: None,
         },
     )
     .expect("gen_store");

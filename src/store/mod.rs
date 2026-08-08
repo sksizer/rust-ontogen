@@ -137,11 +137,14 @@ fn generate_entity_store(backend: &dyn backends::StoreBackend, entity: &EntityDe
     // Update struct + apply + From impls. The struct/apply shape is shared
     // across backends; the From impls' wikilink handling follows the
     // backend's policy (markdown strips `[[id]]` at the boundary, SQL
-    // backends pass ids through untouched).
+    // backends pass ids through untouched) unless the config overrides it —
+    // a SQL-backed store can opt into stripping when its wire contract
+    // still accepts wikilinked ids.
+    let policy = config.wikilink_policy.unwrap_or_else(|| backend.wikilink_policy());
     gen_update::generate_update_struct(&mut code, entity);
     gen_update::generate_apply_method(&mut code, entity);
-    gen_update::generate_from_update_input(&mut code, entity, backend.wikilink_policy());
-    gen_update::generate_from_create_input(&mut code, entity, backend.wikilink_policy());
+    gen_update::generate_from_update_input(&mut code, entity, policy);
+    gen_update::generate_from_create_input(&mut code, entity, policy);
 
     // CRUD impl block (with hook calls) — backend-specific bodies
     backend.emit_crud_impl(&mut code, entity);
