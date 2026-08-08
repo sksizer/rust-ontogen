@@ -129,6 +129,7 @@ fn generate_store_file(entity: &EntityDef) -> String {
         hooks_dir: None,
         schema_module_path: "crate::schema".to_string(),
         backend: crate::ir::Backend::Seaorm(None),
+        wikilink_policy: None,
     };
     crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store failed");
 
@@ -251,6 +252,7 @@ fn generate_markdown_store_file(entity: &EntityDef) -> String {
                 authoritative_m2m: entity.junction_relations().map(|(f, _)| f.name.clone()).collect(),
             }],
         }),
+        wikilink_policy: None,
     };
     crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store(markdown) failed");
 

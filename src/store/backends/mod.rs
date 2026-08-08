@@ -56,13 +56,9 @@ pub(crate) trait StoreBackend {
 }
 
 /// Whether DTO `From` impls strip wikilink syntax from relation id fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WikilinkPolicy {
-    /// Strip `[[id]]` → `id` on every relation field (markdown backend).
-    Strip,
-    /// Pass relation ids through untouched (SQL backends).
-    Passthrough,
-}
+/// Defined in `ir` (it is public config surface via
+/// `StoreConfig::wikilink_policy`); re-exported here for the backend impls.
+pub(crate) use crate::ir::WikilinkPolicy;
 
 /// Resolve the emitter for a configured [`crate::ir::Backend`].
 pub(crate) fn for_backend(backend: &crate::ir::Backend) -> Result<Box<dyn StoreBackend>, crate::CodegenError> {

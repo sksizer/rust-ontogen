@@ -166,6 +166,22 @@ pub enum Backend {
     Markdown(MarkdownIoOutput),
 }
 
+/// Whether the DTO `From` impls emitted by `gen_store` strip wikilink
+/// syntax from relation id fields (`[[id]]` → `id`).
+///
+/// Each backend has a default — the markdown backend strips at its typed
+/// boundary, SQL backends pass ids through untouched — and
+/// `StoreConfig::wikilink_policy` can override it for hybrid consumers:
+/// a SQL-backed store whose wire contract still accepts wikilinked ids
+/// (e.g. an API fed by markdown-authoring agents).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WikilinkPolicy {
+    /// Strip `[[id]]` → `id` on every relation field.
+    Strip,
+    /// Pass relation ids through untouched.
+    Passthrough,
+}
+
 // ── Store output ────────────────────────────────────────────────────
 
 /// Store layer output. Methods from both generated and scanned sources,
