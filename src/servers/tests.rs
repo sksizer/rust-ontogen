@@ -2243,7 +2243,7 @@ fn test_ts_transport_junction_module() {
     crate::clients::generators::transport::generate(&output, &bindings, &modules, &config);
     let content = std::fs::read_to_string(&output).unwrap();
     // Assertions are formatter-agnostic: collapse ALL whitespace so they hold
-    // whether the output is unformatted, prettier-wrapped, or biome-formatted.
+    // whether the output is unformatted or formatted by an injected formatter.
     let compact: String = content.split_whitespace().collect();
 
     // Transport interface method names (entity-first camelCase) + first param.

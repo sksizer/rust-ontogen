@@ -51,7 +51,8 @@ pub(crate) struct Config {
     /// Which client generators to run and their output paths.
     pub generators: Vec<ClientGenerator>,
 
-    /// How to format generated TypeScript (biome / none / external command).
+    /// How to format generated TypeScript (none / custom in-process function
+    /// / external command).
     pub ts_formatter: TsFormatter,
 
     /// SSE route overrides: map from event function name to custom route path.

@@ -69,7 +69,7 @@ pub use ontogen_core::ir::*;
 pub use ontogen_core::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
 pub use ontogen_core::naming::{pluralize, to_pascal_case, to_snake_case};
 pub use ontogen_core::utils::{
-    TsFormatter, clean_generated_dir, emit_rerun_directives, emit_rerun_directives_excluding, rustfmt,
+    TsFormatFn, TsFormatter, clean_generated_dir, emit_rerun_directives, emit_rerun_directives_excluding, rustfmt,
     write_and_format, write_and_format_ts, write_if_changed,
 };
 
@@ -613,11 +613,11 @@ pub struct ClientsConfig {
     /// Which client-side generators to run (TS HTTP client, HTTP+IPC unified
     /// transport, admin registry).
     pub generators: Vec<clients::ClientGenerator>,
-    /// How to format the generated TypeScript. Defaults to
-    /// [`TsFormatter::Biome`] (in-process, hermetic — requires the `biome`
-    /// feature on `ontogen-core`). Set [`TsFormatter::None`] to emit
-    /// unformatted output, or [`TsFormatter::Command`] to shell out to an
-    /// external formatter.
+    /// How to format the generated TypeScript. [`TsFormatter::None`] (the
+    /// default) emits raw output. ontogen ships no formatter of its own:
+    /// wire one in with [`TsFormatter::Custom`] (an in-process function from
+    /// the consuming repo) or [`TsFormatter::Command`] (shell out to an
+    /// external formatter).
     pub ts_formatter: TsFormatter,
     /// SSE route overrides keyed by entity name; values are full URL paths.
     pub sse_route_overrides: std::collections::HashMap<String, String>,

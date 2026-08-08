@@ -117,21 +117,35 @@ pub fn rustfmt(path: &Path) {
     let _ = std::process::Command::new("rustfmt").arg("--edition").arg("2024").arg(path).status();
 }
 
+/// A consumer-supplied in-process TypeScript formatter.
+///
+/// Receives the raw generated source and the output file's resolved path,
+/// returns the formatted source. `Arc` so [`TsFormatter`] stays cheaply
+/// cloneable through config threading.
+pub type TsFormatFn = std::sync::Arc<dyn Fn(&str, &Path) -> Result<String, String> + Send + Sync>;
+
 /// How to format generated TypeScript before writing it.
 ///
-/// Default is [`TsFormatter::Biome`] — hermetic, in-process, no external tool.
-#[derive(Debug, Clone, Default)]
+/// Default is [`TsFormatter::None`] — raw emit. ontogen ships no formatter of
+/// its own: a consumer that wants formatted output wires one in via
+/// [`TsFormatter::Custom`] (in-process) or [`TsFormatter::Command`]
+/// (external tool). Formatting runs in memory BEFORE the changed-content
+/// check, so an injected formatter keeps generated files mtime-stable across
+/// no-op rebuilds (no file-watcher churn).
+#[derive(Clone, Default)]
 pub enum TsFormatter {
-    /// Format in-process with biome (requires ontogen-core's `biome` feature).
-    ///
-    /// This is the default and the recommended mode: no Node, no `npx`, no
-    /// external process — it can never fail on a missing or version-mismatched
-    /// tool. If ontogen-core was built WITHOUT the `biome` feature, this
-    /// degrades to unformatted output plus a `cargo:warning`.
-    #[default]
-    Biome,
     /// Emit the generated TypeScript unformatted — skip the formatting pass.
+    #[default]
     None,
+    /// Format in-process with a consumer-supplied function: `(raw source,
+    /// resolved output path) → formatted source`. On `Err`, the raw source is
+    /// written and a `cargo:warning` names the reason — formatting problems
+    /// never fail the build.
+    ///
+    /// e.g. wrap an in-process biome/dprint/prettier binding from the
+    /// consuming repo:
+    /// `TsFormatter::Custom(Arc::new(|src, _path| my_fmt::format_ts(src)))`.
+    Custom(TsFormatFn),
     /// Run an external formatter, piping the TS through the child's stdin and
     /// reading the formatted result from its stdout. The output file's resolved
     /// path is appended as the final argument (so e.g. prettier's
@@ -140,6 +154,16 @@ pub enum TsFormatter {
     ///
     /// e.g. `TsFormatter::Command(vec!["prettier".into(), "--stdin-filepath".into()])`.
     Command(Vec<String>),
+}
+
+impl std::fmt::Debug for TsFormatter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "TsFormatter::None"),
+            Self::Custom(_) => write!(f, "TsFormatter::Custom(..)"),
+            Self::Command(cmd) => f.debug_tuple("TsFormatter::Command").field(cmd).finish(),
+        }
+    }
 }
 
 /// Format TypeScript content in memory per `formatter`, then write only if
@@ -152,7 +176,7 @@ pub fn write_and_format_ts(path: &Path, content: impl AsRef<str>, formatter: &Ts
     let content = content.as_ref();
     let formatted = match formatter {
         TsFormatter::None => content.to_string(),
-        TsFormatter::Biome => biome_format_ts(content),
+        TsFormatter::Custom(f) => custom_format_ts(content, f, &resolve_ts_path(path)),
         TsFormatter::Command(cmd) => command_format_ts(content, cmd, &resolve_ts_path(path))?,
     };
     write_if_changed(path, formatted)
@@ -174,26 +198,16 @@ fn resolve_ts_path(path: &Path) -> PathBuf {
     }
 }
 
-/// Format via the in-process biome formatter. Falls back to unformatted output
-/// (with a `cargo:warning`) on a parse failure, or when the `biome` feature is
-/// not enabled.
-#[cfg(feature = "biome")]
-fn biome_format_ts(content: &str) -> String {
-    match crate::biome_fmt::format_ts(content) {
+/// Format via a consumer-supplied in-process formatter. Falls back to
+/// unformatted output (with a `cargo:warning`) when the formatter errors.
+fn custom_format_ts(content: &str, f: &TsFormatFn, virtual_path: &Path) -> String {
+    match f(content, virtual_path) {
         Ok(formatted) => formatted,
         Err(e) => {
-            println!("cargo:warning=ontogen: biome could not format generated TS ({e}); emitting unformatted output");
+            println!("cargo:warning=ontogen: custom TS formatter failed ({e}); emitting unformatted output");
             content.to_string()
         }
     }
-}
-
-#[cfg(not(feature = "biome"))]
-fn biome_format_ts(content: &str) -> String {
-    println!(
-        "cargo:warning=ontogen: TsFormatter::Biome selected but ontogen-core was built without the `biome` feature; emitting unformatted TS. Enable the `biome` feature on ontogen-core (via the consuming crate's build-dependencies)."
-    );
-    content.to_string()
 }
 
 /// Walk up from `start` looking for the nearest ancestor directory that
@@ -359,4 +373,31 @@ pub fn relative_path(base: &Path, target: &Path) -> PathBuf {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_formatter_applies_before_write() {
+        let tmp = std::env::temp_dir().join(format!("ontogen-tsfmt-{}", std::process::id()));
+        let path = tmp.join("out.ts");
+        let f: TsFormatFn = std::sync::Arc::new(|src, _path| Ok(src.replace('\'', "\"")));
+        write_and_format_ts(&path, "import {x} from 'y'\n", &TsFormatter::Custom(f)).expect("write");
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, "import {x} from \"y\"\n", "custom formatter output is what lands on disk");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn custom_formatter_error_falls_back_to_raw() {
+        let tmp = std::env::temp_dir().join(format!("ontogen-tsfmt-err-{}", std::process::id()));
+        let path = tmp.join("out.ts");
+        let f: TsFormatFn = std::sync::Arc::new(|_src, _path| Err("nope".to_string()));
+        write_and_format_ts(&path, "const x = 1\n", &TsFormatter::Custom(f)).expect("write");
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, "const x = 1\n", "formatter errors fall back to the raw emit");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

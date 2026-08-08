@@ -9,24 +9,3 @@ license = "MIT"
 repository = "https://github.com/sksizer/rust-ontogen"
 
 [dependencies]
-# Biome formatter as an in-process library (feature `biome`). Pinned to a git
-# release tag: biome stopped publishing usable library crates to crates.io
-# around 0.5.x, so the git source is the only route to a modern formatter.
-# Optional + feature-gated so consumers who don't format TS (or format it some
-# other way) don't pay the compile.
-biome_formatter = { git = "https://github.com/biomejs/biome", tag = "@biomejs/biome@2.5.6", optional = true }
-biome_js_formatter = { git = "https://github.com/biomejs/biome", tag = "@biomejs/biome@2.5.6", optional = true }
-biome_js_parser = { git = "https://github.com/biomejs/biome", tag = "@biomejs/biome@2.5.6", optional = true }
-biome_js_syntax = { git = "https://github.com/biomejs/biome", tag = "@biomejs/biome@2.5.6", optional = true }
-biome_languages = { git = "https://github.com/biomejs/biome", tag = "@biomejs/biome@2.5.6", optional = true }
-
-[features]
-# In-process TypeScript formatting via biome. Off by default: enable in the
-# consuming crate (build-dependencies) to make `TsFormatter::Biome` functional.
-biome = [
-  "dep:biome_formatter",
-  "dep:biome_js_formatter",
-  "dep:biome_js_parser",
-  "dep:biome_js_syntax",
-  "dep:biome_languages",
-]
