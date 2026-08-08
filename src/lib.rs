@@ -614,10 +614,9 @@ pub struct ClientsConfig {
     /// transport, admin registry).
     pub generators: Vec<clients::ClientGenerator>,
     /// How to format the generated TypeScript. Defaults to
-    /// [`TsFormatter::Biome`] (in-process, hermetic — requires the `biome`
-    /// feature on `ontogen-core`). Set [`TsFormatter::None`] to emit
-    /// unformatted output, or [`TsFormatter::Command`] to shell out to an
-    /// external formatter.
+    /// [`TsFormatter::None`] (emit as generated). Set [`TsFormatter::custom`]
+    /// to format in-process with a library of your choice, or
+    /// [`TsFormatter::Command`] to shell out to an external formatter.
     pub ts_formatter: TsFormatter,
     /// SSE route overrides keyed by entity name; values are full URL paths.
     pub sse_route_overrides: std::collections::HashMap<String, String>,
