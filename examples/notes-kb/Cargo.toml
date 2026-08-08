@@ -9,16 +9,8 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[features]
-# Compose the sibling rust-markdown workspace's markdown-vault crate for tag
-# extraction over the same files — the two-crate boundary demo (markdown-store
-# writes/round-trips; markdown-vault reads/extracts). Off by default: the
-# path dependency requires ../../../rust-markdown to be checked out.
-vault-tags = ["dep:markdown-vault"]
-
 [dependencies]
 markdown-store = { path = "../../crates/markdown-store" }
-markdown-vault = { path = "../../../rust-markdown/crates/markdown-vault", optional = true }
 ontogen-macros = { path = "../../crates/ontogen-macros" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

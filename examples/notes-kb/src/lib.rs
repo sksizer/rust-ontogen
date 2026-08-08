@@ -22,21 +22,3 @@ impl AppState {
         Ok(&self.store)
     }
 }
-
-/// Tag extraction over the SAME vault files via the sibling rust-markdown
-/// workspace's `markdown-vault` crate — the two-crate boundary demo:
-/// markdown-store owns write/round-trip, markdown-vault owns read-only
-/// extraction. Feature-gated because the path dependency needs the sibling
-/// checkout (`cargo run --features vault-tags -- tags`).
-#[cfg(feature = "vault-tags")]
-pub fn vault_tags(root: &std::path::Path) -> Vec<String> {
-    use markdown_vault::prelude::*;
-    let policy = TagPolicy::obsidian();
-    let opts = WalkOptions::default();
-    let mut tags: Vec<String> = extract_tags_from_dir(root, &policy, &opts)
-        .map(|by_file| by_file.into_values().flatten().map(|t| t.to_string()).collect())
-        .unwrap_or_default();
-    tags.sort();
-    tags.dedup();
-    tags
-}
