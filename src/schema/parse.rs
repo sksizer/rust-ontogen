@@ -15,19 +15,29 @@ use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationIn
 
 /// Parse all schema files in the given directory, returning entity definitions
 /// for structs annotated with `#[ontology(entity, ...)]`.
+///
+/// Files are visited in sorted path order: `read_dir` order is
+/// platform-dependent (inode/hash order on Linux, insertion order on APFS),
+/// and entity order flows into every generated artifact - unsorted, the same
+/// schema emits differently ordered code on different machines, which reads
+/// as codegen drift to consumers that commit generated output.
 pub fn parse_schema_dir(dir: &Path) -> Result<Vec<EntityDef>, String> {
     let mut entities = Vec::new();
 
     let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read schema directory {}: {e}", dir.display()))?;
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "rs") {
-            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    let mut paths: Vec<_> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .collect();
+    paths.sort();
 
-            let parsed = parse_schema_source(&content, &path)?;
-            entities.extend(parsed);
-        }
+    for path in paths {
+        let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+
+        let parsed = parse_schema_source(&content, &path)?;
+        entities.extend(parsed);
     }
 
     Ok(entities)
@@ -389,6 +399,33 @@ fn expr_to_string(expr: &Expr) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_dir_entities_follow_sorted_file_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entity = |name: &str, directory: &str| {
+            format!(
+                r#"
+                use ontogen_macros::OntologyEntity;
+
+                #[derive(OntologyEntity)]
+                #[ontology(entity, directory = "{directory}", table = "{directory}")]
+                pub struct {name} {{
+                    #[ontology(id)]
+                    pub id: String,
+                }}
+                "#
+            )
+        };
+        // Written in reverse alphabetical order on purpose: entity order must
+        // come from the path sort, not from directory insertion order.
+        std::fs::write(dir.path().join("zebra.rs"), entity("Zebra", "zebras")).expect("write");
+        std::fs::write(dir.path().join("aardvark.rs"), entity("Aardvark", "aardvarks")).expect("write");
+
+        let entities = parse_schema_dir(dir.path()).expect("parse");
+        let names: Vec<_> = entities.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Aardvark", "Zebra"]);
+    }
 
     #[test]
     fn parse_node_schema() {
