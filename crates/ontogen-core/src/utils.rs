@@ -119,7 +119,24 @@ pub fn rustfmt(path: &Path) {
 
 /// Signature of an in-process TypeScript formatting hook: full generated
 /// source in, formatted source out (or a human-readable error).
-pub type TsFormatFn = dyn Fn(&str) -> Result<String, String> + Send + Sync;
+///
+/// The second argument is the resolved output path (see the note on
+/// [`TsFormatter::Command`] about path resolution) so the hook can resolve
+/// per-directory formatter config the way an external tool would.
+pub type TsFormatFn = dyn Fn(&str, &Path) -> Result<String, String> + Send + Sync;
+
+/// What to do when a [`TsFormatter::Custom`] hook returns `Err`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OnFormatError {
+    /// Abort codegen: the error surfaces as a [`CodegenError`] and nothing is
+    /// written. The default — a misbehaving formatter fails loudly instead of
+    /// silently emitting output that trips downstream drift gates.
+    #[default]
+    Fail,
+    /// Emit a `cargo:warning` and write the unformatted output. Formatting
+    /// problems never fail the build.
+    Warn,
+}
 
 /// How to format generated TypeScript before writing it.
 ///
@@ -131,13 +148,15 @@ pub enum TsFormatter {
     /// Emit the generated TypeScript unformatted — skip the formatting pass.
     #[default]
     None,
-    /// Format in-process with a caller-supplied function: full generated
-    /// source in, formatted source out. Construct via [`TsFormatter::custom`].
-    ///
-    /// An `Err` from the hook aborts the write and surfaces as a
-    /// [`CodegenError`]; hooks that prefer emitting unformatted output on
-    /// failure should catch internally and return `Ok(input.to_string())`.
-    Custom(std::sync::Arc<TsFormatFn>),
+    /// Format in-process with a caller-supplied [`TsFormatFn`]. Construct via
+    /// [`TsFormatter::custom`] (fail on hook error) or
+    /// [`TsFormatter::custom_with`] (choose the error policy).
+    Custom {
+        /// The formatting hook.
+        format: std::sync::Arc<TsFormatFn>,
+        /// What to do when the hook returns `Err`.
+        on_error: OnFormatError,
+    },
     /// Run an external formatter, piping the TS through the child's stdin and
     /// reading the formatted result from its stdout. The output file's resolved
     /// path is appended as the final argument (so e.g. prettier's
@@ -149,11 +168,21 @@ pub enum TsFormatter {
 }
 
 impl TsFormatter {
-    /// Wrap an in-process formatting function as [`TsFormatter::Custom`].
+    /// Wrap an in-process formatting function as [`TsFormatter::Custom`] with
+    /// the default [`OnFormatError::Fail`] policy.
     ///
-    /// e.g. `TsFormatter::custom(|src| my_fmt::format(src).map_err(|e| e.to_string()))`.
-    pub fn custom(f: impl Fn(&str) -> Result<String, String> + Send + Sync + 'static) -> Self {
-        Self::Custom(std::sync::Arc::new(f))
+    /// e.g. `TsFormatter::custom(|src, _path| my_fmt::format(src).map_err(|e| e.to_string()))`.
+    pub fn custom(f: impl Fn(&str, &Path) -> Result<String, String> + Send + Sync + 'static) -> Self {
+        Self::custom_with(f, OnFormatError::default())
+    }
+
+    /// Wrap an in-process formatting function as [`TsFormatter::Custom`] with
+    /// an explicit error policy.
+    pub fn custom_with(
+        f: impl Fn(&str, &Path) -> Result<String, String> + Send + Sync + 'static,
+        on_error: OnFormatError,
+    ) -> Self {
+        Self::Custom { format: std::sync::Arc::new(f), on_error }
     }
 }
 
@@ -161,7 +190,9 @@ impl std::fmt::Debug for TsFormatter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => f.write_str("None"),
-            Self::Custom(_) => f.write_str("Custom(..)"),
+            Self::Custom { on_error, .. } => {
+                f.debug_struct("Custom").field("on_error", on_error).finish_non_exhaustive()
+            }
             Self::Command(cmd) => f.debug_tuple("Command").field(cmd).finish(),
         }
     }
@@ -177,8 +208,24 @@ pub fn write_and_format_ts(path: &Path, content: impl AsRef<str>, formatter: &Ts
     let content = content.as_ref();
     let formatted = match formatter {
         TsFormatter::None => content.to_string(),
-        TsFormatter::Custom(format) => format(content)
-            .map_err(|e| CodegenError::Client(format!("custom TS formatter failed for {}: {e}", path.display())))?,
+        TsFormatter::Custom { format, on_error } => match format(content, &resolve_ts_path(path)) {
+            Ok(formatted) => formatted,
+            Err(e) => match on_error {
+                OnFormatError::Fail => {
+                    return Err(CodegenError::Client(format!(
+                        "custom TS formatter failed for {}: {e}",
+                        path.display()
+                    )));
+                }
+                OnFormatError::Warn => {
+                    println!(
+                        "cargo:warning=ontogen: custom TS formatter failed for {} ({e}); emitting unformatted output",
+                        path.display()
+                    );
+                    content.to_string()
+                }
+            },
+        },
         TsFormatter::Command(cmd) => command_format_ts(content, cmd, &resolve_ts_path(path))?,
     };
     write_if_changed(path, formatted)
@@ -367,25 +414,38 @@ pub fn relative_path(base: &Path, target: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{TsFormatter, write_and_format_ts};
+    use super::{OnFormatError, TsFormatter, write_and_format_ts};
 
     #[test]
-    fn custom_formatter_shapes_output() {
+    fn custom_formatter_shapes_output_and_receives_resolved_path() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("out.ts");
-        let formatter = TsFormatter::custom(|src| Ok(src.to_uppercase()));
+        let formatter = TsFormatter::custom(|src, p| {
+            assert_eq!(p.file_name().and_then(|n| n.to_str()), Some("out.ts"), "hook gets the output path");
+            assert!(p.is_absolute(), "hook gets a resolved absolute path; got: {}", p.display());
+            Ok(src.to_uppercase())
+        });
         write_and_format_ts(&path, "const x = 1;\n", &formatter).expect("write");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "CONST X = 1;\n");
     }
 
     #[test]
-    fn custom_formatter_error_aborts_write() {
+    fn custom_formatter_error_aborts_write_by_default() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("out.ts");
-        let formatter = TsFormatter::custom(|_| Err("nope".to_string()));
+        let formatter = TsFormatter::custom(|_, _| Err("nope".to_string()));
         let err = write_and_format_ts(&path, "const x = 1;\n", &formatter).expect_err("must fail");
         assert!(err.to_string().contains("nope"), "hook error surfaces; got: {err}");
         assert!(!path.exists(), "nothing written on formatter failure");
+    }
+
+    #[test]
+    fn custom_formatter_error_warns_and_writes_unformatted_when_lenient() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("out.ts");
+        let formatter = TsFormatter::custom_with(|_, _| Err("nope".to_string()), OnFormatError::Warn);
+        write_and_format_ts(&path, "const  x=1\n", &formatter).expect("lenient mode must not fail");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "const  x=1\n", "raw output written on hook error");
     }
 
     #[test]
