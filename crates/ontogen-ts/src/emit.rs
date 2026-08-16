@@ -16,7 +16,7 @@ use syn::{
 };
 
 use crate::attr::{
-    FieldAttrs, VariantAttrs, extract_container_attrs, extract_field_attrs, extract_ontogen_attrs,
+    ContainerAttrs, FieldAttrs, VariantAttrs, extract_container_attrs, extract_field_attrs, extract_ontogen_attrs,
     extract_variant_attrs,
 };
 use crate::order;
@@ -583,6 +583,31 @@ fn field_wire_name(raw_ident: &str, attrs: &FieldAttrs, rename_all: Option<Renam
     raw_ident.to_string()
 }
 
+/// Pick the rename mode that governs the FIELD names inside a struct
+/// variant.
+///
+/// Serde keeps two independent axes on an enum, and conflating them emits TS
+/// that disagrees with the wire in a way that still looks plausible:
+///
+/// | attribute                              | renames                       |
+/// |----------------------------------------|-------------------------------|
+/// | `#[serde(rename_all)]` on the enum     | the variants                  |
+/// | `#[serde(rename_all_fields)]` on the enum | fields of every struct variant |
+/// | `#[serde(rename_all)]` on a variant    | fields of that variant        |
+///
+/// So the enum's own `rename_all` is deliberately absent here — it governs
+/// the variant key and nothing else. The closer scope wins between the
+/// remaining two.
+///
+/// [`EmitConfig::case_default`] is deliberately absent too. It stands in for
+/// "this crate annotates its types with `rename_all`", and a crate that does
+/// exactly that still gets verbatim struct-variant field names out of serde
+/// unless it also writes `rename_all_fields`. Folding `case_default` in here
+/// would reintroduce the same mismatch from the config side.
+fn variant_field_rename_all(container: &ContainerAttrs, variant: &VariantAttrs) -> Option<RenameAll> {
+    variant.rename_all.or(container.rename_all_fields)
+}
+
 /// Compute the on-the-wire name for an enum variant given its serde attrs
 /// and the container's effective rename_all mode.
 fn variant_wire_name(raw_ident: &str, attrs: &VariantAttrs, rename_all: Option<RenameAll>) -> String {
@@ -670,6 +695,10 @@ fn is_valid_ts_ident(s: &str) -> bool {
 /// behave identically inside a variant payload: a flattened field becomes an
 /// intersection member on the payload (`{ Move: Base & { x: number } }`) and
 /// a defaulted field becomes TS-optional.
+///
+/// Renaming inside a struct variant follows a *different* policy from the
+/// variant key — the enum's `rename_all` renames variants only, never their
+/// fields. See [`variant_field_rename_all`] for the full precedence table.
 #[allow(dead_code)] // tests-only convenience wrapper; production calls _named directly.
 pub(crate) fn emit_enum(item: &ItemEnum, config: &EmitConfig) -> Result<String, EmitError> {
     emit_enum_named(item, config, None)
@@ -738,12 +767,14 @@ pub(crate) fn emit_enum_named(
             }
             Fields::Named(fields) => {
                 // Struct-style variant: serde emits `{"V": {field1: ..., field2: ...}}`.
-                // Renames inside a struct variant fall under the container's
-                // rename_all rules too (phase 1 doesn't distinguish; serde's
-                // `rename_all_fields` for inner-struct overrides is phase-2
-                // work).
+                //
+                // The variant KEY is renamed by the enum's `rename_all`
+                // (already applied above, in `wire_name`). The variant's
+                // FIELD names are a separate axis that the enum's
+                // `rename_all` does not touch — see `variant_field_rename_all`.
                 let key = format_ts_key(&wire_name);
-                let collected = collect_named_fields(fields, config, &referenced_by, effective_rename_all)?;
+                let field_rename_all = variant_field_rename_all(&container, &variant_attrs);
+                let collected = collect_named_fields(fields, config, &referenced_by, field_rename_all)?;
                 let object = (!collected.properties.is_empty()).then(|| {
                     let body = collected
                         .properties
@@ -1492,6 +1523,126 @@ mod tests {
     #[test]
     fn enum_variant_rename_wins_over_container() {
         assert_fixture_matches("enum_variant_rename_wins_over_container");
+    }
+
+    // ── Struct-variant field renaming (issue #133) ─────────────────────
+
+    #[test]
+    fn enum_rename_all_spares_variant_fields() {
+        // The repro from issue #133: an enum's `rename_all` renames the
+        // VARIANT (`toolCall`) and must leave the variant's field names
+        // alone, because serde does.
+        assert_fixture_matches("enum_rename_all_spares_variant_fields");
+    }
+
+    #[test]
+    fn enum_rename_all_fields() {
+        // `rename_all_fields` is the attribute that actually asks for the
+        // renaming the emitter used to do unprompted.
+        assert_fixture_matches("enum_rename_all_fields");
+    }
+
+    #[test]
+    fn enum_variant_rename_all_wins_over_container() {
+        // A variant's own `rename_all` governs that variant's fields and
+        // overrides the container's `rename_all_fields`; sibling variants
+        // still follow the container.
+        assert_fixture_matches("enum_variant_rename_all_wins_over_container");
+    }
+
+    #[test]
+    fn enum_variant_rename_all_does_not_touch_the_variant_key() {
+        // Easy to get backwards: `rename_all` on a VARIANT renames that
+        // variant's fields, not the variant's own wire name. The key here
+        // comes from the container's `rename_all` alone.
+        let config = EmitConfig::default();
+        let item = enum_item(
+            r#"
+            #[serde(rename_all = "camelCase")]
+            pub enum Event {
+                #[serde(rename_all = "UPPERCASE")]
+                ToolCall { prompt_template: String },
+            }
+            "#,
+        );
+        let ts = emit_enum(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Event = { toolCall: { PROMPT_TEMPLATE: string } };");
+    }
+
+    #[test]
+    fn config_case_default_does_not_reach_variant_fields() {
+        // `case_default` stands in for "this crate annotates with
+        // rename_all". Such a crate still gets verbatim struct-variant field
+        // names out of serde, so applying it here would recreate #133 from
+        // the config side. It must still rename the variant key.
+        let config = EmitConfig { case_default: Some(crate::types::RenameAll::CamelCase), ..Default::default() };
+        let item = enum_item(
+            "pub enum Event {
+                ToolCall { prompt_template: String },
+            }",
+        );
+        let ts = emit_enum(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Event = { toolCall: { prompt_template: string } };");
+    }
+
+    #[test]
+    fn enum_field_rename_wins_over_every_rename_all() {
+        // Closest scope of all: an explicit field rename.
+        let config = EmitConfig::default();
+        let item = enum_item(
+            r#"
+            #[serde(rename_all_fields = "camelCase")]
+            pub enum Event {
+                #[serde(rename_all = "UPPERCASE")]
+                ToolCall {
+                    #[serde(rename = "tmpl")]
+                    prompt_template: String,
+                },
+            }
+            "#,
+        );
+        let ts = emit_enum(&item, &config).expect("emit ok");
+        assert!(ts.contains("tmpl: string"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn struct_rename_all_fields_is_inert() {
+        // `rename_all_fields` is an enum attribute. A struct's own fields are
+        // governed by its `rename_all`, and the emitter must not let the
+        // enum-only attr bleed into the struct path.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(rename_all_fields = "camelCase")]
+            pub struct Foo {
+                pub prompt_template: String,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert!(ts.contains("prompt_template: string"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn enum_rename_all_fields_rejects_unknown_mode() {
+        // The error must name `rename_all_fields`, not `rename_all`, or the
+        // build log points at the wrong attribute.
+        let config = EmitConfig::default();
+        let item = enum_item(
+            r#"
+            #[serde(rename_all_fields = "Train-Case")]
+            pub enum Event {
+                ToolCall { prompt_template: String },
+            }
+            "#,
+        );
+        match emit_enum(&item, &config).expect_err("unknown mode should fail") {
+            EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                assert!(attr.contains("rename_all_fields"), "attr was: {attr}");
+                assert!(attr.contains("Train-Case"), "attr was: {attr}");
+            }
+            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+        }
     }
 
     // ── serde(flatten) → TS intersection ───────────────────────────────
