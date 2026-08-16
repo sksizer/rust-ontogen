@@ -341,6 +341,10 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
 /// the field, so the emitted contract matches the wire. It composes with
 /// `Option<T>` → `T | null` to produce `field?: T | null`.
 ///
+/// The same attribute on the *container* fills every absent field from the
+/// struct's `Default`, so it marks every field optional — a struct that
+/// accepts `{}` on the wire emits a TS type whose properties are all `?`.
+///
 /// `#[serde(flatten)]` splices the field type's keys into the parent object
 /// instead of nesting them under the field name, so the field becomes a TS
 /// intersection member rather than a property:
@@ -375,7 +379,8 @@ pub(crate) fn emit_struct_named(
 
     match &item.fields {
         Fields::Named(fields) => {
-            let collected = collect_named_fields(fields, config, &referenced_by, effective_rename_all)?;
+            let collected =
+                collect_named_fields(fields, config, &referenced_by, effective_rename_all, container.default)?;
             // `struct Foo {}` — or all fields skipped/flattened. `None` here
             // means "no property object at all": with flattened members it
             // drops out of the intersection, without them it renders `{}`
@@ -419,11 +424,17 @@ struct NamedFields {
 /// Classify each field of a named-field group into a flattened intersection
 /// member or an ordinary property, applying `#[serde(skip)]`, the rename
 /// family, and `#[serde(default)]` along the way.
+///
+/// `container_default` is `#[serde(default)]` on the struct itself. Serde
+/// fills every absent field from the struct's `Default`, so it makes the
+/// whole body optional — each field is treated exactly as if it carried its
+/// own `#[serde(default)]`.
 fn collect_named_fields(
     fields: &syn::FieldsNamed,
     config: &EmitConfig,
     referenced_by: &TypePath,
     rename_all: Option<RenameAll>,
+    container_default: bool,
 ) -> Result<NamedFields, EmitError> {
     let mut out = NamedFields { intersections: Vec::new(), properties: Vec::with_capacity(fields.named.len()) };
     for field in &fields.named {
@@ -431,21 +442,23 @@ fn collect_named_fields(
         if field_attrs.skip {
             continue;
         }
+        // Either scope of `default` makes this field absent-able on the wire.
+        let defaulted = field_attrs.default || container_default;
         if field_attrs.flatten {
             // A flattened field's own name never reaches the wire, so the
             // rename family is moot here — serde ignores it too.
-            out.intersections.push(flatten_member(&field.ty, &field_attrs, config, referenced_by)?);
+            out.intersections.push(flatten_member(&field.ty, defaulted, config, referenced_by)?);
             continue;
         }
         let raw_ident = field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
         let wire_name = field_wire_name(&raw_ident, &field_attrs, rename_all);
         let key = format_ts_key(&wire_name);
         let ty_ts = emit_type(&field.ty, config, referenced_by)?;
-        // `#[serde(default)]` (bare or path form) means the field may be
-        // absent on the wire — the deserializer fills in a default. Emit it
-        // as TS-optional. Composes with `Option<T>` → `T | null` to give
-        // `field?: T | null` for an optional, nullable field.
-        let opt = if field_attrs.default { "?" } else { "" };
+        // A defaulted field may be absent on the wire — the deserializer
+        // fills in a default. Emit it as TS-optional. Composes with
+        // `Option<T>` → `T | null` to give `field?: T | null` for an
+        // optional, nullable field.
+        let opt = if defaulted { "?" } else { "" };
         out.properties.push((key, opt, ty_ts));
     }
     Ok(out)
@@ -497,15 +510,16 @@ fn intersect(members: &[String], object: Option<String>) -> String {
 /// surfaces at the consumer's `tsc` rather than at emit time.
 fn flatten_member(
     ty: &Type,
-    attrs: &FieldAttrs,
+    defaulted: bool,
     config: &EmitConfig,
     referenced_by: &TypePath,
 ) -> Result<String, EmitError> {
-    if attrs.default {
+    if defaulted {
         return Err(EmitError::UnsupportedShape {
             type_path: referenced_by.clone(),
-            reason: "#[serde(flatten, default)] makes the whole flattened group absent-or-present as a unit, which a \
-                     TS intersection can't express; drop the `default` or use #[ontogen::ts_opaque(target = \"...\")]"
+            reason: "a defaulted #[serde(flatten)] field (whether from `#[serde(flatten, default)]` or a container \
+                     `#[serde(default)]`) makes the whole flattened group absent-or-present as a unit, which a TS \
+                     intersection can't express; drop the `default` or use #[ontogen::ts_opaque(target = \"...\")]"
                 .to_string(),
         });
     }
@@ -774,7 +788,10 @@ pub(crate) fn emit_enum_named(
                 // `rename_all` does not touch — see `variant_field_rename_all`.
                 let key = format_ts_key(&wire_name);
                 let field_rename_all = variant_field_rename_all(&container, &variant_attrs);
-                let collected = collect_named_fields(fields, config, &referenced_by, field_rename_all)?;
+                // No container-default to inherit: serde rejects
+                // `#[serde(default)]` on an enum outright, so a variant body
+                // is only optional field-by-field.
+                let collected = collect_named_fields(fields, config, &referenced_by, field_rename_all, false)?;
                 let object = (!collected.properties.is_empty()).then(|| {
                     let body = collected
                         .properties
@@ -1643,6 +1660,123 @@ mod tests {
             }
             other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
         }
+    }
+
+    // ── Container-level serde(default) ─────────────────────────────────
+
+    #[test]
+    fn struct_container_default_optional() {
+        // `#[serde(default)]` on the struct makes every field absent-able on
+        // the wire, so every field is TS-optional. Emitting them as required
+        // forced callers to spell out a value for each one to satisfy `tsc`,
+        // even though serde accepts `{}`.
+        assert_fixture_matches("struct_container_default_optional");
+    }
+
+    #[test]
+    fn struct_container_default_composes_with_field_default() {
+        // Both scopes say the same thing; the field must not end up with two
+        // `?` markers.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(default)]
+            pub struct Settings {
+                #[serde(default)]
+                pub retries: u32,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Settings = {\n  retries?: number;\n};");
+    }
+
+    #[test]
+    fn struct_container_default_path_form_is_equivalent() {
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(default = "defaults::settings")]
+            pub struct Settings {
+                pub retries: u32,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert!(ts.contains("retries?: number"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn struct_container_default_still_drops_skipped_fields() {
+        // `skip` wins: the field isn't on the wire at all, optional or not.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(default)]
+            pub struct Settings {
+                pub retries: u32,
+                #[serde(skip)]
+                pub cached: u32,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert!(ts.contains("retries?: number"), "ts was: {ts}");
+        assert!(!ts.contains("cached"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn struct_container_default_rejects_a_flattened_field() {
+        // Same absent-or-present problem as `#[serde(flatten, default)]`, just
+        // inherited from the container instead of written on the field.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(default)]
+            pub struct Step {
+                #[serde(flatten)]
+                pub meta: StepMeta,
+            }
+            "#,
+        );
+        match emit_struct(&item, &config).expect_err("container default + flatten should be rejected") {
+            EmitError::UnsupportedShape { reason, .. } => {
+                assert!(reason.contains("absent-or-present"), "reason was: {reason}");
+                assert!(reason.contains("container"), "reason was: {reason}");
+            }
+            other => panic!("expected UnsupportedShape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_container_default_does_not_reach_variant_fields() {
+        // Serde rejects `#[serde(default)]` on an enum, so it must not leak
+        // into struct-variant bodies via the shared container extractor.
+        let config = EmitConfig::default();
+        let item = enum_item(
+            r#"
+            #[serde(default)]
+            pub enum Event {
+                Move { x: u32 },
+            }
+            "#,
+        );
+        let ts = emit_enum(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Event = { Move: { x: number } };");
+    }
+
+    #[test]
+    fn struct_without_container_default_keeps_fields_required() {
+        // The no-attribute path must be untouched.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            "pub struct Settings {
+                pub retries: u32,
+                pub notes: Option<String>,
+            }",
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Settings = {\n  retries: number;\n  notes: string | null;\n};");
     }
 
     // ── serde(flatten) → TS intersection ───────────────────────────────
