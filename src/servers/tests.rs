@@ -594,7 +594,10 @@ fn via_ontogen_ts(rust_ty: &str) -> String {
     std::fs::write(dir.path().join("lib.rs"), format!("pub struct Probe {{ pub field: {rust_ty} }}"))
         .expect("write probe");
     let pool = ontogen_ts::scan_src_dir(dir.path()).expect("scan");
-    let root = ontogen_ts::TypePath::new(vec!["Probe".to_string()]).expect("non-empty");
+    // Pool keys name the root they came from, so a crate-root type is
+    // `["crate", "Probe"]`.
+    let root = ontogen_ts::TypePath::new(vec![ontogen_ts::LOCAL_CRATE_ROOT.to_string(), "Probe".to_string()])
+        .expect("non-empty");
     let ts = ontogen_ts::emit(&[root], &pool, &ontogen_ts::EmitConfig::default())
         .unwrap_or_else(|errs| panic!("ontogen-ts emit failed for `{rust_ty}`: {errs:?}"));
     ts.lines()

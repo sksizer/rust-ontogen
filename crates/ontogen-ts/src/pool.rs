@@ -16,13 +16,21 @@
 //! - Inline `mod foo { ... }` blocks are walked recursively, contributing
 //!   their module name to each contained item's canonical path.
 //!
-//! Path derivation:
+//! Path derivation — every key begins with the root the tree was scanned as
+//! ([`LOCAL_CRATE_ROOT`] for the consuming crate, the package name for a
+//! `pool_extra_roots` sibling):
 //!
-//! - `src/lib.rs` items → path `["ItemName"]`
-//! - `src/foo.rs` items → path `["foo", "ItemName"]`
-//! - `src/foo/mod.rs` items → path `["foo", "ItemName"]`
-//! - `src/foo/bar.rs` items → path `["foo", "bar", "ItemName"]`
-//! - Inline `mod baz { pub struct Q; }` inside `src/foo.rs` → `["foo", "baz", "Q"]`
+//! - `src/lib.rs` items → path `["crate", "ItemName"]`
+//! - `src/foo.rs` items → path `["crate", "foo", "ItemName"]`
+//! - `src/foo/mod.rs` items → path `["crate", "foo", "ItemName"]`
+//! - `src/foo/bar.rs` items → path `["crate", "foo", "bar", "ItemName"]`
+//! - Inline `mod baz { pub struct Q; }` inside `src/foo.rs` → `["crate", "foo", "baz", "Q"]`
+//!
+//! Naming the root in the key is what keeps a workspace sibling's types
+//! distinguishable from the consuming crate's own once the two pools are
+//! merged. Before this, both trees were keyed relative to their own `src/`,
+//! so a sibling's `lint::Severity` and a local `lint::Severity` produced the
+//! same key and one silently displaced the other.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -60,8 +68,20 @@ impl std::fmt::Display for ScanError {
 
 impl std::error::Error for ScanError {}
 
+/// First key segment for types scanned from the consuming crate's own `src/`.
+///
+/// Every pool key names the root it came from, so a key carries its crate
+/// boundary rather than losing it in a flat merge. The local root uses the
+/// literal `crate`, which is what a user writes in source and — being a
+/// keyword — is a segment no real crate name can ever occupy. Additional
+/// roots merged in via `pool_extra_roots` use their package name, so
+/// `crate::schema::Severity` and `vaultpolish_core::lint::Severity` stay
+/// distinguishable after the merge.
+pub const LOCAL_CRATE_ROOT: &str = "crate";
+
 /// Scan a `src/` directory and collect every module-level struct, enum, and
-/// type-alias into a pool keyed by canonical [`TypePath`].
+/// type-alias into a pool keyed by canonical [`TypePath`], rooted at
+/// [`LOCAL_CRATE_ROOT`].
 ///
 /// This discards the per-module `use` tables. Callers that need bare
 /// single-segment references resolved through their defining module's
@@ -78,17 +98,38 @@ pub fn scan_src_dir(src_dir: &Path) -> Result<BTreeMap<TypePath, syn::Item>, Sca
 /// single-segment reference (`BackupManifest`) through the actual `use` that
 /// brought it into scope, instead of guessing by terminal segment — which is
 /// ambiguous when two modules define same-named types.
+///
+/// Keys are rooted at [`LOCAL_CRATE_ROOT`]; use [`scan_crate_root_with_imports`]
+/// to scan a workspace sibling under its own package name.
 pub fn scan_src_dir_with_imports(src_dir: &Path) -> Result<(BTreeMap<TypePath, syn::Item>, ModuleImports), ScanError> {
+    scan_crate_root_with_imports(src_dir, LOCAL_CRATE_ROOT)
+}
+
+/// Scan a `src/` directory as the crate named `crate_root`, so every pool key
+/// and every module-imports key begins with that segment.
+///
+/// This is what keeps a workspace sibling's types distinguishable from the
+/// consuming crate's own after the two pools are merged. The pool and the
+/// imports table MUST be rooted identically — a mismatch doesn't fail loudly,
+/// it just makes `ModuleImports::get` miss and silently degrades resolution
+/// to terminal-segment guessing.
+pub fn scan_crate_root_with_imports(
+    src_dir: &Path,
+    crate_root: &str,
+) -> Result<(BTreeMap<TypePath, syn::Item>, ModuleImports), ScanError> {
     let mut pool = BTreeMap::new();
     let mut imports = ModuleImports::default();
-    scan_dir_recursive(src_dir, &[], &mut pool, &mut imports)?;
+    let root = [crate_root.to_string()];
+    scan_dir_recursive(src_dir, &root, &mut pool, &mut imports)?;
     Ok((pool, imports))
 }
 
 /// Recursive directory walker. `module_prefix` is the canonical path of the
-/// current Rust module (empty at the crate root). Each `.rs` file
-/// contributes its items (and items nested inside `mod` blocks) under that
-/// prefix, plus its `use` declarations into `imports`.
+/// current Rust module, starting at `[crate_root]` for the scanned tree's
+/// own root. Each `.rs` file contributes its items (and items nested inside
+/// `mod` blocks) under that prefix, plus its `use` declarations into
+/// `imports` — under the *same* prefix, which is what lets the resolver look
+/// a referencing module's imports up by its pool key minus the terminal.
 fn scan_dir_recursive(
     dir: &Path,
     module_prefix: &[String],
@@ -206,8 +247,66 @@ mod tests {
         dir
     }
 
+    /// A pool key for the local crate — `segments` with [`LOCAL_CRATE_ROOT`]
+    /// prepended, since every key names the root it came from.
     fn tp(segments: &[&str]) -> TypePath {
+        let mut all = vec![LOCAL_CRATE_ROOT.to_string()];
+        all.extend(segments.iter().map(|s| (*s).to_string()));
+        TypePath::new(all).expect("non-empty")
+    }
+
+    /// A pool key with an explicit root, for extra-root scans.
+    fn rooted(segments: &[&str]) -> TypePath {
         TypePath::new(segments.iter().map(|s| (*s).to_string()).collect()).expect("non-empty")
+    }
+
+    #[test]
+    fn keys_are_rooted_at_the_local_crate() {
+        // Spelled out rather than going through `tp`, so the key convention
+        // itself is pinned somewhere obvious.
+        let dir = make_tempdir(&[("lib.rs", ""), ("models.rs", "pub struct Workout { pub id: u64 }")]);
+        let pool = scan_src_dir(dir.path()).unwrap();
+        assert!(
+            pool.contains_key(&rooted(&["crate", "models", "Workout"])),
+            "pool keys: {:?}",
+            pool.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn extra_root_keys_are_rooted_at_their_package_name() {
+        // The whole point: a sibling's types stay distinguishable from the
+        // consuming crate's after a merge, even when the module path and the
+        // type name both match.
+        let dir = make_tempdir(&[("lint/mod.rs", "pub enum Severity { Error, Warning }")]);
+        let (pool, imports) = scan_crate_root_with_imports(dir.path(), "vaultpolish_core").unwrap();
+        assert!(
+            pool.contains_key(&rooted(&["vaultpolish_core", "lint", "Severity"])),
+            "pool keys: {:?}",
+            pool.keys().collect::<Vec<_>>()
+        );
+        // Pool and imports must be rooted identically, or `ModuleImports::get`
+        // misses and resolution silently degrades to terminal guessing.
+        assert!(
+            imports.get(&["vaultpolish_core".to_string(), "lint".to_string()]).is_some(),
+            "imports table must be rooted the same way as the pool"
+        );
+    }
+
+    #[test]
+    fn a_local_and_a_sibling_type_no_longer_share_a_key() {
+        // Before rooting, both keyed as ["lint", "Severity"] and the merge's
+        // `or_insert` silently dropped one.
+        let local = make_tempdir(&[("lint/mod.rs", "pub enum Severity { Error }")]);
+        let sibling = make_tempdir(&[("lint/mod.rs", "pub enum Severity { Error, Warning, Info }")]);
+        let local_pool = scan_src_dir(local.path()).unwrap();
+        let (sibling_pool, _) = scan_crate_root_with_imports(sibling.path(), "vaultpolish_core").unwrap();
+
+        let mut merged = local_pool;
+        for (key, item) in sibling_pool {
+            merged.entry(key).or_insert(item);
+        }
+        assert_eq!(merged.len(), 2, "both definitions survive the merge: {:?}", merged.keys().collect::<Vec<_>>());
     }
 
     #[test]

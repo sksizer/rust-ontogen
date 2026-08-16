@@ -76,7 +76,10 @@ fn entity_field_type_appears_in_emitted_long_tail() {
     // pool containing the definition, the emitter produces a TS body for
     // it. The unit tests in `ts_bindings::tests` separately verify that
     // `long_tail` produces exactly such roots from `EntityDef.fields`.
-    let root = TypePath::new(vec!["IntervalKind".to_string()]).expect("non-empty TypePath");
+    // Pool keys name the root they came from, so a crate-root type keys as
+    // `["crate", "IntervalKind"]`.
+    let root = TypePath::new(vec![ontogen_ts::LOCAL_CRATE_ROOT.to_string(), "IntervalKind".to_string()])
+        .expect("non-empty TypePath");
     let long_tail_ts = ontogen_ts_emit(&[root], &pool, &EmitConfig::default()).expect("ontogen-ts emit");
 
     // Long-tail half: ontogen-ts emits the enum body.
