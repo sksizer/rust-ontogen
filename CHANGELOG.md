@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.5] - 2026-08-16
+
+### Fixed
+
+- correct rust_type_to_ts precedence, maps, and spacing
+
+
+
 ## [0.6.4] - 2026-08-16
 
 
