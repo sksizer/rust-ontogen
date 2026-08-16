@@ -293,9 +293,10 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
             }
         };
 
-        // 4. Append to every bindings file written above.
+        // 4. Append to every bindings file written above, re-formatting the
+        //    assembled file so the long-tail section matches the rest of it.
         for path in &written_bindings {
-            append_long_tail_to_bindings(path, &ts)?;
+            append_long_tail_to_bindings(path, &ts, &config.ts_formatter)?;
         }
 
         // 5. Tell cargo to rerun if any .rs under src/ changes. Coarse but
@@ -327,35 +328,66 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
     Ok(modules)
 }
 
+/// Comment that separates the schema-known bindings from the long-tail
+/// section, and anchors the boundary when the section is re-generated.
+const LONG_TAIL_MARKER: &str = "// Long-tail types (emitted via ontogen-ts AST walker).";
+
+/// Return the schema-known prefix of an existing bindings file — everything
+/// above [`LONG_TAIL_MARKER`] — with trailing whitespace trimmed.
+///
+/// Matching on the comment text alone (rather than on the marker plus its
+/// surrounding newlines) is what makes this survive a formatter pass: the
+/// formatter is free to add or drop the blank line around the comment, or to
+/// strip a leading blank line when the schema-known section is empty, and
+/// the boundary is still found. If it weren't, the strip would silently miss
+/// and every rebuild would append another copy of the whole section.
+fn strip_long_tail(existing: &str) -> &str {
+    match existing.find(LONG_TAIL_MARKER) {
+        Some(idx) => existing[..idx].trim_end(),
+        None => existing.trim_end(),
+    }
+}
+
 /// Append `ts` to the bindings file at `bindings_path`, prefixed with a
 /// short comment that identifies the source. Creates the file if missing
 /// (the schema-known emitter writes it first, but be defensive).
 ///
+/// The whole assembled file goes through `formatter`, not just the
+/// schema-known base. Formatting the base at write time and then appending
+/// underneath it left the long-tail section in ontogen-ts's raw emit style —
+/// single-quoted literals and over-long unions — inside an otherwise
+/// formatter-canonical file. Formatting after assembly is the invariant that
+/// holds regardless of how many steps contribute to the file.
+///
 /// Idempotent across reruns:
-///   1. Strip any previously-appended long-tail block (the marker comment
-///      anchors the boundary) so re-running doesn't double the section.
-///   2. Write the recombined content via `write_if_changed` so identical
-///      output across runs doesn't bump the file's mtime — without this,
-///      file watchers (e.g. `tauri dev`) see the touch and trigger an
-///      infinite rebuild loop.
-fn append_long_tail_to_bindings(bindings_path: &std::path::Path, ts: &str) -> Result<(), String> {
-    const MARKER: &str = "\n// Long-tail types (emitted via ontogen-ts AST walker).\n";
-
+///   1. [`strip_long_tail`] removes any previously-appended block, so
+///      re-running doesn't double the section.
+///   2. The separator around the marker is normalized before formatting, so
+///      the result converges on the formatter's own preference instead of
+///      oscillating between two spellings.
+///   3. `write_and_format_ts` formats in memory and then writes only on
+///      change, so an unchanged rebuild doesn't bump the file's mtime —
+///      without that, file watchers (e.g. `tauri dev`) see the touch and
+///      trigger an infinite rebuild loop.
+fn append_long_tail_to_bindings(
+    bindings_path: &std::path::Path,
+    ts: &str,
+    formatter: &ontogen_core::utils::TsFormatter,
+) -> Result<(), String> {
     let existing = std::fs::read_to_string(bindings_path).unwrap_or_default();
-    let base = match existing.find(MARKER) {
-        Some(idx) => &existing[..idx],
-        None => existing.as_str(),
-    };
+    let base = strip_long_tail(&existing);
 
-    let mut content = String::with_capacity(base.len() + MARKER.len() + ts.len() + 1);
+    let mut content = String::with_capacity(base.len() + LONG_TAIL_MARKER.len() + ts.len() + 4);
     content.push_str(base);
-    content.push_str(MARKER);
-    content.push_str(ts);
-    if !content.ends_with('\n') {
-        content.push('\n');
+    if !base.is_empty() {
+        content.push_str("\n\n");
     }
+    content.push_str(LONG_TAIL_MARKER);
+    content.push('\n');
+    content.push_str(ts.trim_end());
+    content.push('\n');
 
-    ontogen_core::utils::write_if_changed(bindings_path, content.as_bytes())
+    crate::write_and_format_ts(bindings_path, content, formatter)
         .map_err(|e| format!("failed to write {}: {e}", bindings_path.display()))
 }
 
