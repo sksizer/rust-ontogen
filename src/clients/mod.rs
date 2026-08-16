@@ -149,20 +149,25 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
 
         // 1. Build the type pool from src/, then merge in any configured
         //    extra source roots (workspace-sibling crates the consuming crate
-        //    re-exports types from). Main pool wins on key collision so the
-        //    consuming crate's own definitions take precedence over a sibling
-        //    that happens to share a module path.
+        //    re-exports types from).
+        //
+        //    Every key names the root it came from — `crate` for the
+        //    consuming crate, the package name for each sibling — so the two
+        //    trees occupy distinct namespaces after the merge. Before this,
+        //    both were keyed relative to their own `src/`, so a sibling's
+        //    `lint::Severity` and a local `lint::Severity` produced the same
+        //    key: one silently displaced the other, and a bare reference to
+        //    either was reported as ambiguous.
         let (mut pool, mut imports) =
             ontogen_ts::scan_src_dir_with_imports(&src_dir).map_err(|e| format!("ontogen-ts pool scan failed: {e}"))?;
         for extra in &config.pool_extra_roots {
             let resolved = if extra.is_absolute() { extra.clone() } else { manifest_dir.join(extra) };
-            let (sibling, sibling_imports) = ontogen_ts::scan_src_dir_with_imports(&resolved)
+            let crate_root = extra_root_crate_name(&resolved);
+            let (sibling, sibling_imports) = ontogen_ts::scan_crate_root_with_imports(&resolved, &crate_root)
                 .map_err(|e| format!("ontogen-ts pool scan failed for extra root `{}`: {e}", resolved.display()))?;
             for (key, item) in sibling {
                 pool.entry(key).or_insert(item);
             }
-            // Main root's `use` tables win on a module-path collision, same as
-            // the pool above.
             imports.merge(sibling_imports);
         }
 
@@ -204,7 +209,11 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
                     })
                     .collect();
                 if !segments.is_empty() {
-                    exclude_prefixes.push(segments);
+                    // Pool keys are rooted at the crate, so the prefix must
+                    // be too or it never matches and nothing is excluded.
+                    let mut rooted = vec![ontogen_ts::LOCAL_CRATE_ROOT.to_string()];
+                    rooted.extend(segments);
+                    exclude_prefixes.push(rooted);
                 }
             }
             if !exclude_prefixes.is_empty() {
@@ -232,14 +241,27 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         //    referencing site (e.g. schema entity-field types) resolve with no
         //    module hint — same-module + unique-terminal, which suffices for
         //    those.
-        let api_prefix: Vec<String> = config
-            .api_dir
-            .canonicalize()
-            .ok()
-            .zip(src_dir.canonicalize().ok())
-            .and_then(|(api, src)| api.strip_prefix(&src).ok().map(|rel| rel.to_path_buf()))
-            .map(|rel| rel.components().filter_map(|c| c.as_os_str().to_str().map(str::to_string)).collect())
-            .unwrap_or_default();
+        //
+        //    The module path is rooted at the crate, matching the pool and
+        //    imports keys — a mismatch here doesn't fail loudly, it just makes
+        //    the `use`-table lookup miss and silently drops resolution back to
+        //    terminal-segment guessing.
+        let api_prefix: Vec<String> = std::iter::once(ontogen_ts::LOCAL_CRATE_ROOT.to_string())
+            .chain(
+                config
+                    .api_dir
+                    .canonicalize()
+                    .ok()
+                    .zip(src_dir.canonicalize().ok())
+                    .and_then(|(api, src)| api.strip_prefix(&src).ok().map(|rel| rel.to_path_buf()))
+                    .map(|rel| {
+                        rel.components()
+                            .filter_map(|c| c.as_os_str().to_str().map(str::to_string))
+                            .collect::<Vec<String>>()
+                    })
+                    .unwrap_or_default(),
+            )
+            .collect();
         let mut name_module: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
         for m in &modules {
             let mut module_path = api_prefix.clone();
@@ -252,8 +274,12 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         let mut roots: Vec<ontogen_ts::TypePath> = Vec::with_capacity(long_tail.len());
         let mut missing: Vec<String> = Vec::new();
         let mut ambiguous: Vec<(String, Vec<ontogen_ts::TypePath>)> = Vec::new();
+        // A name with no API referencing site (a schema entity-field type,
+        // say) still resolves from the consuming crate's root, so bare-ident
+        // matching prefers the consuming crate's own types over a sibling's.
+        let crate_root = [ontogen_ts::LOCAL_CRATE_ROOT.to_string()];
         for name in &long_tail {
-            let module: &[String] = name_module.get(name).map_or(&[], Vec::as_slice);
+            let module: &[String] = name_module.get(name).map_or(&crate_root[..], Vec::as_slice);
             match ontogen_ts::resolve_reference(std::slice::from_ref(name), module, &pool, &imports) {
                 ontogen_ts::Resolution::Resolved(key) => roots.push(key),
                 ontogen_ts::Resolution::NotInPool => missing.push(name.clone()),
@@ -326,6 +352,61 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
     }
 
     Ok(modules)
+}
+
+/// Derive the crate name a `pool_extra_roots` entry's types should be keyed
+/// under, so a sibling's `lint::Severity` can't collide with the consuming
+/// crate's own.
+///
+/// `src_dir` points at the sibling's `src/`, so its `Cargo.toml` is one level
+/// up. The `[package] name` there is authoritative — it's what the consuming
+/// crate writes in a `use`. We fall back to the directory name when there's
+/// no readable manifest, which covers a non-standard layout and is still
+/// better than sharing a namespace.
+///
+/// Either way the result is normalized the way Cargo does for `extern crate`
+/// names: `-` becomes `_`, since `vaultpolish-core` is imported as
+/// `vaultpolish_core`.
+fn extra_root_crate_name(src_dir: &std::path::Path) -> String {
+    let from_manifest = src_dir
+        .parent()
+        .map(|crate_dir| crate_dir.join("Cargo.toml"))
+        .and_then(|manifest| std::fs::read_to_string(manifest).ok())
+        .and_then(|text| package_name_from_manifest(&text));
+
+    let raw = from_manifest
+        .or_else(|| src_dir.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "extra_root".to_string());
+    raw.replace('-', "_")
+}
+
+/// Pull `name` out of a Cargo manifest's `[package]` table.
+///
+/// A deliberately small hand-rolled scan rather than a TOML dependency: the
+/// field is a plain string on its own line in every manifest Cargo writes,
+/// and this runs in a build script where a parser dependency isn't worth it.
+/// Returns `None` on anything unexpected so the caller falls back.
+fn package_name_from_manifest(text: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("name") else {
+            continue;
+        };
+        let value = rest.trim_start().strip_prefix('=')?.trim();
+        let unquoted = value.trim_matches('"').trim_matches('\'');
+        if !unquoted.is_empty() {
+            return Some(unquoted.to_string());
+        }
+    }
+    None
 }
 
 /// Comment that separates the schema-known bindings from the long-tail

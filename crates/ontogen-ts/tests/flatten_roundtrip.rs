@@ -22,7 +22,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 
-use ontogen_ts::{EmitConfig, TypePath, emit, scan_src_dir};
+use ontogen_ts::{EmitConfig, LOCAL_CRATE_ROOT, TypePath, emit, scan_src_dir};
 use serde::{Deserialize, Serialize};
 
 /// Declare items normally AND capture their source text, so the emitter is
@@ -55,7 +55,9 @@ fn emit_fixture(root: &str) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
     fs::write(dir.path().join("lib.rs"), FIXTURE_SRC).expect("write lib.rs");
     let pool = scan_src_dir(dir.path()).expect("scan");
-    let path = TypePath::new(vec![root.to_string()]).expect("non-empty");
+    // Pool keys name their root; a crate-root type keys as
+    // `["crate", "Name"]`.
+    let path = TypePath::new(vec![LOCAL_CRATE_ROOT.to_string(), root.to_string()]).expect("non-empty");
     emit(&[path], &pool, &EmitConfig::default()).unwrap_or_else(|errs| panic!("emit failed: {errs:?}"))
 }
 

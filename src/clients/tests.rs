@@ -9,7 +9,9 @@ use std::fs;
 
 use ontogen_core::utils::TsFormatter;
 
-use super::{LONG_TAIL_MARKER, append_long_tail_to_bindings, strip_long_tail};
+use super::{
+    LONG_TAIL_MARKER, append_long_tail_to_bindings, extra_root_crate_name, package_name_from_manifest, strip_long_tail,
+};
 
 /// The long-tail emitter's raw style — single-quoted literals — standing in
 /// for what `ontogen_ts::emit` produces.
@@ -157,4 +159,57 @@ fn append_does_not_rewrite_an_unchanged_file() {
 fn strip_long_tail_handles_a_file_without_the_marker() {
     assert_eq!(strip_long_tail(SCHEMA_KNOWN), SCHEMA_KNOWN.trim_end());
     assert_eq!(strip_long_tail(""), "");
+}
+
+// ── pool_extra_roots crate naming (issue #84) ────────────────────────────
+
+/// Lay out `<dir>/<crate_name>/{Cargo.toml,src}` and return the `src` path.
+fn sibling_crate(manifest: Option<&str>, dir_name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let crate_dir = dir.path().join(dir_name);
+    let src = crate_dir.join("src");
+    fs::create_dir_all(&src).expect("create src");
+    if let Some(manifest) = manifest {
+        fs::write(crate_dir.join("Cargo.toml"), manifest).expect("write manifest");
+    }
+    (dir, src)
+}
+
+#[test]
+fn extra_root_crate_name_prefers_the_manifest_package_name() {
+    // The package name is what a consuming crate writes in a `use`, so it's
+    // what the sibling's pool keys have to be rooted at. The directory can
+    // differ from it.
+    let (_dir, src) =
+        sibling_crate(Some("[package]\nname = \"vaultpolish-core\"\nversion = \"0.1.0\"\n"), "core-checkout");
+    assert_eq!(extra_root_crate_name(&src), "vaultpolish_core");
+}
+
+#[test]
+fn extra_root_crate_name_falls_back_to_the_directory() {
+    // No readable manifest — a non-standard layout. Sharing a namespace with
+    // the consuming crate would be worse than a slightly wrong name.
+    let (_dir, src) = sibling_crate(None, "vaultpolish-core");
+    assert_eq!(extra_root_crate_name(&src), "vaultpolish_core");
+}
+
+#[test]
+fn package_name_ignores_names_outside_the_package_table() {
+    // `name` appears under plenty of other tables; only `[package]` counts.
+    let manifest = "\
+[dependencies]
+name = \"not-the-package\"
+
+[package]
+name = \"real-package\"
+
+[[bin]]
+name = \"some-binary\"
+";
+    assert_eq!(package_name_from_manifest(manifest).as_deref(), Some("real-package"));
+}
+
+#[test]
+fn package_name_absent_yields_none() {
+    assert_eq!(package_name_from_manifest("[workspace]\nmembers = [\"a\"]\n"), None);
 }

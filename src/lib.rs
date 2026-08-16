@@ -646,9 +646,23 @@ pub struct ClientsConfig {
     pub schema_entities: Vec<EntityDef>,
     /// Additional source roots to feed into ontogen-ts's long-tail type pool,
     /// beyond the default `CARGO_MANIFEST_DIR/src`. Use when long-tail types
-    /// are defined in workspace-sibling crates and brought into the consuming
-    /// crate via `pub use`. Paths are resolved relative to
-    /// `CARGO_MANIFEST_DIR`. On key collision the main pool wins.
+    /// are defined in workspace-sibling crates. Paths are resolved relative to
+    /// `CARGO_MANIFEST_DIR` and point at the sibling's `src/`.
+    ///
+    /// Each root's types are keyed under that crate's name — read from its
+    /// `Cargo.toml` `[package] name`, falling back to the directory name, and
+    /// normalized the way Cargo does (`-` → `_`). The consuming crate's own
+    /// types are keyed under `crate`. So a sibling and the consumer can both
+    /// define `lint::Severity` without colliding, and a reference resolves
+    /// the way rustc would:
+    ///
+    /// - `vaultpolish_core::lint::Severity` names the sibling's type outright.
+    /// - A bare `Severity` means the consuming crate's, since a bare ident
+    ///   can't reach a foreign crate's type without a `use`.
+    /// - `crate::` inside the sibling's own source means *that* crate.
+    ///
+    /// Two same-named types in one root, referenced with nothing to
+    /// disambiguate, remain a hard error.
     pub pool_extra_roots: Vec<PathBuf>,
 
     /// Source paths to omit from the ontogen-ts type pool after scanning.
