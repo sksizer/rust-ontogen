@@ -1,7 +1,8 @@
 //! Serde-attribute extraction on `syn::Attribute` lists.
 //!
-//! Phase-1 supports the rename family (`rename`, `rename_all`, `skip`) plus
-//! field-level `default` (which maps to a TS-optional `?`) and field-level
+//! Phase-1 supports the rename family (`rename`, `rename_all`,
+//! `rename_all_fields`, `skip`) plus field-level `default` (which maps to a
+//! TS-optional `?`) and field-level
 //! `flatten` (which maps to a TS intersection member — see
 //! [`crate::emit::emit_struct_named`]), and rejects the remaining
 //! shape-changing attrs (`tag`, `content`, `untagged`) plus split-rename
@@ -10,14 +11,23 @@
 //! or `#[ontogen::ts_opaque]`. Other serde attrs that don't change TS shape
 //! (`borrow`, `bound`, `with`, `serialize_with`, etc.) are silently ignored.
 //!
-//! Each extractor rejects a shape attr at the level where that attr can
-//! legally appear, not merely where serde's own parser would already have
-//! refused it. `tag`/`content`/`untagged` are container attrs, so the field
-//! extractor rejects them; `flatten` is a field attr, so the container and
-//! variant extractors reject it. (An earlier revision listed `flatten`
-//! alongside the container attrs and consulted the list only at container
-//! level, where serde forbids `flatten` outright — so field-level `flatten`
-//! was silently ignored and emitted TS that disagreed with the wire.)
+//! Each extractor handles an attribute at the level where serde itself
+//! gives it meaning, and rejects it elsewhere. `tag`/`content`/`untagged`
+//! are container attrs, so the field extractor rejects them; `flatten` is a
+//! field attr, so the container and variant extractors reject it. (An
+//! earlier revision listed `flatten` alongside the container attrs and
+//! consulted the list only at container level, where serde forbids
+//! `flatten` outright — so field-level `flatten` was silently ignored and
+//! emitted TS that disagreed with the wire.)
+//!
+//! The same care applies to the rename family, where serde overloads one
+//! spelling across two axes. On an enum, `rename_all` renames the
+//! *variants*; `rename_all_fields` renames the fields inside every struct
+//! variant; and `rename_all` on an individual *variant* renames that
+//! variant's fields. They are kept in three separate slots
+//! ([`ContainerAttrs::rename_all`], [`ContainerAttrs::rename_all_fields`],
+//! [`VariantAttrs::rename_all`]) precisely so the emitter cannot apply one
+//! where serde applies another.
 //!
 //! Parsing uses [`syn::Attribute::parse_nested_meta`] — the same primitive
 //! `serde_derive`'s own parser uses — so the exact syntax we accept matches
@@ -34,6 +44,12 @@ pub(crate) struct ContainerAttrs {
     /// container's TS name. Phase-1 emits structs/enums under their Rust
     /// ident; this field is parsed so future PRs can act on it.
     pub rename: Option<String>,
+    /// `#[serde(rename_all_fields = "...")]` (serde 1.0.181+). Enums only:
+    /// it renames the *fields of every struct variant*, which is a
+    /// different axis from [`Self::rename_all`] (which on an enum renames
+    /// the variants themselves). Kept separate so the emitter can't confuse
+    /// the two.
+    pub rename_all_fields: Option<RenameAll>,
 }
 
 /// Attributes on a struct field.
@@ -63,6 +79,11 @@ pub(crate) struct VariantAttrs {
     pub rename: Option<String>,
     /// `#[serde(skip)]`.
     pub skip: bool,
+    /// `#[serde(rename_all = "...")]` on the variant. Renames *this
+    /// variant's* struct fields — it does not touch the variant's own wire
+    /// name, which comes from the enum's `rename_all` and this variant's
+    /// `rename`. Overrides the container's `rename_all_fields`.
+    pub rename_all: Option<RenameAll>,
 }
 
 impl RenameAll {
@@ -185,6 +206,16 @@ pub(crate) fn extract_ontogen_attrs(
     Ok(out)
 }
 
+/// Parse a `rename_all`-family literal into a [`RenameAll`], naming the
+/// offending attribute in the error so `rename_all` and `rename_all_fields`
+/// are distinguishable in a build log.
+fn parse_rename_all(value: &str, attr_name: &str, referenced_by: &TypePath) -> Result<RenameAll, EmitError> {
+    RenameAll::from_serde_str(value).ok_or_else(|| EmitError::UnsupportedSerdeAttr {
+        type_path: referenced_by.clone(),
+        attr: format!("{attr_name} = \"{value}\" (not one of serde's eight recognized modes)"),
+    })
+}
+
 /// Extract container-level serde attributes (struct or enum).
 pub(crate) fn extract_container_attrs(
     attrs: &[syn::Attribute],
@@ -202,11 +233,11 @@ pub(crate) fn extract_container_attrs(
                     Ok(())
                 }
                 MetaKind::RenameAllLit(value) => {
-                    let mode = RenameAll::from_serde_str(&value).ok_or_else(|| EmitError::UnsupportedSerdeAttr {
-                        type_path: referenced_by.clone(),
-                        attr: format!("rename_all = \"{value}\" (not one of serde's eight recognized modes)"),
-                    })?;
-                    out.rename_all = Some(mode);
+                    out.rename_all = Some(parse_rename_all(&value, "rename_all", referenced_by)?);
+                    Ok(())
+                }
+                MetaKind::RenameAllFieldsLit(value) => {
+                    out.rename_all_fields = Some(parse_rename_all(&value, "rename_all_fields", referenced_by)?);
                     Ok(())
                 }
                 MetaKind::SplitRename | MetaKind::SplitRenameAll => Err(EmitError::UnsupportedSerdeAttr {
@@ -255,7 +286,10 @@ pub(crate) fn extract_field_attrs(attrs: &[syn::Attribute], referenced_by: &Type
                     out.rename = Some(value);
                     Ok(())
                 }
-                MetaKind::RenameAllLit(_) => Ok(()), // not meaningful on a field
+                // Neither is meaningful on a field: `rename_all` applies to a
+                // container's members, `rename_all_fields` to an enum's
+                // struct-variant fields.
+                MetaKind::RenameAllLit(_) | MetaKind::RenameAllFieldsLit(_) => Ok(()),
                 MetaKind::Skip => {
                     out.skip = true;
                     Ok(())
@@ -327,7 +361,18 @@ pub(crate) fn extract_variant_attrs(
                 type_path: referenced_by.clone(),
                 attr: "serde(flatten) is a field attribute — serde does not accept it on an enum variant".to_string(),
             }),
-            MetaKind::RenameAllLit(_) | MetaKind::SplitRenameAll | MetaKind::Default | MetaKind::Unknown => Ok(()),
+            // On a variant, `rename_all` governs THIS variant's struct
+            // fields — not the variant's own wire name. Capture it so the
+            // emitter can apply it where serde does.
+            MetaKind::RenameAllLit(value) => {
+                out.rename_all = Some(parse_rename_all(&value, "rename_all", referenced_by)?);
+                Ok(())
+            }
+            // `rename_all_fields` is an enum-container attr; serde doesn't
+            // accept it on a variant.
+            MetaKind::RenameAllFieldsLit(_) | MetaKind::SplitRenameAll | MetaKind::Default | MetaKind::Unknown => {
+                Ok(())
+            }
         })?;
     }
     Ok(out)
@@ -339,6 +384,8 @@ enum MetaKind {
     RenameLit(String),
     /// `rename_all = "camelCase"` — symmetric.
     RenameAllLit(String),
+    /// `rename_all_fields = "camelCase"` — symmetric. Enum containers only.
+    RenameAllFieldsLit(String),
     /// `rename(serialize = "...", deserialize = "...")` — rejected.
     SplitRename,
     /// `rename_all(serialize = "...", deserialize = "...")` — rejected.
@@ -406,11 +453,21 @@ where
                 }
                 Ok(())
             }
-            "rename_all" => {
+            // Same two shapes as `rename`, and both attrs share the
+            // split-form rejection — but they target different things, so
+            // they classify separately. `rename_all` renames a container's
+            // members; `rename_all_fields` renames the fields inside an
+            // enum's struct variants.
+            "rename_all" | "rename_all_fields" => {
+                let is_fields = ident == "rename_all_fields";
                 match meta.value() {
                     Ok(value) => {
                         let lit: syn::LitStr = value.parse().map_err(|_| meta.error("expected string literal"))?;
-                        callbacks.push(MetaKind::RenameAllLit(lit.value()));
+                        callbacks.push(if is_fields {
+                            MetaKind::RenameAllFieldsLit(lit.value())
+                        } else {
+                            MetaKind::RenameAllLit(lit.value())
+                        });
                     }
                     Err(_) => {
                         meta.parse_nested_meta(consume_inner_value)?;
@@ -753,6 +810,104 @@ mod tests {
         );
         // Parses without error; no field-level effect to assert here.
         extract_container_attrs(&attrs, &tp("Foo")).unwrap();
+    }
+
+    // ── rename_all vs rename_all_fields (issue #133) ──────────────────────
+
+    #[test]
+    fn container_rename_all_fields_is_its_own_axis() {
+        // Both attrs can appear together and must not overwrite each other:
+        // one renames the enum's variants, the other its struct-variant
+        // fields.
+        let attrs = enum_attrs(
+            r#"
+            #[serde(rename_all = "camelCase", rename_all_fields = "SCREAMING_SNAKE_CASE")]
+            enum Event { ToolCall { prompt_template: String } }
+            "#,
+        );
+        let out = extract_container_attrs(&attrs, &tp("Event")).unwrap();
+        assert_eq!(out.rename_all, Some(RenameAll::CamelCase));
+        assert_eq!(out.rename_all_fields, Some(RenameAll::ScreamingSnakeCase));
+    }
+
+    #[test]
+    fn container_rename_all_leaves_rename_all_fields_unset() {
+        let attrs = enum_attrs(
+            r#"
+            #[serde(rename_all = "camelCase")]
+            enum Event { ToolCall { prompt_template: String } }
+            "#,
+        );
+        let out = extract_container_attrs(&attrs, &tp("Event")).unwrap();
+        assert_eq!(out.rename_all, Some(RenameAll::CamelCase));
+        assert_eq!(out.rename_all_fields, None, "rename_all must not imply rename_all_fields");
+    }
+
+    #[test]
+    fn container_rename_all_fields_unknown_mode_names_the_right_attr() {
+        let attrs = enum_attrs(
+            r#"
+            #[serde(rename_all_fields = "Train-Case")]
+            enum Event { ToolCall { prompt_template: String } }
+            "#,
+        );
+        match extract_container_attrs(&attrs, &tp("Event")).unwrap_err() {
+            EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                assert!(attr.contains("rename_all_fields"), "attr was: {attr}");
+                assert!(attr.contains("Train-Case"), "attr was: {attr}");
+            }
+            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn variant_rename_all_is_captured() {
+        // On a variant, `rename_all` targets that variant's fields. It used
+        // to be dropped, so there was no way to express it.
+        let attrs = first_variant_attrs(
+            r#"
+            enum Event {
+                #[serde(rename_all = "camelCase")]
+                ToolCall { prompt_template: String },
+            }
+            "#,
+        );
+        let out = extract_variant_attrs(&attrs, &tp("Event")).unwrap();
+        assert_eq!(out.rename_all, Some(RenameAll::CamelCase));
+        assert!(out.rename.is_none(), "rename_all must not set the variant's own wire name");
+    }
+
+    #[test]
+    fn variant_rename_and_rename_all_are_independent() {
+        let attrs = first_variant_attrs(
+            r#"
+            enum Event {
+                #[serde(rename = "call", rename_all = "UPPERCASE")]
+                ToolCall { prompt_template: String },
+            }
+            "#,
+        );
+        let out = extract_variant_attrs(&attrs, &tp("Event")).unwrap();
+        assert_eq!(out.rename.as_deref(), Some("call"));
+        assert_eq!(out.rename_all, Some(RenameAll::Uppercase));
+    }
+
+    #[test]
+    fn field_rename_all_family_is_ignored() {
+        // Neither attr means anything on a field.
+        for src in ["rename_all = \"camelCase\"", "rename_all_fields = \"camelCase\""] {
+            let attrs = first_field_attrs(&format!(
+                r#"
+                struct Foo {{
+                    #[serde({src})]
+                    pub prompt_template: String,
+                }}
+                "#
+            ));
+            let out = extract_field_attrs(&attrs, &tp("Foo")).unwrap();
+            assert!(out.rename.is_none(), "src `{src}` should be inert on a field");
+            assert!(!out.skip);
+        }
     }
 
     // ── flatten: classified at the level where serde allows it ────────────
