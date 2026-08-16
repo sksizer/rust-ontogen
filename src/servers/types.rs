@@ -389,7 +389,58 @@ pub fn snake_to_camel(s: &str) -> String {
     result
 }
 
+/// Split a generic type string into its head and its top-level type
+/// arguments: `HashMap<String, Vec<u8>>` → `("HashMap", ["String", "Vec<u8>"])`.
+///
+/// Splitting on depth-0 commas rather than slicing at fixed offsets is what
+/// makes nested generics work at all, and it tolerates the spacing that
+/// token-stream rendering leaves behind (`Vec < T >`, `HashMap<String , i32>`)
+/// without depending on [`normalize_spaces`] having run first.
+///
+/// Returns `None` when `ty` isn't a generic application. Lifetime arguments
+/// are dropped, so `Cow<'a, str>` yields a single argument.
+fn split_generic(ty: &str) -> Option<(&str, Vec<&str>)> {
+    let open = ty.find('<')?;
+    if !ty.ends_with('>') {
+        return None;
+    }
+    let inner = &ty[open + 1..ty.len() - 1];
+    let mut args: Vec<&str> = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim());
+                start = i + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    args.push(inner[start..].trim());
+    args.retain(|a| !a.is_empty() && !a.starts_with('\''));
+    Some((ty[..open].trim(), args))
+}
+
+/// Wrap `rendered` in parentheses if it is a union, so a following `[]` or
+/// `| null` binds to the whole thing.
+///
+/// Without this, `Vec<Option<T>>` renders as `T | null[]`, which TypeScript
+/// parses as `T | (null[])` — the array-ness lands on the wrong operand.
+fn group_if_union(rendered: &str) -> String {
+    if rendered.contains(" | ") { format!("({rendered})") } else { rendered.to_string() }
+}
+
 /// Map a Rust return type to a TypeScript type string.
+///
+/// This is the string-matching emitter used for API signatures. The
+/// container renderings below are kept in step with
+/// `ontogen_ts::emit::match_container`, the AST-based emitter that handles
+/// the long-tail type closure — the two run over the same codebase and
+/// disagreeing on `Vec` / `Option` / map shapes puts contradictory types in
+/// one generated file.
 pub fn rust_type_to_ts(ty: &str) -> String {
     let ty = ty.trim();
     if ty == "()" {
@@ -407,14 +458,35 @@ pub fn rust_type_to_ts(ty: &str) -> String {
     if let Some(rest) = ty.strip_prefix('&') {
         return rust_type_to_ts(rest.trim());
     }
-    if ty.starts_with("Option<") && ty.ends_with('>') {
-        let inner = &ty[7..ty.len() - 1];
-        return format!("{} | null", rust_type_to_ts(inner));
+
+    if let Some((head, args)) = split_generic(ty) {
+        // Match on the terminal segment so `std::collections::HashMap<K, V>`
+        // classifies the same as a bare `HashMap<K, V>`.
+        let head_ident = head.rsplit("::").next().unwrap_or(head).trim();
+        match (head_ident, args.as_slice()) {
+            // Transparent to serde — the wrapper never reaches the wire.
+            ("Box" | "Rc" | "Arc" | "Cow" | "Pin", [inner]) => return rust_type_to_ts(inner),
+            ("Option", [inner]) => return format!("{} | null", group_if_union(&rust_type_to_ts(inner))),
+            // Sets share `Vec`'s wire shape: a JSON array.
+            ("Vec" | "VecDeque" | "HashSet" | "BTreeSet", [inner]) => {
+                return format!("{}[]", group_if_union(&rust_type_to_ts(inner)));
+            }
+            // Maps serialize as a JSON object. Emitting the Rust spelling
+            // verbatim produced `HashMap<String, Foo>` in TS type position,
+            // which is not a type this emitter ever declares.
+            ("HashMap" | "BTreeMap", [key, value]) => {
+                return format!("Record<{}, {}>", rust_type_to_ts(key), rust_type_to_ts(value));
+            }
+            // An unrecognized generic (`chrono::DateTime<Utc>`, a user
+            // wrapper): drop the arguments and render the head. This emitter
+            // has no generic support, and downstream every rendered name is
+            // used as a bare TS identifier — in an `import { … }` list or a
+            // `type X = …` placeholder — neither of which accepts generic
+            // syntax.
+            _ => return rust_type_to_ts(head),
+        }
     }
-    if ty.starts_with("Vec<") && ty.ends_with('>') {
-        let inner = &ty[4..ty.len() - 1];
-        return format!("{}[]", rust_type_to_ts(inner));
-    }
+
     // Entity-qualified types like `relation::Model` → `RelationModel`
     if ty.contains("::") {
         let parts: Vec<&str> = ty.split("::").collect();
@@ -426,17 +498,91 @@ pub fn rust_type_to_ts(ty: &str) -> String {
     ty.to_string()
 }
 
+/// TS type expressions that never need importing.
+const TS_BUILTINS: &[&str] = &["null", "void", "string", "number", "boolean", "bigint", "unknown", "any", "never"];
+
+/// True iff `s` is wrapped in one balanced pair of parentheses, i.e. the
+/// opening paren's partner is the final character. Distinguishes `(A | B)`
+/// (strippable) from `(A) | (B)` (not).
+fn is_single_group(s: &str) -> bool {
+    let mut depth = 0usize;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + ch.len_utf8() == s.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Split a TS union on its depth-0 ` | ` separators, so a union nested inside
+/// `Record<…>` or parentheses isn't split at the wrong level.
+fn split_union(ts_type: &str) -> Vec<&str> {
+    let bytes = ts_type.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, ch) in ts_type.char_indices() {
+        match ch {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 && i > 0 && bytes[i - 1] == b' ' => {
+                parts.push(ts_type[start..i - 1].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(ts_type[start..].trim());
+    parts
+}
+
 /// Collect TS type imports (skip primitives and null).
+///
+/// Peels the structural syntax the renderer can produce — array suffixes,
+/// grouping parens, unions, and `Record<K, V>` — so what lands in `imports`
+/// is always a bare identifier. Anything else would be spliced into an
+/// `import { … }` list verbatim and break the generated file.
 pub fn collect_ts_import(ts_type: &str, imports: &mut Vec<String>) {
-    if ts_type.contains(" | ") {
-        for part in ts_type.split(" | ") {
-            collect_ts_import(part.trim(), imports);
+    let mut base = ts_type.trim();
+    loop {
+        if let Some(stripped) = base.strip_suffix("[]") {
+            base = stripped.trim();
+            continue;
+        }
+        if base.starts_with('(') && base.ends_with(')') && is_single_group(base) {
+            base = base[1..base.len() - 1].trim();
+            continue;
+        }
+        break;
+    }
+
+    let parts = split_union(base);
+    if parts.len() > 1 {
+        for part in parts {
+            collect_ts_import(part, imports);
         }
         return;
     }
-    let base = ts_type.trim_end_matches("[]");
-    if base == "null" || base == "void" || base == "string" || base == "number" || base == "boolean" || base.is_empty()
+
+    // `Record<K, V>` is built in; it's the key and value types that need
+    // importing.
+    if let Some((head, args)) = split_generic(base)
+        && head == "Record"
     {
+        for arg in args {
+            collect_ts_import(arg, imports);
+        }
+        return;
+    }
+
+    if base.is_empty() || TS_BUILTINS.contains(&base) {
         return;
     }
     if !imports.contains(&base.to_string()) {
