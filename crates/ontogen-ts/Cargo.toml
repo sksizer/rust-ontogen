@@ -1,6 +1,6 @@
 [package]
 name = "ontogen-ts"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Rust AST → TypeScript emitter for ontogen's long-tail type bindings"
