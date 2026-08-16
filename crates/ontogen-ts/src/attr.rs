@@ -1,8 +1,9 @@
 //! Serde-attribute extraction on `syn::Attribute` lists.
 //!
 //! Phase-1 supports the rename family (`rename`, `rename_all`,
-//! `rename_all_fields`, `skip`) plus field-level `default` (which maps to a
-//! TS-optional `?`) and field-level
+//! `rename_all_fields`, `skip`) plus `default` at either scope (which maps
+//! to a TS-optional `?` — on a field for that field, on a struct for every
+//! field) and field-level
 //! `flatten` (which maps to a TS intersection member — see
 //! [`crate::emit::emit_struct_named`]), and rejects the remaining
 //! shape-changing attrs (`tag`, `content`, `untagged`) plus split-rename
@@ -50,6 +51,14 @@ pub(crate) struct ContainerAttrs {
     /// the variants themselves). Kept separate so the emitter can't confuse
     /// the two.
     pub rename_all_fields: Option<RenameAll>,
+    /// `#[serde(default)]` (or `default = "path::to::fn"`) on a struct. Any
+    /// field absent from the input is taken from the struct's `Default`, so
+    /// *every* field is optional on the wire and the emitter renders them
+    /// all as `field?: T`.
+    ///
+    /// Serde only accepts this on a struct with named fields; on an enum it
+    /// is a compile error, so [`crate::emit::emit_enum_named`] ignores it.
+    pub default: bool,
 }
 
 /// Attributes on a struct field.
@@ -262,10 +271,14 @@ pub(crate) fn extract_container_attrs(
                         .to_string(),
                 }),
                 MetaKind::Skip => Ok(()), // ignore at container level
-                // Container-level `#[serde(default)]` is out of scope (it would
-                // make every field optional); only field-level default maps to
-                // a TS `?`. Ignore here.
-                MetaKind::Default => Ok(()),
+                // Container-level `#[serde(default)]` fills every absent field
+                // from the struct's `Default`, so the whole body is optional
+                // on the wire. Record it; `emit_struct_named` marks each field
+                // TS-optional.
+                MetaKind::Default => {
+                    out.default = true;
+                    Ok(())
+                }
                 MetaKind::Unknown => Ok(()),
             }
         })?;
@@ -799,17 +812,41 @@ mod tests {
     }
 
     #[test]
-    fn container_default_is_ignored() {
-        // Container-level `#[serde(default)]` is out of scope — it doesn't make
-        // every field individually optional in our emission.
+    fn container_default_sets_flag() {
+        // Container-level `#[serde(default)]` fills every absent field from
+        // the struct's `Default`, so the emitter needs to know about it —
+        // it used to be dropped here, and the whole body silently emitted as
+        // required.
         let attrs = struct_attrs(
             r#"
             #[serde(default)]
             struct Foo { a: u32 }
             "#,
         );
-        // Parses without error; no field-level effect to assert here.
-        extract_container_attrs(&attrs, &tp("Foo")).unwrap();
+        assert!(extract_container_attrs(&attrs, &tp("Foo")).unwrap().default);
+    }
+
+    #[test]
+    fn container_default_path_form_sets_flag() {
+        // `#[serde(default = "path")]` on a struct means the same thing.
+        let attrs = struct_attrs(
+            r#"
+            #[serde(default = "defaults::foo")]
+            struct Foo { a: u32 }
+            "#,
+        );
+        assert!(extract_container_attrs(&attrs, &tp("Foo")).unwrap().default);
+    }
+
+    #[test]
+    fn container_without_default_leaves_flag_unset() {
+        let attrs = struct_attrs(
+            r#"
+            #[serde(rename_all = "camelCase")]
+            struct Foo { a: u32 }
+            "#,
+        );
+        assert!(!extract_container_attrs(&attrs, &tp("Foo")).unwrap().default);
     }
 
     // ── rename_all vs rename_all_fields (issue #133) ──────────────────────
