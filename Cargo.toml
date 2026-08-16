@@ -12,7 +12,7 @@ resolver = "3"
 
 [package]
 name = "ontogen"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 rust-version = "1.85"
 description = "Build-time code generator for ontology-driven applications: schema → persistence → store → API → servers → clients"
@@ -40,7 +40,7 @@ exclude = [
 [dependencies]
 ontogen-core = { path = "crates/ontogen-core", version = "=0.4.0" }
 ontogen-macros = { path = "crates/ontogen-macros", version = "=0.1.1" }
-ontogen-ts = { path = "crates/ontogen-ts", version = "=0.1.1" }
+ontogen-ts = { path = "crates/ontogen-ts", version = "=0.1.2" }
 cruet = "1.0"
 syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
 quote = "1"
