@@ -534,6 +534,139 @@ fn test_rust_type_to_ts() {
 }
 
 #[test]
+fn rust_type_to_ts_parenthesizes_unions_before_postfix() {
+    // `T | null[]` parses as `T | (null[])` — the array-ness binds to the
+    // wrong operand, so the emitted type claimed "a T, or an array of null".
+    assert_eq!(rust_type_to_ts("Vec<Option<String>>"), "(string | null)[]");
+    assert_eq!(rust_type_to_ts("Vec<Option<Node>>"), "(Node | null)[]");
+    // Same hazard one level up: `| null` must apply to the whole inner union.
+    assert_eq!(rust_type_to_ts("Option<Option<i32>>"), "(number | null) | null");
+    // A non-union element needs no parens.
+    assert_eq!(rust_type_to_ts("Vec<Vec<String>>"), "string[][]");
+}
+
+#[test]
+fn rust_type_to_ts_renders_maps_as_record() {
+    // The Rust spelling was returned verbatim, putting `HashMap<String, Foo>`
+    // in TS type position — a type this emitter never declares.
+    assert_eq!(rust_type_to_ts("HashMap<String, i32>"), "Record<string, number>");
+    assert_eq!(rust_type_to_ts("BTreeMap<String, Node>"), "Record<string, Node>");
+    assert_eq!(rust_type_to_ts("std::collections::HashMap<String, bool>"), "Record<string, boolean>");
+    // Nested generics survive the depth-aware argument split.
+    assert_eq!(rust_type_to_ts("HashMap<String, Vec<Node>>"), "Record<string, Node[]>");
+}
+
+#[test]
+fn rust_type_to_ts_handles_sets_and_smart_pointers() {
+    // Sets share Vec's wire shape.
+    assert_eq!(rust_type_to_ts("HashSet<String>"), "string[]");
+    assert_eq!(rust_type_to_ts("BTreeSet<Node>"), "Node[]");
+    // Smart pointers are transparent to serde.
+    assert_eq!(rust_type_to_ts("Box<Node>"), "Node");
+    assert_eq!(rust_type_to_ts("Arc<Vec<String>>"), "string[]");
+    assert_eq!(rust_type_to_ts("Cow<'a, str>"), "string");
+}
+
+#[test]
+fn rust_type_to_ts_strips_args_from_unrecognized_generics() {
+    // Every rendered name is used downstream as a bare TS identifier — in an
+    // `import { … }` list or a `type X = …` placeholder. Neither accepts
+    // generic syntax, so `DateTime<Utc>` must not survive as a name.
+    assert_eq!(rust_type_to_ts("chrono::DateTime<Utc>"), "DateTime");
+    assert_eq!(rust_type_to_ts("MyWrapper<Node>"), "MyWrapper");
+    assert_eq!(rust_type_to_ts("relation::Model<T>"), "RelationModel");
+}
+
+#[test]
+fn rust_type_to_ts_tolerates_token_stream_spacing() {
+    // Types can arrive rendered from a token stream, with spaces around the
+    // angle brackets and commas. The old fixed-offset slicing missed these
+    // entirely and fell through to the verbatim branch.
+    assert_eq!(rust_type_to_ts("Vec < String >"), "string[]");
+    assert_eq!(rust_type_to_ts("HashMap < String , i32 >"), "Record<string, number>");
+    assert_eq!(rust_type_to_ts("Option < Node >"), "Node | null");
+}
+
+/// Render `rust_ty` through the AST-based emitter by putting it in a struct
+/// field and pulling the field's rendered type back out.
+fn via_ontogen_ts(rust_ty: &str) -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("lib.rs"), format!("pub struct Probe {{ pub field: {rust_ty} }}"))
+        .expect("write probe");
+    let pool = ontogen_ts::scan_src_dir(dir.path()).expect("scan");
+    let root = ontogen_ts::TypePath::new(vec!["Probe".to_string()]).expect("non-empty");
+    let ts = ontogen_ts::emit(&[root], &pool, &ontogen_ts::EmitConfig::default())
+        .unwrap_or_else(|errs| panic!("ontogen-ts emit failed for `{rust_ty}`: {errs:?}"));
+    ts.lines()
+        .find_map(|line| line.trim().strip_prefix("field: "))
+        .map(|t| t.trim_end_matches(';').to_string())
+        .unwrap_or_else(|| panic!("no `field:` line for `{rust_ty}` in:\n{ts}"))
+}
+
+#[test]
+fn the_two_ts_emitters_agree_on_shared_shapes() {
+    // ontogen ships two TypeScript emitters over the same codebase:
+    // `rust_type_to_ts` (string matching, for API signatures) and ontogen-ts
+    // (real AST, for the long-tail closure). Their output lands in the same
+    // generated file, so a disagreement puts contradictory types in front of
+    // one caller. Pin the overlap.
+    //
+    // Deliberately excluded, because the two are meant to differ there:
+    //   - `chrono::DateTime<Utc>` — ontogen-ts has an external-types table
+    //     that maps it to `string`; this emitter has no such table.
+    //   - `relation::Model` — an ontogen entity-naming convention that only
+    //     the signature emitter knows about.
+    let shared = [
+        "String",
+        "bool",
+        "i32",
+        "u64",
+        "Vec<String>",
+        "Vec<Node>",
+        "Option<String>",
+        "Option<Node>",
+        "Vec<Option<String>>",
+        "Option<Option<i32>>",
+        "Vec<Vec<String>>",
+        "HashMap<String, i32>",
+        "BTreeMap<String, Node>",
+        "HashMap<String, Vec<Node>>",
+        "HashSet<String>",
+        "BTreeSet<Node>",
+        "Box<Node>",
+        "Arc<Vec<String>>",
+    ];
+    for rust_ty in shared {
+        assert_eq!(rust_type_to_ts(rust_ty), via_ontogen_ts(rust_ty), "emitters disagree on `{rust_ty}`");
+    }
+}
+
+#[test]
+fn collect_ts_import_unwraps_structural_syntax() {
+    // Whatever `rust_type_to_ts` renders has to reduce to bare identifiers
+    // here, or it gets spliced into an `import { … }` list verbatim.
+    let mut imports = Vec::new();
+    collect_ts_import("(Node | null)[]", &mut imports);
+    assert_eq!(imports, vec!["Node"]);
+
+    let mut imports = Vec::new();
+    collect_ts_import("Record<string, Node>", &mut imports);
+    assert_eq!(imports, vec!["Node"], "Record itself is built in; its value type is not");
+
+    let mut imports = Vec::new();
+    collect_ts_import("Record<string, unknown>", &mut imports);
+    assert!(imports.is_empty(), "no importable name in {imports:?}");
+
+    let mut imports = Vec::new();
+    collect_ts_import("(number | null) | null", &mut imports);
+    assert!(imports.is_empty(), "no importable name in {imports:?}");
+
+    let mut imports = Vec::new();
+    collect_ts_import("Record<string, Node[]>", &mut imports);
+    assert_eq!(imports, vec!["Node"]);
+}
+
+#[test]
 fn test_collect_ts_import() {
     let mut imports = Vec::new();
     collect_ts_import("Node", &mut imports);
