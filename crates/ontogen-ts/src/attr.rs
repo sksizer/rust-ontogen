@@ -1,12 +1,23 @@
 //! Serde-attribute extraction on `syn::Attribute` lists.
 //!
 //! Phase-1 supports the rename family (`rename`, `rename_all`, `skip`) plus
-//! field-level `default` (which maps to a TS-optional `?`), and rejects
-//! shape-changing attrs (`tag`, `content`, `untagged`, `flatten`) plus
-//! split-rename (`rename(serialize = "...", deserialize = "...")`) with an
+//! field-level `default` (which maps to a TS-optional `?`) and field-level
+//! `flatten` (which maps to a TS intersection member — see
+//! [`crate::emit::emit_struct_named`]), and rejects the remaining
+//! shape-changing attrs (`tag`, `content`, `untagged`) plus split-rename
+//! (`rename(serialize = "...", deserialize = "...")`) with an
 //! [`EmitError::UnsupportedSerdeAttr`] carrying a hint at the symmetric form
 //! or `#[ontogen::ts_opaque]`. Other serde attrs that don't change TS shape
 //! (`borrow`, `bound`, `with`, `serialize_with`, etc.) are silently ignored.
+//!
+//! Each extractor rejects a shape attr at the level where that attr can
+//! legally appear, not merely where serde's own parser would already have
+//! refused it. `tag`/`content`/`untagged` are container attrs, so the field
+//! extractor rejects them; `flatten` is a field attr, so the container and
+//! variant extractors reject it. (An earlier revision listed `flatten`
+//! alongside the container attrs and consulted the list only at container
+//! level, where serde forbids `flatten` outright — so field-level `flatten`
+//! was silently ignored and emitted TS that disagreed with the wire.)
 //!
 //! Parsing uses [`syn::Attribute::parse_nested_meta`] — the same primitive
 //! `serde_derive`'s own parser uses — so the exact syntax we accept matches
@@ -39,6 +50,10 @@ pub(crate) struct FieldAttrs {
     /// wire contract treats the field as optional — the emitter renders it as
     /// a TS-optional `field?: T`.
     pub default: bool,
+    /// `#[serde(flatten)]`. The field's own name never reaches the wire —
+    /// its type's keys are spliced into the parent object — so the emitter
+    /// renders it as a TS intersection member rather than a property.
+    pub flatten: bool,
 }
 
 /// Attributes on an enum variant.
@@ -69,10 +84,20 @@ impl RenameAll {
     }
 }
 
-/// Phase-1 attrs that ontogen-ts rejects outright as "shape-changing serde
-/// attributes" — these alter the JSON wire shape in ways that need a
-/// dedicated emission path (phase 2 / OF-015 phase 2).
-const REJECTED_SHAPE_ATTRS: &[&str] = &["tag", "content", "untagged", "flatten"];
+/// Container-level serde attrs that ontogen-ts rejects outright as
+/// "shape-changing serde attributes" — these alter the JSON wire shape in
+/// ways that need a dedicated emission path (phase 2 / OF-015 phase 2).
+///
+/// `flatten` is deliberately NOT in this list: it is a *field* attribute
+/// with its own [`MetaKind::Flatten`] classification and a real emission
+/// path (a TS intersection member). Anything listed here is rejected at
+/// every level — all three are container attrs, so an occurrence on a field
+/// or variant is a malformed input serde itself would refuse.
+const REJECTED_SHAPE_ATTRS: &[&str] = &["tag", "content", "untagged"];
+
+/// Shared tail for the "shape-changing container attr" rejection message.
+const REJECTED_SHAPE_HINT: &str = "shape-changing attrs (tag/content/untagged) are phase 2 work; use \
+                                   #[ontogen::ts_opaque(target = \"...\")] if a custom TS rendering is needed";
 
 /// Ontogen-specific attributes on a type definition. Both attrs are
 /// no-ops at Rust compile time (the proc-macro implementations in
@@ -194,10 +219,16 @@ pub(crate) fn extract_container_attrs(
                 }),
                 MetaKind::RejectedShape(name) => Err(EmitError::UnsupportedSerdeAttr {
                     type_path: referenced_by.clone(),
-                    attr: format!(
-                        "serde({name}) — shape-changing attrs (tag/content/untagged/flatten) are phase 2 work; \
-                         use #[ontogen::ts_opaque(target = \"...\")] if a custom TS rendering is needed"
-                    ),
+                    attr: format!("serde({name}) — {REJECTED_SHAPE_HINT}"),
+                }),
+                // serde only accepts `flatten` on a field. Seeing it here
+                // means the source wouldn't compile; say so rather than
+                // ignoring it.
+                MetaKind::Flatten => Err(EmitError::UnsupportedSerdeAttr {
+                    type_path: referenced_by.clone(),
+                    attr: "serde(flatten) is a field attribute — serde does not accept it on a struct or enum \
+                           declaration"
+                        .to_string(),
                 }),
                 MetaKind::Skip => Ok(()), // ignore at container level
                 // Container-level `#[serde(default)]` is out of scope (it would
@@ -233,6 +264,10 @@ pub(crate) fn extract_field_attrs(attrs: &[syn::Attribute], referenced_by: &Type
                     out.default = true;
                     Ok(())
                 }
+                MetaKind::Flatten => {
+                    out.flatten = true;
+                    Ok(())
+                }
                 MetaKind::SplitRename => Err(EmitError::UnsupportedSerdeAttr {
                     type_path: referenced_by.clone(),
                     attr: "split-rename (rename(serialize = \"...\", deserialize = \"...\")) on a field is not \
@@ -240,7 +275,14 @@ pub(crate) fn extract_field_attrs(attrs: &[syn::Attribute], referenced_by: &Type
                            #[ontogen::ts_opaque(target = \"...\")] on the parent type"
                         .to_string(),
                 }),
-                MetaKind::SplitRenameAll | MetaKind::RejectedShape(_) | MetaKind::Unknown => Ok(()),
+                // tag/content/untagged are container attrs; serde rejects
+                // them on a field, so reaching this arm means the input is
+                // malformed. Surface it rather than swallowing it.
+                MetaKind::RejectedShape(name) => Err(EmitError::UnsupportedSerdeAttr {
+                    type_path: referenced_by.clone(),
+                    attr: format!("serde({name}) on a field — {REJECTED_SHAPE_HINT}"),
+                }),
+                MetaKind::SplitRenameAll | MetaKind::Unknown => Ok(()),
             }
         })?;
     }
@@ -272,11 +314,20 @@ pub(crate) fn extract_variant_attrs(
                            #[serde(rename = \"...\")]"
                     .to_string(),
             }),
-            MetaKind::RenameAllLit(_)
-            | MetaKind::SplitRenameAll
-            | MetaKind::RejectedShape(_)
-            | MetaKind::Default
-            | MetaKind::Unknown => Ok(()),
+            // `#[serde(untagged)]` is legal on an individual variant (serde
+            // 1.0.181+) and changes that variant's wire shape; `tag`/`content`
+            // are container-only. Either way we have no faithful rendering,
+            // so reject rather than emit the externally-tagged default.
+            MetaKind::RejectedShape(name) => Err(EmitError::UnsupportedSerdeAttr {
+                type_path: referenced_by.clone(),
+                attr: format!("serde({name}) on a variant — {REJECTED_SHAPE_HINT}"),
+            }),
+            // serde only accepts `flatten` on a field.
+            MetaKind::Flatten => Err(EmitError::UnsupportedSerdeAttr {
+                type_path: referenced_by.clone(),
+                attr: "serde(flatten) is a field attribute — serde does not accept it on an enum variant".to_string(),
+            }),
+            MetaKind::RenameAllLit(_) | MetaKind::SplitRenameAll | MetaKind::Default | MetaKind::Unknown => Ok(()),
         })?;
     }
     Ok(out)
@@ -292,8 +343,11 @@ enum MetaKind {
     SplitRename,
     /// `rename_all(serialize = "...", deserialize = "...")` — rejected.
     SplitRenameAll,
-    /// `tag`, `content`, `untagged`, `flatten` — rejected.
+    /// `tag`, `content`, `untagged` — rejected at every level.
     RejectedShape(String),
+    /// `flatten` — supported on a field (TS intersection member), rejected
+    /// on a container or variant where serde itself wouldn't accept it.
+    Flatten,
     /// `skip`, `skip_serializing`, `skip_deserializing` — fold all three.
     Skip,
     /// `default` or `default = "path::to::fn"` — field is optional on the wire.
@@ -378,6 +432,15 @@ where
                     let _: syn::LitStr = value.parse().map_err(|_| meta.error("expected string literal"))?;
                 }
                 callbacks.push(MetaKind::Default);
+                Ok(())
+            }
+            "flatten" => {
+                // Serde's `flatten` is a bare word; be tolerant of a value
+                // anyway so a malformed attr doesn't desync the parser.
+                if let Ok(value) = meta.value() {
+                    let _: syn::Lit = value.parse().map_err(|_| meta.error("expected literal"))?;
+                }
+                callbacks.push(MetaKind::Flatten);
                 Ok(())
             }
             other if REJECTED_SHAPE_ATTRS.contains(&other) => {
@@ -690,6 +753,134 @@ mod tests {
         );
         // Parses without error; no field-level effect to assert here.
         extract_container_attrs(&attrs, &tp("Foo")).unwrap();
+    }
+
+    // ── flatten: classified at the level where serde allows it ────────────
+
+    #[test]
+    fn field_flatten_sets_flag() {
+        // Issue #132: `flatten` is a field attribute, so the field extractor
+        // is the only place it can legally show up — and it must not be
+        // swallowed there.
+        let attrs = first_field_attrs(
+            r#"
+            struct Step {
+                #[serde(flatten)]
+                pub meta: StepMeta,
+            }
+            "#,
+        );
+        let out = extract_field_attrs(&attrs, &tp("Step")).unwrap();
+        assert!(out.flatten, "#[serde(flatten)] should set the flatten flag");
+        assert!(out.rename.is_none());
+        assert!(!out.skip);
+        assert!(!out.default);
+    }
+
+    #[test]
+    fn field_flatten_composes_with_default() {
+        // Both flags are parsed; the emitter is what rejects the pairing.
+        let attrs = first_field_attrs(
+            r#"
+            struct Step {
+                #[serde(flatten, default)]
+                pub meta: StepMeta,
+            }
+            "#,
+        );
+        let out = extract_field_attrs(&attrs, &tp("Step")).unwrap();
+        assert!(out.flatten);
+        assert!(out.default);
+    }
+
+    #[test]
+    fn field_without_flatten_leaves_flag_unset() {
+        let attrs = first_field_attrs(
+            r#"
+            struct Step {
+                pub meta: StepMeta,
+            }
+            "#,
+        );
+        assert!(!extract_field_attrs(&attrs, &tp("Step")).unwrap().flatten);
+    }
+
+    #[test]
+    fn container_flatten_rejected() {
+        // Serde doesn't accept `flatten` on a container at all, so say that
+        // rather than silently ignoring it.
+        let attrs = struct_attrs(
+            r#"
+            #[serde(flatten)]
+            struct Foo { a: u32 }
+            "#,
+        );
+        let err = extract_container_attrs(&attrs, &tp("Foo")).unwrap_err();
+        match err {
+            EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                assert!(attr.contains("field attribute"), "attr was: {attr}");
+            }
+            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn variant_flatten_rejected() {
+        let attrs = first_variant_attrs(
+            r#"
+            enum E {
+                #[serde(flatten)]
+                A,
+            }
+            "#,
+        );
+        let err = extract_variant_attrs(&attrs, &tp("E")).unwrap_err();
+        assert!(matches!(err, EmitError::UnsupportedSerdeAttr { .. }));
+    }
+
+    #[test]
+    fn field_level_container_shape_attrs_rejected() {
+        // tag/content/untagged are container attrs. Reaching the field
+        // extractor means the input is malformed; don't swallow it.
+        for src in ["tag = \"type\"", "content = \"c\"", "untagged"] {
+            let attrs = first_field_attrs(&format!(
+                r#"
+                struct Foo {{
+                    #[serde({src})]
+                    pub a: u32,
+                }}
+                "#
+            ));
+            let err = extract_field_attrs(&attrs, &tp("Foo")).unwrap_err();
+            match err {
+                EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                    assert!(attr.contains("on a field"), "src `{src}` — attr was: {attr}");
+                }
+                other => panic!("expected UnsupportedSerdeAttr for `{src}`, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn variant_level_untagged_rejected() {
+        // Variant-level `#[serde(untagged)]` is legal serde (1.0.181+) and
+        // changes that variant's wire shape, so the externally-tagged
+        // default we'd otherwise emit would be wrong.
+        let attrs = first_variant_attrs(
+            r#"
+            enum U {
+                #[serde(untagged)]
+                Other(String),
+            }
+            "#,
+        );
+        let err = extract_variant_attrs(&attrs, &tp("U")).unwrap_err();
+        match err {
+            EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                assert!(attr.contains("on a variant"), "attr was: {attr}");
+            }
+            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+        }
     }
 
     // ── Variant: rename ───────────────────────────────────────────────────

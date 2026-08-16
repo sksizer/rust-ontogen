@@ -18,6 +18,8 @@
 //! - Smart-pointer wrappers (`Box`, `Rc`, `Arc`, `Cow`, `Pin`) peeled
 //!   silently
 //! - External types via [`EmitConfig::external_types`]
+//! - `#[serde(flatten)]` on a struct field (or an enum struct-variant
+//!   field), emitted as a TS intersection: `StepMeta & { program: string }`
 //!
 //! See `docs/tasks/OF-015-productionize-typescript-generation.md` for the
 //! full design pass.
