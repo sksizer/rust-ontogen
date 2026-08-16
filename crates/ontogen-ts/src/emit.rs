@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use syn::{
     Fields, GenericArgument, ItemEnum, ItemStruct, PathArguments, Type, TypeArray, TypePath as SynTypePath,
-    TypeReference, TypeSlice,
+    TypeReference, TypeSlice, TypeTuple,
 };
 
 use crate::attr::{
@@ -185,6 +185,50 @@ fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     }
 }
 
+/// Diagnostic stand-in for the "type whose field we're rendering" when a type
+/// is rendered on its own, outside any declaration. See [`render_type`].
+const STANDALONE: &str = "<standalone type>";
+
+/// Synthetic [`TypePath`] used as `referenced_by` for standalone renders.
+fn standalone_path() -> TypePath {
+    TypePath::new(vec![STANDALONE.to_string()]).expect("non-empty")
+}
+
+/// Render one Rust type as TypeScript, with no type pool and no surrounding
+/// declaration.
+///
+/// This is the same classifier [`emit`] uses for struct fields and enum
+/// payloads — smart-pointer peeling, container generics, primitives, and the
+/// external-types table — exposed for callers that hold a single type rather
+/// than a pool of declarations. User-defined types render as their terminal
+/// ident, exactly as they do inside a declaration; resolving that ident to a
+/// definition is the caller's business.
+///
+/// ontogen's API-signature emitter (`rust_type_to_ts`) delegates here, which
+/// is what keeps the two TypeScript emitters from disagreeing on a shape they
+/// both have to render into the same generated file.
+pub fn render_type(ty: &Type, config: &EmitConfig) -> Result<String, EmitError> {
+    emit_type(ty, config, &standalone_path())
+}
+
+/// Parse `rust_ty` as a Rust type expression and render it via
+/// [`render_type`].
+///
+/// For callers whose type arrived as text — a rendered token stream, a
+/// signature scraped from source — rather than as a `syn::Type`. Spacing is
+/// whatever `syn` tolerates, so token-stream renderings like `Vec < String >`
+/// parse fine.
+///
+/// Returns [`EmitError::UnsupportedShape`] if the text doesn't parse as a
+/// type.
+pub fn render_type_str(rust_ty: &str, config: &EmitConfig) -> Result<String, EmitError> {
+    let parsed: Type = syn::parse_str(rust_ty).map_err(|err| EmitError::UnsupportedShape {
+        type_path: standalone_path(),
+        reason: format!("`{rust_ty}` does not parse as a Rust type expression: {err}"),
+    })?;
+    render_type(&parsed, config)
+}
+
 /// Render a `syn::Type` as its TypeScript equivalent.
 ///
 /// Classification order (matches the OF-015 design pass):
@@ -240,6 +284,21 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
     if let Type::Slice(TypeSlice { elem, .. }) = ty {
         let inner = emit_type(elem, config, referenced_by)?;
         return Ok(format!("{inner}[]"));
+    }
+
+    // The unit type is `null` on the wire — serde serializes `()` as JSON
+    // `null`. It reaches here from handler signatures that return nothing.
+    // Non-empty tuples stay unsupported: they serialize as JSON arrays, but
+    // TS tuple syntax needs an element-by-element rendering that phase 1's
+    // field-name-driven model has no place for.
+    if let Type::Tuple(TypeTuple { elems, .. }) = ty {
+        if elems.is_empty() {
+            return Ok("null".to_string());
+        }
+        return Err(EmitError::UnsupportedShape {
+            type_path: referenced_by.clone(),
+            reason: format!("tuple type `{}` is not supported; use a named struct", quote::quote!(#ty)),
+        });
     }
 
     // Everything else lives on a `syn::TypePath`.
@@ -902,7 +961,10 @@ fn match_container(path: &SynTypePath) -> Option<Container<'_>> {
 
     match (name.as_str(), type_args.as_slice()) {
         ("Option", [inner]) => Some(Container::Option(inner)),
-        ("Vec", [inner]) => Some(Container::Vec(inner)),
+        // `VecDeque` shares `Vec`'s wire shape — serde serializes it as a
+        // JSON array. Without it here the type fell through to the terminal
+        // ident and emitted a bare `VecDeque`, which is not a TS type.
+        ("Vec" | "VecDeque", [inner]) => Some(Container::Vec(inner)),
         ("HashMap" | "BTreeMap", [k, v]) => Some(Container::Map(k, v)),
         ("HashSet" | "BTreeSet", [inner]) => Some(Container::Set(inner)),
         _ => None,
@@ -1119,6 +1181,35 @@ mod tests {
     }
 
     #[test]
+    fn container_vecdeque_renders_as_array() {
+        // `VecDeque` serializes as a JSON array like `Vec`, but was missing
+        // from the container table, so it fell through to the terminal ident
+        // and emitted a bare `VecDeque` — not a TS type.
+        assert_eq!(emit("VecDeque<u32>"), "number[]");
+        assert_eq!(emit("VecDeque<Option<String>>"), "(string | null)[]");
+    }
+
+    #[test]
+    fn unit_type_renders_as_null() {
+        // serde serializes `()` as JSON `null`.
+        assert_eq!(emit("()"), "null");
+        // Degenerate but well-defined: TS collapses the duplicate itself.
+        assert_eq!(emit("Option<()>"), "null | null");
+    }
+
+    #[test]
+    fn non_empty_tuple_is_rejected() {
+        // A JSON array with positional meaning has no field names to hang a
+        // TS object shape on; a named struct is the supported spelling.
+        match emit_err("(String, u32)") {
+            EmitError::UnsupportedShape { reason, .. } => {
+                assert!(reason.contains("tuple"), "reason was: {reason}");
+            }
+            other => panic!("expected UnsupportedShape, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn container_hashmap_renders_as_record() {
         assert_eq!(emit("HashMap<String, u32>"), "Record<string, number>");
         assert_eq!(emit("BTreeMap<String, bool>"), "Record<string, boolean>");
@@ -1252,6 +1343,60 @@ mod tests {
     fn multi_segment_path_collapses_to_terminal_for_now() {
         // PR 3's canonicalization will replace this with a real lookup.
         assert_eq!(emit("crate::models::Workout"), "Workout");
+    }
+
+    // ── Standalone rendering (`render_type` / `render_type_str`) ───────
+
+    #[test]
+    fn render_type_str_matches_the_in_declaration_renderer() {
+        // `render_type_str` is the entry point ontogen's API-signature
+        // emitter delegates to. It has to agree with what the same type
+        // renders as inside a struct field, or the two halves of one
+        // generated file disagree — which is the whole reason it exists.
+        let config = EmitConfig::default();
+        for src in [
+            "String",
+            "u8",
+            "Vec<Option<String>>",
+            "HashMap<String, Vec<Node>>",
+            "Cow<'a, str>",
+            "chrono::DateTime<Utc>",
+            "serde_json::Value",
+            "()",
+        ] {
+            let standalone = render_type_str(src, &config).unwrap_or_else(|err| panic!("`{src}` failed: {err:?}"));
+            assert_eq!(standalone, emit(src), "standalone render of `{src}` diverged");
+        }
+    }
+
+    #[test]
+    fn render_type_str_tolerates_token_stream_spacing() {
+        // Callers hand it text rendered from a token stream, which carries
+        // spaces the source spelling never had.
+        let config = EmitConfig::default();
+        assert_eq!(render_type_str("Vec < String >", &config).expect("renders"), "string[]");
+        assert_eq!(render_type_str("HashMap < String , i32 >", &config).expect("renders"), "Record<string, number>");
+    }
+
+    #[test]
+    fn render_type_str_rejects_text_that_is_not_a_type() {
+        let config = EmitConfig::default();
+        match render_type_str("not a type!", &config) {
+            Err(EmitError::UnsupportedShape { reason, .. }) => {
+                assert!(reason.contains("does not parse"), "reason was: {reason}");
+            }
+            other => panic!("expected a parse failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_type_honors_config() {
+        // The config reaches the standalone path too — otherwise a consumer
+        // setting `bigint_behavior` would get it applied to the long-tail
+        // types and silently not to the signatures.
+        let config = EmitConfig { bigint_behavior: BigIntBehavior::BigInt, ..EmitConfig::default() };
+        assert_eq!(render_type_str("u64", &config).expect("renders"), "bigint");
+        assert_eq!(render_type_str("u64", &EmitConfig::default()).expect("renders"), "number");
     }
 
     // ── Struct emission ────────────────────────────────────────────────
