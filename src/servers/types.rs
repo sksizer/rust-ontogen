@@ -424,78 +424,89 @@ fn split_generic(ty: &str) -> Option<(&str, Vec<&str>)> {
     Some((ty[..open].trim(), args))
 }
 
-/// Wrap `rendered` in parentheses if it is a union, so a following `[]` or
-/// `| null` binds to the whole thing.
+/// The `EmitConfig` API signatures are rendered under.
 ///
-/// Without this, `Vec<Option<T>>` renders as `T | null[]`, which TypeScript
-/// parses as `T | (null[])` — the array-ness lands on the wrong operand.
-fn group_if_union(rendered: &str) -> String {
-    if rendered.contains(" | ") { format!("({rendered})") } else { rendered.to_string() }
+/// Deliberately the same value `src/clients/mod.rs` passes to
+/// `ontogen_ts::emit` for the long-tail closure. The two halves write into
+/// one generated file, so rendering them under different configs would put
+/// `bigint` in one half and `number` in the other for the same Rust type.
+/// When that config becomes consumer-settable, this is the second place it
+/// has to reach.
+fn signature_emit_config() -> ontogen_ts::EmitConfig {
+    ontogen_ts::EmitConfig::default()
 }
 
-/// Map a Rust return type to a TypeScript type string.
+/// Map a Rust type to a TypeScript type string, for API signatures.
 ///
-/// This is the string-matching emitter used for API signatures. The
-/// container renderings below are kept in step with
-/// `ontogen_ts::emit::match_container`, the AST-based emitter that handles
-/// the long-tail type closure — the two run over the same codebase and
-/// disagreeing on `Vec` / `Option` / map shapes puts contradictory types in
-/// one generated file.
+/// The rendering itself is `ontogen_ts::render_type_str` — the same
+/// classifier that emits the long-tail type closure. ontogen used to carry a
+/// second, string-matching type model here and keep it "in step" with
+/// ontogen-ts by hand; it drifted, and since both halves write into one
+/// generated file the drift showed up as contradictory types in front of a
+/// single caller. Delegating makes agreement structural instead of
+/// aspirational.
+///
+/// Two things stay local to this function, because neither is something
+/// ontogen-ts could know:
+///
+/// - **The entity-relation convention** (`relation::Model` → `RelationModel`)
+///   is an ontogen schema-path concept.
+/// - **The error policy.** ontogen-ts is hard-error-only; this path is
+///   lenient by design — an unrenderable signature type degrades to a bare
+///   ident (and downstream to a `Record<string, unknown>` stub plus a
+///   `cargo:warning`) rather than failing the build. See [`opaque_fallback`].
 pub fn rust_type_to_ts(ty: &str) -> String {
     let ty = ty.trim();
-    if ty == "()" {
-        return "null".to_string();
-    }
-    if ty == "String" || ty == "&str" || ty == "str" {
-        return "string".to_string();
-    }
-    if ty == "i32" || ty == "i64" || ty == "u32" || ty == "u64" || ty == "f32" || ty == "f64" {
-        return "number".to_string();
-    }
-    if ty == "bool" {
-        return "boolean".to_string();
-    }
-    if let Some(rest) = ty.strip_prefix('&') {
-        return rust_type_to_ts(rest.trim());
+
+    // Runs first: `relation::Model` is a real Rust path, so ontogen-ts would
+    // happily render it as the terminal ident `Model` and lose the entity
+    // prefix that makes the name unique.
+    if let Some(name) = entity_model_ts_name(ty) {
+        return name;
     }
 
-    if let Some((head, args)) = split_generic(ty) {
-        // Match on the terminal segment so `std::collections::HashMap<K, V>`
-        // classifies the same as a bare `HashMap<K, V>`.
-        let head_ident = head.rsplit("::").next().unwrap_or(head).trim();
-        match (head_ident, args.as_slice()) {
-            // Transparent to serde — the wrapper never reaches the wire.
-            ("Box" | "Rc" | "Arc" | "Cow" | "Pin", [inner]) => return rust_type_to_ts(inner),
-            ("Option", [inner]) => return format!("{} | null", group_if_union(&rust_type_to_ts(inner))),
-            // Sets share `Vec`'s wire shape: a JSON array.
-            ("Vec" | "VecDeque" | "HashSet" | "BTreeSet", [inner]) => {
-                return format!("{}[]", group_if_union(&rust_type_to_ts(inner)));
-            }
-            // Maps serialize as a JSON object. Emitting the Rust spelling
-            // verbatim produced `HashMap<String, Foo>` in TS type position,
-            // which is not a type this emitter ever declares.
-            ("HashMap" | "BTreeMap", [key, value]) => {
-                return format!("Record<{}, {}>", rust_type_to_ts(key), rust_type_to_ts(value));
-            }
-            // An unrecognized generic (`chrono::DateTime<Utc>`, a user
-            // wrapper): drop the arguments and render the head. This emitter
-            // has no generic support, and downstream every rendered name is
-            // used as a bare TS identifier — in an `import { … }` list or a
-            // `type X = …` placeholder — neither of which accepts generic
-            // syntax.
-            _ => return rust_type_to_ts(head),
-        }
-    }
+    ontogen_ts::render_type_str(ty, &signature_emit_config()).unwrap_or_else(|_| opaque_fallback(ty))
+}
 
-    // Entity-qualified types like `relation::Model` → `RelationModel`
-    if ty.contains("::") {
-        let parts: Vec<&str> = ty.split("::").collect();
-        if parts.len() == 2 && parts[1] == "Model" {
-            return format!("{}{}", capitalize(parts[0]), parts[1]);
-        }
-        return parts.last().unwrap_or(&ty).to_string();
+/// Recognize ontogen's entity-relation spelling and render its TS name:
+/// `relation::Model` → `RelationModel`, including through generic args
+/// (`relation::Model<T>`).
+///
+/// Returns `None` for anything else, including plain two-segment paths.
+fn entity_model_ts_name(ty: &str) -> Option<String> {
+    // Strip generic args first so `relation::Model<T>` is recognized too.
+    let bare = match split_generic(ty) {
+        Some((head, _)) => head,
+        None => ty,
+    };
+    let parts: Vec<&str> = bare.split("::").collect();
+    if parts.len() == 2 && parts[1] == "Model" {
+        return Some(format!("{}{}", capitalize(parts[0]), parts[1]));
     }
-    ty.to_string()
+    None
+}
+
+/// Last-resort rendering for a type ontogen-ts declines to emit — a
+/// `Mutex<T>` in a signature, a non-empty tuple, something that doesn't parse
+/// as a type at all.
+///
+/// This path must not fail the build, so it degrades instead: drop generic
+/// arguments and take the terminal path segment, which is what downstream
+/// wants anyway (every rendered name is used as a bare TS identifier, in an
+/// `import { … }` list or a `type X = …` placeholder, and neither accepts
+/// generic syntax). If what's left still isn't a usable identifier, render
+/// `unknown` — an honest untyped value beats emitting a token that breaks the
+/// consumer's TypeScript build.
+fn opaque_fallback(ty: &str) -> String {
+    let bare = match split_generic(ty) {
+        Some((head, _)) => head,
+        None => ty,
+    };
+    let terminal = bare.rsplit("::").next().unwrap_or(bare).trim().trim_start_matches('&').trim();
+    let is_ident = !terminal.is_empty()
+        && terminal.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && terminal.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if is_ident { terminal.to_string() } else { "unknown".to_string() }
 }
 
 /// TS type expressions that never need importing.

@@ -289,44 +289,22 @@ fn field_to_ts(ft: &FieldType) -> String {
         FieldType::VecString => "string[]".into(),
         FieldType::VecStruct(name) => format!("{name}[]"),
         FieldType::OptionEnum(name) => {
-            // The catch-all in the Option<...> classifier (parse.rs) routes
-            // any unknown inner ident here, including Rust primitives that
-            // don't have a dedicated typed variant (u8/u16/u32/i8/i16/isize/
-            // u128/i128/etc.). Map those to their TS equivalent so we don't
-            // ship bare Rust idents into bindings.ts.
-            if let Some(p) = rust_primitive_to_ts(name) { format!("{p} | null") } else { format!("{name} | null") }
+            // The catch-all in the `Option<...>` classifier (parse.rs) routes
+            // any unknown inner ident here — a real enum, but also Rust
+            // primitives with no dedicated `FieldType` variant.
+            format!("{} | null", rust_type_to_ts(name))
         }
         FieldType::Other(name) => {
-            // Map the wider Rust primitive set to TS. The typed FieldType
-            // variants above cover String / bool / i32 / i64 / f32 / f64 (and
-            // their Option<...> forms — the macro folds u64 into i64 since
-            // SQLite has no unsigned integers), but everything else —
-            // u8 / u16 / u32 / u128 / usize / i8 / i16 / i128 / isize and
-            // their `Option<...>` wrappers — falls through to `Other(...)`
-            // here. Without this we'd ship bare Rust idents to TS bindings
-            // (e.g. `step_index: u32`), which the consuming TS sees as an
-            // unresolved type and refuses to compile.
-            let trimmed = name.trim();
-            if let Some(p) = rust_primitive_to_ts(trimmed) {
-                return p.to_string();
-            }
-            if let Some(inner) = trimmed.strip_prefix("Option<").and_then(|s| s.strip_suffix('>'))
-                && let Some(p) = rust_primitive_to_ts(inner.trim())
-            {
-                return format!("{p} | null");
-            }
-            name.clone()
+            // Everything the typed variants above don't cover. They handle
+            // String / bool / i32 / i64 / f32 / f64 and their `Option<...>`
+            // forms (the macro folds u64 into i64, since SQLite has no
+            // unsigned integers); the rest of the primitive widths, plus any
+            // user type or container spelling, lands here. Rendering it with
+            // the shared type model rather than a local primitive table is
+            // what stops this arm from shipping bare Rust idents like
+            // `step_index: u32` into bindings.ts.
+            rust_type_to_ts(name)
         }
-    }
-}
-
-/// Map a single-ident Rust primitive scalar to the TS equivalent.
-fn rust_primitive_to_ts(name: &str) -> Option<&'static str> {
-    match name {
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32"
-        | "f64" => Some("number"),
-        "bool" => Some("boolean"),
-        _ => None,
     }
 }
 
@@ -334,7 +312,7 @@ fn rust_primitive_to_ts(name: &str) -> Option<&'static str> {
 mod tests {
     use ontogen_core::model::{EntityDef, FieldDef, FieldRole, FieldType};
 
-    use super::{entity_field_type_names, field_type_user_ident, is_simple_user_ident, long_tail};
+    use super::{entity_field_type_names, field_to_ts, field_type_user_ident, is_simple_user_ident, long_tail};
     use crate::clients::config::Config;
 
     fn empty_config() -> Config {
@@ -493,5 +471,37 @@ mod tests {
         let entities = vec![other, parent];
         let names = long_tail(&[], &empty_config(), &entities);
         assert!(!names.contains(&"Other".to_string()), "schema-known name leaked into long_tail: {names:?}");
+    }
+
+    #[test]
+    fn field_to_ts_keeps_the_answers_the_local_primitive_table_gave() {
+        // The `Other` / `OptionEnum` arms used to carry their own primitive
+        // table. They render through the shared type model now; every case
+        // that table covered has to come out the same.
+        for width in
+            ["u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64"]
+        {
+            assert_eq!(field_to_ts(&FieldType::Other(width.into())), "number", "`{width}`");
+            assert_eq!(field_to_ts(&FieldType::Other(format!("Option<{width}>"))), "number | null", "Option<{width}>");
+        }
+        assert_eq!(field_to_ts(&FieldType::Other("bool".into())), "boolean");
+        assert_eq!(field_to_ts(&FieldType::Other("Option<bool>".into())), "boolean | null");
+        // A user type still passes through as its own name — the long-tail
+        // emitter declares it, and this arm just has to name it.
+        assert_eq!(field_to_ts(&FieldType::Other("Severity".into())), "Severity");
+        assert_eq!(field_to_ts(&FieldType::OptionEnum("Severity".into())), "Severity | null");
+        assert_eq!(field_to_ts(&FieldType::OptionEnum("u32".into())), "number | null");
+    }
+
+    #[test]
+    fn field_to_ts_renders_shapes_the_local_table_shipped_verbatim() {
+        // Anything outside the old primitive table fell through to
+        // `name.clone()`, putting Rust spellings in TS type position.
+        assert_eq!(field_to_ts(&FieldType::Other("chrono::DateTime<Utc>".into())), "string");
+        assert_eq!(field_to_ts(&FieldType::Other("uuid::Uuid".into())), "string");
+        assert_eq!(field_to_ts(&FieldType::Other("serde_json::Value".into())), "unknown");
+        assert_eq!(field_to_ts(&FieldType::Other("HashMap<String, i32>".into())), "Record<string, number>");
+        assert_eq!(field_to_ts(&FieldType::Other("Vec<Option<String>>".into())), "(string | null)[]");
+        assert_eq!(field_to_ts(&FieldType::Other("char".into())), "string");
     }
 }

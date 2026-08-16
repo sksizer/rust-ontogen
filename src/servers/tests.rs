@@ -571,10 +571,48 @@ fn rust_type_to_ts_handles_sets_and_smart_pointers() {
 fn rust_type_to_ts_strips_args_from_unrecognized_generics() {
     // Every rendered name is used downstream as a bare TS identifier — in an
     // `import { … }` list or a `type X = …` placeholder. Neither accepts
-    // generic syntax, so `DateTime<Utc>` must not survive as a name.
-    assert_eq!(rust_type_to_ts("chrono::DateTime<Utc>"), "DateTime");
+    // generic syntax, so a generic must not survive as a name.
     assert_eq!(rust_type_to_ts("MyWrapper<Node>"), "MyWrapper");
     assert_eq!(rust_type_to_ts("relation::Model<T>"), "RelationModel");
+}
+
+#[test]
+fn rust_type_to_ts_resolves_external_types() {
+    // These reach the shared external-types table now that this emitter
+    // delegates to ontogen-ts. Each used to fall through to a bare ident and
+    // get stubbed as `type DateTime<Utc> = Record<string, unknown>;` — a
+    // syntax error in the consumer's build for the generic ones, and a
+    // silently untyped value for the rest.
+    assert_eq!(rust_type_to_ts("chrono::DateTime<Utc>"), "string");
+    assert_eq!(rust_type_to_ts("chrono::NaiveDate"), "string");
+    assert_eq!(rust_type_to_ts("uuid::Uuid"), "string");
+    assert_eq!(rust_type_to_ts("url::Url"), "string");
+    assert_eq!(rust_type_to_ts("serde_json::Value"), "unknown");
+    assert_eq!(rust_type_to_ts("std::path::PathBuf"), "string");
+}
+
+#[test]
+fn rust_type_to_ts_covers_every_numeric_width() {
+    // Only the six "common" widths were mapped; the rest shipped as bare Rust
+    // idents and were stubbed `Record<string, unknown>` downstream, so a
+    // `u8` field arrived in TypeScript as an object.
+    for ty in ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize", "f32", "f64"] {
+        assert_eq!(rust_type_to_ts(ty), "number", "`{ty}` should render as number");
+    }
+    // `char` serializes as a single-codepoint JSON string.
+    assert_eq!(rust_type_to_ts("char"), "string");
+}
+
+#[test]
+fn rust_type_to_ts_degrades_instead_of_failing_on_unrenderable_types() {
+    // ontogen-ts is hard-error-only; this path is lenient by design, because
+    // failing the Rust build over a signature type it can't render would be a
+    // worse trade than shipping an untyped one. A rejected shape falls back to
+    // the terminal ident, and anything that isn't a usable identifier renders
+    // `unknown` rather than a token that breaks the consumer's tsc run.
+    assert_eq!(rust_type_to_ts("Mutex<Node>"), "Mutex");
+    assert_eq!(rust_type_to_ts("(String, i32)"), "unknown");
+    assert_eq!(rust_type_to_ts("impl Iterator<Item = u8>"), "unknown");
 }
 
 #[test]
@@ -608,22 +646,40 @@ fn via_ontogen_ts(rust_ty: &str) -> String {
 
 #[test]
 fn the_two_ts_emitters_agree_on_shared_shapes() {
-    // ontogen ships two TypeScript emitters over the same codebase:
-    // `rust_type_to_ts` (string matching, for API signatures) and ontogen-ts
-    // (real AST, for the long-tail closure). Their output lands in the same
-    // generated file, so a disagreement puts contradictory types in front of
-    // one caller. Pin the overlap.
+    // ontogen renders TypeScript from two places: `rust_type_to_ts` (API
+    // signatures) and ontogen-ts (the long-tail closure). Their output lands
+    // in the same generated file, so a disagreement puts contradictory types
+    // in front of one caller.
     //
-    // Deliberately excluded, because the two are meant to differ there:
-    //   - `chrono::DateTime<Utc>` — ontogen-ts has an external-types table
-    //     that maps it to `string`; this emitter has no such table.
-    //   - `relation::Model` — an ontogen entity-naming convention that only
-    //     the signature emitter knows about.
+    // `rust_type_to_ts` delegates to ontogen-ts now, so this can't drift the
+    // way it did when the two carried separate type models. It stays as a
+    // guard on that delegation: anything short-circuited ahead of the
+    // delegate, or bolted on after it, has to keep agreeing here.
+    //
+    // The `via_ontogen_ts` side goes the long way round — through a real
+    // scan/resolve/emit of a struct field — so this also pins that rendering
+    // a type standalone matches rendering it in a declaration.
+    //
+    // `relation::Model` is the one deliberate exclusion: an ontogen
+    // entity-naming convention ontogen-ts has no way to know about.
     let shared = [
+        // Primitives, every width — not just the six the string matcher knew.
         "String",
         "bool",
-        "i32",
+        "char",
+        "u8",
+        "u16",
+        "u32",
         "u64",
+        "usize",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "isize",
+        "f32",
+        "f64",
+        // Containers.
         "Vec<String>",
         "Vec<Node>",
         "Option<String>",
@@ -636,8 +692,21 @@ fn the_two_ts_emitters_agree_on_shared_shapes() {
         "HashMap<String, Vec<Node>>",
         "HashSet<String>",
         "BTreeSet<Node>",
+        "VecDeque<Node>",
+        // Smart pointers, peeled by both.
         "Box<Node>",
         "Arc<Vec<String>>",
+        "Cow<'a, str>",
+        // External types — previously the documented disagreement.
+        "chrono::DateTime<Utc>",
+        "chrono::NaiveDate",
+        "uuid::Uuid",
+        "url::Url",
+        "serde_json::Value",
+        "std::path::PathBuf",
+        // Unknown user types render as their terminal ident on both sides.
+        "Node",
+        "some::nested::Node",
     ];
     for rust_ty in shared {
         assert_eq!(rust_type_to_ts(rust_ty), via_ontogen_ts(rust_ty), "emitters disagree on `{rust_ty}`");
@@ -2276,6 +2345,83 @@ fn test_ts_client_returns_fallback_record_for_missing_type() {
     assert!(names.contains(&"Workout"), "expected Workout fallback, got {names:?}");
     assert!(names.contains(&"CreateWorkoutInput"), "expected CreateWorkoutInput fallback, got {names:?}");
     assert!(names.contains(&"UpdateWorkoutInput"), "expected UpdateWorkoutInput fallback, got {names:?}");
+}
+
+/// A module whose parameters exercise the widths the old two-way guess got
+/// wrong: everything that wasn't literally `i32` was typed `string`.
+fn make_widths_module() -> ApiModule {
+    ApiModule {
+        name: "widths".to_string(),
+        functions: vec![
+            ApiFn {
+                name: "get_by_offset".to_string(),
+                is_async: true,
+                doc: "Read at an offset.".to_string(),
+                params: vec![param("offset", "u64"), param("depth", "u8")],
+                return_type: "Node".to_string(),
+                return_type_ast: ty_ast("Node"),
+                ..Default::default()
+            },
+            ApiFn {
+                name: "set_flag".to_string(),
+                is_async: true,
+                doc: "Set a flag.".to_string(),
+                params: vec![param("enabled", "bool"), param("weight", "f64")],
+                return_type: "Node".to_string(),
+                return_type_ast: ty_ast("Node"),
+                ..Default::default()
+            },
+        ],
+        events: vec![],
+        is_singleton: false,
+    }
+}
+
+/// Pull `name: type` pairs out of a generated method signature.
+fn signature_params(ts: &str, method: &str) -> Vec<String> {
+    let line = ts
+        .lines()
+        .find(|l| l.contains(&format!("{method}(")))
+        .unwrap_or_else(|| panic!("no `{method}` method in:\n{ts}"));
+    let open = line.find('(').expect("method signature has an open paren");
+    let close = line[open..].find(')').expect("method signature has a close paren") + open;
+    line[open + 1..close].split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+}
+
+#[test]
+fn the_two_client_generators_type_a_parameter_the_same_way() {
+    // `ts_client.rs` reduced every parameter to `if ty == "i32" { number }
+    // else { string }`, while `transport.rs` ran the same parameter through
+    // `rust_type_to_ts`. Both files are generated from one API definition and
+    // both are importable by the same caller, so one endpoint had two
+    // different signatures depending on which file you imported from — and
+    // for anything wider than `i32` at least one of them was wrong.
+    let tmp = tempfile::tempdir().unwrap();
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "export type Node = { id: string };\n").unwrap();
+
+    let config = client_test_config(tmp.path().to_path_buf());
+    let modules = vec![make_widths_module()];
+
+    let client_path = tmp.path().join("client.ts");
+    let transport_path = tmp.path().join("transport.ts");
+    crate::clients::generators::ts_client::generate(&client_path, &bindings, &modules, &config);
+    crate::clients::generators::transport::generate(&transport_path, &bindings, &modules, &config);
+
+    let client_ts = std::fs::read_to_string(&client_path).unwrap();
+    let transport_ts = std::fs::read_to_string(&transport_path).unwrap();
+
+    for method in ["widthGetByOffset", "widthSetFlag"] {
+        let from_client = signature_params(&client_ts, method);
+        let from_transport = signature_params(&transport_ts, method);
+        assert_eq!(from_client, from_transport, "generators disagree on `{method}` parameters");
+    }
+
+    // And the shared answer is the correct one, not the old `string` guess.
+    let offset = signature_params(&client_ts, "widthGetByOffset");
+    assert_eq!(offset, vec!["offset: number", "depth: number"], "numeric path params should be numbers");
+    let flag = signature_params(&client_ts, "widthSetFlag");
+    assert_eq!(flag, vec!["enabled: boolean", "weight: number"], "body fields should keep their real types");
 }
 
 #[test]

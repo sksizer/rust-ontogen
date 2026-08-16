@@ -53,7 +53,7 @@ mod rename;
 mod resolve;
 mod types;
 
-pub use emit::{emit, emit_with_imports};
+pub use emit::{emit, emit_with_imports, render_type, render_type_str};
 pub use pool::{LOCAL_CRATE_ROOT, ScanError, scan_crate_root_with_imports, scan_src_dir, scan_src_dir_with_imports};
 pub use resolve::{ModuleImports, Resolution, resolve_reference};
 pub use types::{BigIntBehavior, EmitConfig, EmitError, QuoteStyle, RenameAll, TypePath, TypePathError};
