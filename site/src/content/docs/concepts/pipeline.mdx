@@ -202,13 +202,13 @@ Each function is classified into an `OpKind` (defined in `ontogen_core::ir`):
 ```rust
 pub enum OpKind {
     List,                                      // GET /tasks
-    GetById,                                   // GET /tasks/:id
+    GetById,                                   // GET /tasks/{id}
     Create,                                    // POST /tasks
-    Update,                                    // PUT /tasks/:id
-    Delete,                                    // DELETE /tasks/:id
-    JunctionList   { child_segment: String },  // GET /agents/:id/roles
-    JunctionAdd    { child_segment: String },  // POST /agents/:id/roles
-    JunctionRemove { child_segment: String },  // DELETE /agents/:id/roles/:child_id
+    Update,                                    // PUT /tasks/{id}
+    Delete,                                    // DELETE /tasks/{id}
+    JunctionList   { child_segment: String },  // GET /agents/{id}/roles
+    JunctionAdd    { child_segment: String },  // POST /agents/{id}/roles
+    JunctionRemove { child_segment: String },  // DELETE /agents/{id}/roles/{child_id}
     CustomGet,                                 // GET with non-standard params
     CustomPost,                                // POST with non-standard params
     EventStream,                               // SSE endpoint
@@ -234,7 +234,7 @@ Each transport gets its own metadata type:
 ```rust
 pub struct HttpRouteMeta {
     pub method: String,       // "GET"
-    pub path: String,         // "/api/tasks/:id"
+    pub path: String,         // "/api/tasks/{id}"
     pub handler_name: String, // "get_task_by_id"
     pub module_name: String,  // "task"
 }
@@ -337,10 +337,10 @@ Notice the `assign` function at the end -- that came from a hand-written `src/ap
 
 ```text
 HttpRouteMeta { method: "GET",    path: "/api/tasks",     handler: "list_tasks" }
-HttpRouteMeta { method: "GET",    path: "/api/tasks/:id", handler: "get_task_by_id" }
+HttpRouteMeta { method: "GET",    path: "/api/tasks/{id}", handler: "get_task_by_id" }
 HttpRouteMeta { method: "POST",   path: "/api/tasks",     handler: "create_task" }
-HttpRouteMeta { method: "PUT",    path: "/api/tasks/:id", handler: "update_task" }
-HttpRouteMeta { method: "DELETE", path: "/api/tasks/:id", handler: "delete_task" }
+HttpRouteMeta { method: "PUT",    path: "/api/tasks/{id}", handler: "update_task" }
+HttpRouteMeta { method: "DELETE", path: "/api/tasks/{id}", handler: "delete_task" }
 HttpRouteMeta { method: "POST",   path: "/api/tasks/assign", handler: "assign_task" }
 IpcCommandMeta { command_name: "list_tasks", ... }
 IpcCommandMeta { command_name: "assign_task", ... }
@@ -375,6 +375,6 @@ The optional chaining pattern is what makes partial adoption work. If you just w
 
 Ontogen doesn't use template files. There's no `.hbs`, no `.tera`, no string interpolation into template strings.
 
-All code generation happens through direct string building in Rust functions. The generators construct source code strings programmatically, then pass them through `rustfmt` (for Rust) or `prettier` (for TypeScript) before writing. The `write_if_changed` utility ensures files are only written when their content actually differs from what's on disk.
+All code generation happens through direct string building in Rust functions. The generators construct source code strings programmatically, then pass Rust through `rustfmt` and TypeScript through the [`ts_formatter`](/reference/configuration/#tsformatter) hook you supply (none by default) before writing. The `write_if_changed` utility ensures files are only written when their content actually differs from what's on disk.
 
 This approach has trade-offs. Generated code is harder to preview than a template. But it means generators have full access to Rust's type system and control flow while constructing output -- conditional blocks, loops over fields, pattern matching on field types. The output is always syntactically correct because it's built structurally, not by filling blanks in a template.

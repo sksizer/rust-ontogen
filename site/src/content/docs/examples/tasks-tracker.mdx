@@ -1,0 +1,98 @@
+---
+title: "Tasks Tracker"
+description: A planning vault served over HTTP and as a generated MCP tool registry, from one pipeline.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`tasks-tracker` is ADR 0001's flagship use case: a tracker whose records mirror this repository's own `docs/planning/tasks/*.md` frontmatter -- compound statuses like `open/ready`, an epic wikilink, tags, and a markdown body of sections -- served two ways from one generated pipeline.
+
+It's the example to read if you care about the **MCP transport**, because it's the one that exercises the generated tool registry end to end.
+
+The source lives at `examples/tasks-tracker/`.
+
+## Over HTTP
+
+```sh
+cargo run
+```
+
+```sh
+curl -s localhost:3002/api/tasks | jq
+
+# POST without an id -- the slug derives from the title
+curl -s -X POST localhost:3002/api/tasks \
+  -H 'content-type: application/json' \
+  -d '{"title":"Review the stack","status":"open/ready","created":"2026-06-06","epic_id":"markdown-backend","tags":["codegen"],"body":"## Goal\n\nReview.\n"}'
+
+cat data/vault/tasks/review-the-stack.md
+```
+
+The filename came from the title. `IdStrategy::SlugFromField("title")` slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
+
+## Over MCP
+
+The same pipeline emits an MCP tool registry:
+
+```sh
+cargo run -- mcp-tools                 # every entity op as a tool, with JSON schemas
+cargo run -- mcp-call task_list '{}'   # agent-shaped reads over the vault
+cargo run -- mcp-call task_create '{"title":"From an agent","status":"open","created":"2026-06-06","body":"…"}'
+```
+
+`generated_tool_registry()` is transport-agnostic -- name, description, JSON schema, and an async handler per tool -- so wiring it into any MCP server runtime is a loop over the registry. The CLI here dispatches it directly to keep the example dependency-free.
+
+<Aside type="tip">
+Tool descriptions come from your Rust doc comments. The `///` above an API function becomes the text an agent reads when deciding whether to call it, which makes doc comments load-bearing in a way they usually aren't.
+</Aside>
+
+## The schema
+
+Three entities, shaped by the corpus rather than by what's convenient to generate:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, directory = "tasks", table = "tasks")]
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,
+
+    pub title: String,
+
+    /// e.g. `open/ready`, `in-progress`, `closed/done` -- compound statuses
+    /// are plain strings, exactly as the corpus writes them.
+    pub status: String,
+
+    pub created: String,
+
+    #[ontology(relation(belongs_to, target = "Epic"))]
+    pub epic_id: Option<String>,
+
+    #[ontology(relation(many_to_many, target = "Tag"))]
+    pub tags: Vec<String>,
+
+    #[ontology(body)]
+    pub body: String,
+}
+```
+
+Note what `status` **isn't**: an `enum_field`. The real corpus uses compound values like `open/ready` and `closed/wontdo`, and forcing those into a Rust enum would mean the schema dictating vocabulary to the vault rather than describing it. Plain `String` keeps the files authoritative.
+
+`Epic` deliberately has no task list. Which tasks belong to an epic is a **derived** question -- walk `tasks/`, filter on `epic_id` -- and storing it on the epic would create a second place for the truth to live. The vault stays greppable, diffable, and Obsidian-navigable; the tracker is one lens over it.
+
+## Why this shape matters
+
+The vault is a plain folder of markdown. That means:
+
+- An agent can edit records through MCP **and** you can edit the same records in Obsidian, in the same session, without a sync step.
+- `git log` on `data/vault/tasks/` is the tracker's audit trail, for free.
+- `grep -r 'open/ready' data/vault` works.
+
+The generated API is a convenience over the files, not a gatekeeper in front of them.
+
+## Where to look
+
+1. **`src/schema/task.rs`** -- the corpus-shaped entity, and the reasoning above in comment form.
+2. **`build.rs`** -- `markdown_io` + `HttpAxum` + `Mcp` in one `Pipeline`, ~50 lines.
+3. **`src/api/transport/mcp/generated.rs`** -- the tool registry.
+4. **`data/vault/`** -- the records.

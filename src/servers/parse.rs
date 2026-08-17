@@ -189,7 +189,7 @@ pub struct ApiModule {
     /// `//! ontogen:singleton` marker in the file's leading
     /// comment-and-attribute block (parser side), or from
     /// [`NamingConfig::singleton_modules`](crate::servers::NamingConfig) via
-    /// the post-parse [`apply_singleton_overlay`] step. Downstream generators
+    /// the post-parse `apply_singleton_overlay` step. Downstream generators
     /// (HTTP today; admin / doc-gen in the future) branch on this rather than
     /// re-deriving from naming rules.
     pub is_singleton: bool,

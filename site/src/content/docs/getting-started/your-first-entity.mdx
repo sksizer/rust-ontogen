@@ -198,6 +198,7 @@ fn main() {
             // Add HttpTs, HttpTauriIpcSplit, AdminRegistry here when you want
             // client artifacts.
         ],
+        ts_formatter: ontogen::TsFormatter::None,
         sse_route_overrides: Default::default(),
         ts_skip_commands: vec![],
         route_prefix: None,
@@ -207,6 +208,7 @@ fn main() {
         // Pipeline auto-fills this with the parsed schema entities.
         schema_entities: Vec::new(),
         pool_extra_roots: Vec::new(),
+        pool_exclude_paths: Vec::new(),
     };
 
     Pipeline::new("src/schema")
@@ -411,11 +413,11 @@ This produces Axum route handlers with proper routing:
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/tasks", get(list_tasks).post(create_task))
-        .route("/tasks/:id", get(get_task).put(update_task).delete(delete_task))
+        .route("/tasks/{id}", get(get_task).put(update_task).delete(delete_task))
         .route("/agents", get(list_agents).post(create_agent))
-        .route("/agents/:id", get(get_agent).put(update_agent).delete(delete_agent))
+        .route("/agents/{id}", get(get_agent).put(update_agent).delete(delete_agent))
         .route("/requirements", get(list_requirements).post(create_requirement))
-        .route("/requirements/:id", get(get_requirement).put(update_requirement).delete(delete_requirement))
+        .route("/requirements/{id}", get(get_requirement).put(update_requirement).delete(delete_requirement))
 }
 ```
 

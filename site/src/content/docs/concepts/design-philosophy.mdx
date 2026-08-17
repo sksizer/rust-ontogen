@@ -138,7 +138,7 @@ Simple idea: read the existing file, compare, skip the write if nothing changed.
 
 Why does this matter? File watchers. Tauri's development server watches `src/` for changes and triggers hot reloads. If `build.rs` writes 30 generated files on every build, and those files haven't actually changed, you get 30 file-change events that trigger 30 unnecessary recompiles. With `write_if_changed`, a no-op rebuild touches zero files and triggers zero watchers.
 
-For Rust files, Ontogen formats in memory via `rustfmt` before comparing. For TypeScript files, it formats via `prettier`. The formatted output is compared against what's on disk, so formatting differences don't cause spurious writes either.
+For Rust files, Ontogen formats in memory via `rustfmt` before comparing. TypeScript goes through whatever [`ts_formatter`](/reference/configuration/#tsformatter) you configured -- by default nothing, since Ontogen doesn't ship an opinion about your TS style. Either way the *formatted* output is what gets compared against disk, so formatting differences don't cause spurious writes either.
 
 ## Entity-First Naming
 
@@ -148,7 +148,7 @@ Ontogen uses Rails-style inflection for all generated names. A `Task` entity get
 |---------|------|
 | Store method | `list_tasks`, `get_task`, `create_task` |
 | API module | `task` |
-| HTTP routes | `/api/tasks`, `/api/tasks/:id` |
+| HTTP routes | `/api/tasks`, `/api/tasks/{id}` |
 | IPC commands | `list_tasks`, `create_task` |
 | MCP tools | `list_tasks`, `get_task` |
 | TypeScript functions | `listTasks()`, `getTask()` |

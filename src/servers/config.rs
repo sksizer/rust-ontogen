@@ -7,8 +7,9 @@ use crate::servers::types::NamingConfig;
 
 /// Top-level configuration for the server transport codegen pipeline.
 ///
-/// Client-side TypeScript and admin-registry codegen has its own carrier in
-/// [`crate::clients::config`]; the two pipelines no longer share a config.
+/// Client-side TypeScript and admin-registry codegen has its own carrier,
+/// reached publicly as [`crate::ClientsConfig`]; the two pipelines no longer
+/// share a config.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Directory containing API source files (e.g., `src/api/v1`).

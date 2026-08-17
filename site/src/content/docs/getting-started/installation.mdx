@@ -17,7 +17,7 @@ ontogen-macros = "0.1"
 serde = { version = "1", features = ["derive"] }
 
 [build-dependencies]
-ontogen = "0.1"
+ontogen = "0.6"
 ```
 
 That's the minimum. `ontogen-macros` goes in `[dependencies]` because your schema structs use its derive macro at compile time. `ontogen` goes in `[build-dependencies]` because it runs inside `build.rs` to generate code before your crate compiles.

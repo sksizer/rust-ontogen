@@ -53,13 +53,44 @@ The `entity_output` and `conversion_output` directories are cleaned on each buil
 
 Used by [`gen_markdown_io()`](/reference/public-api/#gen_markdown_io).
 
+The `output_dir` field controls where generated code lands. The rest describe the **runtime** shape of the vault (ADR 0001) and flow into the returned `MarkdownIoOutput`, which [`gen_store`](/reference/public-api/#gen_store) consumes via `Backend::Markdown`.
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `output_dir` | `PathBuf` | Output directory for generated parser, writer, and filesystem operation modules. |
+| `vault_root` | `PathBuf` | Where the `.md` records live at runtime, relative to the consumer crate root (e.g., `data/vault`). |
+| `layout` | `MarkdownLayout` | On-disk arrangement of record files under the vault root. |
+| `id_strategy` | `IdStrategy` | How a new record derives an id when the caller didn't supply one. |
+| `list_cap` | `usize` | Hard cap on records parsed per `list()` before the runtime errors -- ADR 0001's explicit scale ceiling. |
 
 ```rust
 MarkdownIoConfig {
-    output_dir: "src/persistence/markdown".into(),
+    output_dir: "src/persistence/markdown/generated".into(),
+    vault_root: "data/vault".into(),
+    layout: ontogen::MarkdownLayout::PerEntityDir,
+    id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
+    list_cap: 10_000,
+}
+```
+
+### `MarkdownLayout`
+
+```rust
+pub enum MarkdownLayout {
+    PerEntityDir,   // vault_root/<dir_segment>/<id>.md -- the default
+    Flat,           // vault_root/<id>.md, all entities together
+}
+```
+
+`Flat` relies on the frontmatter `type:` discriminator and id prefixes to tell entities apart. `PerEntityDir` takes its directory segment from `#[ontology(entity, directory = "...")]`.
+
+### `IdStrategy`
+
+```rust
+pub enum IdStrategy {
+    Provided,                  // the caller must supply the id
+    SlugFromField(String),     // slugify the named field, de-duplicating with -2, -3, ...
+    Uuid,                      // fresh UUID v4 (needs the runtime crate's `uuid` feature)
 }
 ```
 
@@ -92,16 +123,54 @@ Used by [`gen_store()`](/reference/public-api/#gen_store).
 | `output_dir` | `PathBuf` | Output directory for generated CRUD method modules. Each entity gets its own file. |
 | `hooks_dir` | `Option<PathBuf>` | Directory for scaffolded hook files. When `Some`, hook files are created once per entity and never overwritten. When `None`, hook scaffolding is skipped entirely. |
 | `schema_module_path` | `String` | Rust import path for the schema module in generated code. Use [`ontogen::DEFAULT_SCHEMA_MODULE_PATH`](/reference/public-api/#default_schema_module_path) (`"crate::schema"`) for the canonical default. |
+| `backend` | `Backend` | Which persistence backend the generated CRUD bodies are wired to. See [`Backend`](#backend) below and the [markdown backend guide](/guides/markdown-backend/). |
+| `wikilink_policy` | `Option<WikilinkPolicy>` | Whether the DTO `From` impls strip wikilink-shaped relation ids (`[[id]]` to `id`). `None` uses the backend's default. See [`WikilinkPolicy`](#wikilinkpolicy) below. |
 
 ```rust
 StoreConfig {
     output_dir: "src/store/generated".into(),
     hooks_dir: Some("src/store/hooks".into()),
     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+    backend: ontogen::Backend::Seaorm(Some(seaorm)),
+    wikilink_policy: None,
 }
 ```
 
 When `hooks_dir` is `None`, the generated CRUD code still compiles -- but it expects your consuming crate to provide hook modules at the expected import paths. This is useful when you want full control over hook file organization.
+
+### `Backend`
+
+```rust
+pub enum Backend {
+    Seaorm(Option<SeaOrmOutput>),
+    Markdown(MarkdownIoOutput),
+}
+```
+
+The persistence backend is a **generation-time** choice (ADR 0001), not a runtime one. `gen_store` emits one CRUD module per entity wired to that backend's primitives, and everything above the store -- `gen_api`, `gen_servers`, `gen_clients` -- is byte-identical between the two.
+
+`Seaorm`'s payload is optional enrichment: pass the `SeaOrmOutput` you got from `gen_seaorm` for exact table and column references, or `None` to fall back to naming conventions. `Markdown` **always** carries metadata -- the emitter genuinely needs the vault layout, id strategy, and per-entity directory mapping, so you must pass the `MarkdownIoOutput` that `gen_markdown_io` returned.
+
+<Aside type="note">
+`Backend` is a closed enum by design. ADR 0001 (alternative C) rejected an out-of-tree backend trait; new backends land here by upstream PR.
+</Aside>
+
+### `WikilinkPolicy`
+
+```rust
+pub enum WikilinkPolicy {
+    Strip,        // [[id]] -> id on every relation field
+    Passthrough,  // relation ids pass through untouched
+}
+```
+
+Each backend has a default -- the markdown backend strips at its typed boundary, SQL backends pass through -- so `wikilink_policy: None` is right for almost everyone.
+
+Set it explicitly for the hybrid case: a SQL-backed store whose **wire contract** still accepts wikilinked ids, for instance an API fed by markdown-authoring agents. `Some(WikilinkPolicy::Strip)` on a SeaORM store makes the generated DTO `From` impls accept `"[[task-42]]"` and store `"task-42"`.
+
+<Aside type="caution">
+The emitted strip calls resolve to `markdown_store::wikilink`, so a SQL consumer that opts in must depend on the `markdown-store` runtime crate. That crate is `publish = false` today, so this currently means a path or git dependency on the workspace.
+</Aside>
 
 <Aside type="note">
 Hook files are scaffolded once and never touched again. If you delete a hook file, the next build will recreate it with empty function bodies. If you rename an entity, the old hook file stays (remove it manually) and a new one is scaffolded.
@@ -152,9 +221,11 @@ If a function genuinely doesn't need state — a pure data transformation, a clo
 
 ## `ServersConfig`
 
-Used by [`gen_servers()`](/reference/public-api/#gen_servers).
+Used by [`gen_servers()`](/reference/public-api/#gen_servers). Controls **Rust server transports only** -- Axum, Tauri IPC, MCP.
 
-This is the largest config type because it controls multiple transport generators simultaneously.
+<Aside type="note">
+Client-side TypeScript and admin-registry generation moved out of this struct into its own [`ClientsConfig`](#clientsconfig), paired with [`gen_clients`](/reference/public-api/#gen_clients). If you're carrying a build script that sets `client_generators`, `ts_skip_commands`, or `schema_entities` on `ServersConfig`, those three fields now live on `ClientsConfig`.
+</Aside>
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -165,18 +236,15 @@ This is the largest config type because it controls multiple transport generator
 | `state_import` | `String` | Import path for the state type (e.g., `"crate::AppState"`). |
 | `naming` | `NamingConfig` | Naming overrides for pluralization, singularization, and labels. |
 | `generators` | `Vec<ServerGeneratorConfig>` | Which server generators to run and their output paths. |
-| `client_generators` | `Vec<ClientGenerator>` | Which client generators to run (TypeScript transports, admin registry). |
 | `rustfmt_edition` | `String` | Rust edition for formatting generated Rust code (e.g., `"2021"`, `"2024"`). |
-| `sse_route_overrides` | `HashMap<String, String>` | Map from event function name to custom SSE route path. |
-| `ts_skip_commands` | `Vec<String>` | IPC command names to skip in TypeScript client generation. |
+| `sse_route_overrides` | `HashMap<String, String>` | Map from event function name to custom SSE route path. Values use colon-style params (`:id`); see [route parameter syntax](#route-parameter-syntax). |
 | `route_prefix` | `Option<RoutePrefix>` | Optional route prefix for project-scoped routes. |
 | `store_type` | `Option<String>` | Store type for entity-scoped functions. |
 | `store_import` | `Option<String>` | Import path for the Store type. |
 | `pagination` | `Option<PaginationConfig>` | Pagination support for list operations. |
-| `schema_entities` | `Vec<EntityDef>` | Parsed schema entities used by the admin-registry client generator to emit per-field UI metadata. Pass `schema.entities.clone()` from the [`SchemaOutput`](/reference/intermediate-representations/#schemaoutput) returned by `parse_schema`. Without it, `admin-registry.ts` ships with empty `fields: []` per entity. The [`Pipeline`](/reference/public-api/#pipeline) builder fills this in automatically. Server transports (Axum, Tauri IPC, MCP) and the transport TypeScript clients do not consume it -- only the admin-registry generator does. |
 
 <Aside type="note">
-The supporting types below (`NamingConfig`, `ServerGenerator`, `ClientGenerator`, `RoutePrefix`, `PrefixParam`, `PaginationConfig`) live in the `ontogen::servers::*` module and are re-exported at the module level. The `ontogen::servers::config::*` and `ontogen::servers::types::*` paths used in earlier docs are now `pub(crate)` -- always import from `ontogen::servers::Foo` (or via `use ontogen::servers::{Foo, Bar};`).
+The supporting types below (`NamingConfig`, `ServerGenerator`, `ClientGenerator`, `RoutePrefix`, `PrefixParam`, `PaginationConfig`) live in the `ontogen::servers::*` module and are re-exported at the module level. The `ontogen::servers::config::*` and `ontogen::servers::types::*` paths used in earlier docs are now `pub(crate)` -- always import from `ontogen::servers::Foo` (or via `use ontogen::servers::{Foo, Bar};`). `ClientGenerator` lives at `ontogen::clients::ClientGenerator`.
 </Aside>
 
 ### `NamingConfig`
@@ -189,7 +257,7 @@ Controls how entity names are transformed for URLs, labels, and module names. Li
 | `singular_overrides` | `HashMap<String, String>` | Module name to singular form. |
 | `label_overrides` | `HashMap<String, String>` | Module name to human label (e.g., `"work_session"` to `"Work Session"`). |
 | `plural_label_overrides` | `HashMap<String, String>` | Module name to human plural label. |
-| `singleton_modules` | `HashSet<String>` | Module names declared as singletons (single-entity modules like `database`, `autostart`, `vault`). The HTTP generator emits singular kebab URLs (`/api/database/path`) instead of the pluralized form. A source-side `// ontogen:singleton` marker reaches the same effect via `ApiModule::is_singleton`; both inputs are OR'd together before generators run. See the [singleton modules guide](/guides/api-layer/#singleton-modules-ontogensingleton). |
+| `singleton_modules` | `HashSet<String>` | Module names declared as singletons (single-entity modules like `database`, `autostart`, `vault`). The HTTP generator emits singular kebab URLs (`/api/database/path`) instead of the pluralized form. A source-side `// ontogen:singleton` marker reaches the same effect via `ApiModule::is_singleton`; both inputs are OR'd together before generators run. See the [singleton modules guide](/guides/api-layer/#singleton-modules--ontogensingleton). |
 | `command_overrides` | `HashMap<String, String>` | Per-function override for the emitted IPC command / TS method name. Keys are `"module::fn_name"` (e.g., `"journal::get_tag_history"`); values replace the default `{entity}_{fn_name}` scheme. The source-side `#[ontogen(rename = "...")]` attribute always wins -- the config entry is silently ignored when the attribute is set. HTTP route paths and the underlying Rust function name are unaffected. See [Renaming a command](/guides/api-layer/#renaming-a-command-ontogenrename--). |
 
 Uses `cruet` for Rails-style inflection by default. Override maps take precedence.
@@ -238,31 +306,21 @@ pub enum ServerGenerator {
 | `TauriIpc` | Rust file | `#[tauri::command]` handlers with `State` extraction and `specta` annotations. |
 | `Mcp` | Rust file | MCP tool definitions with JSON Schema parameters. |
 
-### `ClientGenerator`
-
-```rust
-pub enum ClientGenerator {
-    HttpTauriIpcSplit { output: PathBuf, bindings_path: PathBuf },
-    HttpTs { output: PathBuf, bindings_path: PathBuf },
-    AdminRegistry { output: PathBuf },
-}
-```
-
-| Variant | Output | Description |
-|---------|--------|-------------|
-| `HttpTauriIpcSplit` | TypeScript file | Unified client that uses HTTP in browsers and Tauri IPC in desktop apps. |
-| `HttpTs` | TypeScript file | HTTP-only TypeScript client. |
-| `AdminRegistry` | TypeScript file | Entity metadata for admin UI components. |
-
 ### `RoutePrefix`
 
-Optional prefix for project-scoped routes (e.g., `/api/projects/:project_id/nodes`).
+Optional prefix for project-scoped routes (e.g., `/api/projects/{project_id}/nodes`).
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `segments` | `String` | Path segments to insert (e.g., `"projects/:project_id"`). |
 | `state_accessor` | `String` | State method for validation (e.g., `"store_for"` produces `state.store_for(&project_id)?`). |
 | `params` | `Vec<PrefixParam>` | Parameters extracted from segments. |
+
+#### Route parameter syntax
+
+`RoutePrefix::segments` and `sse_route_overrides` take **colon-style** parameters (`projects/:project_id`), while the generated axum router emits axum 0.8's **brace style** (`/api/projects/{project_id}/nodes`).
+
+That asymmetry is deliberate: `axum_path()` normalizes every route string at emission, so build scripts written before the axum 0.8 cutover keep working unchanged. Write colons in config; expect braces in generated code and in [`ServersOutput.http_routes`](/reference/intermediate-representations/#httproutemeta).
 
 ### `PrefixParam`
 
@@ -278,6 +336,142 @@ Optional prefix for project-scoped routes (e.g., `/api/projects/:project_id/node
 |-------|------|-------------|
 | `default_limit` | `u32` | Default page size when `limit` is not specified in the request. |
 | `max_limit` | `u32` | Maximum allowed page size. Requests above this are clamped. |
+
+---
+
+## `ClientsConfig`
+
+Used by [`gen_clients()`](/reference/public-api/#gen_clients). The sibling of `ServersConfig` for the **client-side** surface: TypeScript bindings, the HTTP and HTTP+IPC transport clients, and the admin registry.
+
+The two configs overlap on naming, state, and routing because those decisions drive both sides of the wire -- URL pluralization, pagination wrappers, route prefixes. The shared types are re-exported from `ontogen::servers`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `api_dir` | `PathBuf` | Directory to scan for API source files when not using `ApiOutput`. |
+| `state_type` | `String` | The `AppState` type name (e.g., `"AppState"`). |
+| `service_import_path` | `String` | Import path for service modules (e.g., `"crate::api::v1"`). |
+| `types_import_path` | `String` | Import path for schema types (e.g., `"crate::schema"`). |
+| `state_import` | `String` | Import path for the state type (e.g., `"crate::AppState"`). |
+| `naming` | `NamingConfig` | Naming overrides. Same type and semantics as on [`ServersConfig`](#namingconfig). |
+| `generators` | `Vec<ClientGenerator>` | Which client generators to run. See [`ClientGenerator`](#clientgenerator) below. |
+| `ts_formatter` | `TsFormatter` | How to format the generated TypeScript. See [`TsFormatter`](#tsformatter) below. Defaults to `TsFormatter::None`. |
+| `sse_route_overrides` | `HashMap<String, String>` | Map from event function name to custom SSE route path. |
+| `ts_skip_commands` | `Vec<String>` | IPC command names to omit from the generated TypeScript. Skipped commands still get server-side handlers. |
+| `route_prefix` | `Option<RoutePrefix>` | Optional route prefix. Same type as on [`ServersConfig`](#routeprefix). |
+| `store_type` | `Option<String>` | Store type for entity-scoped functions. |
+| `store_import` | `Option<String>` | Import path for the Store type. |
+| `pagination` | `Option<PaginationConfig>` | Pagination for list operations. Same type as on [`ServersConfig`](#paginationconfig). |
+| `schema_entities` | `Vec<EntityDef>` | Parsed schema entities, used by the admin-registry generator for per-field UI metadata. Pass `schema.entities.clone()` from the [`SchemaOutput`](/reference/intermediate-representations/#schemaoutput). Leaving it empty ships `admin-registry.ts` with empty `fields: []` per entity. The [`Pipeline`](/reference/public-api/#pipeline) builder fills it in automatically. |
+| `pool_extra_roots` | `Vec<PathBuf>` | Extra source roots for the ontogen-ts type pool, beyond `CARGO_MANIFEST_DIR/src`. See [`pool_extra_roots`](#pool_extra_roots) below. |
+| `pool_exclude_paths` | `Vec<PathBuf>` | Source paths to drop from the pool after scanning. See [`pool_exclude_paths`](#pool_exclude_paths) below. |
+
+```rust
+ClientsConfig {
+    api_dir: "src/api/v1".into(),
+    state_type: "AppState".into(),
+    service_import_path: "crate::api::v1".into(),
+    types_import_path: "crate::schema".into(),
+    state_import: "crate::AppState".into(),
+    naming: NamingConfig::default(),
+    generators: vec![
+        ClientGenerator::HttpTauriIpcSplit {
+            output: "../src-nuxt/app/generated/transport.ts".into(),
+            bindings_path: "../src-nuxt/app/generated/types.ts".into(),
+        },
+        ClientGenerator::AdminRegistry {
+            output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
+        },
+    ],
+    ts_formatter: ontogen::TsFormatter::None,
+    sse_route_overrides: Default::default(),
+    ts_skip_commands: vec![],
+    route_prefix: None,
+    store_type: Some("Store".into()),
+    store_import: Some("crate::store::Store".into()),
+    pagination: None,
+    // Pipeline auto-fills this from the parsed schema.
+    schema_entities: Vec::new(),
+    pool_extra_roots: Vec::new(),
+    pool_exclude_paths: Vec::new(),
+}
+```
+
+### `ClientGenerator`
+
+Lives at `ontogen::clients::ClientGenerator`.
+
+```rust
+pub enum ClientGenerator {
+    HttpTauriIpcSplit { output: PathBuf, bindings_path: PathBuf },
+    HttpTs { output: PathBuf, bindings_path: PathBuf },
+    AdminRegistry { output: PathBuf },
+}
+```
+
+| Variant | Output | Description |
+|---------|--------|-------------|
+| `HttpTauriIpcSplit` | TypeScript file | Unified client that uses HTTP in browsers and Tauri IPC in desktop apps. |
+| `HttpTs` | TypeScript file | HTTP-only TypeScript client. |
+| `AdminRegistry` | TypeScript file | Entity metadata for admin UI components. |
+
+`bindings_path` is an **output**, not an input -- Ontogen rewrites that file on every build. See the [TypeScript bindings guide](/guides/typescript-bindings/).
+
+### `TsFormatter`
+
+Ontogen does **not** format generated TypeScript for you. The default emits exactly what the generators produced:
+
+```rust
+pub enum TsFormatter {
+    None,                        // emit as generated -- the default
+    Custom { /* ... */ },        // format in-process via a caller-supplied hook
+    Command(Vec<String>),        // shell out to an external formatter
+}
+```
+
+<Aside type="caution">
+Earlier versions formatted TypeScript in-process (first `prettier`, briefly a feature-gated `biome`). Both are gone. If your generated TypeScript suddenly looks unformatted after upgrading, this field is why -- set it rather than reformatting by hand.
+</Aside>
+
+**Shell out to an external formatter.** The output file's resolved path is appended as the final argument, so tools like prettier can resolve their own config. The command runs from the nearest ancestor `node_modules` directory when one exists:
+
+```rust
+ts_formatter: TsFormatter::Command(vec![
+    "prettier".into(),
+    "--stdin-filepath".into(),
+]),
+```
+
+**Format in-process** with a library of your choice. The hook receives the source and the resolved output path:
+
+```rust
+ts_formatter: TsFormatter::custom(|src, _path| {
+    my_formatter::format(src).map_err(|e| e.to_string())
+}),
+```
+
+`TsFormatter::custom` fails the build if the hook returns `Err`. Use `TsFormatter::custom_with(f, OnFormatError::…)` to choose a different policy -- useful when a formatter is nice-to-have but shouldn't be able to break codegen.
+
+### `pool_extra_roots`
+
+By default the ontogen-ts type pool scans only `CARGO_MANIFEST_DIR/src`. Add sibling crates' source roots here when long-tail types live outside the consuming crate. Paths resolve relative to `CARGO_MANIFEST_DIR`.
+
+```rust
+pool_extra_roots: vec!["../my-schema/src".into()],
+```
+
+Each root's types are keyed under that crate's name, read from its `Cargo.toml` and normalized the way Cargo does (`-` to `_`); the consuming crate's own types are keyed under `crate`. So a sibling and the consumer can both define `lint::Severity` without colliding, and references resolve the way rustc would -- `my_schema::lint::Severity` names the sibling's, a bare `Severity` names the consumer's.
+
+### `pool_exclude_paths`
+
+Pool entries whose module path lies under any of these paths are dropped before the long-tail resolver runs. Rooted at `CARGO_MANIFEST_DIR`, mirroring `pool_extra_roots`.
+
+The canonical use is unavoidable for SeaORM consumers: `gen_seaorm` emits a `Relation` enum per entity by convention, so any consumer with its own domain type named `Relation` would see ambiguous matches and abort. Exclude the directory you pointed `gen_seaorm` at:
+
+```rust
+pool_exclude_paths: vec!["src/persistence/db/entities/generated".into()],
+```
+
+`Pipeline` users get this populated automatically from their `seaorm()` stage; direct callers set it explicitly.
 
 ---
 
