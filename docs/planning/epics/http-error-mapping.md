@@ -14,6 +14,9 @@ tags: [servers, http, errors, dx]
 specification … the wire error shape is consumer-controlled rather than
 ontogen-imposed", [roadmap](../../roadmap.md))
 **Status:** proposed — design pass complete, no implementation started
+**Design source:** [design document](../../http-error-mapping-design.md) —
+exact surfaces, generated-output spec, scanning semantics, call-site
+routing, test plan
 
 ## Problem
 
