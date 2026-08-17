@@ -23,15 +23,15 @@ body = """
 {% endif -%}
 
 {% set breaking = commits | filter(attribute="breaking", value=true) -%}
-{% if breaking | length > 0 %}
+{%- if breaking | length > 0 %}
     ### ⚠ BREAKING CHANGES
     {% for commit in breaking %}
         - {{ commit.message | split(pat="\n") | first | trim }}\
-        {% if commit.breaking_description and commit.breaking_description != commit.message %}
+        {%- if commit.breaking_description and commit.breaking_description != commit.message %}
           {{ commit.breaking_description | trim }}\
-        {% endif %}
+        {%- endif %}
     {% endfor %}
-{% endif %}
+{%- endif -%}
 {% for group, commits in commits | group_by(attribute="group") %}
     ### {{ group | striptags | trim }}
     {% for commit in commits %}
