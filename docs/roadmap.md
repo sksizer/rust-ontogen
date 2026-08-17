@@ -62,9 +62,9 @@ audit trails, metrics). First-class error-type specification, threaded
 through the full generation stack so downstream consumers can pin domain
 errors at the wire boundary.
 
-| Epic              | Status                    |
-|-------------------|---------------------------|
-| (none drafted)    | planned — not yet drafted |
+| Epic                                                                            | Status   |
+|---------------------------------------------------------------------------------|----------|
+| [Consumer-controlled HTTP error responses](planning/epics/http-error-mapping.md) | proposed |
 
 **Exit criteria:** a consumer can register hooks at any CRUD entry point
 without subclassing or wrapping the store; the wire error shape is
