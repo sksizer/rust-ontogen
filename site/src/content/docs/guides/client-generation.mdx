@@ -40,6 +40,33 @@ let clients_config = ClientsConfig {
 
 `ClientGenerator` lives at `ontogen::clients::ClientGenerator` (re-exported at the module level). The internal path `ontogen::clients::config::ClientGenerator` is `pub(crate)` and no longer accessible to downstream crates.
 
+## Formatting the output
+
+Ontogen does not format the TypeScript it generates. `ClientsConfig::ts_formatter` defaults to `TsFormatter::None`, which writes each file exactly as the generators produced it.
+
+That's usually what you want when the consuming project runs its own formatter over the tree. If you'd rather the generated files land already matching your style:
+
+```rust
+// Shell out to an external formatter. The output file's resolved path is
+// appended as the final argument, so prettier can resolve its own config.
+// Runs from the nearest ancestor node_modules directory when one exists.
+ts_formatter: ontogen::TsFormatter::Command(vec![
+    "prettier".into(),
+    "--stdin-filepath".into(),
+]),
+
+// Or format in-process with a library of your choice.
+ts_formatter: ontogen::TsFormatter::custom(|src, _path| {
+    my_formatter::format(src).map_err(|e| e.to_string())
+}),
+```
+
+`TsFormatter::custom` fails the build if the hook returns `Err`. `TsFormatter::custom_with(f, OnFormatError::…)` lets you pick a laxer policy for cases where formatting is nice-to-have but shouldn't be able to break codegen.
+
+<Aside type="note">
+Whatever formatter you configure runs **in memory, before** the write-if-changed comparison. So a rebuild that produces identical formatted output touches no files and trips no watchers -- the same property [`rustfmt`](/concepts/design-philosophy/) gives the Rust side.
+</Aside>
+
 ## TypeScript HTTP client
 
 The `HttpTs` generator produces a typed, fetch-based HTTP client. For each API function, it generates a TypeScript function that makes the appropriate HTTP request.
@@ -265,7 +292,7 @@ Skipped commands are omitted from both the HTTP client and the split transport. 
 The client generators discover functions through the same `ApiModule` list that the server generators use. For each function, the generator:
 
 1. Determines the HTTP method and path from `OpKind`.
-2. Maps Rust parameter types to TypeScript types using the `rust_type_to_ts` function.
+2. Renders Rust parameter and return types to TypeScript through [`ontogen_ts::render_type_str`](/guides/typescript-bindings/#rendering-a-single-type) -- the same classifier that emits `bindings.ts`, so a parameter's type in the client always matches the same type in the bindings.
 3. Checks which TypeScript types are available in `bindings.ts`.
 4. Generates a function with matching name, parameters, and return type.
 

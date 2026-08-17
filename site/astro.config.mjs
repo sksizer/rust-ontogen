@@ -88,6 +88,9 @@ export default defineConfig({
 					label: 'Examples',
 					items: [
 						{ label: 'Iron Log', slug: 'examples/iron-log' },
+						{ label: 'Iron Log MD', slug: 'examples/iron-log-md' },
+						{ label: 'Tasks Tracker', slug: 'examples/tasks-tracker' },
+						{ label: 'Notes KB', slug: 'examples/notes-kb' },
 					],
 				},
 				{ label: 'Roadmap', slug: 'roadmap' },

@@ -83,7 +83,7 @@ let seaorm = gen_seaorm(&schema.entities, &SeaOrmConfig {
 pub fn gen_markdown_io(
     entities: &[EntityDef],
     config: &MarkdownIoConfig,
-) -> Result<(), CodegenError>
+) -> Result<MarkdownIoOutput, CodegenError>
 ```
 
 Generates Markdown I/O code for content-as-code workflows:
@@ -92,22 +92,28 @@ Generates Markdown I/O code for content-as-code workflows:
 - **Writers** -- serialize your schema type back to Markdown with YAML frontmatter.
 - **Filesystem operations** -- read/write entities as Markdown files on disk, with directory-based organization.
 
-This generator is a sibling of `gen_seaorm` -- it consumes `SchemaOutput` independently and produces no output struct. Use it when your entities live in Markdown files (wikis, knowledge bases, content repos) rather than (or in addition to) a database.
+This generator is the sibling of `gen_seaorm`: both consume `SchemaOutput` independently, and both return metadata that `gen_store` consumes through [`StoreConfig::backend`](/reference/configuration/#backend). Use it when your entities live in Markdown files -- wikis, knowledge bases, planning vaults -- rather than (or in addition to) a database.
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `entities` | `&[EntityDef]` | Entity definitions from `parse_schema`. |
-| `config` | `&MarkdownIoConfig` | Output directory for generated code. |
+| `config` | `&MarkdownIoConfig` | Output directory plus the runtime vault shape (root, layout, id strategy, list cap). |
 
-**Returns:** `()`. This generator only writes files; it produces no IR for downstream consumption.
+**Returns:** `MarkdownIoOutput` -- the vault layout, id strategy, and per-entity directory mapping. Pass it into `Backend::Markdown` to wire the generated store at the markdown vault runtime; the markdown emitter genuinely needs this metadata, so unlike `SeaOrmOutput` it isn't optional.
 
 ```rust
-gen_markdown_io(&schema.entities, &MarkdownIoConfig {
-    output_dir: "src/persistence/markdown".into(),
+let md = gen_markdown_io(&schema.entities, &MarkdownIoConfig {
+    output_dir: "src/persistence/markdown/generated".into(),
+    vault_root: "data/vault".into(),
+    layout: ontogen::MarkdownLayout::PerEntityDir,
+    id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
+    list_cap: 10_000,
 })?;
 ```
+
+See the [markdown backend guide](/guides/markdown-backend/) for the full picture.
 
 ---
 
@@ -152,7 +158,6 @@ gen_dtos(&schema.entities, &DtoConfig {
 ```rust
 pub fn gen_store(
     entities: &[EntityDef],
-    seaorm: Option<&SeaOrmOutput>,
     config: &StoreConfig,
 ) -> Result<StoreOutput, CodegenError>
 ```
@@ -171,21 +176,34 @@ Generates the CRUD store layer:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `entities` | `&[EntityDef]` | Entity definitions from `parse_schema`. |
-| `seaorm` | `Option<&SeaOrmOutput>` | When provided, uses exact table/column names. When `None`, falls back to naming conventions. |
-| `config` | `&StoreConfig` | Output directory and optional hooks directory. |
+| `config` | `&StoreConfig` | Output directory, optional hooks directory, and the [`Backend`](/reference/configuration/#backend) the CRUD bodies are wired to. |
 
 **Returns:** `StoreOutput` with metadata about generated methods, scaffolded hooks, and change channels.
 
 ```rust
-let store = gen_store(&schema.entities, Some(&seaorm), &StoreConfig {
+// SeaORM-backed
+let store = gen_store(&schema.entities, &StoreConfig {
     output_dir: "src/store/generated".into(),
     hooks_dir: Some("src/store/hooks".into()),
     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+    backend: ontogen::Backend::Seaorm(Some(seaorm)),
+    wikilink_policy: None,
+})?;
+
+// Markdown-backed -- same call, one field different
+let store = gen_store(&schema.entities, &StoreConfig {
+    output_dir: "src/store/generated".into(),
+    hooks_dir: Some("src/store/hooks".into()),
+    schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+    backend: ontogen::Backend::Markdown(md),
+    wikilink_policy: None,
 })?;
 ```
 
 <Aside type="note">
-The `seaorm` parameter is `Option` by design. When you provide it, the store generator uses structured metadata for exact table names, column names, and junction table references. When you skip it, it derives these from entity naming conventions. Either way works -- the structured metadata just makes the output more precise.
+The backend is a **generation-time** choice (ADR 0001), which is why it travels in the config rather than as a separate parameter. `Backend::Seaorm`'s payload is optional enrichment: with it the store generator uses exact table names, column names, and junction references; without it, it derives them from naming conventions. `Backend::Markdown`'s payload is required -- the emitter needs the vault layout and per-entity directory mapping.
+
+Everything above the store -- `gen_api`, `gen_servers`, `gen_clients` -- emits byte-identical output for either backend. That invariant is CI-enforced by `tests/backend_parity.rs`.
 </Aside>
 
 ---
@@ -300,28 +318,41 @@ Sibling of [`gen_servers`](#gen_servers) for the client-side surface. Reads the 
 |-----------|------|-------------|
 | `api` | `Option<&ApiOutput>` | Structured API metadata. When `None`, falls back to scanning source files with `syn`. Reserved for future enrichment; currently ignored. |
 | `scan_dirs` | `&[PathBuf]` | Additional directories to scan. Reserved for future enrichment; currently ignored. |
-| `config` | `&ClientsConfig` | Client configuration -- which client generators to run, `ts_skip_commands`, `schema_entities`, `pool_extra_roots`, etc. The `Pipeline` builder forwards `schema.entities` automatically. |
+| `config` | `&ClientsConfig` | Client configuration -- which client generators to run, plus `ts_formatter`, `ts_skip_commands`, `schema_entities`, `pool_extra_roots`, `pool_exclude_paths`. See the [`ClientsConfig` reference](/reference/configuration/#clientsconfig) for every field. The `Pipeline` builder forwards `schema.entities` automatically. |
 
 ```rust
 gen_clients(Some(&api), &[], &ClientsConfig {
     api_dir: "src/api/v1".into(),
     state_type: "AppState".into(),
-    // ... shared with ServersConfig ...
+    service_import_path: "crate::api::v1".into(),
+    types_import_path: "crate::schema".into(),
+    state_import: "crate::AppState".into(),
+    naming: NamingConfig::default(),
     generators: vec![
         ClientGenerator::HttpTauriIpcSplit {
-            output: "../src-nuxt/app/transport/generated.ts".into(),
-            bindings_path: "../src-nuxt/app/types/bindings.ts".into(),
+            output: "../src-nuxt/app/generated/transport.ts".into(),
+            bindings_path: "../src-nuxt/app/generated/types.ts".into(),
         },
         ClientGenerator::AdminRegistry {
-            output: "../src-nuxt/layers/admin/generated/admin-registry.ts".into(),
+            output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
         },
     ],
+    ts_formatter: ontogen::TsFormatter::None,
+    sse_route_overrides: Default::default(),
     ts_skip_commands: vec![],
+    route_prefix: None,
+    store_type: Some("Store".into()),
+    store_import: Some("crate::store::Store".into()),
+    pagination: None,
     schema_entities: schema.entities.clone(),
     pool_extra_roots: vec![],
-    // ... other config fields
+    pool_exclude_paths: vec!["src/persistence/db/entities/generated".into()],
 })?;
 ```
+
+<Aside type="caution">
+`ts_formatter` defaults to `TsFormatter::None` -- generated TypeScript is emitted exactly as produced, unformatted. Set [`TsFormatter::Command`](/reference/configuration/#tsformatter) or `TsFormatter::custom` if you want it to match your project's style.
+</Aside>
 
 ---
 
@@ -335,7 +366,8 @@ impl Pipeline {
     pub fn schema_module_path(self, path: impl Into<String>) -> Self;
     pub fn seaorm(self, entity_output: impl Into<PathBuf>, conversion_output: impl Into<PathBuf>) -> Self;
     pub fn seaorm_skip_conversions(self, skip: Vec<String>) -> Self;
-    pub fn markdown_io(self, output_dir: impl Into<PathBuf>) -> Self;
+    pub fn markdown_io(self, output_dir: impl Into<PathBuf>, options: MarkdownIoOptions) -> Self;
+    pub fn store_backend(self, choice: StoreBackendChoice) -> Self;
     pub fn dtos(self, output_dir: impl Into<PathBuf>) -> Self;
     pub fn store<P: Into<PathBuf>>(self, output_dir: impl Into<PathBuf>, hooks_dir: Option<P>) -> Self;
     pub fn api(self, output_dir: impl Into<PathBuf>, state_type: impl Into<String>) -> Self;
@@ -357,10 +389,33 @@ Sensible defaults are applied automatically:
 - `schema_module_path` defaults to [`DEFAULT_SCHEMA_MODULE_PATH`](#default_schema_module_path) (`"crate::schema"`) and propagates to both `StoreConfig` and `ApiConfig`.
 - When the `store` stage is enabled and the API stage hasn't overridden it, `store_type` defaults to `Some("Store")`.
 - When the `clients` stage is enabled, the builder forwards `schema.entities` into `ClientsConfig.schema_entities` so the admin-registry generator gets the field metadata it needs (without it, admin-registry.ts ships with empty `fields: []` per entity).
+- `ClientsConfig.pool_exclude_paths` is populated from the `seaorm()` stage's `entity_output`, so the per-entity `Relation` enums SeaORM emits can't make the long-tail resolver ambiguous.
+- The store backend is **inferred** when exactly one persistence stage is configured. Enable both `seaorm(...)` and `markdown_io(...)` and you must disambiguate with `.store_backend(StoreBackendChoice::Seaorm)` or `.store_backend(StoreBackendChoice::Markdown)`.
 
 ```rust
 ontogen::Pipeline::new("src/schema")
     .seaorm("src/persistence/db/entities/generated", "src/persistence/db/conversions/generated")
+    .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
+    .api("src/api/v1/generated", "AppState")
+    .build()
+    .expect("ontogen pipeline failed");
+```
+
+The same pipeline on the markdown backend -- `seaorm()` swaps for `markdown_io()`, nothing else changes:
+
+```rust
+use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout};
+
+ontogen::Pipeline::new("src/schema")
+    .markdown_io(
+        "src/persistence/markdown/generated",
+        MarkdownIoOptions {
+            vault_root: "data/vault".into(),
+            layout: MarkdownLayout::PerEntityDir,
+            id_strategy: IdStrategy::SlugFromField("title".into()),
+            list_cap: 10_000,
+        },
+    )
     .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
     .api("src/api/v1/generated", "AppState")
     .build()

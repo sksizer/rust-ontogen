@@ -190,7 +190,7 @@ Returned by `gen_servers()`. Describes all transport endpoints that were generat
 | Field | Type | Description |
 |-------|------|-------------|
 | `method` | `String` | HTTP method (e.g., `"GET"`, `"POST"`, `"PUT"`, `"DELETE"`). |
-| `path` | `String` | Route path (e.g., `"/api/workouts"`, `"/api/workouts/:id"`). |
+| `path` | `String` | Route path (e.g., `"/api/workouts"`, `"/api/workouts/{id}"`). |
 | `handler_name` | `String` | Handler function name in the generated Rust code. |
 | `module_name` | `String` | API module this route belongs to. |
 
@@ -255,16 +255,16 @@ pub enum OpKind {
 | Variant | HTTP Method | Route Pattern | Description |
 |---------|------------|---------------|-------------|
 | `List` | `GET` | `/entities` | Returns all entities. |
-| `GetById` | `GET` | `/entities/:id` | Returns one entity by ID. |
+| `GetById` | `GET` | `/entities/{id}` | Returns one entity by ID. |
 | `Create` | `POST` | `/entities` | Creates a new entity. |
-| `Update` | `PUT` | `/entities/:id` | Updates an existing entity. |
-| `Delete` | `DELETE` | `/entities/:id` | Deletes an entity. |
-| `JunctionList { child_segment }` | `GET` | `/parents/:parent_id/{child_segment}` | List child entities of a parent through a junction. |
-| `JunctionAdd { child_segment }` | `POST` | `/parents/:parent_id/{child_segment}` | Add a child to a parent through a junction. |
-| `JunctionRemove { child_segment }` | `DELETE` | `/parents/:parent_id/{child_segment}/:child_id` | Remove a child from a parent through a junction. |
-| `CustomGet` | `GET` | `/entities/:action` | Custom read operation with non-standard parameters. |
-| `CustomPost` | `POST` | `/entities/:action` | Custom write operation with non-standard parameters. |
-| `EventStream` | `GET` (SSE) | `/events/:name` | Server-Sent Events stream. |
+| `Update` | `PUT` | `/entities/{id}` | Updates an existing entity. |
+| `Delete` | `DELETE` | `/entities/{id}` | Deletes an entity. |
+| `JunctionList { child_segment }` | `GET` | `/parents/{parent_id}/{child_segment}` | List child entities of a parent through a junction. |
+| `JunctionAdd { child_segment }` | `POST` | `/parents/{parent_id}/{child_segment}` | Add a child to a parent through a junction. |
+| `JunctionRemove { child_segment }` | `DELETE` | `/parents/{parent_id}/{child_segment}/{child_id}` | Remove a child from a parent through a junction. |
+| `CustomGet` | `GET` | `/entities/{action}` | Custom read operation with non-standard parameters. |
+| `CustomPost` | `POST` | `/entities/{action}` | Custom write operation with non-standard parameters. |
+| `EventStream` | `GET` (SSE) | `/events/{name}` | Server-Sent Events stream. |
 
 `OpKind` is assigned automatically during API scanning based on function name patterns and parameter shapes. For generated CRUD functions, the mapping is direct. Junction operations are recognized by name prefixes like `list_*`/`add_*`/`remove_*` paired with parent+child id parameters. For other scanned custom functions, the classifier looks at the function name prefix (`get_*` becomes `CustomGet`, others become `CustomPost`) and whether the return type looks like a stream.
 

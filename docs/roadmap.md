@@ -11,7 +11,7 @@ TypeScript clients. The library runs as a `[build-dependencies]` of the
 consuming crate; one `cargo build` produces the full stack.
 
 The roadmap is organized in capability tiers. Each tier names its **exit
-criteria** and the [epics](planning/epics/) that compose it. Earlier tiers
+criteria** and the [epics](https://github.com/sksizer/rust-ontogen/tree/main/docs/planning/epics/) that compose it. Earlier tiers
 are foundation; later tiers build on what came before without breaking it.
 
 Status legend: `planned` · `in progress` · `shipped`
@@ -27,7 +27,7 @@ stack" foundation that everything else builds on.
 
 | Epic                                                            | Status      |
 |-----------------------------------------------------------------|-------------|
-| [TypeScript bindings pipeline](planning/epics/ts-pipeline.md)   | in progress |
+| [TypeScript bindings pipeline](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/epics/ts-pipeline.md)   | in progress |
 
 **Exit criteria:** a Tauri + frontend consumer can define entities in
 `src/schema/`, write custom API endpoints in `src/api/v1/`, and get a
@@ -38,20 +38,31 @@ Pumice validates it on a second consumer.
 
 ---
 
-## M2 — Pipeline ergonomics · *planned*
+## M2 — Pipeline ergonomics · *shipped*
 
 Cleaner API separation between servers and clients (the M1 entry points
-grew organically). Architecting the pipeline to allow other db/ORM mapping
-mechanisms beyond SeaORM. Smoothing the rough edges that the M1 pass
-exposes once real consumers (Pumice, iron-log, future adopters) hit them.
+grew organically). Architecting the pipeline to allow persistence backends
+beyond SeaORM. Smoothing the rough edges that the M1 pass exposed once real
+consumers (Pumice, iron-log, future adopters) hit them.
 
-| Epic              | Status                    |
-|-------------------|---------------------------|
-| (none drafted)    | planned — not yet drafted |
+| Epic                                                            | Status  |
+|-----------------------------------------------------------------|---------|
+| [Markdown as a store backend](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0001-markdown-as-store-backend.md) | shipped |
 
 **Exit criteria:** a consumer can swap in an alternative persistence layer
-(e.g., diesel, sqlx-native) without touching the rest of the pipeline; the
-server/client split is documented and stable.
+without touching the rest of the pipeline; the server/client split is
+documented and stable. **Both met.**
+
+- The `gen_servers` / `gen_clients` split landed with dedicated
+  `ServersConfig` / `ClientsConfig` types.
+- `StoreConfig::backend` selects the persistence backend at generation
+  time. The markdown vault backend ships behind it, and everything above
+  the store emits byte-identical output on either — enforced by
+  `tests/backend_parity.rs`.
+
+The backend seam is a closed enum by upstream design (ADR 0001,
+alternative C): a third backend — diesel, sqlx-native — is a PR against
+`Backend`, not an out-of-tree trait impl.
 
 ---
 
@@ -87,16 +98,21 @@ consumer-controlled rather than ontogen-imposed.
 
 ## Architecture principles
 
-Captured under [`architecture/`](architecture/) as ADRs once they earn the
-formal treatment. None written yet; the principles are currently lived
+Captured under [`architecture/`](https://github.com/sksizer/rust-ontogen/tree/main/docs/architecture/) as ADRs once they earn the
+formal treatment. Principles that haven't yet warranted one are lived
 through consistent practice and through individual task docs.
+
+- [ADR 0001 — Markdown as a first-class store backend](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0001-markdown-as-store-backend.md)
+  · *accepted* — establishes the backend seam, the id-as-filename
+  constraint, and the "everything above the store is byte-identical"
+  invariant that M2 exits on.
 
 ## Planning artefacts
 
-- [`planning/README.md`](planning/README.md) — structural index: where
+- [`planning/README.md`](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/README.md) — structural index: where
   epics and tasks live, how they link
-- [`planning/epics/`](planning/epics/) — capability slices, one file per
+- [`planning/epics/`](https://github.com/sksizer/rust-ontogen/tree/main/docs/planning/epics/) — capability slices, one file per
   epic
-- [`planning/tasks/`](planning/tasks/) — PR-sized work units; the open /
-  closed backlog tables live in [`planning/tasks/README.md`](planning/tasks/README.md)
-- [`architecture/`](architecture/) — ADRs (none yet)
+- [`planning/tasks/`](https://github.com/sksizer/rust-ontogen/tree/main/docs/planning/tasks/) — PR-sized work units; the open /
+  closed backlog tables live in [`planning/tasks/README.md`](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/tasks/README.md)
+- [`architecture/`](https://github.com/sksizer/rust-ontogen/tree/main/docs/architecture/) — ADRs

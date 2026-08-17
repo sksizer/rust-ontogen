@@ -7,7 +7,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 Iron Log is a weight-lifting tracker built as a Tauri desktop app with a Nuxt frontend. It's the reference example for Ontogen -- a small but complete application that exercises the full pipeline from schema definitions through generated TypeScript client code.
 
-Four entity definitions produce 39 generated files. The entire backend -- persistence, CRUD, API, HTTP handlers, and IPC commands -- comes from those four annotated structs plus a `build.rs`.
+Four entity definitions produce 36 generated files. The entire backend -- persistence, CRUD, API, HTTP handlers, and IPC commands -- comes from those four annotated structs plus a `build.rs`.
 
 The source lives at `examples/iron-log/` in the Ontogen repository.
 
@@ -131,7 +131,7 @@ Notice `weight_grams: i32` instead of a float. Storing weight as integer grams a
 
 ## What gets generated
 
-From these four structs, `cargo build` produces 39 files across the project. Here's the breakdown.
+From these four structs, `cargo build` produces 36 files across the project. Here's the breakdown.
 
 ### SeaORM entities (6 files)
 
@@ -233,17 +233,19 @@ The HTTP file generates Axum route handlers. The IPC file generates Tauri comman
 
 The IPC file contains 20 commands (5 per entity x 4 entities). Each command extracts `State<'_, Arc<AppState>>`, gets the store, calls the API function, and maps errors to strings.
 
-### TypeScript client (1 file)
+### TypeScript client (3 files)
 
 ```
 ../src-nuxt/app/generated/transport.ts
+../src-nuxt/app/generated/types.ts
+../src-nuxt/app/admin/generated/admin-registry.ts
 ```
 
 A split transport layer that provides typed functions for every CRUD operation. Detects at runtime whether Tauri IPC is available and routes accordingly.
 
 ## The `build.rs`
 
-Iron Log's build script uses the `Pipeline` builder. The full file is around 70 lines and looks like this (verbatim from `examples/iron-log/src-tauri/build.rs`):
+Iron Log's build script uses the `Pipeline` builder. The full file is around 85 lines; here it is, verbatim from `examples/iron-log/src-tauri/build.rs` minus one long explanatory comment:
 
 ```rust
 use std::path::PathBuf;
@@ -298,36 +300,38 @@ fn main() {
                 output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
             },
         ],
+        ts_formatter: ontogen::TsFormatter::None,
         sse_route_overrides: Default::default(),
         ts_skip_commands: vec![],
         route_prefix: None,
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
         pagination: None,
-        // Pipeline auto-fills this from parsed schema entities.
         schema_entities: Vec::new(),
         pool_extra_roots: Vec::new(),
+        pool_exclude_paths: Vec::new(),
     };
 
-    Pipeline::new("src/schema")
-        .seaorm(
-            "src/persistence/db/entities/generated",
-            "src/persistence/db/conversions/generated",
-        )
+    let pipeline = Pipeline::new("src/schema")
+        .seaorm("src/persistence/db/entities/generated", "src/persistence/db/conversions/generated")
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
         .api("src/api/v1/generated", "AppState")
         .servers(servers_config)
-        .clients(clients_config)
-        .build()
-        .unwrap_or_else(|e| {
-            e.emit_cargo_warning();
-            panic!("ontogen pipeline failed: {e}");
-        });
+        .clients(clients_config);
+    pipeline.build().unwrap_or_else(|e| {
+        e.emit_cargo_warning();
+        panic!("ontogen pipeline failed: {e}");
+    });
 
     tauri_build::build();
 }
 ```
+
+Two fields worth noticing, because they're easy to miss and the compiler will demand them:
+
+- **`ts_formatter`** — `TsFormatter::None` emits the TypeScript exactly as generated. Iron Log's Nuxt app runs its own formatter over the tree, so there's nothing for Ontogen to do here.
+- **`schema_entities`** — left empty because `Pipeline` fills it from the schema stage. A direct `gen_clients` caller has to pass `schema.entities.clone()` or the admin registry ships with no field metadata.
 
 Pipeline runs every stage in dependency order regardless of method-call order. It also threads each stage's typed output (`SchemaOutput → SeaOrmOutput → ApiOutput → ServersOutput / ()`) into the next, applies `schema_module_path` defaults to `StoreConfig`/`ApiConfig`, and forwards `schema.entities` into `ClientsConfig.schema_entities` so the admin-registry generator gets the field metadata it needs.
 
@@ -369,7 +373,6 @@ iron-log/
         db/
           entities/generated/             # generated SeaORM entities
           conversions/generated/          # generated model conversions
-        fs_markdown/                      # markdown parser (for frontmatter)
       store/
         generated/                        # generated CRUD methods
         hooks/                            # scaffolded lifecycle hooks
@@ -403,7 +406,7 @@ cd src-nuxt && npm install && cd ..
 cd src-tauri && cargo tauri dev
 ```
 
-The Tauri build triggers `build.rs`, which runs the Ontogen pipeline and generates all 39 files before compilation. The Nuxt dev server picks up the generated TypeScript client.
+The Tauri build triggers `build.rs`, which runs the Ontogen pipeline and generates all 36 files before compilation. The Nuxt dev server picks up the generated TypeScript client.
 
 <Aside type="note">
 Iron Log uses SQLite via SeaORM. You'll need to create the database schema before running the app. The SQL migrations aren't part of the example yet -- you'd need to create the tables manually or add SeaORM migrations. See the entity definitions for the expected table structures.

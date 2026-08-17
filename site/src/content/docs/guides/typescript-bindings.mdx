@@ -20,7 +20,7 @@ Both emitters write to the same file: schema-known first, then long-tail appende
 
 The pipeline:
 
-1. **Scan.** `scan_src_dir(CARGO_MANIFEST_DIR/src)` walks every `.rs` under `src/` and builds a pool keyed by canonical `TypePath` (`foo::bar::Baz`). All module-level structs, enums, and type aliases land in the pool regardless of visibility.
+1. **Scan.** `scan_src_dir(CARGO_MANIFEST_DIR/src)` walks every `.rs` under `src/` and builds a pool keyed by canonical `TypePath`. All module-level structs, enums, and type aliases land in the pool regardless of visibility. Keys are **rooted at the crate the type was scanned from** — the consuming crate's own types under `crate` (`crate::foo::bar::Baz`), each [extra root](#workspace-sibling-types) under that crate's Cargo name. That rooting is what lets a sibling and the consumer both define `lint::Severity` without colliding.
 2. **Root set.** The schema-known emitter computes a long-tail name list from two sources, unioned and de-duped:
    - **API surface** — every type ident referenced by an endpoint's params or return that isn't an entity or generated DTO.
    - **Schema-entity fields** — every type ident referenced by an `EntityDef.field`'s type that isn't itself a primitive, container, or another entity / generated DTO. This is what makes a field like `interval_kind: Option<IntervalKind>` on a schema entity pull `IntervalKind` into emission even if no API endpoint mentions it.
@@ -42,8 +42,9 @@ The phase-1 subset covers what's needed for typical CRUD + custom-endpoint surfa
 **Container types** (hardcoded):
 
 - `Option<T>` → `T | null`
-- `Vec<T>` → `T[]`
+- `Vec<T>` / `VecDeque<T>` → `T[]` (both serialize as a JSON array)
 - `HashMap<K, V>` / `BTreeMap<K, V>` → `Record<K, V>` where `K` is `String` or an id-like primitive.
+- `()` → `null` (serde serializes the unit type as JSON `null`). Non-empty tuples are rejected — use a named struct.
 
 **Primitives:**
 
@@ -57,20 +58,74 @@ The phase-1 subset covers what's needed for typical CRUD + custom-endpoint surfa
 
 **Type aliases** — followed.
 
-## Serde rename support
+## Serde support
 
-`ontogen-ts` reads `#[serde(...)]` attributes off your structs/enums and renames TS fields/variants accordingly. The supported attrs:
+`ontogen-ts` reads `#[serde(...)]` attributes off your structs and enums so the emitted TypeScript matches the wire payload, not the Rust spelling.
+
+### Renaming
 
 - `#[serde(rename = "...")]` on a field or variant.
 - `#[serde(rename_all = "<mode>")]` on a struct or enum.
-- `#[serde(skip)]` on a field — drops from the TS rendering.
 
-The eight `rename_all` modes are all supported (`lowercase`, `UPPERCASE`, `PascalCase`, `camelCase`, `snake_case`, `SCREAMING_SNAKE_CASE`, `kebab-case`, `SCREAMING-KEBAB-CASE`). The case-transform implementations are property-tested against `serde_json::to_string` so the TS output matches the wire payload exactly.
+All eight `rename_all` modes are supported (`lowercase`, `UPPERCASE`, `PascalCase`, `camelCase`, `snake_case`, `SCREAMING_SNAKE_CASE`, `kebab-case`, `SCREAMING-KEBAB-CASE`). The case-transform implementations are property-tested against `serde_json::to_string` so the TS output matches the wire payload exactly.
 
-**Not supported in phase 1:**
+`rename_all` on an enum renames its **variants**, not the fields inside a struct variant — matching serde, which needs a separate `rename_all_fields` for that.
 
-- Split rename (`rename(serialize = "...", deserialize = "...")`) — hard error.
-- Shape-changing attrs: `tag`, `content`, `untagged`, `flatten` — hard error. (Phase 2.)
+### Skipping
+
+`#[serde(skip)]` on a field drops it from the TS rendering entirely.
+
+### Optional fields — `#[serde(default)]`
+
+A field with `#[serde(default)]` (bare or the `default = "path"` form) renders as **TS-optional**, since the wire payload may omit it:
+
+```rust
+pub struct Query {
+    pub term: String,
+    #[serde(default)]
+    pub limit: u32,
+}
+```
+
+```typescript
+export type Query = { term: string; limit?: number };
+```
+
+Container-level `#[serde(default)]` on the struct itself defaults **every** field, exactly as serde does — a field doesn't need its own attribute:
+
+```rust
+#[derive(Deserialize)]
+#[serde(default)]
+pub struct Query {
+    pub term: String,   // → term?: string
+    pub limit: u32,     // → limit?: number
+}
+```
+
+Serde only accepts container-level `default` on structs, so this never applies to enum variants.
+
+### Flattening — `#[serde(flatten)]`
+
+A flattened field's keys are spliced into the parent object on the wire, so it renders as a TypeScript **intersection**:
+
+```rust
+pub struct Step {
+    pub id: String,
+    #[serde(flatten)]
+    pub meta: StepMeta,
+}
+```
+
+```typescript
+export type Step = StepMeta & { id: string };
+```
+
+The flattened field's own name never reaches the wire, so it never appears in the TS. If every field is flattened, the empty property object is dropped and the type is the bare intersection.
+
+### Not supported
+
+- Split rename (`rename(serialize = "...", deserialize = "...")`) — hard error. Workaround: two fields plus a `From` impl.
+- The remaining shape-changing enum attrs: `tag`, `content`, `untagged` — hard error.
 
 ## BigInt rendering
 
@@ -110,10 +165,10 @@ Ontogen ships sensible defaults for common crates; user overrides merge on top. 
 
 ## Workspace-sibling types
 
-By default `ontogen-ts` only scans `CARGO_MANIFEST_DIR/src`. If your schema types live in workspace-sibling crates and are brought into the consuming crate via `pub use`, declare the sibling source roots in `ServersConfig`:
+By default `ontogen-ts` only scans `CARGO_MANIFEST_DIR/src`. If your schema types live in workspace-sibling crates and are brought into the consuming crate via `pub use`, declare the sibling source roots in `ClientsConfig`:
 
 ```rust
-let servers_config = ServersConfig {
+let clients_config = ClientsConfig {
     // ... other fields ...
     pool_extra_roots: vec![
         "../crates/my-schema/src".into(),
@@ -122,7 +177,27 @@ let servers_config = ServersConfig {
 };
 ```
 
-Paths resolve relative to `CARGO_MANIFEST_DIR`. The walker scans the main `src/` first, then each extra root; the main pool wins on key collision.
+Paths resolve relative to `CARGO_MANIFEST_DIR` and point at the sibling's `src/`.
+
+Each root's types are keyed under that crate's name — read from its `Cargo.toml` `[package] name` and normalized the way Cargo does (`-` → `_`) — while the consuming crate's own types are keyed under `crate`. A sibling and the consumer can therefore both define `lint::Severity`, and a reference resolves the way rustc would:
+
+- `my_schema::lint::Severity` names the sibling's type outright.
+- A bare `Severity` means the consuming crate's, since a bare ident can't reach a foreign crate's type without a `use`.
+- `crate::` inside the sibling's own source means *that* crate.
+
+Two same-named types in one root, referenced with nothing to disambiguate, remain a hard `NameCollision`.
+
+## Excluding generated types from the pool
+
+`gen_seaorm` emits a `Relation` enum per entity by convention. If your own code also defines a `Relation`, the long-tail resolver sees ambiguous matches and the build aborts before any client generator runs.
+
+`ClientsConfig::pool_exclude_paths` drops pool entries whose module path lies under a given path, rooted at `CARGO_MANIFEST_DIR` the same way `pool_extra_roots` is. Point it at whatever directory you gave `gen_seaorm`:
+
+```rust
+pool_exclude_paths: vec!["src/persistence/db/entities/generated".into()],
+```
+
+[`Pipeline`](/concepts/pipeline/) users get this filled in automatically from the `seaorm()` stage. Only direct `gen_clients` callers need to set it.
 
 ## Escape hatches
 
@@ -174,13 +249,26 @@ error: failed to run custom build command for `my-app`
 The four error variants:
 
 - `UnsupportedShape` — the type's Rust shape isn't in the phase-1 subset. Fix: annotate with `#[ontogen::ts_opaque]`, refactor into a supported shape (e.g., named-field struct + `From` impl), or [file a phase-2 follow-up](https://github.com/sksizer/rust-ontogen/issues).
-- `UnsupportedSerdeAttr` — a serde attribute isn't supported in phase 1. Fix: drop the attribute, use a workaround (split-rename → two fields + `From` impl), or wait for phase 2 (`tag`/`content`/`untagged`/`flatten`).
+- `UnsupportedSerdeAttr` — a serde attribute isn't supported. Fix: drop the attribute, or use a workaround (split-rename → two fields + `From` impl). See [Not supported](#not-supported) for the current list.
 - `UnresolvedReference` — a referenced ident couldn't be resolved against the pool or the external-types table. Fix: add the type's crate to [`pool_extra_roots`](#workspace-sibling-types), add the canonical path to `EmitConfig::external_types`, or annotate the referencing type with `#[ts_opaque]`.
 - `NameCollision` — two reachable types render to the same TS name. Fix: annotate one with `#[ts_name = "..."]`.
 
 <Aside type="note">
-  Ontogen's downstream transport / client emitters (in `servers/generators/transport.rs` and `ts_client.rs`) carry their own fallback path that emits `Record<string, unknown>` for any type they can't find in `bindings.ts`. In the happy case `ontogen-ts` populates `bindings.ts` completely, so the fallback never fires. It exists as a defensive backstop against hand-edits to `bindings.ts` or root-set drift; if you see a `Record<string, unknown>` placeholder in the generated transport, it means the transport surface references a type `ontogen-ts` didn't include — usually a sign your `pool_extra_roots` or schema config needs adjusting.
+  Ontogen's downstream transport / client emitters (in `src/clients/generators/transport.rs` and `ts_client.rs`) carry their own fallback path that emits `Record<string, unknown>` for any type they can't find in `bindings.ts`. In the happy case `ontogen-ts` populates `bindings.ts` completely, so the fallback never fires. It exists as a defensive backstop against hand-edits to `bindings.ts` or root-set drift; if you see a `Record<string, unknown>` placeholder in the generated transport, it means the transport surface references a type `ontogen-ts` didn't include — usually a sign your `pool_extra_roots` or schema config needs adjusting.
 </Aside>
+
+## Rendering a single type
+
+Most callers never touch this, but `ontogen-ts` exposes two pool-free entry points for rendering one Rust type to its TS equivalent:
+
+```rust
+pub fn render_type(ty: &syn::Type, config: &EmitConfig) -> Result<String, EmitError>;
+pub fn render_type_str(rust_ty: &str, config: &EmitConfig) -> Result<String, EmitError>;
+```
+
+Both run the same classifier that renders a field inside a declaration — same containers, primitives, smart-pointer peeling, and external-types table — but need no type pool, because user-defined types render as their terminal ident exactly as they do in a declaration.
+
+This is what Ontogen itself uses to type API signatures in the generated clients, which is why a parameter's type in `transport.ts` always matches the same type inside `types.ts`. `render_type_str` exists for callers whose type arrived as a rendered token stream rather than a `syn::Type`.
 
 ## Migration from the OF-014 specta side-car
 

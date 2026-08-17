@@ -67,15 +67,18 @@ fn main() {
                 output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
             },
         ],
+        // Generated TS is emitted as-is unless you set a formatter here.
+        ts_formatter: ontogen::TsFormatter::None,
         sse_route_overrides: Default::default(),
         ts_skip_commands: vec![],
         route_prefix: None,
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
         pagination: None,
-        // Pipeline auto-fills this from parse_schema; leave empty.
+        // Pipeline auto-fills these two; leave them empty.
         schema_entities: Vec::new(),
         pool_extra_roots: Vec::new(),
+        pool_exclude_paths: Vec::new(),
     };
 
     Pipeline::new("src/schema")
@@ -98,11 +101,36 @@ fn main() {
 }
 ```
 
-That's roughly 70 lines for a full Tauri + Nuxt pipeline -- HTTP, IPC, TypeScript split client, admin registry. To skip a stage, omit its method call.
+That's roughly 80 lines for a full Tauri + Nuxt pipeline -- HTTP, IPC, TypeScript split client, admin registry. To skip a stage, omit its method call.
 
 <Aside type="tip">
 The builder's defaults: `schema_module_path` defaults to `ontogen::DEFAULT_SCHEMA_MODULE_PATH` (`"crate::schema"`) and propagates to both the store and API stages; when you opt into `store(...)`, the API stage's `store_type` defaults to `Some("Store")`. Override either with `.schema_module_path(...)` or `.api_store_type(Some(_))`.
+
+`Pipeline` also fills in `ClientsConfig.schema_entities` from the schema stage and `pool_exclude_paths` from the `seaorm()` stage, which is why both are left empty above. And it **infers the store backend** when exactly one persistence stage is configured -- if you enable both `seaorm(...)` and `markdown_io(...)`, disambiguate with `.store_backend(StoreBackendChoice::Seaorm)`.
 </Aside>
+
+### Formatting the generated TypeScript
+
+`ts_formatter` is the one field above with a behavioural default worth knowing: `TsFormatter::None` writes the TypeScript exactly as the generators produced it, with no formatting pass.
+
+Point it at your project's formatter if you'd rather the generated files match the rest of your tree:
+
+```rust
+// Shell out. The output file's resolved path is appended as the final
+// argument, so prettier can find your config. Runs from the nearest
+// ancestor node_modules directory when one exists.
+ts_formatter: ontogen::TsFormatter::Command(vec![
+    "prettier".into(),
+    "--stdin-filepath".into(),
+]),
+
+// Or format in-process with a library of your choice.
+ts_formatter: ontogen::TsFormatter::custom(|src, _path| {
+    my_formatter::format(src).map_err(|e| e.to_string())
+}),
+```
+
+`TsFormatter::custom` fails the build if the hook errors; `TsFormatter::custom_with(f, OnFormatError::…)` lets you pick a laxer policy when formatting is nice-to-have but shouldn't be able to break codegen.
 
 ## The explicit form
 
@@ -146,16 +174,6 @@ fn main() {
     );
 
     unwrap_codegen(
-        ontogen::gen_markdown_io(
-            &schema.entities,
-            &ontogen::MarkdownIoConfig {
-                output_dir: "src/persistence/fs_markdown/writers".into(),
-            },
-        ),
-        "gen_markdown_io",
-    );
-
-    unwrap_codegen(
         ontogen::gen_dtos(
             &schema.entities,
             &ontogen::DtoConfig {
@@ -166,14 +184,17 @@ fn main() {
     );
 
     // ── 3. Store layer ───────────────────────────────────────────
+    // `backend` is what decides whether the emitted CRUD talks to SeaORM
+    // or to a markdown vault. Here it carries the SeaOrmOutput from above.
     let _store = unwrap_codegen(
         ontogen::gen_store(
             &schema.entities,
-            Some(&seaorm),
             &ontogen::StoreConfig {
                 output_dir: "src/store/generated".into(),
                 hooks_dir: Some("src/store/hooks".into()),
                 schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+                backend: ontogen::Backend::Seaorm(Some(seaorm)),
+                wikilink_policy: None,
             },
         ),
         "gen_store",
@@ -247,6 +268,7 @@ fn main() {
                         output: "../src-nuxt/layers/admin/generated/admin-registry.ts".into(),
                     },
                 ],
+                ts_formatter: ontogen::TsFormatter::None,
                 sse_route_overrides: HashMap::new(),
                 ts_skip_commands: vec![],
                 route_prefix: None,
@@ -258,6 +280,12 @@ fn main() {
                 // otherwise admin-registry.ts ships with empty `fields: []`.
                 schema_entities: schema.entities.clone(),
                 pool_extra_roots: vec![],
+                // Also automatic under Pipeline. Without it, the per-entity
+                // `Relation` enums gen_seaorm emitted make the long-tail
+                // resolver ambiguous if you have your own `Relation` type.
+                pool_exclude_paths: vec![
+                    "src/persistence/db/entities/generated".into(),
+                ],
             },
         ),
         "gen_clients",
@@ -266,7 +294,10 @@ fn main() {
 ```
 
 <Aside type="caution">
-When calling `gen_clients` directly (not through `Pipeline`), you **must** populate `ClientsConfig.schema_entities` if any of your generators is `AdminRegistry`. Without it, the admin-registry generator silently emits empty `fields: []` for every entity and the admin UI has nothing to render. `Pipeline::clients(...)` fills this in automatically.
+Two `ClientsConfig` fields that `Pipeline` fills in for you and the explicit form must pass manually:
+
+- **`schema_entities`** -- required if any of your generators is `AdminRegistry`. Without it the generator silently emits empty `fields: []` for every entity and the admin UI has nothing to render.
+- **`pool_exclude_paths`** -- point it at your `gen_seaorm` `entity_output`. `gen_seaorm` emits a `Relation` enum per entity, so a consumer with its own `Relation` type otherwise hits an ambiguous-match abort.
 </Aside>
 
 Server-side supporting types -- `NamingConfig`, `ServerGenerator`, `RoutePrefix`, `PaginationConfig` -- live in `ontogen::servers::*` (re-exported at the module level). The client-side `ClientGenerator` lives in `ontogen::clients::*`. Both `ClientsConfig` and `ServersConfig` re-import the shared types (`NamingConfig`, `RoutePrefix`, etc.) from `ontogen::servers::*` -- a follow-up may relocate them to a shared module.
@@ -278,11 +309,11 @@ The pipeline has a natural flow, and while generators are independent functions,
 ```
 parse_schema  ─────────────────────────────────── required first
      │
-     ├── gen_seaorm       ─── independent, returns SeaOrmOutput
-     ├── gen_markdown_io  ─── independent, returns ()
-     ├── gen_dtos         ─── independent, returns ()
-     │
-     └── gen_store        ─── uses SeaOrmOutput (optional), returns StoreOutput
+     ├── gen_seaorm       ─── independent, returns SeaOrmOutput      ──┐
+     ├── gen_markdown_io  ─── independent, returns MarkdownIoOutput  ──┤
+     ├── gen_dtos         ─── independent, returns ()                  │
+     │                                          StoreConfig.backend  <─┘
+     └── gen_store        ─── returns StoreOutput
               │
               └── gen_api  ─── uses entities, returns ApiOutput
                        │
@@ -294,7 +325,11 @@ parse_schema  ──────────────────────
                                             admin-UI registry
 ```
 
-`parse_schema` always comes first because every other generator needs `SchemaOutput.entities`. After that, `gen_seaorm`, `gen_markdown_io`, and `gen_dtos` are independent -- they only need the entity list. `gen_store` benefits from `SeaOrmOutput` but works without it. `gen_api`, `gen_servers`, and `gen_clients` form a chain where `gen_api`'s output feeds both `gen_servers` (Rust transports) and `gen_clients` (TypeScript clients + admin registry); the latter two are siblings and run in stable order for deterministic rerun-if-changed traces.
+`parse_schema` always comes first because every other generator needs `SchemaOutput.entities`. After that, `gen_seaorm`, `gen_markdown_io`, and `gen_dtos` are independent -- they only need the entity list.
+
+`gen_store` is where the two persistence generators rejoin: its `StoreConfig.backend` decides which one it emits CRUD against. `Backend::Seaorm` takes the `SeaOrmOutput` as optional enrichment (pass `None` and it derives table and column names by convention); `Backend::Markdown` requires the `MarkdownIoOutput`, because the markdown emitter genuinely needs the vault layout and per-entity directory mapping.
+
+`gen_api`, `gen_servers`, and `gen_clients` form a chain where `gen_api`'s output feeds both `gen_servers` (Rust transports) and `gen_clients` (TypeScript clients + admin registry); the latter two are siblings and run in stable order for deterministic rerun-if-changed traces. All three emit byte-identical output regardless of which store backend you picked.
 
 ## Partial pipelines
 
@@ -339,10 +374,12 @@ You don't need to run everything. Pick the generators you need.
     );
 
     unwrap_codegen(
-        ontogen::gen_store(&schema.entities, Some(&seaorm), &ontogen::StoreConfig {
+        ontogen::gen_store(&schema.entities, &ontogen::StoreConfig {
             output_dir: "src/store/generated".into(),
             hooks_dir: Some("src/store/hooks".into()),
             schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+            backend: ontogen::Backend::Seaorm(Some(seaorm)),
+            wikilink_policy: None,
         }),
         "gen_store",
     );
@@ -363,8 +400,10 @@ You don't need to run everything. Pick the generators you need.
         .expect("ontogen pipeline failed");
     ```
   </TabItem>
-  <TabItem label="Markdown only">
+  <TabItem label="Markdown store">
     ```rust
+    use ontogen::{IdStrategy, MarkdownLayout};
+
     let schema = unwrap_codegen(
         ontogen::parse_schema(&ontogen::SchemaConfig {
             schema_dir: "src/schema".into(),
@@ -372,17 +411,57 @@ You don't need to run everything. Pick the generators you need.
         "parse schema",
     );
 
-    unwrap_codegen(
+    let md = unwrap_codegen(
         ontogen::gen_markdown_io(&schema.entities, &ontogen::MarkdownIoConfig {
-            output_dir: "src/persistence/fs_markdown/writers".into(),
+            output_dir: "src/persistence/markdown/generated".into(),
+            vault_root: "data/vault".into(),
+            layout: MarkdownLayout::PerEntityDir,
+            id_strategy: IdStrategy::SlugFromField("title".into()),
+            list_cap: 10_000,
         }),
         "gen_markdown_io",
     );
+
+    // The returned metadata is what wires the store at the vault runtime.
+    unwrap_codegen(
+        ontogen::gen_store(&schema.entities, &ontogen::StoreConfig {
+            output_dir: "src/store/generated".into(),
+            hooks_dir: Some("src/store/hooks".into()),
+            schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+            backend: ontogen::Backend::Markdown(md),
+            wikilink_policy: None,
+        }),
+        "gen_store",
+    );
     ```
+
+    Or, with `Pipeline` -- the backend is inferred from the single persistence stage:
+    ```rust
+    use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout};
+
+    ontogen::Pipeline::new("src/schema")
+        .markdown_io(
+            "src/persistence/markdown/generated",
+            MarkdownIoOptions {
+                vault_root: "data/vault".into(),
+                layout: MarkdownLayout::PerEntityDir,
+                id_strategy: IdStrategy::SlugFromField("title".into()),
+                list_cap: 10_000,
+            },
+        )
+        .store(
+            "src/store/generated",
+            Some::<std::path::PathBuf>("src/store/hooks".into()),
+        )
+        .build()
+        .expect("ontogen pipeline failed");
+    ```
+
+    See the [markdown backend guide](/guides/markdown-backend/) for what the consumer writes by hand.
   </TabItem>
 </Tabs>
 
-Each generator is a standalone function. If you're building a CLI tool that only needs Markdown I/O, skip the database and transport generators entirely.
+Each generator is a standalone function. If you're building a CLI tool that only needs the schema and DTOs, skip the transport generators entirely.
 
 ## Error handling with CodegenError
 
@@ -397,7 +476,7 @@ pub enum CodegenError {
     Server(String),
     Client(String),
     /// An external tool required by the codegen pipeline is missing or failed
-    /// (e.g., rustfmt, prettier).
+    /// (e.g., rustfmt, or whatever `TsFormatter::Command` points at).
     ExternalTool { tool: &'static str, detail: String },
 }
 ```
@@ -456,10 +535,11 @@ Ontogen uses `generated/` subdirectories by convention:
 | `gen_store` | `src/store/generated/` |
 | `gen_store` (hooks) | `src/store/hooks/` |
 | `gen_api` | `src/api/v1/generated/` |
-| `gen_markdown_io` | `src/persistence/fs_markdown/writers/` |
+| `gen_markdown_io` | `src/persistence/markdown/generated/` |
 | `gen_servers` (HTTP) | `src/api/transport/http/generated.rs` |
 | `gen_servers` (IPC) | `src/api/transport/ipc/generated.rs` |
 | `gen_servers` (MCP) | `src/api/transport/mcp/generated.rs` |
+| `gen_clients` (TS) | `../src-nuxt/app/generated/transport.ts` |
 
 The `generated/` convention makes it clear which files are machine-written and should never be edited by hand. Your `.gitignore` can either track or ignore these directories -- most projects track them so CI builds don't need to run code generation.
 

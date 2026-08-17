@@ -43,9 +43,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.6.0] - 2026-08-08
 
+### ⚠ BREAKING CHANGES
+
+- **The in-process TypeScript formatter is gone.** The `biome` feature added in
+  0.5.0 is removed, along with every built-in formatting pass. Generated
+  TypeScript is now emitted unformatted by default. Set
+  `ClientsConfig::ts_formatter` to `TsFormatter::Command(...)` to shell out to a
+  formatter, or `TsFormatter::custom(...)` / `custom_with(...)` to format
+  in-process with a library of your choice and pick an error policy.
+  `ts_formatter` is a required field, so build scripts must add it.
+
+  *(This landed as `fix(formatter)!: replace in-process biome with a consumer
+  formatter hook` and was omitted from the generated changelog — recorded here
+  after the fact. The `cliff.toml` template now surfaces breaking commits
+  automatically.)*
+
 ### Added
 
-- path-aware TS format hook with configurable error policy
+- path-aware TS format hook with configurable error policy **(breaking)**
 - #[ontogen::http::get] override, and fix POST dropping optional params
 
 
@@ -55,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - in-process biome TypeScript formatter, feature-gated ([#120](https://github.com/sksizer/rust-ontogen/pull/120))
+  — **removed again in 0.6.0**; see that entry.
 
 
 

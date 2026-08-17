@@ -7,7 +7,7 @@
 //! Generated DTOs are clean API-layer types:
 //! - No persistence-only fields (wikilinks, source_file)
 //! - Typed enums (not raw strings)
-//! - Includes relation fields (has_many, many_to_many) as Vec<String> for API input
+//! - Includes relation fields (has_many, many_to_many) as `Vec<String>` for API input
 //! - Includes skip fields (entity-level data not in DB columns)
 
 use std::fs;

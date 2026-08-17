@@ -66,10 +66,17 @@ Let's walk through the important fields:
 | `state_import` | Full import path for the state type |
 | `naming` | Pluralization and URL naming overrides |
 | `generators` | Which server transports to generate |
-| `client_generators` | Which client artifacts to generate (TypeScript transports, admin registry) |
+| `rustfmt_edition` | Rust edition used when formatting the generated Rust |
 | `store_type` | Store type name for entity-scoped functions |
 | `store_import` | Full import path for the Store type |
-| `schema_entities` | Parsed entities (used by the admin-registry generator). Pipeline auto-fills this. |
+| `route_prefix` | Optional scope prepended to every route -- see [Route prefix](#route-prefix-for-project-scoping) |
+| `pagination` | Optional pagination for list operations |
+
+The full field list is in the [`ServersConfig` reference](/reference/configuration/#serversconfig).
+
+<Aside type="note">
+Client-side fields (`client_generators`, `ts_skip_commands`, `schema_entities`) used to live on this struct. They moved to [`ClientsConfig`](/reference/configuration/#clientsconfig) when client generation split into its own `gen_clients` entry point.
+</Aside>
 
 ## HTTP/Axum generation
 
@@ -82,15 +89,15 @@ Each `OpKind` maps to a specific HTTP method and path pattern:
 | Operation | Method | Route pattern | Example |
 |-----------|--------|---------------|---------|
 | `List` | GET | `/api/{entities}` | `GET /api/tasks` |
-| `GetById` | GET | `/api/{entities}/:id` | `GET /api/tasks/:id` |
+| `GetById` | GET | `/api/{entities}/{id}` | `GET /api/tasks/{id}` |
 | `Create` | POST | `/api/{entities}` | `POST /api/tasks` |
-| `Update` | PUT | `/api/{entities}/:id` | `PUT /api/tasks/:id` |
-| `Delete` | DELETE | `/api/{entities}/:id` | `DELETE /api/tasks/:id` |
+| `Update` | PUT | `/api/{entities}/{id}` | `PUT /api/tasks/{id}` |
+| `Delete` | DELETE | `/api/{entities}/{id}` | `DELETE /api/tasks/{id}` |
 | `CustomGet` | GET | `/api/{entities}/{action}` | `GET /api/tasks/overdue` |
 | `CustomPost` | POST | `/api/{entities}/{action}` | `POST /api/tasks/close-by-project` |
-| `JunctionList` | GET | `/api/{parents}/:id/{children}` | `GET /api/agents/:id/roles` |
-| `JunctionAdd` | POST | `/api/{parents}/:id/{children}` | `POST /api/agents/:id/roles` |
-| `JunctionRemove` | DELETE | `/api/{parents}/:id/{children}/:child_id` | `DELETE /api/agents/:id/roles/:child_id` |
+| `JunctionList` | GET | `/api/{parents}/{id}/{children}` | `GET /api/agents/{id}/roles` |
+| `JunctionAdd` | POST | `/api/{parents}/{id}/{children}` | `POST /api/agents/{id}/roles` |
+| `JunctionRemove` | DELETE | `/api/{parents}/{id}/{children}/{child_id}` | `DELETE /api/agents/{id}/roles/{child_id}` |
 | `EventStream` | GET | `/api/events/{name}` | `GET /api/events/task-updates` |
 
 Entity names in URLs are pluralized and kebab-cased automatically: `work_session` becomes `work-sessions`, `unit_of_work` becomes `units-of-work`.
@@ -117,7 +124,7 @@ The generator also produces a `router()` function that wires all handlers to the
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/tasks", get(task_list).post(task_create))
-        .route("/api/tasks/:id", get(task_get_by_id).put(task_update).delete(task_delete))
+        .route("/api/tasks/{id}", get(task_get_by_id).put(task_update).delete(task_delete))
         // ... more routes
 }
 ```
@@ -274,6 +281,7 @@ When your app manages multiple projects, you can prepend a project scope to all 
 
 ```rust
 route_prefix: Some(ontogen::servers::RoutePrefix {
+    // Colon-style here -- see the note below.
     segments: "projects/:project_id".to_string(),
     state_accessor: "store_for".to_string(),
     params: vec![
@@ -286,7 +294,13 @@ route_prefix: Some(ontogen::servers::RoutePrefix {
 }),
 ```
 
-This generates scoped routes like `/api/projects/:project_id/tasks` alongside the entity handlers. The `state_accessor` method is called to construct a project-scoped Store from the extracted path parameter.
+This generates scoped routes like `/api/projects/{project_id}/tasks` alongside the entity handlers. The `state_accessor` method is called to construct a project-scoped Store from the extracted path parameter.
+
+<Aside type="note" title="Colons in config, braces in output">
+`RoutePrefix::segments` and the values in `sse_route_overrides` take **colon-style** parameters (`projects/:project_id`), while every generated axum route uses axum 0.8's **brace style** (`/api/projects/{project_id}/tasks`).
+
+That asymmetry is deliberate: `axum_path()` normalizes each route string at emission, so build scripts written before the axum 0.8 cutover keep working untouched. Write colons in config; expect braces in the generated router and in `ServersOutput.http_routes`.
+</Aside>
 
 ## Generated file locations
 

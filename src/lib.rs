@@ -81,7 +81,7 @@ use std::path::PathBuf;
 /// Both configs require the import path to the schema module in generated code.
 /// Use this constant rather than hard-coding `"crate::schema"` so that any future
 /// change to the convention propagates to every direct consumer at once. Callers
-/// who construct configs via [`Pipeline`](pipeline::Pipeline) do not need to set
+/// who construct configs via [`Pipeline`] do not need to set
 /// the field directly - the builder applies this default and propagates it to
 /// both configs.
 pub const DEFAULT_SCHEMA_MODULE_PATH: &str = "crate::schema";
@@ -422,11 +422,18 @@ pub fn gen_clients(api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &Clie
 
 /// Configuration for [`parse_schema`].
 ///
-/// Points the parser at a directory of `.rs` schema files. The directory is
-/// scanned recursively and every file containing `#[derive(OntologyEntity)]`
-/// types contributes one or more [`EntityDef`]s to the output.
+/// Points the parser at a directory of `.rs` schema files. Every file
+/// containing `#[derive(OntologyEntity)]` types contributes one or more
+/// [`EntityDef`]s to the output.
+///
+/// The scan is one level deep - subdirectories are **not** traversed. Entities
+/// nested under `src/schema/domain/` are silently invisible to the parser; keep
+/// every entity file directly in `schema_dir`.
 pub struct SchemaConfig {
     /// Path to the schema source directory (e.g., `src/schema/`).
+    ///
+    /// Only the `.rs` files directly inside this directory are read; see the
+    /// type-level docs.
     pub schema_dir: PathBuf,
 }
 
