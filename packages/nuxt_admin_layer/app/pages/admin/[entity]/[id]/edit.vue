@@ -43,6 +43,14 @@ async function handleSubmit() {
   formError.value = null
   try {
     const input = { ...formData.value }
+    // The form shows the current values, so an emptied optional field means
+    // "none": null clears the column, where undefined would leave it alone.
+    for (const field of formFields.value) {
+      const value = input[field.key]
+      if (!field.required && (value === '' || value === undefined)) {
+        input[field.key] = null
+      }
+    }
     const id = getEntityId(currentItem.value)
     await updateEntity(id, input)
     router.push(`/admin/${entityPlural.value}/${entityId.value}`)

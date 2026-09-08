@@ -45,9 +45,9 @@ function removeArrayItem(index: number) {
       @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
     />
 
-    <!-- Enum select -->
+    <!-- Enum select; a registry without the values falls through to text -->
     <select
-      v-else-if="field.type === 'enum'"
+      v-else-if="field.type === 'enum' && field.enumValues?.length"
       :value="(modelValue as string) ?? ''"
       class="w-full px-3 py-2 text-sm rounded-md border border-(--ui-border) bg-(--ui-bg) text-(--ui-text) focus:outline-none focus:ring-1 focus:ring-(--ui-border-accented)"
       @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value || undefined)"
@@ -94,14 +94,12 @@ function removeArrayItem(index: number) {
       </div>
     </div>
 
-    <!-- Single relation (rendered as text input for now) -->
-    <input
-      v-else-if="field.type === 'relation'"
-      type="text"
-      :value="(modelValue as string) ?? ''"
-      class="w-full px-3 py-2 text-sm rounded-md border border-(--ui-border) bg-(--ui-bg) text-(--ui-text) focus:outline-none focus:ring-1 focus:ring-(--ui-border-accented)"
-      :placeholder="`${field.relationTo} ID`"
-      @input="emit('update:modelValue', ($event.target as HTMLInputElement).value || undefined)"
+    <!-- Single relation: a picker over the target entity's rows -->
+    <AdminRelationPicker
+      v-else-if="field.type === 'relation' && field.relationTo"
+      :relation-to="field.relationTo"
+      :model-value="modelValue"
+      @update:model-value="emit('update:modelValue', $event)"
     />
 
     <!-- Number input -->

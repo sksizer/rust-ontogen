@@ -61,8 +61,21 @@ onMounted(async () => {
         const config = adminEntityMap[rel.sourceEntityKey]
         if (!config) return
         const method = config.listMethod as keyof typeof transport
-        const fn = transport[method] as (...args: unknown[]) => Promise<EntityRecord[]>
-        const allItems = await fn()
+        const fn = transport[method] as (...args: unknown[]) => Promise<unknown>
+        // A paginated target is read page by page; the filter below is
+        // client-side either way until a server-side filter exists.
+        let allItems: EntityRecord[]
+        if (config.paginated) {
+          const limit = config.maxLimit ?? config.defaultLimit ?? 50
+          allItems = []
+          for (let offset = 0; ; offset += limit) {
+            const page = (await fn(...pageArgs(config, limit, offset))) as { items: EntityRecord[]; total: number }
+            allItems.push(...page.items)
+            if (page.items.length < limit || allItems.length >= page.total) break
+          }
+        } else {
+          allItems = (await fn()) as EntityRecord[]
+        }
         // Filter to items that reference our entity
         rel.items = allItems.filter((item) => {
           const val = item[rel.sourceFieldKey]
