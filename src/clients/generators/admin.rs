@@ -17,7 +17,10 @@ use crate::servers::parse::ApiModule;
 use crate::servers::types::{extract_input_type, inner_type, rust_type_to_ts, snake_to_camel};
 
 /// Generate admin entity registry and write to the output file.
-pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
+///
+/// `entities` supplies the per-field definitions; an entity absent from it
+/// ships with `fields: []`.
+pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities: &[EntityDef]) {
     let mut out = String::new();
     out.push_str(
         "// Auto-generated admin registry. DO NOT EDIT.\n\
@@ -55,7 +58,7 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
         let plural_label = config.naming.plural_label(module);
 
         // Generate field definitions if schema data is available
-        let fields_js = generate_fields_for_entity(module, &config.schema_entities);
+        let fields_js = generate_fields_for_entity(module, entities);
 
         // Pagination metadata for the admin UI. The CRUD five come from one
         // surface, so `list`'s surface decides.
@@ -155,7 +158,9 @@ fn generate_fields_for_entity(module_name: &str, entities: &[EntityDef]) -> Stri
                 field.field_type,
                 FieldType::String | FieldType::I32 | FieldType::I64 | FieldType::F32 | FieldType::F64 | FieldType::Bool
             );
-        let is_read_only = key == "source_file" || key == "created_at" || key == "last_opened_at";
+        // A required `created_at` has to be sent on create (the store stamps
+        // a blank one), so only an optional one is left to the store.
+        let is_read_only = key == "source_file" || key == "last_opened_at" || (key == "created_at" && !is_required);
 
         // Display hints: sensible defaults
         let show_in_table = is_id

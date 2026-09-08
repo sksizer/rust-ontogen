@@ -103,6 +103,7 @@ impl Config {
             store_type: self.store_type.clone(),
             pagination: self.pagination.clone(),
             paginated_modules: Vec::new(),
+            schema_dir: None,
         };
         std::iter::once(primary).chain(self.extra_surfaces.iter().cloned()).collect()
     }

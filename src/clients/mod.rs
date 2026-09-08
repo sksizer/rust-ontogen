@@ -316,12 +316,35 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
                 }
             }
             ClientGenerator::AdminRegistry { output } => {
-                generators::admin::generate(output, &modules, config);
+                // The surfaces' own entities join the registry; the entity
+                // already present wins on a name collision.
+                let mut entities = config.schema_entities.clone();
+                for entity in surface_entities(&config.extra_surfaces)? {
+                    if !entities.iter().any(|e| e.name == entity.name) {
+                        entities.push(entity);
+                    }
+                }
+                generators::admin::generate(output, &modules, config, &entities);
             }
         }
     }
 
     Ok(modules)
+}
+
+/// The entities of every surface that names an [`ApiSurface::schema_dir`],
+/// in surface order.
+///
+/// [`ApiSurface::schema_dir`]: crate::servers::ApiSurface::schema_dir
+pub(crate) fn surface_entities(
+    surfaces: &[crate::servers::ApiSurface],
+) -> Result<Vec<ontogen_core::model::EntityDef>, String> {
+    let mut entities = Vec::new();
+    for dir in surfaces.iter().filter_map(|s| s.schema_dir.clone()) {
+        let parsed = crate::parse_schema(&crate::SchemaConfig { schema_dir: dir }).map_err(|e| e.to_string())?;
+        entities.extend(parsed.entities);
+    }
+    Ok(entities)
 }
 
 /// Append `ts` to the bindings file at `bindings_path`, prefixed with a

@@ -77,7 +77,7 @@ fn test_two_surfaces_admin_registry_reports_pagination_per_module() {
     config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
 
     let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    crate::clients::generators::admin::generate(&admin_out, &modules, &config);
+    crate::clients::generators::admin::generate(&admin_out, &modules, &config, &config.schema_entities);
 
     let registry = std::fs::read_to_string(&admin_out).unwrap();
     let entry = |key: &str| {
@@ -91,4 +91,37 @@ fn test_two_surfaces_admin_registry_reports_pagination_per_module() {
     assert!(entry("workout").contains("paginated: false"), "{registry}");
     assert!(entry("workout").contains("listMethod: 'workoutList'"), "the merged module is a CRUD entity:\n{registry}");
     assert!(!registry.contains("key: 'athlete'"), "a list-only module is not a CRUD entity:\n{registry}");
+}
+
+#[test]
+fn surface_entities_come_from_the_surfaces_that_name_a_schema_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("athlete.rs"),
+        r#"
+        #[derive(OntologyEntity)]
+        #[ontology(entity)]
+        pub struct Athlete {
+            #[ontology(id)]
+            pub id: String,
+            pub display_name: String,
+        }
+        "#,
+    )
+    .unwrap();
+    let surface = |schema_dir| ApiSurface {
+        api_dir: std::path::PathBuf::from("unused"),
+        service_import_path: String::new(),
+        types_import_path: String::new(),
+        store_accessor: None,
+        store_type: None,
+        pagination: None,
+        paginated_modules: Vec::new(),
+        schema_dir,
+    };
+
+    let entities = crate::clients::surface_entities(&[surface(None), surface(Some(dir.path().to_path_buf()))]).unwrap();
+    let names: Vec<_> = entities.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["Athlete"]);
+    assert!(entities[0].fields.iter().any(|f| f.name == "display_name"));
 }

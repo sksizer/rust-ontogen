@@ -84,6 +84,7 @@ impl Config {
             store_type: self.store_type.clone(),
             pagination: self.pagination.clone(),
             paginated_modules: Vec::new(),
+            schema_dir: None,
         }
     }
 
@@ -158,6 +159,11 @@ pub struct ApiSurface {
     /// When non-empty, restricts [`pagination`](Self::pagination) to these
     /// module names. Empty means every module of the surface paginates.
     pub paginated_modules: Vec<String>,
+    /// Directory of this surface's `#[ontology(entity)]` structs. The admin
+    /// registry parses it for the surface's field definitions; without it
+    /// each of the surface's entities ships with `fields: []`. The surface's
+    /// TypeScript types come from the long-tail pool either way.
+    pub schema_dir: Option<PathBuf>,
 }
 
 /// Accessor used when [`ApiSurface::store_accessor`] is `None`.

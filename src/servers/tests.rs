@@ -326,6 +326,7 @@ pub async fn get_summary(state: &AppState, id: &str) -> Result<WorkoutSummary, a
             store_type: Some("Store".to_string()),
             pagination: None,
             paginated_modules: Vec::new(),
+            schema_dir: None,
         },
         crate::servers::ApiSurface {
             api_dir: fitness,
@@ -335,6 +336,7 @@ pub async fn get_summary(state: &AppState, id: &str) -> Result<WorkoutSummary, a
             store_type: Some("FitnessStore".to_string()),
             pagination: None,
             paginated_modules: Vec::new(),
+            schema_dir: None,
         },
     ]
 }
@@ -2276,7 +2278,7 @@ fn test_admin_registry_generator() {
         make_custom_module(), // non-CRUD should be excluded
     ];
 
-    crate::clients::generators::admin::generate(&output, &modules, &config);
+    crate::clients::generators::admin::generate(&output, &modules, &config, &config.schema_entities);
     let content = std::fs::read_to_string(&output).unwrap();
 
     // Type import (definitions moved to @ontogen/admin-types)
@@ -2798,7 +2800,7 @@ fn test_e2e_generate_transport_with_real_api() {
         extra_surfaces: Vec::new(),
     };
     crate::clients::generators::transport::generate(&ts_out, &bindings, &modules, &client_config);
-    crate::clients::generators::admin::generate(&admin_out, &modules, &client_config);
+    crate::clients::generators::admin::generate(&admin_out, &modules, &client_config, &client_config.schema_entities);
 
     // Should find a reasonable number of modules
     assert!(modules.len() >= 5, "Expected at least 5 API modules from real API dir, got {}", modules.len());
@@ -4225,6 +4227,7 @@ fn test_surface_pagination_honours_paginated_modules() {
         store_type: None,
         pagination: Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 }),
         paginated_modules: vec!["exercise".to_string()],
+        schema_dir: None,
     };
     assert!(surface.pagination_for("exercise").is_some());
     assert!(surface.pagination_for("workout").is_none());
