@@ -47,6 +47,7 @@ let servers_output = ontogen::gen_servers(
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
+        extra_surfaces: vec![],
     },
 )?;
 ```

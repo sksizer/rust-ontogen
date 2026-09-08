@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use ontogen_core::utils::TsFormatter;
 
 use crate::servers::types::NamingConfig;
-use crate::servers::{PaginationConfig, RoutePrefix};
+use crate::servers::{ApiSurface, PaginationConfig, RoutePrefix};
 
 /// Crate-internal configuration carrier for the client generators.
 ///
@@ -87,6 +87,35 @@ pub(crate) struct Config {
     /// ontogen's own `gen_seaorm` output, whose per-entity `Relation`
     /// enums otherwise collide with any domain type named `Relation`.
     pub pool_exclude_paths: Vec<PathBuf>,
+
+    /// API surfaces scanned in addition to the primary one. See [`ApiSurface`].
+    pub extra_surfaces: Vec<ApiSurface>,
+}
+
+impl Config {
+    /// Every surface, primary first. Indexes match `ApiFn::surface`.
+    pub(crate) fn surfaces(&self) -> Vec<ApiSurface> {
+        let primary = ApiSurface {
+            api_dir: self.api_dir.clone(),
+            service_import_path: self.service_import_path.clone(),
+            types_import_path: self.types_import_path.clone(),
+            store_accessor: None,
+            store_type: self.store_type.clone(),
+            pagination: self.pagination.clone(),
+            paginated_modules: Vec::new(),
+        };
+        std::iter::once(primary).chain(self.extra_surfaces.iter().cloned()).collect()
+    }
+
+    /// Pagination for `module`'s list methods when the fn came from `surface`.
+    pub(crate) fn pagination_for(&self, module: &str, surface: usize) -> Option<&PaginationConfig> {
+        crate::servers::config::pagination_for(&self.pagination, &self.extra_surfaces, module, surface)
+    }
+
+    /// True when any surface paginates, so the shared `PaginatedResult` type is needed.
+    pub(crate) fn any_pagination(&self) -> bool {
+        self.pagination.is_some() || self.extra_surfaces.iter().any(|s| s.pagination.is_some())
+    }
 }
 
 /// Client-side code generators (TypeScript + admin registry).

@@ -49,6 +49,7 @@ fn main() {
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
         pagination: None,
+        extra_surfaces: vec![],
     };
 
     let clients_config = ClientsConfig {
@@ -76,6 +77,7 @@ fn main() {
         // Pipeline auto-fills this from parse_schema; leave empty.
         schema_entities: Vec::new(),
         pool_extra_roots: Vec::new(),
+        extra_surfaces: vec![],
     };
 
     Pipeline::new("src/schema")
@@ -221,6 +223,7 @@ fn main() {
                 store_type: Some("Store".to_string()),
                 store_import: Some("crate::store::Store".to_string()),
                 pagination: None,
+                extra_surfaces: vec![],
             },
         ),
         "gen_servers",
@@ -258,6 +261,7 @@ fn main() {
                 // otherwise admin-registry.ts ships with empty `fields: []`.
                 schema_entities: schema.entities.clone(),
                 pool_extra_roots: vec![],
+                extra_surfaces: vec![],
             },
         ),
         "gen_clients",

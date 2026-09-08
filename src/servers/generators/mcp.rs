@@ -8,9 +8,10 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::servers::classify::classify_op;
-use crate::servers::config::Config;
+use crate::servers::config::{Config, PaginationConfig};
+use crate::servers::generators::surface_use_stmts;
 use crate::servers::parse::{ApiFn, ApiModule};
-use crate::servers::types::{collect_type_import, extract_input_type, param_to_owned_type, to_pascal_case};
+use crate::servers::types::{extract_input_type, param_to_owned_type, to_pascal_case};
 
 /// Wraps a schema_fn reference with project_id injection when route_prefix is set.
 /// Returns either `"schema_for::<T>"` or `"|| with_project_id_schema(schema_for::<T>())"`.
@@ -18,23 +19,20 @@ fn wrap_schema(base: &str, config: &Config) -> String {
     if config.route_prefix.is_some() { format!("|| with_project_id_schema({}())", base) } else { base.to_string() }
 }
 
-/// Wraps a schema_fn reference with project_id and pagination injection for list ops.
-/// Adds `with_pagination_schema` around the result when pagination is configured.
+/// Wraps a schema_fn reference with project_id and pagination injection for
+/// paginated list ops. Callers pick this over [`wrap_schema`] only when the
+/// fn's surface paginates the module.
 fn wrap_schema_for_list(base: &str, config: &Config) -> String {
     let inner = wrap_schema(base, config);
-    if config.pagination.is_some() {
-        // If wrap_schema already produced a closure, compose with it
-        if inner.starts_with("||") {
-            // inner is like "|| with_project_id_schema(schema_for::<T>())"
-            // We need: "|| with_pagination_schema(with_project_id_schema(schema_for::<T>()))"
-            let body = inner.trim_start_matches("|| ").trim();
-            format!("|| with_pagination_schema({})", body)
-        } else {
-            // inner is like "schema_for::<EmptyInput>"
-            format!("|| with_pagination_schema({}())", inner)
-        }
+    // If wrap_schema already produced a closure, compose with it
+    if inner.starts_with("||") {
+        // inner is like "|| with_project_id_schema(schema_for::<T>())"
+        // We need: "|| with_pagination_schema(with_project_id_schema(schema_for::<T>()))"
+        let body = inner.trim_start_matches("|| ").trim();
+        format!("|| with_pagination_schema({})", body)
     } else {
-        inner
+        // inner is like "schema_for::<EmptyInput>"
+        format!("|| with_pagination_schema({}())", inner)
     }
 }
 
@@ -58,10 +56,12 @@ fn mcp_handler_prefix(config: &Config) -> String {
     }
 }
 
-/// Returns Store construction code for MCP handlers (store-based functions).
+/// Returns Store construction code for a store-based MCP handler.
 ///
-/// Extracts optional project_id from args, constructs Store via state accessor.
-fn mcp_store_construction(config: &Config) -> String {
+/// Extracts optional project_id from args and constructs the Store via the
+/// prefix accessor; otherwise opens it through the fn's surface accessor.
+fn mcp_store_construction(config: &Config, f: &ApiFn) -> String {
+    let store_accessor = &f.store_accessor;
     match &config.route_prefix {
         Some(prefix) => {
             let pp = &prefix.params[0];
@@ -72,13 +72,15 @@ fn mcp_store_construction(config: &Config) -> String {
                         let uuid = uuid::Uuid::parse_str(pid).map_err(|e| e.to_string())?;
                         state.{}(&uuid).map_err(|e| e.to_string())?
                     }} else {{
-                        state.store().await.map_err(|e| e.to_string())?
+                        state.{store_accessor}().await.map_err(|e| e.to_string())?
                     }};
 ",
                 pp.name, accessor,
             )
         }
-        None => "                    let store = state.store().await.map_err(|e| e.to_string())?;\n".to_string(),
+        None => {
+            format!("                    let store = state.{store_accessor}().await.map_err(|e| e.to_string())?;\n")
+        }
     }
 }
 
@@ -104,34 +106,8 @@ use serde_json::{json, Value};
 ",
     );
 
-    let mut service_imports: Vec<String> = modules.iter().map(|m| m.name.clone()).collect();
-    service_imports.sort();
-    service_imports.dedup();
-
-    let mut type_imports: Vec<String> = Vec::new();
-    for m in modules {
-        for f in &m.functions {
-            collect_type_import(&f.return_type_ast, &mut type_imports);
-            for p in &f.params {
-                collect_type_import(&p.ty_ast, &mut type_imports);
-            }
-        }
-    }
-
-    out.push_str(&format!("use {}::{{\n", config.service_import_path));
-    for m in &service_imports {
-        out.push_str(&format!("    {},\n", m));
-    }
-    out.push_str("};\n");
-
-    type_imports.sort();
-    type_imports.dedup();
-    if !type_imports.is_empty() {
-        out.push_str(&format!("use {}::{{\n", config.types_import_path));
-        for t in &type_imports {
-            out.push_str(&format!("    {},\n", t));
-        }
-        out.push_str("};\n");
+    for stmt in surface_use_stmts(modules, config) {
+        out.push_str(&stmt);
     }
 
     out.push_str(&format!("use {};\n", config.state_import));
@@ -245,7 +221,7 @@ fn with_project_id_schema(mut schema: Value) -> Value {{
     }
 
     // Add pagination schema helper when pagination is configured
-    if config.pagination.is_some() {
+    if config.any_pagination() {
         out.push_str(
             "\
 /// Inject `limit` and `offset` pagination properties into a JSON schema.
@@ -298,7 +274,6 @@ fn with_pagination_schema(mut schema: Value) -> Value {
     }
 
     let hp = mcp_handler_prefix(config);
-    let sc = mcp_store_construction(config);
 
     out.push_str(
         "/// Generated MCP tool definitions.\npub fn generated_tool_registry() -> Vec<McpToolDef> {\n    vec![\n",
@@ -309,14 +284,18 @@ fn with_pagination_schema(mut schema: Value) -> Value {
             continue;
         }
 
-        let svc = &m.name;
+        let module = &m.name;
 
         for f in &m.functions {
             // Use the canonical entity-first command name for tool names
-            let tool_name = crate::servers::generators::ipc::command_name(svc, f, config);
+            let tool_name = crate::servers::generators::ipc::command_name(module, f, config);
             let op = classify_op(f);
+            let svc = m.service_ident(f.surface);
             let is_async = f.is_async;
-            let desc = if f.doc.is_empty() { format!("{} {}", f.name, svc) } else { f.doc.clone() };
+            let desc = if f.doc.is_empty() { format!("{} {}", f.name, module) } else { f.doc.clone() };
+            let sc = mcp_store_construction(config, f);
+            let (prefix, first_arg) =
+                if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
 
             match op {
                 OpKind::List => {
@@ -325,9 +304,8 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     let ret_type = &f.return_type;
                     // Pagination only applies when the list function returns Vec<T>;
                     // custom result types (e.g., CodingAgentListResult) are passed through unchanged.
-                    let paginate = config.pagination.is_some() && ret_type.starts_with("Vec<");
-                    let (prefix, first_arg) =
-                        if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
+                    let pagination = config.pagination_for(module, f.surface).filter(|_| ret_type.starts_with("Vec<"));
+                    let paginate = pagination.is_some();
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
                     let plain_params: Vec<_> =
                         f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
@@ -348,9 +326,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                         ));
                         extra_args.push_str(&format!(", {}", pp.name));
                     }
-                    if let Some(ref pg) = config.pagination
-                        && paginate
-                    {
+                    if let Some(pg) = pagination {
                         let default_limit = pg.default_limit;
                         let max_limit = pg.max_limit;
                         // Pagination always needs args access
@@ -406,8 +382,6 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     // tool_name computed above
                     let await_str = if is_async { ".await" } else { "" };
                     let fn_name = &f.name;
-                    let (prefix, first_arg) =
-                        if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
                     let schema_fn = wrap_schema("schema_for::<GetByIdInput>", config);
                     out.push_str(&format!(
                         "\
@@ -432,8 +406,6 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     let input_type = extract_input_type(&f.params[0].ty);
                     let await_str = if is_async { ".await" } else { "" };
                     let schema_fn = wrap_schema(&format!("schema_for::<{input_type}>"), config);
-                    let (prefix, first_arg) =
-                        if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
                     out.push_str(&format!(
                         "\
         McpToolDef {{
@@ -457,8 +429,6 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     // tool_name computed above
                     let input_type = extract_input_type(&f.params[1].ty);
                     let await_str = if is_async { ".await" } else { "" };
-                    let (prefix, first_arg) =
-                        if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
                     let schema_fn = wrap_schema(&format!("schema_for_with_str_id::<{input_type}>"), config);
                     out.push_str(&format!(
                         "\
@@ -483,8 +453,6 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                 OpKind::Delete => {
                     // tool_name computed above
                     let await_str = if is_async { ".await" } else { "" };
-                    let (prefix, first_arg) =
-                        if f.first_param_is_store { (sc.as_str(), "&store") } else { (hp.as_str(), "state") };
                     let schema_fn = wrap_schema("schema_for::<GetByIdInput>", config);
                     out.push_str(&format!(
                         "\
@@ -505,15 +473,15 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                 }
 
                 OpKind::JunctionList { .. } => {
-                    generate_generic_mcp_tool(&mut out, svc, f, config, true);
+                    generate_generic_mcp_tool(&mut out, m, f, config, true);
                 }
 
                 OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-                    generate_generic_mcp_tool(&mut out, svc, f, config, false);
+                    generate_generic_mcp_tool(&mut out, m, f, config, false);
                 }
 
                 OpKind::CustomGet | OpKind::CustomPost => {
-                    generate_generic_mcp_tool(&mut out, svc, f, config, false);
+                    generate_generic_mcp_tool(&mut out, m, f, config, false);
                 }
 
                 OpKind::EventStream => continue,
@@ -576,16 +544,20 @@ pub fn handle_tool_call(
     crate::write_and_format(output, out).expect("Failed to write MCP generated file");
 }
 
-fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Config, is_list_op: bool) {
+fn generate_generic_mcp_tool(out: &mut String, m: &ApiModule, f: &ApiFn, config: &Config, is_list_op: bool) {
+    let module = m.name.as_str();
+    let svc = m.service_ident(f.surface);
     let fn_name = &f.name;
     let desc = if f.doc.is_empty() { fn_name.clone() } else { f.doc.clone() };
     let is_async = f.is_async;
     let await_str = if is_async { ".await" } else { "" };
-    let tool_name = crate::servers::generators::ipc::command_name(svc, f, config);
+    let tool_name = crate::servers::generators::ipc::command_name(module, f, config);
     let returns_unit = f.return_type == "()";
     // Pagination only applies to list operations that return Vec<T>;
     // custom result types are passed through unchanged.
-    let paginate = is_list_op && config.pagination.is_some() && f.return_type.starts_with("Vec<");
+    let pagination: Option<&PaginationConfig> =
+        config.pagination_for(module, f.surface).filter(|_| is_list_op && f.return_type.starts_with("Vec<"));
+    let paginate = pagination.is_some();
     // Stateless tools skip the state/store handler prefix and forward no
     // positional state argument to the service function. The MCP runtime
     // still hands `state` and `args` to every tool handler closure — the
@@ -593,7 +565,7 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
     let (hp, first_arg) = if f.is_stateless {
         (String::new(), "")
     } else if f.first_param_is_store {
-        (mcp_store_construction(config), "&store")
+        (mcp_store_construction(config, f), "&store")
     } else {
         (mcp_handler_prefix(config), "state")
     };
@@ -631,8 +603,7 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
         }},
 "
             ));
-        } else if paginate {
-            let pg = config.pagination.as_ref().unwrap();
+        } else if let Some(pg) = pagination {
             let default_limit = pg.default_limit;
             let max_limit = pg.max_limit;
             out.push_str(&format!(
@@ -718,7 +689,7 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
             ));
         }
     } else {
-        let struct_name = format!("{}{}Input", to_pascal_case(svc), to_pascal_case(fn_name));
+        let struct_name = format!("{}{}Input", to_pascal_case(module), to_pascal_case(fn_name));
         let schema_fn = wrap(&format!("schema_for::<{struct_name}>"), config);
 
         let mut extraction = String::new();
@@ -769,8 +740,7 @@ fn generate_generic_mcp_tool(out: &mut String, svc: &str, f: &ApiFn, config: &Co
         }},
 "
             ));
-        } else if paginate {
-            let pg = config.pagination.as_ref().unwrap();
+        } else if let Some(pg) = pagination {
             let default_limit = pg.default_limit;
             let max_limit = pg.max_limit;
             out.push_str(&format!(

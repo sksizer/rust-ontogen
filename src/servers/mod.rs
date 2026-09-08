@@ -9,11 +9,13 @@ pub(crate) mod config;
 pub(crate) mod generators;
 pub(crate) mod parse;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 pub(crate) mod types;
 
 // Re-export key types at the servers module level
-pub use config::{Config, PaginationConfig, PrefixParam, RoutePrefix, ServerGenerator};
+pub use config::{
+    ApiSurface, Config, DEFAULT_STORE_ACCESSOR, PaginationConfig, PrefixParam, RoutePrefix, ServerGenerator,
+};
 pub use parse::{ApiFn, ApiModule, EventFn, Param};
 pub use types::NamingConfig;
 
@@ -55,6 +57,7 @@ pub fn generate(
         store_type: config.store_type.clone(),
         store_import: config.store_import.clone(),
         pagination: config.pagination.clone(),
+        extra_surfaces: config.extra_surfaces.clone(),
     };
 
     // Run the transport generation pipeline
@@ -199,17 +202,15 @@ fn http_route_for(
 /// [`ServerGenerator`]. Returns the parsed `ApiModule` list so callers can
 /// use it for test generation or other downstream tasks.
 pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModule>, String> {
-    if !config.api_dir.exists() {
-        return Err(format!("API directory does not exist: {}", config.api_dir.display()));
-    }
-
-    let scanned = parse::scan_api_dir(&config.api_dir, &config.state_type, config.store_type.as_deref());
+    let surfaces = config.surfaces();
+    let scanned = parse::scan_surfaces(&surfaces, &config.state_type)?;
 
     for record in &scanned.skips {
         println!("cargo:warning={record}");
     }
 
     let mut modules = scanned.modules;
+    parse::qualify_shared_types(&mut modules, &surfaces);
     parse::apply_singleton_overlay(&mut modules, &config.naming);
     parse::apply_command_overrides(&mut modules, &config.naming);
     if modules.is_empty() {

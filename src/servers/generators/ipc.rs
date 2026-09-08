@@ -9,9 +9,10 @@ use ontogen_core::ir::OpKind;
 
 use crate::servers::classify::classify_op;
 use crate::servers::config::Config;
+use crate::servers::generators::surface_use_stmts;
 use crate::servers::parse::{ApiFn, ApiModule};
 use crate::servers::types::{
-    capitalize, collect_type_import, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
+    capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
 };
 
 /// Returns the generated prefix param line for IPC commands (e.g., `project_id: Option<String>,`).
@@ -44,11 +45,13 @@ fn prefix_validation_line(config: &Config) -> String {
     }
 }
 
-/// Returns Store construction code for store-based IPC commands.
+/// Returns Store construction code for a store-based IPC command.
 ///
 /// When project_id is provided, constructs Store via store_for().
-/// When not provided, falls back to the default project via store().
-fn store_construction_line(config: &Config) -> String {
+/// When not provided, falls back to the fn's surface accessor
+/// (`state.{store_accessor}().await`).
+fn store_construction_line(config: &Config, f: &ApiFn) -> String {
+    let store_accessor = &f.store_accessor;
     match &config.route_prefix {
         Some(prefix) => {
             let pp = &prefix.params[0];
@@ -58,12 +61,12 @@ fn store_construction_line(config: &Config) -> String {
                  \x20       let uuid = uuid::Uuid::parse_str(pid).map_err(|e| e.to_string())?;\n\
                  \x20       state.{}(&uuid).map_err(|e| e.to_string())?\n\
                  \x20   }} else {{\n\
-                 \x20       state.store().await.map_err(|e| e.to_string())?\n\
+                 \x20       state.{store_accessor}().await.map_err(|e| e.to_string())?\n\
                  \x20   }};\n",
                 pp.name, accessor,
             )
         }
-        None => "    let store = state.store().await.map_err(|e| e.to_string())?;\n".to_string(),
+        None => format!("    let store = state.{store_accessor}().await.map_err(|e| e.to_string())?;\n"),
     }
 }
 
@@ -104,40 +107,8 @@ use tauri::State;
 ",
     );
 
-    // Collect imports
-    let mut service_imports: Vec<String> = modules.iter().map(|m| m.name.clone()).collect();
-    service_imports.sort();
-    service_imports.dedup();
-
-    let mut type_imports: Vec<String> = Vec::new();
-
-    for m in modules {
-        for f in &m.functions {
-            collect_type_import(&f.return_type_ast, &mut type_imports);
-            for p in &f.params {
-                collect_type_import(&p.ty_ast, &mut type_imports);
-            }
-        }
-    }
-
     // Emit use statements in sorted order (matches rustfmt alphabetical sort)
-    let mut use_stmts = Vec::new();
-
-    use_stmts.push(format!(
-        "use {}::{{\n{}}};\n",
-        config.service_import_path,
-        service_imports.iter().map(|m| format!("    {},\n", m)).collect::<String>()
-    ));
-
-    type_imports.sort();
-    type_imports.dedup();
-    if !type_imports.is_empty() {
-        use_stmts.push(format!(
-            "use {}::{{\n{}}};\n",
-            config.types_import_path,
-            type_imports.iter().map(|t| format!("    {},\n", t)).collect::<String>()
-        ));
-    }
+    let mut use_stmts = surface_use_stmts(modules, config);
 
     use_stmts.push(format!("use {};\n", config.state_import));
 
@@ -152,7 +123,7 @@ use tauri::State;
 
     out.push('\n');
 
-    if config.pagination.is_some() {
+    if config.any_pagination() {
         out.push_str(
             "\
 use serde::Serialize;
@@ -171,13 +142,11 @@ pub struct PaginatedResult<T: Serialize> {
 
     let pp_line = prefix_param_line(config);
     let pp_validate = prefix_validation_line(config);
-    let store_construct = store_construction_line(config);
 
     let mut command_names: Vec<String> = Vec::new();
 
     for m in modules {
         let module = &m.name;
-        let svc = module;
 
         if m.functions.is_empty() {
             continue;
@@ -187,12 +156,14 @@ pub struct PaginatedResult<T: Serialize> {
 
         for f in &m.functions {
             let op = classify_op(f);
+            let svc = m.service_ident(f.surface);
             let is_async = f.is_async;
             let ret_type = &f.return_type;
+            let pagination = config.pagination_for(module, f.surface);
 
             // Determine per-function prefix and first-arg behavior
             let (fn_pp_line, fn_pp_body, first_arg) = if f.first_param_is_store {
-                (pp_line.clone(), store_construct.clone(), "&store")
+                (pp_line.clone(), store_construction_line(config, f), "&store")
             } else {
                 (pp_line.clone(), pp_validate.clone(), "&state")
             };
@@ -216,7 +187,7 @@ pub struct PaginatedResult<T: Serialize> {
                         param_lines.push_str(&format!("    {}: {},\n", pp.name, owned_ty));
                         extra_args.push_str(&format!(", &{}", pp.name));
                     }
-                    if let Some(pg) = &config.pagination
+                    if let Some(pg) = pagination
                         && ret_type.starts_with("Vec<")
                     {
                         let item_type = inner_type(ret_type);
@@ -356,23 +327,25 @@ pub async fn {cmd_name}(
 
                 OpKind::JunctionList { .. } => {
                     let cmd_name = command_name(module, f, config);
-                    if config.pagination.is_some() && ret_type.starts_with("Vec<") {
-                        generate_paginated_ipc_handler(&mut out, module, f, config);
+                    if let Some(pg) = pagination
+                        && ret_type.starts_with("Vec<")
+                    {
+                        generate_paginated_ipc_handler(&mut out, m, f, config, pg);
                     } else {
-                        generate_generic_ipc_handler(&mut out, module, f, config);
+                        generate_generic_ipc_handler(&mut out, m, f, config);
                     }
                     command_names.push(cmd_name);
                 }
 
                 OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
                     let cmd_name = command_name(module, f, config);
-                    generate_generic_ipc_handler(&mut out, module, f, config);
+                    generate_generic_ipc_handler(&mut out, m, f, config);
                     command_names.push(cmd_name);
                 }
 
                 OpKind::CustomGet | OpKind::CustomPost => {
                     let cmd_name = command_name(module, f, config);
-                    generate_generic_ipc_handler(&mut out, module, f, config);
+                    generate_generic_ipc_handler(&mut out, m, f, config);
                     command_names.push(cmd_name);
                 }
 
@@ -397,6 +370,7 @@ pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
             config.state_import.split("::").last().unwrap_or(&config.state_type),
         ));
 
+        let surfaces = config.surfaces();
         for m in modules {
             for ev in &m.events {
                 let fn_name = &ev.name;
@@ -418,7 +392,7 @@ pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
         }});
     }}
 ",
-                    config.service_import_path,
+                    surfaces[ev.surface].service_import_path,
                 ));
             }
         }
@@ -443,9 +417,10 @@ pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
     crate::write_and_format(output, out).expect("Failed to write IPC generated file");
 }
 
-fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, config: &Config) {
+fn generate_generic_ipc_handler(out: &mut String, m: &ApiModule, f: &ApiFn, config: &Config) {
+    let module = m.name.as_str();
     let fn_name = &f.name;
-    let svc = module;
+    let svc = m.service_ident(f.surface);
     let is_async = f.is_async;
     let ret_type = &f.return_type;
     let await_str = if is_async { "\n        .await" } else { "" };
@@ -459,7 +434,7 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
     let (fn_pp_body, first_arg) = if f.is_stateless {
         (String::new(), None)
     } else if f.first_param_is_store {
-        (store_construction_line(config), Some("&store"))
+        (store_construction_line(config, f), Some("&store"))
     } else {
         (prefix_validation_line(config), Some("&state"))
     };
@@ -501,10 +476,16 @@ fn generate_generic_ipc_handler(out: &mut String, module: &str, f: &ApiFn, confi
 /// Generate a paginated IPC handler for JunctionList operations.
 ///
 /// Wraps the service call result in `PaginatedResult<T>` with limit/offset params.
-fn generate_paginated_ipc_handler(out: &mut String, module: &str, f: &ApiFn, config: &Config) {
-    let pg = config.pagination.as_ref().expect("pagination config required");
+fn generate_paginated_ipc_handler(
+    out: &mut String,
+    m: &ApiModule,
+    f: &ApiFn,
+    config: &Config,
+    pg: &crate::servers::config::PaginationConfig,
+) {
+    let module = m.name.as_str();
     let fn_name = &f.name;
-    let svc = module;
+    let svc = m.service_ident(f.surface);
     let is_async = f.is_async;
     let ret_type = &f.return_type;
     let item_type = inner_type(ret_type);
@@ -517,7 +498,7 @@ fn generate_paginated_ipc_handler(out: &mut String, module: &str, f: &ApiFn, con
     let (fn_pp_body, first_arg) = if f.is_stateless {
         (String::new(), None)
     } else if f.first_param_is_store {
-        (store_construction_line(config), Some("&store"))
+        (store_construction_line(config, f), Some("&store"))
     } else {
         (prefix_validation_line(config), Some("&state"))
     };

@@ -26,6 +26,7 @@ fn main() {
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
         pagination: None,
+        extra_surfaces: vec![],
     };
 
     Pipeline::new("src/schema")

@@ -73,6 +73,7 @@ pub use ontogen_core::utils::{
     OnFormatError, TsFormatFn, TsFormatter, clean_generated_dir, emit_rerun_directives,
     emit_rerun_directives_excluding, rustfmt, write_and_format, write_and_format_ts, write_if_changed,
 };
+pub use servers::ApiSurface;
 
 use std::path::PathBuf;
 
@@ -298,8 +299,9 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 /// Generate server transport handlers (Axum HTTP routes, Tauri IPC commands,
 /// MCP tools) from API metadata.
 ///
-/// Currently, this function always scans `config.api_dir` with `syn`,
-/// regardless of `api` and `scan_dirs`. Both parameters are **reserved for
+/// Currently, this function always scans `config.api_dir` and every
+/// [`ServersConfig::extra_surfaces`] entry with `syn`, regardless of `api`
+/// and `scan_dirs`. Both parameters are **reserved for
 /// future enrichment** - `api` for using structured metadata directly without
 /// re-parsing, and `scan_dirs` for additional scan locations beyond
 /// `config.api_dir`. They have no effect today; pass `None` and `&[]`
@@ -351,6 +353,7 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 ///         store_type: Some("Store".into()),
 ///         store_import: Some("crate::Store".into()),
 ///         pagination: None,
+///         extra_surfaces: vec![],
 ///     },
 /// )?;
 /// # Ok::<(), ontogen::CodegenError>(())
@@ -373,7 +376,8 @@ pub fn gen_servers(
 ///
 /// As with [`gen_servers`], the `api` and `scan_dirs` parameters are reserved
 /// for future enrichment - this function currently always scans
-/// `config.api_dir`. Pass `None` and `&[]`.
+/// `config.api_dir` and [`ClientsConfig::extra_surfaces`]. Pass `None` and
+/// `&[]`.
 ///
 /// The set of client artefacts emitted is controlled by
 /// [`ClientsConfig::generators`].
@@ -410,6 +414,7 @@ pub fn gen_servers(
 ///         schema_entities: vec![],
 ///         pool_extra_roots: vec![],
 ///         pool_exclude_paths: vec![],
+///         extra_surfaces: vec![],
 ///     },
 /// )?;
 /// # Ok::<(), ontogen::CodegenError>(())
@@ -581,6 +586,10 @@ pub struct ServersConfig {
     pub store_import: Option<String>,
     /// Optional pagination configuration for list operations.
     pub pagination: Option<servers::PaginationConfig>,
+    /// API surfaces scanned in addition to the primary one the fields above
+    /// describe. Their modules merge into the same router, IPC handler and
+    /// MCP registry; see [`ApiSurface`]. Empty for a single-surface crate.
+    pub extra_surfaces: Vec<ApiSurface>,
 }
 
 /// Configuration for [`gen_clients`].
@@ -664,6 +673,10 @@ pub struct ClientsConfig {
     /// matches and abort. Pipeline users get this populated automatically
     /// from their `seaorm()` step; direct callers set it explicitly.
     pub pool_exclude_paths: Vec<PathBuf>,
+    /// API surfaces scanned in addition to the primary one. Must list the
+    /// same surfaces as [`ServersConfig::extra_surfaces`] so the TypeScript
+    /// transport matches the Rust handlers; see [`ApiSurface`].
+    pub extra_surfaces: Vec<ApiSurface>,
 }
 
 // `AdminLayerConfig` and `install_admin_layer` are re-exported from the

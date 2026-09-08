@@ -272,6 +272,7 @@ let servers = gen_servers(Some(&api), &[], &ServersConfig {
         },
     ],
     // ... other config fields
+    extra_surfaces: vec![],
 })?;
 ```
 
@@ -320,6 +321,7 @@ gen_clients(Some(&api), &[], &ClientsConfig {
     schema_entities: schema.entities.clone(),
     pool_extra_roots: vec![],
     // ... other config fields
+    extra_surfaces: vec![],
 })?;
 ```
 

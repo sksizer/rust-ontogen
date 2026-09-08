@@ -166,7 +166,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     }
 
     // ── PaginatedResult<T> (when pagination is enabled) ──
-    if config.pagination.is_some() {
+    if config.any_pagination() {
         out.push_str(
             "export interface PaginatedResult<T> {\n\
              \x20 items: T[];\n\
@@ -229,7 +229,8 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                         f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
                     // Pagination only applies when the list function returns Vec<T>;
                     // custom result types are passed through unchanged.
-                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+                    let paginated =
+                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
 
                     let mut params = Vec::new();
                     // Plain params first (e.g., workflowId: string)
@@ -283,7 +284,8 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                     // the method returns PaginatedResult<T> and accepts
                     // limit/offset. Without this the interface and HTTP/IPC
                     // implementations get out of sync.
-                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+                    let paginated =
+                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
                     let mut params = build_ts_params(f, config);
                     if paginated {
                         params.push("limit?: number".to_string());
@@ -461,7 +463,8 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                         f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
                     // Pagination only applies when the list function returns Vec<T>;
                     // custom result types are passed through unchanged.
-                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+                    let paginated =
+                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
 
                     let mut params = Vec::new();
                     for pp in &plain_params {
@@ -585,7 +588,8 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                     // Junction list: `GET /<plural>/<parent_id>/<child_segment>`.
                     // The parent_id is the first (and only non-pagination) plain param.
                     let parent_param = f.params.first().map(|p| snake_to_camel(&p.name)).unwrap_or_default();
-                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+                    let paginated =
+                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
                     let return_type = if paginated {
                         let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str.as_str());
                         format!("PaginatedResult<{}>", item_type)
@@ -783,7 +787,8 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                         f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
                     // Pagination only applies when the list function returns Vec<T>;
                     // custom result types are passed through unchanged.
-                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+                    let paginated =
+                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
 
                     let mut params = Vec::new();
                     for pp in &plain_params {
@@ -883,7 +888,8 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                     // when pagination is enabled and the return is Vec<T>,
                     // accept limit/offset and invoke with those args; the
                     // Rust handler returns PaginatedResult<T>.
-                    let paginated = config.pagination.is_some() && f.return_type.starts_with("Vec<");
+                    let paginated =
+                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
                     let return_type = if paginated {
                         let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str.as_str());
                         format!("PaginatedResult<{}>", item_type)

@@ -44,7 +44,7 @@ use crate::servers::parse;
 /// Generate TypeScript client and admin-registry artefacts.
 ///
 /// Mirrors the shape of [`crate::gen_servers`] - takes the parsed
-/// [`ApiOutput`] (or scans `api_dir` itself, as a fallback), the additional
+/// [`ApiOutput`] (or scans the configured surfaces itself, as a fallback), the additional
 /// scan dirs (reserved for future enrichment), and a [`crate::ClientsConfig`].
 ///
 /// Emits the schema-known TypeScript bindings first (always), then runs
@@ -83,6 +83,7 @@ pub fn generate(
         pagination: config.pagination.clone(),
         pool_extra_roots: config.pool_extra_roots.clone(),
         pool_exclude_paths: config.pool_exclude_paths.clone(),
+        extra_surfaces: config.extra_surfaces.clone(),
     };
 
     generate_clients(&internal).map(|_| ()).map_err(CodegenError::Server)
@@ -90,16 +91,12 @@ pub fn generate(
 
 /// Run the client-side generation pipeline.
 ///
-/// Parses API modules from `config.api_dir`, emits the schema-known
+/// Parses API modules from every configured surface, emits the schema-known
 /// TypeScript aliases to every distinct `bindings_path`, optionally runs
 /// [`ontogen_ts`] to append the long-tail closure, then dispatches to
 /// each configured client generator.
 fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
-    if !config.api_dir.exists() {
-        return Err(format!("API directory does not exist: {}", config.api_dir.display()));
-    }
-
-    let scanned = parse::scan_api_dir(&config.api_dir, &config.state_type, config.store_type.as_deref());
+    let scanned = parse::scan_surfaces(&config.surfaces(), &config.state_type)?;
 
     for record in &scanned.skips {
         println!("cargo:warning={record}");

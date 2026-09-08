@@ -26,17 +26,7 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
     );
 
     // Collect CRUD entities only
-    let crud_modules: Vec<&ApiModule> = modules
-        .iter()
-        .filter(|m| {
-            let fns: Vec<&str> = m.functions.iter().map(|f| f.name.as_str()).collect();
-            fns.contains(&"list")
-                && fns.contains(&"get_by_id")
-                && fns.contains(&"create")
-                && fns.contains(&"update")
-                && fns.contains(&"delete")
-        })
-        .collect();
+    let crud_modules: Vec<&ApiModule> = modules.iter().filter(|m| m.is_crud()).collect();
 
     // ── Entity configs ──
 
@@ -67,8 +57,9 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
         // Generate field definitions if schema data is available
         let fields_js = generate_fields_for_entity(module, &config.schema_entities);
 
-        // Pagination metadata for the admin UI
-        let pagination_js = if let Some(ref pg) = config.pagination {
+        // Pagination metadata for the admin UI. The CRUD five come from one
+        // surface, so `list`'s surface decides.
+        let pagination_js = if let Some(pg) = config.pagination_for(module, list_fn.surface) {
             format!("    paginated: true,\n    defaultLimit: {},\n    maxLimit: {},\n", pg.default_limit, pg.max_limit)
         } else {
             "    paginated: false,\n".to_string()

@@ -38,6 +38,7 @@ fn test_config(api_dir: PathBuf) -> Config {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
+        extra_surfaces: Vec::new(),
     }
 }
 
@@ -63,6 +64,7 @@ fn client_test_config(api_dir: PathBuf) -> ClientsInternalConfig {
         pagination: None,
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
+        extra_surfaces: Vec::new(),
     }
 }
 
@@ -205,7 +207,10 @@ fn make_event_module() -> ApiModule {
     ApiModule {
         name: "events".to_string(),
         functions: vec![],
-        events: vec![EventFn { name: "graph_updated".to_string() }, EventFn { name: "entity_changed".to_string() }],
+        events: vec![
+            EventFn { name: "graph_updated".to_string(), surface: 0 },
+            EventFn { name: "entity_changed".to_string(), surface: 0 },
+        ],
         is_singleton: false,
     }
 }
@@ -268,9 +273,106 @@ fn make_junction_module() -> ApiModule {
 }
 
 /// Write a synthetic API source file for parse tests.
-fn write_synthetic_api(dir: &std::path::Path, filename: &str, content: &str) {
+pub(crate) fn write_synthetic_api(dir: &std::path::Path, filename: &str, content: &str) {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join(filename), content).unwrap();
+}
+
+/// A store-scoped CRUD module source for `entity` (PascalCase `Entity`),
+/// taking `&{store_type}` as its first parameter.
+pub(crate) fn crud_module_source(entity: &str, store_type: &str) -> String {
+    let pascal = capitalize(entity);
+    format!(
+        "pub async fn list(store: &{st}) -> Result<Vec<{p}>, anyhow::Error> {{ todo!() }}
+pub async fn get_by_id(store: &{st}, id: &str) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn create(store: &{st}, input: Create{p}Input) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn update(store: &{st}, id: &str, input: Update{p}Input) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn delete(store: &{st}, id: &str) -> Result<(), anyhow::Error> {{ todo!() }}
+",
+        st = store_type,
+        p = pascal,
+    )
+}
+
+/// Two API surfaces under `root`: the primary one at `root/primary` with a
+/// store-scoped `athlete` module and a state-scoped `workout` module of custom
+/// fns, and a second one at `root/fitness` (accessor `fitness_store`, store
+/// type `FitnessStore`) with CRUD `workout` and `exercise` modules. `workout`
+/// exists in both, and both reference a type named `Workout`.
+pub(crate) fn two_surface_fixture(root: &std::path::Path) -> Vec<crate::servers::ApiSurface> {
+    let primary = root.join("primary");
+    write_synthetic_api(
+        &primary,
+        "athlete.rs",
+        "pub async fn list(store: &Store) -> Result<Vec<Athlete>, anyhow::Error> { todo!() }\n",
+    );
+    write_synthetic_api(
+        &primary,
+        "workout.rs",
+        "pub async fn start(state: &AppState, input: StartWorkoutInput) -> Result<Workout, anyhow::Error> { todo!() }
+pub async fn get_summary(state: &AppState, id: &str) -> Result<WorkoutSummary, anyhow::Error> { todo!() }
+",
+    );
+    let fitness = root.join("fitness");
+    write_synthetic_api(&fitness, "workout.rs", &crud_module_source("workout", "FitnessStore"));
+    write_synthetic_api(&fitness, "exercise.rs", &crud_module_source("exercise", "FitnessStore"));
+
+    vec![
+        crate::servers::ApiSurface {
+            api_dir: primary,
+            service_import_path: "crate::api::v1".to_string(),
+            types_import_path: "crate::schema".to_string(),
+            store_accessor: None,
+            store_type: Some("Store".to_string()),
+            pagination: None,
+            paginated_modules: Vec::new(),
+        },
+        crate::servers::ApiSurface {
+            api_dir: fitness,
+            service_import_path: "fitness::api".to_string(),
+            types_import_path: "fitness::schema".to_string(),
+            store_accessor: Some("fitness_store".to_string()),
+            store_type: Some("FitnessStore".to_string()),
+            pagination: None,
+            paginated_modules: Vec::new(),
+        },
+    ]
+}
+
+/// A server `Config` whose primary surface is `surfaces[0]` and whose
+/// `extra_surfaces` are the rest.
+pub(crate) fn two_surface_config(surfaces: Vec<crate::servers::ApiSurface>) -> Config {
+    let mut surfaces = surfaces.into_iter();
+    let primary = surfaces.next().expect("at least one surface");
+    let mut config = test_config(primary.api_dir);
+    config.service_import_path = primary.service_import_path;
+    config.types_import_path = primary.types_import_path;
+    config.store_type = primary.store_type;
+    config.pagination = primary.pagination;
+    config.extra_surfaces = surfaces.collect();
+    config
+}
+
+/// Every name a file's `use` items bring into scope (the leaf ident, or the
+/// alias after `as`). Two entries with the same name would not compile.
+pub(crate) fn imported_names(source: &str) -> Vec<String> {
+    fn walk(tree: &syn::UseTree, out: &mut Vec<String>) {
+        match tree {
+            syn::UseTree::Path(p) => walk(&p.tree, out),
+            syn::UseTree::Name(n) => out.push(n.ident.to_string()),
+            syn::UseTree::Rename(r) => out.push(r.rename.to_string()),
+            syn::UseTree::Group(g) => g.items.iter().for_each(|t| walk(t, out)),
+            syn::UseTree::Glob(_) => {}
+        }
+    }
+    let file = syn::parse_file(source).expect("generated file must parse");
+    let mut names = Vec::new();
+    for item in &file.items {
+        if let syn::Item::Use(u) = item {
+            walk(&u.tree, &mut names);
+        }
+    }
+    names
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2665,6 +2767,7 @@ fn test_e2e_generate_transport_with_real_api() {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
+        extra_surfaces: Vec::new(),
     };
 
     let modules = crate::servers::generate_transport(&server_config).expect("generate_transport failed");
@@ -2692,6 +2795,7 @@ fn test_e2e_generate_transport_with_real_api() {
         schema_entities: Vec::new(),
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
+        extra_surfaces: Vec::new(),
     };
     crate::clients::generators::transport::generate(&ts_out, &bindings, &modules, &client_config);
     crate::clients::generators::admin::generate(&admin_out, &modules, &client_config);
@@ -3960,4 +4064,176 @@ fn test_ts_client_uses_override_camelcased() {
         !content.contains("journalGetTagHistory"),
         "default-scheme camelCase should NOT appear when override is set"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// API surfaces - a second api_dir with its own accessor, merged into one transport
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_two_surfaces_emit_each_accessor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = two_surface_config(two_surface_fixture(tmp.path()));
+    let http_out = tmp.path().join("http.rs");
+    let ipc_out = tmp.path().join("ipc.rs");
+    let mcp_out = tmp.path().join("mcp.rs");
+    config.generators = vec![
+        ServerGenerator::HttpAxum { output: http_out.clone() },
+        ServerGenerator::TauriIpc { output: ipc_out.clone() },
+        ServerGenerator::Mcp { output: mcp_out.clone() },
+    ];
+
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+
+    let http = std::fs::read_to_string(&http_out).unwrap();
+    assert!(
+        http.contains("let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;"),
+        "second-surface handlers open the store through the surface accessor:\n{http}"
+    );
+    assert!(
+        http.contains("let store = state.store().await.map_err(|e| err(e.to_string()))?;"),
+        "primary-surface handlers keep the default accessor:\n{http}"
+    );
+    assert!(http.contains("athlete::list(&store)"), "primary store module calls through its own name:\n{http}");
+
+    let ipc = std::fs::read_to_string(&ipc_out).unwrap();
+    assert!(ipc.contains("state.fitness_store().await"), "IPC uses the surface accessor:\n{ipc}");
+    assert!(ipc.contains("state.store().await"), "IPC keeps the default accessor:\n{ipc}");
+
+    let mcp = std::fs::read_to_string(&mcp_out).unwrap();
+    assert!(mcp.contains("state.fitness_store().await"), "MCP uses the surface accessor:\n{mcp}");
+    assert!(mcp.contains("state.store().await"), "MCP keeps the default accessor:\n{mcp}");
+}
+
+#[test]
+fn test_two_surfaces_merge_same_named_module() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = two_surface_config(two_surface_fixture(tmp.path()));
+    let http_out = tmp.path().join("http.rs");
+    let ipc_out = tmp.path().join("ipc.rs");
+    config.generators = vec![
+        ServerGenerator::HttpAxum { output: http_out.clone() },
+        ServerGenerator::TauriIpc { output: ipc_out.clone() },
+    ];
+
+    let modules = crate::servers::generate_transport(&config).expect("generate_transport failed");
+
+    let names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, ["athlete", "workout", "exercise"], "primary order first, new modules appended");
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert_eq!(workout.functions.len(), 7, "custom fns and CRUD five merge into one module");
+    assert_eq!(workout.base_surface(), 0);
+    assert_eq!(workout.service_ident(0), "workout");
+    assert_eq!(workout.service_ident(1), "workout_1");
+
+    let http = std::fs::read_to_string(&http_out).unwrap();
+    for route in [
+        ".route(\"/api/workouts\", get(workout_list).post(workout_create))",
+        ".route(\"/api/workouts/{id}\", get(workout_get_by_id).put(workout_update).delete(workout_delete))",
+        ".route(\"/api/workouts/start\", post(workout_start))",
+        ".route(\"/api/workouts/summary/{id}\", get(workout_get_summary))",
+        ".route(\"/api/exercises\", get(exercise_list).post(exercise_create))",
+    ] {
+        assert!(http.contains(route), "expected route {route} in:\n{http}");
+    }
+    assert!(http.contains("workout as workout_1"), "second surface's workout is aliased:\n{http}");
+    assert!(http.contains("workout_1::list(&store)"), "CRUD handlers call through the alias:\n{http}");
+    assert!(http.contains("workout::start(&state, input)"), "custom handlers call the primary module:\n{http}");
+    assert!(
+        http.contains("fitness::schema::Workout") && http.contains("Json<Workout>"),
+        "the shared type name is bare for the primary surface and qualified for the second:\n{http}"
+    );
+    let mut names = imported_names(&http);
+    let count = names.len();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), count, "no name is imported twice:\n{http}");
+
+    let ipc = std::fs::read_to_string(&ipc_out).unwrap();
+    for cmd in
+        ["workout_list", "workout_get_by_id", "workout_create", "workout_update", "workout_delete", "workout_start"]
+    {
+        assert!(ipc.contains(&format!("        {cmd},\n")), "ipc_handler lists {cmd}:\n{ipc}");
+    }
+    assert!(ipc.contains("workout_1::create(&store, input)"), "IPC CRUD calls through the alias:\n{ipc}");
+}
+
+#[test]
+fn test_two_surfaces_duplicate_fn_is_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let surfaces = two_surface_fixture(tmp.path());
+    write_synthetic_api(
+        &surfaces[1].api_dir,
+        "workout.rs",
+        &format!(
+            "{}pub async fn start(store: &FitnessStore, input: StartWorkoutInput) -> Result<Workout, anyhow::Error> {{ todo!() }}\n",
+            crud_module_source("workout", "FitnessStore")
+        ),
+    );
+    let primary_dir = surfaces[0].api_dir.display().to_string();
+    let fitness_dir = surfaces[1].api_dir.display().to_string();
+    let config = two_surface_config(surfaces);
+
+    let err = crate::servers::generate_transport(&config).expect_err("duplicate fn must fail");
+    assert!(err.contains("`workout::start`"), "names the module and fn: {err}");
+    assert!(err.contains(&primary_dir) && err.contains(&fitness_dir), "names both surfaces: {err}");
+}
+
+#[test]
+fn test_two_surfaces_crud_split_is_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let surfaces = two_surface_fixture(tmp.path());
+    write_synthetic_api(
+        &surfaces[0].api_dir,
+        "workout.rs",
+        "pub async fn list(store: &Store) -> Result<Vec<Workout>, anyhow::Error> { todo!() }\n",
+    );
+    std::fs::remove_file(surfaces[1].api_dir.join("workout.rs")).unwrap();
+    write_synthetic_api(
+        &surfaces[1].api_dir,
+        "workout.rs",
+        "pub async fn get_by_id(store: &FitnessStore, id: &str) -> Result<Workout, anyhow::Error> { todo!() }\n",
+    );
+    let config = two_surface_config(surfaces);
+
+    let err = crate::servers::generate_transport(&config).expect_err("split CRUD must fail");
+    assert!(err.contains("CRUD functions of module `workout`"), "{err}");
+    assert!(err.contains("`list`") && err.contains("`get_by_id`"), "{err}");
+}
+
+#[test]
+fn test_single_surface_stamps_default_accessor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "node.rs", &crud_module_source("node", "Store"));
+    let surfaces = vec![test_config(api_dir).primary_surface()];
+
+    let scanned = crate::servers::parse::scan_surfaces(&surfaces, "AppState").unwrap();
+    let f = &scanned.modules[0].functions[0];
+    assert_eq!(f.surface, 0);
+    assert_eq!(f.store_accessor, "store");
+    assert!(f.first_param_is_store);
+}
+
+#[test]
+fn test_surface_pagination_honours_paginated_modules() {
+    let surface = crate::servers::ApiSurface {
+        api_dir: PathBuf::from("unused"),
+        service_import_path: String::new(),
+        types_import_path: String::new(),
+        store_accessor: None,
+        store_type: None,
+        pagination: Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 }),
+        paginated_modules: vec!["exercise".to_string()],
+    };
+    assert!(surface.pagination_for("exercise").is_some());
+    assert!(surface.pagination_for("workout").is_none());
+    assert_eq!(surface.store_accessor(), "store");
+
+    let mut config = test_config(PathBuf::from("unused"));
+    config.extra_surfaces = vec![surface];
+    assert!(config.pagination_for("workout", 0).is_none(), "primary surface has no pagination");
+    assert!(config.pagination_for("exercise", 1).is_some());
+    assert!(config.pagination_for("workout", 1).is_none());
+    assert!(config.any_pagination());
 }

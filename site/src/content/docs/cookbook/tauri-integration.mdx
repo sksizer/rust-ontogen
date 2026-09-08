@@ -105,6 +105,7 @@ my-app/
            store_type: Some("Store".into()),
            store_import: Some("crate::store::Store".into()),
            pagination: None,
+           extra_surfaces: vec![],
        };
 
        let clients_config = ClientsConfig {
@@ -132,6 +133,7 @@ my-app/
            // Pipeline auto-fills this from parsed schema; leave empty.
            schema_entities: Vec::new(),
            pool_extra_roots: Vec::new(),
+           extra_surfaces: vec![],
        };
 
        Pipeline::new("src/schema")
