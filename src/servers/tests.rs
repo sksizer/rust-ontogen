@@ -170,6 +170,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
         ],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -199,6 +200,7 @@ fn make_custom_module() -> ApiModule {
         ],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -212,6 +214,7 @@ fn make_event_module() -> ApiModule {
             EventFn { name: "entity_changed".to_string(), surface: 0 },
         ],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -269,6 +272,7 @@ fn make_junction_module() -> ApiModule {
         ],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -315,7 +319,8 @@ pub async fn get_summary(state: &AppState, id: &str) -> Result<WorkoutSummary, a
     );
     let fitness = root.join("fitness");
     write_synthetic_api(&fitness, "workout.rs", &crud_module_source("workout", "FitnessStore"));
-    write_synthetic_api(&fitness, "exercise.rs", &crud_module_source("exercise", "FitnessStore"));
+    // `exercise` is the module the pagination tests flag, so it carries the page.
+    write_synthetic_api(&fitness, "exercise.rs", &paged_crud_module_source("exercise", "FitnessStore"));
 
     vec![
         crate::servers::ApiSurface {
@@ -690,21 +695,39 @@ fn test_naming_config_overrides() {
 #[test]
 fn test_url_for_module_singleton_uses_singular() {
     let naming = NamingConfig::default();
-    let m = ApiModule { name: "database".to_string(), functions: vec![], events: vec![], is_singleton: true };
+    let m = ApiModule {
+        name: "database".to_string(),
+        functions: vec![],
+        events: vec![],
+        is_singleton: true,
+        has_count: false,
+    };
     assert_eq!(naming.url_for_module(&m), "database", "singleton modules must NOT be pluralized");
 }
 
 #[test]
 fn test_url_for_module_entity_uses_plural() {
     let naming = NamingConfig::default();
-    let m = ApiModule { name: "workout".to_string(), functions: vec![], events: vec![], is_singleton: false };
+    let m = ApiModule {
+        name: "workout".to_string(),
+        functions: vec![],
+        events: vec![],
+        is_singleton: false,
+        has_count: false,
+    };
     assert_eq!(naming.url_for_module(&m), "workouts", "non-singleton modules go through url_plural");
 }
 
 #[test]
 fn test_url_for_module_singleton_with_underscore() {
     let naming = NamingConfig::default();
-    let m = ApiModule { name: "auto_start".to_string(), functions: vec![], events: vec![], is_singleton: true };
+    let m = ApiModule {
+        name: "auto_start".to_string(),
+        functions: vec![],
+        events: vec![],
+        is_singleton: true,
+        has_count: false,
+    };
     assert_eq!(naming.url_for_module(&m), "auto-start", "singleton URL must be kebab-cased but NOT pluralized");
 }
 
@@ -2177,6 +2200,7 @@ fn test_transport_post_with_only_optional_params_sends_them_as_query() {
         name: "doc".to_string(),
         events: vec![],
         is_singleton: false,
+        has_count: false,
         functions: vec![ApiFn {
             name: "count_matching_files".to_string(),
             is_async: true,
@@ -2641,6 +2665,7 @@ fn make_mixed_path_query_module() -> ApiModule {
         }],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -3843,6 +3868,7 @@ fn make_renamed_module(override_value: Option<&str>) -> ApiModule {
         }],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -4239,4 +4265,80 @@ fn test_surface_pagination_honours_paginated_modules() {
     assert!(config.pagination_for("exercise", 1).is_some());
     assert!(config.pagination_for("workout", 1).is_none());
     assert!(config.any_pagination());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Pagination pushdown: the page reaches the store, the total is a count
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A CRUD module whose `list` takes the page and that carries a `count`,
+/// the shape `ApiConfig::paginated` generates.
+pub(crate) fn paged_crud_module_source(entity: &str, store_type: &str) -> String {
+    let pascal = capitalize(entity);
+    format!(
+        "pub async fn list(store: &{st}, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{p}>, anyhow::Error> {{ todo!() }}
+pub async fn count(store: &{st}) -> Result<u64, anyhow::Error> {{ todo!() }}
+pub async fn get_by_id(store: &{st}, id: &str) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn create(store: &{st}, input: Create{p}Input) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn update(store: &{st}, id: &str, input: Update{p}Input) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn delete(store: &{st}, id: &str) -> Result<(), anyhow::Error> {{ todo!() }}
+",
+        st = store_type,
+        p = pascal,
+    )
+}
+
+#[test]
+fn a_paginated_list_pushes_the_page_into_the_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "Store"));
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.has_count, "`count` is recorded on the module");
+    assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation");
+    assert!(workout.is_crud(), "the CRUD surface is intact without `count`");
+    crate::servers::parse::check_paginated_lists(&modules, &config).unwrap();
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(
+        http.contains("workout::list(&store, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        "the HTTP page handler passes the page down:\n{http}"
+    );
+    assert!(http.contains("workout::count(&store)"), "the HTTP page handler asks for the total:\n{http}");
+    assert!(!http.contains(".len() as u64"), "nothing is materialised to be counted:\n{http}");
+    assert!(!http.contains("Query(limit)"), "limit is the page, not a filter:\n{http}");
+
+    let ipc = tmp.path().join("ipc.rs");
+    crate::servers::generators::ipc::generate(&ipc, &modules, &config);
+    let ipc = std::fs::read_to_string(&ipc).unwrap();
+    assert!(
+        ipc.contains("workout::list(&store, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        "the IPC page command passes the page down:\n{ipc}"
+    );
+    assert!(ipc.contains("workout::count(&store)"), "the IPC page command asks for the total:\n{ipc}");
+    assert_eq!(ipc.matches("limit: Option<u32>").count(), 1, "the page params appear once:\n{ipc}");
+}
+
+#[test]
+fn a_paginated_list_without_the_page_or_a_count_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &crud_module_source("workout", "Store"));
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let err = crate::servers::parse::check_paginated_lists(&modules, &config).unwrap_err();
+    assert!(err.contains("module `workout` is paginated"), "{err}");
+    assert!(err.contains("`workout::list` must take `limit: Option<u64>, offset: Option<u64>`"), "{err}");
+
+    // Not paginated: the plain list is fine as it is.
+    config.pagination = None;
+    crate::servers::parse::check_paginated_lists(&modules, &config).unwrap();
 }

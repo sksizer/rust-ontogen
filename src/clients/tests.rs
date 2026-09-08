@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::clients::ClientGenerator;
 use crate::clients::config::Config;
-use crate::servers::tests::two_surface_fixture;
+use crate::servers::tests::{two_surface_fixture, write_synthetic_api};
 use crate::servers::{ApiSurface, NamingConfig, PaginationConfig};
 
 /// A clients `Config` whose primary surface is `surfaces[0]` and whose
@@ -124,4 +124,43 @@ fn surface_entities_come_from_the_surfaces_that_name_a_schema_dir() {
     let names: Vec<_> = entities.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["Athlete"]);
     assert!(entities[0].fields.iter().any(|f| f.name == "display_name"));
+}
+
+#[test]
+fn the_registry_says_whether_list_takes_a_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "note.rs",
+        "pub async fn list(store: &Store, query: ListNotesQuery, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Note>, anyhow::Error> { todo!() }
+pub async fn count(store: &Store) -> Result<u64, anyhow::Error> { todo!() }
+pub async fn get_by_id(store: &Store, id: &str) -> Result<Note, anyhow::Error> { todo!() }
+pub async fn create(store: &Store, input: CreateNoteInput) -> Result<Note, anyhow::Error> { todo!() }
+pub async fn update(store: &Store, id: &str, input: UpdateNoteInput) -> Result<Note, anyhow::Error> { todo!() }
+pub async fn delete(store: &Store, id: &str) -> Result<(), anyhow::Error> { todo!() }
+",
+    );
+    write_synthetic_api(&api_dir, "tag.rs", &crate::servers::tests::crud_module_source("tag", "Store"));
+    let mut config = two_surface_client_config(vec![ApiSurface {
+        api_dir,
+        service_import_path: "crate::api".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        store_accessor: None,
+        store_type: Some("Store".to_string()),
+        pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 }),
+        paginated_modules: vec!["note".to_string()],
+        schema_dir: None,
+    }]);
+    let admin_out = tmp.path().join("admin-registry.ts");
+    config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
+
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::clients::generators::admin::generate(&admin_out, &modules, &config, &config.schema_entities);
+
+    let registry = std::fs::read_to_string(&admin_out).unwrap();
+    let note = &registry[registry.find("key: 'note'").unwrap()..registry.find("key: 'tag'").unwrap()];
+    assert!(note.contains("listQuery: true"), "note's list takes a query:\n{note}");
+    let tag = &registry[registry.find("key: 'tag'").unwrap()..];
+    assert!(!tag.contains("listQuery"), "tag's list does not:\n{tag}");
 }

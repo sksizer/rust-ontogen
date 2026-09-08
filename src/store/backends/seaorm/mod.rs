@@ -15,7 +15,7 @@ impl StoreBackend for SeaormBackend {
     fn emit_preamble(&self, code: &mut String, entity: &EntityDef) {
         let snake = to_snake_case(&entity.name);
 
-        code.push_str("use sea_orm::{ActiveModelTrait, EntityTrait, QuerySelect};\n\n");
+        code.push_str("use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QuerySelect};\n\n");
 
         // Additional imports for entities with has_many relations
         if entity.has_many_relations().next().is_some() {

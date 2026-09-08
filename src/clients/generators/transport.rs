@@ -15,7 +15,7 @@ use ontogen_core::ir::OpKind;
 use crate::clients::config::Config;
 use crate::clients::generators::{FallbackRecord, command_name};
 use crate::servers::classify::{classify_op, is_read_op};
-use crate::servers::parse::{ApiModule, Param};
+use crate::servers::parse::{ApiModule, Param, is_page_param};
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 
 /// Returns `", projectId?: string"` when route_prefix is configured, else `""`.
@@ -225,12 +225,18 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
             match op {
                 OpKind::List => {
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let plain_params: Vec<&Param> =
-                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
                     // Pagination only applies when the list function returns Vec<T>;
                     // custom result types are passed through unchanged.
                     let paginated =
                         config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
+                    // A paginated list's own limit/offset are the page, not caller params.
+                    let plain_params: Vec<&Param> = f
+                        .params
+                        .iter()
+                        .filter(|p| {
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!paginated || !is_page_param(p))
+                        })
+                        .collect();
 
                     let mut params = Vec::new();
                     // Plain params first (e.g., workflowId: string)
@@ -459,12 +465,18 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
             match op {
                 OpKind::List => {
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let plain_params: Vec<&Param> =
-                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
                     // Pagination only applies when the list function returns Vec<T>;
                     // custom result types are passed through unchanged.
                     let paginated =
                         config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
+                    // A paginated list's own limit/offset are the page, not caller params.
+                    let plain_params: Vec<&Param> = f
+                        .params
+                        .iter()
+                        .filter(|p| {
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!paginated || !is_page_param(p))
+                        })
+                        .collect();
 
                     let mut params = Vec::new();
                     for pp in &plain_params {
@@ -783,12 +795,18 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
             match op {
                 OpKind::List => {
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let plain_params: Vec<&Param> =
-                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
                     // Pagination only applies when the list function returns Vec<T>;
                     // custom result types are passed through unchanged.
                     let paginated =
                         config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
+                    // A paginated list's own limit/offset are the page, not caller params.
+                    let plain_params: Vec<&Param> = f
+                        .params
+                        .iter()
+                        .filter(|p| {
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!paginated || !is_page_param(p))
+                        })
+                        .collect();
 
                     let mut params = Vec::new();
                     for pp in &plain_params {

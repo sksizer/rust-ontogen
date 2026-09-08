@@ -67,6 +67,11 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities:
         } else {
             "    paginated: false,\n".to_string()
         };
+        // The transport's list signature: `(query?, limit?, offset?)` when the
+        // fn takes a query struct, `(limit?, offset?)` otherwise. A caller that
+        // pages has to know which slot the page goes in.
+        let list_query_js =
+            if list_fn.params.iter().any(|p| p.ty.contains("Query")) { "    listQuery: true,\n" } else { "" };
 
         out.push_str(&format!(
             "\
@@ -84,7 +89,7 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities:
     returnType: '{return_type}',
     createInputType: '{create_input}',
     updateInputType: '{update_input}',
-{pagination_js}\
+{pagination_js}{list_query_js}\
     fields: [{fields_js}],
   }},\n",
             list_method = snake_to_camel(&command_name(module, list_fn, config)),

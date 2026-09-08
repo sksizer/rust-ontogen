@@ -10,7 +10,7 @@ use ontogen_core::ir::OpKind;
 use crate::servers::classify::classify_op;
 use crate::servers::config::Config;
 use crate::servers::generators::surface_use_stmts;
-use crate::servers::parse::{ApiFn, ApiModule};
+use crate::servers::parse::{ApiFn, ApiModule, is_page_param};
 use crate::servers::types::{
     capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
 };
@@ -172,9 +172,16 @@ pub struct PaginatedResult<T: Serialize> {
                 OpKind::List => {
                     let cmd_name = command_name(module, f, config);
                     let await_str = if is_async { ".await" } else { "" };
+                    let paginated = pagination.is_some() && ret_type.starts_with("Vec<");
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let plain_params: Vec<_> =
-                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
+                    // A paginated list's own limit/offset are the page, not caller params.
+                    let plain_params: Vec<_> = f
+                        .params
+                        .iter()
+                        .filter(|p| {
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!paginated || !is_page_param(p))
+                        })
+                        .collect();
                     let mut param_lines = String::new();
                     let mut extra_args = String::new();
                     if let Some(qp) = query_param {
@@ -188,7 +195,7 @@ pub struct PaginatedResult<T: Serialize> {
                         extra_args.push_str(&format!(", &{}", pp.name));
                     }
                     if let Some(pg) = pagination
-                        && ret_type.starts_with("Vec<")
+                        && paginated
                     {
                         let item_type = inner_type(ret_type);
                         let default_limit = pg.default_limit;
@@ -201,12 +208,12 @@ pub struct PaginatedResult<T: Serialize> {
 pub async fn {cmd_name}(
 {param_lines}{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
 ) -> Result<PaginatedResult<{item_type}>, String> {{
-{fn_pp_body}    let all_items = {svc}::list({first_arg}{extra_args}){await_str}
-        .map_err(|e| e.to_string())?;
-    let total = all_items.len() as u64;
-    let limit = limit.unwrap_or({default_limit}).min({max_limit});
+{fn_pp_body}    let limit = limit.unwrap_or({default_limit}).min({max_limit});
     let offset = offset.unwrap_or(0);
-    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();
+    let items = {svc}::list({first_arg}{extra_args}, Some(u64::from(limit)), Some(u64::from(offset))){await_str}
+        .map_err(|e| e.to_string())?;
+    let total = {svc}::count({first_arg}){await_str}
+        .map_err(|e| e.to_string())?;
     Ok(PaginatedResult {{ items, total, limit, offset }})
 }}
 
