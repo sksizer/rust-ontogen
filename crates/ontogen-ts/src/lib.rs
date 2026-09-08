@@ -48,7 +48,7 @@ mod rename;
 mod resolve;
 mod types;
 
-pub use emit::{emit, emit_with_imports};
+pub use emit::{emit, emit_with_imports, unit_variant_wire_names};
 pub use pool::{ScanError, scan_src_dir, scan_src_dir_with_imports};
 pub use resolve::{ModuleImports, Resolution, resolve_reference};
 pub use types::{BigIntBehavior, EmitConfig, EmitError, QuoteStyle, RenameAll, TypePath, TypePathError};

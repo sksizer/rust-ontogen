@@ -37,7 +37,7 @@ pub fn emit_schema_known_ts_for_tests(entities: &[ontogen_core::model::EntityDef
 use std::path::PathBuf;
 
 use crate::CodegenError;
-use crate::ir::ApiOutput;
+use crate::ir::{ApiOutput, SchemaOutput};
 use crate::servers::ApiModule;
 use crate::servers::parse;
 
@@ -80,6 +80,8 @@ pub fn generate(
         store_type: config.store_type.clone(),
         store_import: config.store_import.clone(),
         schema_entities: config.schema_entities.clone(),
+        schema_enums: config.schema_enums.clone(),
+        label_overrides: config.label_overrides.clone(),
         pagination: config.pagination.clone(),
         pool_extra_roots: config.pool_extra_roots.clone(),
         pool_exclude_paths: config.pool_exclude_paths.clone(),
@@ -319,12 +321,19 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
                 // The surfaces' own entities join the registry; the entity
                 // already present wins on a name collision.
                 let mut entities = config.schema_entities.clone();
-                for entity in surface_entities(&config.extra_surfaces)? {
+                let mut enums = config.schema_enums.clone();
+                let surfaces = surface_schema(&config.extra_surfaces)?;
+                for entity in surfaces.entities {
                     if !entities.iter().any(|e| e.name == entity.name) {
                         entities.push(entity);
                     }
                 }
-                generators::admin::generate(output, &modules, config, &entities);
+                for def in surfaces.enums {
+                    if !enums.iter().any(|e| e.name == def.name) {
+                        enums.push(def);
+                    }
+                }
+                generators::admin::generate(output, &modules, config, &entities, &enums);
             }
         }
     }
@@ -336,15 +345,14 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
 /// in surface order.
 ///
 /// [`ApiSurface::schema_dir`]: crate::servers::ApiSurface::schema_dir
-pub(crate) fn surface_entities(
-    surfaces: &[crate::servers::ApiSurface],
-) -> Result<Vec<ontogen_core::model::EntityDef>, String> {
-    let mut entities = Vec::new();
+pub(crate) fn surface_schema(surfaces: &[crate::servers::ApiSurface]) -> Result<SchemaOutput, String> {
+    let mut schema = SchemaOutput { entities: Vec::new(), enums: Vec::new() };
     for dir in surfaces.iter().filter_map(|s| s.schema_dir.clone()) {
         let parsed = crate::parse_schema(&crate::SchemaConfig { schema_dir: dir }).map_err(|e| e.to_string())?;
-        entities.extend(parsed.entities);
+        schema.entities.extend(parsed.entities);
+        schema.enums.extend(parsed.enums);
     }
-    Ok(entities)
+    Ok(schema)
 }
 
 /// Append `ts` to the bindings file at `bindings_path`, prefixed with a

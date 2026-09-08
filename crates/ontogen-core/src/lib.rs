@@ -17,7 +17,7 @@ pub mod utils;
 
 // Re-export key types at the crate root for ergonomic use
 pub use ir::*;
-pub use model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+pub use model::{EntityDef, EnumDef, EnumVariant, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
 pub use naming::{pluralize, to_pascal_case, to_snake_case};
 pub use utils::{clean_generated_dir, emit_rerun_directives, rustfmt};
 

@@ -67,7 +67,9 @@ pub mod http {
 // Re-export key types for ergonomic use in build.rs
 pub use ontogen_core::CodegenError;
 pub use ontogen_core::ir::*;
-pub use ontogen_core::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+pub use ontogen_core::model::{
+    EntityDef, EnumDef, EnumVariant, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind,
+};
 pub use ontogen_core::naming::{pluralize, to_pascal_case, to_snake_case};
 pub use ontogen_core::utils::{
     OnFormatError, TsFormatFn, TsFormatter, clean_generated_dir, emit_rerun_directives,
@@ -120,7 +122,8 @@ pub const DEFAULT_SCHEMA_MODULE_PATH: &str = "crate::schema";
 pub fn parse_schema(config: &SchemaConfig) -> Result<SchemaOutput, CodegenError> {
     emit_rerun_directives(&config.schema_dir);
     let entities = schema::parse::parse_schema_dir(&config.schema_dir).map_err(CodegenError::Schema)?;
-    Ok(SchemaOutput { entities })
+    let enums = schema::parse::parse_schema_enums_dir(&config.schema_dir).map_err(CodegenError::Schema)?;
+    Ok(SchemaOutput { entities, enums })
 }
 
 /// Generate SeaORM entities, junction tables, and model conversions from parsed schema.
@@ -414,6 +417,8 @@ pub fn gen_servers(
 ///         store_import: Some("crate::Store".into()),
 ///         pagination: None,
 ///         schema_entities: vec![],
+///         schema_enums: vec![],
+///         label_overrides: HashMap::new(),
 ///         pool_extra_roots: vec![],
 ///         pool_exclude_paths: vec![],
 ///         extra_surfaces: vec![],
@@ -661,6 +666,14 @@ pub struct ClientsConfig {
     /// [`Pipeline`] users do not need to set this; the builder forwards
     /// `schema.entities` automatically.
     pub schema_entities: Vec<EntityDef>,
+    /// The schema's string enums, which give the admin registry a field's
+    /// `enumValues`. [`Pipeline`] users do not need to set this; the builder
+    /// forwards `schema.enums` automatically.
+    pub schema_enums: Vec<EnumDef>,
+    /// Admin-registry labels that replace the title-cased field name, keyed
+    /// `entity.field` for one entity's field or `field` for every entity's
+    /// field of that name: `("avg_hr_bpm", "Average HR (bpm)")`.
+    pub label_overrides: std::collections::HashMap<String, String>,
     /// Additional source roots to feed into ontogen-ts's long-tail type pool,
     /// beyond the default `CARGO_MANIFEST_DIR/src`. Use when long-tail types
     /// are defined in workspace-sibling crates and brought into the consuming

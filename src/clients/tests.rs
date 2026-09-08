@@ -32,6 +32,8 @@ fn two_surface_client_config(surfaces: Vec<ApiSurface>) -> Config {
         store_type: primary.store_type,
         store_import: Some("crate::store::Store".to_string()),
         schema_entities: Vec::new(),
+        schema_enums: Vec::new(),
+        label_overrides: HashMap::new(),
         pagination: primary.pagination,
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
@@ -77,7 +79,13 @@ fn test_two_surfaces_admin_registry_reports_pagination_per_module() {
     config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
 
     let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    crate::clients::generators::admin::generate(&admin_out, &modules, &config, &config.schema_entities);
+    crate::clients::generators::admin::generate(
+        &admin_out,
+        &modules,
+        &config,
+        &config.schema_entities,
+        &config.schema_enums,
+    );
 
     let registry = std::fs::read_to_string(&admin_out).unwrap();
     let entry = |key: &str| {
@@ -120,7 +128,8 @@ fn surface_entities_come_from_the_surfaces_that_name_a_schema_dir() {
         schema_dir,
     };
 
-    let entities = crate::clients::surface_entities(&[surface(None), surface(Some(dir.path().to_path_buf()))]).unwrap();
+    let entities =
+        crate::clients::surface_schema(&[surface(None), surface(Some(dir.path().to_path_buf()))]).unwrap().entities;
     let names: Vec<_> = entities.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["Athlete"]);
     assert!(entities[0].fields.iter().any(|f| f.name == "display_name"));
@@ -156,11 +165,100 @@ pub async fn delete(store: &Store, id: &str) -> Result<(), anyhow::Error> { todo
     config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
 
     let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    crate::clients::generators::admin::generate(&admin_out, &modules, &config, &config.schema_entities);
+    crate::clients::generators::admin::generate(
+        &admin_out,
+        &modules,
+        &config,
+        &config.schema_entities,
+        &config.schema_enums,
+    );
 
     let registry = std::fs::read_to_string(&admin_out).unwrap();
     let note = &registry[registry.find("key: 'note'").unwrap()..registry.find("key: 'tag'").unwrap()];
     assert!(note.contains("listQuery: true"), "note's list takes a query:\n{note}");
     let tag = &registry[registry.find("key: 'tag'").unwrap()..];
     assert!(!tag.contains("listQuery"), "tag's list does not:\n{tag}");
+}
+
+#[test]
+fn the_registry_carries_enum_values_label_overrides_and_the_id_type() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "source.rs", &crate::servers::tests::crud_module_source("source", "Store"));
+    write_synthetic_api(&api_dir, "reading.rs", &crate::servers::tests::crud_module_source("reading", "Store"));
+    let schema = r#"
+        #[derive(Serialize, Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        pub enum Quality {
+            PeerReviewed,
+            Community,
+        }
+
+        #[derive(OntologyEntity)]
+        #[ontology(entity)]
+        pub struct Source {
+            #[ontology(id)]
+            pub id: String,
+            #[ontology(enum_field)]
+            pub kind: Quality,
+            pub quality: Option<Quality>,
+            pub avg_hr_bpm: Option<i32>,
+        }
+
+        #[derive(OntologyEntity)]
+        #[ontology(entity)]
+        pub struct Reading {
+            #[ontology(id)]
+            pub id: i64,
+            pub avg_hr_bpm: Option<i32>,
+        }
+    "#;
+    let path = std::path::Path::new("schema.rs");
+    let mut config = two_surface_client_config(vec![ApiSurface {
+        api_dir,
+        service_import_path: "crate::api".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        store_accessor: None,
+        store_type: Some("Store".to_string()),
+        pagination: None,
+        paginated_modules: Vec::new(),
+        schema_dir: None,
+    }]);
+    config.schema_entities = crate::schema::parse::parse_schema_source(schema, path).unwrap();
+    config.schema_enums = crate::schema::parse::parse_schema_enums_source(schema, path).unwrap();
+    config.label_overrides = HashMap::from([
+        ("avg_hr_bpm".to_string(), "Average HR (bpm)".to_string()),
+        ("reading.avg_hr_bpm".to_string(), "Heart rate".to_string()),
+    ]);
+    let admin_out = tmp.path().join("admin-registry.ts");
+    config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
+
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::clients::generators::admin::generate(
+        &admin_out,
+        &modules,
+        &config,
+        &config.schema_entities,
+        &config.schema_enums,
+    );
+
+    let registry = std::fs::read_to_string(&admin_out).unwrap();
+    let reading = &registry[registry.find("key: 'reading'").unwrap()..registry.find("key: 'source'").unwrap()];
+    let source = &registry[registry.find("key: 'source'").unwrap()..];
+    assert!(source.contains("idType: 'string'"), "a String id:\n{source}");
+    assert!(reading.contains("idType: 'number'"), "an i64 id:\n{reading}");
+    let kind = &source[source.find("key: 'kind'").unwrap()..source.find("key: 'quality'").unwrap()];
+    assert!(
+        kind.contains("type: 'enum', required: true") && kind.contains("enumValues: ['peer-reviewed', 'community']"),
+        "a bare enum field is a required select:\n{kind}"
+    );
+    let quality = &source[source.find("key: 'quality'").unwrap()..source.find("key: 'avg_hr_bpm'").unwrap()];
+    assert!(
+        quality.contains("type: 'enum'")
+            && !quality.contains("required")
+            && quality.contains("enumValues: ['peer-reviewed', 'community']"),
+        "an optional enum field is an optional select:\n{quality}"
+    );
+    assert!(source.contains("label: 'Average HR (bpm)'"), "the field-wide override:\n{source}");
+    assert!(reading.contains("label: 'Heart rate'"), "the entity's own override wins:\n{reading}");
 }

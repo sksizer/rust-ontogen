@@ -61,6 +61,8 @@ fn client_test_config(api_dir: PathBuf) -> ClientsInternalConfig {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         schema_entities: Vec::new(),
+        schema_enums: Vec::new(),
+        label_overrides: HashMap::new(),
         pagination: None,
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
@@ -2302,7 +2304,13 @@ fn test_admin_registry_generator() {
         make_custom_module(), // non-CRUD should be excluded
     ];
 
-    crate::clients::generators::admin::generate(&output, &modules, &config, &config.schema_entities);
+    crate::clients::generators::admin::generate(
+        &output,
+        &modules,
+        &config,
+        &config.schema_entities,
+        &config.schema_enums,
+    );
     let content = std::fs::read_to_string(&output).unwrap();
 
     // Type import (definitions moved to @ontogen/admin-types)
@@ -2820,12 +2828,20 @@ fn test_e2e_generate_transport_with_real_api() {
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
         schema_entities: Vec::new(),
+        schema_enums: Vec::new(),
+        label_overrides: HashMap::new(),
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
         extra_surfaces: Vec::new(),
     };
     crate::clients::generators::transport::generate(&ts_out, &bindings, &modules, &client_config);
-    crate::clients::generators::admin::generate(&admin_out, &modules, &client_config, &client_config.schema_entities);
+    crate::clients::generators::admin::generate(
+        &admin_out,
+        &modules,
+        &client_config,
+        &client_config.schema_entities,
+        &client_config.schema_enums,
+    );
 
     // Should find a reasonable number of modules
     assert!(modules.len() >= 5, "Expected at least 5 API modules from real API dir, got {}", modules.len());
