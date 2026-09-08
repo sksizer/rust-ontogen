@@ -205,10 +205,32 @@ pub struct ApiModule {
     /// (HTTP today; admin / doc-gen in the future) branch on this rather than
     /// re-deriving from naming rules.
     pub is_singleton: bool,
+    /// True when the module defines `count(store) -> Result<u64, _>`: the
+    /// total behind a paginated `list`. It is called by the generated page
+    /// handlers and is not an operation of its own, so it is kept off
+    /// `functions`.
+    pub has_count: bool,
+}
+
+/// The parameter names a paginated `list` ends with.
+pub const PAGE_PARAMS: [&str; 2] = ["limit", "offset"];
+
+/// True for the `limit`/`offset` parameter of a paginated `list`.
+pub fn is_page_param(p: &Param) -> bool {
+    PAGE_PARAMS.contains(&p.name.as_str())
 }
 
 /// The function names that make up a module's CRUD surface.
 pub const CRUD_FN_NAMES: [&str; 5] = ["list", "get_by_id", "create", "update", "delete"];
+
+impl ApiFn {
+    /// True when the fn ends with `limit: Option<u64>, offset: Option<u64>`:
+    /// the shape a paginated `list` must have for the page to reach the store.
+    pub fn takes_page(&self) -> bool {
+        let n = self.params.len();
+        n >= 2 && self.params[n - 2].name == PAGE_PARAMS[0] && self.params[n - 1].name == PAGE_PARAMS[1]
+    }
+}
 
 impl ApiModule {
     /// Returns true if this module has a complete CRUD surface
@@ -469,6 +491,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
         return result;
     }
     let is_singleton = has_singleton_marker(&source);
+    let mut has_count = false;
     let Ok(syntax) = syn::parse_file(&source) else {
         return result;
     };
@@ -611,6 +634,11 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
 
             let (return_type, return_type_ast) = extract_result_ok_type(&func.sig.output);
 
+            if fn_ident == "count" && is_store && params.is_empty() {
+                has_count = true;
+                continue;
+            }
+
             functions.push(ApiFn {
                 name: fn_ident,
                 is_async: func.sig.asyncness.is_some(),
@@ -628,7 +656,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
         }
     }
 
-    result.module = Some(ApiModule { name: file_stem.to_string(), functions, events, is_singleton });
+    result.module = Some(ApiModule { name: file_stem.to_string(), functions, events, is_singleton, has_count });
     result
 }
 
@@ -778,6 +806,7 @@ pub fn merge_surfaces(per_surface: Vec<Vec<ApiModule>>, surfaces: &[ApiSurface])
                 continue;
             };
             let module = &incoming.name;
+            existing.has_count |= incoming.has_count;
             for f in incoming.functions {
                 if let Some(prior) = existing.functions.iter().find(|p| p.name == f.name) {
                     return Err(format!(
@@ -1022,4 +1051,29 @@ fn parse_ontogen_rename(attrs: &[syn::Attribute]) -> OntogenAttr {
     }
 
     result
+}
+
+/// A paginated `list` pushes its page into the store: it must take
+/// `limit`/`offset` as its last two parameters and sit beside a `count`.
+/// Anything else would make the handler load the whole table to slice it.
+pub fn check_paginated_lists(modules: &[ApiModule], config: &crate::servers::config::Config) -> Result<(), String> {
+    for m in modules {
+        for f in &m.functions {
+            if f.name != "list"
+                || !f.return_type.starts_with("Vec<")
+                || config.pagination_for(&m.name, f.surface).is_none()
+            {
+                continue;
+            }
+            if !f.takes_page() || !m.has_count {
+                return Err(format!(
+                    "ontogen: module `{}` is paginated, so `{}::list` must take `limit: Option<u64>, offset: Option<u64>` as \
+                     its last two parameters and the module must define `count(store) -> Result<u64, _>`; a generated \
+                     CRUD module gets both from `ApiConfig::paginated`",
+                    m.name, m.name
+                ));
+            }
+        }
+    }
+    Ok(())
 }

@@ -110,6 +110,7 @@ struct ApiStage {
     exclude: Vec<String>,
     scan_dirs: Vec<PathBuf>,
     store_type: Option<String>,
+    paginated: Vec<String>,
 }
 
 /// Internal state for the servers stage.
@@ -273,7 +274,20 @@ impl Pipeline {
             exclude: Vec::new(),
             scan_dirs: Vec::new(),
             store_type: None,
+            paginated: Vec::new(),
         });
+        self
+    }
+
+    /// Generate a paged `list(store, limit, offset)` and a `count(store)` for
+    /// these modules (snake_case entity names) — see [`ApiConfig::paginated`].
+    ///
+    /// Has no effect unless [`Pipeline::api`] has been called.
+    #[must_use]
+    pub fn api_paginated(mut self, modules: Vec<String>) -> Self {
+        if let Some(stage) = self.api.as_mut() {
+            stage.paginated = modules;
+        }
         self
     }
 
@@ -521,6 +535,7 @@ impl Pipeline {
                         state_type: stage.state_type,
                         store_type: resolved_store_type,
                         schema_module_path: self.schema_module_path.clone(),
+                        paginated: stage.paginated,
                     },
                 )?)
             }

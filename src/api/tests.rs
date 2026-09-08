@@ -30,6 +30,7 @@ mod tests {
             state_type: "AppState".to_string(),
             store_type: Some("Store".to_string()),
             schema_module_path: "crate::schema".to_string(),
+            paginated: vec![],
         }
     }
 

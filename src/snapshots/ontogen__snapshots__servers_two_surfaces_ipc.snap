@@ -81,9 +81,13 @@ pub async fn workout_delete(id: String, state: State<'_, Arc<AppState>>) -> Resu
 // ── Exercise IPC Commands ──
 
 #[tauri::command]
-pub async fn exercise_list(state: State<'_, Arc<AppState>>) -> Result<Vec<Exercise>, String> {
+pub async fn exercise_list(
+    limit: Option<u64>,
+    offset: Option<u64>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<Exercise>, String> {
     let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    exercise::list(&store).await.map_err(|e| e.to_string())
+    exercise::list(&store, &limit, &offset).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

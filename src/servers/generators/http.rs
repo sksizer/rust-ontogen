@@ -10,7 +10,7 @@ use ontogen_core::ir::OpKind;
 use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::config::Config;
 use crate::servers::generators::surface_use_stmts;
-use crate::servers::parse::{ApiFn, ApiModule};
+use crate::servers::parse::{ApiFn, ApiModule, is_page_param};
 use crate::servers::types::{
     capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type, to_pascal_case,
 };
@@ -195,11 +195,18 @@ pub struct PaginationParams {
                 OpKind::List => {
                     let await_str = if is_async { "\n        .await" } else { "" };
                     let err_map = ".map_err(|e| err(e.to_string()))";
+                    let paginated = pagination.is_some() && ret_type.starts_with("Vec<");
                     // Check for a query parameter struct (e.g., ListAgentsQuery)
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    // Check for plain string params (e.g., skill_id: &str) - scoped list filters
-                    let plain_params: Vec<_> =
-                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
+                    // Check for plain string params (e.g., skill_id: &str) - scoped list filters.
+                    // A paginated list's own limit/offset are the page, not filters.
+                    let plain_params: Vec<_> = f
+                        .params
+                        .iter()
+                        .filter(|p| {
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!paginated || !is_page_param(p))
+                        })
+                        .collect();
 
                     let mut extra_extractors = String::new();
                     let mut extra_args = String::new();
@@ -214,7 +221,7 @@ pub struct PaginationParams {
                     }
 
                     if let Some(pg) = pagination
-                        && ret_type.starts_with("Vec<")
+                        && paginated
                     {
                         let item_type = inner_type(ret_type);
                         let default_limit = pg.default_limit;
@@ -225,12 +232,12 @@ pub struct PaginationParams {
 async fn {handler_name}(
     State(state): State<Arc<{state_type}>>,{extra_extractors}
 ) -> Result<Json<PaginatedResult<{item_type}>>, ApiError> {{
-{store_let}    let all_items = {svc}::list({first_arg}{extra_args}){await_str}
-        {err_map}?;
-    let total = all_items.len() as u64;
-    let limit = pagination.limit.unwrap_or({default_limit}).min({max_limit});
+{store_let}    let limit = pagination.limit.unwrap_or({default_limit}).min({max_limit});
     let offset = pagination.offset.unwrap_or(0);
-    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();
+    let items = {svc}::list({first_arg}{extra_args}, Some(u64::from(limit)), Some(u64::from(offset))){await_str}
+        {err_map}?;
+    let total = {svc}::count({first_arg}){await_str}
+        {err_map}?;
     Ok(Json(PaginatedResult {{ items, total, limit, offset }}))
 }}
 

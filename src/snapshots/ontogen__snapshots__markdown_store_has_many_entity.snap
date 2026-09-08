@@ -78,6 +78,10 @@ impl Store {
         Ok(nodes)
     }
 
+    pub async fn count_nodes(&self) -> Result<u64, AppError> {
+        Ok(self.vault().read_all(NODES_DIR).map_err(AppError::from)?.len() as u64)
+    }
+
     pub async fn get_node(&self, id: &str) -> Result<Node, AppError> {
         let doc = self
             .vault()

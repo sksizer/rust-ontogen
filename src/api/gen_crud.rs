@@ -1,7 +1,8 @@
 //! Generate CRUD forwarding functions for one entity.
 //!
 //! Each generated module delegates to the Store methods:
-//! - `list` → `store.list_{entities}()`
+//! - `list` → `store.list_{entities}()`, or `list_{entities}(limit, offset)` plus
+//!   `count` → `store.count_{entities}()` for a paginated entity
 //! - `get_by_id` → `store.get_{entity}(id)`
 //! - `create` → `input.into()` + `store.create_{entity}(entity)`
 //! - `update` → `input.into()` + `store.update_{entity}(id, updates)`
@@ -30,11 +31,24 @@ pub fn generate_crud_module(entity: &EntityDef, config: &ApiConfig) -> String {
     code.push_str("use crate::store::Store;\n\n");
     code.push('\n');
 
-    // list
-    code.push_str(&format!("/// List all {plural}\n"));
-    code.push_str(&format!("pub async fn list(store: &Store) -> Result<Vec<{name}>, AppError> {{\n"));
-    code.push_str(&format!("    store.list_{plural}(None, None).await\n"));
-    code.push_str("}\n\n");
+    // list (+ count when paginated)
+    if config.paginated.iter().any(|m| m == &snake) {
+        code.push_str(&format!("/// One page of {plural}\n"));
+        code.push_str(&format!(
+            "pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
+        ));
+        code.push_str(&format!("    store.list_{plural}(limit, offset).await\n"));
+        code.push_str("}\n\n");
+        code.push_str(&format!("/// How many {plural} there are — the total behind a page of `list`\n"));
+        code.push_str("pub async fn count(store: &Store) -> Result<u64, AppError> {\n");
+        code.push_str(&format!("    store.count_{plural}().await\n"));
+        code.push_str("}\n\n");
+    } else {
+        code.push_str(&format!("/// List all {plural}\n"));
+        code.push_str(&format!("pub async fn list(store: &Store) -> Result<Vec<{name}>, AppError> {{\n"));
+        code.push_str(&format!("    store.list_{plural}(None, None).await\n"));
+        code.push_str("}\n\n");
+    }
 
     // get_by_id
     code.push_str(&format!("/// Get a single {snake} by ID\n"));
@@ -96,6 +110,7 @@ mod tests {
             state_type: "AppState".to_string(),
             store_type: Some("Store".to_string()),
             schema_module_path: "crate::schema".to_string(),
+            paginated: vec![],
         }
     }
 
@@ -108,5 +123,30 @@ mod tests {
         syn::parse_file(&code).unwrap_or_else(|e| {
             panic!("api::gen_crud::generate_crud_module produced invalid Rust: {e}\n--- code ---\n{code}")
         });
+    }
+
+    #[test]
+    fn a_paginated_entity_gets_a_paged_list_and_a_count() {
+        let entity = EntityDef {
+            name: "Workout".to_string(),
+            directory: "workout".to_string(),
+            table: "workouts".to_string(),
+            type_name: "workout".to_string(),
+            prefix: "workout".to_string(),
+            fields: vec![FieldDef::new("id", FieldType::String, FieldRole::Id)],
+        };
+        let mut config = make_config();
+        config.paginated = vec!["workout".to_string()];
+        let code = generate_crud_module(&entity, &config);
+        assert!(code.contains(
+            "pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Workout>, AppError>"
+        ));
+        assert!(code.contains("store.list_workouts(limit, offset).await"));
+        assert!(code.contains("pub async fn count(store: &Store) -> Result<u64, AppError>"));
+        assert!(code.contains("store.count_workouts().await"));
+
+        let plain = generate_crud_module(&entity, &make_config());
+        assert!(plain.contains("pub async fn list(store: &Store) -> Result<Vec<Workout>, AppError>"));
+        assert!(!plain.contains("fn count("));
     }
 }

@@ -68,6 +68,10 @@ impl Store {
         Ok(articles)
     }
 
+    pub async fn count_articles(&self) -> Result<u64, AppError> {
+        Ok(self.vault().read_all(ARTICLES_DIR).map_err(AppError::from)?.len() as u64)
+    }
+
     pub async fn get_article(&self, id: &str) -> Result<Article, AppError> {
         let doc = self
             .vault()

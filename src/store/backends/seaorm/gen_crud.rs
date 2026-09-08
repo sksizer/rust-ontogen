@@ -18,6 +18,7 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef) {
     code.push_str("impl Store {\n");
 
     generate_list(code, entity, has_relations);
+    generate_count(code, entity);
     generate_get(code, entity, has_relations);
     generate_create(code, entity, has_relations);
     generate_update(code, entity, has_relations);
@@ -71,6 +72,18 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
         code.push_str(&format!("        Ok(models.iter().map({name}::from_model).collect())\n"));
     }
 
+    code.push_str("    }\n\n");
+}
+
+fn generate_count(code: &mut String, entity: &EntityDef) {
+    let snake = to_snake_case(&entity.name);
+    let plural = pluralize(&snake);
+
+    code.push_str(&format!("    pub async fn count_{plural}(&self) -> Result<u64, AppError> {{\n"));
+    code.push_str(&format!("        {snake}::Entity::find()\n"));
+    code.push_str("            .count(self.db())\n");
+    code.push_str("            .await\n");
+    code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))\n");
     code.push_str("    }\n\n");
 }
 

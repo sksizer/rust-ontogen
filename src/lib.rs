@@ -289,6 +289,7 @@ pub fn gen_store(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOu
 ///     state_type: "AppState".into(),
 ///     store_type: Some("Store".into()),
 ///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+///     paginated: vec![],
 /// })?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
@@ -334,6 +335,7 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 ///     state_type: "AppState".into(),
 ///     store_type: Some("Store".into()),
 ///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+///     paginated: vec![],
 /// })?;
 ///
 /// gen_servers(
@@ -548,6 +550,12 @@ pub struct ApiConfig {
     /// Use [`DEFAULT_SCHEMA_MODULE_PATH`] for the canonical default; the same
     /// constant is referenced by [`StoreConfig::schema_module_path`].
     pub schema_module_path: String,
+    /// Modules (snake_case entity names, e.g. `"workout"`) whose generated
+    /// `list` takes `limit`/`offset` and gets a `count` sibling, so a
+    /// paginated transport handler asks the store for one page and a total
+    /// instead of the whole table. Name the same modules in the surface's
+    /// `paginated_modules`.
+    pub paginated: Vec<String>,
 }
 
 /// Configuration for [`gen_servers`].
