@@ -443,7 +443,7 @@ fn docs_markdown_prints_enum_values_and_flattens_docs() {
     let files = generate_docs(&schema_output(vec![documented_set_entity()], vec![set_kind_enum()]));
 
     assert!(files.markdown.contains("| distance_m | integer | no | Integer metres. |"), "{}", files.markdown);
-    assert!(files.markdown.contains("enum(working | warm-up)"), "{}", files.markdown);
+    assert!(files.markdown.contains("enum(working, warm-up)"), "{}", files.markdown);
     // A multi-line field doc collapses onto the table row.
     assert!(files.markdown.contains("How the set was recorded."), "{}", files.markdown);
 }

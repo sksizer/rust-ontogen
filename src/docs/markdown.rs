@@ -50,7 +50,7 @@ fn field_table(entity: &EntityDef, enums: &[EnumDef]) -> String {
 fn field_type(field: &FieldDef, enums: &[EnumDef]) -> String {
     if let Some(def) = field.enum_def(enums) {
         let values: Vec<&str> = def.variants.iter().map(|v| v.value.as_str()).collect();
-        return format!("enum({})", values.join(" | "));
+        return format!("enum({})", values.join(", "));
     }
     match &field.field_type {
         FieldType::VecString => "string[]",
