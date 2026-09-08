@@ -17,6 +17,7 @@ generators can optionally consume:
 
 ```text
 parse_schema -> SchemaOutput
+    |-- gen_docs        -> ()             (data-model reference + JSON Schema)
     |-- gen_seaorm      -> SeaOrmOutput
     |-- gen_markdown_io -> ()
     |-- gen_dtos        -> ()
@@ -89,6 +90,8 @@ and transport handlers. Add a new entity to your schema and rebuild -- everythin
 - **Server transports** for Axum HTTP, Tauri IPC, and MCP (Model Context Protocol)
 - **Client generation** for TypeScript and admin registries
 - **Markdown I/O** with parser dispatch, writers, and filesystem operations
+- **Docs generation** -- a `data-model.md` reference and JSON Schema (draft 2020-12) per entity, so the schema ships
+  as a published spec
 
 ## Example Project
 

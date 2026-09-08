@@ -370,6 +370,7 @@ mod tests {
             type_name: name.to_ascii_lowercase(),
             prefix: name.to_ascii_lowercase(),
             fields,
+            doc: String::new(),
         }
     }
 

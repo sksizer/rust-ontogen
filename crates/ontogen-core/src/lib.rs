@@ -32,6 +32,7 @@ pub enum CodegenError {
     Api(String),
     Server(String),
     Client(String),
+    Docs(String),
     /// An external tool required by the codegen pipeline is missing or failed.
     ExternalTool {
         tool: &'static str,
@@ -48,6 +49,7 @@ impl std::fmt::Display for CodegenError {
             Self::Api(e) => write!(f, "api codegen error: {e}"),
             Self::Server(e) => write!(f, "server codegen error: {e}"),
             Self::Client(e) => write!(f, "client codegen error: {e}"),
+            Self::Docs(e) => write!(f, "docs codegen error: {e}"),
             Self::ExternalTool { tool, detail } => {
                 write!(f, "external tool `{tool}` unavailable: {detail}")
             }

@@ -1,0 +1,27 @@
+---
+source: src/snapshots.rs
+expression: "files.schemas[\"comment\"]"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "comment.schema.json",
+  "title": "Comment",
+  "x-schema-revision": "bf88bc108107cf1a",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "post_id": {
+      "type": "string"
+    },
+    "body": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "body"
+  ],
+  "additionalProperties": false
+}
