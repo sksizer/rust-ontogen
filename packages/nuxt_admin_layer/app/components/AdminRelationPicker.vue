@@ -98,6 +98,11 @@ function clear() {
   query.value = ''
 }
 
+function onInput(event: Event) {
+  query.value = (event.target as HTMLInputElement).value
+  open.value = true
+}
+
 function onKeydown(event: KeyboardEvent) {
   if (!open.value && (event.key === 'ArrowDown' || event.key === 'Enter')) {
     open.value = true
@@ -161,10 +166,7 @@ function closeSoon() {
           class="flex-1 px-3 py-2 text-sm rounded-md border border-(--ui-border) bg-(--ui-bg) text-(--ui-text) focus:outline-none focus:ring-1 focus:ring-(--ui-border-accented)"
           :placeholder="loading ? 'Loading…' : `Search ${target?.pluralLabel?.toLowerCase() ?? relationTo}…`"
           @focus="open = true"
-          @input="
-            query = ($event.target as HTMLInputElement).value
-            open = true
-          "
+          @input="onInput"
           @keydown="onKeydown"
           @blur="closeSoon"
         />
