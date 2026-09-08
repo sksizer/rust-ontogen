@@ -473,6 +473,29 @@ fn is_valid_ts_ident(s: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
 }
 
+/// The wire names of a C-style enum's variants in declaration order, as
+/// `(rust_name, serde_name)` pairs with `#[serde(skip)]` variants left out.
+/// `None` when a variant carries a payload: such an enum is not a closed set
+/// of strings.
+pub fn unit_variant_wire_names(item: &ItemEnum) -> Result<Option<Vec<(String, String)>>, EmitError> {
+    let referenced_by = TypePath::new(vec![item.ident.to_string()]).expect("single segment is non-empty");
+    let container = extract_container_attrs(&item.attrs, &referenced_by)?;
+    let mut names = Vec::with_capacity(item.variants.len());
+    for variant in &item.variants {
+        let attrs = extract_variant_attrs(&variant.attrs, &referenced_by)?;
+        if attrs.skip {
+            continue;
+        }
+        if !matches!(variant.fields, Fields::Unit) {
+            return Ok(None);
+        }
+        let raw = variant.ident.to_string();
+        let wire = variant_wire_name(&raw, &attrs, container.rename_all);
+        names.push((raw, wire));
+    }
+    Ok(Some(names))
+}
+
 /// Emit a `syn::ItemEnum` as a TypeScript union type.
 ///
 /// Variant shape determines the rendering:

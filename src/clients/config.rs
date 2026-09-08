@@ -73,6 +73,10 @@ pub(crate) struct Config {
     /// per-field metadata (type, role, relation targets, display hints).
     pub schema_entities: Vec<ontogen_core::model::EntityDef>,
 
+    pub schema_enums: Vec<ontogen_core::model::EnumDef>,
+
+    pub label_overrides: HashMap<String, String>,
+
     /// Optional pagination support for list operations.
     pub pagination: Option<PaginationConfig>,
 

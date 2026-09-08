@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crate::model::EntityDef;
+use crate::model::{EntityDef, EnumDef};
 
 // ── Source discriminator (shared across all layers) ─────────────────
 
@@ -25,6 +25,8 @@ pub enum Source {
 /// Output from `parse_schema`. The starting point for the pipeline.
 pub struct SchemaOutput {
     pub entities: Vec<EntityDef>,
+    /// The string enums declared beside the entities.
+    pub enums: Vec<EnumDef>,
 }
 
 // ── Persistence output ──────────────────────────────────────────────

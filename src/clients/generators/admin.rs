@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::Path;
 
-use ontogen_core::model::{EntityDef, FieldRole, FieldType, RelationKind};
+use ontogen_core::model::{EntityDef, EnumDef, FieldDef, FieldRole, FieldType, RelationKind};
 
 use crate::clients::config::Config;
 use crate::clients::generators::command_name;
@@ -19,8 +19,9 @@ use crate::servers::types::{extract_input_type, inner_type, rust_type_to_ts, sna
 /// Generate admin entity registry and write to the output file.
 ///
 /// `entities` supplies the per-field definitions; an entity absent from it
-/// ships with `fields: []`.
-pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities: &[EntityDef]) {
+/// ships with `fields: []` and a string id. `enums` supplies the values of
+/// the fields typed by a schema enum.
+pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities: &[EntityDef], enums: &[EnumDef]) {
     let mut out = String::new();
     out.push_str(
         "// Auto-generated admin registry. DO NOT EDIT.\n\
@@ -39,7 +40,11 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities:
         let module = &m.name;
         let plural = config.naming.module_plural(module);
 
-        let id_type = "string";
+        let entity = entities.iter().find(|e| e.name == ontogen_core::naming::to_pascal_case(module));
+        let id_type = match entity.and_then(EntityDef::id_field).map(|f| &f.field_type) {
+            Some(FieldType::I32 | FieldType::OptionI32 | FieldType::I64 | FieldType::OptionI64) => "number",
+            _ => "string",
+        };
 
         let get_fn = m.functions.iter().find(|f| f.name == "get_by_id").unwrap();
         let get_method = command_name(module, get_fn, config);
@@ -57,8 +62,7 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities:
         let label = config.naming.label(module);
         let plural_label = config.naming.plural_label(module);
 
-        // Generate field definitions if schema data is available
-        let fields_js = generate_fields_for_entity(module, entities);
+        let fields_js = entity.map(|e| generate_fields_for_entity(module, e, enums, config)).unwrap_or_default();
 
         // Pagination metadata for the admin UI. The CRUD five come from one
         // surface, so `list`'s surface decides.
@@ -132,19 +136,8 @@ export const adminFieldDefs: Record<string, AdminFieldDef[]> = Object.fromEntrie
     crate::write_and_format_ts(output, out, &config.ts_formatter).expect("Failed to write admin registry");
 }
 
-/// Generate TypeScript field definition array for a single entity.
-///
-/// Matches the entity by converting the API module name (snake_case) to
-/// PascalCase and finding the corresponding `EntityDef`.
-fn generate_fields_for_entity(module_name: &str, entities: &[EntityDef]) -> String {
-    let pascal = ontogen_core::naming::to_pascal_case(module_name);
-    let entity = entities.iter().find(|e| e.name == pascal);
-
-    let entity = match entity {
-        Some(e) => e,
-        None => return String::new(), // No schema data - empty fields array
-    };
-
+/// Generate the TypeScript field definition array for one entity.
+fn generate_fields_for_entity(module_name: &str, entity: &EntityDef, enums: &[EnumDef], config: &Config) -> String {
     let mut fields = Vec::new();
     let field_count = entity.fields.len();
 
@@ -154,15 +147,23 @@ fn generate_fields_for_entity(module_name: &str, entities: &[EntityDef]) -> Stri
         }
 
         let key = &field.name;
-        let label = field_label(key);
-        let (field_type, relation_to) = classify_admin_field(field);
+        let label = config
+            .label_overrides
+            .get(&format!("{module_name}.{key}"))
+            .or_else(|| config.label_overrides.get(key))
+            .cloned()
+            .unwrap_or_else(|| field_label(key));
+        let enum_def = field.enum_def(enums);
+        let (field_type, relation_to) = classify_admin_field(field, enum_def.is_some());
         let is_id = field.role == FieldRole::Id;
         let is_body = field.role == FieldRole::Body;
+        // A bare `Kind` is required the way a bare `String` is.
         let is_required = is_id
             || matches!(
                 field.field_type,
                 FieldType::String | FieldType::I32 | FieldType::I64 | FieldType::F32 | FieldType::F64 | FieldType::Bool
-            );
+            )
+            || (enum_def.is_some() && matches!(field.field_type, FieldType::Other(_)));
         // A required `created_at` has to be sent on create (the store stamps
         // a blank one), so only an optional one is left to the store.
         let is_read_only = key == "source_file" || key == "last_opened_at" || (key == "created_at" && !is_required);
@@ -184,6 +185,10 @@ fn generate_fields_for_entity(module_name: &str, entities: &[EntityDef]) -> Stri
         }
         if let Some(ref target) = relation_to {
             props.push(format!("relationTo: '{target}'"));
+        }
+        if let Some(def) = enum_def {
+            let values: Vec<_> = def.variants.iter().map(|v| format!("'{}'", ts_escape(&v.value))).collect();
+            props.push(format!("enumValues: [{}]", values.join(", ")));
         }
         if show_in_table {
             props.push("showInTable: true".to_string());
@@ -212,7 +217,8 @@ fn generate_fields_for_entity(module_name: &str, entities: &[EntityDef]) -> Stri
 }
 
 /// Map a FieldDef to an admin field type string and optional relation target.
-fn classify_admin_field(field: &ontogen_core::model::FieldDef) -> (&'static str, Option<String>) {
+/// `is_enum` says the field's type is a schema enum.
+fn classify_admin_field(field: &FieldDef, is_enum: bool) -> (&'static str, Option<String>) {
     match (&field.role, &field.field_type) {
         (FieldRole::Id, FieldType::I32 | FieldType::OptionI32 | FieldType::I64 | FieldType::OptionI64) => {
             ("number", None)
@@ -237,8 +243,14 @@ fn classify_admin_field(field: &ontogen_core::model::FieldDef) -> (&'static str,
         (_, FieldType::F32 | FieldType::OptionF32) => ("number", None),
         (_, FieldType::F64 | FieldType::OptionF64) => ("number", None),
         (_, FieldType::Bool | FieldType::OptionBool) => ("boolean", None),
+        (_, FieldType::Other(_)) if is_enum => ("enum", None),
         (_, FieldType::Other(_)) => ("string", None),
     }
+}
+
+/// Escape a value for a single-quoted TypeScript string literal.
+fn ts_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
 /// Generate a human-readable label from a snake_case field name.
