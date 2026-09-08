@@ -40,7 +40,7 @@ export interface AdminEntityConfig {
   plural: string
   label: string
   pluralLabel: string
-  idType: 'string'
+  idType: 'string' | 'number'
   listMethod: string
   getMethod: string
   createMethod: string

@@ -183,3 +183,14 @@ alias ca := cousin-apply
 cousin-apply-all *args:
     bash scripts/cousin_apply_all.sh {{args}}
 alias caa := cousin-apply-all
+
+# ---------------------------------------------------------------------------- #
+#                                ADMIN PACKAGES                                #
+# ---------------------------------------------------------------------------- #
+
+# Pack @ontogen/admin-types and @ontogen/admin-layer into dist/ (pnpm; a consumer that cannot git-install a subdirectory takes the tgz with `file:`)
+pack-admin:
+    mkdir -p dist
+    cd packages/admin-types && pnpm pack --pack-destination "$(pwd)/../../dist"
+    cd packages/nuxt_admin_layer && pnpm pack --pack-destination "$(pwd)/../../dist"
+    ls -1 dist/ontogen-admin-*.tgz
