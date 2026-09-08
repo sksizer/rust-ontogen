@@ -39,17 +39,23 @@ fn field_table(entity: &EntityDef, enums: &[EnumDef]) -> String {
     let mut rows = vec!["| field | type | required | doc |".to_string(), "|---|---|---|---|".to_string()];
     for field in &entity.fields {
         let required = if is_required(field) { "yes" } else { "no" };
-        let doc = field.doc.replace('\n', " ");
+        let doc = escape_pipes(&field.doc.replace('\n', " "));
         rows.push(format!("| {} | {} | {required} | {doc} |", field.name, field_type(field, enums)));
     }
     rows.join("\n")
+}
+
+/// A `|` inside a cell ends the cell, so escape it. Field docs list closed
+/// sets as `a | b | c` often enough that an unescaped pipe would split rows.
+fn escape_pipes(text: &str) -> String {
+    text.replace('|', "\\|")
 }
 
 /// The type column's vocabulary: a wire type, not the Rust type. An enum
 /// prints its values, since the closed set is the contract.
 fn field_type(field: &FieldDef, enums: &[EnumDef]) -> String {
     if let Some(def) = field.enum_def(enums) {
-        let values: Vec<&str> = def.variants.iter().map(|v| v.value.as_str()).collect();
+        let values: Vec<String> = def.variants.iter().map(|v| escape_pipes(&v.value)).collect();
         return format!("enum({})", values.join(", "));
     }
     match &field.field_type {

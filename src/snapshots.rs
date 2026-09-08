@@ -390,7 +390,10 @@ fn documented_set_entity() -> EntityDef {
                 "How the set was\nrecorded.",
                 FieldDef::new("kind", FieldType::OptionEnum("SetKind".to_string()), FieldRole::EnumField),
             ),
-            FieldDef::new("tags", FieldType::VecString, FieldRole::Plain),
+            documented(
+                "Free labels. Reserved: rpe | tempo.",
+                FieldDef::new("tags", FieldType::VecString, FieldRole::Plain),
+            ),
             FieldDef::new("weight_kg", FieldType::F64, FieldRole::Plain),
         ],
     }
@@ -446,4 +449,6 @@ fn docs_markdown_prints_enum_values_and_flattens_docs() {
     assert!(files.markdown.contains("enum(working, warm-up)"), "{}", files.markdown);
     // A multi-line field doc collapses onto the table row.
     assert!(files.markdown.contains("How the set was recorded."), "{}", files.markdown);
+    // A pipe inside a doc would end the cell, so it is escaped.
+    assert!(files.markdown.contains(r"Reserved: rpe \| tempo."), "{}", files.markdown);
 }
