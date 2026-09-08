@@ -69,7 +69,7 @@ onMounted(async () => {
           const limit = config.maxLimit ?? config.defaultLimit ?? 50
           allItems = []
           for (let offset = 0; ; offset += limit) {
-            const page = (await fn(undefined, limit, offset)) as { items: EntityRecord[]; total: number }
+            const page = (await fn(...pageArgs(config, limit, offset))) as { items: EntityRecord[]; total: number }
             allItems.push(...page.items)
             if (page.items.length < limit || allItems.length >= page.total) break
           }

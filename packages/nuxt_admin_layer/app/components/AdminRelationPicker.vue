@@ -75,7 +75,7 @@ async function load() {
     const method = config.listMethod as keyof typeof transport
     const fn = transport[method] as unknown as (...args: unknown[]) => Promise<unknown>
     if (config.paginated) {
-      const page = (await fn(undefined, config.defaultLimit ?? 50, 0)) as { items: EntityRecord[] }
+      const page = (await fn(...pageArgs(config, config.defaultLimit ?? 50, 0))) as { items: EntityRecord[] }
       rows.value = page.items
     } else {
       rows.value = (await fn()) as EntityRecord[]

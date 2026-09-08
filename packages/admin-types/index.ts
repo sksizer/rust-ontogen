@@ -51,6 +51,11 @@ export interface AdminEntityConfig {
   updateInputType: string
   /** Whether the list endpoint returns paginated results */
   paginated?: boolean
+  /**
+   * Whether the list method takes a query struct before the page:
+   * `(query?, limit?, offset?)` rather than `(limit?, offset?)`.
+   */
+  listQuery?: boolean
   /** Default page size for paginated list queries */
   defaultLimit?: number
   /** Maximum allowed page size for paginated list queries */

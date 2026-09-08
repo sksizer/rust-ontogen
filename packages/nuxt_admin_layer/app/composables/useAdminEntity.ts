@@ -62,7 +62,7 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
         // subscriptions returning `Promise<() => void>`) that don't overlap
         // with this paginated return type.
         const fn = transport[method] as unknown as (...args: unknown[]) => Promise<{ items: EntityRecord[]; total: number }>
-        const result = await fn(undefined, limit.value, offset)
+        const result = await fn(...pageArgs(config.value, limit.value, offset))
         items.value = result.items
         total.value = result.total
       } else {
