@@ -10,6 +10,10 @@ pub struct EntityDef {
     /// Rust struct name (e.g., `Node`, `Contract`).
     pub name: String,
 
+    /// The struct's `///` doc comment, lines joined with newlines. Empty when
+    /// the struct has none.
+    pub doc: String,
+
     /// Subdirectory for markdown files (e.g., `"nodes"`).
     /// Defaults to snake_case of `name` if not specified.
     pub directory: String,
@@ -35,6 +39,10 @@ pub struct EntityDef {
 pub struct FieldDef {
     /// Rust field name (e.g., `parent_id`, `contains`).
     pub name: String,
+
+    /// The field's `///` doc comment, lines joined with newlines. Empty when
+    /// the field has none.
+    pub doc: String,
 
     /// The Rust type of the field.
     pub field_type: FieldType,
@@ -172,9 +180,17 @@ pub struct EnumVariant {
 
 impl FieldDef {
     /// Create a new FieldDef with the given name, type, and role.
-    /// Rendering hints default to off.
+    /// The doc comment starts empty and rendering hints default to off.
     pub fn new(name: impl Into<String>, field_type: FieldType, role: FieldRole) -> Self {
-        Self { name: name.into(), field_type, role, serde_default: false, multiline_list: false, default_value: None }
+        Self {
+            name: name.into(),
+            doc: String::new(),
+            field_type,
+            role,
+            serde_default: false,
+            multiline_list: false,
+            default_value: None,
+        }
     }
 
     /// The schema enum this field's type names, for `Kind` and `Option<Kind>`.

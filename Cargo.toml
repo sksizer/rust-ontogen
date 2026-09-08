@@ -44,6 +44,9 @@ ontogen-ts = { path = "crates/ontogen-ts", version = "=0.1.0" }
 cruet = "1.0"
 syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
 quote = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 insta = { version = "1", features = ["yaml"] }
@@ -51,4 +54,3 @@ tempfile = "3"
 # Used by the markdown-backend golden/conformance tests to validate spec
 # artifacts against the real runtime crate.
 markdown-store = { path = "crates/markdown-store" }
-serde = { version = "1", features = ["derive"] }

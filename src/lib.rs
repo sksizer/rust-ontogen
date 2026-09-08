@@ -6,6 +6,7 @@
 //!
 //! ```text
 //! parse_schema → SchemaOutput
+//!     ├── gen_docs        → ()             (data-model reference + JSON Schema)
 //!     ├── gen_seaorm      → SeaOrmOutput
 //!     ├── gen_markdown_io → ()
 //!     ├── gen_dtos        → ()
@@ -21,12 +22,14 @@
 pub mod admin;
 pub mod api;
 pub mod clients;
+pub mod docs;
 pub mod persistence;
 pub mod pipeline;
 pub mod schema;
 pub mod servers;
 pub mod store;
 
+pub use docs::DocsConfig;
 pub use pipeline::{MarkdownIoOptions, Pipeline, StoreBackendChoice};
 
 #[cfg(test)]
@@ -428,6 +431,39 @@ pub fn gen_servers(
 /// ```
 pub fn gen_clients(api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError> {
     clients::generate(api, scan_dirs, config)
+}
+
+/// Generate the data-model reference and JSON Schema from the parsed schema.
+///
+/// The docs stage publishes the schema as a spec: `data-model.md` with one
+/// section per entity, and JSON Schema (draft 2020-12) for each entity plus an
+/// export bundle. It reads nothing but [`parse_schema`]'s output and produces
+/// nothing another stage consumes, so it can run alone.
+///
+/// # Errors
+///
+/// Returns [`CodegenError::Docs`] on I/O or serialisation failure.
+///
+/// # Example
+///
+/// ```ignore
+/// use ontogen::{gen_docs, parse_schema, DocsConfig, SchemaConfig};
+/// use std::path::PathBuf;
+///
+/// let schema = parse_schema(&SchemaConfig {
+///     schema_dir: PathBuf::from("src/schema"),
+/// })?;
+///
+/// gen_docs(&schema, &DocsConfig {
+///     markdown_output: PathBuf::from("docs/data-model.md"),
+///     json_schema_dir: PathBuf::from("docs/schema"),
+///     title: "Fitness data model".into(),
+///     export_format: "determined-fitness-log".into(),
+/// })?;
+/// # Ok::<(), ontogen::CodegenError>(())
+/// ```
+pub fn gen_docs(schema: &SchemaOutput, config: &DocsConfig) -> Result<(), CodegenError> {
+    docs::generate(schema, config)
 }
 
 // ── Configuration types ─────────────────────────────────────────────

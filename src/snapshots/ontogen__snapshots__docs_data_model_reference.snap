@@ -1,0 +1,27 @@
+---
+source: src/snapshots.rs
+expression: files.markdown
+---
+# Blog data model
+
+Generated from the schema. Do not edit. Schema revision `bf88bc108107cf1a`.
+
+## Comment
+
+Table: `comments`
+
+| field | type | required | doc |
+|---|---|---|---|
+| id | string | yes |  |
+| post_id | string | no |  |
+| body | string | yes |  |
+
+Relations:
+- belongs to Post via `post_id`
+
+## Entity relationship diagram
+
+```mermaid
+erDiagram
+  Post ||--o{ Comment : "post_id"
+```

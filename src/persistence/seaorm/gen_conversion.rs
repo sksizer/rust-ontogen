@@ -349,6 +349,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "name".to_string(),
@@ -357,6 +358,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "agent_type".to_string(),
@@ -365,6 +367,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "capabilities".to_string(),
@@ -373,6 +376,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "body".to_string(),
@@ -381,8 +385,10 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         }
     }
 
@@ -429,6 +435,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "parent_id".to_string(),
@@ -442,6 +449,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "contains".to_string(),
@@ -455,6 +463,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "fulfills".to_string(),
@@ -468,6 +477,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "body".to_string(),
@@ -476,8 +486,10 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         };
 
         let code = generate_conversion_code(&entity);
@@ -513,6 +525,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "status".to_string(),
@@ -521,6 +534,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "body".to_string(),
@@ -529,8 +543,10 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         };
 
         let code = generate_conversion_code(&entity);
@@ -560,6 +576,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "acceptance_criteria".to_string(),
@@ -568,6 +585,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "body".to_string(),
@@ -576,8 +594,10 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         };
 
         let code = generate_conversion_code(&entity);
@@ -605,6 +625,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "skipped".to_string(),
@@ -613,6 +634,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "body".to_string(),
@@ -621,8 +643,10 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         };
 
         let code = generate_conversion_code(&entity);
