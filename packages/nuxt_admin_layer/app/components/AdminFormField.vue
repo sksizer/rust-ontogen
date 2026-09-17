@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AdminFieldDef } from '../../admin-fields'
+import { coerceNumberInput } from './admin-form-field-number'
 
 const props = defineProps<{
   field: AdminFieldDef
@@ -110,7 +111,16 @@ function removeArrayItem(index: number) {
       type="number"
       :value="(modelValue as number) ?? ''"
       class="w-full px-3 py-2 text-sm rounded-md border border-(--ui-border) bg-(--ui-bg) text-(--ui-text) focus:outline-none focus:ring-1 focus:ring-(--ui-border-accented)"
-      @input="emit('update:modelValue', Number(($event.target as HTMLInputElement).value))"
+      @input="emit('update:modelValue', coerceNumberInput(($event.target as HTMLInputElement).value))"
+    />
+
+    <!-- Boolean checkbox -->
+    <input
+      v-else-if="field.type === 'boolean'"
+      type="checkbox"
+      :checked="(modelValue as boolean) ?? false"
+      class="h-4 w-4 rounded border border-(--ui-border) bg-(--ui-bg) focus:outline-none focus:ring-1 focus:ring-(--ui-border-accented)"
+      @change="emit('update:modelValue', ($event.target as HTMLInputElement).checked)"
     />
 
     <!-- Default string input -->

@@ -21,6 +21,13 @@ jobs:
           components: "clippy,rustfmt"
           toolchain: "stable"
       - uses: "extractions/setup-just@v3"
+      # `test` (via full-check) runs packages/nuxt_admin_layer's vitest suite
+      # (just test-admin-layer), which needs pnpm/node.
+      - uses: "pnpm/action-setup@v4"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+          cache: "pnpm"
       # full-check already includes `test` (format-check + lint + test);
       # the previous standalone `just test` step ran the whole suite twice.
       - run: "just full-check"

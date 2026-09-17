@@ -5,6 +5,7 @@
 //! generators. Client-side test cases were relocated here as part of the
 //! servers→clients split.
 
+use std::collections::HashMap;
 use std::fs;
 
 use ontogen_core::utils::TsFormatter;
@@ -212,4 +213,142 @@ name = \"some-binary\"
 #[test]
 fn package_name_absent_yields_none() {
     assert_eq!(package_name_from_manifest("[workspace]\nmembers = [\"a\"]\n"), None);
+}
+
+// ── admin registry: listHasQuery flag (Issue 2 follow-up) ───────────────────
+//
+// transport.rs's OpKind::List branch puts a `query?: T` param ahead of the
+// pagination args only when the Rust `list` fn takes a `Query`-typed
+// parameter — see transport.rs's `generate_transport_interface`. The admin
+// registry has to record which shape a given entity's list method uses, so
+// `useAdminEntity.fetchList` can call it correctly instead of guessing.
+
+use std::path::PathBuf as StdPathBuf;
+
+use crate::clients::config::Config as ClientsConfig;
+use crate::clients::generators::admin;
+use crate::servers::PaginationConfig;
+use crate::servers::parse::{ApiFn, ApiModule, Param};
+use crate::servers::types::NamingConfig;
+
+/// Build a `Param` from a name and a type string. Panics if the type fails to
+/// parse as a `syn::Type`. Mirrors `servers::tests::param`, duplicated here
+/// because that module's `#[cfg(test)] mod tests` is private to `servers`.
+fn admin_test_param(name: &str, ty: &str) -> Param {
+    let ty_ast: syn::Type = syn::parse_str(ty).expect("test param type must parse as syn::Type");
+    Param { name: name.to_string(), ty: ty.to_string(), ty_ast }
+}
+
+fn admin_test_ty_ast(ty: &str) -> syn::Type {
+    syn::parse_str(ty).expect("test return type must parse as syn::Type")
+}
+
+/// A minimal CRUD module (list/get_by_id/create/update/delete — the shape
+/// `admin::generate`'s `crud_modules` filter requires), with `list` optionally
+/// taking a `<Name>Query`-typed parameter.
+fn admin_test_crud_module(name: &str, list_has_query: bool) -> ApiModule {
+    let mut list_params = Vec::new();
+    if list_has_query {
+        list_params.push(admin_test_param("query", "Option<TimerSessionQuery>"));
+    }
+    ApiModule {
+        name: name.to_string(),
+        functions: vec![
+            ApiFn {
+                name: "list".to_string(),
+                is_async: true,
+                doc: format!("List all {name}s."),
+                params: list_params,
+                return_type: format!("Vec<{name}>"),
+                return_type_ast: admin_test_ty_ast(&format!("Vec<{name}>")),
+                ..Default::default()
+            },
+            ApiFn {
+                name: "get_by_id".to_string(),
+                is_async: true,
+                doc: format!("Get a {name} by ID."),
+                params: vec![admin_test_param("id", "&str")],
+                return_type: name.to_string(),
+                return_type_ast: admin_test_ty_ast(name),
+                ..Default::default()
+            },
+            ApiFn {
+                name: "create".to_string(),
+                is_async: true,
+                doc: format!("Create a new {name}."),
+                params: vec![admin_test_param("input", &format!("Create{name}Input"))],
+                return_type: name.to_string(),
+                return_type_ast: admin_test_ty_ast(name),
+                ..Default::default()
+            },
+            ApiFn {
+                name: "update".to_string(),
+                is_async: true,
+                doc: format!("Update a {name}."),
+                params: vec![admin_test_param("id", "&str"), admin_test_param("input", &format!("Update{name}Input"))],
+                return_type: name.to_string(),
+                return_type_ast: admin_test_ty_ast(name),
+                ..Default::default()
+            },
+            ApiFn {
+                name: "delete".to_string(),
+                is_async: true,
+                doc: format!("Delete a {name}."),
+                params: vec![admin_test_param("id", "&str")],
+                ..Default::default()
+            },
+        ],
+        events: vec![],
+        is_singleton: false,
+    }
+}
+
+/// A paginated admin-registry `ClientsConfig`, with `list_has_query`
+/// controlling whether the fixture `list` fn takes a query-struct param.
+fn admin_test_config() -> ClientsConfig {
+    ClientsConfig {
+        api_dir: StdPathBuf::from("src/api/v1"),
+        state_type: "AppState".to_string(),
+        service_import_path: "crate::api::v1".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        state_import: "crate::AppState".to_string(),
+        naming: NamingConfig::default(),
+        generators: vec![],
+        ts_formatter: crate::TsFormatter::None,
+        sse_route_overrides: HashMap::new(),
+        ts_skip_commands: vec![],
+        route_prefix: None,
+        store_type: Some("Store".to_string()),
+        store_import: Some("crate::store::Store".to_string()),
+        schema_entities: Vec::new(),
+        pagination: Some(PaginationConfig { default_limit: 50, max_limit: 200 }),
+        pool_extra_roots: Vec::new(),
+        pool_exclude_paths: Vec::new(),
+    }
+}
+
+#[test]
+fn paginated_list_with_a_query_struct_param_emits_list_has_query() {
+    let module = admin_test_crud_module("timer_session", true);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = dir.path().join("admin-registry.ts");
+
+    admin::generate(&output, std::slice::from_ref(&module), &admin_test_config());
+
+    let written = fs::read_to_string(&output).expect("read admin registry");
+    assert!(written.contains("paginated: true"), "registry was:\n{written}");
+    assert!(written.contains("listHasQuery: true"), "registry was:\n{written}");
+}
+
+#[test]
+fn paginated_list_without_a_query_struct_param_omits_list_has_query() {
+    let module = admin_test_crud_module("timer_session", false);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = dir.path().join("admin-registry.ts");
+
+    admin::generate(&output, std::slice::from_ref(&module), &admin_test_config());
+
+    let written = fs::read_to_string(&output).expect("read admin registry");
+    assert!(written.contains("paginated: true"), "registry was:\n{written}");
+    assert!(!written.contains("listHasQuery"), "registry was:\n{written}");
 }
