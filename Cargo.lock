@@ -424,6 +424,7 @@ dependencies = [
  "ontogen-macros",
  "schemars",
  "serde",
+ "serde_json",
  "specta",
  "tempfile",
  "tokio",
@@ -489,6 +490,7 @@ dependencies = [
  "ontogen-ts",
  "quote",
  "serde",
+ "serde_json",
  "syn 2.0.119",
  "tempfile",
 ]
