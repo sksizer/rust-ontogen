@@ -12,9 +12,14 @@ onMounted(async () => {
     const results = await Promise.allSettled(
       adminEntities.map(async (entity) => {
         const method = entity.listMethod as keyof typeof transport
-        const fn = transport[method] as (...args: unknown[]) => Promise<unknown[]>
-        const items = await fn()
-        return { key: entity.plural, count: items.length }
+        // A `paginated: true` entity's list method returns a
+        // `{ items, total }` envelope, not the plain array `.length` assumes;
+        // countFromListResult reads the right field for either shape.
+        const fn = transport[method] as unknown as (
+          ...args: unknown[]
+        ) => Promise<unknown[] | { items: unknown[]; total: number }>
+        const result = await fn()
+        return { key: entity.plural, count: countFromListResult(result) }
       }),
     )
     for (const result of results) {

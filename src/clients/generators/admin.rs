@@ -74,6 +74,16 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
             "    paginated: false,\n".to_string()
         };
 
+        // Whether `list` takes a typed query-struct parameter, matching the
+        // same detection transport.rs's OpKind::List branch uses to decide
+        // the generated method's parameter order: a query param sorts ahead
+        // of the pagination args, so the call shape is
+        // `list(query?, limit?, offset?)` rather than `list(limit?, offset?)`.
+        // The admin UI layer (useAdminEntity.fetchList) needs to know which
+        // shape it's calling; omitted (false) keeps existing registries valid.
+        let list_has_query = list_fn.params.iter().any(|p| p.ty.contains("Query"));
+        let list_has_query_js = if list_has_query { "    listHasQuery: true,\n".to_string() } else { String::new() };
+
         out.push_str(&format!(
             "\
   {{
@@ -91,6 +101,7 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
     createInputType: '{create_input}',
     updateInputType: '{update_input}',
 {pagination_js}\
+{list_has_query_js}\
     fields: [{fields_js}],
   }},\n",
             list_method = snake_to_camel(&command_name(module, list_fn, config)),
