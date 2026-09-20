@@ -634,7 +634,12 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
 
             let (return_type, return_type_ast) = extract_result_ok_type(&func.sig.output);
 
-            if fn_ident == "count" && is_store && params.is_empty() {
+            // A paginated list's companion. The first param is already known
+            // to be the state or the store — anything else was skipped above —
+            // and both are scoped the same way, so either shape counts. It is
+            // recorded on the module rather than pushed as an operation: the
+            // page handler calls it directly, and it is not a caller-facing op.
+            if fn_ident == "count" && params.is_empty() {
                 has_count = true;
                 continue;
             }
@@ -1053,9 +1058,11 @@ fn parse_ontogen_rename(attrs: &[syn::Attribute]) -> OntogenAttr {
     result
 }
 
-/// A paginated `list` pushes its page into the store: it must take
+/// A paginated `list` pushes its page down to the data it reads: it must take
 /// `limit`/`offset` as its last two parameters and sit beside a `count`.
 /// Anything else would make the handler load the whole table to slice it.
+/// The `count` takes the same first parameter the module's other functions
+/// take — the store or the state — and nothing else.
 pub fn check_paginated_lists(modules: &[ApiModule], config: &crate::servers::config::Config) -> Result<(), String> {
     for m in modules {
         for f in &m.functions {
@@ -1068,8 +1075,9 @@ pub fn check_paginated_lists(modules: &[ApiModule], config: &crate::servers::con
             if !f.takes_page() || !m.has_count {
                 return Err(format!(
                     "ontogen: module `{}` is paginated, so `{}::list` must take `limit: Option<u64>, offset: Option<u64>` as \
-                     its last two parameters and the module must define `count(store) -> Result<u64, _>`; a generated \
-                     CRUD module gets both from `ApiConfig::paginated`",
+                     its last two parameters and the module must define `count(store)` or `count(state)` returning \
+                     `Result<u64, _>` and taking nothing else; a generated CRUD module gets both from \
+                     `ApiConfig::paginated`",
                     m.name, m.name
                 ));
             }

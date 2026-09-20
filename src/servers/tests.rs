@@ -4341,6 +4341,42 @@ fn a_paginated_list_pushes_the_page_into_the_store() {
     assert_eq!(ipc.matches("limit: Option<u32>").count(), 1, "the page params appear once:\n{ipc}");
 }
 
+/// The same shape, scoped to the state instead of a store. An app that reaches
+/// its data through `AppState` rather than a generated `Store` still paginates:
+/// the generators take the first argument from `list`, so `count` follows it.
+#[test]
+fn a_state_scoped_count_paginates_the_same_way() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "AppState"));
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.has_count, "`count` is recorded on a state-scoped module too");
+    assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation");
+    crate::servers::parse::check_paginated_lists(&modules, &config).unwrap();
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(
+        http.contains("workout::list(&state, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        "the HTTP page handler passes the page down:\n{http}"
+    );
+    assert!(http.contains("workout::count(&state)"), "the total is asked of the state:\n{http}");
+
+    let ipc = tmp.path().join("ipc.rs");
+    crate::servers::generators::ipc::generate(&ipc, &modules, &config);
+    let ipc = std::fs::read_to_string(&ipc).unwrap();
+    assert!(
+        ipc.contains("workout::list(&state, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        "the IPC page command passes the page down:\n{ipc}"
+    );
+    assert!(ipc.contains("workout::count(&state)"), "the total is asked of the state:\n{ipc}");
+}
+
 #[test]
 fn a_paginated_list_without_the_page_or_a_count_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
