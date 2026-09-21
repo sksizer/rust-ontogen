@@ -4296,12 +4296,14 @@ fn a_paginated_list_pushes_the_page_into_the_store() {
     let mut config = test_config(api_dir);
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
 
-    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
     let workout = modules.iter().find(|m| m.name == "workout").unwrap();
     assert!(workout.has_count, "`count` is recorded on the module");
-    assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation");
+    assert!(workout.functions.iter().any(|f| f.name == "count"), "`count` is parsed like any other fn");
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation of a paginated module");
     assert!(workout.is_crud(), "the CRUD surface is intact without `count`");
-    crate::servers::parse::check_paginated_lists(&modules, &config).unwrap();
 
     let http = tmp.path().join("http.rs");
     crate::servers::generators::http::generate(&http, &modules, &config);
@@ -4333,12 +4335,92 @@ fn a_paginated_list_without_the_page_or_a_count_is_refused() {
     let mut config = test_config(api_dir);
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
 
-    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    let err = crate::servers::parse::check_paginated_lists(&modules, &config).unwrap_err();
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
     assert!(err.contains("module `workout` is paginated"), "{err}");
     assert!(err.contains("`workout::list` must take `limit: Option<u64>, offset: Option<u64>`"), "{err}");
 
     // Not paginated: the plain list is fine as it is.
     config.pagination = None;
-    crate::servers::parse::check_paginated_lists(&modules, &config).unwrap();
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+}
+
+#[test]
+fn a_paginated_list_whose_page_params_are_not_option_u64_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store").replace("Option<u64>", "Option<usize>"),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    assert!(!modules[0].functions.iter().find(|f| f.name == "list").unwrap().takes_page());
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    assert!(err.contains("`workout::list` must take `limit: Option<u64>, offset: Option<u64>`"), "{err}");
+}
+
+#[test]
+fn a_paginated_list_with_a_filter_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store")
+            .replace("store: &Store, limit", "store: &Store, plan_id: &str, limit"),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    assert!(err.contains("`count(store)` cannot apply the filter `plan_id: &str` to the total"), "{err}");
+}
+
+#[test]
+fn a_count_on_an_unpaginated_module_stays_an_operation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "Store"));
+    let config = test_config(api_dir);
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(
+        workout.functions.iter().any(|f| f.name == "count"),
+        "nothing pages, so `count` is the consumer's own endpoint"
+    );
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(http.contains("workout::count(&store)"), "`count` gets a handler:\n{http}");
+}
+
+#[test]
+fn an_unpaginated_surface_hands_a_page_taking_list_no_page() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "Store"));
+    let config = test_config(api_dir);
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(http.contains("workout::list(&store, None, None)"), "the whole table, as before:\n{http}");
+    assert!(!http.contains("Query(limit)"), "limit is not a filter:\n{http}");
+
+    let ipc = tmp.path().join("ipc.rs");
+    crate::servers::generators::ipc::generate(&ipc, &modules, &config);
+    let ipc = std::fs::read_to_string(&ipc).unwrap();
+    assert!(ipc.contains("workout::list(&store, None, None)"), "the whole table, as before:\n{ipc}");
+    assert!(!ipc.contains("limit: Option<u64>"), "limit is not a command param:\n{ipc}");
 }

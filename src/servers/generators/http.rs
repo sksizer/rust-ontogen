@@ -199,12 +199,12 @@ pub struct PaginationParams {
                     // Check for a query parameter struct (e.g., ListAgentsQuery)
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
                     // Check for plain string params (e.g., skill_id: &str) - scoped list filters.
-                    // A paginated list's own limit/offset are the page, not filters.
+                    // A list that takes the page owns its limit/offset: they are never filters.
                     let plain_params: Vec<_> = f
                         .params
                         .iter()
                         .filter(|p| {
-                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!paginated || !is_page_param(p))
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p))
                         })
                         .collect();
 
@@ -244,12 +244,14 @@ async fn {handler_name}(
 "
                         ));
                     } else {
+                        // This surface does not paginate: a list that takes the page gets the whole table.
+                        let page_args = if f.takes_page() { ", None, None" } else { "" };
                         out.push_str(&format!(
                             "\
 async fn {handler_name}(
     State(state): State<Arc<{state_type}>>,{extra_extractors}
 ) -> Result<Json<{ret_type}>, ApiError> {{
-{store_let}    {svc}::list({first_arg}{extra_args}){await_str}
+{store_let}    {svc}::list({first_arg}{extra_args}{page_args}){await_str}
         .map(Json)
         {err_map}
 }}

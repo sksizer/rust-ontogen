@@ -174,12 +174,12 @@ pub struct PaginatedResult<T: Serialize> {
                     let await_str = if is_async { ".await" } else { "" };
                     let paginated = pagination.is_some() && ret_type.starts_with("Vec<");
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    // A paginated list's own limit/offset are the page, not caller params.
+                    // A list that takes the page owns its limit/offset: they are never caller params.
                     let plain_params: Vec<_> = f
                         .params
                         .iter()
                         .filter(|p| {
-                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!paginated || !is_page_param(p))
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p))
                         })
                         .collect();
                     let mut param_lines = String::new();
@@ -220,13 +220,15 @@ pub async fn {cmd_name}(
 "
                         ));
                     } else {
+                        // This surface does not paginate: a list that takes the page gets the whole table.
+                        let page_args = if f.takes_page() { ", None, None" } else { "" };
                         out.push_str(&format!(
                             "\
 #[tauri::command]
 pub async fn {cmd_name}(
 {param_lines}{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
-{fn_pp_body}    {svc}::list({first_arg}{extra_args}){await_str}
+{fn_pp_body}    {svc}::list({first_arg}{extra_args}{page_args}){await_str}
         .map_err(|e| e.to_string())
 }}
 

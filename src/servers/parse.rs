@@ -206,14 +206,17 @@ pub struct ApiModule {
     /// re-deriving from naming rules.
     pub is_singleton: bool,
     /// True when the module defines `count(store) -> Result<u64, _>`: the
-    /// total behind a paginated `list`. It is called by the generated page
-    /// handlers and is not an operation of its own, so it is kept off
-    /// `functions`.
+    /// total behind a paginated `list`. It stays an operation of its own on
+    /// `functions` until [`check_paginated_lists`] finds the module paginated,
+    /// at which point the generated page handlers call it and it is taken off.
     pub has_count: bool,
 }
 
 /// The parameter names a paginated `list` ends with.
 pub const PAGE_PARAMS: [&str; 2] = ["limit", "offset"];
+
+/// The type each page parameter must have.
+pub const PAGE_PARAM_TYPE: &str = "Option<u64>";
 
 /// True for the `limit`/`offset` parameter of a paginated `list`.
 pub fn is_page_param(p: &Param) -> bool {
@@ -228,7 +231,13 @@ impl ApiFn {
     /// the shape a paginated `list` must have for the page to reach the store.
     pub fn takes_page(&self) -> bool {
         let n = self.params.len();
-        n >= 2 && self.params[n - 2].name == PAGE_PARAMS[0] && self.params[n - 1].name == PAGE_PARAMS[1]
+        n >= 2
+            && PAGE_PARAMS.iter().zip(&self.params[n - 2..]).all(|(name, p)| p.name == *name && p.ty == PAGE_PARAM_TYPE)
+    }
+
+    /// True for the store-scoped `count(store)` that backs a paginated `list`.
+    pub fn is_count(&self) -> bool {
+        self.name == "count" && self.first_param_is_store && self.params.is_empty()
     }
 }
 
@@ -634,10 +643,10 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
 
             let (return_type, return_type_ast) = extract_result_ok_type(&func.sig.output);
 
-            if fn_ident == "count" && is_store && params.is_empty() {
-                has_count = true;
-                continue;
-            }
+            // `count(store)` is recorded here but stays a function: only a
+            // paginated module (known once the config is in hand) folds it
+            // into its page handler — see `check_paginated_lists`.
+            has_count |= fn_ident == "count" && is_store && params.is_empty();
 
             functions.push(ApiFn {
                 name: fn_ident,
@@ -1056,8 +1065,13 @@ fn parse_ontogen_rename(attrs: &[syn::Attribute]) -> OntogenAttr {
 /// A paginated `list` pushes its page into the store: it must take
 /// `limit`/`offset` as its last two parameters and sit beside a `count`.
 /// Anything else would make the handler load the whole table to slice it.
-pub fn check_paginated_lists(modules: &[ApiModule], config: &crate::servers::config::Config) -> Result<(), String> {
+///
+/// The `count` of a paginated module is what the page handlers call for the
+/// total, so it is taken off `functions` here; on a module no surface
+/// paginates it stays an operation of its own.
+pub fn check_paginated_lists(modules: &mut [ApiModule], config: &crate::servers::config::Config) -> Result<(), String> {
     for m in modules {
+        let mut paginated = false;
         for f in &m.functions {
             if f.name != "list"
                 || !f.return_type.starts_with("Vec<")
@@ -1065,6 +1079,7 @@ pub fn check_paginated_lists(modules: &[ApiModule], config: &crate::servers::con
             {
                 continue;
             }
+            paginated = true;
             if !f.takes_page() || !m.has_count {
                 return Err(format!(
                     "ontogen: module `{}` is paginated, so `{}::list` must take `limit: Option<u64>, offset: Option<u64>` as \
@@ -1073,6 +1088,24 @@ pub fn check_paginated_lists(modules: &[ApiModule], config: &crate::servers::con
                     m.name, m.name
                 ));
             }
+            // `count(store)` takes no filter, so a filtered page would report
+            // the whole table as its total.
+            if f.params.len() > PAGE_PARAMS.len() {
+                return Err(format!(
+                    "ontogen: module `{}` is paginated, so `{}::list` may take nothing but `limit`/`offset` after the \
+                     store: `count(store)` cannot apply the filter `{}` to the total",
+                    m.name,
+                    m.name,
+                    f.params[..f.params.len() - PAGE_PARAMS.len()]
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, p.ty))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+        if paginated {
+            m.functions.retain(|f| !f.is_count());
         }
     }
     Ok(())
