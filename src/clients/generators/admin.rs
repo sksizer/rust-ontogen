@@ -177,7 +177,7 @@ fn generate_fields_for_entity(module_name: &str, entity: &EntityDef, enums: &[En
 
         let mut props = Vec::new();
         props.push(format!("key: '{key}'"));
-        props.push(format!("label: '{label}'"));
+        props.push(format!("label: '{}'", ts_escape(&label)));
         props.push(format!("type: '{field_type}'"));
 
         if is_required {
