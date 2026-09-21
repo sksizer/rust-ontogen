@@ -12,11 +12,11 @@ use std::collections::BTreeMap;
 
 use syn::{
     Fields, GenericArgument, ItemEnum, ItemStruct, PathArguments, Type, TypeArray, TypePath as SynTypePath,
-    TypeReference, TypeSlice,
+    TypeReference, TypeSlice, TypeTuple,
 };
 
 use crate::attr::{
-    FieldAttrs, VariantAttrs, extract_container_attrs, extract_field_attrs, extract_ontogen_attrs,
+    ContainerAttrs, FieldAttrs, VariantAttrs, extract_container_attrs, extract_field_attrs, extract_ontogen_attrs,
     extract_variant_attrs,
 };
 use crate::order;
@@ -185,6 +185,50 @@ fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     }
 }
 
+/// Diagnostic stand-in for the "type whose field we're rendering" when a type
+/// is rendered on its own, outside any declaration. See [`render_type`].
+const STANDALONE: &str = "<standalone type>";
+
+/// Synthetic [`TypePath`] used as `referenced_by` for standalone renders.
+fn standalone_path() -> TypePath {
+    TypePath::new(vec![STANDALONE.to_string()]).expect("non-empty")
+}
+
+/// Render one Rust type as TypeScript, with no type pool and no surrounding
+/// declaration.
+///
+/// This is the same classifier [`emit`] uses for struct fields and enum
+/// payloads — smart-pointer peeling, container generics, primitives, and the
+/// external-types table — exposed for callers that hold a single type rather
+/// than a pool of declarations. User-defined types render as their terminal
+/// ident, exactly as they do inside a declaration; resolving that ident to a
+/// definition is the caller's business.
+///
+/// ontogen's API-signature emitter (`rust_type_to_ts`) delegates here, which
+/// is what keeps the two TypeScript emitters from disagreeing on a shape they
+/// both have to render into the same generated file.
+pub fn render_type(ty: &Type, config: &EmitConfig) -> Result<String, EmitError> {
+    emit_type(ty, config, &standalone_path())
+}
+
+/// Parse `rust_ty` as a Rust type expression and render it via
+/// [`render_type`].
+///
+/// For callers whose type arrived as text — a rendered token stream, a
+/// signature scraped from source — rather than as a `syn::Type`. Spacing is
+/// whatever `syn` tolerates, so token-stream renderings like `Vec < String >`
+/// parse fine.
+///
+/// Returns [`EmitError::UnsupportedShape`] if the text doesn't parse as a
+/// type.
+pub fn render_type_str(rust_ty: &str, config: &EmitConfig) -> Result<String, EmitError> {
+    let parsed: Type = syn::parse_str(rust_ty).map_err(|err| EmitError::UnsupportedShape {
+        type_path: standalone_path(),
+        reason: format!("`{rust_ty}` does not parse as a Rust type expression: {err}"),
+    })?;
+    render_type(&parsed, config)
+}
+
 /// Render a `syn::Type` as its TypeScript equivalent.
 ///
 /// Classification order (matches the OF-015 design pass):
@@ -240,6 +284,21 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
     if let Type::Slice(TypeSlice { elem, .. }) = ty {
         let inner = emit_type(elem, config, referenced_by)?;
         return Ok(format!("{inner}[]"));
+    }
+
+    // The unit type is `null` on the wire — serde serializes `()` as JSON
+    // `null`. It reaches here from handler signatures that return nothing.
+    // Non-empty tuples stay unsupported: they serialize as JSON arrays, but
+    // TS tuple syntax needs an element-by-element rendering that phase 1's
+    // field-name-driven model has no place for.
+    if let Type::Tuple(TypeTuple { elems, .. }) = ty {
+        if elems.is_empty() {
+            return Ok("null".to_string());
+        }
+        return Err(EmitError::UnsupportedShape {
+            type_path: referenced_by.clone(),
+            reason: format!("tuple type `{}` is not supported; use a named struct", quote::quote!(#ty)),
+        });
     }
 
     // Everything else lives on a `syn::TypePath`.
@@ -340,6 +399,24 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
 /// as TS-optional (`field?: T`) — the deserializer accepts partial JSON for
 /// the field, so the emitted contract matches the wire. It composes with
 /// `Option<T>` → `T | null` to produce `field?: T | null`.
+///
+/// The same attribute on the *container* fills every absent field from the
+/// struct's `Default`, so it marks every field optional — a struct that
+/// accepts `{}` on the wire emits a TS type whose properties are all `?`.
+///
+/// `#[serde(flatten)]` splices the field type's keys into the parent object
+/// instead of nesting them under the field name, so the field becomes a TS
+/// intersection member rather than a property:
+///
+/// ```text
+/// #[serde(flatten)] meta: StepMeta,   →   export type Step =
+/// program: String,                        StepMeta & { program: string };
+/// ```
+///
+/// Flattened members are emitted in field-declaration order ahead of the
+/// property object; if every field is flattened, the (empty) object is
+/// dropped and the type is the bare intersection. See [`flatten_member`] for
+/// which field types are admissible.
 #[allow(dead_code)] // tests-only convenience wrapper; production calls _named directly.
 pub(crate) fn emit_struct(item: &ItemStruct, config: &EmitConfig) -> Result<String, EmitError> {
     emit_struct_named(item, config, None)
@@ -361,32 +438,22 @@ pub(crate) fn emit_struct_named(
 
     match &item.fields {
         Fields::Named(fields) => {
-            let mut field_lines: Vec<String> = Vec::with_capacity(fields.named.len());
-            for field in &fields.named {
-                let field_attrs = extract_field_attrs(&field.attrs, &referenced_by)?;
-                if field_attrs.skip {
-                    continue;
-                }
-                let raw_ident = field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
-                let wire_name = field_wire_name(&raw_ident, &field_attrs, effective_rename_all);
-                let key = format_ts_key(&wire_name);
-                let ty_ts = emit_type(&field.ty, config, &referenced_by)?;
-                // `#[serde(default)]` (bare or path form) means the field may
-                // be absent on the wire — the deserializer fills in a default.
-                // Emit it as TS-optional. Composes with `Option<T>` → `T |
-                // null` to give `field?: T | null` for an optional, nullable
-                // field.
-                let opt = if field_attrs.default { "?" } else { "" };
-                field_lines.push(format!("  {key}{opt}: {ty_ts};"));
-            }
-            if field_lines.is_empty() {
-                // `struct Foo {}` — or all fields skipped. Emit `{}` rather
-                // than multi-line empties for readability.
-                Ok(format!("export type {name} = {{}};"))
-            } else {
-                let body = field_lines.join("\n");
-                Ok(format!("export type {name} = {{\n{body}\n}};"))
-            }
+            let collected =
+                collect_named_fields(fields, config, &referenced_by, effective_rename_all, container.default)?;
+            // `struct Foo {}` — or all fields skipped/flattened. `None` here
+            // means "no property object at all": with flattened members it
+            // drops out of the intersection, without them it renders `{}`
+            // rather than multi-line empties.
+            let object = (!collected.properties.is_empty()).then(|| {
+                let body = collected
+                    .properties
+                    .iter()
+                    .map(|(key, opt, ty_ts)| format!("  {key}{opt}: {ty_ts};"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("{{\n{body}\n}}")
+            });
+            Ok(format!("export type {name} = {};", intersect(&collected.intersections, object)))
         }
         Fields::Unnamed(_) => Err(EmitError::UnsupportedShape {
             type_path: referenced_by,
@@ -402,6 +469,181 @@ pub(crate) fn emit_struct_named(
     }
 }
 
+/// A named-field group — a struct body or an enum struct-variant body —
+/// split into the two pieces TypeScript renders differently.
+struct NamedFields {
+    /// TS type expressions contributed by `#[serde(flatten)]` fields, in
+    /// declaration order. Empty in the common case, which is what keeps
+    /// non-flatten output byte-identical to the pre-flatten emitter.
+    intersections: Vec<String>,
+    /// `(ts_key, optional_marker, ts_type)` for each surviving property.
+    properties: Vec<(String, &'static str, String)>,
+}
+
+/// Classify each field of a named-field group into a flattened intersection
+/// member or an ordinary property, applying `#[serde(skip)]`, the rename
+/// family, and `#[serde(default)]` along the way.
+///
+/// `container_default` is `#[serde(default)]` on the struct itself. Serde
+/// fills every absent field from the struct's `Default`, so it makes the
+/// whole body optional — each field is treated exactly as if it carried its
+/// own `#[serde(default)]`.
+fn collect_named_fields(
+    fields: &syn::FieldsNamed,
+    config: &EmitConfig,
+    referenced_by: &TypePath,
+    rename_all: Option<RenameAll>,
+    container_default: bool,
+) -> Result<NamedFields, EmitError> {
+    let mut out = NamedFields { intersections: Vec::new(), properties: Vec::with_capacity(fields.named.len()) };
+    for field in &fields.named {
+        let field_attrs = extract_field_attrs(&field.attrs, referenced_by)?;
+        if field_attrs.skip {
+            continue;
+        }
+        // Either scope of `default` makes this field absent-able on the wire.
+        let defaulted = field_attrs.default || container_default;
+        if field_attrs.flatten {
+            // A flattened field's own name never reaches the wire, so the
+            // rename family is moot here — serde ignores it too.
+            out.intersections.push(flatten_member(&field.ty, defaulted, config, referenced_by)?);
+            continue;
+        }
+        let raw_ident = field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
+        let wire_name = field_wire_name(&raw_ident, &field_attrs, rename_all);
+        let key = format_ts_key(&wire_name);
+        let ty_ts = emit_type(&field.ty, config, referenced_by)?;
+        // A defaulted field may be absent on the wire — the deserializer
+        // fills in a default. Emit it as TS-optional. Composes with
+        // `Option<T>` → `T | null` to give `field?: T | null` for an
+        // optional, nullable field.
+        let opt = if defaulted { "?" } else { "" };
+        out.properties.push((key, opt, ty_ts));
+    }
+    Ok(out)
+}
+
+/// Fold flattened intersection `members` together with the group's property
+/// `object` (already rendered; `None` when the group has no properties).
+///
+/// With no flattened members this returns the object unchanged — or `{}` for
+/// an empty group — so output for the overwhelmingly common case is exactly
+/// what the emitter produced before `flatten` was supported. `A & {}` is
+/// just `A`, so an empty object drops out of a non-empty intersection.
+fn intersect(members: &[String], object: Option<String>) -> String {
+    match (members.is_empty(), object) {
+        (true, Some(object)) => object,
+        (true, None) => "{}".to_string(),
+        (false, Some(object)) => format!("{} & {object}", members.join(" & ")),
+        (false, None) => members.join(" & "),
+    }
+}
+
+/// Render the TS intersection member contributed by a `#[serde(flatten)]`
+/// field, or reject the field with a hard error.
+///
+/// Serde splices the flattened type's keys into the parent object, and the
+/// structural equivalent in TypeScript is an intersection. That only works
+/// when the field type renders to something object-shaped, so everything
+/// else is rejected rather than silently emitted:
+///
+/// - **`Option<T>`, and `#[serde(flatten, default)]`** — both make the whole
+///   flattened group absent-or-present as a unit. An intersection can't say
+///   that, and `Partial<T>` would wrongly admit any subset of the keys.
+/// - **`Vec<T>` / sets / primitives / `serde_json::Value`** — these render
+///   as `T[]`, `string`, `unknown`, and so on. `X & unknown` is a silent
+///   no-op and `X & string` collapses to `never`, so either way the emitted
+///   type would stop describing the wire.
+///
+/// String-keyed maps ARE admissible, which covers serde's catch-all idiom:
+/// `#[serde(flatten)] extra: HashMap<String, Value>` renders as
+/// `Record<string, unknown>` and intersects correctly.
+///
+/// Smart-pointer wrappers are peeled first — `Box<StepMeta>` flattens
+/// exactly like `StepMeta` does, since serde sees through both.
+///
+/// One case this can't catch: flattening a field whose type is an *enum*.
+/// `emit_type` only yields the referenced name, not its definition, so the
+/// emitter can't tell `StepMeta` (struct) from `StepKind` (enum) here. The
+/// resulting intersection is well-formed TS that resolves to `never`, which
+/// surfaces at the consumer's `tsc` rather than at emit time.
+fn flatten_member(
+    ty: &Type,
+    defaulted: bool,
+    config: &EmitConfig,
+    referenced_by: &TypePath,
+) -> Result<String, EmitError> {
+    if defaulted {
+        return Err(EmitError::UnsupportedShape {
+            type_path: referenced_by.clone(),
+            reason: "a defaulted #[serde(flatten)] field (whether from `#[serde(flatten, default)]` or a container \
+                     `#[serde(default)]`) makes the whole flattened group absent-or-present as a unit, which a TS \
+                     intersection can't express; drop the `default` or use #[ontogen::ts_opaque(target = \"...\")]"
+                .to_string(),
+        });
+    }
+
+    let mut inner = ty;
+    while let Some(peeled) = peel_smart_pointer(inner) {
+        inner = peeled;
+    }
+
+    if let Type::Path(path) = inner
+        && matches!(match_container(path), Some(Container::Option(_)))
+    {
+        return Err(EmitError::UnsupportedShape {
+            type_path: referenced_by.clone(),
+            reason: "#[serde(flatten)] on an Option<T> makes the whole flattened group absent-or-present as a unit, \
+                     which a TS intersection can't express; flatten a non-Option field or use \
+                     #[ontogen::ts_opaque(target = \"...\")]"
+                .to_string(),
+        });
+    }
+
+    let rendered = emit_type(inner, config, referenced_by)?;
+    if !is_object_shaped(&rendered) {
+        return Err(EmitError::UnsupportedShape {
+            type_path: referenced_by.clone(),
+            reason: format!(
+                "#[serde(flatten)] needs a field type that renders to a TS object, but this one renders as \
+                 `{rendered}`; intersecting that would void or silently drop the parent type. Flatten a struct or a \
+                 map, or use #[ontogen::ts_opaque(target = \"...\")]"
+            ),
+        });
+    }
+    Ok(rendered)
+}
+
+/// TS keywords that never denote a useful intersection member for a
+/// flattened field. `object` is included: it's nominally an object type but
+/// carries no keys, so `X & object` says nothing about the wire.
+const NON_OBJECT_TS_KEYWORDS: &[&str] = &[
+    "any",
+    "bigint",
+    "boolean",
+    "never",
+    "null",
+    "number",
+    "object",
+    "string",
+    "symbol",
+    "undefined",
+    "unknown",
+    "void",
+];
+
+/// True iff `rendered` is a TS type expression that can meaningfully take
+/// part in an object intersection — a `Record<...>` mapped type, or a named
+/// type reference. Unions (`T | null`), arrays (`T[]`) and the primitive
+/// keywords all fail, since `is_valid_ts_ident` rejects the first two and
+/// [`NON_OBJECT_TS_KEYWORDS`] the third.
+fn is_object_shaped(rendered: &str) -> bool {
+    if rendered.starts_with("Record<") {
+        return true;
+    }
+    is_valid_ts_ident(rendered) && !NON_OBJECT_TS_KEYWORDS.contains(&rendered)
+}
+
 /// Compute the on-the-wire name for a struct field given the field's serde
 /// attrs and the container's effective rename_all mode.
 fn field_wire_name(raw_ident: &str, attrs: &FieldAttrs, rename_all: Option<RenameAll>) -> String {
@@ -412,6 +654,31 @@ fn field_wire_name(raw_ident: &str, attrs: &FieldAttrs, rename_all: Option<Renam
         return mode.apply_to_field(raw_ident);
     }
     raw_ident.to_string()
+}
+
+/// Pick the rename mode that governs the FIELD names inside a struct
+/// variant.
+///
+/// Serde keeps two independent axes on an enum, and conflating them emits TS
+/// that disagrees with the wire in a way that still looks plausible:
+///
+/// | attribute                              | renames                       |
+/// |----------------------------------------|-------------------------------|
+/// | `#[serde(rename_all)]` on the enum     | the variants                  |
+/// | `#[serde(rename_all_fields)]` on the enum | fields of every struct variant |
+/// | `#[serde(rename_all)]` on a variant    | fields of that variant        |
+///
+/// So the enum's own `rename_all` is deliberately absent here — it governs
+/// the variant key and nothing else. The closer scope wins between the
+/// remaining two.
+///
+/// [`EmitConfig::case_default`] is deliberately absent too. It stands in for
+/// "this crate annotates its types with `rename_all`", and a crate that does
+/// exactly that still gets verbatim struct-variant field names out of serde
+/// unless it also writes `rename_all_fields`. Folding `case_default` in here
+/// would reintroduce the same mismatch from the config side.
+fn variant_field_rename_all(container: &ContainerAttrs, variant: &VariantAttrs) -> Option<RenameAll> {
+    variant.rename_all.or(container.rename_all_fields)
 }
 
 /// Compute the on-the-wire name for an enum variant given its serde attrs
@@ -495,6 +762,16 @@ fn is_valid_ts_ident(s: &str) -> bool {
 /// Empty enums (`enum Foo {}`) emit as `never` since they have no
 /// inhabitants — matches `serde_json::to_string`'s effective behavior
 /// (calling code can't ever construct a value).
+///
+/// Struct variants run the same named-field collector as
+/// [`emit_struct_named`], so `#[serde(flatten)]` and `#[serde(default)]`
+/// behave identically inside a variant payload: a flattened field becomes an
+/// intersection member on the payload (`{ Move: Base & { x: number } }`) and
+/// a defaulted field becomes TS-optional.
+///
+/// Renaming inside a struct variant follows a *different* policy from the
+/// variant key — the enum's `rename_all` renames variants only, never their
+/// fields. See [`variant_field_rename_all`] for the full precedence table.
 #[allow(dead_code)] // tests-only convenience wrapper; production calls _named directly.
 pub(crate) fn emit_enum(item: &ItemEnum, config: &EmitConfig) -> Result<String, EmitError> {
     emit_enum_named(item, config, None)
@@ -563,26 +840,28 @@ pub(crate) fn emit_enum_named(
             }
             Fields::Named(fields) => {
                 // Struct-style variant: serde emits `{"V": {field1: ..., field2: ...}}`.
-                // Renames inside a struct variant fall under the container's
-                // rename_all rules too (phase 1 doesn't distinguish; serde's
-                // `rename_all_fields` for inner-struct overrides is phase-2
-                // work).
+                //
+                // The variant KEY is renamed by the enum's `rename_all`
+                // (already applied above, in `wire_name`). The variant's
+                // FIELD names are a separate axis that the enum's
+                // `rename_all` does not touch — see `variant_field_rename_all`.
                 let key = format_ts_key(&wire_name);
-                let mut field_lines: Vec<String> = Vec::with_capacity(fields.named.len());
-                for field in &fields.named {
-                    let field_attrs = extract_field_attrs(&field.attrs, &referenced_by)?;
-                    if field_attrs.skip {
-                        continue;
-                    }
-                    let raw_field_ident =
-                        field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
-                    let field_wire = field_wire_name(&raw_field_ident, &field_attrs, effective_rename_all);
-                    let field_key = format_ts_key(&field_wire);
-                    let ty_ts = emit_type(&field.ty, config, &referenced_by)?;
-                    field_lines.push(format!("{field_key}: {ty_ts}"));
-                }
-                let body = field_lines.join("; ");
-                variant_lines.push(format!("{{ {key}: {{ {body} }} }}"));
+                let field_rename_all = variant_field_rename_all(&container, &variant_attrs);
+                // No container-default to inherit: serde rejects
+                // `#[serde(default)]` on an enum outright, so a variant body
+                // is only optional field-by-field.
+                let collected = collect_named_fields(fields, config, &referenced_by, field_rename_all, false)?;
+                let object = (!collected.properties.is_empty()).then(|| {
+                    let body = collected
+                        .properties
+                        .iter()
+                        .map(|(field_key, opt, ty_ts)| format!("{field_key}{opt}: {ty_ts}"))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    format!("{{ {body} }}")
+                });
+                let payload = intersect(&collected.intersections, object);
+                variant_lines.push(format!("{{ {key}: {payload} }}"));
             }
         }
     }
@@ -682,7 +961,10 @@ fn match_container(path: &SynTypePath) -> Option<Container<'_>> {
 
     match (name.as_str(), type_args.as_slice()) {
         ("Option", [inner]) => Some(Container::Option(inner)),
-        ("Vec", [inner]) => Some(Container::Vec(inner)),
+        // `VecDeque` shares `Vec`'s wire shape — serde serializes it as a
+        // JSON array. Without it here the type fell through to the terminal
+        // ident and emitted a bare `VecDeque`, which is not a TS type.
+        ("Vec" | "VecDeque", [inner]) => Some(Container::Vec(inner)),
         ("HashMap" | "BTreeMap", [k, v]) => Some(Container::Map(k, v)),
         ("HashSet" | "BTreeSet", [inner]) => Some(Container::Set(inner)),
         _ => None,
@@ -899,6 +1181,35 @@ mod tests {
     }
 
     #[test]
+    fn container_vecdeque_renders_as_array() {
+        // `VecDeque` serializes as a JSON array like `Vec`, but was missing
+        // from the container table, so it fell through to the terminal ident
+        // and emitted a bare `VecDeque` — not a TS type.
+        assert_eq!(emit("VecDeque<u32>"), "number[]");
+        assert_eq!(emit("VecDeque<Option<String>>"), "(string | null)[]");
+    }
+
+    #[test]
+    fn unit_type_renders_as_null() {
+        // serde serializes `()` as JSON `null`.
+        assert_eq!(emit("()"), "null");
+        // Degenerate but well-defined: TS collapses the duplicate itself.
+        assert_eq!(emit("Option<()>"), "null | null");
+    }
+
+    #[test]
+    fn non_empty_tuple_is_rejected() {
+        // A JSON array with positional meaning has no field names to hang a
+        // TS object shape on; a named struct is the supported spelling.
+        match emit_err("(String, u32)") {
+            EmitError::UnsupportedShape { reason, .. } => {
+                assert!(reason.contains("tuple"), "reason was: {reason}");
+            }
+            other => panic!("expected UnsupportedShape, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn container_hashmap_renders_as_record() {
         assert_eq!(emit("HashMap<String, u32>"), "Record<string, number>");
         assert_eq!(emit("BTreeMap<String, bool>"), "Record<string, boolean>");
@@ -1032,6 +1343,60 @@ mod tests {
     fn multi_segment_path_collapses_to_terminal_for_now() {
         // PR 3's canonicalization will replace this with a real lookup.
         assert_eq!(emit("crate::models::Workout"), "Workout");
+    }
+
+    // ── Standalone rendering (`render_type` / `render_type_str`) ───────
+
+    #[test]
+    fn render_type_str_matches_the_in_declaration_renderer() {
+        // `render_type_str` is the entry point ontogen's API-signature
+        // emitter delegates to. It has to agree with what the same type
+        // renders as inside a struct field, or the two halves of one
+        // generated file disagree — which is the whole reason it exists.
+        let config = EmitConfig::default();
+        for src in [
+            "String",
+            "u8",
+            "Vec<Option<String>>",
+            "HashMap<String, Vec<Node>>",
+            "Cow<'a, str>",
+            "chrono::DateTime<Utc>",
+            "serde_json::Value",
+            "()",
+        ] {
+            let standalone = render_type_str(src, &config).unwrap_or_else(|err| panic!("`{src}` failed: {err:?}"));
+            assert_eq!(standalone, emit(src), "standalone render of `{src}` diverged");
+        }
+    }
+
+    #[test]
+    fn render_type_str_tolerates_token_stream_spacing() {
+        // Callers hand it text rendered from a token stream, which carries
+        // spaces the source spelling never had.
+        let config = EmitConfig::default();
+        assert_eq!(render_type_str("Vec < String >", &config).expect("renders"), "string[]");
+        assert_eq!(render_type_str("HashMap < String , i32 >", &config).expect("renders"), "Record<string, number>");
+    }
+
+    #[test]
+    fn render_type_str_rejects_text_that_is_not_a_type() {
+        let config = EmitConfig::default();
+        match render_type_str("not a type!", &config) {
+            Err(EmitError::UnsupportedShape { reason, .. }) => {
+                assert!(reason.contains("does not parse"), "reason was: {reason}");
+            }
+            other => panic!("expected a parse failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_type_honors_config() {
+        // The config reaches the standalone path too — otherwise a consumer
+        // setting `bigint_behavior` would get it applied to the long-tail
+        // types and silently not to the signatures.
+        let config = EmitConfig { bigint_behavior: BigIntBehavior::BigInt, ..EmitConfig::default() };
+        assert_eq!(render_type_str("u64", &config).expect("renders"), "bigint");
+        assert_eq!(render_type_str("u64", &EmitConfig::default()).expect("renders"), "number");
     }
 
     // ── Struct emission ────────────────────────────────────────────────
@@ -1320,6 +1685,384 @@ mod tests {
     #[test]
     fn enum_variant_rename_wins_over_container() {
         assert_fixture_matches("enum_variant_rename_wins_over_container");
+    }
+
+    // ── Struct-variant field renaming (issue #133) ─────────────────────
+
+    #[test]
+    fn enum_rename_all_spares_variant_fields() {
+        // The repro from issue #133: an enum's `rename_all` renames the
+        // VARIANT (`toolCall`) and must leave the variant's field names
+        // alone, because serde does.
+        assert_fixture_matches("enum_rename_all_spares_variant_fields");
+    }
+
+    #[test]
+    fn enum_rename_all_fields() {
+        // `rename_all_fields` is the attribute that actually asks for the
+        // renaming the emitter used to do unprompted.
+        assert_fixture_matches("enum_rename_all_fields");
+    }
+
+    #[test]
+    fn enum_variant_rename_all_wins_over_container() {
+        // A variant's own `rename_all` governs that variant's fields and
+        // overrides the container's `rename_all_fields`; sibling variants
+        // still follow the container.
+        assert_fixture_matches("enum_variant_rename_all_wins_over_container");
+    }
+
+    #[test]
+    fn enum_variant_rename_all_does_not_touch_the_variant_key() {
+        // Easy to get backwards: `rename_all` on a VARIANT renames that
+        // variant's fields, not the variant's own wire name. The key here
+        // comes from the container's `rename_all` alone.
+        let config = EmitConfig::default();
+        let item = enum_item(
+            r#"
+            #[serde(rename_all = "camelCase")]
+            pub enum Event {
+                #[serde(rename_all = "UPPERCASE")]
+                ToolCall { prompt_template: String },
+            }
+            "#,
+        );
+        let ts = emit_enum(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Event = { toolCall: { PROMPT_TEMPLATE: string } };");
+    }
+
+    #[test]
+    fn config_case_default_does_not_reach_variant_fields() {
+        // `case_default` stands in for "this crate annotates with
+        // rename_all". Such a crate still gets verbatim struct-variant field
+        // names out of serde, so applying it here would recreate #133 from
+        // the config side. It must still rename the variant key.
+        let config = EmitConfig { case_default: Some(crate::types::RenameAll::CamelCase), ..Default::default() };
+        let item = enum_item(
+            "pub enum Event {
+                ToolCall { prompt_template: String },
+            }",
+        );
+        let ts = emit_enum(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Event = { toolCall: { prompt_template: string } };");
+    }
+
+    #[test]
+    fn enum_field_rename_wins_over_every_rename_all() {
+        // Closest scope of all: an explicit field rename.
+        let config = EmitConfig::default();
+        let item = enum_item(
+            r#"
+            #[serde(rename_all_fields = "camelCase")]
+            pub enum Event {
+                #[serde(rename_all = "UPPERCASE")]
+                ToolCall {
+                    #[serde(rename = "tmpl")]
+                    prompt_template: String,
+                },
+            }
+            "#,
+        );
+        let ts = emit_enum(&item, &config).expect("emit ok");
+        assert!(ts.contains("tmpl: string"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn struct_rename_all_fields_is_inert() {
+        // `rename_all_fields` is an enum attribute. A struct's own fields are
+        // governed by its `rename_all`, and the emitter must not let the
+        // enum-only attr bleed into the struct path.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(rename_all_fields = "camelCase")]
+            pub struct Foo {
+                pub prompt_template: String,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert!(ts.contains("prompt_template: string"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn enum_rename_all_fields_rejects_unknown_mode() {
+        // The error must name `rename_all_fields`, not `rename_all`, or the
+        // build log points at the wrong attribute.
+        let config = EmitConfig::default();
+        let item = enum_item(
+            r#"
+            #[serde(rename_all_fields = "Train-Case")]
+            pub enum Event {
+                ToolCall { prompt_template: String },
+            }
+            "#,
+        );
+        match emit_enum(&item, &config).expect_err("unknown mode should fail") {
+            EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                assert!(attr.contains("rename_all_fields"), "attr was: {attr}");
+                assert!(attr.contains("Train-Case"), "attr was: {attr}");
+            }
+            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+        }
+    }
+
+    // ── Container-level serde(default) ─────────────────────────────────
+
+    #[test]
+    fn struct_container_default_optional() {
+        // `#[serde(default)]` on the struct makes every field absent-able on
+        // the wire, so every field is TS-optional. Emitting them as required
+        // forced callers to spell out a value for each one to satisfy `tsc`,
+        // even though serde accepts `{}`.
+        assert_fixture_matches("struct_container_default_optional");
+    }
+
+    #[test]
+    fn struct_container_default_composes_with_field_default() {
+        // Both scopes say the same thing; the field must not end up with two
+        // `?` markers.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(default)]
+            pub struct Settings {
+                #[serde(default)]
+                pub retries: u32,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Settings = {\n  retries?: number;\n};");
+    }
+
+    #[test]
+    fn struct_container_default_path_form_is_equivalent() {
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(default = "defaults::settings")]
+            pub struct Settings {
+                pub retries: u32,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert!(ts.contains("retries?: number"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn struct_container_default_still_drops_skipped_fields() {
+        // `skip` wins: the field isn't on the wire at all, optional or not.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(default)]
+            pub struct Settings {
+                pub retries: u32,
+                #[serde(skip)]
+                pub cached: u32,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert!(ts.contains("retries?: number"), "ts was: {ts}");
+        assert!(!ts.contains("cached"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn struct_container_default_rejects_a_flattened_field() {
+        // Same absent-or-present problem as `#[serde(flatten, default)]`, just
+        // inherited from the container instead of written on the field.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(default)]
+            pub struct Step {
+                #[serde(flatten)]
+                pub meta: StepMeta,
+            }
+            "#,
+        );
+        match emit_struct(&item, &config).expect_err("container default + flatten should be rejected") {
+            EmitError::UnsupportedShape { reason, .. } => {
+                assert!(reason.contains("absent-or-present"), "reason was: {reason}");
+                assert!(reason.contains("container"), "reason was: {reason}");
+            }
+            other => panic!("expected UnsupportedShape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_container_default_does_not_reach_variant_fields() {
+        // Serde rejects `#[serde(default)]` on an enum, so it must not leak
+        // into struct-variant bodies via the shared container extractor.
+        let config = EmitConfig::default();
+        let item = enum_item(
+            r#"
+            #[serde(default)]
+            pub enum Event {
+                Move { x: u32 },
+            }
+            "#,
+        );
+        let ts = emit_enum(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Event = { Move: { x: number } };");
+    }
+
+    #[test]
+    fn struct_without_container_default_keeps_fields_required() {
+        // The no-attribute path must be untouched.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            "pub struct Settings {
+                pub retries: u32,
+                pub notes: Option<String>,
+            }",
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Settings = {\n  retries: number;\n  notes: string | null;\n};");
+    }
+
+    // ── serde(flatten) → TS intersection ───────────────────────────────
+
+    #[test]
+    fn struct_field_flatten_intersection() {
+        // The repro from issue #132: the flattened field's keys land in the
+        // parent object on the wire, so TS gets an intersection, not a
+        // nested `meta` property.
+        assert_fixture_matches("struct_field_flatten_intersection");
+    }
+
+    #[test]
+    fn struct_field_flatten_only() {
+        // Every field flattened — the empty property object drops out
+        // rather than emitting a pointless `& {}`.
+        assert_fixture_matches("struct_field_flatten_only");
+    }
+
+    #[test]
+    fn struct_field_flatten_catch_all_map() {
+        // Serde's catch-all idiom. A string-keyed map is object-shaped, so
+        // it intersects cleanly.
+        assert_fixture_matches("struct_field_flatten_catch_all_map");
+    }
+
+    #[test]
+    fn enum_struct_variant_flatten() {
+        // Struct variants share the named-field collector, so flatten works
+        // inside a variant payload too.
+        assert_fixture_matches("enum_struct_variant_flatten");
+    }
+
+    #[test]
+    fn struct_field_flatten_peels_smart_pointers() {
+        // `Box<T>` is transparent to serde, so it flattens like `T`.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            "pub struct Step {
+                #[serde(flatten)]
+                pub meta: Box<StepMeta>,
+                pub program: String,
+            }",
+        );
+        let ts = emit_struct(&item, &config).expect("boxed flatten should emit");
+        assert!(ts.starts_with("export type Step = StepMeta & {"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn struct_field_flatten_respects_rename_all_on_siblings() {
+        // The flattened field contributes no key of its own, so rename_all
+        // applies to the surviving properties only.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            #[serde(rename_all = "camelCase")]
+            pub struct Step {
+                #[serde(flatten)]
+                pub meta: StepMeta,
+                pub program_name: String,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert!(ts.contains("StepMeta & {"), "ts was: {ts}");
+        assert!(ts.contains("programName: string"), "ts was: {ts}");
+    }
+
+    /// Assert a flattened field of type `field_ty` is rejected, and that the
+    /// reason mentions `needle`.
+    fn assert_flatten_rejected(field_ty: &str, needle: &str) {
+        let config = EmitConfig::default();
+        let item = struct_item(&format!(
+            "pub struct Holder {{
+                #[serde(flatten)]
+                pub inner: {field_ty},
+                pub tail: u32,
+            }}"
+        ));
+        let Err(err) = emit_struct(&item, &config) else {
+            panic!("flatten of `{field_ty}` should have been rejected");
+        };
+        match err {
+            EmitError::UnsupportedShape { reason, .. } => {
+                assert!(reason.contains(needle), "flatten of `{field_ty}` — reason was: {reason}");
+            }
+            other => panic!("expected UnsupportedShape for `{field_ty}`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_field_flatten_rejects_option() {
+        // Serde makes the whole group absent-or-present; an intersection
+        // can't say that, and `Partial<T>` would admit any subset.
+        assert_flatten_rejected("Option<StepMeta>", "absent-or-present");
+        // The same is true through a smart pointer.
+        assert_flatten_rejected("Box<Option<StepMeta>>", "absent-or-present");
+    }
+
+    #[test]
+    fn struct_field_flatten_rejects_non_object_renderings() {
+        // `X & string` collapses to `never`; `X & unknown` is a silent
+        // no-op; `X & T[]` describes nothing on the wire. All hard errors.
+        assert_flatten_rejected("String", "renders as `string`");
+        assert_flatten_rejected("u32", "renders as `number`");
+        assert_flatten_rejected("Vec<StepMeta>", "renders as `StepMeta[]`");
+        assert_flatten_rejected("serde_json::Value", "renders as `unknown`");
+    }
+
+    #[test]
+    fn struct_field_flatten_rejects_default_combination() {
+        let config = EmitConfig::default();
+        let item = struct_item(
+            "pub struct Holder {
+                #[serde(flatten, default)]
+                pub inner: StepMeta,
+            }",
+        );
+        match emit_struct(&item, &config).expect_err("flatten + default should be rejected") {
+            EmitError::UnsupportedShape { reason, .. } => {
+                assert!(reason.contains("flatten, default"), "reason was: {reason}");
+            }
+            other => panic!("expected UnsupportedShape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_field_flatten_and_skip_leave_only_flatten() {
+        // A skipped field never reaches the wire; a flattened one has no key
+        // of its own. Together they leave a bare intersection.
+        let config = EmitConfig::default();
+        let item = struct_item(
+            "pub struct Holder {
+                #[serde(flatten)]
+                pub inner: StepMeta,
+                #[serde(skip)]
+                pub cached: u32,
+            }",
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert_eq!(ts, "export type Holder = StepMeta;");
     }
 
     #[test]

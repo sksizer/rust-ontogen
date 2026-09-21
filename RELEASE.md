@@ -86,6 +86,41 @@ before publishing and will block a bump that's too small for the API delta.
 > commits on the branches are what appear. A merge-based workflow produces a
 > correct changelog.
 
+### Writing a breaking change
+
+The `!` marker is what makes a change visible to consumers — it drives both the
+version bump and, since `cliff.toml` grew a breaking-changes section, a
+dedicated **⚠ BREAKING CHANGES** block at the top of the release entry.
+
+Two things worth getting right, because the changelog is generated from the
+commit and can't be improved later without a hand-edit:
+
+1. **Mark the commit that does the breaking, not just the one that adds the
+   replacement.** A pair like "add new hook" (`feat!`) and "remove the old
+   implementation" (`fix!`) both need the `!`. Ontogen 0.6.0 shipped exactly
+   that pair; only the first was marked, so the changelog announced a new
+   formatter hook and never recorded that the built-in formatter had been
+   deleted. Consumers reading it would reasonably conclude `feature = "biome"`
+   still worked.
+
+2. **Use a `BREAKING CHANGE:` footer for anything a reader has to act on.**
+   The subject line becomes the bullet; the footer becomes the explanation
+   underneath it. Say what the consumer must change, not what you changed:
+
+   ```
+   feat(clients)!: TypeScript formatting is now a consumer-supplied hook
+
+   BREAKING CHANGE: `ClientsConfig::ts_formatter` is a new required field and
+   the built-in formatter is gone. Existing build scripts must add
+   `ts_formatter: TsFormatter::None` to keep compiling; set
+   `TsFormatter::Command(vec!["prettier".into(), "--stdin-filepath".into()])`
+   to restore formatted output.
+   ```
+
+Note that release-plz scopes each commit to a crate by the paths it touched, so
+a change spanning `ontogen` and `ontogen-core` lands in both changelogs — check
+both when reviewing the release PR.
+
 ## Prerequisites (one-time setup)
 
 These must be in place for the automation to work end to end:
