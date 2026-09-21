@@ -205,10 +205,41 @@ pub struct ApiModule {
     /// (HTTP today; admin / doc-gen in the future) branch on this rather than
     /// re-deriving from naming rules.
     pub is_singleton: bool,
+    /// True when the module defines `count(store) -> Result<u64, _>`: the
+    /// total behind a paginated `list`. It stays an operation of its own on
+    /// `functions` until [`check_paginated_lists`] finds the module paginated,
+    /// at which point the generated page handlers call it and it is taken off.
+    pub has_count: bool,
+}
+
+/// The parameter names a paginated `list` ends with.
+pub const PAGE_PARAMS: [&str; 2] = ["limit", "offset"];
+
+/// The type each page parameter must have.
+pub const PAGE_PARAM_TYPE: &str = "Option<u64>";
+
+/// True for the `limit`/`offset` parameter of a paginated `list`.
+pub fn is_page_param(p: &Param) -> bool {
+    PAGE_PARAMS.contains(&p.name.as_str())
 }
 
 /// The function names that make up a module's CRUD surface.
 pub const CRUD_FN_NAMES: [&str; 5] = ["list", "get_by_id", "create", "update", "delete"];
+
+impl ApiFn {
+    /// True when the fn ends with `limit: Option<u64>, offset: Option<u64>`:
+    /// the shape a paginated `list` must have for the page to reach the store.
+    pub fn takes_page(&self) -> bool {
+        let n = self.params.len();
+        n >= 2
+            && PAGE_PARAMS.iter().zip(&self.params[n - 2..]).all(|(name, p)| p.name == *name && p.ty == PAGE_PARAM_TYPE)
+    }
+
+    /// True for the store-scoped `count(store)` that backs a paginated `list`.
+    pub fn is_count(&self) -> bool {
+        self.name == "count" && self.first_param_is_store && self.params.is_empty()
+    }
+}
 
 impl ApiModule {
     /// Returns true if this module has a complete CRUD surface
@@ -469,6 +500,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
         return result;
     }
     let is_singleton = has_singleton_marker(&source);
+    let mut has_count = false;
     let Ok(syntax) = syn::parse_file(&source) else {
         return result;
     };
@@ -611,6 +643,11 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
 
             let (return_type, return_type_ast) = extract_result_ok_type(&func.sig.output);
 
+            // `count(store)` is recorded here but stays a function: only a
+            // paginated module (known once the config is in hand) folds it
+            // into its page handler — see `check_paginated_lists`.
+            has_count |= fn_ident == "count" && is_store && params.is_empty();
+
             functions.push(ApiFn {
                 name: fn_ident,
                 is_async: func.sig.asyncness.is_some(),
@@ -628,7 +665,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
         }
     }
 
-    result.module = Some(ApiModule { name: file_stem.to_string(), functions, events, is_singleton });
+    result.module = Some(ApiModule { name: file_stem.to_string(), functions, events, is_singleton, has_count });
     result
 }
 
@@ -778,6 +815,7 @@ pub fn merge_surfaces(per_surface: Vec<Vec<ApiModule>>, surfaces: &[ApiSurface])
                 continue;
             };
             let module = &incoming.name;
+            existing.has_count |= incoming.has_count;
             for f in incoming.functions {
                 if let Some(prior) = existing.functions.iter().find(|p| p.name == f.name) {
                     return Err(format!(
@@ -1022,4 +1060,53 @@ fn parse_ontogen_rename(attrs: &[syn::Attribute]) -> OntogenAttr {
     }
 
     result
+}
+
+/// A paginated `list` pushes its page into the store: it must take
+/// `limit`/`offset` as its last two parameters and sit beside a `count`.
+/// Anything else would make the handler load the whole table to slice it.
+///
+/// The `count` of a paginated module is what the page handlers call for the
+/// total, so it is taken off `functions` here; on a module no surface
+/// paginates it stays an operation of its own.
+pub fn check_paginated_lists(modules: &mut [ApiModule], config: &crate::servers::config::Config) -> Result<(), String> {
+    for m in modules {
+        let mut paginated = false;
+        for f in &m.functions {
+            if f.name != "list"
+                || !f.return_type.starts_with("Vec<")
+                || config.pagination_for(&m.name, f.surface).is_none()
+            {
+                continue;
+            }
+            paginated = true;
+            if !f.takes_page() || !m.has_count {
+                return Err(format!(
+                    "ontogen: module `{}` is paginated, so `{}::list` must take `limit: Option<u64>, offset: Option<u64>` as \
+                     its last two parameters and the module must define `count(store) -> Result<u64, _>`; a generated \
+                     CRUD module gets both from `ApiConfig::paginated`",
+                    m.name, m.name
+                ));
+            }
+            // `count(store)` takes no filter, so a filtered page would report
+            // the whole table as its total.
+            if f.params.len() > PAGE_PARAMS.len() {
+                return Err(format!(
+                    "ontogen: module `{}` is paginated, so `{}::list` may take nothing but `limit`/`offset` after the \
+                     store: `count(store)` cannot apply the filter `{}` to the total",
+                    m.name,
+                    m.name,
+                    f.params[..f.params.len() - PAGE_PARAMS.len()]
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, p.ty))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+        if paginated {
+            m.functions.retain(|f| !f.is_count());
+        }
+    }
+    Ok(())
 }

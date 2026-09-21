@@ -67,7 +67,6 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities:
         } else {
             "    paginated: false,\n".to_string()
         };
-
         // Whether `list` takes a typed query-struct parameter, matching the
         // same detection transport.rs's OpKind::List branch uses to decide
         // the generated method's parameter order: a query param sorts ahead

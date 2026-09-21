@@ -119,11 +119,12 @@ async fn exercise_list(
     Query(pagination): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResult<Exercise>>, ApiError> {
     let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
-    let all_items = exercise::list(&store).await.map_err(|e| err(e.to_string()))?;
-    let total = all_items.len() as u64;
     let limit = pagination.limit.unwrap_or(20).min(100);
     let offset = pagination.offset.unwrap_or(0);
-    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();
+    let items = exercise::list(&store, Some(u64::from(limit)), Some(u64::from(offset)))
+        .await
+        .map_err(|e| err(e.to_string()))?;
+    let total = exercise::count(&store).await.map_err(|e| err(e.to_string()))?;
     Ok(Json(PaginatedResult { items, total, limit, offset }))
 }
 
