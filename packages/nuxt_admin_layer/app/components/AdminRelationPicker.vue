@@ -105,6 +105,7 @@ function onInput(event: Event) {
 
 function onKeydown(event: KeyboardEvent) {
   if (!open.value && (event.key === 'ArrowDown' || event.key === 'Enter')) {
+    event.preventDefault()
     open.value = true
     return
   }
