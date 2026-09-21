@@ -55,5 +55,16 @@ export interface AdminEntityConfig {
   defaultLimit?: number
   /** Maximum allowed page size for paginated list queries */
   maxLimit?: number
+  /**
+   * Whether the generated list method takes a leading query-struct argument:
+   * `list(query?, limit?, offset?)` when true, `list(limit?, offset?)` when
+   * false/absent. Set by the admin-registry generator
+   * (src/clients/generators/admin.rs) from whether the Rust `list` fn has a
+   * `Query`-typed parameter — see src/clients/generators/transport.rs's
+   * `OpKind::List` branch, which puts the same query param ahead of the
+   * pagination args. Absent means false, so registries generated before this
+   * field existed stay valid.
+   */
+  listHasQuery?: boolean
   fields: AdminFieldDef[]
 }

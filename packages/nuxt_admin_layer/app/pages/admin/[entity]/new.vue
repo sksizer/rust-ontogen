@@ -20,11 +20,7 @@ const formError = ref<string | null>(null)
 onMounted(() => {
   const data: Record<string, unknown> = {}
   for (const field of formFields.value) {
-    if (field.type === 'string-array' || field.type === 'relation-array') {
-      data[field.key] = []
-    } else {
-      data[field.key] = field.type === 'number' ? null : ''
-    }
+    data[field.key] = emptyFormValue(field)
   }
   formData.value = data
 })
@@ -34,16 +30,7 @@ async function handleSubmit() {
   saving.value = true
   formError.value = null
   try {
-    const input = { ...formData.value }
-    // Clean up empty optional fields
-    for (const field of formFields.value) {
-      if (!field.required && (input[field.key] === '' || input[field.key] === null)) {
-        if (field.type === 'string' || field.type === 'enum' || field.type === 'relation') {
-          input[field.key] = undefined
-        }
-      }
-    }
-    await createEntity(input)
+    await createEntity(toCreateInput(formFields.value, formData.value))
     router.push(`/admin/${entityPlural.value}`)
   } catch (e) {
     formError.value = String(e)

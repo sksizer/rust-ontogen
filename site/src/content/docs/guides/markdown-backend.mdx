@@ -103,7 +103,9 @@ let state = AppState::new(vault);
   authoritative side — no junction tables). `has_many` is **never stored**:
   it's a derived view, answered by walking the child folder and filtering on
   the foreign key. Generated code strips brackets at its typed boundary;
-  your JSON API never sees them.
+  your JSON API never sees them. (That stripping is a
+  [policy](#wikilinks-on-a-sql-backed-store), not a hardcoded behaviour —
+  the markdown backend just defaults to it.)
 - **Creates can derive ids.** POST without an id (Create DTOs carry
   `#[serde(default)]` on `id`) and `SlugFromField` slugifies the configured
   field, de-duplicating with `-2`, `-3`, … — atomically with the write.
@@ -114,6 +116,42 @@ let state = AppState::new(vault);
   errors past `list_cap` — the deliberate "wrong backend for this N" signal.
 - **Single-record atomicity only** (same-dir tempfile + fsync + rename).
   Need batch transactions? That's the other backend.
+
+## Wikilinks on a SQL-backed store
+
+Wikilink stripping is a `StoreConfig` field, not a property of the markdown
+backend. Each backend supplies a default — markdown strips, SQL passes through
+— and `wikilink_policy: None` picks it up:
+
+```rust
+pub enum WikilinkPolicy {
+    Strip,        // [[id]] -> id on every relation field
+    Passthrough,  // relation ids pass through untouched
+}
+```
+
+Almost everyone wants the default. Set it explicitly for the hybrid case: a
+**SQL-backed** store whose wire contract still accepts wikilinked ids — an API
+fed by markdown-authoring agents, or one migrating off a vault while keeping
+its callers working.
+
+```rust
+StoreConfig {
+    // ...
+    backend: Backend::Seaorm(Some(seaorm)),
+    wikilink_policy: Some(WikilinkPolicy::Strip),
+}
+```
+
+The generated DTO `From` impls will then accept `"[[task-42]]"` and store
+`"task-42"`.
+
+<Aside type="caution">
+The emitted strip calls resolve to `markdown_store::wikilink`, so a SQL
+consumer that opts in must depend on the `markdown-store` runtime crate. That
+crate is `publish = false` today, so this currently means a path or git
+dependency on the workspace rather than a crates.io version.
+</Aside>
 
 ## See it running
 

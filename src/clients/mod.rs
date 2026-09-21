@@ -146,20 +146,25 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
 
         // 1. Build the type pool from src/, then merge in any configured
         //    extra source roots (workspace-sibling crates the consuming crate
-        //    re-exports types from). Main pool wins on key collision so the
-        //    consuming crate's own definitions take precedence over a sibling
-        //    that happens to share a module path.
+        //    re-exports types from).
+        //
+        //    Every key names the root it came from — `crate` for the
+        //    consuming crate, the package name for each sibling — so the two
+        //    trees occupy distinct namespaces after the merge. Before this,
+        //    both were keyed relative to their own `src/`, so a sibling's
+        //    `lint::Severity` and a local `lint::Severity` produced the same
+        //    key: one silently displaced the other, and a bare reference to
+        //    either was reported as ambiguous.
         let (mut pool, mut imports) =
             ontogen_ts::scan_src_dir_with_imports(&src_dir).map_err(|e| format!("ontogen-ts pool scan failed: {e}"))?;
         for extra in &config.pool_extra_roots {
             let resolved = if extra.is_absolute() { extra.clone() } else { manifest_dir.join(extra) };
-            let (sibling, sibling_imports) = ontogen_ts::scan_src_dir_with_imports(&resolved)
+            let crate_root = extra_root_crate_name(&resolved);
+            let (sibling, sibling_imports) = ontogen_ts::scan_crate_root_with_imports(&resolved, &crate_root)
                 .map_err(|e| format!("ontogen-ts pool scan failed for extra root `{}`: {e}", resolved.display()))?;
             for (key, item) in sibling {
                 pool.entry(key).or_insert(item);
             }
-            // Main root's `use` tables win on a module-path collision, same as
-            // the pool above.
             imports.merge(sibling_imports);
         }
 
@@ -201,7 +206,11 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
                     })
                     .collect();
                 if !segments.is_empty() {
-                    exclude_prefixes.push(segments);
+                    // Pool keys are rooted at the crate, so the prefix must
+                    // be too or it never matches and nothing is excluded.
+                    let mut rooted = vec![ontogen_ts::LOCAL_CRATE_ROOT.to_string()];
+                    rooted.extend(segments);
+                    exclude_prefixes.push(rooted);
                 }
             }
             if !exclude_prefixes.is_empty() {
@@ -229,14 +238,27 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         //    referencing site (e.g. schema entity-field types) resolve with no
         //    module hint — same-module + unique-terminal, which suffices for
         //    those.
-        let api_prefix: Vec<String> = config
-            .api_dir
-            .canonicalize()
-            .ok()
-            .zip(src_dir.canonicalize().ok())
-            .and_then(|(api, src)| api.strip_prefix(&src).ok().map(|rel| rel.to_path_buf()))
-            .map(|rel| rel.components().filter_map(|c| c.as_os_str().to_str().map(str::to_string)).collect())
-            .unwrap_or_default();
+        //
+        //    The module path is rooted at the crate, matching the pool and
+        //    imports keys — a mismatch here doesn't fail loudly, it just makes
+        //    the `use`-table lookup miss and silently drops resolution back to
+        //    terminal-segment guessing.
+        let api_prefix: Vec<String> = std::iter::once(ontogen_ts::LOCAL_CRATE_ROOT.to_string())
+            .chain(
+                config
+                    .api_dir
+                    .canonicalize()
+                    .ok()
+                    .zip(src_dir.canonicalize().ok())
+                    .and_then(|(api, src)| api.strip_prefix(&src).ok().map(|rel| rel.to_path_buf()))
+                    .map(|rel| {
+                        rel.components()
+                            .filter_map(|c| c.as_os_str().to_str().map(str::to_string))
+                            .collect::<Vec<String>>()
+                    })
+                    .unwrap_or_default(),
+            )
+            .collect();
         let mut name_module: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
         for m in &modules {
             let mut module_path = api_prefix.clone();
@@ -249,8 +271,12 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         let mut roots: Vec<ontogen_ts::TypePath> = Vec::with_capacity(long_tail.len());
         let mut missing: Vec<String> = Vec::new();
         let mut ambiguous: Vec<(String, Vec<ontogen_ts::TypePath>)> = Vec::new();
+        // A name with no API referencing site (a schema entity-field type,
+        // say) still resolves from the consuming crate's root, so bare-ident
+        // matching prefers the consuming crate's own types over a sibling's.
+        let crate_root = [ontogen_ts::LOCAL_CRATE_ROOT.to_string()];
         for name in &long_tail {
-            let module: &[String] = name_module.get(name).map_or(&[], Vec::as_slice);
+            let module: &[String] = name_module.get(name).map_or(&crate_root[..], Vec::as_slice);
             match ontogen_ts::resolve_reference(std::slice::from_ref(name), module, &pool, &imports) {
                 ontogen_ts::Resolution::Resolved(key) => roots.push(key),
                 ontogen_ts::Resolution::NotInPool => missing.push(name.clone()),
@@ -290,9 +316,10 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
             }
         };
 
-        // 4. Append to every bindings file written above.
+        // 4. Append to every bindings file written above, re-formatting the
+        //    assembled file so the long-tail section matches the rest of it.
         for path in &written_bindings {
-            append_long_tail_to_bindings(path, &ts)?;
+            append_long_tail_to_bindings(path, &ts, &config.ts_formatter)?;
         }
 
         // 5. Tell cargo to rerun if any .rs under src/ changes. Coarse but
@@ -316,13 +343,20 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
                 }
             }
             ClientGenerator::AdminRegistry { output } => {
-                // The surfaces' own entities join the registry; the entity
-                // already present wins on a name collision.
+                // The surfaces' own entities join the registry. Entities
+                // are keyed by bare name in the registry and the TS
+                // bindings, so a name two surfaces both define would
+                // collapse into one; refuse it.
                 let mut entities = config.schema_entities.clone();
                 for entity in surface_entities(&config.extra_surfaces)? {
-                    if !entities.iter().any(|e| e.name == entity.name) {
-                        entities.push(entity);
+                    if entities.iter().any(|e| e.name == entity.name) {
+                        return Err(format!(
+                            "ontogen: entity `{}` is defined by more than one API surface; entity and type names \
+                             must be distinct across surfaces",
+                            entity.name
+                        ));
                     }
+                    entities.push(entity);
                 }
                 generators::admin::generate(output, &modules, config, &entities);
             }
@@ -347,35 +381,121 @@ pub(crate) fn surface_entities(
     Ok(entities)
 }
 
+/// Derive the crate name a `pool_extra_roots` entry's types should be keyed
+/// under, so a sibling's `lint::Severity` can't collide with the consuming
+/// crate's own.
+///
+/// `src_dir` points at the sibling's `src/`, so its `Cargo.toml` is one level
+/// up. The `[package] name` there is authoritative — it's what the consuming
+/// crate writes in a `use`. We fall back to the directory name when there's
+/// no readable manifest, which covers a non-standard layout and is still
+/// better than sharing a namespace.
+///
+/// Either way the result is normalized the way Cargo does for `extern crate`
+/// names: `-` becomes `_`, since `vaultpolish-core` is imported as
+/// `vaultpolish_core`.
+fn extra_root_crate_name(src_dir: &std::path::Path) -> String {
+    let from_manifest = src_dir
+        .parent()
+        .map(|crate_dir| crate_dir.join("Cargo.toml"))
+        .and_then(|manifest| std::fs::read_to_string(manifest).ok())
+        .and_then(|text| package_name_from_manifest(&text));
+
+    let raw = from_manifest
+        .or_else(|| src_dir.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "extra_root".to_string());
+    raw.replace('-', "_")
+}
+
+/// Pull `name` out of a Cargo manifest's `[package]` table.
+///
+/// A deliberately small hand-rolled scan rather than a TOML dependency: the
+/// field is a plain string on its own line in every manifest Cargo writes,
+/// and this runs in a build script where a parser dependency isn't worth it.
+/// Returns `None` on anything unexpected so the caller falls back.
+fn package_name_from_manifest(text: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("name") else {
+            continue;
+        };
+        let value = rest.trim_start().strip_prefix('=')?.trim();
+        let unquoted = value.trim_matches('"').trim_matches('\'');
+        if !unquoted.is_empty() {
+            return Some(unquoted.to_string());
+        }
+    }
+    None
+}
+
+/// Comment that separates the schema-known bindings from the long-tail
+/// section, and anchors the boundary when the section is re-generated.
+const LONG_TAIL_MARKER: &str = "// Long-tail types (emitted via ontogen-ts AST walker).";
+
+/// Return the schema-known prefix of an existing bindings file — everything
+/// above [`LONG_TAIL_MARKER`] — with trailing whitespace trimmed.
+///
+/// Matching on the comment text alone (rather than on the marker plus its
+/// surrounding newlines) is what makes this survive a formatter pass: the
+/// formatter is free to add or drop the blank line around the comment, or to
+/// strip a leading blank line when the schema-known section is empty, and
+/// the boundary is still found. If it weren't, the strip would silently miss
+/// and every rebuild would append another copy of the whole section.
+fn strip_long_tail(existing: &str) -> &str {
+    match existing.find(LONG_TAIL_MARKER) {
+        Some(idx) => existing[..idx].trim_end(),
+        None => existing.trim_end(),
+    }
+}
+
 /// Append `ts` to the bindings file at `bindings_path`, prefixed with a
 /// short comment that identifies the source. Creates the file if missing
 /// (the schema-known emitter writes it first, but be defensive).
 ///
+/// The whole assembled file goes through `formatter`, not just the
+/// schema-known base. Formatting the base at write time and then appending
+/// underneath it left the long-tail section in ontogen-ts's raw emit style —
+/// single-quoted literals and over-long unions — inside an otherwise
+/// formatter-canonical file. Formatting after assembly is the invariant that
+/// holds regardless of how many steps contribute to the file.
+///
 /// Idempotent across reruns:
-///   1. Strip any previously-appended long-tail block (the marker comment
-///      anchors the boundary) so re-running doesn't double the section.
-///   2. Write the recombined content via `write_if_changed` so identical
-///      output across runs doesn't bump the file's mtime — without this,
-///      file watchers (e.g. `tauri dev`) see the touch and trigger an
-///      infinite rebuild loop.
-fn append_long_tail_to_bindings(bindings_path: &std::path::Path, ts: &str) -> Result<(), String> {
-    const MARKER: &str = "\n// Long-tail types (emitted via ontogen-ts AST walker).\n";
-
+///   1. [`strip_long_tail`] removes any previously-appended block, so
+///      re-running doesn't double the section.
+///   2. The separator around the marker is normalized before formatting, so
+///      the result converges on the formatter's own preference instead of
+///      oscillating between two spellings.
+///   3. `write_and_format_ts` formats in memory and then writes only on
+///      change, so an unchanged rebuild doesn't bump the file's mtime —
+///      without that, file watchers (e.g. `tauri dev`) see the touch and
+///      trigger an infinite rebuild loop.
+fn append_long_tail_to_bindings(
+    bindings_path: &std::path::Path,
+    ts: &str,
+    formatter: &ontogen_core::utils::TsFormatter,
+) -> Result<(), String> {
     let existing = std::fs::read_to_string(bindings_path).unwrap_or_default();
-    let base = match existing.find(MARKER) {
-        Some(idx) => &existing[..idx],
-        None => existing.as_str(),
-    };
+    let base = strip_long_tail(&existing);
 
-    let mut content = String::with_capacity(base.len() + MARKER.len() + ts.len() + 1);
+    let mut content = String::with_capacity(base.len() + LONG_TAIL_MARKER.len() + ts.len() + 4);
     content.push_str(base);
-    content.push_str(MARKER);
-    content.push_str(ts);
-    if !content.ends_with('\n') {
-        content.push('\n');
+    if !base.is_empty() {
+        content.push_str("\n\n");
     }
+    content.push_str(LONG_TAIL_MARKER);
+    content.push('\n');
+    content.push_str(ts.trim_end());
+    content.push('\n');
 
-    ontogen_core::utils::write_if_changed(bindings_path, content.as_bytes())
+    crate::write_and_format_ts(bindings_path, content, formatter)
         .map_err(|e| format!("failed to write {}: {e}", bindings_path.display()))
 }
 

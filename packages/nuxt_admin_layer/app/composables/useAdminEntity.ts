@@ -42,6 +42,17 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
   })
 
   /**
+   * Monotonically increasing id for the in-flight fetchList request.
+   *
+   * nextPage/prevPage/goToPage each fire fetchList without awaiting the
+   * previous call, so two requests can be in flight together. Whichever
+   * response resolves first is not necessarily the one for the page the UI
+   * is now showing; each call captures its own id and only applies its
+   * result if it is still the latest one when its response lands.
+   */
+  let fetchListRequestId = 0
+
+  /**
    * Fetch the entity list from the transport layer.
    *
    * For paginated entities, passes limit/offset and unwraps the
@@ -50,6 +61,7 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
    */
   async function fetchList() {
     if (!config.value) return
+    const requestId = ++fetchListRequestId
     loading.value = true
     error.value = null
     try {
@@ -62,17 +74,39 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
         // subscriptions returning `Promise<() => void>`) that don't overlap
         // with this paginated return type.
         const fn = transport[method] as unknown as (...args: unknown[]) => Promise<{ items: EntityRecord[]; total: number }>
-        const result = await fn(undefined, limit.value, offset)
+        // The generated list method's call shape depends on whether the
+        // underlying Rust fn has a query-struct param (see
+        // src/clients/generators/transport.rs's OpKind::List branch, and
+        // src/clients/generators/admin.rs, which records this on the entity
+        // config as listHasQuery): (query?, limit?, offset?) when true,
+        // (limit?, offset?) when false/absent. Guessing the shape silently
+        // shifts every argument, so this is not optional.
+        const result = config.value.listHasQuery
+          ? await fn(undefined, limit.value, offset)
+          : await fn(limit.value, offset)
+        if (requestId !== fetchListRequestId) return // a newer fetchList has since started; drop this response
+        // The total may have shrunk since `page` was chosen (e.g. rows
+        // deleted elsewhere). Landing past the last real page returns an
+        // empty page and strands the UI there with no control to leave it
+        // (see index.vue's AdminPagination visibility), so clamp and retry.
+        const newTotalPages = Math.ceil(result.total / limit.value) || 1
+        if (page.value > newTotalPages && page.value > 1) {
+          page.value = newTotalPages
+          return fetchList()
+        }
         items.value = result.items
         total.value = result.total
       } else {
         const fn = transport[method] as unknown as (...args: unknown[]) => Promise<EntityRecord[]>
-        items.value = await fn()
+        const result = await fn()
+        if (requestId !== fetchListRequestId) return
+        items.value = result
       }
     } catch (e) {
+      if (requestId !== fetchListRequestId) return
       error.value = String(e)
     } finally {
-      loading.value = false
+      if (requestId === fetchListRequestId) loading.value = false
     }
   }
 

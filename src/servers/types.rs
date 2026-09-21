@@ -389,54 +389,211 @@ pub fn snake_to_camel(s: &str) -> String {
     result
 }
 
-/// Map a Rust return type to a TypeScript type string.
+/// Split a generic type string into its head and its top-level type
+/// arguments: `HashMap<String, Vec<u8>>` → `("HashMap", ["String", "Vec<u8>"])`.
+///
+/// Splitting on depth-0 commas rather than slicing at fixed offsets is what
+/// makes nested generics work at all, and it tolerates the spacing that
+/// token-stream rendering leaves behind (`Vec < T >`, `HashMap<String , i32>`)
+/// without depending on [`normalize_spaces`] having run first.
+///
+/// Returns `None` when `ty` isn't a generic application. Lifetime arguments
+/// are dropped, so `Cow<'a, str>` yields a single argument.
+fn split_generic(ty: &str) -> Option<(&str, Vec<&str>)> {
+    let open = ty.find('<')?;
+    if !ty.ends_with('>') {
+        return None;
+    }
+    let inner = &ty[open + 1..ty.len() - 1];
+    let mut args: Vec<&str> = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim());
+                start = i + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    args.push(inner[start..].trim());
+    args.retain(|a| !a.is_empty() && !a.starts_with('\''));
+    Some((ty[..open].trim(), args))
+}
+
+/// The `EmitConfig` API signatures are rendered under.
+///
+/// Deliberately the same value `src/clients/mod.rs` passes to
+/// `ontogen_ts::emit` for the long-tail closure. The two halves write into
+/// one generated file, so rendering them under different configs would put
+/// `bigint` in one half and `number` in the other for the same Rust type.
+/// When that config becomes consumer-settable, this is the second place it
+/// has to reach.
+fn signature_emit_config() -> ontogen_ts::EmitConfig {
+    ontogen_ts::EmitConfig::default()
+}
+
+/// Map a Rust type to a TypeScript type string, for API signatures.
+///
+/// The rendering itself is `ontogen_ts::render_type_str` — the same
+/// classifier that emits the long-tail type closure. ontogen used to carry a
+/// second, string-matching type model here and keep it "in step" with
+/// ontogen-ts by hand; it drifted, and since both halves write into one
+/// generated file the drift showed up as contradictory types in front of a
+/// single caller. Delegating makes agreement structural instead of
+/// aspirational.
+///
+/// Two things stay local to this function, because neither is something
+/// ontogen-ts could know:
+///
+/// - **The entity-relation convention** (`relation::Model` → `RelationModel`)
+///   is an ontogen schema-path concept.
+/// - **The error policy.** ontogen-ts is hard-error-only; this path is
+///   lenient by design — an unrenderable signature type degrades to a bare
+///   ident (and downstream to a `Record<string, unknown>` stub plus a
+///   `cargo:warning`) rather than failing the build. See [`opaque_fallback`].
 pub fn rust_type_to_ts(ty: &str) -> String {
     let ty = ty.trim();
-    if ty == "()" {
-        return "null".to_string();
+
+    // Runs first: `relation::Model` is a real Rust path, so ontogen-ts would
+    // happily render it as the terminal ident `Model` and lose the entity
+    // prefix that makes the name unique.
+    if let Some(name) = entity_model_ts_name(ty) {
+        return name;
     }
-    if ty == "String" || ty == "&str" || ty == "str" {
-        return "string".to_string();
+
+    ontogen_ts::render_type_str(ty, &signature_emit_config()).unwrap_or_else(|_| opaque_fallback(ty))
+}
+
+/// Recognize ontogen's entity-relation spelling and render its TS name:
+/// `relation::Model` → `RelationModel`, including through generic args
+/// (`relation::Model<T>`).
+///
+/// Returns `None` for anything else, including plain two-segment paths.
+fn entity_model_ts_name(ty: &str) -> Option<String> {
+    // Strip generic args first so `relation::Model<T>` is recognized too.
+    let bare = match split_generic(ty) {
+        Some((head, _)) => head,
+        None => ty,
+    };
+    let parts: Vec<&str> = bare.split("::").collect();
+    if parts.len() == 2 && parts[1] == "Model" {
+        return Some(format!("{}{}", capitalize(parts[0]), parts[1]));
     }
-    if ty == "i32" || ty == "i64" || ty == "u32" || ty == "u64" || ty == "f32" || ty == "f64" {
-        return "number".to_string();
-    }
-    if ty == "bool" {
-        return "boolean".to_string();
-    }
-    if let Some(rest) = ty.strip_prefix('&') {
-        return rust_type_to_ts(rest.trim());
-    }
-    if ty.starts_with("Option<") && ty.ends_with('>') {
-        let inner = &ty[7..ty.len() - 1];
-        return format!("{} | null", rust_type_to_ts(inner));
-    }
-    if ty.starts_with("Vec<") && ty.ends_with('>') {
-        let inner = &ty[4..ty.len() - 1];
-        return format!("{}[]", rust_type_to_ts(inner));
-    }
-    // Entity-qualified types like `relation::Model` → `RelationModel`
-    if ty.contains("::") {
-        let parts: Vec<&str> = ty.split("::").collect();
-        if parts.len() == 2 && parts[1] == "Model" {
-            return format!("{}{}", capitalize(parts[0]), parts[1]);
+    None
+}
+
+/// Last-resort rendering for a type ontogen-ts declines to emit — a
+/// `Mutex<T>` in a signature, a non-empty tuple, something that doesn't parse
+/// as a type at all.
+///
+/// This path must not fail the build, so it degrades instead: drop generic
+/// arguments and take the terminal path segment, which is what downstream
+/// wants anyway (every rendered name is used as a bare TS identifier, in an
+/// `import { … }` list or a `type X = …` placeholder, and neither accepts
+/// generic syntax). If what's left still isn't a usable identifier, render
+/// `unknown` — an honest untyped value beats emitting a token that breaks the
+/// consumer's TypeScript build.
+fn opaque_fallback(ty: &str) -> String {
+    let bare = match split_generic(ty) {
+        Some((head, _)) => head,
+        None => ty,
+    };
+    let terminal = bare.rsplit("::").next().unwrap_or(bare).trim().trim_start_matches('&').trim();
+    let is_ident = !terminal.is_empty()
+        && terminal.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && terminal.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if is_ident { terminal.to_string() } else { "unknown".to_string() }
+}
+
+/// TS type expressions that never need importing.
+const TS_BUILTINS: &[&str] = &["null", "void", "string", "number", "boolean", "bigint", "unknown", "any", "never"];
+
+/// True iff `s` is wrapped in one balanced pair of parentheses, i.e. the
+/// opening paren's partner is the final character. Distinguishes `(A | B)`
+/// (strippable) from `(A) | (B)` (not).
+fn is_single_group(s: &str) -> bool {
+    let mut depth = 0usize;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + ch.len_utf8() == s.len();
+                }
+            }
+            _ => {}
         }
-        return parts.last().unwrap_or(&ty).to_string();
     }
-    ty.to_string()
+    false
+}
+
+/// Split a TS union on its depth-0 ` | ` separators, so a union nested inside
+/// `Record<…>` or parentheses isn't split at the wrong level.
+fn split_union(ts_type: &str) -> Vec<&str> {
+    let bytes = ts_type.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, ch) in ts_type.char_indices() {
+        match ch {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 && i > 0 && bytes[i - 1] == b' ' => {
+                parts.push(ts_type[start..i - 1].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(ts_type[start..].trim());
+    parts
 }
 
 /// Collect TS type imports (skip primitives and null).
+///
+/// Peels the structural syntax the renderer can produce — array suffixes,
+/// grouping parens, unions, and `Record<K, V>` — so what lands in `imports`
+/// is always a bare identifier. Anything else would be spliced into an
+/// `import { … }` list verbatim and break the generated file.
 pub fn collect_ts_import(ts_type: &str, imports: &mut Vec<String>) {
-    if ts_type.contains(" | ") {
-        for part in ts_type.split(" | ") {
-            collect_ts_import(part.trim(), imports);
+    let mut base = ts_type.trim();
+    loop {
+        if let Some(stripped) = base.strip_suffix("[]") {
+            base = stripped.trim();
+            continue;
+        }
+        if base.starts_with('(') && base.ends_with(')') && is_single_group(base) {
+            base = base[1..base.len() - 1].trim();
+            continue;
+        }
+        break;
+    }
+
+    let parts = split_union(base);
+    if parts.len() > 1 {
+        for part in parts {
+            collect_ts_import(part, imports);
         }
         return;
     }
-    let base = ts_type.trim_end_matches("[]");
-    if base == "null" || base == "void" || base == "string" || base == "number" || base == "boolean" || base.is_empty()
+
+    // `Record<K, V>` is built in; it's the key and value types that need
+    // importing.
+    if let Some((head, args)) = split_generic(base)
+        && head == "Record"
     {
+        for arg in args {
+            collect_ts_import(arg, imports);
+        }
+        return;
+    }
+
+    if base.is_empty() || TS_BUILTINS.contains(&base) {
         return;
     }
     if !imports.contains(&base.to_string()) {

@@ -195,11 +195,12 @@ Hook scaffolding is controlled by the `StoreConfig::hooks_dir` field:
 ```rust
 let store_output = ontogen::gen_store(
     &schema.entities,
-    Some(&seaorm),
     &ontogen::StoreConfig {
         output_dir: "src/store/generated".into(),
         hooks_dir: Some("src/store/hooks".into()),
         schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+        backend: ontogen::Backend::Seaorm(Some(seaorm)),
+        wikilink_policy: None,
     },
 )?;
 ```

@@ -82,7 +82,7 @@ use std::path::PathBuf;
 /// Both configs require the import path to the schema module in generated code.
 /// Use this constant rather than hard-coding `"crate::schema"` so that any future
 /// change to the convention propagates to every direct consumer at once. Callers
-/// who construct configs via [`Pipeline`](pipeline::Pipeline) do not need to set
+/// who construct configs via [`Pipeline`] do not need to set
 /// the field directly - the builder applies this default and propagates it to
 /// both configs.
 pub const DEFAULT_SCHEMA_MODULE_PATH: &str = "crate::schema";
@@ -429,11 +429,18 @@ pub fn gen_clients(api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &Clie
 
 /// Configuration for [`parse_schema`].
 ///
-/// Points the parser at a directory of `.rs` schema files. The directory is
-/// scanned recursively and every file containing `#[derive(OntologyEntity)]`
-/// types contributes one or more [`EntityDef`]s to the output.
+/// Points the parser at a directory of `.rs` schema files. Every file
+/// containing `#[derive(OntologyEntity)]` types contributes one or more
+/// [`EntityDef`]s to the output.
+///
+/// The scan is one level deep - subdirectories are **not** traversed. Entities
+/// nested under `src/schema/domain/` are silently invisible to the parser; keep
+/// every entity file directly in `schema_dir`.
 pub struct SchemaConfig {
     /// Path to the schema source directory (e.g., `src/schema/`).
+    ///
+    /// Only the `.rs` files directly inside this directory are read; see the
+    /// type-level docs.
     pub schema_dir: PathBuf,
 }
 
@@ -663,9 +670,23 @@ pub struct ClientsConfig {
     pub schema_entities: Vec<EntityDef>,
     /// Additional source roots to feed into ontogen-ts's long-tail type pool,
     /// beyond the default `CARGO_MANIFEST_DIR/src`. Use when long-tail types
-    /// are defined in workspace-sibling crates and brought into the consuming
-    /// crate via `pub use`. Paths are resolved relative to
-    /// `CARGO_MANIFEST_DIR`. On key collision the main pool wins.
+    /// are defined in workspace-sibling crates. Paths are resolved relative to
+    /// `CARGO_MANIFEST_DIR` and point at the sibling's `src/`.
+    ///
+    /// Each root's types are keyed under that crate's name — read from its
+    /// `Cargo.toml` `[package] name`, falling back to the directory name, and
+    /// normalized the way Cargo does (`-` → `_`). The consuming crate's own
+    /// types are keyed under `crate`. So a sibling and the consumer can both
+    /// define `lint::Severity` without colliding, and a reference resolves
+    /// the way rustc would:
+    ///
+    /// - `vaultpolish_core::lint::Severity` names the sibling's type outright.
+    /// - A bare `Severity` means the consuming crate's, since a bare ident
+    ///   can't reach a foreign crate's type without a `use`.
+    /// - `crate::` inside the sibling's own source means *that* crate.
+    ///
+    /// Two same-named types in one root, referenced with nothing to
+    /// disambiguate, remain a hard error.
     pub pool_extra_roots: Vec<PathBuf>,
 
     /// Source paths to omit from the ontogen-ts type pool after scanning.
