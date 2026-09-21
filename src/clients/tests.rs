@@ -125,3 +125,30 @@ fn surface_entities_come_from_the_surfaces_that_name_a_schema_dir() {
     assert_eq!(names, ["Athlete"]);
     assert!(entities[0].fields.iter().any(|f| f.name == "display_name"));
 }
+
+#[test]
+fn test_two_surfaces_same_entity_name_is_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut surfaces = two_surface_fixture(tmp.path());
+    let entity = |name: &str| {
+        format!(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {name} {{\n    #[ontology(id)]\n    pub id: \
+             String,\n}}\n"
+        )
+    };
+    let primary_schema = tmp.path().join("primary_schema");
+    std::fs::create_dir_all(&primary_schema).unwrap();
+    std::fs::write(primary_schema.join("workout.rs"), entity("Workout")).unwrap();
+    let fitness_schema = tmp.path().join("fitness_schema");
+    std::fs::create_dir_all(&fitness_schema).unwrap();
+    std::fs::write(fitness_schema.join("workout.rs"), entity("Workout")).unwrap();
+    surfaces[1].schema_dir = Some(fitness_schema);
+
+    let mut config = two_surface_client_config(surfaces);
+    config.schema_entities = crate::parse_schema(&crate::SchemaConfig { schema_dir: primary_schema }).unwrap().entities;
+    config.generators = vec![ClientGenerator::AdminRegistry { output: tmp.path().join("admin-registry.ts") }];
+
+    let err = crate::clients::generate_clients(&config).expect_err("an entity name shared by two surfaces must fail");
+    assert!(err.contains("entity `Workout`"), "{err}");
+    assert!(err.contains("more than one API surface"), "{err}");
+}

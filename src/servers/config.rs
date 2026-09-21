@@ -46,6 +46,10 @@ pub struct Config {
     /// When set, generates project-scoped routes (e.g., `/api/projects/{project_id}/nodes`)
     /// alongside the existing unscoped routes. The prefix params are extracted and used
     /// to validate the project context via the configured state accessor method.
+    ///
+    /// Scoped handlers open the store through [`RoutePrefix::state_accessor`],
+    /// which yields the primary surface's store; an extra surface with its
+    /// own `store_type` is therefore rejected when this is set.
     pub route_prefix: Option<RoutePrefix>,
 
     /// Optional store type for project-scoped data access.
@@ -138,6 +142,11 @@ pub struct PaginationConfig {
 /// with the rules that no function name may appear in more than one surface
 /// and that the five CRUD functions (`list`, `get_by_id`, `create`, `update`,
 /// `delete`) all come from the same surface.
+///
+/// The client generators key types by bare name, so a type name should
+/// denote one type across every surface: two distinct types that share a
+/// name would collapse into one TypeScript type. The admin registry rejects
+/// an entity name that more than one surface's schema defines.
 #[derive(Debug, Clone)]
 pub struct ApiSurface {
     /// Directory containing this surface's API source files.

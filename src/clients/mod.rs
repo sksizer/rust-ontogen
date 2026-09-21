@@ -316,13 +316,20 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
                 }
             }
             ClientGenerator::AdminRegistry { output } => {
-                // The surfaces' own entities join the registry; the entity
-                // already present wins on a name collision.
+                // The surfaces' own entities join the registry. Entities
+                // are keyed by bare name in the registry and the TS
+                // bindings, so a name two surfaces both define would
+                // collapse into one; refuse it.
                 let mut entities = config.schema_entities.clone();
                 for entity in surface_entities(&config.extra_surfaces)? {
-                    if !entities.iter().any(|e| e.name == entity.name) {
-                        entities.push(entity);
+                    if entities.iter().any(|e| e.name == entity.name) {
+                        return Err(format!(
+                            "ontogen: entity `{}` is defined by more than one API surface; entity and type names \
+                             must be distinct across surfaces",
+                            entity.name
+                        ));
                     }
+                    entities.push(entity);
                 }
                 generators::admin::generate(output, &modules, config, &entities);
             }

@@ -4204,6 +4204,79 @@ fn test_two_surfaces_crud_split_is_error() {
 }
 
 #[test]
+fn test_route_prefix_rejects_extra_surface_with_store_type() {
+    let tmp = tempfile::tempdir().unwrap();
+    let surfaces = two_surface_fixture(tmp.path());
+    let fitness_dir = surfaces[1].api_dir.display().to_string();
+    let mut config = two_surface_config(surfaces);
+    config.route_prefix = test_config_with_prefix(config.api_dir.clone()).route_prefix;
+
+    let err = crate::servers::generate_transport(&config).expect_err("route_prefix + store-scoped extra surface");
+    assert!(err.contains("`route_prefix`") && err.contains("`store_type`"), "{err}");
+    assert!(err.contains(&fitness_dir) && err.contains("`FitnessStore`"), "names the surface: {err}");
+    assert!(err.contains("`store_for`"), "names the prefix accessor: {err}");
+
+    // An extra surface with no store_type has only state-scoped fns, which
+    // route_prefix handles like the primary's, so it is still accepted.
+    config.extra_surfaces[0].store_type = None;
+    crate::servers::generate_transport(&config).expect("state-only extra surface is fine with route_prefix");
+}
+
+/// With `route_prefix`, whether a fn gets scoped-only or unscoped routes is
+/// decided per fn, not by the module's first fn - so a merged module that
+/// mixes state-scoped custom fns with store-scoped CRUD emits the same
+/// routes whichever surface's fns come first.
+#[test]
+fn test_mixed_module_routes_are_per_fn_and_order_independent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config_with_prefix(tmp.path().to_path_buf());
+
+    let custom = ApiFn {
+        name: "start".to_string(),
+        is_async: true,
+        doc: "Start a workout.".to_string(),
+        params: vec![param("input", "StartWorkoutInput")],
+        return_type: "Workout".to_string(),
+        return_type_ast: ty_ast("Workout"),
+        ..Default::default()
+    };
+    let mut state_first = make_crud_module("workout", true);
+    state_first.functions.insert(0, custom.clone());
+    let mut store_first = make_crud_module("workout", true);
+    store_first.functions.push(custom);
+
+    let mut outputs = Vec::new();
+    for (i, module) in [state_first, store_first].into_iter().enumerate() {
+        let output = tmp.path().join(format!("http_{i}.rs"));
+        crate::servers::generators::http::generate(&output, std::slice::from_ref(&module), &config);
+        let http = std::fs::read_to_string(&output).unwrap();
+
+        assert!(
+            http.contains(".route(\"/api/workouts/start\", post(workout_start))"),
+            "state-scoped fn keeps its unscoped route:\n{http}"
+        );
+        assert!(http.contains("workout::start(&state, input)"), "state-scoped fn takes &state:\n{http}");
+        assert!(
+            !http.contains(".route(\"/api/workouts\", ") && !http.contains(".route(\"/api/workouts/{id}\", "),
+            "store-scoped CRUD gets no unscoped routes:\n{http}"
+        );
+        assert!(
+            http.contains(".route(\"/api/projects/{project_id}/workouts\", get(list_workouts_scoped)"),
+            "store-scoped CRUD gets scoped routes:\n{http}"
+        );
+        assert!(!http.contains("start_scoped"), "state-scoped fn gets no scoped route:\n{http}");
+
+        let meta = crate::servers::extract_server_metadata(&[module], &config);
+        let path = |handler: &str| meta.http_routes.iter().find(|r| r.handler_name == handler).unwrap().path.clone();
+        assert_eq!(path("workout_start"), "/api/workouts/start");
+        assert_eq!(path("workout_list"), "/api/projects/{project_id}/workouts");
+
+        outputs.push(http);
+    }
+    assert_eq!(outputs[0], outputs[1], "fn order within the module does not change the output");
+}
+
+#[test]
 fn test_single_surface_stamps_default_accessor() {
     let tmp = tempfile::tempdir().unwrap();
     let api_dir = tmp.path().join("api");
