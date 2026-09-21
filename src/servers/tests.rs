@@ -2742,6 +2742,81 @@ fn test_http_generator_junction_module() {
         "regression: snake_case plural leaked into HTTP routes (should be kebab-case)"
     );
 }
+/// Build a module with a custom POST whose optional param is declared *after*
+/// a required one. Models SDF's `setup_project(project_id, install_harness)`.
+fn make_post_trailing_optional_module() -> ApiModule {
+    ApiModule {
+        name: "project".to_string(),
+        functions: vec![ApiFn {
+            name: "setup".to_string(),
+            is_async: true,
+            doc: "Set a project up.".to_string(),
+            params: vec![param("project_id", "&str"), param("install_harness", "Option<&str>")],
+            return_type: "ProjectSetupResult".to_string(),
+            return_type_ast: ty_ast("ProjectSetupResult"),
+            ..Default::default()
+        }],
+        events: vec![],
+        is_singleton: false,
+        has_count: false,
+    }
+}
+
+#[test]
+fn test_custom_post_keeps_declaration_order_across_transports() {
+    // Pre-fix the TS emitters grouped the `Option<_>` query params ahead of the
+    // body ones, so this fn's client read `(installHarness, projectId)` while
+    // the IPC impl — which forwards `f.params` verbatim and can emit nothing
+    // but declaration order — read `(projectId, installHarness)`. The Transport
+    // interface sided with the HTTP impl, so the IPC impl failed to typecheck
+    // and no Rust signature satisfied every transport at once.
+    let tmp = tempfile::tempdir().unwrap();
+    let transport_out = tmp.path().join("transport.ts");
+    let client_out = tmp.path().join("client.ts");
+    let mcp_out = tmp.path().join("mcp.rs");
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "export type ProjectSetupResult = { ok: boolean };\n").unwrap();
+
+    let config = test_config(tmp.path().to_path_buf());
+    let client_config = client_test_config(tmp.path().to_path_buf());
+    let modules = vec![make_post_trailing_optional_module()];
+
+    crate::clients::generators::transport::generate(&transport_out, &bindings, &modules, &client_config);
+    crate::clients::generators::ts_client::generate(&client_out, &bindings, &modules, &client_config);
+    crate::servers::generators::mcp::generate(&mcp_out, &modules, &config);
+
+    let transport = std::fs::read_to_string(&transport_out).unwrap();
+    let client = std::fs::read_to_string(&client_out).unwrap();
+    let mcp = std::fs::read_to_string(&mcp_out).unwrap();
+
+    // Formatter-agnostic: collapse all whitespace.
+    let declared = "projectSetup(projectId:string,installHarness:string|null)";
+    let hoisted = "projectSetup(installHarness:string|null,projectId:string)";
+    for (name, content) in [("transport.ts", &transport), ("ts_client.ts", &client)] {
+        let compact: String = content.split_whitespace().collect();
+        assert!(
+            !compact.contains(hoisted),
+            "regression: {name} hoisted the optional param ahead of the required one:\n{content}"
+        );
+        assert!(compact.contains(declared), "{name} must emit the params in Rust declaration order, got:\n{content}");
+    }
+
+    // transport.ts carries three signatures for the one fn — the Transport
+    // interface, the HTTP impl and the IPC impl — and all three must agree.
+    let transport_compact: String = transport.split_whitespace().collect();
+    assert_eq!(
+        transport_compact.matches(declared).count(),
+        3,
+        "interface, HTTP impl and IPC impl must each carry the declared order:\n{transport}"
+    );
+
+    // The MCP handler calls the Rust fn positionally, so it pins the order the
+    // TS surfaces are being held to.
+    assert!(
+        mcp.contains("project_id, install_harness.as_deref()"),
+        "MCP handler must call the service fn in declaration order:\n{mcp}"
+    );
+}
 
 #[test]
 fn test_http_generator_junction_routes_deterministic_across_runs() {

@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use crate::clients::config::Config;
 use crate::servers::parse::ApiFn;
+use crate::servers::types::{extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 
 /// Derive the IPC/TS command name for any function.
 ///
@@ -31,6 +32,32 @@ pub(crate) fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
         let entity = config.naming.url_singular(module);
         format!("{}_{}", entity, f.name)
     })
+}
+
+/// The TypeScript parameter list for a custom fn, in Rust declaration order.
+///
+/// Every generated surface — the `Transport` interface, its HTTP and IPC
+/// impls, and the HTTP-only client — has to agree on positions, and the IPC
+/// impl forwards `f.params` verbatim, so declaration order is the only order
+/// all four can share. Grouping the `Option<_>` query params ahead of the body
+/// ones, as the HTTP-side emitters used to, left a POST with an optional param
+/// after a required one uncallable: no Rust signature satisfied every
+/// transport at once.
+pub(crate) fn ts_params_in_declaration_order(f: &ApiFn) -> Vec<String> {
+    f.params
+        .iter()
+        .map(|p| {
+            if p.ty.contains("Input") {
+                format!("input: {}", rust_type_to_ts(&extract_input_type(&p.ty)))
+            } else if p.ty.starts_with("Option<") {
+                // Type from the Option's inner type: `Option<u64>` → `number |
+                // null`, matching what the IPC handler deserializes.
+                format!("{}: {}", snake_to_camel(&p.name), rust_type_to_ts(&p.ty))
+            } else {
+                format!("{}: {}", snake_to_camel(&p.name), rust_type_to_ts(&strip_ref(&p.ty)))
+            }
+        })
+        .collect()
 }
 
 /// A type that the TypeScript transport / client emitter could not resolve

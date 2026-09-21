@@ -13,7 +13,7 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::clients::config::Config;
-use crate::clients::generators::{FallbackRecord, command_name};
+use crate::clients::generators::{FallbackRecord, command_name, ts_params_in_declaration_order};
 use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::parse::{ApiModule, Param, is_page_param};
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
@@ -292,7 +292,7 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                     // implementations get out of sync.
                     let paginated =
                         config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
-                    let mut params = build_ts_params(f, config);
+                    let mut params = ts_params_in_declaration_order(f);
                     if paginated {
                         params.push("limit?: number".to_string());
                         params.push("offset?: number".to_string());
@@ -310,7 +310,7 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                     out.push_str(&format!("  {}({}): Promise<{}>;\n", camel, params_str, return_type));
                 }
                 OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } | OpKind::CustomGet | OpKind::CustomPost => {
-                    let mut params = build_ts_params(f, config);
+                    let mut params = ts_params_in_declaration_order(f);
                     if !pp_only.is_empty() {
                         params.push(pp_only.clone());
                     }
@@ -1069,7 +1069,7 @@ fn generate_http_custom_method(
         if has_prefix { format!("scopedPath({}, `{}`)", pp_camel, path) } else { format!("`{}`", path) }
     };
 
-    let mut ts_params = build_ts_params(f, config);
+    let mut ts_params = ts_params_in_declaration_order(f);
     if !pp_only.is_empty() {
         ts_params.push(pp_only.clone());
     }
@@ -1239,45 +1239,6 @@ fn generate_ipc_custom_method(out: &mut String, f: &crate::servers::parse::ApiFn
             ));
         }
     }
-}
-
-/// Build TypeScript parameter list for a custom function.
-fn build_ts_params(f: &crate::servers::parse::ApiFn, config: &Config) -> Vec<String> {
-    let is_get = is_read_op(&classify_op(f));
-    let body_struct: Option<&Param> = f.params.iter().find(|p| p.ty.contains("Input"));
-    let query_params: Vec<&Param> = f.params.iter().filter(|p| p.ty.starts_with("Option<")).collect();
-    let path_params: Vec<&Param> = if is_get {
-        f.params.iter().filter(|p| !p.ty.starts_with("Option<") && !p.ty.contains("Input")).collect()
-    } else {
-        vec![]
-    };
-    let body_fields: Vec<&Param> = if !is_get && body_struct.is_none() {
-        f.params.iter().filter(|p| !p.ty.starts_with("Option<") && !p.ty.contains("Input")).collect()
-    } else {
-        vec![]
-    };
-
-    let _ = config; // used for naming in the caller
-    let mut ts_params = Vec::new();
-    for p in &path_params {
-        let ts_ty = rust_type_to_ts(&strip_ref(&p.ty));
-        ts_params.push(format!("{}: {}", snake_to_camel(&p.name), ts_ty));
-    }
-    for qp in &query_params {
-        // Derive from the Option's inner type: `Option<u64>` → `number | null`.
-        // Hardcoding `string | null` here desyncs the interface from the IPC
-        // handler, which deserializes the invoke payload as `Option<u64>`.
-        ts_params.push(format!("{}: {}", snake_to_camel(&qp.name), rust_type_to_ts(&qp.ty)));
-    }
-    if let Some(bs) = body_struct {
-        let input_type = rust_type_to_ts(&extract_input_type(&bs.ty));
-        ts_params.push(format!("input: {}", input_type));
-    }
-    for bf in &body_fields {
-        let ts_ty = rust_type_to_ts(&strip_ref(&bf.ty));
-        ts_params.push(format!("{}: {}", snake_to_camel(&bf.name), ts_ty));
-    }
-    ts_params
 }
 
 /// Capitalize the first character of a string.
