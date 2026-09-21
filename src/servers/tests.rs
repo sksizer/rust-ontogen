@@ -4339,6 +4339,20 @@ fn a_paginated_list_pushes_the_page_into_the_store() {
     );
     assert!(ipc.contains("workout::count(&store)"), "the IPC page command asks for the total:\n{ipc}");
     assert_eq!(ipc.matches("limit: Option<u32>").count(), 1, "the page params appear once:\n{ipc}");
+
+    let mcp = tmp.path().join("mcp.rs");
+    crate::servers::generators::mcp::generate(&mcp, &modules, &config);
+    let mcp = std::fs::read_to_string(&mcp).unwrap();
+    assert!(
+        mcp.contains("workout::list(&store, Some(limit), Some(offset))"),
+        "the MCP tool passes the page down:\n{mcp}"
+    );
+    assert!(mcp.contains("workout::count(&store)"), "the MCP tool asks for the total:\n{mcp}");
+    assert!(!mcp.contains("all_items"), "nothing is materialised to be sliced:\n{mcp}");
+    assert!(
+        !mcp.contains(r#"required_str(args, "limit")"#),
+        "the page is read from args, not demanded as a tool argument:\n{mcp}"
+    );
 }
 
 /// The same shape, scoped to the state instead of a store. An app that reaches
@@ -4375,6 +4389,16 @@ fn a_state_scoped_count_paginates_the_same_way() {
         "the IPC page command passes the page down:\n{ipc}"
     );
     assert!(ipc.contains("workout::count(&state)"), "the total is asked of the state:\n{ipc}");
+
+    let mcp = tmp.path().join("mcp.rs");
+    crate::servers::generators::mcp::generate(&mcp, &modules, &config);
+    let mcp = std::fs::read_to_string(&mcp).unwrap();
+    assert!(
+        mcp.contains("workout::list(state, Some(limit), Some(offset))"),
+        "the MCP tool passes the page down:\n{mcp}"
+    );
+    assert!(mcp.contains("workout::count(state)"), "the MCP tool asks the state for the total:\n{mcp}");
+    assert!(!mcp.contains("all_items"), "nothing is materialised to be sliced:\n{mcp}");
 }
 
 #[test]
