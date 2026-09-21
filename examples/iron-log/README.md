@@ -61,8 +61,16 @@ iron-log/
 
 ## Known Limitations
 
-- The `strip_wikilink` stubs in `persistence/fs_markdown/` are no-ops required
-  by generated store code for `belongs_to` / `many_to_many` fields. Projects
-  without markdown persistence still need these.
 - No database initialization or migrations are included. SeaORM 2 will handle
   schema creation from entity definitions.
+
+## See also
+
+[`examples/iron-log-md`](../iron-log-md/) runs these same four entities on the
+markdown store backend. Diffing the two generated `api/v1` trees is the
+clearest demonstration of ADR 0001's invariant -- everything above the store is
+byte-identical between backends:
+
+```sh
+diff -r src-tauri/src/api/v1/generated ../iron-log-md/src/api/v1/generated
+```

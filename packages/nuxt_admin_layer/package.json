@@ -1,6 +1,6 @@
 {
   "name": "@ontogen/admin-layer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "./nuxt.config.ts",
   "files": [
@@ -21,6 +21,9 @@
     "marked": "^15.0.0 || ^16.0.0 || ^17.0.0"
   },
   "peerDependenciesMeta": {
+    "@ontogen/admin-types": {
+      "optional": true
+    },
     "@nuxt/icon": {
       "optional": true
     },
@@ -31,9 +34,19 @@
       "optional": true
     }
   },
+  "scripts": {
+    "test": "vitest run"
+  },
   "devDependencies": {
     "@ontogen/admin-types": "workspace:*",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "@vue/test-utils": "^2.5.1",
+    "dompurify": "^3.4.15",
+    "happy-dom": "^20.14.5",
+    "marked": "^17.0.6",
     "nuxt": "^4.0.0",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1",
     "vue": "^3.5.0"
   }
 }

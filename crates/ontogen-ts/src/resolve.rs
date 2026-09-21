@@ -3,9 +3,9 @@
 //! When the pool walker encounters a reference to a type in some struct/enum
 //! field, the reference is typically one segment (`DateTime`) or
 //! crate-relative (`crate::models::Workout`). The pool, on the other hand,
-//! is keyed by canonical paths derived from where each item was defined
-//! (`["models", "Workout"]`). Bridging the two requires reading the source
-//! file's `use` declarations and turning them into a lookup table that
+//! is keyed by canonical paths that name the root each item was scanned from
+//! (`["crate", "models", "Workout"]`). Bridging the two requires reading the
+//! source file's `use` declarations and turning them into a lookup table that
 //! one-segment references can consult.
 //!
 //! Rules (matching the OF-015 design pass's "Use-resolution / path
@@ -15,13 +15,21 @@
 //!   has a `use` entry, the entry's canonical path wins. If not, fall back
 //!   to "single-segment ident under the current module" — the pool may have
 //!   a matching local key.
-//! - Multi-segment ref (`chrono::DateTime`, `crate::models::Workout`):
-//!   take as-qualified. `crate::` prefix is stripped before pool lookup so
-//!   keys stay project-relative.
+//! - Multi-segment ref (`chrono::DateTime`, `crate::models::Workout`,
+//!   `vaultpolish_core::lint::Severity`): normalized by [`absolutize`], the
+//!   same path used for `use` targets. `crate`/`self`/`super` are relative to
+//!   the referencing module's own root, a bare first segment is either a
+//!   submodule of that module or another scanned root, and anything else is
+//!   external.
 //! - Glob imports (`use chrono::*`) — recorded but raise
 //!   [`EmitError::UnresolvedReference`] when a one-segment ref needs them
 //!   for resolution, since walking the imported crate's source is out of
 //!   phase-1 scope.
+//!
+//! Keys naming their root is what lets several source trees share one pool
+//! (`ClientsConfig::pool_extra_roots`) without a workspace sibling's types
+//! colliding with the consuming crate's. It also makes `crate::` mean the
+//! right thing inside a sibling: relative to *that* crate, not the consumer.
 //!
 //! `#[allow(dead_code)]` is module-wide. As of the closure-edge fix,
 //! [`ModuleImports`] / [`collect_module_imports`] / [`FileImports::resolve_ident`]
@@ -154,26 +162,32 @@ pub enum Resolution {
 ///
 /// A bare single-segment reference resolves in priority order: the referencing
 /// module's `use` table (authoritative, followed across re-export chains),
-/// then a same-module sibling, then a unique terminal-segment match. A
-/// multi-segment reference matches only on an exact pool key. See the
-/// [`crate::order`] module docs for the rationale.
+/// then a same-module sibling, then a terminal-segment match that prefers the
+/// referencing module's own root (see [`terminal_resolution`]). A
+/// multi-segment reference is normalized by [`absolutize`] and must land on an
+/// exact pool key. See the [`crate::order`] module docs for the rationale.
 pub fn resolve_reference(
     segments: &[String],
     module: &[String],
     pool: &BTreeMap<TypePath, syn::Item>,
     imports: &ModuleImports,
 ) -> Resolution {
-    // Strip a leading `crate::`; pool keys are crate-relative.
-    let canonical: &[String] =
-        if segments.first().map(String::as_str) == Some("crate") { &segments[1..] } else { segments };
-    match canonical {
+    match segments {
         [] => Resolution::NotInPool,
         [only] => resolve_bare_ident(only, module, pool, imports, 0),
-        multi => match TypePath::new(multi.to_vec()) {
-            Ok(tp) if pool.contains_key(&tp) => Resolution::Resolved(tp),
-            // A qualified path we don't have as a definition key — external,
-            // or a re-export path we don't follow for multi-segment refs.
-            _ => Resolution::NotInPool,
+        // A written multi-segment path goes through the same normalization as
+        // a `use` path: `crate::`/`self::`/`super::` are relative to the
+        // referencing module's own root, a bare first segment is either a
+        // submodule of that module or another scanned root, and anything else
+        // is external. See [`absolutize`].
+        multi => match absolutize(multi, module, pool, imports) {
+            Some(abs) => match TypePath::new(abs) {
+                Ok(tp) if pool.contains_key(&tp) => Resolution::Resolved(tp),
+                // A qualified path we don't have as a definition key — a
+                // re-export path we don't follow for multi-segment refs.
+                _ => Resolution::NotInPool,
+            },
+            None => Resolution::NotInPool,
         },
     }
 }
@@ -201,8 +215,10 @@ fn resolve_bare_ident(
     {
         return Resolution::Resolved(path);
     }
-    // 3. A unique terminal-segment match across the whole pool.
-    terminal_resolution(ident, pool)
+    // 3. A terminal-segment match, preferring the referencing module's own
+    //    root — nothing named this ident explicitly, so it cannot be a
+    //    foreign type (see `terminal_resolution`).
+    terminal_resolution(ident, pool, module.first().map(String::as_str))
 }
 
 /// Resolve the path a `use` points at (`target`, as written in `in_module`)
@@ -219,17 +235,14 @@ fn resolve_import_target(
     let Some(leaf) = target.last().cloned() else {
         return Resolution::NotInPool;
     };
-    // Normalize the `use` path to an absolute crate-relative path. `None`
-    // means it's rooted at another crate (`use chrono::DateTime`, or a
-    // `pool_extra_roots` sibling like `use pumice_config::ThemePreference`).
-    // We can't tell a true-external crate from an in-pool sibling — the
-    // extra-root scan strips the crate name, so a sibling's types are keyed
-    // under their own module path (`ui::ThemePreference`, not
-    // `pumice_config::ui::ThemePreference`). The only available resolution is
-    // a unique terminal match: it finds the sibling type and leaves a genuine
-    // external (no pool key with that terminal) as `NotInPool`.
+    // Normalize the `use` path to an absolute, root-prefixed path. Now that
+    // every pool key names its root, `use pumice_config::ThemePreference`
+    // absolutizes to that sibling's own key and hits exactly. `None` is left
+    // for genuine externals (`use chrono::DateTime`), where a terminal match
+    // is the only thing to try — and finds nothing, which is the right
+    // answer.
     let Some(abs) = absolutize(target, in_module, pool, imports) else {
-        return terminal_resolution(&leaf, pool);
+        return terminal_resolution(&leaf, pool, in_module.first().map(String::as_str));
     };
     let Ok(abs_path) = TypePath::new(abs.clone()) else {
         return Resolution::NotInPool;
@@ -249,12 +262,12 @@ fn resolve_import_target(
             Resolution::NotInPool => {}
         }
     }
-    terminal_resolution(&leaf, pool)
+    terminal_resolution(&leaf, pool, in_module.first().map(String::as_str))
 }
 
-/// Normalize a `use` path written in `in_module` to an absolute crate-relative
-/// segment vector. Returns `None` when the path is rooted at an external crate
-/// (not `crate`/`self`/`super`, and not a submodule of `in_module`).
+/// Normalize a `use` path written in `in_module` to an absolute, root-prefixed
+/// segment vector. Returns `None` only when the path is rooted at a crate that
+/// isn't in the pool at all (a genuine external like `chrono`).
 fn absolutize(
     target: &[String],
     in_module: &[String],
@@ -263,7 +276,9 @@ fn absolutize(
 ) -> Option<Vec<String>> {
     let (first, rest) = target.split_first()?;
     match first.as_str() {
-        "crate" => Some(rest.to_vec()),
+        // Relative to whichever root this module belongs to — see
+        // [`rebase_crate_prefix`].
+        "crate" => Some([&in_module[..1.min(in_module.len())], rest].concat()),
         "self" => Some([in_module, rest].concat()),
         "super" => {
             // `use super::X` — parent of the current module, then the rest.
@@ -271,12 +286,24 @@ fn absolutize(
             Some([parent, rest].concat())
         }
         _ => {
-            // A bare first segment is either a submodule of `in_module` (the
-            // 2018-edition relative form, `pub use vault::X` inside `schema`)
-            // or an external crate. Prefer relative when the submodule exists.
+            // A bare first segment is one of three things, in precedence
+            // order: a submodule of `in_module` (the 2018-edition relative
+            // form, `pub use vault::X` inside `schema`); another scanned root
+            // (a `pool_extra_roots` sibling named by its package, which is
+            // exactly the key prefix); or a genuine external crate.
             let mut candidate_module = in_module.to_vec();
             candidate_module.push(first.clone());
-            if is_known_module(&candidate_module, pool, imports) { Some([in_module, target].concat()) } else { None }
+            if is_known_module(&candidate_module, pool, imports) {
+                return Some([in_module, target].concat());
+            }
+            // Rooting keys at their crate is what makes this branch possible:
+            // `use vaultpolish_core::lint::Severity` IS the pool key, so it
+            // resolves exactly instead of falling through to terminal
+            // guessing.
+            if is_known_module(std::slice::from_ref(first), pool, imports) {
+                return Some(target.to_vec());
+            }
+            None
         }
     }
 }
@@ -295,12 +322,33 @@ fn is_known_module(prefix: &[String], pool: &BTreeMap<TypePath, syn::Item>, impo
 
 /// The pool key whose terminal segment equals `ident`: `Resolved` when exactly
 /// one matches, `NotInPool` for none, `Ambiguous` for more than one.
-fn terminal_resolution(ident: &str, pool: &BTreeMap<TypePath, syn::Item>) -> Resolution {
+///
+/// `home_root` is the root of the module doing the referencing. Candidates
+/// from that root are considered first, and only if it has none do candidates
+/// from other roots get a look.
+///
+/// That ordering is Rust's rule, not a tie-break. Terminal matching is a
+/// heuristic Rust itself doesn't have — the language requires a bare ident to
+/// be in scope — and it exists here only to recover references that arrived
+/// through a glob (`use some_crate::*`), since a glob records no
+/// ident-to-path mapping. Any reference brought in by an explicit `use` was
+/// already resolved by step 1 of [`resolve_bare_ident`]. So reaching here
+/// means nothing named the ident explicitly, and Rust says an item declared
+/// or explicitly imported in the referencing crate shadows a glob import.
+/// A same-root collision is still genuinely ambiguous, and still an error.
+fn terminal_resolution(ident: &str, pool: &BTreeMap<TypePath, syn::Item>, home_root: Option<&str>) -> Resolution {
     let matches: Vec<TypePath> = pool.keys().filter(|p| p.terminal() == ident).cloned().collect();
-    match matches.len() {
+    let home: Vec<TypePath> = match home_root {
+        Some(root) => {
+            matches.iter().filter(|p| p.segments().first().map(String::as_str) == Some(root)).cloned().collect()
+        }
+        None => Vec::new(),
+    };
+    let candidates = if home.is_empty() { matches } else { home };
+    match candidates.len() {
         0 => Resolution::NotInPool,
-        1 => Resolution::Resolved(matches.into_iter().next().expect("len checked")),
-        _ => Resolution::Ambiguous(matches),
+        1 => Resolution::Resolved(candidates.into_iter().next().expect("len checked")),
+        _ => Resolution::Ambiguous(candidates),
     }
 }
 
@@ -429,7 +477,18 @@ mod tests {
         syn::parse_str(src).expect("parse file")
     }
 
+    /// Prepend the local-crate root, matching what the pool walker produces.
+    fn rooted(segments: &[&str]) -> Vec<String> {
+        std::iter::once("crate".to_string()).chain(segments.iter().map(|s| (*s).to_string())).collect()
+    }
+
+    /// An expected pool key in the local crate.
     fn tp(segments: &[&str]) -> TypePath {
+        TypePath::new(rooted(segments)).expect("non-empty")
+    }
+
+    /// An expected pool key with an explicit root — for extra-root siblings.
+    fn tp_in(segments: &[&str]) -> TypePath {
         TypePath::new(segments.iter().map(|s| (*s).to_string()).collect()).expect("non-empty")
     }
 
@@ -437,17 +496,40 @@ mod tests {
         syn::parse_str(src).expect("parse path")
     }
 
+    /// Synthetic pool rooted at the local crate, as `scan_src_dir` would key it.
     fn pool_from(entries: &[(&[&str], &str)]) -> BTreeMap<TypePath, syn::Item> {
         entries
             .iter()
             .map(|(segs, src)| {
-                let key = TypePath::new(segs.iter().map(|s| (*s).to_string()).collect()).expect("non-empty");
-                (key, syn::parse_str::<syn::Item>(src).expect("parse item"))
+                (TypePath::new(rooted(segs)).expect("non-empty"), syn::parse_str::<syn::Item>(src).expect("parse item"))
             })
             .collect()
     }
 
+    /// Merge additional entries whose roots are given verbatim — used to model
+    /// a `pool_extra_roots` sibling alongside the local crate.
+    fn with_root(
+        mut pool: BTreeMap<TypePath, syn::Item>,
+        entries: &[(&[&str], &str)],
+    ) -> BTreeMap<TypePath, syn::Item> {
+        for (segs, src) in entries {
+            let key = TypePath::new(segs.iter().map(|s| (*s).to_string()).collect()).expect("non-empty");
+            pool.insert(key, syn::parse_str::<syn::Item>(src).expect("parse item"));
+        }
+        pool
+    }
+
     fn imports_from(entries: &[(&[&str], &str)]) -> ModuleImports {
+        let mut imports = ModuleImports::default();
+        for (module, src) in entries {
+            let file = parse_file(src);
+            collect_module_imports(&file, &rooted(module), &mut imports);
+        }
+        imports
+    }
+
+    /// Imports for modules whose roots are given verbatim.
+    fn imports_in(entries: &[(&[&str], &str)]) -> ModuleImports {
         let mut imports = ModuleImports::default();
         for (module, src) in entries {
             let file = parse_file(src);
@@ -457,8 +539,14 @@ mod tests {
         imports
     }
 
+    /// A written source path — NOT rooted; this is what appears in the code.
     fn seg(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// A referencing module's canonical path in the local crate.
+    fn md(parts: &[&str]) -> Vec<String> {
+        rooted(parts)
     }
 
     // ── resolve_reference ─────────────────────────────────────────────────
@@ -481,7 +569,7 @@ mod tests {
             (&["api", "v1", "vault"], "use crate::schema::VaultConfig;"),
             (&["schema"], "pub use vault::VaultConfig;"),
         ]);
-        let r = resolve_reference(&seg(&["VaultConfig"]), &seg(&["api", "v1", "vault"]), &pool, &imports);
+        let r = resolve_reference(&seg(&["VaultConfig"]), &md(&["api", "v1", "vault"]), &pool, &imports);
         assert_eq!(r, Resolution::Resolved(tp(&["schema", "vault", "VaultConfig"])), "got {r:?}");
     }
 
@@ -494,7 +582,7 @@ mod tests {
             (&["vault", "VaultConfig"], "pub struct VaultConfig { pub enabled: bool }"),
         ]);
         let imports = ModuleImports::default();
-        let r = resolve_reference(&seg(&["VaultConfig"]), &seg(&["api", "v1", "vault"]), &pool, &imports);
+        let r = resolve_reference(&seg(&["VaultConfig"]), &md(&["api", "v1", "vault"]), &pool, &imports);
         match r {
             Resolution::Ambiguous(cands) => assert_eq!(cands.len(), 2, "got {cands:?}"),
             other => panic!("expected Ambiguous, got {other:?}"),
@@ -507,21 +595,100 @@ mod tests {
         // `pub use crate::core::Foo;`.
         let pool = pool_from(&[(&["core", "Foo"], "pub struct Foo { pub x: u32 }")]);
         let imports = imports_from(&[(&["c"], "use crate::facade::Foo;"), (&["facade"], "pub use crate::core::Foo;")]);
-        let r = resolve_reference(&seg(&["Foo"]), &seg(&["c"]), &pool, &imports);
+        let r = resolve_reference(&seg(&["Foo"]), &md(&["c"]), &pool, &imports);
         assert_eq!(r, Resolution::Resolved(tp(&["core", "Foo"])), "got {r:?}");
     }
 
     #[test]
-    fn cross_crate_use_resolves_via_unique_terminal() {
-        // `use pumice_config::ThemePreference;` — `pumice_config` is a
-        // `pool_extra_roots` sibling crate, so its type is in the pool keyed
-        // under its own module (`ui::ThemePreference`), with the crate name
-        // stripped. The flat pool can't distinguish this from a true-external
-        // crate, so it resolves via a unique terminal match.
-        let pool = pool_from(&[(&["ui", "ThemePreference"], "pub enum ThemePreference { Light, Dark }")]);
+    fn cross_crate_use_hits_the_sibling_key_exactly() {
+        // `use pumice_config::ThemePreference;` — a `pool_extra_roots`
+        // sibling. Its key names its own crate, so the written path IS the
+        // key and resolution is exact rather than a terminal guess.
+        let pool = with_root(
+            BTreeMap::new(),
+            &[(&["pumice_config", "ui", "ThemePreference"], "pub enum ThemePreference { Light, Dark }")],
+        );
         let imports = imports_from(&[(&["schema", "settings"], "use pumice_config::ThemePreference;")]);
-        let r = resolve_reference(&seg(&["ThemePreference"]), &seg(&["schema", "settings"]), &pool, &imports);
-        assert_eq!(r, Resolution::Resolved(tp(&["ui", "ThemePreference"])), "got {r:?}");
+        let r = resolve_reference(&seg(&["ThemePreference"]), &md(&["schema", "settings"]), &pool, &imports);
+        assert_eq!(r, Resolution::Resolved(tp_in(&["pumice_config", "ui", "ThemePreference"])), "got {r:?}");
+    }
+
+    #[test]
+    fn cross_crate_qualified_path_resolves_without_a_use() {
+        // The form issue #84 wanted to work: name the sibling type outright.
+        // Before rooting, `absolutize` returned None for any non-local first
+        // segment and this fell through to terminal guessing.
+        let pool =
+            with_root(BTreeMap::new(), &[(&["vaultpolish_core", "lint", "Severity"], "pub enum Severity { Error }")]);
+        let r = resolve_reference(
+            &seg(&["vaultpolish_core", "lint", "Severity"]),
+            &md(&["api", "v1", "scan"]),
+            &pool,
+            &ModuleImports::default(),
+        );
+        assert_eq!(r, Resolution::Resolved(tp_in(&["vaultpolish_core", "lint", "Severity"])), "got {r:?}");
+    }
+
+    #[test]
+    fn bare_ident_colliding_across_roots_takes_the_local_one() {
+        // The reported #84 failure. A local mirror and a sibling type share a
+        // terminal, and the reference arrives with nothing naming it — a glob
+        // import, typically. Rust says a locally declared or explicitly
+        // imported item shadows a glob, and a bare ident can never reach a
+        // foreign crate's type unaided, so the local key is the only answer
+        // that could be right. This used to be a build-failing Ambiguous.
+        let pool = with_root(
+            pool_from(&[(&["schema", "scan", "Severity"], "pub enum Severity { Error, Warning, Info }")]),
+            &[(&["vaultpolish_core", "lint", "Severity"], "pub enum Severity { Error }")],
+        );
+        let r = resolve_reference(&seg(&["Severity"]), &md(&["api", "v1", "scan"]), &pool, &ModuleImports::default());
+        assert_eq!(r, Resolution::Resolved(tp(&["schema", "scan", "Severity"])), "got {r:?}");
+    }
+
+    #[test]
+    fn a_sibling_referencing_itself_stays_in_its_own_crate() {
+        // `crate::` is relative to whichever root the referencing module is
+        // in. With flat keys, a sibling's own `use crate::lint::Severity`
+        // resolved against the merged namespace where the local crate had
+        // already won the key — silently yielding the wrong type's shape.
+        let pool = with_root(
+            pool_from(&[(&["lint", "Severity"], "pub enum Severity { Local }")]),
+            &[(&["vaultpolish_core", "lint", "Severity"], "pub enum Severity { Sibling }")],
+        );
+        let r = resolve_reference(
+            &seg(&["crate", "lint", "Severity"]),
+            &["vaultpolish_core".to_string(), "scan".to_string()],
+            &pool,
+            &ModuleImports::default(),
+        );
+        assert_eq!(r, Resolution::Resolved(tp_in(&["vaultpolish_core", "lint", "Severity"])), "got {r:?}");
+
+        // And the same text written in the local crate still means the local one.
+        let r =
+            resolve_reference(&seg(&["crate", "lint", "Severity"]), &md(&["scan"]), &pool, &ModuleImports::default());
+        assert_eq!(r, Resolution::Resolved(tp(&["lint", "Severity"])), "got {r:?}");
+    }
+
+    #[test]
+    fn same_root_collision_is_still_ambiguous() {
+        // Local preference only breaks ties ACROSS roots. Two same-named
+        // types in one crate with nothing to disambiguate is a genuine
+        // ambiguity that rustc would reject too, so it stays an error.
+        let pool = with_root(
+            pool_from(&[
+                (&["a", "Severity"], "pub enum Severity { X }"),
+                (&["b", "Severity"], "pub enum Severity { Y }"),
+            ]),
+            &[(&["vaultpolish_core", "lint", "Severity"], "pub enum Severity { Z }")],
+        );
+        let r = resolve_reference(&seg(&["Severity"]), &md(&["api"]), &pool, &ModuleImports::default());
+        match r {
+            Resolution::Ambiguous(cands) => {
+                assert_eq!(cands.len(), 2, "only the two local candidates compete: {cands:?}");
+                assert!(cands.iter().all(|p| p.segments()[0] == "crate"), "got {cands:?}");
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
     }
 
     #[test]
@@ -530,7 +697,7 @@ mod tests {
         // genuinely external, so no resolution.
         let pool = pool_from(&[(&["models", "Workout"], "pub struct Workout { pub id: u64 }")]);
         let imports = imports_from(&[(&["c"], "use chrono::DateTime;")]);
-        let r = resolve_reference(&seg(&["DateTime"]), &seg(&["c"]), &pool, &imports);
+        let r = resolve_reference(&seg(&["DateTime"]), &md(&["c"]), &pool, &imports);
         assert_eq!(r, Resolution::NotInPool, "got {r:?}");
     }
 
@@ -538,7 +705,7 @@ mod tests {
     fn reference_unique_terminal_without_imports_resolves() {
         // No imports, bare ident, exactly one pool key with that terminal.
         let pool = pool_from(&[(&["schema", "backup", "BackupManifest"], "pub struct BackupManifest { pub v: u32 }")]);
-        let r = resolve_reference(&seg(&["BackupManifest"]), &seg(&["api"]), &pool, &ModuleImports::default());
+        let r = resolve_reference(&seg(&["BackupManifest"]), &md(&["api"]), &pool, &ModuleImports::default());
         assert_eq!(r, Resolution::Resolved(tp(&["schema", "backup", "BackupManifest"])), "got {r:?}");
     }
 
@@ -546,7 +713,7 @@ mod tests {
     fn reference_qualified_crate_path_matches_exact_key() {
         let pool = pool_from(&[(&["models", "Workout"], "pub struct Workout { pub id: u64 }")]);
         let r =
-            resolve_reference(&seg(&["crate", "models", "Workout"]), &seg(&["api"]), &pool, &ModuleImports::default());
+            resolve_reference(&seg(&["crate", "models", "Workout"]), &md(&["api"]), &pool, &ModuleImports::default());
         assert_eq!(r, Resolution::Resolved(tp(&["models", "Workout"])), "got {r:?}");
     }
 
@@ -556,14 +723,14 @@ mod tests {
     fn parse_simple_use() {
         let f = parse_file("use chrono::DateTime;");
         let imports = parse_imports(&f);
-        assert_eq!(imports.simple.get("DateTime"), Some(&tp(&["chrono", "DateTime"])));
+        assert_eq!(imports.simple.get("DateTime"), Some(&tp_in(&["chrono", "DateTime"])));
     }
 
     #[test]
     fn parse_use_with_rename() {
         let f = parse_file("use chrono::DateTime as Moment;");
         let imports = parse_imports(&f);
-        assert_eq!(imports.simple.get("Moment"), Some(&tp(&["chrono", "DateTime"])));
+        assert_eq!(imports.simple.get("Moment"), Some(&tp_in(&["chrono", "DateTime"])));
         // The original ident isn't re-mapped.
         assert!(!imports.simple.contains_key("DateTime"));
     }
@@ -572,25 +739,25 @@ mod tests {
     fn parse_use_with_group() {
         let f = parse_file("use chrono::{DateTime, NaiveDate, NaiveTime};");
         let imports = parse_imports(&f);
-        assert_eq!(imports.simple.get("DateTime"), Some(&tp(&["chrono", "DateTime"])));
-        assert_eq!(imports.simple.get("NaiveDate"), Some(&tp(&["chrono", "NaiveDate"])));
-        assert_eq!(imports.simple.get("NaiveTime"), Some(&tp(&["chrono", "NaiveTime"])));
+        assert_eq!(imports.simple.get("DateTime"), Some(&tp_in(&["chrono", "DateTime"])));
+        assert_eq!(imports.simple.get("NaiveDate"), Some(&tp_in(&["chrono", "NaiveDate"])));
+        assert_eq!(imports.simple.get("NaiveTime"), Some(&tp_in(&["chrono", "NaiveTime"])));
     }
 
     #[test]
     fn parse_nested_group() {
         let f = parse_file("use foo::{bar::Baz, qux::{Quux, Quuux as Q}};");
         let imports = parse_imports(&f);
-        assert_eq!(imports.simple.get("Baz"), Some(&tp(&["foo", "bar", "Baz"])));
-        assert_eq!(imports.simple.get("Quux"), Some(&tp(&["foo", "qux", "Quux"])));
-        assert_eq!(imports.simple.get("Q"), Some(&tp(&["foo", "qux", "Quuux"])));
+        assert_eq!(imports.simple.get("Baz"), Some(&tp_in(&["foo", "bar", "Baz"])));
+        assert_eq!(imports.simple.get("Quux"), Some(&tp_in(&["foo", "qux", "Quux"])));
+        assert_eq!(imports.simple.get("Q"), Some(&tp_in(&["foo", "qux", "Quuux"])));
     }
 
     #[test]
     fn parse_glob_import() {
         let f = parse_file("use chrono::*;");
         let imports = parse_imports(&f);
-        assert!(imports.globs.contains(&tp(&["chrono"])));
+        assert!(imports.globs.contains(&tp_in(&["chrono"])));
         assert!(imports.simple.is_empty());
     }
 
@@ -598,8 +765,8 @@ mod tests {
     fn parse_multiple_glob_imports() {
         let f = parse_file("use chrono::*; use uuid::*;");
         let imports = parse_imports(&f);
-        assert!(imports.globs.contains(&tp(&["chrono"])));
-        assert!(imports.globs.contains(&tp(&["uuid"])));
+        assert!(imports.globs.contains(&tp_in(&["chrono"])));
+        assert!(imports.globs.contains(&tp_in(&["uuid"])));
     }
 
     // ── canonicalize ──────────────────────────────────────────────────────
@@ -609,8 +776,8 @@ mod tests {
         let f = parse_file("use chrono::DateTime;");
         let imports = parse_imports(&f);
         let path = parse_path("DateTime");
-        let resolved = canonicalize(&path, &imports, &tp(&["Foo"])).unwrap();
-        assert_eq!(resolved, tp(&["chrono", "DateTime"]));
+        let resolved = canonicalize(&path, &imports, &tp_in(&["Foo"])).unwrap();
+        assert_eq!(resolved, tp_in(&["chrono", "DateTime"]));
     }
 
     #[test]
@@ -618,8 +785,8 @@ mod tests {
         let f = parse_file("use chrono::DateTime as Moment;");
         let imports = parse_imports(&f);
         let path = parse_path("Moment");
-        let resolved = canonicalize(&path, &imports, &tp(&["Foo"])).unwrap();
-        assert_eq!(resolved, tp(&["chrono", "DateTime"]));
+        let resolved = canonicalize(&path, &imports, &tp_in(&["Foo"])).unwrap();
+        assert_eq!(resolved, tp_in(&["chrono", "DateTime"]));
     }
 
     #[test]
@@ -628,8 +795,8 @@ mod tests {
         let f = parse_file("");
         let imports = parse_imports(&f);
         let path = parse_path("MyWorkout");
-        let resolved = canonicalize(&path, &imports, &tp(&["Foo"])).unwrap();
-        assert_eq!(resolved, tp(&["MyWorkout"]));
+        let resolved = canonicalize(&path, &imports, &tp_in(&["Foo"])).unwrap();
+        assert_eq!(resolved, tp_in(&["MyWorkout"]));
     }
 
     #[test]
@@ -637,7 +804,7 @@ mod tests {
         let f = parse_file("use chrono::*;");
         let imports = parse_imports(&f);
         let path = parse_path("DateTime");
-        let err = canonicalize(&path, &imports, &tp(&["Foo"])).unwrap_err();
+        let err = canonicalize(&path, &imports, &tp_in(&["Foo"])).unwrap_err();
         match err {
             EmitError::UnresolvedReference { name, .. } => {
                 assert!(name.contains("DateTime"), "name was: {name}");
@@ -653,8 +820,8 @@ mod tests {
         let f = parse_file("");
         let imports = parse_imports(&f);
         let path = parse_path("chrono::DateTime");
-        let resolved = canonicalize(&path, &imports, &tp(&["Foo"])).unwrap();
-        assert_eq!(resolved, tp(&["chrono", "DateTime"]));
+        let resolved = canonicalize(&path, &imports, &tp_in(&["Foo"])).unwrap();
+        assert_eq!(resolved, tp_in(&["chrono", "DateTime"]));
     }
 
     #[test]
@@ -662,9 +829,9 @@ mod tests {
         let f = parse_file("");
         let imports = parse_imports(&f);
         let path = parse_path("crate::models::Workout");
-        let resolved = canonicalize(&path, &imports, &tp(&["Foo"])).unwrap();
+        let resolved = canonicalize(&path, &imports, &tp_in(&["Foo"])).unwrap();
         // `crate::` stripped — pool keys are crate-relative.
-        assert_eq!(resolved, tp(&["models", "Workout"]));
+        assert_eq!(resolved, tp_in(&["models", "Workout"]));
     }
 
     #[test]
@@ -672,8 +839,8 @@ mod tests {
         let f = parse_file("");
         let imports = parse_imports(&f);
         let path = parse_path("chrono::DateTime<Utc>");
-        let resolved = canonicalize(&path, &imports, &tp(&["Foo"])).unwrap();
+        let resolved = canonicalize(&path, &imports, &tp_in(&["Foo"])).unwrap();
         // Generic args don't affect the canonical name.
-        assert_eq!(resolved, tp(&["chrono", "DateTime"]));
+        assert_eq!(resolved, tp_in(&["chrono", "DateTime"]));
     }
 }

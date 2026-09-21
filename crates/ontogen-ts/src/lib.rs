@@ -18,6 +18,11 @@
 //! - Smart-pointer wrappers (`Box`, `Rc`, `Arc`, `Cow`, `Pin`) peeled
 //!   silently
 //! - External types via [`EmitConfig::external_types`]
+//! - `#[serde(flatten)]` on a struct field (or an enum struct-variant
+//!   field), emitted as a TS intersection: `StepMeta & { program: string }`
+//! - The full rename family, each on the axis serde gives it: `rename_all`
+//!   (a container's members), `rename_all_fields` (an enum's struct-variant
+//!   fields), `rename_all` on a variant (that variant's fields), `rename`
 //!
 //! See `docs/tasks/OF-015-productionize-typescript-generation.md` for the
 //! full design pass.
@@ -48,7 +53,7 @@ mod rename;
 mod resolve;
 mod types;
 
-pub use emit::{emit, emit_with_imports, unit_variant_wire_names};
-pub use pool::{ScanError, scan_src_dir, scan_src_dir_with_imports};
+pub use emit::{emit, emit_with_imports, render_type, render_type_str, unit_variant_wire_names};
+pub use pool::{LOCAL_CRATE_ROOT, ScanError, scan_crate_root_with_imports, scan_src_dir, scan_src_dir_with_imports};
 pub use resolve::{ModuleImports, Resolution, resolve_reference};
 pub use types::{BigIntBehavior, EmitConfig, EmitError, QuoteStyle, RenameAll, TypePath, TypePathError};

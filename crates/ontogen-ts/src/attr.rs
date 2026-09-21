@@ -1,12 +1,34 @@
 //! Serde-attribute extraction on `syn::Attribute` lists.
 //!
-//! Phase-1 supports the rename family (`rename`, `rename_all`, `skip`) plus
-//! field-level `default` (which maps to a TS-optional `?`), and rejects
-//! shape-changing attrs (`tag`, `content`, `untagged`, `flatten`) plus
-//! split-rename (`rename(serialize = "...", deserialize = "...")`) with an
+//! Phase-1 supports the rename family (`rename`, `rename_all`,
+//! `rename_all_fields`, `skip`) plus `default` at either scope (which maps
+//! to a TS-optional `?` — on a field for that field, on a struct for every
+//! field) and field-level
+//! `flatten` (which maps to a TS intersection member — see
+//! [`crate::emit::emit_struct_named`]), and rejects the remaining
+//! shape-changing attrs (`tag`, `content`, `untagged`) plus split-rename
+//! (`rename(serialize = "...", deserialize = "...")`) with an
 //! [`EmitError::UnsupportedSerdeAttr`] carrying a hint at the symmetric form
 //! or `#[ontogen::ts_opaque]`. Other serde attrs that don't change TS shape
 //! (`borrow`, `bound`, `with`, `serialize_with`, etc.) are silently ignored.
+//!
+//! Each extractor handles an attribute at the level where serde itself
+//! gives it meaning, and rejects it elsewhere. `tag`/`content`/`untagged`
+//! are container attrs, so the field extractor rejects them; `flatten` is a
+//! field attr, so the container and variant extractors reject it. (An
+//! earlier revision listed `flatten` alongside the container attrs and
+//! consulted the list only at container level, where serde forbids
+//! `flatten` outright — so field-level `flatten` was silently ignored and
+//! emitted TS that disagreed with the wire.)
+//!
+//! The same care applies to the rename family, where serde overloads one
+//! spelling across two axes. On an enum, `rename_all` renames the
+//! *variants*; `rename_all_fields` renames the fields inside every struct
+//! variant; and `rename_all` on an individual *variant* renames that
+//! variant's fields. They are kept in three separate slots
+//! ([`ContainerAttrs::rename_all`], [`ContainerAttrs::rename_all_fields`],
+//! [`VariantAttrs::rename_all`]) precisely so the emitter cannot apply one
+//! where serde applies another.
 //!
 //! Parsing uses [`syn::Attribute::parse_nested_meta`] — the same primitive
 //! `serde_derive`'s own parser uses — so the exact syntax we accept matches
@@ -23,6 +45,20 @@ pub(crate) struct ContainerAttrs {
     /// container's TS name. Phase-1 emits structs/enums under their Rust
     /// ident; this field is parsed so future PRs can act on it.
     pub rename: Option<String>,
+    /// `#[serde(rename_all_fields = "...")]` (serde 1.0.181+). Enums only:
+    /// it renames the *fields of every struct variant*, which is a
+    /// different axis from [`Self::rename_all`] (which on an enum renames
+    /// the variants themselves). Kept separate so the emitter can't confuse
+    /// the two.
+    pub rename_all_fields: Option<RenameAll>,
+    /// `#[serde(default)]` (or `default = "path::to::fn"`) on a struct. Any
+    /// field absent from the input is taken from the struct's `Default`, so
+    /// *every* field is optional on the wire and the emitter renders them
+    /// all as `field?: T`.
+    ///
+    /// Serde only accepts this on a struct with named fields; on an enum it
+    /// is a compile error, so [`crate::emit::emit_enum_named`] ignores it.
+    pub default: bool,
 }
 
 /// Attributes on a struct field.
@@ -39,6 +75,10 @@ pub(crate) struct FieldAttrs {
     /// wire contract treats the field as optional — the emitter renders it as
     /// a TS-optional `field?: T`.
     pub default: bool,
+    /// `#[serde(flatten)]`. The field's own name never reaches the wire —
+    /// its type's keys are spliced into the parent object — so the emitter
+    /// renders it as a TS intersection member rather than a property.
+    pub flatten: bool,
 }
 
 /// Attributes on an enum variant.
@@ -48,6 +88,11 @@ pub(crate) struct VariantAttrs {
     pub rename: Option<String>,
     /// `#[serde(skip)]`.
     pub skip: bool,
+    /// `#[serde(rename_all = "...")]` on the variant. Renames *this
+    /// variant's* struct fields — it does not touch the variant's own wire
+    /// name, which comes from the enum's `rename_all` and this variant's
+    /// `rename`. Overrides the container's `rename_all_fields`.
+    pub rename_all: Option<RenameAll>,
 }
 
 impl RenameAll {
@@ -69,10 +114,20 @@ impl RenameAll {
     }
 }
 
-/// Phase-1 attrs that ontogen-ts rejects outright as "shape-changing serde
-/// attributes" — these alter the JSON wire shape in ways that need a
-/// dedicated emission path (phase 2 / OF-015 phase 2).
-const REJECTED_SHAPE_ATTRS: &[&str] = &["tag", "content", "untagged", "flatten"];
+/// Container-level serde attrs that ontogen-ts rejects outright as
+/// "shape-changing serde attributes" — these alter the JSON wire shape in
+/// ways that need a dedicated emission path (phase 2 / OF-015 phase 2).
+///
+/// `flatten` is deliberately NOT in this list: it is a *field* attribute
+/// with its own [`MetaKind::Flatten`] classification and a real emission
+/// path (a TS intersection member). Anything listed here is rejected at
+/// every level — all three are container attrs, so an occurrence on a field
+/// or variant is a malformed input serde itself would refuse.
+const REJECTED_SHAPE_ATTRS: &[&str] = &["tag", "content", "untagged"];
+
+/// Shared tail for the "shape-changing container attr" rejection message.
+const REJECTED_SHAPE_HINT: &str = "shape-changing attrs (tag/content/untagged) are phase 2 work; use \
+                                   #[ontogen::ts_opaque(target = \"...\")] if a custom TS rendering is needed";
 
 /// Ontogen-specific attributes on a type definition. Both attrs are
 /// no-ops at Rust compile time (the proc-macro implementations in
@@ -160,6 +215,16 @@ pub(crate) fn extract_ontogen_attrs(
     Ok(out)
 }
 
+/// Parse a `rename_all`-family literal into a [`RenameAll`], naming the
+/// offending attribute in the error so `rename_all` and `rename_all_fields`
+/// are distinguishable in a build log.
+fn parse_rename_all(value: &str, attr_name: &str, referenced_by: &TypePath) -> Result<RenameAll, EmitError> {
+    RenameAll::from_serde_str(value).ok_or_else(|| EmitError::UnsupportedSerdeAttr {
+        type_path: referenced_by.clone(),
+        attr: format!("{attr_name} = \"{value}\" (not one of serde's eight recognized modes)"),
+    })
+}
+
 /// Extract container-level serde attributes (struct or enum).
 pub(crate) fn extract_container_attrs(
     attrs: &[syn::Attribute],
@@ -177,11 +242,11 @@ pub(crate) fn extract_container_attrs(
                     Ok(())
                 }
                 MetaKind::RenameAllLit(value) => {
-                    let mode = RenameAll::from_serde_str(&value).ok_or_else(|| EmitError::UnsupportedSerdeAttr {
-                        type_path: referenced_by.clone(),
-                        attr: format!("rename_all = \"{value}\" (not one of serde's eight recognized modes)"),
-                    })?;
-                    out.rename_all = Some(mode);
+                    out.rename_all = Some(parse_rename_all(&value, "rename_all", referenced_by)?);
+                    Ok(())
+                }
+                MetaKind::RenameAllFieldsLit(value) => {
+                    out.rename_all_fields = Some(parse_rename_all(&value, "rename_all_fields", referenced_by)?);
                     Ok(())
                 }
                 MetaKind::SplitRename | MetaKind::SplitRenameAll => Err(EmitError::UnsupportedSerdeAttr {
@@ -194,16 +259,26 @@ pub(crate) fn extract_container_attrs(
                 }),
                 MetaKind::RejectedShape(name) => Err(EmitError::UnsupportedSerdeAttr {
                     type_path: referenced_by.clone(),
-                    attr: format!(
-                        "serde({name}) — shape-changing attrs (tag/content/untagged/flatten) are phase 2 work; \
-                         use #[ontogen::ts_opaque(target = \"...\")] if a custom TS rendering is needed"
-                    ),
+                    attr: format!("serde({name}) — {REJECTED_SHAPE_HINT}"),
+                }),
+                // serde only accepts `flatten` on a field. Seeing it here
+                // means the source wouldn't compile; say so rather than
+                // ignoring it.
+                MetaKind::Flatten => Err(EmitError::UnsupportedSerdeAttr {
+                    type_path: referenced_by.clone(),
+                    attr: "serde(flatten) is a field attribute — serde does not accept it on a struct or enum \
+                           declaration"
+                        .to_string(),
                 }),
                 MetaKind::Skip => Ok(()), // ignore at container level
-                // Container-level `#[serde(default)]` is out of scope (it would
-                // make every field optional); only field-level default maps to
-                // a TS `?`. Ignore here.
-                MetaKind::Default => Ok(()),
+                // Container-level `#[serde(default)]` fills every absent field
+                // from the struct's `Default`, so the whole body is optional
+                // on the wire. Record it; `emit_struct_named` marks each field
+                // TS-optional.
+                MetaKind::Default => {
+                    out.default = true;
+                    Ok(())
+                }
                 MetaKind::Unknown => Ok(()),
             }
         })?;
@@ -224,13 +299,20 @@ pub(crate) fn extract_field_attrs(attrs: &[syn::Attribute], referenced_by: &Type
                     out.rename = Some(value);
                     Ok(())
                 }
-                MetaKind::RenameAllLit(_) => Ok(()), // not meaningful on a field
+                // Neither is meaningful on a field: `rename_all` applies to a
+                // container's members, `rename_all_fields` to an enum's
+                // struct-variant fields.
+                MetaKind::RenameAllLit(_) | MetaKind::RenameAllFieldsLit(_) => Ok(()),
                 MetaKind::Skip => {
                     out.skip = true;
                     Ok(())
                 }
                 MetaKind::Default => {
                     out.default = true;
+                    Ok(())
+                }
+                MetaKind::Flatten => {
+                    out.flatten = true;
                     Ok(())
                 }
                 MetaKind::SplitRename => Err(EmitError::UnsupportedSerdeAttr {
@@ -240,7 +322,14 @@ pub(crate) fn extract_field_attrs(attrs: &[syn::Attribute], referenced_by: &Type
                            #[ontogen::ts_opaque(target = \"...\")] on the parent type"
                         .to_string(),
                 }),
-                MetaKind::SplitRenameAll | MetaKind::RejectedShape(_) | MetaKind::Unknown => Ok(()),
+                // tag/content/untagged are container attrs; serde rejects
+                // them on a field, so reaching this arm means the input is
+                // malformed. Surface it rather than swallowing it.
+                MetaKind::RejectedShape(name) => Err(EmitError::UnsupportedSerdeAttr {
+                    type_path: referenced_by.clone(),
+                    attr: format!("serde({name}) on a field — {REJECTED_SHAPE_HINT}"),
+                }),
+                MetaKind::SplitRenameAll | MetaKind::Unknown => Ok(()),
             }
         })?;
     }
@@ -272,11 +361,31 @@ pub(crate) fn extract_variant_attrs(
                            #[serde(rename = \"...\")]"
                     .to_string(),
             }),
-            MetaKind::RenameAllLit(_)
-            | MetaKind::SplitRenameAll
-            | MetaKind::RejectedShape(_)
-            | MetaKind::Default
-            | MetaKind::Unknown => Ok(()),
+            // `#[serde(untagged)]` is legal on an individual variant (serde
+            // 1.0.181+) and changes that variant's wire shape; `tag`/`content`
+            // are container-only. Either way we have no faithful rendering,
+            // so reject rather than emit the externally-tagged default.
+            MetaKind::RejectedShape(name) => Err(EmitError::UnsupportedSerdeAttr {
+                type_path: referenced_by.clone(),
+                attr: format!("serde({name}) on a variant — {REJECTED_SHAPE_HINT}"),
+            }),
+            // serde only accepts `flatten` on a field.
+            MetaKind::Flatten => Err(EmitError::UnsupportedSerdeAttr {
+                type_path: referenced_by.clone(),
+                attr: "serde(flatten) is a field attribute — serde does not accept it on an enum variant".to_string(),
+            }),
+            // On a variant, `rename_all` governs THIS variant's struct
+            // fields — not the variant's own wire name. Capture it so the
+            // emitter can apply it where serde does.
+            MetaKind::RenameAllLit(value) => {
+                out.rename_all = Some(parse_rename_all(&value, "rename_all", referenced_by)?);
+                Ok(())
+            }
+            // `rename_all_fields` is an enum-container attr; serde doesn't
+            // accept it on a variant.
+            MetaKind::RenameAllFieldsLit(_) | MetaKind::SplitRenameAll | MetaKind::Default | MetaKind::Unknown => {
+                Ok(())
+            }
         })?;
     }
     Ok(out)
@@ -288,12 +397,17 @@ enum MetaKind {
     RenameLit(String),
     /// `rename_all = "camelCase"` — symmetric.
     RenameAllLit(String),
+    /// `rename_all_fields = "camelCase"` — symmetric. Enum containers only.
+    RenameAllFieldsLit(String),
     /// `rename(serialize = "...", deserialize = "...")` — rejected.
     SplitRename,
     /// `rename_all(serialize = "...", deserialize = "...")` — rejected.
     SplitRenameAll,
-    /// `tag`, `content`, `untagged`, `flatten` — rejected.
+    /// `tag`, `content`, `untagged` — rejected at every level.
     RejectedShape(String),
+    /// `flatten` — supported on a field (TS intersection member), rejected
+    /// on a container or variant where serde itself wouldn't accept it.
+    Flatten,
     /// `skip`, `skip_serializing`, `skip_deserializing` — fold all three.
     Skip,
     /// `default` or `default = "path::to::fn"` — field is optional on the wire.
@@ -352,11 +466,21 @@ where
                 }
                 Ok(())
             }
-            "rename_all" => {
+            // Same two shapes as `rename`, and both attrs share the
+            // split-form rejection — but they target different things, so
+            // they classify separately. `rename_all` renames a container's
+            // members; `rename_all_fields` renames the fields inside an
+            // enum's struct variants.
+            "rename_all" | "rename_all_fields" => {
+                let is_fields = ident == "rename_all_fields";
                 match meta.value() {
                     Ok(value) => {
                         let lit: syn::LitStr = value.parse().map_err(|_| meta.error("expected string literal"))?;
-                        callbacks.push(MetaKind::RenameAllLit(lit.value()));
+                        callbacks.push(if is_fields {
+                            MetaKind::RenameAllFieldsLit(lit.value())
+                        } else {
+                            MetaKind::RenameAllLit(lit.value())
+                        });
                     }
                     Err(_) => {
                         meta.parse_nested_meta(consume_inner_value)?;
@@ -378,6 +502,15 @@ where
                     let _: syn::LitStr = value.parse().map_err(|_| meta.error("expected string literal"))?;
                 }
                 callbacks.push(MetaKind::Default);
+                Ok(())
+            }
+            "flatten" => {
+                // Serde's `flatten` is a bare word; be tolerant of a value
+                // anyway so a malformed attr doesn't desync the parser.
+                if let Ok(value) = meta.value() {
+                    let _: syn::Lit = value.parse().map_err(|_| meta.error("expected literal"))?;
+                }
+                callbacks.push(MetaKind::Flatten);
                 Ok(())
             }
             other if REJECTED_SHAPE_ATTRS.contains(&other) => {
@@ -679,17 +812,267 @@ mod tests {
     }
 
     #[test]
-    fn container_default_is_ignored() {
-        // Container-level `#[serde(default)]` is out of scope — it doesn't make
-        // every field individually optional in our emission.
+    fn container_default_sets_flag() {
+        // Container-level `#[serde(default)]` fills every absent field from
+        // the struct's `Default`, so the emitter needs to know about it —
+        // it used to be dropped here, and the whole body silently emitted as
+        // required.
         let attrs = struct_attrs(
             r#"
             #[serde(default)]
             struct Foo { a: u32 }
             "#,
         );
-        // Parses without error; no field-level effect to assert here.
-        extract_container_attrs(&attrs, &tp("Foo")).unwrap();
+        assert!(extract_container_attrs(&attrs, &tp("Foo")).unwrap().default);
+    }
+
+    #[test]
+    fn container_default_path_form_sets_flag() {
+        // `#[serde(default = "path")]` on a struct means the same thing.
+        let attrs = struct_attrs(
+            r#"
+            #[serde(default = "defaults::foo")]
+            struct Foo { a: u32 }
+            "#,
+        );
+        assert!(extract_container_attrs(&attrs, &tp("Foo")).unwrap().default);
+    }
+
+    #[test]
+    fn container_without_default_leaves_flag_unset() {
+        let attrs = struct_attrs(
+            r#"
+            #[serde(rename_all = "camelCase")]
+            struct Foo { a: u32 }
+            "#,
+        );
+        assert!(!extract_container_attrs(&attrs, &tp("Foo")).unwrap().default);
+    }
+
+    // ── rename_all vs rename_all_fields (issue #133) ──────────────────────
+
+    #[test]
+    fn container_rename_all_fields_is_its_own_axis() {
+        // Both attrs can appear together and must not overwrite each other:
+        // one renames the enum's variants, the other its struct-variant
+        // fields.
+        let attrs = enum_attrs(
+            r#"
+            #[serde(rename_all = "camelCase", rename_all_fields = "SCREAMING_SNAKE_CASE")]
+            enum Event { ToolCall { prompt_template: String } }
+            "#,
+        );
+        let out = extract_container_attrs(&attrs, &tp("Event")).unwrap();
+        assert_eq!(out.rename_all, Some(RenameAll::CamelCase));
+        assert_eq!(out.rename_all_fields, Some(RenameAll::ScreamingSnakeCase));
+    }
+
+    #[test]
+    fn container_rename_all_leaves_rename_all_fields_unset() {
+        let attrs = enum_attrs(
+            r#"
+            #[serde(rename_all = "camelCase")]
+            enum Event { ToolCall { prompt_template: String } }
+            "#,
+        );
+        let out = extract_container_attrs(&attrs, &tp("Event")).unwrap();
+        assert_eq!(out.rename_all, Some(RenameAll::CamelCase));
+        assert_eq!(out.rename_all_fields, None, "rename_all must not imply rename_all_fields");
+    }
+
+    #[test]
+    fn container_rename_all_fields_unknown_mode_names_the_right_attr() {
+        let attrs = enum_attrs(
+            r#"
+            #[serde(rename_all_fields = "Train-Case")]
+            enum Event { ToolCall { prompt_template: String } }
+            "#,
+        );
+        match extract_container_attrs(&attrs, &tp("Event")).unwrap_err() {
+            EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                assert!(attr.contains("rename_all_fields"), "attr was: {attr}");
+                assert!(attr.contains("Train-Case"), "attr was: {attr}");
+            }
+            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn variant_rename_all_is_captured() {
+        // On a variant, `rename_all` targets that variant's fields. It used
+        // to be dropped, so there was no way to express it.
+        let attrs = first_variant_attrs(
+            r#"
+            enum Event {
+                #[serde(rename_all = "camelCase")]
+                ToolCall { prompt_template: String },
+            }
+            "#,
+        );
+        let out = extract_variant_attrs(&attrs, &tp("Event")).unwrap();
+        assert_eq!(out.rename_all, Some(RenameAll::CamelCase));
+        assert!(out.rename.is_none(), "rename_all must not set the variant's own wire name");
+    }
+
+    #[test]
+    fn variant_rename_and_rename_all_are_independent() {
+        let attrs = first_variant_attrs(
+            r#"
+            enum Event {
+                #[serde(rename = "call", rename_all = "UPPERCASE")]
+                ToolCall { prompt_template: String },
+            }
+            "#,
+        );
+        let out = extract_variant_attrs(&attrs, &tp("Event")).unwrap();
+        assert_eq!(out.rename.as_deref(), Some("call"));
+        assert_eq!(out.rename_all, Some(RenameAll::Uppercase));
+    }
+
+    #[test]
+    fn field_rename_all_family_is_ignored() {
+        // Neither attr means anything on a field.
+        for src in ["rename_all = \"camelCase\"", "rename_all_fields = \"camelCase\""] {
+            let attrs = first_field_attrs(&format!(
+                r#"
+                struct Foo {{
+                    #[serde({src})]
+                    pub prompt_template: String,
+                }}
+                "#
+            ));
+            let out = extract_field_attrs(&attrs, &tp("Foo")).unwrap();
+            assert!(out.rename.is_none(), "src `{src}` should be inert on a field");
+            assert!(!out.skip);
+        }
+    }
+
+    // ── flatten: classified at the level where serde allows it ────────────
+
+    #[test]
+    fn field_flatten_sets_flag() {
+        // Issue #132: `flatten` is a field attribute, so the field extractor
+        // is the only place it can legally show up — and it must not be
+        // swallowed there.
+        let attrs = first_field_attrs(
+            r#"
+            struct Step {
+                #[serde(flatten)]
+                pub meta: StepMeta,
+            }
+            "#,
+        );
+        let out = extract_field_attrs(&attrs, &tp("Step")).unwrap();
+        assert!(out.flatten, "#[serde(flatten)] should set the flatten flag");
+        assert!(out.rename.is_none());
+        assert!(!out.skip);
+        assert!(!out.default);
+    }
+
+    #[test]
+    fn field_flatten_composes_with_default() {
+        // Both flags are parsed; the emitter is what rejects the pairing.
+        let attrs = first_field_attrs(
+            r#"
+            struct Step {
+                #[serde(flatten, default)]
+                pub meta: StepMeta,
+            }
+            "#,
+        );
+        let out = extract_field_attrs(&attrs, &tp("Step")).unwrap();
+        assert!(out.flatten);
+        assert!(out.default);
+    }
+
+    #[test]
+    fn field_without_flatten_leaves_flag_unset() {
+        let attrs = first_field_attrs(
+            r#"
+            struct Step {
+                pub meta: StepMeta,
+            }
+            "#,
+        );
+        assert!(!extract_field_attrs(&attrs, &tp("Step")).unwrap().flatten);
+    }
+
+    #[test]
+    fn container_flatten_rejected() {
+        // Serde doesn't accept `flatten` on a container at all, so say that
+        // rather than silently ignoring it.
+        let attrs = struct_attrs(
+            r#"
+            #[serde(flatten)]
+            struct Foo { a: u32 }
+            "#,
+        );
+        let err = extract_container_attrs(&attrs, &tp("Foo")).unwrap_err();
+        match err {
+            EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                assert!(attr.contains("field attribute"), "attr was: {attr}");
+            }
+            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn variant_flatten_rejected() {
+        let attrs = first_variant_attrs(
+            r#"
+            enum E {
+                #[serde(flatten)]
+                A,
+            }
+            "#,
+        );
+        let err = extract_variant_attrs(&attrs, &tp("E")).unwrap_err();
+        assert!(matches!(err, EmitError::UnsupportedSerdeAttr { .. }));
+    }
+
+    #[test]
+    fn field_level_container_shape_attrs_rejected() {
+        // tag/content/untagged are container attrs. Reaching the field
+        // extractor means the input is malformed; don't swallow it.
+        for src in ["tag = \"type\"", "content = \"c\"", "untagged"] {
+            let attrs = first_field_attrs(&format!(
+                r#"
+                struct Foo {{
+                    #[serde({src})]
+                    pub a: u32,
+                }}
+                "#
+            ));
+            let err = extract_field_attrs(&attrs, &tp("Foo")).unwrap_err();
+            match err {
+                EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                    assert!(attr.contains("on a field"), "src `{src}` — attr was: {attr}");
+                }
+                other => panic!("expected UnsupportedSerdeAttr for `{src}`, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn variant_level_untagged_rejected() {
+        // Variant-level `#[serde(untagged)]` is legal serde (1.0.181+) and
+        // changes that variant's wire shape, so the externally-tagged
+        // default we'd otherwise emit would be wrong.
+        let attrs = first_variant_attrs(
+            r#"
+            enum U {
+                #[serde(untagged)]
+                Other(String),
+            }
+            "#,
+        );
+        let err = extract_variant_attrs(&attrs, &tp("U")).unwrap_err();
+        match err {
+            EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                assert!(attr.contains("on a variant"), "attr was: {attr}");
+            }
+            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+        }
     }
 
     // ── Variant: rename ───────────────────────────────────────────────────

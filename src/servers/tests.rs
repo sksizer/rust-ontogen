@@ -645,6 +645,211 @@ fn test_rust_type_to_ts() {
 }
 
 #[test]
+fn rust_type_to_ts_parenthesizes_unions_before_postfix() {
+    // `T | null[]` parses as `T | (null[])` — the array-ness binds to the
+    // wrong operand, so the emitted type claimed "a T, or an array of null".
+    assert_eq!(rust_type_to_ts("Vec<Option<String>>"), "(string | null)[]");
+    assert_eq!(rust_type_to_ts("Vec<Option<Node>>"), "(Node | null)[]");
+    // Same hazard one level up: `| null` must apply to the whole inner union.
+    assert_eq!(rust_type_to_ts("Option<Option<i32>>"), "(number | null) | null");
+    // A non-union element needs no parens.
+    assert_eq!(rust_type_to_ts("Vec<Vec<String>>"), "string[][]");
+}
+
+#[test]
+fn rust_type_to_ts_renders_maps_as_record() {
+    // The Rust spelling was returned verbatim, putting `HashMap<String, Foo>`
+    // in TS type position — a type this emitter never declares.
+    assert_eq!(rust_type_to_ts("HashMap<String, i32>"), "Record<string, number>");
+    assert_eq!(rust_type_to_ts("BTreeMap<String, Node>"), "Record<string, Node>");
+    assert_eq!(rust_type_to_ts("std::collections::HashMap<String, bool>"), "Record<string, boolean>");
+    // Nested generics survive the depth-aware argument split.
+    assert_eq!(rust_type_to_ts("HashMap<String, Vec<Node>>"), "Record<string, Node[]>");
+}
+
+#[test]
+fn rust_type_to_ts_handles_sets_and_smart_pointers() {
+    // Sets share Vec's wire shape.
+    assert_eq!(rust_type_to_ts("HashSet<String>"), "string[]");
+    assert_eq!(rust_type_to_ts("BTreeSet<Node>"), "Node[]");
+    // Smart pointers are transparent to serde.
+    assert_eq!(rust_type_to_ts("Box<Node>"), "Node");
+    assert_eq!(rust_type_to_ts("Arc<Vec<String>>"), "string[]");
+    assert_eq!(rust_type_to_ts("Cow<'a, str>"), "string");
+}
+
+#[test]
+fn rust_type_to_ts_strips_args_from_unrecognized_generics() {
+    // Every rendered name is used downstream as a bare TS identifier — in an
+    // `import { … }` list or a `type X = …` placeholder. Neither accepts
+    // generic syntax, so a generic must not survive as a name.
+    assert_eq!(rust_type_to_ts("MyWrapper<Node>"), "MyWrapper");
+    assert_eq!(rust_type_to_ts("relation::Model<T>"), "RelationModel");
+}
+
+#[test]
+fn rust_type_to_ts_resolves_external_types() {
+    // These reach the shared external-types table now that this emitter
+    // delegates to ontogen-ts. Each used to fall through to a bare ident and
+    // get stubbed as `type DateTime<Utc> = Record<string, unknown>;` — a
+    // syntax error in the consumer's build for the generic ones, and a
+    // silently untyped value for the rest.
+    assert_eq!(rust_type_to_ts("chrono::DateTime<Utc>"), "string");
+    assert_eq!(rust_type_to_ts("chrono::NaiveDate"), "string");
+    assert_eq!(rust_type_to_ts("uuid::Uuid"), "string");
+    assert_eq!(rust_type_to_ts("url::Url"), "string");
+    assert_eq!(rust_type_to_ts("serde_json::Value"), "unknown");
+    assert_eq!(rust_type_to_ts("std::path::PathBuf"), "string");
+}
+
+#[test]
+fn rust_type_to_ts_covers_every_numeric_width() {
+    // Only the six "common" widths were mapped; the rest shipped as bare Rust
+    // idents and were stubbed `Record<string, unknown>` downstream, so a
+    // `u8` field arrived in TypeScript as an object.
+    for ty in ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize", "f32", "f64"] {
+        assert_eq!(rust_type_to_ts(ty), "number", "`{ty}` should render as number");
+    }
+    // `char` serializes as a single-codepoint JSON string.
+    assert_eq!(rust_type_to_ts("char"), "string");
+}
+
+#[test]
+fn rust_type_to_ts_degrades_instead_of_failing_on_unrenderable_types() {
+    // ontogen-ts is hard-error-only; this path is lenient by design, because
+    // failing the Rust build over a signature type it can't render would be a
+    // worse trade than shipping an untyped one. A rejected shape falls back to
+    // the terminal ident, and anything that isn't a usable identifier renders
+    // `unknown` rather than a token that breaks the consumer's tsc run.
+    assert_eq!(rust_type_to_ts("Mutex<Node>"), "Mutex");
+    assert_eq!(rust_type_to_ts("(String, i32)"), "unknown");
+    assert_eq!(rust_type_to_ts("impl Iterator<Item = u8>"), "unknown");
+}
+
+#[test]
+fn rust_type_to_ts_tolerates_token_stream_spacing() {
+    // Types can arrive rendered from a token stream, with spaces around the
+    // angle brackets and commas. The old fixed-offset slicing missed these
+    // entirely and fell through to the verbatim branch.
+    assert_eq!(rust_type_to_ts("Vec < String >"), "string[]");
+    assert_eq!(rust_type_to_ts("HashMap < String , i32 >"), "Record<string, number>");
+    assert_eq!(rust_type_to_ts("Option < Node >"), "Node | null");
+}
+
+/// Render `rust_ty` through the AST-based emitter by putting it in a struct
+/// field and pulling the field's rendered type back out.
+fn via_ontogen_ts(rust_ty: &str) -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("lib.rs"), format!("pub struct Probe {{ pub field: {rust_ty} }}"))
+        .expect("write probe");
+    let pool = ontogen_ts::scan_src_dir(dir.path()).expect("scan");
+    // Pool keys name the root they came from, so a crate-root type is
+    // `["crate", "Probe"]`.
+    let root = ontogen_ts::TypePath::new(vec![ontogen_ts::LOCAL_CRATE_ROOT.to_string(), "Probe".to_string()])
+        .expect("non-empty");
+    let ts = ontogen_ts::emit(&[root], &pool, &ontogen_ts::EmitConfig::default())
+        .unwrap_or_else(|errs| panic!("ontogen-ts emit failed for `{rust_ty}`: {errs:?}"));
+    ts.lines()
+        .find_map(|line| line.trim().strip_prefix("field: "))
+        .map(|t| t.trim_end_matches(';').to_string())
+        .unwrap_or_else(|| panic!("no `field:` line for `{rust_ty}` in:\n{ts}"))
+}
+
+#[test]
+fn the_two_ts_emitters_agree_on_shared_shapes() {
+    // ontogen renders TypeScript from two places: `rust_type_to_ts` (API
+    // signatures) and ontogen-ts (the long-tail closure). Their output lands
+    // in the same generated file, so a disagreement puts contradictory types
+    // in front of one caller.
+    //
+    // `rust_type_to_ts` delegates to ontogen-ts now, so this can't drift the
+    // way it did when the two carried separate type models. It stays as a
+    // guard on that delegation: anything short-circuited ahead of the
+    // delegate, or bolted on after it, has to keep agreeing here.
+    //
+    // The `via_ontogen_ts` side goes the long way round — through a real
+    // scan/resolve/emit of a struct field — so this also pins that rendering
+    // a type standalone matches rendering it in a declaration.
+    //
+    // `relation::Model` is the one deliberate exclusion: an ontogen
+    // entity-naming convention ontogen-ts has no way to know about.
+    let shared = [
+        // Primitives, every width — not just the six the string matcher knew.
+        "String",
+        "bool",
+        "char",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "usize",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "isize",
+        "f32",
+        "f64",
+        // Containers.
+        "Vec<String>",
+        "Vec<Node>",
+        "Option<String>",
+        "Option<Node>",
+        "Vec<Option<String>>",
+        "Option<Option<i32>>",
+        "Vec<Vec<String>>",
+        "HashMap<String, i32>",
+        "BTreeMap<String, Node>",
+        "HashMap<String, Vec<Node>>",
+        "HashSet<String>",
+        "BTreeSet<Node>",
+        "VecDeque<Node>",
+        // Smart pointers, peeled by both.
+        "Box<Node>",
+        "Arc<Vec<String>>",
+        "Cow<'a, str>",
+        // External types — previously the documented disagreement.
+        "chrono::DateTime<Utc>",
+        "chrono::NaiveDate",
+        "uuid::Uuid",
+        "url::Url",
+        "serde_json::Value",
+        "std::path::PathBuf",
+        // Unknown user types render as their terminal ident on both sides.
+        "Node",
+        "some::nested::Node",
+    ];
+    for rust_ty in shared {
+        assert_eq!(rust_type_to_ts(rust_ty), via_ontogen_ts(rust_ty), "emitters disagree on `{rust_ty}`");
+    }
+}
+
+#[test]
+fn collect_ts_import_unwraps_structural_syntax() {
+    // Whatever `rust_type_to_ts` renders has to reduce to bare identifiers
+    // here, or it gets spliced into an `import { … }` list verbatim.
+    let mut imports = Vec::new();
+    collect_ts_import("(Node | null)[]", &mut imports);
+    assert_eq!(imports, vec!["Node"]);
+
+    let mut imports = Vec::new();
+    collect_ts_import("Record<string, Node>", &mut imports);
+    assert_eq!(imports, vec!["Node"], "Record itself is built in; its value type is not");
+
+    let mut imports = Vec::new();
+    collect_ts_import("Record<string, unknown>", &mut imports);
+    assert!(imports.is_empty(), "no importable name in {imports:?}");
+
+    let mut imports = Vec::new();
+    collect_ts_import("(number | null) | null", &mut imports);
+    assert!(imports.is_empty(), "no importable name in {imports:?}");
+
+    let mut imports = Vec::new();
+    collect_ts_import("Record<string, Node[]>", &mut imports);
+    assert_eq!(imports, vec!["Node"]);
+}
+
+#[test]
 fn test_collect_ts_import() {
     let mut imports = Vec::new();
     collect_ts_import("Node", &mut imports);
@@ -2270,6 +2475,84 @@ fn test_ts_client_returns_fallback_record_for_missing_type() {
     assert!(names.contains(&"Workout"), "expected Workout fallback, got {names:?}");
     assert!(names.contains(&"CreateWorkoutInput"), "expected CreateWorkoutInput fallback, got {names:?}");
     assert!(names.contains(&"UpdateWorkoutInput"), "expected UpdateWorkoutInput fallback, got {names:?}");
+}
+
+/// A module whose parameters exercise the widths the old two-way guess got
+/// wrong: everything that wasn't literally `i32` was typed `string`.
+fn make_widths_module() -> ApiModule {
+    ApiModule {
+        name: "widths".to_string(),
+        functions: vec![
+            ApiFn {
+                name: "get_by_offset".to_string(),
+                is_async: true,
+                doc: "Read at an offset.".to_string(),
+                params: vec![param("offset", "u64"), param("depth", "u8")],
+                return_type: "Node".to_string(),
+                return_type_ast: ty_ast("Node"),
+                ..Default::default()
+            },
+            ApiFn {
+                name: "set_flag".to_string(),
+                is_async: true,
+                doc: "Set a flag.".to_string(),
+                params: vec![param("enabled", "bool"), param("weight", "f64")],
+                return_type: "Node".to_string(),
+                return_type_ast: ty_ast("Node"),
+                ..Default::default()
+            },
+        ],
+        events: vec![],
+        is_singleton: false,
+        has_count: false,
+    }
+}
+
+/// Pull `name: type` pairs out of a generated method signature.
+fn signature_params(ts: &str, method: &str) -> Vec<String> {
+    let line = ts
+        .lines()
+        .find(|l| l.contains(&format!("{method}(")))
+        .unwrap_or_else(|| panic!("no `{method}` method in:\n{ts}"));
+    let open = line.find('(').expect("method signature has an open paren");
+    let close = line[open..].find(')').expect("method signature has a close paren") + open;
+    line[open + 1..close].split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+}
+
+#[test]
+fn the_two_client_generators_type_a_parameter_the_same_way() {
+    // `ts_client.rs` reduced every parameter to `if ty == "i32" { number }
+    // else { string }`, while `transport.rs` ran the same parameter through
+    // `rust_type_to_ts`. Both files are generated from one API definition and
+    // both are importable by the same caller, so one endpoint had two
+    // different signatures depending on which file you imported from — and
+    // for anything wider than `i32` at least one of them was wrong.
+    let tmp = tempfile::tempdir().unwrap();
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "export type Node = { id: string };\n").unwrap();
+
+    let config = client_test_config(tmp.path().to_path_buf());
+    let modules = vec![make_widths_module()];
+
+    let client_path = tmp.path().join("client.ts");
+    let transport_path = tmp.path().join("transport.ts");
+    crate::clients::generators::ts_client::generate(&client_path, &bindings, &modules, &config);
+    crate::clients::generators::transport::generate(&transport_path, &bindings, &modules, &config);
+
+    let client_ts = std::fs::read_to_string(&client_path).unwrap();
+    let transport_ts = std::fs::read_to_string(&transport_path).unwrap();
+
+    for method in ["widthGetByOffset", "widthSetFlag"] {
+        let from_client = signature_params(&client_ts, method);
+        let from_transport = signature_params(&transport_ts, method);
+        assert_eq!(from_client, from_transport, "generators disagree on `{method}` parameters");
+    }
+
+    // And the shared answer is the correct one, not the old `string` guess.
+    let offset = signature_params(&client_ts, "widthGetByOffset");
+    assert_eq!(offset, vec!["offset: number", "depth: number"], "numeric path params should be numbers");
+    let flag = signature_params(&client_ts, "widthSetFlag");
+    assert_eq!(flag, vec!["enabled: boolean", "weight: number"], "body fields should keep their real types");
 }
 
 #[test]
@@ -4246,6 +4529,79 @@ fn test_two_surfaces_crud_split_is_error() {
 }
 
 #[test]
+fn test_route_prefix_rejects_extra_surface_with_store_type() {
+    let tmp = tempfile::tempdir().unwrap();
+    let surfaces = two_surface_fixture(tmp.path());
+    let fitness_dir = surfaces[1].api_dir.display().to_string();
+    let mut config = two_surface_config(surfaces);
+    config.route_prefix = test_config_with_prefix(config.api_dir.clone()).route_prefix;
+
+    let err = crate::servers::generate_transport(&config).expect_err("route_prefix + store-scoped extra surface");
+    assert!(err.contains("`route_prefix`") && err.contains("`store_type`"), "{err}");
+    assert!(err.contains(&fitness_dir) && err.contains("`FitnessStore`"), "names the surface: {err}");
+    assert!(err.contains("`store_for`"), "names the prefix accessor: {err}");
+
+    // An extra surface with no store_type has only state-scoped fns, which
+    // route_prefix handles like the primary's, so it is still accepted.
+    config.extra_surfaces[0].store_type = None;
+    crate::servers::generate_transport(&config).expect("state-only extra surface is fine with route_prefix");
+}
+
+/// With `route_prefix`, whether a fn gets scoped-only or unscoped routes is
+/// decided per fn, not by the module's first fn - so a merged module that
+/// mixes state-scoped custom fns with store-scoped CRUD emits the same
+/// routes whichever surface's fns come first.
+#[test]
+fn test_mixed_module_routes_are_per_fn_and_order_independent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config_with_prefix(tmp.path().to_path_buf());
+
+    let custom = ApiFn {
+        name: "start".to_string(),
+        is_async: true,
+        doc: "Start a workout.".to_string(),
+        params: vec![param("input", "StartWorkoutInput")],
+        return_type: "Workout".to_string(),
+        return_type_ast: ty_ast("Workout"),
+        ..Default::default()
+    };
+    let mut state_first = make_crud_module("workout", true);
+    state_first.functions.insert(0, custom.clone());
+    let mut store_first = make_crud_module("workout", true);
+    store_first.functions.push(custom);
+
+    let mut outputs = Vec::new();
+    for (i, module) in [state_first, store_first].into_iter().enumerate() {
+        let output = tmp.path().join(format!("http_{i}.rs"));
+        crate::servers::generators::http::generate(&output, std::slice::from_ref(&module), &config);
+        let http = std::fs::read_to_string(&output).unwrap();
+
+        assert!(
+            http.contains(".route(\"/api/workouts/start\", post(workout_start))"),
+            "state-scoped fn keeps its unscoped route:\n{http}"
+        );
+        assert!(http.contains("workout::start(&state, input)"), "state-scoped fn takes &state:\n{http}");
+        assert!(
+            !http.contains(".route(\"/api/workouts\", ") && !http.contains(".route(\"/api/workouts/{id}\", "),
+            "store-scoped CRUD gets no unscoped routes:\n{http}"
+        );
+        assert!(
+            http.contains(".route(\"/api/projects/{project_id}/workouts\", get(list_workouts_scoped)"),
+            "store-scoped CRUD gets scoped routes:\n{http}"
+        );
+        assert!(!http.contains("start_scoped"), "state-scoped fn gets no scoped route:\n{http}");
+
+        let meta = crate::servers::extract_server_metadata(&[module], &config);
+        let path = |handler: &str| meta.http_routes.iter().find(|r| r.handler_name == handler).unwrap().path.clone();
+        assert_eq!(path("workout_start"), "/api/workouts/start");
+        assert_eq!(path("workout_list"), "/api/projects/{project_id}/workouts");
+
+        outputs.push(http);
+    }
+    assert_eq!(outputs[0], outputs[1], "fn order within the module does not change the output");
+}
+
+#[test]
 fn test_single_surface_stamps_default_accessor() {
     let tmp = tempfile::tempdir().unwrap();
     let api_dir = tmp.path().join("api");
@@ -4312,12 +4668,14 @@ fn a_paginated_list_pushes_the_page_into_the_store() {
     let mut config = test_config(api_dir);
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
 
-    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
     let workout = modules.iter().find(|m| m.name == "workout").unwrap();
     assert!(workout.has_count, "`count` is recorded on the module");
-    assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation");
+    assert!(workout.functions.iter().any(|f| f.name == "count"), "`count` is parsed like any other fn");
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation of a paginated module");
     assert!(workout.is_crud(), "the CRUD surface is intact without `count`");
-    crate::servers::parse::check_paginated_lists(&modules, &config).unwrap();
 
     let http = tmp.path().join("http.rs");
     crate::servers::generators::http::generate(&http, &modules, &config);
@@ -4349,12 +4707,92 @@ fn a_paginated_list_without_the_page_or_a_count_is_refused() {
     let mut config = test_config(api_dir);
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
 
-    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    let err = crate::servers::parse::check_paginated_lists(&modules, &config).unwrap_err();
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
     assert!(err.contains("module `workout` is paginated"), "{err}");
     assert!(err.contains("`workout::list` must take `limit: Option<u64>, offset: Option<u64>`"), "{err}");
 
     // Not paginated: the plain list is fine as it is.
     config.pagination = None;
-    crate::servers::parse::check_paginated_lists(&modules, &config).unwrap();
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+}
+
+#[test]
+fn a_paginated_list_whose_page_params_are_not_option_u64_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store").replace("Option<u64>", "Option<usize>"),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    assert!(!modules[0].functions.iter().find(|f| f.name == "list").unwrap().takes_page());
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    assert!(err.contains("`workout::list` must take `limit: Option<u64>, offset: Option<u64>`"), "{err}");
+}
+
+#[test]
+fn a_paginated_list_with_a_filter_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store")
+            .replace("store: &Store, limit", "store: &Store, plan_id: &str, limit"),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    assert!(err.contains("`count(store)` cannot apply the filter `plan_id: &str` to the total"), "{err}");
+}
+
+#[test]
+fn a_count_on_an_unpaginated_module_stays_an_operation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "Store"));
+    let config = test_config(api_dir);
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(
+        workout.functions.iter().any(|f| f.name == "count"),
+        "nothing pages, so `count` is the consumer's own endpoint"
+    );
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(http.contains("workout::count(&store)"), "`count` gets a handler:\n{http}");
+}
+
+#[test]
+fn an_unpaginated_surface_hands_a_page_taking_list_no_page() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "Store"));
+    let config = test_config(api_dir);
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(http.contains("workout::list(&store, None, None)"), "the whole table, as before:\n{http}");
+    assert!(!http.contains("Query(limit)"), "limit is not a filter:\n{http}");
+
+    let ipc = tmp.path().join("ipc.rs");
+    crate::servers::generators::ipc::generate(&ipc, &modules, &config);
+    let ipc = std::fs::read_to_string(&ipc).unwrap();
+    assert!(ipc.contains("workout::list(&store, None, None)"), "the whole table, as before:\n{ipc}");
+    assert!(!ipc.contains("limit: Option<u64>"), "limit is not a command param:\n{ipc}");
 }

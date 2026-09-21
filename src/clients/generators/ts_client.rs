@@ -11,7 +11,7 @@ use crate::clients::config::Config;
 use crate::clients::generators::{FallbackRecord, command_name};
 use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::parse::{ApiFn, ApiModule, Param};
-use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel};
+use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 
 /// Generate TypeScript HTTP client and write to the output file.
 ///
@@ -244,7 +244,11 @@ fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config
 
     let mut ts_params = Vec::new();
     for p in &path_params {
-        let ts_ty = if p.ty == "i32" { "number" } else { "string" };
+        // `transport.rs` renders the same parameter through `rust_type_to_ts`.
+        // This used to guess `i32 → number`, everything else → `string`, so
+        // one endpoint got different parameter types depending on which
+        // generated file the caller imported from.
+        let ts_ty = rust_type_to_ts(&strip_ref(&p.ty));
         ts_params.push(format!("{}: {}", snake_to_camel(&p.name), ts_ty));
     }
     for qp in &query_params {
@@ -256,7 +260,7 @@ fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config
         ts_params.push(format!("input: {}", input_type));
     }
     for bf in &body_fields {
-        let ts_ty = if bf.ty == "i32" { "number" } else { "string" };
+        let ts_ty = rust_type_to_ts(&strip_ref(&bf.ty));
         ts_params.push(format!("{}: {}", snake_to_camel(&bf.name), ts_ty));
     }
 

@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use ontogen_ts::{EmitConfig, EmitError, QuoteStyle, TypePath, emit, scan_src_dir};
+use ontogen_ts::{EmitConfig, EmitError, LOCAL_CRATE_ROOT, QuoteStyle, TypePath, emit, scan_src_dir};
 
 /// Convenience: build a tempdir from `files` (each `(rel_path, content)`).
 fn make_tempdir(files: &[(&str, &str)]) -> tempfile::TempDir {
@@ -25,8 +25,12 @@ fn make_tempdir(files: &[(&str, &str)]) -> tempfile::TempDir {
     dir
 }
 
+/// A pool key in the scanned crate. Keys name the root they came from, so a
+/// type at the crate root is `["crate", "Name"]`.
 fn tp(segments: &[&str]) -> TypePath {
-    TypePath::new(segments.iter().map(|s| (*s).to_string()).collect()).expect("non-empty")
+    let mut all = vec![LOCAL_CRATE_ROOT.to_string()];
+    all.extend(segments.iter().map(|s| (*s).to_string()));
+    TypePath::new(all).expect("non-empty")
 }
 
 #[test]

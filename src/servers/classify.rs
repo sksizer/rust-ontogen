@@ -74,8 +74,8 @@ const KNOWN_READ_PREFIXES: &[&str] = &["get_", "list_", "count_", "exists_", "fi
 /// no user-facing params should still classify as `CustomGet`. Anything
 /// outside the allowlist defaults to `CustomPost` — the RFC-7231-safe
 /// default — and can opt back into GET routing either by renaming to a
-/// read prefix or (future work) via an explicit `#[ontogen::http::get]`
-/// override.
+/// read prefix or via an explicit `#[ontogen::http::get]` override, which
+/// [`classify_op`] short-circuits on before this function is consulted.
 fn name_implies_read(name: &str) -> bool {
     KNOWN_READ_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
 }
@@ -98,8 +98,10 @@ fn name_implies_read(name: &str) -> bool {
 ///
 /// Functions whose name happens to look mutating but are actually reads
 /// (`stats::workout`, `dashboard::snapshot`) should either rename to a
-/// known-read prefix or (future work) carry an explicit
-/// `#[ontogen::http::get]` annotation.
+/// known-read prefix or carry an explicit `#[ontogen::http::get]`
+/// annotation — see [`ForcedMethod::Get`].
+///
+/// [`ForcedMethod::Get`]: crate::servers::parse::ForcedMethod::Get
 ///
 /// # `get_*` with body-carrying first param
 ///

@@ -172,11 +172,12 @@ The store layer generates CRUD methods and lifecycle hooks. Add it to `build.rs`
     let _store = unwrap_codegen(
         ontogen::gen_store(
             &schema.entities,
-            Some(&seaorm),
             &ontogen::StoreConfig {
                 output_dir: "src/store/generated".into(),
                 hooks_dir: Some("src/store/hooks".into()),
                 schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+                backend: ontogen::Backend::Seaorm(Some(seaorm)),
+                wikilink_policy: None,
             },
         ),
         "generate store",
@@ -324,11 +325,12 @@ fn main() {
     let _store = unwrap_codegen(
         ontogen::gen_store(
             &schema.entities,
-            Some(&seaorm),
             &ontogen::StoreConfig {
                 output_dir: "src/store/generated".into(),
                 hooks_dir: Some("src/store/hooks".into()),
                 schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+                backend: ontogen::Backend::Seaorm(Some(seaorm)),
+                wikilink_policy: None,
             },
         ),
         "generate store",
