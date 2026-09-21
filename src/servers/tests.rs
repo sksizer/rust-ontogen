@@ -4418,3 +4418,48 @@ fn a_paginated_list_without_the_page_or_a_count_is_refused() {
     config.pagination = None;
     crate::servers::parse::check_paginated_lists(&modules, &config).unwrap();
 }
+
+/// `count` is only the page's companion when a `list` beside it takes the
+/// page. In a module that does not paginate it is an ordinary command, and
+/// dropping it there would lose a real operation without a word.
+#[test]
+fn a_count_beside_an_unpaged_list_stays_a_command() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    let source = format!(
+        "{}pub async fn count(state: &AppState) -> Result<u64, anyhow::Error> {{ todo!() }}\n",
+        crud_module_source("workout", "AppState")
+    );
+    write_synthetic_api(&api_dir, "workout.rs", &source);
+    let config = test_config(api_dir);
+
+    let scanned = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap();
+    let workout = scanned.modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(!workout.has_count, "`count` is not the page's companion without a paged `list`");
+    assert!(workout.functions.iter().any(|f| f.name == "count"), "`count` is kept as an operation");
+    assert!(scanned.skips.is_empty(), "nothing was dropped: {:?}", scanned.skips);
+}
+
+/// A stateless `count()` declares no argument for the generators to pass, so
+/// it is never taken for the companion: it stays an operation and a paginated
+/// module without a scoped `count` is refused rather than generating a call
+/// that does not compile.
+#[test]
+fn a_stateless_count_is_not_the_pages_companion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    let source = "pub async fn list(state: &AppState, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Workout>, anyhow::Error> { todo!() }
+#[ontogen::stateless]
+pub async fn count() -> Result<u64, anyhow::Error> { todo!() }
+";
+    write_synthetic_api(&api_dir, "workout.rs", source);
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(!workout.has_count, "a stateless `count()` is not recorded as the companion");
+    assert!(workout.functions.iter().any(|f| f.name == "count" && f.is_stateless), "it stays an operation");
+    let err = crate::servers::parse::check_paginated_lists(&modules, &config).unwrap_err();
+    assert!(err.contains("module `workout` is paginated"), "{err}");
+}

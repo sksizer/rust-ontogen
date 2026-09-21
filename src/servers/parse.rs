@@ -634,16 +634,6 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
 
             let (return_type, return_type_ast) = extract_result_ok_type(&func.sig.output);
 
-            // A paginated list's companion. The first param is already known
-            // to be the state or the store — anything else was skipped above —
-            // and both are scoped the same way, so either shape counts. It is
-            // recorded on the module rather than pushed as an operation: the
-            // page handler calls it directly, and it is not a caller-facing op.
-            if fn_ident == "count" && params.is_empty() {
-                has_count = true;
-                continue;
-            }
-
             functions.push(ApiFn {
                 name: fn_ident,
                 is_async: func.sig.asyncness.is_some(),
@@ -659,6 +649,22 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 store_accessor: crate::servers::config::DEFAULT_STORE_ACCESSOR.to_string(),
             });
         }
+    }
+
+    // A paginated list's companion. `count` takes only the state or the store
+    // (the first param is already known to be one of those; anything else was
+    // skipped above) and both are scoped the same way, so either shape counts.
+    // It is recorded on the module rather than kept as an operation: the page
+    // handler calls it directly, and it is not a caller-facing op. The swallow
+    // is gated on a `list` that takes the page, so a module that does not
+    // paginate keeps `count` as an ordinary command, and a stateless `count()`
+    // is never taken for the companion — the generators would call it with an
+    // argument it does not declare.
+    if functions.iter().any(|f| f.name == "list" && f.takes_page())
+        && let Some(i) = functions.iter().position(|f| f.name == "count" && !f.is_stateless && f.params.is_empty())
+    {
+        functions.remove(i);
+        has_count = true;
     }
 
     result.module = Some(ApiModule { name: file_stem.to_string(), functions, events, is_singleton, has_count });
