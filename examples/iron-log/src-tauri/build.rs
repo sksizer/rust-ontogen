@@ -32,6 +32,7 @@ fn main() {
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
         pagination: None,
+        extra_surfaces: vec![],
     };
 
     let clients_config = ClientsConfig {
@@ -60,6 +61,7 @@ fn main() {
         schema_entities: Vec::new(),
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
+        extra_surfaces: vec![],
     };
 
     // OF-015 PR 6: the IRON_LOG_SKIP_SERVER_CODEGEN escape hatch is gone.

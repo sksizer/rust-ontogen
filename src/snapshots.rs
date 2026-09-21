@@ -285,3 +285,40 @@ fn markdown_frontmatter_complex_entity() {
     let code = crate::persistence::markdown::gen_frontmatter::generate_frontmatter_module(&article_mtm_tags_entity());
     insta::assert_snapshot!(code);
 }
+
+// ─── Servers: two API surfaces ───────────────────────────────────────────────
+
+/// Run `generate_transport` over the two-surface fixture with `generator`
+/// pointed at a tempdir file, and read the generated file back.
+fn generate_two_surface_file(
+    generator: impl FnOnce(std::path::PathBuf) -> crate::servers::ServerGenerator,
+    pagination: Option<crate::servers::PaginationConfig>,
+) -> String {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut surfaces = crate::servers::tests::two_surface_fixture(tmp.path());
+    surfaces[1].pagination = pagination;
+    surfaces[1].paginated_modules = vec!["exercise".to_string()];
+    let mut config = crate::servers::tests::two_surface_config(surfaces);
+    let output = tmp.path().join("generated.rs");
+    config.generators = vec![generator(output.clone())];
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+    read_file(&output)
+}
+
+#[test]
+fn servers_two_surfaces_http() {
+    // `workout` merges custom fns from the primary surface with the CRUD five
+    // from the fitness surface; the fitness handlers open `fitness_store()`,
+    // call through the `workout_1` alias, and qualify the shared `Workout`.
+    let code = generate_two_surface_file(
+        |output| crate::servers::ServerGenerator::HttpAxum { output },
+        Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 }),
+    );
+    insta::assert_snapshot!(code);
+}
+
+#[test]
+fn servers_two_surfaces_ipc() {
+    let code = generate_two_surface_file(|output| crate::servers::ServerGenerator::TauriIpc { output }, None);
+    insta::assert_snapshot!(code);
+}

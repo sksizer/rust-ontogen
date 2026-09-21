@@ -43,9 +43,9 @@ use std::path::PathBuf;
 
 use crate::ir::{ApiOutput, Backend, IdStrategy, MarkdownIoOutput, MarkdownLayout, SchemaOutput, SeaOrmOutput};
 use crate::{
-    ApiConfig, ClientsConfig, CodegenError, DEFAULT_SCHEMA_MODULE_PATH, DtoConfig, MarkdownIoConfig, SchemaConfig,
-    SeaOrmConfig, ServersConfig, StoreConfig, gen_api, gen_clients, gen_dtos, gen_markdown_io, gen_seaorm, gen_servers,
-    gen_store, parse_schema,
+    ApiConfig, ApiSurface, ClientsConfig, CodegenError, DEFAULT_SCHEMA_MODULE_PATH, DtoConfig, MarkdownIoConfig,
+    SchemaConfig, SeaOrmConfig, ServersConfig, StoreConfig, gen_api, gen_clients, gen_dtos, gen_markdown_io,
+    gen_seaorm, gen_servers, gen_store, parse_schema,
 };
 
 /// Default store type name used for the `api` and `servers` stages once a
@@ -342,6 +342,18 @@ impl Pipeline {
         self
     }
 
+    /// Add an API surface to the servers stage
+    /// ([`ServersConfig::extra_surfaces`]). Has no effect unless
+    /// [`Pipeline::servers`] has been called. See [`Pipeline::api_surface`]
+    /// to register the surface with both stages at once.
+    #[must_use]
+    pub fn servers_surface(mut self, surface: ApiSurface) -> Self {
+        if let Some(stage) = self.servers.as_mut() {
+            stage.config.extra_surfaces.push(surface);
+        }
+        self
+    }
+
     // ── clients ─────────────────────────────────────────────────────
 
     /// Enable the clients stage with a fully-formed `ClientsConfig`.
@@ -373,6 +385,25 @@ impl Pipeline {
             stage.scan_dirs = scan_dirs;
         }
         self
+    }
+
+    /// Add an API surface to the clients stage
+    /// ([`ClientsConfig::extra_surfaces`]). Has no effect unless
+    /// [`Pipeline::clients`] has been called.
+    #[must_use]
+    pub fn clients_surface(mut self, surface: ApiSurface) -> Self {
+        if let Some(stage) = self.clients.as_mut() {
+            stage.config.extra_surfaces.push(surface);
+        }
+        self
+    }
+
+    /// Add an API surface to both the servers and clients stages, so the Rust
+    /// handlers and the TypeScript transport see the same modules. Stages
+    /// that are not enabled are left alone.
+    #[must_use]
+    pub fn api_surface(self, surface: ApiSurface) -> Self {
+        self.servers_surface(surface.clone()).clients_surface(surface)
     }
 
     // ── execution ───────────────────────────────────────────────────

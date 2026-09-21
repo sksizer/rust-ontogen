@@ -5,12 +5,14 @@
 //! Extracts function signatures, parameters, return types, and event functions
 //! from files where public functions take a `&{StateType}` as their first parameter.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use syn::{FnArg, GenericArgument, PathArguments, ReturnType, Type, Visibility};
 
-use crate::servers::types::norm_type;
+use crate::servers::config::ApiSurface;
+use crate::servers::types::{collect_type_import, norm_type};
 
 // ─── Extracted function metadata ──────────────────────────────────────────────
 
@@ -113,6 +115,12 @@ pub struct ApiFn {
     /// Precedence: if the source attribute is present, it wins; the config
     /// map only fills in entries that were absent on the source side.
     pub command_override: Option<String>,
+    /// Index of the [`ApiSurface`](crate::servers::ApiSurface) this function
+    /// was scanned from: `0` is the primary surface.
+    pub surface: usize,
+    /// State method a store-scoped handler calls to obtain the store
+    /// (`state.{store_accessor}().await`). Copied from the surface.
+    pub store_accessor: String,
 }
 
 /// A single function parameter.
@@ -150,6 +158,8 @@ impl Default for ApiFn {
             is_stateless: false,
             force_method: None,
             command_override: None,
+            surface: 0,
+            store_accessor: crate::servers::config::DEFAULT_STORE_ACCESSOR.to_string(),
         }
     }
 }
@@ -167,10 +177,12 @@ impl Default for Param {
 }
 
 /// An event function that returns a `broadcast::Receiver<T>`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EventFn {
     /// Function name (e.g., `graph_updated`).
     pub name: String,
+    /// Index of the surface this event was scanned from; see [`ApiFn::surface`].
+    pub surface: usize,
 }
 
 /// A parsed API module with its functions and events.
@@ -195,16 +207,28 @@ pub struct ApiModule {
     pub is_singleton: bool,
 }
 
+/// The function names that make up a module's CRUD surface.
+pub const CRUD_FN_NAMES: [&str; 5] = ["list", "get_by_id", "create", "update", "delete"];
+
 impl ApiModule {
     /// Returns true if this module has a complete CRUD surface
     /// (list, get_by_id, create, update, delete).
     pub fn is_crud(&self) -> bool {
-        let fns: Vec<&str> = self.functions.iter().map(|f| f.name.as_str()).collect();
-        fns.contains(&"list")
-            && fns.contains(&"get_by_id")
-            && fns.contains(&"create")
-            && fns.contains(&"update")
-            && fns.contains(&"delete")
+        CRUD_FN_NAMES.iter().all(|name| self.functions.iter().any(|f| f.name == *name))
+    }
+
+    /// The lowest surface index any of this module's functions or events came
+    /// from. That surface's service module is imported under the module's own
+    /// name; the same-named module of every other surface is aliased.
+    pub fn base_surface(&self) -> usize {
+        self.functions.iter().map(|f| f.surface).chain(self.events.iter().map(|e| e.surface)).min().unwrap_or(0)
+    }
+
+    /// The identifier generated handlers call this module's functions
+    /// through, for a function scanned from `surface`: the module name for
+    /// the base surface, `{name}_{surface}` for any other.
+    pub fn service_ident(&self, surface: usize) -> String {
+        if surface == self.base_surface() { self.name.clone() } else { format!("{}_{}", self.name, surface) }
     }
 }
 
@@ -537,7 +561,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
 
             // Check if this is an event function (returns broadcast::Receiver<T>)
             if is_receiver_return_type(&func.sig.output) {
-                events.push(EventFn { name: func.sig.ident.to_string() });
+                events.push(EventFn { name: func.sig.ident.to_string(), surface: 0 });
                 continue;
             }
 
@@ -598,6 +622,8 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 is_stateless,
                 force_method,
                 command_override,
+                surface: 0,
+                store_accessor: crate::servers::config::DEFAULT_STORE_ACCESSOR.to_string(),
             });
         }
     }
@@ -700,6 +726,196 @@ pub fn scan_api_dir(api_dir: &Path, state_type: &str, store_type: Option<&str>) 
     }
 
     result
+}
+
+/// Scan every surface's `api_dir` and merge the results into one module list.
+///
+/// Each surface is scanned with its own `store_type`; every function and
+/// event is stamped with the surface index and the surface's store accessor.
+/// Same-named modules across surfaces merge under [`merge_surfaces`]'s rules.
+pub fn scan_surfaces(surfaces: &[ApiSurface], state_type: &str) -> Result<ScanResult, String> {
+    let mut result = ScanResult::default();
+    let mut per_surface = Vec::with_capacity(surfaces.len());
+
+    for (i, surface) in surfaces.iter().enumerate() {
+        if !surface.api_dir.exists() {
+            return Err(format!("API directory does not exist: {}", surface.api_dir.display()));
+        }
+        let mut scanned = scan_api_dir(&surface.api_dir, state_type, surface.store_type.as_deref());
+        let accessor = surface.store_accessor();
+        for m in &mut scanned.modules {
+            for f in &mut m.functions {
+                f.surface = i;
+                f.store_accessor = accessor.to_string();
+            }
+            for ev in &mut m.events {
+                ev.surface = i;
+            }
+        }
+        result.skips.extend(scanned.skips);
+        per_surface.push(scanned.modules);
+    }
+
+    result.modules = merge_surfaces(per_surface, surfaces)?;
+    Ok(result)
+}
+
+/// Merge per-surface module lists into one, folding same-named modules together.
+///
+/// Module order is the primary surface's, with modules only later surfaces
+/// define appended in surface order. Within a merged module, functions and
+/// events keep surface order and `is_singleton` comes from the first surface
+/// that defines the module. Errors when a function or event name appears in
+/// more than one surface, or when the CRUD five are split across surfaces.
+pub fn merge_surfaces(per_surface: Vec<Vec<ApiModule>>, surfaces: &[ApiSurface]) -> Result<Vec<ApiModule>, String> {
+    let dir = |i: usize| surfaces[i].api_dir.display();
+    let mut merged: Vec<ApiModule> = Vec::new();
+
+    for (surface, modules) in per_surface.into_iter().enumerate() {
+        for incoming in modules {
+            let Some(existing) = merged.iter_mut().find(|m| m.name == incoming.name) else {
+                merged.push(incoming);
+                continue;
+            };
+            let module = &incoming.name;
+            for f in incoming.functions {
+                if let Some(prior) = existing.functions.iter().find(|p| p.name == f.name) {
+                    return Err(format!(
+                        "ontogen: fn `{}::{}` is defined by both API surfaces `{}` and `{}`; a function name may come \
+                         from one surface only",
+                        module,
+                        f.name,
+                        dir(prior.surface),
+                        dir(surface),
+                    ));
+                }
+                existing.functions.push(f);
+            }
+            for ev in incoming.events {
+                if let Some(prior) = existing.events.iter().find(|p| p.name == ev.name) {
+                    return Err(format!(
+                        "ontogen: event `{}::{}` is defined by both API surfaces `{}` and `{}`",
+                        module,
+                        ev.name,
+                        dir(prior.surface),
+                        dir(surface),
+                    ));
+                }
+                existing.events.push(ev);
+            }
+        }
+    }
+
+    for m in &merged {
+        let crud: Vec<&ApiFn> = m.functions.iter().filter(|f| CRUD_FN_NAMES.contains(&f.name.as_str())).collect();
+        if let Some(first) = crud.first()
+            && let Some(other) = crud.iter().find(|f| f.surface != first.surface)
+        {
+            return Err(format!(
+                "ontogen: the CRUD functions of module `{}` must come from one API surface, but `{}` is in `{}` and \
+                 `{}` is in `{}`",
+                m.name,
+                first.name,
+                dir(first.surface),
+                other.name,
+                dir(other.surface),
+            ));
+        }
+    }
+
+    Ok(merged)
+}
+
+/// Rewrite type names that two surfaces import from different paths.
+///
+/// A bare name (`Workout`) referenced by functions of several surfaces would
+/// need one `use` line per surface and clash. The surface with the lowest
+/// index keeps the bare name; every other surface's references become the
+/// fully qualified path (`determined_fitness::schema::Workout`), which the
+/// import collector leaves alone. Surfaces sharing a `types_import_path`
+/// share the import and are not rewritten.
+pub fn qualify_shared_types(modules: &mut [ApiModule], surfaces: &[ApiSurface]) {
+    // name -> the types path that keeps the bare import (lowest surface index).
+    let mut owner: HashMap<String, (usize, &str)> = HashMap::new();
+    for m in modules.iter() {
+        for f in &m.functions {
+            let path = surfaces[f.surface].types_import_path.as_str();
+            for name in fn_type_imports(f) {
+                let entry = owner.entry(name).or_insert((f.surface, path));
+                if f.surface < entry.0 {
+                    *entry = (f.surface, path);
+                }
+            }
+        }
+    }
+
+    for m in modules.iter_mut() {
+        for f in &mut m.functions {
+            let path = surfaces[f.surface].types_import_path.as_str();
+            let shared: Vec<String> = fn_type_imports(f)
+                .into_iter()
+                .filter(|name| owner.get(name).is_some_and(|(_, owner_path)| *owner_path != path))
+                .collect();
+            if shared.is_empty() {
+                continue;
+            }
+            for name in &shared {
+                qualify_type(&mut f.return_type_ast, name, path);
+                for p in &mut f.params {
+                    qualify_type(&mut p.ty_ast, name, path);
+                }
+            }
+            f.return_type = norm_type(&f.return_type_ast);
+            for p in &mut f.params {
+                p.ty = norm_type(&p.ty_ast);
+            }
+        }
+    }
+}
+
+/// Bare type names a function's signature imports.
+fn fn_type_imports(f: &ApiFn) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_type_import(&f.return_type_ast, &mut names);
+    for p in &f.params {
+        collect_type_import(&p.ty_ast, &mut names);
+    }
+    names
+}
+
+/// Replace every single-segment path `name` inside `ty` with `{path}::{name}`.
+fn qualify_type(ty: &mut Type, name: &str, path: &str) {
+    match ty {
+        Type::Reference(r) => qualify_type(&mut r.elem, name, path),
+        Type::Paren(p) => qualify_type(&mut p.elem, name, path),
+        Type::Group(g) => qualify_type(&mut g.elem, name, path),
+        Type::Slice(s) => qualify_type(&mut s.elem, name, path),
+        Type::Array(a) => qualify_type(&mut a.elem, name, path),
+        Type::Tuple(t) => {
+            for elem in &mut t.elems {
+                qualify_type(elem, name, path);
+            }
+        }
+        Type::Path(tp) => {
+            if tp.qself.is_none() && tp.path.segments.len() == 1 && tp.path.segments[0].ident == name {
+                let qualified: syn::Path =
+                    syn::parse_str(&format!("{path}::{name}")).expect("types_import_path parses");
+                let args = std::mem::replace(&mut tp.path.segments[0].arguments, PathArguments::None);
+                tp.path = qualified;
+                tp.path.segments.last_mut().expect("non-empty path").arguments = args;
+            }
+            for seg in &mut tp.path.segments {
+                if let PathArguments::AngleBracketed(ab) = &mut seg.arguments {
+                    for arg in &mut ab.args {
+                        if let GenericArgument::Type(inner) = arg {
+                            qualify_type(inner, name, path);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Collect `.rs` files from a directory and its immediate subdirectories.

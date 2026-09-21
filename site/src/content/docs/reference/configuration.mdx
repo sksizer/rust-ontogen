@@ -242,6 +242,7 @@ Client-side TypeScript and admin-registry generation moved out of this struct in
 | `store_type` | `Option<String>` | Store type for entity-scoped functions. |
 | `store_import` | `Option<String>` | Import path for the Store type. |
 | `pagination` | `Option<PaginationConfig>` | Pagination support for list operations. |
+| `extra_surfaces` | `Vec<ApiSurface>` | API surfaces scanned in addition to the primary one the fields above describe. Their modules merge into the same router, IPC handler, MCP registry and TypeScript transport. Empty for a single-surface crate. See [`ApiSurface`](#apisurface). |
 
 <Aside type="note">
 The supporting types below (`NamingConfig`, `ServerGenerator`, `ClientGenerator`, `RoutePrefix`, `PrefixParam`, `PaginationConfig`) live in the `ontogen::servers::*` module and are re-exported at the module level. The `ontogen::servers::config::*` and `ontogen::servers::types::*` paths used in earlier docs are now `pub(crate)` -- always import from `ontogen::servers::Foo` (or via `use ontogen::servers::{Foo, Bar};`). `ClientGenerator` lives at `ontogen::clients::ClientGenerator`.
@@ -337,6 +338,34 @@ That asymmetry is deliberate: `axum_path()` normalizes every route string at emi
 | `default_limit` | `u32` | Default page size when `limit` is not specified in the request. |
 | `max_limit` | `u32` | Maximum allowed page size. Requests above this are clamped. |
 
+### `ApiSurface`
+
+One directory of API modules with the import paths and store accessor its generated handlers use. Lives at `ontogen::ApiSurface` (also `ontogen::servers::ApiSurface`). The top-level `api_dir`, `service_import_path`, `types_import_path`, `store_type` and `pagination` fields of `ServersConfig` and `ClientsConfig` describe the primary surface; `extra_surfaces` adds more, and the same list must be given to both configs so the Rust handlers and the TypeScript transport agree. `Pipeline::api_surface(surface)` registers one surface with both stages (`servers_surface` / `clients_surface` target one stage).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `api_dir` | `PathBuf` | Directory containing this surface's API source files. |
+| `service_import_path` | `String` | Import path for this surface's service modules (e.g., `"determined_fitness::api"`). |
+| `types_import_path` | `String` | Import path for the types this surface's handlers reference (e.g., `"determined_fitness::schema"`). |
+| `store_accessor` | `Option<String>` | The state method store-scoped handlers call to obtain the store: `state.{store_accessor}().await`. `None` means `"store"`, which is what the primary surface always uses. |
+| `store_type` | `Option<String>` | Store type name for this surface's entity-scoped functions. Each surface is scanned with its own store type. |
+| `pagination` | `Option<PaginationConfig>` | Pagination for this surface's list operations. |
+| `paginated_modules` | `Vec<String>` | When non-empty, restricts `pagination` to these module names. Empty means every module of the surface paginates. |
+
+Modules are merged by name across surfaces. A module present in several surfaces becomes one module under one route prefix and one command prefix, with two rules: a function name may come from one surface only (a duplicate is a build error naming the module, the function and both surfaces), and the five CRUD functions (`list`, `get_by_id`, `create`, `update`, `delete`) must all come from the same surface. The surface that first defines a module imports it under its own name; every other surface's same-named module is imported as `{module}_{surface_index}` (`use determined_fitness::api::{workout as workout_1};`) and its handlers call through that alias. A type name that two surfaces import from different paths keeps the bare import for the lower-indexed surface and is written fully qualified in the other surface's handlers. The client generators key types by bare name, so a type name should denote one type across every surface: two distinct types that share a name would collapse into one TypeScript type, and the admin registry rejects an entity name that more than one surface's schema defines. `route_prefix` cannot be combined with an extra surface that has a `store_type`: scoped handlers open the store through the prefix's `state_accessor`, which yields the primary surface's store.
+
+```rust
+ApiSurface {
+    api_dir: "../determined-fitness/src/api".into(),
+    service_import_path: "determined_fitness::api".into(),
+    types_import_path: "determined_fitness::schema".into(),
+    store_accessor: Some("fitness_store".into()),
+    store_type: Some("Store".into()),
+    pagination: Some(PaginationConfig { default_limit: 50, max_limit: 500 }),
+    paginated_modules: vec!["workout_set".into()],
+}
+```
+
 ---
 
 ## `ClientsConfig`
@@ -364,6 +393,7 @@ The two configs overlap on naming, state, and routing because those decisions dr
 | `schema_entities` | `Vec<EntityDef>` | Parsed schema entities, used by the admin-registry generator for per-field UI metadata. Pass `schema.entities.clone()` from the [`SchemaOutput`](/reference/intermediate-representations/#schemaoutput). Leaving it empty ships `admin-registry.ts` with empty `fields: []` per entity. The [`Pipeline`](/reference/public-api/#pipeline) builder fills it in automatically. |
 | `pool_extra_roots` | `Vec<PathBuf>` | Extra source roots for the ontogen-ts type pool, beyond `CARGO_MANIFEST_DIR/src`. See [`pool_extra_roots`](#pool_extra_roots) below. |
 | `pool_exclude_paths` | `Vec<PathBuf>` | Source paths to drop from the pool after scanning. See [`pool_exclude_paths`](#pool_exclude_paths) below. |
+| `extra_surfaces` | `Vec<ApiSurface>` | API surfaces scanned in addition to the primary one. Same type and rules as on [`ServersConfig`](#apisurface); register a surface on both stages with [`Pipeline::api_surface`](/reference/public-api/#pipeline). |
 
 ```rust
 ClientsConfig {
@@ -393,6 +423,7 @@ ClientsConfig {
     schema_entities: Vec::new(),
     pool_extra_roots: Vec::new(),
     pool_exclude_paths: Vec::new(),
+    extra_surfaces: vec![],
 }
 ```
 

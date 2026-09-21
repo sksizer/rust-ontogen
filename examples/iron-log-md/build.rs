@@ -32,6 +32,7 @@ fn main() {
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
         pagination: None,
+        extra_surfaces: vec![],
     };
 
     let clients_config = ClientsConfig {
@@ -58,6 +59,7 @@ fn main() {
         schema_entities: Vec::new(),
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
+        extra_surfaces: vec![],
     };
 
     Pipeline::new("src/schema")
