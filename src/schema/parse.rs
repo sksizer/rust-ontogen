@@ -2,16 +2,19 @@
 //!
 //! This module reads `.rs` files from the schema directory, finds structs with
 //! `#[derive(OntologyEntity)]` and `#[ontology(entity, ...)]`, and extracts
-//! [`EntityDef`] metadata from them.
+//! [`EntityDef`] metadata from them. The string enums declared beside them
+//! become [`EnumDef`]s.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use syn::{Attribute, Expr, Field, Fields, ItemStruct, Lit, Meta, Type};
 
 use ontogen_core::naming::to_snake_case;
 
-use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+use crate::schema::model::{
+    EntityDef, EnumDef, EnumVariant, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind,
+};
 
 /// Parse all schema files in the given directory, returning entity definitions
 /// for structs annotated with `#[ontology(entity, ...)]`.
@@ -23,7 +26,24 @@ use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationIn
 /// as codegen drift to consumers that commit generated output.
 pub fn parse_schema_dir(dir: &Path) -> Result<Vec<EntityDef>, String> {
     let mut entities = Vec::new();
+    for (path, content) in schema_sources(dir)? {
+        entities.extend(parse_schema_source(&content, &path)?);
+    }
+    Ok(entities)
+}
 
+/// Parse the string enums declared in the schema directory, in the same
+/// file order as [`parse_schema_dir`].
+pub fn parse_schema_enums_dir(dir: &Path) -> Result<Vec<EnumDef>, String> {
+    let mut enums = Vec::new();
+    for (path, content) in schema_sources(dir)? {
+        enums.extend(parse_schema_enums_source(&content, &path)?);
+    }
+    Ok(enums)
+}
+
+/// The `.rs` files of the schema directory with their contents, in sorted path order.
+fn schema_sources(dir: &Path) -> Result<Vec<(PathBuf, String)>, String> {
     let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read schema directory {}: {e}", dir.display()))?;
 
     let mut paths: Vec<_> = entries
@@ -33,14 +53,13 @@ pub fn parse_schema_dir(dir: &Path) -> Result<Vec<EntityDef>, String> {
         .collect();
     paths.sort();
 
-    for path in paths {
-        let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-
-        let parsed = parse_schema_source(&content, &path)?;
-        entities.extend(parsed);
-    }
-
-    Ok(entities)
+    paths
+        .into_iter()
+        .map(|path| {
+            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+            Ok((path, content))
+        })
+        .collect()
 }
 
 /// Parse a single source file, returning any entity definitions found.
@@ -59,6 +78,31 @@ pub fn parse_schema_source(source: &str, path: &Path) -> Result<Vec<EntityDef>, 
     }
 
     Ok(entities)
+}
+
+/// Parse the string enums in a single source file: every enum whose variants
+/// are all unit variants, with the serde wire name of each. An enum with a
+/// payload variant, or a serde shape ontogen-ts rejects, is not a string enum
+/// and is left out.
+pub fn parse_schema_enums_source(source: &str, path: &Path) -> Result<Vec<EnumDef>, String> {
+    let syntax = syn::parse_file(source).map_err(|e| format!("Failed to parse {}: {e}", path.display()))?;
+
+    Ok(syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Enum(item_enum) => parse_string_enum(item_enum),
+            _ => None,
+        })
+        .collect())
+}
+
+fn parse_string_enum(item: &syn::ItemEnum) -> Option<EnumDef> {
+    let variants = ontogen_ts::unit_variant_wire_names(item).ok().flatten()?;
+    Some(EnumDef {
+        name: item.ident.to_string(),
+        variants: variants.into_iter().map(|(name, value)| EnumVariant { name, value }).collect(),
+    })
 }
 
 /// Check if a struct has `#[derive(OntologyEntity)]`.
@@ -399,6 +443,46 @@ fn expr_to_string(expr: &Expr) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_enums_parse_with_their_serde_names() {
+        let src = r#"
+            #[derive(Serialize, Deserialize)]
+            #[serde(rename_all = "kebab-case")]
+            pub enum Quality {
+                PeerReviewed,
+                #[serde(rename = "crowd")]
+                Community,
+                #[serde(skip)]
+                Hidden,
+            }
+
+            pub enum AppError {
+                SourceNotFound(String),
+            }
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Source {
+                #[ontology(id)]
+                pub id: String,
+                pub quality: Option<Quality>,
+                pub name: String,
+            }
+        "#;
+        let path = Path::new("source.rs");
+
+        let enums = parse_schema_enums_source(src, path).expect("parse enums");
+        assert_eq!(enums.len(), 1, "a payload variant keeps AppError out: {enums:?}");
+        assert_eq!(enums[0].name, "Quality");
+        let values: Vec<_> = enums[0].variants.iter().map(|v| v.value.as_str()).collect();
+        assert_eq!(values, ["peer-reviewed", "crowd"]);
+
+        let entities = parse_schema_source(src, path).expect("parse entities");
+        let field = |name: &str| entities[0].fields.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(field("quality").enum_def(&enums).map(|e| e.name.as_str()), Some("Quality"));
+        assert!(field("name").enum_def(&enums).is_none());
+    }
 
     #[test]
     fn schema_dir_entities_follow_sorted_file_order() {

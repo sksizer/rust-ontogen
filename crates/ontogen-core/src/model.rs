@@ -148,11 +148,42 @@ pub enum RelationKind {
     ManyToMany,
 }
 
+/// A Rust enum declared in the schema whose variants are all unit variants:
+/// a closed set of strings on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumDef {
+    /// Rust enum name (e.g., `SourceKind`).
+    pub name: String,
+
+    /// The variants in declaration order, `#[serde(skip)]` ones left out.
+    pub variants: Vec<EnumVariant>,
+}
+
+/// One variant of an [`EnumDef`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumVariant {
+    /// Rust variant name (e.g., `PeerReviewed`).
+    pub name: String,
+
+    /// The serialised form after `#[serde(rename_all)]` and `#[serde(rename)]`
+    /// (e.g., `peer-reviewed`).
+    pub value: String,
+}
+
 impl FieldDef {
     /// Create a new FieldDef with the given name, type, and role.
     /// Rendering hints default to off.
     pub fn new(name: impl Into<String>, field_type: FieldType, role: FieldRole) -> Self {
         Self { name: name.into(), field_type, role, serde_default: false, multiline_list: false, default_value: None }
+    }
+
+    /// The schema enum this field's type names, for `Kind` and `Option<Kind>`.
+    pub fn enum_def<'a>(&self, enums: &'a [EnumDef]) -> Option<&'a EnumDef> {
+        let name = match &self.field_type {
+            FieldType::OptionEnum(name) | FieldType::Other(name) => name,
+            _ => return None,
+        };
+        enums.iter().find(|e| &e.name == name)
     }
 }
 

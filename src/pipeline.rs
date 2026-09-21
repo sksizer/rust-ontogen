@@ -556,6 +556,9 @@ impl Pipeline {
             if clients_config.schema_entities.is_empty() {
                 clients_config.schema_entities = schema.entities.clone();
             }
+            if clients_config.schema_enums.is_empty() {
+                clients_config.schema_enums = schema.enums.clone();
+            }
             // Auto-exclude the SeaORM `entity_output` directory from the
             // ontogen-ts pool (see comment near the capture above). Only
             // append when the caller hasn't already listed it.
