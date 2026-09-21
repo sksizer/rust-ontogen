@@ -6,8 +6,9 @@
 //! to register the layer.
 //!
 //! For TypeScript admin-registry _generation_ (the data the layer consumes),
-//! see [`crate::servers::generators::admin`] which is wired through the
-//! servers pipeline.
+//! see the `admin` generator in `src/clients/generators/`, selected with
+//! [`ClientGenerator::AdminRegistry`](crate::clients::ClientGenerator) and run
+//! by [`gen_clients`](crate::gen_clients).
 
 use std::path::PathBuf;
 

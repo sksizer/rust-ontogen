@@ -12,7 +12,7 @@ resolver = "3"
 
 [package]
 name = "ontogen"
-version = "0.6.1"
+version = "0.6.7"
 edition = "2024"
 rust-version = "1.85"
 description = "Build-time code generator for ontology-driven applications: schema → persistence → store → API → servers → clients"
@@ -38,9 +38,9 @@ exclude = [
 ]
 
 [dependencies]
-ontogen-core = { path = "crates/ontogen-core", version = "=0.4.0" }
+ontogen-core = { path = "crates/ontogen-core", version = "=0.4.1" }
 ontogen-macros = { path = "crates/ontogen-macros", version = "=0.1.1" }
-ontogen-ts = { path = "crates/ontogen-ts", version = "=0.1.0" }
+ontogen-ts = { path = "crates/ontogen-ts", version = "=0.1.5" }
 cruet = "1.0"
 syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
 quote = "1"
@@ -51,4 +51,7 @@ tempfile = "3"
 # Used by the markdown-backend golden/conformance tests to validate spec
 # artifacts against the real runtime crate.
 markdown-store = { path = "crates/markdown-store" }
+# Used by the double-option deserializer test to prove the emitted idiom
+# behaves correctly against real JSON, not just a string-contains check.
+serde_json = "1"
 serde = { version = "1", features = ["derive"] }

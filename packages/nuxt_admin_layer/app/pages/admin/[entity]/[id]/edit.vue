@@ -9,7 +9,7 @@ const entityId = computed(() => route.params.id as string)
 const { adminEntityByPlural } = useAdminRegistry()
 const entityConfig = computed(() => adminEntityByPlural[entityPlural.value])
 
-const { currentItem, fields, fetchById, updateEntity, getEntityId } = useAdminEntity(
+const { currentItem, error, fields, fetchById, updateEntity, getEntityId } = useAdminEntity(
   entityPlural.value,
 )
 
@@ -22,17 +22,16 @@ const saving = ref(false)
 const formError = ref<string | null>(null)
 const loaded = ref(false)
 
+/** `/admin/<plural>/<id>`, with the id percent-encoded (it may contain '/', '?', '#', ...). */
+const detailRoute = computed(
+  () => `/admin/${entityPlural.value}/${encodeURIComponent(entityId.value)}`,
+)
+
 onMounted(async () => {
   const id = entityId.value
   await fetchById(id)
   if (currentItem.value) {
-    const data: Record<string, unknown> = {}
-    for (const field of formFields.value) {
-      data[field.key] =
-        currentItem.value[field.key] ??
-        (field.type === 'string-array' || field.type === 'relation-array' ? [] : '')
-    }
-    formData.value = data
+    formData.value = initEditFormData(formFields.value, currentItem.value)
   }
   loaded.value = true
 })
@@ -42,10 +41,10 @@ async function handleSubmit() {
   saving.value = true
   formError.value = null
   try {
-    const input = { ...formData.value }
+    const input = toUpdateInput(formFields.value, formData.value)
     const id = getEntityId(currentItem.value)
     await updateEntity(id, input)
-    router.push(`/admin/${entityPlural.value}/${entityId.value}`)
+    router.push(detailRoute.value)
   } catch (e) {
     formError.value = String(e)
   } finally {
@@ -68,7 +67,7 @@ async function handleSubmit() {
       </NuxtLink>
       <span class="text-(--ui-text-muted)">/</span>
       <NuxtLink
-        :to="`/admin/${entityPlural}/${entityId}`"
+        :to="detailRoute"
         class="text-sm text-(--ui-text-muted) hover:text-(--ui-text)"
       >
         {{ entityId }}
@@ -80,6 +79,10 @@ async function handleSubmit() {
     <!-- Form -->
     <div class="flex-1 overflow-auto p-6">
       <div v-if="!loaded" class="text-(--ui-text-muted) text-sm">Loading...</div>
+
+      <div v-else-if="error" class="text-red-600 text-sm">{{ error }}</div>
+
+      <div v-else-if="!currentItem" class="text-(--ui-text-muted) text-sm">Not found.</div>
 
       <form v-else class="max-w-2xl space-y-4" @submit.prevent="handleSubmit">
         <div v-if="formError" class="text-red-600 text-sm p-3 rounded bg-red-50">
@@ -103,7 +106,7 @@ async function handleSubmit() {
             {{ saving ? 'Saving...' : 'Save Changes' }}
           </button>
           <NuxtLink
-            :to="`/admin/${entityPlural}/${entityId}`"
+            :to="detailRoute"
             class="px-4 py-2 text-sm rounded-md border border-(--ui-border) text-(--ui-text) hover:bg-(--ui-bg-accented) transition-colors"
           >
             Cancel

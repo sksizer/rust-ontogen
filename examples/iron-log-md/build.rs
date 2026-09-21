@@ -57,6 +57,8 @@ fn main() {
         store_import: Some("crate::store::Store".into()),
         pagination: None,
         schema_entities: Vec::new(),
+        schema_enums: Vec::new(),
+        label_overrides: Default::default(),
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
         extra_surfaces: vec![],

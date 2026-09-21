@@ -228,8 +228,16 @@ impl<'ast> Visit<'ast> for DepCollector<'_> {
 mod tests {
     use super::*;
 
+    /// A pool key in the local crate. Pool keys name the root they came from
+    /// (see `crate::pool`), so these mirror what the walker produces.
     fn tp(segments: &[&str]) -> TypePath {
-        TypePath::new(segments.iter().map(|s| (*s).to_string()).collect()).expect("non-empty")
+        TypePath::new(rooted(segments)).expect("non-empty")
+    }
+
+    fn rooted(segments: &[&str]) -> Vec<String> {
+        std::iter::once(crate::pool::LOCAL_CRATE_ROOT.to_string())
+            .chain(segments.iter().map(|s| (*s).to_string()))
+            .collect()
     }
 
     fn parse_item(src: &str) -> syn::Item {
@@ -247,8 +255,7 @@ mod tests {
         let mut imports = ModuleImports::default();
         for (module, src) in entries {
             let file: syn::File = syn::parse_str(src).expect("parse module source");
-            let prefix: Vec<String> = module.iter().map(|s| (*s).to_string()).collect();
-            crate::resolve::collect_module_imports(&file, &prefix, &mut imports);
+            crate::resolve::collect_module_imports(&file, &rooted(module), &mut imports);
         }
         imports
     }

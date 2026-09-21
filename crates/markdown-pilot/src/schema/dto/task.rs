@@ -27,7 +27,7 @@ pub struct UpdateTaskInput {
     pub title: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub parent_id: Option<Option<String>>,
     #[serde(default)]
     pub subtasks: Option<Vec<String>>,
@@ -35,4 +35,12 @@ pub struct UpdateTaskInput {
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub body: Option<String>,
+}
+
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
 }
