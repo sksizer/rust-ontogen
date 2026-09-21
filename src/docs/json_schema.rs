@@ -8,7 +8,7 @@ use ontogen_core::naming::to_snake_case;
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
 
-use crate::docs::{DocsConfig, is_required, sorted_entities};
+use crate::docs::{DocsConfig, is_required, sorted_entities, wire_type};
 
 const DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
 
@@ -121,17 +121,7 @@ fn property(field: &FieldDef, enums: &[EnumDef]) -> Schema {
         FieldType::VecStruct(_) => {
             Schema { ty: Some("array"), items: items("object"), description, ..Schema::default() }
         }
-        other => {
-            let ty = match other {
-                FieldType::I32 | FieldType::OptionI32 | FieldType::I64 | FieldType::OptionI64 => "integer",
-                FieldType::F32 | FieldType::OptionF32 | FieldType::F64 | FieldType::OptionF64 => "number",
-                FieldType::Bool | FieldType::OptionBool => "boolean",
-                // Everything else — including a named type with no enum
-                // declaration — is a string on the wire.
-                _ => "string",
-            };
-            Schema { ty: Some(ty), description, ..Schema::default() }
-        }
+        _ => Schema { ty: Some(wire_type(field)), description, ..Schema::default() },
     }
 }
 

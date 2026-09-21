@@ -4,7 +4,7 @@
 use ontogen_core::ir::SchemaOutput;
 use ontogen_core::model::{EntityDef, EnumDef, FieldDef, FieldType};
 
-use crate::docs::{DocsConfig, is_required, sorted_entities};
+use crate::docs::{DocsConfig, is_required, sorted_entities, wire_type};
 
 /// Render the whole reference. Blocks are joined by a blank line and the
 /// document ends with a newline.
@@ -61,12 +61,7 @@ fn field_type(field: &FieldDef, enums: &[EnumDef]) -> String {
     match &field.field_type {
         FieldType::VecString => "string[]",
         FieldType::VecStruct(_) => "object[]",
-        FieldType::I32 | FieldType::OptionI32 | FieldType::I64 | FieldType::OptionI64 => "integer",
-        FieldType::F32 | FieldType::OptionF32 | FieldType::F64 | FieldType::OptionF64 => "number",
-        FieldType::Bool | FieldType::OptionBool => "boolean",
-        // Everything else — including a named type with no enum declaration —
-        // is a string on the wire.
-        _ => "string",
+        _ => wire_type(field),
     }
     .to_string()
 }

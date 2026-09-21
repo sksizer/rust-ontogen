@@ -119,6 +119,33 @@ fn is_required(field: &FieldDef) -> bool {
     !rust_type(field).starts_with("Option<")
 }
 
+/// The JSON type a scalar field has on the wire. Integer widths the parser
+/// has no dedicated variant for (`u32`, `usize`, `Option<u16>`, ...) arrive
+/// as `Other(name)` / `OptionEnum(name)`, so the name is checked too.
+/// Everything else — including a named type with no enum declaration — is a
+/// string on the wire.
+fn wire_type(field: &FieldDef) -> &'static str {
+    match &field.field_type {
+        FieldType::I32 | FieldType::OptionI32 | FieldType::I64 | FieldType::OptionI64 => "integer",
+        FieldType::F32 | FieldType::OptionF32 | FieldType::F64 | FieldType::OptionF64 => "number",
+        FieldType::Bool | FieldType::OptionBool => "boolean",
+        FieldType::OptionEnum(name) | FieldType::Other(name) => primitive_wire_type(name).unwrap_or("string"),
+        _ => "string",
+    }
+}
+
+/// The wire type of a Rust primitive by name, or `None` for anything else.
+fn primitive_wire_type(name: &str) -> Option<&'static str> {
+    match name {
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => {
+            Some("integer")
+        }
+        "f32" | "f64" => Some("number"),
+        "bool" => Some("boolean"),
+        _ => None,
+    }
+}
+
 /// The entities in reference order: sorted by name, so the document does not
 /// move when a schema file is renamed.
 fn sorted_entities(entities: &[EntityDef]) -> Vec<&EntityDef> {
@@ -142,6 +169,16 @@ mod tests {
         assert!(!is_required(&field("note", FieldType::OptionString)));
         assert!(is_required(&field("reps", FieldType::I32)));
         assert!(!is_required(&field("weight", FieldType::OptionF64)));
+    }
+
+    #[test]
+    fn undedicated_primitives_keep_their_wire_type() {
+        assert_eq!(wire_type(&field("reps", FieldType::Other("u32".into()))), "integer");
+        assert_eq!(wire_type(&field("n", FieldType::Other("usize".into()))), "integer");
+        assert_eq!(wire_type(&field("sets", FieldType::OptionEnum("u16".into()))), "integer");
+        assert_eq!(wire_type(&field("kind", FieldType::OptionEnum("IntervalKind".into()))), "string");
+        assert_eq!(wire_type(&field("at", FieldType::Other("chrono :: DateTime < Utc >".into()))), "string");
+        assert_eq!(wire_type(&field("id", FieldType::String)), "string");
     }
 
     #[test]
