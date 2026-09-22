@@ -641,3 +641,49 @@ fn the_registry_carries_enum_values_label_overrides_and_the_id_type() {
     assert!(source.contains("label: 'Average HR (bpm)'"), "the field-wide override:\n{source}");
     assert!(reading.contains("label: 'Heart rate'"), "the entity's own override wins:\n{reading}");
 }
+
+/// The guard on [`crate::ClientsConfig::new`]: a consumer that supplies only
+/// the five required inputs still compiles and still gets an inert
+/// configuration, so adding a field to `ClientsConfig` costs consumers
+/// nothing. Drop the `..new(..)` base from a consumer and this test stops
+/// compiling; give a defaulted field a non-inert value in `new` and the
+/// assertions below fail.
+#[test]
+fn a_config_built_from_only_its_required_inputs_is_inert() {
+    let config =
+        crate::ClientsConfig::new("src/api/v1", "AppState", "crate::api::v1", "crate::schema", "crate::AppState");
+
+    assert_eq!(config.api_dir, std::path::Path::new("src/api/v1"));
+    assert_eq!(config.state_type, "AppState");
+    assert_eq!(config.service_import_path, "crate::api::v1");
+    assert_eq!(config.types_import_path, "crate::schema");
+    assert_eq!(config.state_import, "crate::AppState");
+
+    assert!(config.generators.is_empty(), "nothing is generated until a generator is named");
+    assert!(matches!(config.ts_formatter, TsFormatter::None), "TypeScript is emitted as generated");
+    assert!(config.sse_route_overrides.is_empty());
+    assert!(config.ts_skip_commands.is_empty());
+    assert!(config.route_prefix.is_none());
+    assert!(config.store_type.is_none() && config.store_import.is_none());
+    assert!(config.pagination.is_none());
+    assert!(config.schema_entities.is_empty() && config.schema_enums.is_empty());
+    assert!(config.label_overrides.is_empty());
+    assert!(config.pool_extra_roots.is_empty() && config.pool_exclude_paths.is_empty());
+    assert!(config.extra_surfaces.is_empty(), "one surface, the primary");
+}
+
+/// The shape every consuming `build.rs` is meant to use: override the handful
+/// of fields the project cares about, inherit the rest. The overrides must
+/// survive the update syntax, and the base must not leak back over them.
+#[test]
+fn a_partial_literal_over_new_keeps_its_overrides() {
+    let config = crate::ClientsConfig {
+        generators: vec![crate::clients::ClientGenerator::AdminRegistry { output: "app/admin-registry.ts".into() }],
+        store_type: Some("Store".into()),
+        ..crate::ClientsConfig::new("src/api/v1", "AppState", "crate::api::v1", "crate::schema", "crate::AppState")
+    };
+
+    assert_eq!(config.generators.len(), 1);
+    assert_eq!(config.store_type.as_deref(), Some("Store"));
+    assert!(config.store_import.is_none(), "an unmentioned field stays at the base's default");
+}
