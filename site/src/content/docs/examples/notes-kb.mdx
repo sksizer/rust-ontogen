@@ -1,0 +1,78 @@
+---
+title: "Notes KB"
+description: An Obsidian-shaped vault where one wikilink is simultaneously a foreign key, a graph edge, and a link.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`notes-kb` is the smallest of the four examples and makes a single point: in a markdown vault, `[[some-note]]` is **one syntax doing three jobs at once** -- a foreign key to the store, an edge to the graph, and a navigable link in Obsidian. Nothing has to reconcile those three views, because there's only one artifact.
+
+The source lives at `examples/notes-kb/`.
+
+## Try it
+
+```sh
+cargo run    # http://127.0.0.1:3003 -- the graph IS the index page
+```
+
+The index page is a deliberately framework-free SVG graph fed by the generated HTTP API. Click a node to read the note body.
+
+## One entity, self-referential
+
+The whole schema:
+
+```rust
+/// A note whose outbound `links` are wikilinks to other notes -- the
+/// self-referential many-to-many that makes a vault a graph.
+#[derive(Debug, Clone, Serialize, Deserialize, OntologyEntity)]
+#[ontology(entity, directory = "notes", table = "notes")]
+pub struct Note {
+    #[ontology(id)]
+    pub id: String,
+
+    pub title: String,
+
+    #[ontology(relation(many_to_many, target = "Note"))]
+    pub links: Vec<String>,
+
+    #[ontology(body)]
+    pub body: String,
+}
+```
+
+`target = "Note"` -- the entity points at itself. On the SeaORM backend that would mean a junction table with two foreign keys into the same table. On the markdown backend it's a list in the frontmatter of the owning file:
+
+```markdown
+---
+type: note
+title: Wikilinks are edges
+links:
+  - "[[the-vault-is-the-database]]"
+  - "[[markdown-as-store]]"
+---
+
+## The claim
+
+...
+```
+
+<Aside type="note">
+The generated code strips the brackets at its typed boundary, so your JSON API returns `["the-vault-is-the-database", "markdown-as-store"]` and never leaks wikilink syntax to HTTP clients. The `[[...]]` form only exists on disk, where Obsidian wants it. See [`WikilinkPolicy`](/reference/configuration/#wikilinkpolicy) if you need the stripping behaviour on a SQL-backed store too.
+</Aside>
+
+## No junction table, no second source of truth
+
+Many-to-many on the markdown backend lives on the **owning** record -- there's no junction table and no `sync_junction` call. The file that declares the link is the only place the link exists.
+
+That has a real consequence worth understanding: links are **directed and single-sided**. A note's `links` are its outbound edges. Inbound edges (Obsidian's "backlinks") are a derived question -- walk the folder, filter on who mentions you. The example's graph view computes them that way.
+
+## What's here, and what isn't
+
+The generated TypeScript client lives in `generated-ts/` for a real frontend to consume. A full Nuxt app over it is left as the natural next step, shaped by your own component conventions rather than by generated boilerplate -- the example ships the SVG graph instead so that `cargo run` gets you something to look at with no `npm install`.
+
+## Where to look
+
+1. **`src/schema/note.rs`** -- eighteen lines, one self-referential relation.
+2. **`data/vault/notes/`** -- three notes that link to each other. Open the folder in Obsidian and you get the same graph the example renders.
+3. **`src/main.rs`** -- how the graph page consumes the generated API.
+4. **`generated-ts/types.ts`** -- the emitted bindings, including the `Note` type and its DTOs.

@@ -24,16 +24,24 @@ pub struct CreateWorkoutInput {
 /// All fields are optional; only provided fields are updated.
 #[derive(Debug, Clone, Deserialize, JsonSchema, specta::Type)]
 pub struct UpdateWorkoutInput {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub name: Option<Option<String>>,
     #[serde(default)]
     pub date: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub duration_minutes: Option<Option<i32>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub notes: Option<Option<String>>,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub created_at: Option<String>,
+}
+
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
 }

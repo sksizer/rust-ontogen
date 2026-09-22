@@ -195,7 +195,7 @@ fn generate_from_model_field(field: &FieldDef) -> Option<String> {
                     _ => "String".to_string(),
                 };
                 Some(format!(
-                    r#"{name}: serde_json::from_str::<crate::schema::{type_name}>(&format!("\"{{}}\"", &model.{name})).unwrap_or_else(|_| serde_json::from_str::<crate::schema::{type_name}>("\"\"").expect("enum should have a fallback variant")),"#
+                    r#"{name}: serde_json::from_str::<crate::schema::{type_name}>(&format!("\"{{}}\"", model.{name})).unwrap_or_else(|_| serde_json::from_str::<crate::schema::{type_name}>("\"\"").expect("enum should have a fallback variant")),"#
                 ))
             }
         },

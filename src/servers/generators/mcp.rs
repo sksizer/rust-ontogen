@@ -10,7 +10,7 @@ use ontogen_core::ir::OpKind;
 use crate::servers::classify::classify_op;
 use crate::servers::config::{Config, PaginationConfig};
 use crate::servers::generators::surface_use_stmts;
-use crate::servers::parse::{ApiFn, ApiModule};
+use crate::servers::parse::{ApiFn, ApiModule, is_page_param};
 use crate::servers::types::{extract_input_type, param_to_owned_type, to_pascal_case};
 
 /// Wraps a schema_fn reference with project_id injection when route_prefix is set.
@@ -307,8 +307,16 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     let pagination = config.pagination_for(module, f.surface).filter(|_| ret_type.starts_with("Vec<"));
                     let paginate = pagination.is_some();
                     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let plain_params: Vec<_> =
-                        f.params.iter().filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input")).collect();
+                    // A pushed-down list's own limit/offset are the page, taken
+                    // from `args` below — not tool arguments to extract.
+                    let pushes_page = paginate && f.takes_page();
+                    let plain_params: Vec<_> = f
+                        .params
+                        .iter()
+                        .filter(|p| {
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!pushes_page || !is_page_param(p))
+                        })
+                        .collect();
                     let schema_wrap = if paginate { wrap_schema_for_list } else { wrap_schema };
                     let mut schema_fn = schema_wrap("schema_for::<EmptyInput>", config);
                     let mut extraction = String::new();
@@ -329,6 +337,31 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     if let Some(pg) = pagination {
                         let default_limit = pg.default_limit;
                         let max_limit = pg.max_limit;
+                        // Two shapes. When `list` takes the page it is pushed down
+                        // and the total comes from the module's `count` — nothing
+                        // beyond the page is ever materialised. A list that does not
+                        // take it (not every Vec-returning op is the checked `list`)
+                        // keeps the older in-memory slice.
+                        let body = if pushes_page {
+                            format!(
+                                "\
+{prefix}{extraction}                    let limit = args.get(\"limit\").and_then(|v| v.as_u64()).unwrap_or({default_limit}).min({max_limit});
+                    let offset = args.get(\"offset\").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let items = {svc}::list({first_arg}{extra_args}, Some(limit), Some(offset)){await_str}.map_err(|e| e.to_string())?;
+                    let total = {svc}::count({first_arg}){await_str}.map_err(|e| e.to_string())?;
+"
+                            )
+                        } else {
+                            format!(
+                                "\
+{prefix}{extraction}                    let all_items = {svc}::list({first_arg}{extra_args}){await_str}.map_err(|e| e.to_string())?;
+                    let total = all_items.len();
+                    let limit = args.get(\"limit\").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or({default_limit}_usize).min({max_limit}_usize);
+                    let offset = args.get(\"offset\").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+                    let items: Vec<_> = all_items.into_iter().skip(offset).take(limit).collect();
+"
+                            )
+                        };
                         // Pagination always needs args access
                         out.push_str(&format!(
                             "\
@@ -338,12 +371,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
             schema_fn: {schema_fn},
             handler: |state, args| {{
                 Box::pin(async move {{
-{prefix}{extraction}                    let all_items = {svc}::list({first_arg}{extra_args}){await_str}.map_err(|e| e.to_string())?;
-                    let total = all_items.len();
-                    let limit = args.get(\"limit\").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or({default_limit}_usize).min({max_limit}_usize);
-                    let offset = args.get(\"offset\").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
-                    let items: Vec<_> = all_items.into_iter().skip(offset).take(limit).collect();
-                    Ok(json!({{
+{body}                    Ok(json!({{
                         \"items\": serde_json::to_value(&items).map_err(|e| format!(\"Serialize error: {{e}}\"))?,
                         \"total\": total,
                         \"limit\": limit,

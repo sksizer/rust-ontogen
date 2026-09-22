@@ -17,6 +17,7 @@ let store_output = ontogen::gen_store(
         hooks_dir: Some(PathBuf::from("src/store/hooks")),
         schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
         backend: ontogen::Backend::Seaorm(Some(seaorm_output)),
+        wikilink_policy: None,
     },
 )?;
 ```

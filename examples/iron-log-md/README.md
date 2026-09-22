@@ -44,8 +44,3 @@ Declared omission: the TauriIpc transport generator (compiling the Tauri
 stack for a headless demo buys nothing; iron-log exercises it). The schema
 files add explicit `directory = "…"` attributes — the markdown backend reads
 them; SeaORM never did.
-
-Known follow-up surfaced by this example: the HTTP generator emits axum-0.7
-route syntax (`:param`); axum 0.8 — which iron-log itself pins — rejects it
-at router-build time, so iron-log's HTTP server panics on boot on main.
-This twin pins axum 0.7 until the generator emits `{param}`.

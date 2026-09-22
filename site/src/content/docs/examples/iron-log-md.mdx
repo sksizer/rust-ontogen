@@ -1,0 +1,108 @@
+---
+title: "Iron Log MD"
+description: Iron Log's exact schema on the markdown store backend, and the diff that proves the backends are interchangeable.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`iron-log-md` is the twin of [Iron Log](/examples/iron-log/): the **same four entities**, generated through the **same pipeline**, with one line of difference that matters -- the store backend. Workouts live as editable markdown files under `data/vault/` instead of SQLite rows.
+
+It exists to make [ADR 0001](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0001-markdown-as-store-backend.md)'s load-bearing claim checkable rather than assertable.
+
+The source lives at `examples/iron-log-md/`.
+
+## Try it
+
+```sh
+cargo run
+```
+
+```sh
+# in another shell
+curl -s localhost:3001/api/workouts | jq
+
+curl -s -X POST localhost:3001/api/workouts \
+  -H 'content-type: application/json' \
+  -d '{"id":"w-1","date":"2026-06-06","tags":["strength"],"created_at":"2026-06-06T08:00:00Z"}'
+
+cat data/vault/workouts/w-1.md      # wikilinked tags, plain YAML
+
+$EDITOR data/vault/workouts/w-1.md  # add a field, edit the prose...
+
+curl -s -X PUT localhost:3001/api/workouts/w-1 \
+  -H 'content-type: application/json' \
+  -d '{"duration_minutes":60}'
+
+cat data/vault/workouts/w-1.md      # ...your edits survived the generated update
+```
+
+That last step is the point. The generated update went through the runtime's `Document` round-trip, which preserves unknown keys, key order, and the body. A field you added by hand is still there; an untouched file re-renders byte-for-byte.
+
+## The byte-identical demo
+
+Everything above the store is identical between backends. You can check it directly:
+
+```sh
+diff -r ../iron-log/src-tauri/src/api/v1/generated src/api/v1/generated
+```
+
+Zero output. Same API forwarding layer, same handler signatures, same everything -- generated from the same schema against two completely different persistence layers.
+
+<Aside type="note">
+The mechanical, CI-enforced version of this lives in the root workspace at `tests/backend_parity.rs`, with a negative control so the test can't pass by comparing nothing.
+</Aside>
+
+## The entire consumer delta
+
+This is the complete list of what a consumer writes differently:
+
+| | iron-log (SeaORM) | iron-log-md (markdown) |
+|---|---|---|
+| `Store` holds | `db: Arc<DatabaseConnection>` | `vault: markdown_store::VaultHandle` |
+| Generated CRUD calls | `self.db()` | `self.vault()` |
+| Junction plumbing | `sync_junction` / `load_junction_ids` | none -- many-to-many is a wikilink list in frontmatter |
+| `AppError` | `DbError(String)` | `Md(String)` + `From<markdown_store::Error>` |
+| Storage | one SQLite file | `data/vault/<entity>/<id>.md`, editable anywhere |
+
+And in `build.rs`, `.seaorm(...)` becomes `.markdown_io(...)`:
+
+```rust
+Pipeline::new("src/schema")
+    .markdown_io(
+        "src/persistence/markdown/generated",
+        MarkdownIoOptions {
+            vault_root: "data/vault".into(),
+            layout: MarkdownLayout::PerEntityDir,
+            // Workout.name is Option<String>, so SlugFromField is out;
+            // Provided keeps the example honest about where ids come from.
+            id_strategy: IdStrategy::Provided,
+            list_cap: 10_000,
+        },
+    )
+    .dtos("src/schema/dto")
+    .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
+    .api("src/api/v1/generated", "AppState")
+    .servers(servers_config)
+    .clients(clients_config)
+    .build()
+```
+
+With exactly one persistence stage configured, the store backend is inferred -- no `.store_backend(...)` call needed.
+
+## Two schema differences
+
+The entities are otherwise identical to iron-log's:
+
+- **Explicit `directory = "…"`** on each entity. The markdown backend uses it to pick the vault folder; SeaORM never read it. Without it the segment defaults to the singular type name and the store walks a folder your records aren't in.
+- **`IdStrategy::Provided`** rather than `SlugFromField`. `Workout.name` is `Option<String>`, so there's no guaranteed field to slug from. Callers supply ids; an empty one is a runtime error.
+
+## Declared omission
+
+No `TauriIpc` transport generator. Compiling the Tauri stack for a headless demo buys nothing, and iron-log already exercises that path. The HTTP transport and the TypeScript client generators both run.
+
+## Where to look
+
+1. **`build.rs`** -- the one-stage swap, side by side with iron-log's.
+2. **`src/store/mod.rs`** -- the hand-written `Store`, to see how small the delta really is.
+3. **`src/store/generated/workout.rs`** -- generated CRUD against the vault runtime instead of SeaORM.
+4. **`data/vault/workouts/`** -- the records themselves. Open one in Obsidian.

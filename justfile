@@ -10,6 +10,9 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 cargo := require("cargo")
 rustc := require("rustc")
 
+# pnpm: https://pnpm.io/installation (used by packages/nuxt_admin_layer's test suite)
+pnpm := require("pnpm")
+
 # ---------------------------------------------------------------------------- #
 #                                    RECIPES                                   #
 # ---------------------------------------------------------------------------- #
@@ -51,8 +54,16 @@ full-write: format
 alias fw := full-write
 
 # Run tests (whole workspace, so every member crate is gated)
-test:
+test: && test-admin-layer
     cargo test --workspace
+
+# Run packages/nuxt_admin_layer's vitest suite (regression tests for the Nuxt
+# admin layer; the layer itself has no Nuxt app of its own to build inside,
+# so these mount its composables/components/pages directly - see
+# packages/nuxt_admin_layer/vitest.config.ts).
+test-admin-layer:
+    pnpm install --frozen-lockfile
+    pnpm --filter @ontogen/admin-layer test
 
 # Alias retained for muscle memory: same as full-check now that tests are folded in.
 ci: full-check

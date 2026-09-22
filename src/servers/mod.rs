@@ -79,17 +79,16 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
 
     for m in modules {
         let url_plural = config.naming.url_for_module(m);
-        let is_store_module = m.functions.first().is_some_and(|f| f.first_param_is_store);
-
-        // HTTP base path: store-based modules get scoped under route_prefix
-        // when configured (mirroring http.rs:166-170 + generate_scoped_handlers).
-        let http_base = match (&config.route_prefix, is_store_module) {
-            (Some(prefix), true) => format!("/api/{}", generators::http::axum_path(&prefix.segments)),
-            _ => "/api".to_string(),
-        };
 
         for f in &m.functions {
             let op = classify::classify_op(f);
+            // HTTP base path: store-scoped fns get scoped under route_prefix
+            // when configured (mirroring the per-fn gating in http.rs's
+            // unscoped loop and generate_scoped_handlers).
+            let http_base = match (&config.route_prefix, f.first_param_is_store) {
+                (Some(prefix), true) => format!("/api/{}", generators::http::axum_path(&prefix.segments)),
+                _ => "/api".to_string(),
+            };
             let handler_name = generators::ipc::command_name(&m.name, f, config);
             let params: Vec<ParamMeta> =
                 f.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
@@ -202,6 +201,23 @@ fn http_route_for(
 /// [`ServerGenerator`]. Returns the parsed `ApiModule` list so callers can
 /// use it for test generation or other downstream tasks.
 pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModule>, String> {
+    // Project-scoped handlers open the store through the one
+    // `route_prefix.state_accessor`, which yields the primary surface's store
+    // type; an extra surface's store-scoped fns expect their own store, so
+    // the combination cannot be generated correctly.
+    if let Some(prefix) = &config.route_prefix
+        && let Some(surface) = config.extra_surfaces.iter().find(|s| s.store_type.is_some())
+    {
+        return Err(format!(
+            "ontogen: `route_prefix` cannot be combined with an extra API surface that has a `store_type` (surface \
+             `{}`, store type `{}`); scoped handlers always open the store via `{}`, which yields the primary \
+             surface's store",
+            surface.api_dir.display(),
+            surface.store_type.as_deref().unwrap_or_default(),
+            prefix.state_accessor,
+        ));
+    }
+
     let surfaces = config.surfaces();
     let scanned = parse::scan_surfaces(&surfaces, &config.state_type)?;
 
@@ -213,7 +229,7 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
     parse::qualify_shared_types(&mut modules, &surfaces);
     parse::apply_singleton_overlay(&mut modules, &config.naming);
     parse::apply_command_overrides(&mut modules, &config.naming);
-    parse::check_paginated_lists(&modules, config)?;
+    parse::check_paginated_lists(&mut modules, config)?;
     if modules.is_empty() {
         return Ok(modules);
     }

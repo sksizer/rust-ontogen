@@ -229,12 +229,12 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
                     // custom result types are passed through unchanged.
                     let paginated =
                         config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
-                    // A paginated list's own limit/offset are the page, not caller params.
+                    // A list that takes the page owns its limit/offset: they are never caller params.
                     let plain_params: Vec<&Param> = f
                         .params
                         .iter()
                         .filter(|p| {
-                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!paginated || !is_page_param(p))
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p))
                         })
                         .collect();
 
@@ -469,12 +469,12 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                     // custom result types are passed through unchanged.
                     let paginated =
                         config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
-                    // A paginated list's own limit/offset are the page, not caller params.
+                    // A list that takes the page owns its limit/offset: they are never caller params.
                     let plain_params: Vec<&Param> = f
                         .params
                         .iter()
                         .filter(|p| {
-                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!paginated || !is_page_param(p))
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p))
                         })
                         .collect();
 
@@ -799,12 +799,12 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                     // custom result types are passed through unchanged.
                     let paginated =
                         config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
-                    // A paginated list's own limit/offset are the page, not caller params.
+                    // A list that takes the page owns its limit/offset: they are never caller params.
                     let plain_params: Vec<&Param> = f
                         .params
                         .iter()
                         .filter(|p| {
-                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!paginated || !is_page_param(p))
+                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p))
                         })
                         .collect();
 

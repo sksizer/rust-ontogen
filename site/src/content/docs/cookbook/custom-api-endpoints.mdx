@@ -111,26 +111,39 @@ The scanner classifies each function into an `OpKind` that drives HTTP verb and 
 | Function name | `OpKind` | HTTP | Route example |
 |---------------|----------|------|---------------|
 | `list` | `List` | `GET` | `/api/workouts` |
-| `get_by_id` | `GetById` | `GET` | `/api/workouts/:id` |
+| `get_by_id` | `GetById` | `GET` | `/api/workouts/{id}` |
 | `create` | `Create` | `POST` | `/api/workouts` |
-| `update` | `Update` | `PUT` | `/api/workouts/:id` |
-| `delete` | `Delete` | `DELETE` | `/api/workouts/:id` |
-| `add_{child}(parent_id, child_id)` | `JunctionAdd` | `POST` | `/api/workouts/:parent_id/{child}` |
-| `remove_{child}(parent_id, child_id)` | `JunctionRemove` | `DELETE` | `/api/workouts/:parent_id/{child}/:child_id` |
-| `list_{children}(parent_id)` | `JunctionList` | `GET` | `/api/workouts/:parent_id/{children}` |
+| `update` | `Update` | `PUT` | `/api/workouts/{id}` |
+| `delete` | `Delete` | `DELETE` | `/api/workouts/{id}` |
+| `add_{child}(parent_id, child_id)` | `JunctionAdd` | `POST` | `/api/workouts/{parent_id}/{child}` |
+| `remove_{child}(parent_id, child_id)` | `JunctionRemove` | `DELETE` | `/api/workouts/{parent_id}/{child}/{child_id}` |
+| `list_{children}(parent_id)` | `JunctionList` | `GET` | `/api/workouts/{parent_id}/{children}` |
 
 ### Custom functions (CustomGet / CustomPost)
 
-For names that don't match a vocabulary entry, the classifier looks at the *shape* of the first user-facing parameter:
+For names that don't match a vocabulary entry, the classifier looks at the function name and the *shape* of the first user-facing parameter:
 
 | Function shape | `OpKind` | HTTP | How parameters are extracted |
 |----------------|----------|------|------------------------------|
-| Zero user-facing parameters | `CustomGet` | `GET` | (no extraction) |
-| `get_{name}(state, id: &str)` (or `String`, integer, `Uuid`, …) | `CustomGet` | `GET` | First param → URL path segment (`/api/.../:id`) |
+| Zero user-facing parameters, name starts with a read prefix | `CustomGet` | `GET` | (no extraction) |
+| Zero user-facing parameters, any other name | `CustomPost` | `POST` | (no extraction) |
+| `get_{name}(state, id: &str)` (or `String`, integer, `Uuid`, …) | `CustomGet` | `GET` | First param → URL path segment (`/api/.../{id}`) |
 | `get_{name}(state, q: Option<…>)` | `CustomGet` | `GET` | `Option<…>` params → query string |
 | `get_{name}(state, body: &CustomStruct)` | `CustomPost` | `POST` | Body-carrying first param → JSON body |
 | Any other shape | `CustomPost` | `POST` | Non-`Option` non-`*Input` params → JSON body; `Option<…>` → query |
 | Returns `tokio::sync::broadcast::Receiver<T>` | `EventStream` | `GET` (SSE) | `/api/events/{event-name}` |
+
+<Aside type="caution" title="Zero-param functions default to POST">
+A function with no user-facing parameters carries no body, but that doesn't make it a read -- `pause(state)`, `backup(state)`, and `reset_all(state)` all mutate state with no params. Per RFC 7231 §4.2.1, GET must be safe, so the classifier defaults these to `CustomPost`.
+
+It opts back into `CustomGet` only when the name starts with one of the **known read prefixes**:
+
+```text
+get_   list_   count_   exists_   find_   is_   has_
+```
+
+So `get_status(state)` emits `GET`, and `refresh_cache(state)` emits `POST`. Override either direction with [`#[ontogen::http::get]` or `#[ontogen::http::post]`](#forcing-a-method).
+</Aside>
 
 The id-like primitive allowlist is: `bool`, `char`, `i8`–`i128`, `isize`, `u8`–`u128`, `usize`, `f32`, `f64`, `String`, `str`, and `Uuid`. References to any of these (`&str`, `&String`) are also path-extractable. Anything else (a single-segment custom struct, a fully-qualified path like `crate::schema::Foo`, or a generic container like `Vec<T>` / `HashMap<K, V>`) is treated as body-carrying.
 
@@ -139,7 +152,7 @@ For custom functions, the module name becomes part of the route path. The functi
 <Aside type="tip">
 **`get_*` with a body.** A function named `get_filtered_sessions(store, filter: &ExportFilterRequest)` reads as a "get" semantically, but the filter is too complex to fit in a URL. Classification handles this automatically: because `ExportFilterRequest` is a custom struct, the function emits a `POST /api/{module}/filtered-sessions` route with the filter as the JSON body. The HTTP method is `POST` but the operation remains read-only on the IPC and MCP sides (those transports don't distinguish GET from POST).
 
-If you need to force a method regardless of param shape, use the source-side `#[ontogen::http::post]` attribute (see the "Force POST classification" section below). A symmetric `#[ontogen::http::get]` is anticipated but not yet shipped.
+If you need to force a method regardless of name or param shape, use the source-side `#[ontogen::http::post]` / `#[ontogen::http::get]` attributes -- see [Forcing a method](#forcing-a-method) below.
 </Aside>
 
 ## Organizing custom endpoints
@@ -209,7 +222,7 @@ pub async fn count(store: &Store) -> Result<i64, AppError> { ... }
 **Parameters after the state/store are extracted as route params or query params:**
 
 ```rust
-// `id` becomes a path parameter: GET /api/workouts/:id/sets
+// `id` becomes a path parameter: GET /api/workouts/{id}/sets
 pub async fn get_sets(store: &Store, id: &str) -> Result<Vec<WorkoutSet>, AppError> { ... }
 
 // `input` becomes a JSON body: POST /api/workouts/import
@@ -248,24 +261,44 @@ pub fn copy(text: &str) -> Result<(), AppError> {
 
 See [Stateless utility functions](/guides/api-layer/#stateless-utility-functions-ontogenstateless) for the full behaviour.
 
-**Force POST classification with `#[ontogen::http::post]`:**
+### Forcing a method
 
-The auto-classifier routes zero-user-param custom functions as `GET` (the empty-params branch in `classify_by_name_and_params` — no body to carry). That heuristic is wrong for action-verb mutating handlers like `pause(state)`, `resume(state)`, or `reset_all(state)` — they mutate state but emit as `GET` because they have no input. Use `#[ontogen::http::post]` to flip a single handler to `POST` without changing the global default:
+Two attributes override classification outright, for the cases where the name-and-shape heuristic reads a handler wrong.
+
+**`#[ontogen::http::post]`** — for a mutating handler the classifier would route as a read. The usual case is a read-prefixed name that isn't a read:
 
 ```rust
 use ontogen::http::post;
 
-// Without the attribute, `pause(state)` would emit as `get(...)` because
-// after the state strip it has zero user-input params.
+// `get_fresh_token` starts with `get_`, so it would classify as GET.
+// It mints a token — that's a mutation.
 #[post]
-pub async fn pause(state: &AppState) -> Result<(), AppError> {
-    state.engine.pause().await
+pub async fn get_fresh_token(state: &AppState) -> Result<String, AppError> {
+    state.auth.mint().await
 }
 ```
 
-The attribute lives under the `http::*` namespace because the override is specifically HTTP-method-shape; routing-shape-agnostic attributes (`stateless`, `rename`, `skip`) stay at the top of the `ontogen::` namespace. The same attribute parser also accepts the bare `#[post]` form (after a `use ontogen::http::post;`) or any path ending in `::post` — match is on the final path segment.
+**`#[ontogen::http::get]`** — for a read the classifier would route as `POST`. This is the escape hatch for an asymmetry in the name heuristic: the read-prefix allowlist is consulted **only** for functions with no user-facing params, and among functions that *do* carry params only `get_` has a branch back into `CustomGet`. So a read with arguments named `count_*`, `exists_*`, `find_*`, `is_*`, or `has_*` classifies `CustomPost` however side-effect-free it is:
 
-The attribute is purely additive: omit it and the existing classifier behaviour applies (zero-param custom fns → `CustomGet`, named-CRUD by name, body-carrying first params → `CustomPost`, etc.). The macro itself is a no-op; the ontogen parser reads it via `syn` during build-time scanning and stamps `ApiFn::force_method = Some(ForcedMethod::Post)`, which `classify_op` short-circuits on to return `OpKind::CustomPost`.
+```rust
+use ontogen::http::get;
+
+// Has a param and isn't named `get_*`, so it would classify as POST.
+#[get]
+pub async fn count_matching(store: &Store, pattern: &str) -> Result<i64, AppError> {
+    store.count_matching(pattern).await
+}
+```
+
+Before this attribute existed the only remedy was renaming to `get_*`, which bends a handler's name to satisfy the router rather than to describe what it does.
+
+Both overrides **win outright**. Forcing GET is you asserting the param shape suits a GET; it deliberately does not re-run the body-carrying-first-param check that the `get_*` branch applies. An override that second-guesses the author isn't an override.
+
+<Aside type="note">
+These attributes live under the `http::*` namespace because the override is specifically HTTP-method-shape; routing-shape-agnostic attributes (`stateless`, `rename`, `skip`) stay at the top of the `ontogen::` namespace.
+
+The parser matches on the **final path segment**, so `#[ontogen::http::get]`, a bare `#[get]` after a `use ontogen::http::get;`, and any other path ending in `::get` all work. The macros themselves are no-ops; the ontogen parser reads them via `syn` during build-time scanning and stamps `ApiFn::force_method`, which `classify_op` short-circuits on.
+</Aside>
 
 Combine freely with `#[ontogen::stateless]` and `#[ontogen(rename = "…")]` — order doesn't matter, the parser inspects each attribute independently.
 

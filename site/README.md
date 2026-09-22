@@ -1,49 +1,50 @@
-# Starlight Starter Kit: Basics
+# Ontogen documentation site
 
-[![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
+The Ontogen docs, built with [Astro](https://astro.build) and
+[Starlight](https://starlight.astro.build). Deployed from `main` via Cloudflare
+Pages.
 
-```
-pnpm create astro@latest -- --template starlight
-```
+## Running it
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
-
-## 🚀 Project Structure
-
-Inside of your Astro + Starlight project, you'll see the following folders and files:
-
-```
-.
-├── public/
-├── src/
-│   ├── assets/
-│   ├── content/
-│   │   └── docs/
-│   └── content.config.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
+```sh
+npm install
+npm run dev      # http://localhost:4321
+npm run build    # production build into ./dist
+npm run preview  # serve ./dist locally
 ```
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
+## Layout
 
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
+```
+site/
+├── astro.config.mjs          # site config -- the sidebar lives here
+├── public/                   # static assets served as-is
+└── src/
+    ├── assets/               # logos, images referenced from content
+    ├── styles/custom.css     # theme overrides
+    └── content/docs/         # every page, one .mdx per route
+        ├── index.mdx         # landing page
+        ├── getting-started/
+        ├── concepts/
+        ├── guides/
+        ├── cookbook/
+        ├── reference/
+        └── examples/
+```
 
-Static assets, like favicons, can be placed in the `public/` directory.
+A file at `src/content/docs/guides/store-layer.mdx` is served at
+`/guides/store-layer/`. Adding a page means creating the file **and** adding it
+to the `sidebar` array in `astro.config.mjs` -- Starlight won't pick it up
+automatically.
 
-## 🧞 Commands
+## Writing
 
-All commands are run from the root of the project, from a terminal:
-
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `pnpm install`             | Installs dependencies                            |
-| `pnpm dev`             | Starts local dev server at `localhost:4321`      |
-| `pnpm build`           | Build your production site to `./dist/`          |
-| `pnpm preview`         | Preview your build locally, before deploying     |
-| `pnpm astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `pnpm astro -- --help` | Get help using the Astro CLI                     |
-
-## 👀 Want to learn more?
-
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+- Internal links are absolute, trailing-slashed: `[Store Layer](/guides/store-layer/)`.
+- Prose uses `--`, not em dashes, matching the rest of the repository.
+- Rust snippets that show a config struct must list **every** field. These are
+  plain structs with public fields and no `#[non_exhaustive]`, so an omitted
+  field is a compile error for anyone who copies the block. When a snippet is
+  deliberately partial, mark the gap with `// ... other fields`.
+- The four `build.rs` files under [`examples/`](../examples/) are the source of
+  truth for what a working pipeline looks like. When the API changes, reconcile
+  the docs against those rather than against another doc page.
