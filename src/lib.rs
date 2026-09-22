@@ -393,35 +393,21 @@ pub fn gen_servers(
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```no_run
 /// use ontogen::{gen_clients, ClientsConfig};
 /// use ontogen::clients::ClientGenerator;
-/// use std::collections::HashMap;
-/// use std::path::PathBuf;
 ///
 /// gen_clients(
 ///     None,
 ///     &[],
 ///     &ClientsConfig {
-///         api_dir: PathBuf::from("src/api/v1"),
-///         state_type: "AppState".into(),
-///         service_import_path: "crate::service".into(),
-///         types_import_path: "crate::schema".into(),
-///         state_import: "crate::AppState".into(),
-///         naming: Default::default(),
-///         generators: vec![],
-///         sse_route_overrides: HashMap::new(),
-///         ts_skip_commands: vec![],
-///         route_prefix: None,
+///         generators: vec![ClientGenerator::HttpTs {
+///             output: "app/generated/http.ts".into(),
+///             bindings_path: "app/generated/types.ts".into(),
+///         }],
 ///         store_type: Some("Store".into()),
 ///         store_import: Some("crate::Store".into()),
-///         pagination: None,
-///         schema_entities: vec![],
-///         schema_enums: vec![],
-///         label_overrides: HashMap::new(),
-///         pool_extra_roots: vec![],
-///         pool_exclude_paths: vec![],
-///         extra_surfaces: vec![],
+///         ..ClientsConfig::new("src/api/v1", "AppState", "crate::service", "crate::schema", "crate::AppState")
 ///     },
 /// )?;
 /// # Ok::<(), ontogen::CodegenError>(())
@@ -624,6 +610,22 @@ pub struct ServersConfig {
 /// pagination wrappers, route prefixes). The `naming`, `route_prefix`, and
 /// `pagination` types are re-exported from [`servers`] for now; they may
 /// move to a shared module in a future refactor.
+///
+/// Build one from [`ClientsConfig::new`] and override only what you need, so
+/// that a field added here later costs you nothing:
+///
+/// ```no_run
+/// # use ontogen::{ClientsConfig, clients::ClientGenerator};
+/// let config = ClientsConfig {
+///     generators: vec![ClientGenerator::AdminRegistry { output: "app/admin-registry.ts".into() }],
+///     store_type: Some("Store".into()),
+///     ..ClientsConfig::new("src/api/v1", "AppState", "crate::api::v1", "crate::schema", "crate::AppState")
+/// };
+/// ```
+///
+/// There is deliberately no `Default`: the five arguments `new` takes have no
+/// meaningful empty value, and defaulting them would turn a forgotten field
+/// from a compile error into a client generated against the wrong paths.
 pub struct ClientsConfig {
     /// Directory to scan for API source files when no [`ApiOutput`] is supplied.
     pub api_dir: PathBuf,
@@ -719,6 +721,47 @@ pub struct ClientsConfig {
     /// same surfaces as [`ServersConfig::extra_surfaces`] so the TypeScript
     /// transport matches the Rust handlers; see [`ApiSurface`].
     pub extra_surfaces: Vec<ApiSurface>,
+}
+
+impl ClientsConfig {
+    /// A config carrying the inputs client generation cannot infer, with every
+    /// other field at its inert default: no generators, no formatting, no route
+    /// prefix, no store, no pagination, no schema metadata.
+    ///
+    /// Reach for it as the base of a struct literal (see the type's own docs)
+    /// rather than spelling out all twenty fields — that is what keeps a new
+    /// field from breaking every consuming `build.rs`.
+    #[must_use]
+    pub fn new(
+        api_dir: impl Into<PathBuf>,
+        state_type: impl Into<String>,
+        service_import_path: impl Into<String>,
+        types_import_path: impl Into<String>,
+        state_import: impl Into<String>,
+    ) -> Self {
+        Self {
+            api_dir: api_dir.into(),
+            state_type: state_type.into(),
+            service_import_path: service_import_path.into(),
+            types_import_path: types_import_path.into(),
+            state_import: state_import.into(),
+            naming: servers::NamingConfig::default(),
+            generators: Vec::new(),
+            ts_formatter: TsFormatter::None,
+            sse_route_overrides: std::collections::HashMap::new(),
+            ts_skip_commands: Vec::new(),
+            route_prefix: None,
+            store_type: None,
+            store_import: None,
+            pagination: None,
+            schema_entities: Vec::new(),
+            schema_enums: Vec::new(),
+            label_overrides: std::collections::HashMap::new(),
+            pool_extra_roots: Vec::new(),
+            pool_exclude_paths: Vec::new(),
+            extra_surfaces: Vec::new(),
+        }
+    }
 }
 
 // `AdminLayerConfig` and `install_admin_layer` are re-exported from the
