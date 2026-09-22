@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-09-22
+
+### Added
+
+- a ClientsConfig built from its required inputs, with the rest defaulted
+
+### Fixed
+
+- emit deserialize_with for nullable Update DTO fields
+- handle booleans, paginated envelopes, and null/undefined form values correctly
+
+### merge
+
+- main into api-surfaces
+- main into pagination-pushdown
+- main into schema-enums
+- main into state-scoped-count
+
+
+
 ## [0.6.7] - 2026-08-17
 
 
