@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.6] - 2026-09-22
+
+### Added
+
+- string enums reach the admin registry, with labels and the id type
+
+### merge
+
+- main into schema-enums
+
+
+
 ## [0.1.5] - 2026-08-16
 
 ### Changed
