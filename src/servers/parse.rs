@@ -235,9 +235,19 @@ impl ApiFn {
             && PAGE_PARAMS.iter().zip(&self.params[n - 2..]).all(|(name, p)| p.name == *name && p.ty == PAGE_PARAM_TYPE)
     }
 
-    /// True for the `count(store)` or `count(state)` that backs a paginated `list`.
+    /// True for the `count` that backs a paginated `list`. It takes the store
+    /// or the state, then whatever filter the list takes — `check_paginated_lists`
+    /// is what holds the two parameter lists to each other.
     pub fn is_count(&self) -> bool {
-        self.name == "count" && !self.is_stateless && self.params.is_empty()
+        self.name == "count" && !self.is_stateless
+    }
+
+    /// This function's parameters other than the page, as `name: type` — the
+    /// filter a paginated `list` applies and its `count` must apply too.
+    pub fn filter_params(&self) -> Vec<String> {
+        let n = self.params.len();
+        let end = if self.takes_page() { n - PAGE_PARAMS.len() } else { n };
+        self.params[..end].iter().map(|p| format!("{}: {}", p.name, p.ty)).collect()
     }
 }
 
@@ -643,15 +653,16 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
 
             let (return_type, return_type_ast) = extract_result_ok_type(&func.sig.output);
 
-            // A paginated list's companion. `count` takes only the state or the
+            // A paginated list's companion. `count` takes the state or the
             // store (the first param is already known to be one of those;
-            // anything else was skipped above) and both are scoped the same
-            // way, so either shape counts. A stateless `count()` is never the
-            // companion: the generators would call it with an argument it
-            // does not declare. It is recorded here but stays a function: only
-            // a paginated module (known once the config is in hand) folds it
-            // into its page handler — see `check_paginated_lists`.
-            has_count |= fn_ident == "count" && !is_stateless && params.is_empty();
+            // anything else was skipped above) and then the same filter the
+            // list takes, so that the total describes the same rows as the
+            // page. A stateless `count()` is never the companion: the
+            // generators would call it with an argument it does not declare.
+            // It is recorded here but stays a function: only a paginated
+            // module (known once the config is in hand) folds it into its
+            // page handler — see `check_paginated_lists`.
+            has_count |= fn_ident == "count" && !is_stateless;
 
             functions.push(ApiFn {
                 name: fn_ident,
@@ -1071,7 +1082,10 @@ fn parse_ontogen_rename(attrs: &[syn::Attribute]) -> OntogenAttr {
 /// `limit`/`offset` as its last two parameters and sit beside a `count`.
 /// Anything else would make the handler load the whole table to slice it.
 /// The `count` takes the same first parameter the module's other functions
-/// take — the store or the state — and nothing else.
+/// take — the store or the state — and then the same filter the `list` takes,
+/// so the total counts the rows the page is drawn from. A `list` that filters
+/// beside a `count` that does not would report the whole table as the total of
+/// a filtered page.
 ///
 /// The `count` of a paginated module is what the page handlers call for the
 /// total, so it is taken off `functions` here; on a module no surface
@@ -1096,19 +1110,20 @@ pub fn check_paginated_lists(modules: &mut [ApiModule], config: &crate::servers:
                     m.name, m.name
                 ));
             }
-            // `count(store)` takes no filter, so a filtered page would report
-            // the whole table as its total.
-            if f.params.len() > PAGE_PARAMS.len() {
+            // The total has to describe the rows the page is drawn from, so
+            // whatever the list filters by, the count filters by too.
+            let want = f.filter_params();
+            let got = m.functions.iter().find(|c| c.is_count()).map(ApiFn::filter_params).unwrap_or_default();
+            if want != got {
+                let render = |ps: &[String]| if ps.is_empty() { "nothing".to_string() } else { ps.join(", ") };
                 return Err(format!(
-                    "ontogen: module `{}` is paginated, so `{}::list` may take nothing but `limit`/`offset` after the \
-                     store: `count(store)` cannot apply the filter `{}` to the total",
+                    "ontogen: module `{}` is paginated, so `{}::count` must take the same filter `{}::list` takes, \
+                     or the total describes different rows than the page; `list` filters by {}, `count` by {}",
                     m.name,
                     m.name,
-                    f.params[..f.params.len() - PAGE_PARAMS.len()]
-                        .iter()
-                        .map(|p| format!("{}: {}", p.name, p.ty))
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    m.name,
+                    render(&want),
+                    render(&got)
                 ));
             }
         }
