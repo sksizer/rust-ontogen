@@ -106,7 +106,11 @@ fn generate_count(code: &mut String, entity: &EntityDef) {
     let dir = dir_const(&snake);
 
     code.push_str(&format!("    pub async fn count_{plural}(&self) -> Result<u64, AppError> {{\n"));
-    code.push_str(&format!("        Ok(self.vault().read_all({dir}).map_err(AppError::from)?.len() as u64)\n"));
+    // A count needs the number of records, not their contents: `list_paths`
+    // walks the directory, where `read_all` would also read and parse every
+    // file. Both go through `list_paths`, so the list cap still applies and
+    // an oversized directory fails the same way.
+    code.push_str(&format!("        Ok(self.vault().list_paths({dir}).map_err(AppError::from)?.len() as u64)\n"));
     code.push_str("    }\n\n");
 }
 

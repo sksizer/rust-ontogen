@@ -52,7 +52,7 @@ impl Store {
     }
 
     pub async fn count_notes(&self) -> Result<u64, AppError> {
-        Ok(self.vault().read_all(NOTES_DIR).map_err(AppError::from)?.len() as u64)
+        Ok(self.vault().list_paths(NOTES_DIR).map_err(AppError::from)?.len() as u64)
     }
 
     pub async fn get_note(&self, id: &str) -> Result<Note, AppError> {

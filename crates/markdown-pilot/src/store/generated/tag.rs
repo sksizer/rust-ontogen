@@ -48,7 +48,7 @@ impl Store {
     }
 
     pub async fn count_tags(&self) -> Result<u64, AppError> {
-        Ok(self.vault().read_all(TAGS_DIR).map_err(AppError::from)?.len() as u64)
+        Ok(self.vault().list_paths(TAGS_DIR).map_err(AppError::from)?.len() as u64)
     }
 
     pub async fn get_tag(&self, id: &str) -> Result<Tag, AppError> {

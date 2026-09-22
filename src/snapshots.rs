@@ -278,6 +278,20 @@ fn markdown_store_has_many_entity() {
 }
 
 #[test]
+fn markdown_count_walks_the_directory_without_parsing_records() {
+    // A count needs how many records there are, not what is in them.
+    // `read_all` reads and parses every file in the directory; `list_paths`
+    // only walks it. A paginated page handler calls `count` once per request
+    // beside `list`, so parsing the whole vault to take `.len()` would make a
+    // page cost two full reads of the vault where it used to cost one.
+    let code = generate_markdown_store_file(&article_mtm_tags_entity());
+    let body = &code[code.find("pub async fn count_").expect("a count method")..];
+    let body = &body[..body.find("\n    }").expect("the count method's closing brace")];
+    assert!(body.contains(".list_paths("), "the count walks the directory:\n{body}");
+    assert!(!body.contains(".read_all("), "the count never reads or parses records:\n{body}");
+}
+
+#[test]
 fn markdown_frontmatter_complex_entity() {
     // Article's m2m relation exercises the wikilink-encode/strip boundary
     // and the owned-keys constant; body field exercises the conversion
