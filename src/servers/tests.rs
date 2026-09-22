@@ -4697,6 +4697,67 @@ fn a_paginated_list_pushes_the_page_into_the_store() {
     );
     assert!(ipc.contains("workout::count(&store)"), "the IPC page command asks for the total:\n{ipc}");
     assert_eq!(ipc.matches("limit: Option<u32>").count(), 1, "the page params appear once:\n{ipc}");
+
+    let mcp = tmp.path().join("mcp.rs");
+    crate::servers::generators::mcp::generate(&mcp, &modules, &config);
+    let mcp = std::fs::read_to_string(&mcp).unwrap();
+    assert!(
+        mcp.contains("workout::list(&store, Some(limit), Some(offset))"),
+        "the MCP tool passes the page down:\n{mcp}"
+    );
+    assert!(mcp.contains("workout::count(&store)"), "the MCP tool asks for the total:\n{mcp}");
+    assert!(!mcp.contains("all_items"), "nothing is materialised to be sliced:\n{mcp}");
+    assert!(
+        !mcp.contains(r#"required_str(args, "limit")"#),
+        "the page is read from args, not demanded as a tool argument:\n{mcp}"
+    );
+}
+
+/// The same shape, scoped to the state instead of a store. An app that reaches
+/// its data through `AppState` rather than a generated `Store` still paginates:
+/// the generators take the first argument from `list`, so `count` follows it.
+#[test]
+fn a_state_scoped_count_paginates_the_same_way() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "AppState"));
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.has_count, "`count` is recorded on a state-scoped module too");
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation once paginated");
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(
+        http.contains("workout::list(&state, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        "the HTTP page handler passes the page down:\n{http}"
+    );
+    assert!(http.contains("workout::count(&state)"), "the total is asked of the state:\n{http}");
+
+    let ipc = tmp.path().join("ipc.rs");
+    crate::servers::generators::ipc::generate(&ipc, &modules, &config);
+    let ipc = std::fs::read_to_string(&ipc).unwrap();
+    assert!(
+        ipc.contains("workout::list(&state, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        "the IPC page command passes the page down:\n{ipc}"
+    );
+    assert!(ipc.contains("workout::count(&state)"), "the total is asked of the state:\n{ipc}");
+
+    let mcp = tmp.path().join("mcp.rs");
+    crate::servers::generators::mcp::generate(&mcp, &modules, &config);
+    let mcp = std::fs::read_to_string(&mcp).unwrap();
+    assert!(
+        mcp.contains("workout::list(state, Some(limit), Some(offset))"),
+        "the MCP tool passes the page down:\n{mcp}"
+    );
+    assert!(mcp.contains("workout::count(state)"), "the MCP tool asks the state for the total:\n{mcp}");
+    assert!(!mcp.contains("all_items"), "nothing is materialised to be sliced:\n{mcp}");
 }
 
 #[test]
@@ -4795,4 +4856,50 @@ fn an_unpaginated_surface_hands_a_page_taking_list_no_page() {
     let ipc = std::fs::read_to_string(&ipc).unwrap();
     assert!(ipc.contains("workout::list(&store, None, None)"), "the whole table, as before:\n{ipc}");
     assert!(!ipc.contains("limit: Option<u64>"), "limit is not a command param:\n{ipc}");
+}
+
+/// `count` is only folded into the page handler on a module some surface
+/// paginates. In a module that does not paginate it is an ordinary command,
+/// and dropping it there would lose a real operation without a word.
+#[test]
+fn a_count_beside_an_unpaged_list_stays_a_command() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    let source = format!(
+        "{}pub async fn count(state: &AppState) -> Result<u64, anyhow::Error> {{ todo!() }}\n",
+        crud_module_source("workout", "AppState")
+    );
+    write_synthetic_api(&api_dir, "workout.rs", &source);
+    let config = test_config(api_dir);
+
+    let scanned = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap();
+    assert!(scanned.skips.is_empty(), "nothing was dropped: {:?}", scanned.skips);
+    let mut modules = scanned.modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.functions.iter().any(|f| f.name == "count"), "`count` is kept as an operation");
+}
+
+/// A stateless `count()` declares no argument for the generators to pass, so
+/// it is never taken for the companion: it stays an operation and a paginated
+/// module without a scoped `count` is refused rather than generating a call
+/// that does not compile.
+#[test]
+fn a_stateless_count_is_not_the_pages_companion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    let source = "pub async fn list(state: &AppState, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Workout>, anyhow::Error> { todo!() }
+#[ontogen::stateless]
+pub async fn count() -> Result<u64, anyhow::Error> { todo!() }
+";
+    write_synthetic_api(&api_dir, "workout.rs", source);
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(!workout.has_count, "a stateless `count()` is not recorded as the companion");
+    assert!(workout.functions.iter().any(|f| f.name == "count" && f.is_stateless), "it stays an operation");
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    assert!(err.contains("module `workout` is paginated"), "{err}");
 }
