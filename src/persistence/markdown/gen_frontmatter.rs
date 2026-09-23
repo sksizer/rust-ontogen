@@ -282,6 +282,7 @@ mod tests {
                 ),
                 FieldDef::new("body", FieldType::String, FieldRole::Body),
             ],
+            doc: String::new(),
         }
     }
 

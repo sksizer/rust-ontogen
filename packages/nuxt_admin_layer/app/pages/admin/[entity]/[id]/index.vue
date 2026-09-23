@@ -59,7 +59,7 @@ async function handleDelete() {
 }
 
 function navigateToEdit() {
-  router.push(`/admin/${entityPlural.value}/${entityId.value}/edit`)
+  router.push(`/admin/${entityPlural.value}/${encodeURIComponent(entityId.value)}/edit`)
 }
 
 function resolveRelationRoute(field: { relationTo?: string }, value: unknown): string | null {

@@ -37,14 +37,14 @@ pub fn emit_schema_known_ts_for_tests(entities: &[ontogen_core::model::EntityDef
 use std::path::PathBuf;
 
 use crate::CodegenError;
-use crate::ir::ApiOutput;
+use crate::ir::{ApiOutput, SchemaOutput};
 use crate::servers::ApiModule;
 use crate::servers::parse;
 
 /// Generate TypeScript client and admin-registry artefacts.
 ///
 /// Mirrors the shape of [`crate::gen_servers`] - takes the parsed
-/// [`ApiOutput`] (or scans `api_dir` itself, as a fallback), the additional
+/// [`ApiOutput`] (or scans the configured surfaces itself, as a fallback), the additional
 /// scan dirs (reserved for future enrichment), and a [`crate::ClientsConfig`].
 ///
 /// Emits the schema-known TypeScript bindings first (always), then runs
@@ -80,9 +80,12 @@ pub fn generate(
         store_type: config.store_type.clone(),
         store_import: config.store_import.clone(),
         schema_entities: config.schema_entities.clone(),
+        schema_enums: config.schema_enums.clone(),
+        label_overrides: config.label_overrides.clone(),
         pagination: config.pagination.clone(),
         pool_extra_roots: config.pool_extra_roots.clone(),
         pool_exclude_paths: config.pool_exclude_paths.clone(),
+        extra_surfaces: config.extra_surfaces.clone(),
     };
 
     generate_clients(&internal).map(|_| ()).map_err(CodegenError::Server)
@@ -90,16 +93,12 @@ pub fn generate(
 
 /// Run the client-side generation pipeline.
 ///
-/// Parses API modules from `config.api_dir`, emits the schema-known
+/// Parses API modules from every configured surface, emits the schema-known
 /// TypeScript aliases to every distinct `bindings_path`, optionally runs
 /// [`ontogen_ts`] to append the long-tail closure, then dispatches to
 /// each configured client generator.
 fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
-    if !config.api_dir.exists() {
-        return Err(format!("API directory does not exist: {}", config.api_dir.display()));
-    }
-
-    let scanned = parse::scan_api_dir(&config.api_dir, &config.state_type, config.store_type.as_deref());
+    let scanned = parse::scan_surfaces(&config.surfaces(), &config.state_type)?;
 
     for record in &scanned.skips {
         println!("cargo:warning={record}");
@@ -346,12 +345,48 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
                 }
             }
             ClientGenerator::AdminRegistry { output } => {
-                generators::admin::generate(output, &modules, config);
+                // The surfaces' own entities join the registry. Entities
+                // are keyed by bare name in the registry and the TS
+                // bindings, so a name two surfaces both define would
+                // collapse into one; refuse it.
+                let mut entities = config.schema_entities.clone();
+                let mut enums = config.schema_enums.clone();
+                let surfaces = surface_schema(&config.extra_surfaces)?;
+                for entity in surfaces.entities {
+                    if entities.iter().any(|e| e.name == entity.name) {
+                        return Err(format!(
+                            "ontogen: entity `{}` is defined by more than one API surface; entity and type names \
+                             must be distinct across surfaces",
+                            entity.name
+                        ));
+                    }
+                    entities.push(entity);
+                }
+                for def in surfaces.enums {
+                    if !enums.iter().any(|e| e.name == def.name) {
+                        enums.push(def);
+                    }
+                }
+                generators::admin::generate(output, &modules, config, &entities, &enums);
             }
         }
     }
 
     Ok(modules)
+}
+
+/// The entities of every surface that names an [`ApiSurface::schema_dir`],
+/// in surface order.
+///
+/// [`ApiSurface::schema_dir`]: crate::servers::ApiSurface::schema_dir
+pub(crate) fn surface_schema(surfaces: &[crate::servers::ApiSurface]) -> Result<SchemaOutput, String> {
+    let mut schema = SchemaOutput { entities: Vec::new(), enums: Vec::new() };
+    for dir in surfaces.iter().filter_map(|s| s.schema_dir.clone()) {
+        let parsed = crate::parse_schema(&crate::SchemaConfig { schema_dir: dir }).map_err(|e| e.to_string())?;
+        schema.entities.extend(parsed.entities);
+        schema.enums.extend(parsed.enums);
+    }
+    Ok(schema)
 }
 
 /// Derive the crate name a `pool_extra_roots` entry's types should be keyed

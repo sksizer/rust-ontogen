@@ -462,6 +462,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "name".into(),
@@ -470,6 +471,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "kind".into(),
@@ -478,6 +480,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "parent_id".into(),
@@ -491,6 +494,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "contains".into(),
@@ -504,6 +508,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "tags".into(),
@@ -512,6 +517,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "body".into(),
@@ -520,6 +526,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "fulfills".into(),
@@ -533,8 +540,10 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         }
     }
 
@@ -621,6 +630,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "depends_on".into(),
@@ -634,8 +644,10 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         };
 
         let mods = modules(&["Task"]);
@@ -678,6 +690,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "scope".into(),
@@ -691,6 +704,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "from".into(),
@@ -704,6 +718,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "to".into(),
@@ -717,6 +732,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "fulfills".into(),
@@ -730,6 +746,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "body".into(),
@@ -738,8 +755,10 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         };
 
         let mods = modules(&["Contract", "Node", "Requirement"]);

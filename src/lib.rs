@@ -6,6 +6,7 @@
 //!
 //! ```text
 //! parse_schema → SchemaOutput
+//!     ├── gen_docs        → ()             (data-model reference + JSON Schema)
 //!     ├── gen_seaorm      → SeaOrmOutput
 //!     ├── gen_markdown_io → ()
 //!     ├── gen_dtos        → ()
@@ -21,12 +22,14 @@
 pub mod admin;
 pub mod api;
 pub mod clients;
+pub mod docs;
 pub mod persistence;
 pub mod pipeline;
 pub mod schema;
 pub mod servers;
 pub mod store;
 
+pub use docs::DocsConfig;
 pub use pipeline::{MarkdownIoOptions, Pipeline, StoreBackendChoice};
 
 #[cfg(test)]
@@ -67,12 +70,15 @@ pub mod http {
 // Re-export key types for ergonomic use in build.rs
 pub use ontogen_core::CodegenError;
 pub use ontogen_core::ir::*;
-pub use ontogen_core::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+pub use ontogen_core::model::{
+    EntityDef, EnumDef, EnumVariant, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind,
+};
 pub use ontogen_core::naming::{pluralize, to_pascal_case, to_snake_case};
 pub use ontogen_core::utils::{
     OnFormatError, TsFormatFn, TsFormatter, clean_generated_dir, emit_rerun_directives,
     emit_rerun_directives_excluding, rustfmt, write_and_format, write_and_format_ts, write_if_changed,
 };
+pub use servers::ApiSurface;
 
 use std::path::PathBuf;
 
@@ -119,7 +125,8 @@ pub const DEFAULT_SCHEMA_MODULE_PATH: &str = "crate::schema";
 pub fn parse_schema(config: &SchemaConfig) -> Result<SchemaOutput, CodegenError> {
     emit_rerun_directives(&config.schema_dir);
     let entities = schema::parse::parse_schema_dir(&config.schema_dir).map_err(CodegenError::Schema)?;
-    Ok(SchemaOutput { entities })
+    let enums = schema::parse::parse_schema_enums_dir(&config.schema_dir).map_err(CodegenError::Schema)?;
+    Ok(SchemaOutput { entities, enums })
 }
 
 /// Generate SeaORM entities, junction tables, and model conversions from parsed schema.
@@ -288,6 +295,7 @@ pub fn gen_store(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOu
 ///     state_type: "AppState".into(),
 ///     store_type: Some("Store".into()),
 ///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+///     paginated: vec![],
 /// })?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
@@ -298,8 +306,9 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 /// Generate server transport handlers (Axum HTTP routes, Tauri IPC commands,
 /// MCP tools) from API metadata.
 ///
-/// Currently, this function always scans `config.api_dir` with `syn`,
-/// regardless of `api` and `scan_dirs`. Both parameters are **reserved for
+/// Currently, this function always scans `config.api_dir` and every
+/// [`ServersConfig::extra_surfaces`] entry with `syn`, regardless of `api`
+/// and `scan_dirs`. Both parameters are **reserved for
 /// future enrichment** - `api` for using structured metadata directly without
 /// re-parsing, and `scan_dirs` for additional scan locations beyond
 /// `config.api_dir`. They have no effect today; pass `None` and `&[]`
@@ -332,6 +341,7 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 ///     state_type: "AppState".into(),
 ///     store_type: Some("Store".into()),
 ///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+///     paginated: vec![],
 /// })?;
 ///
 /// gen_servers(
@@ -351,6 +361,7 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 ///         store_type: Some("Store".into()),
 ///         store_import: Some("crate::Store".into()),
 ///         pagination: None,
+///         extra_surfaces: vec![],
 ///     },
 /// )?;
 /// # Ok::<(), ontogen::CodegenError>(())
@@ -373,7 +384,8 @@ pub fn gen_servers(
 ///
 /// As with [`gen_servers`], the `api` and `scan_dirs` parameters are reserved
 /// for future enrichment - this function currently always scans
-/// `config.api_dir`. Pass `None` and `&[]`.
+/// `config.api_dir` and [`ClientsConfig::extra_surfaces`]. Pass `None` and
+/// `&[]`.
 ///
 /// The set of client artefacts emitted is controlled by
 /// [`ClientsConfig::generators`].
@@ -384,38 +396,60 @@ pub fn gen_servers(
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```no_run
 /// use ontogen::{gen_clients, ClientsConfig};
 /// use ontogen::clients::ClientGenerator;
-/// use std::collections::HashMap;
-/// use std::path::PathBuf;
 ///
 /// gen_clients(
 ///     None,
 ///     &[],
 ///     &ClientsConfig {
-///         api_dir: PathBuf::from("src/api/v1"),
-///         state_type: "AppState".into(),
-///         service_import_path: "crate::service".into(),
-///         types_import_path: "crate::schema".into(),
-///         state_import: "crate::AppState".into(),
-///         naming: Default::default(),
-///         generators: vec![],
-///         sse_route_overrides: HashMap::new(),
-///         ts_skip_commands: vec![],
-///         route_prefix: None,
+///         generators: vec![ClientGenerator::HttpTs {
+///             output: "app/generated/http.ts".into(),
+///             bindings_path: "app/generated/types.ts".into(),
+///         }],
 ///         store_type: Some("Store".into()),
 ///         store_import: Some("crate::Store".into()),
-///         pagination: None,
-///         schema_entities: vec![],
-///         pool_extra_roots: vec![],
-///         pool_exclude_paths: vec![],
+///         ..ClientsConfig::new("src/api/v1", "AppState", "crate::service", "crate::schema", "crate::AppState")
 ///     },
 /// )?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
 pub fn gen_clients(api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError> {
     clients::generate(api, scan_dirs, config)
+}
+
+/// Generate the data-model reference and JSON Schema from the parsed schema.
+///
+/// The docs stage publishes the schema as a spec: `data-model.md` with one
+/// section per entity, and JSON Schema (draft 2020-12) for each entity plus an
+/// export bundle. It reads nothing but [`parse_schema`]'s output and produces
+/// nothing another stage consumes, so it can run alone.
+///
+/// # Errors
+///
+/// Returns [`CodegenError::Docs`] on I/O or serialisation failure.
+///
+/// # Example
+///
+/// ```ignore
+/// use ontogen::{gen_docs, parse_schema, DocsConfig, SchemaConfig};
+/// use std::path::PathBuf;
+///
+/// let schema = parse_schema(&SchemaConfig {
+///     schema_dir: PathBuf::from("src/schema"),
+/// })?;
+///
+/// gen_docs(&schema, &DocsConfig {
+///     markdown_output: PathBuf::from("docs/data-model.md"),
+///     json_schema_dir: PathBuf::from("docs/schema"),
+///     title: "Fitness data model".into(),
+///     export_format: "determined-fitness-log".into(),
+/// })?;
+/// # Ok::<(), ontogen::CodegenError>(())
+/// ```
+pub fn gen_docs(schema: &SchemaOutput, config: &DocsConfig) -> Result<(), CodegenError> {
+    docs::generate(schema, config)
 }
 
 // ── Configuration types ─────────────────────────────────────────────
@@ -550,6 +584,12 @@ pub struct ApiConfig {
     /// Use [`DEFAULT_SCHEMA_MODULE_PATH`] for the canonical default; the same
     /// constant is referenced by [`StoreConfig::schema_module_path`].
     pub schema_module_path: String,
+    /// Modules (snake_case entity names, e.g. `"workout"`) whose generated
+    /// `list` takes `limit`/`offset` and gets a `count` sibling, so a
+    /// paginated transport handler asks the store for one page and a total
+    /// instead of the whole table. Name the same modules in the surface's
+    /// `paginated_modules`.
+    pub paginated: Vec<String>,
 }
 
 /// Configuration for [`gen_servers`].
@@ -588,6 +628,10 @@ pub struct ServersConfig {
     pub store_import: Option<String>,
     /// Optional pagination configuration for list operations.
     pub pagination: Option<servers::PaginationConfig>,
+    /// API surfaces scanned in addition to the primary one the fields above
+    /// describe. Their modules merge into the same router, IPC handler and
+    /// MCP registry; see [`ApiSurface`]. Empty for a single-surface crate.
+    pub extra_surfaces: Vec<ApiSurface>,
 }
 
 /// Configuration for [`gen_clients`].
@@ -602,6 +646,22 @@ pub struct ServersConfig {
 /// pagination wrappers, route prefixes). The `naming`, `route_prefix`, and
 /// `pagination` types are re-exported from [`servers`] for now; they may
 /// move to a shared module in a future refactor.
+///
+/// Build one from [`ClientsConfig::new`] and override only what you need, so
+/// that a field added here later costs you nothing:
+///
+/// ```no_run
+/// # use ontogen::{ClientsConfig, clients::ClientGenerator};
+/// let config = ClientsConfig {
+///     generators: vec![ClientGenerator::AdminRegistry { output: "app/admin-registry.ts".into() }],
+///     store_type: Some("Store".into()),
+///     ..ClientsConfig::new("src/api/v1", "AppState", "crate::api::v1", "crate::schema", "crate::AppState")
+/// };
+/// ```
+///
+/// There is deliberately no `Default`: the five arguments `new` takes have no
+/// meaningful empty value, and defaulting them would turn a forgotten field
+/// from a compile error into a client generated against the wrong paths.
 pub struct ClientsConfig {
     /// Directory to scan for API source files when no [`ApiOutput`] is supplied.
     pub api_dir: PathBuf,
@@ -651,6 +711,14 @@ pub struct ClientsConfig {
     /// [`Pipeline`] users do not need to set this; the builder forwards
     /// `schema.entities` automatically.
     pub schema_entities: Vec<EntityDef>,
+    /// The schema's string enums, which give the admin registry a field's
+    /// `enumValues`. [`Pipeline`] users do not need to set this; the builder
+    /// forwards `schema.enums` automatically.
+    pub schema_enums: Vec<EnumDef>,
+    /// Admin-registry labels that replace the title-cased field name, keyed
+    /// `entity.field` for one entity's field or `field` for every entity's
+    /// field of that name: `("avg_hr_bpm", "Average HR (bpm)")`.
+    pub label_overrides: std::collections::HashMap<String, String>,
     /// Additional source roots to feed into ontogen-ts's long-tail type pool,
     /// beyond the default `CARGO_MANIFEST_DIR/src`. Use when long-tail types
     /// are defined in workspace-sibling crates. Paths are resolved relative to
@@ -685,6 +753,51 @@ pub struct ClientsConfig {
     /// matches and abort. Pipeline users get this populated automatically
     /// from their `seaorm()` step; direct callers set it explicitly.
     pub pool_exclude_paths: Vec<PathBuf>,
+    /// API surfaces scanned in addition to the primary one. Must list the
+    /// same surfaces as [`ServersConfig::extra_surfaces`] so the TypeScript
+    /// transport matches the Rust handlers; see [`ApiSurface`].
+    pub extra_surfaces: Vec<ApiSurface>,
+}
+
+impl ClientsConfig {
+    /// A config carrying the inputs client generation cannot infer, with every
+    /// other field at its inert default: no generators, no formatting, no route
+    /// prefix, no store, no pagination, no schema metadata.
+    ///
+    /// Reach for it as the base of a struct literal (see the type's own docs)
+    /// rather than spelling out all twenty fields — that is what keeps a new
+    /// field from breaking every consuming `build.rs`.
+    #[must_use]
+    pub fn new(
+        api_dir: impl Into<PathBuf>,
+        state_type: impl Into<String>,
+        service_import_path: impl Into<String>,
+        types_import_path: impl Into<String>,
+        state_import: impl Into<String>,
+    ) -> Self {
+        Self {
+            api_dir: api_dir.into(),
+            state_type: state_type.into(),
+            service_import_path: service_import_path.into(),
+            types_import_path: types_import_path.into(),
+            state_import: state_import.into(),
+            naming: servers::NamingConfig::default(),
+            generators: Vec::new(),
+            ts_formatter: TsFormatter::None,
+            sse_route_overrides: std::collections::HashMap::new(),
+            ts_skip_commands: Vec::new(),
+            route_prefix: None,
+            store_type: None,
+            store_import: None,
+            pagination: None,
+            schema_entities: Vec::new(),
+            schema_enums: Vec::new(),
+            label_overrides: std::collections::HashMap::new(),
+            pool_extra_roots: Vec::new(),
+            pool_exclude_paths: Vec::new(),
+            extra_surfaces: Vec::new(),
+        }
+    }
 }
 
 // `AdminLayerConfig` and `install_admin_layer` are re-exported from the

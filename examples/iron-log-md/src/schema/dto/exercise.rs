@@ -25,6 +25,14 @@ pub struct UpdateExerciseInput {
     pub muscle_group: Option<String>,
     #[serde(default)]
     pub equipment: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub notes: Option<Option<String>>,
+}
+
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
 }

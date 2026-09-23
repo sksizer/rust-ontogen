@@ -290,6 +290,7 @@ let servers = gen_servers(Some(&api), &[], &ServersConfig {
         },
     ],
     // ... other config fields
+    extra_surfaces: vec![],
 })?;
 ```
 
@@ -347,6 +348,8 @@ gen_clients(Some(&api), &[], &ClientsConfig {
     schema_entities: schema.entities.clone(),
     pool_extra_roots: vec![],
     pool_exclude_paths: vec!["src/persistence/db/entities/generated".into()],
+    // ... other config fields
+    extra_surfaces: vec![],
 })?;
 ```
 

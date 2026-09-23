@@ -10,6 +10,10 @@ pub struct EntityDef {
     /// Rust struct name (e.g., `Node`, `Contract`).
     pub name: String,
 
+    /// The struct's `///` doc comment, lines joined with newlines. Empty when
+    /// the struct has none.
+    pub doc: String,
+
     /// Subdirectory for markdown files (e.g., `"nodes"`).
     /// Defaults to snake_case of `name` if not specified.
     pub directory: String,
@@ -35,6 +39,10 @@ pub struct EntityDef {
 pub struct FieldDef {
     /// Rust field name (e.g., `parent_id`, `contains`).
     pub name: String,
+
+    /// The field's `///` doc comment, lines joined with newlines. Empty when
+    /// the field has none.
+    pub doc: String,
 
     /// The Rust type of the field.
     pub field_type: FieldType,
@@ -148,11 +156,50 @@ pub enum RelationKind {
     ManyToMany,
 }
 
+/// A Rust enum declared in the schema whose variants are all unit variants:
+/// a closed set of strings on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumDef {
+    /// Rust enum name (e.g., `SourceKind`).
+    pub name: String,
+
+    /// The variants in declaration order, `#[serde(skip)]` ones left out.
+    pub variants: Vec<EnumVariant>,
+}
+
+/// One variant of an [`EnumDef`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumVariant {
+    /// Rust variant name (e.g., `PeerReviewed`).
+    pub name: String,
+
+    /// The serialised form after `#[serde(rename_all)]` and `#[serde(rename)]`
+    /// (e.g., `peer-reviewed`).
+    pub value: String,
+}
+
 impl FieldDef {
     /// Create a new FieldDef with the given name, type, and role.
-    /// Rendering hints default to off.
+    /// The doc comment starts empty and rendering hints default to off.
     pub fn new(name: impl Into<String>, field_type: FieldType, role: FieldRole) -> Self {
-        Self { name: name.into(), field_type, role, serde_default: false, multiline_list: false, default_value: None }
+        Self {
+            name: name.into(),
+            doc: String::new(),
+            field_type,
+            role,
+            serde_default: false,
+            multiline_list: false,
+            default_value: None,
+        }
+    }
+
+    /// The schema enum this field's type names, for `Kind` and `Option<Kind>`.
+    pub fn enum_def<'a>(&self, enums: &'a [EnumDef]) -> Option<&'a EnumDef> {
+        let name = match &self.field_type {
+            FieldType::OptionEnum(name) | FieldType::Other(name) => name,
+            _ => return None,
+        };
+        enums.iter().find(|e| &e.name == name)
     }
 }
 

@@ -32,15 +32,10 @@ fn main() {
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
         pagination: None,
+        extra_surfaces: vec![],
     };
 
     let clients_config = ClientsConfig {
-        api_dir: "src/api/v1".into(),
-        state_type: "AppState".into(),
-        service_import_path: "crate::api::v1".into(),
-        types_import_path: "crate::schema".into(),
-        state_import: "crate::AppState".into(),
-        naming: NamingConfig::default(),
         generators: vec![
             ClientGenerator::HttpTauriIpcSplit {
                 output: "generated-ts/transport.ts".into(),
@@ -48,16 +43,9 @@ fn main() {
             },
             ClientGenerator::AdminRegistry { output: "generated-ts/admin-registry.ts".into() },
         ],
-        ts_formatter: ontogen::TsFormatter::None,
-        sse_route_overrides: Default::default(),
-        ts_skip_commands: vec![],
-        route_prefix: None,
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
-        pagination: None,
-        schema_entities: Vec::new(),
-        pool_extra_roots: Vec::new(),
-        pool_exclude_paths: Vec::new(),
+        ..ClientsConfig::new("src/api/v1", "AppState", "crate::api::v1", "crate::schema", "crate::AppState")
     };
 
     Pipeline::new("src/schema")

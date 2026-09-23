@@ -331,9 +331,12 @@ mod tests {
             store_type: None,
             store_import: None,
             schema_entities: Vec::new(),
+            schema_enums: Vec::new(),
+            label_overrides: Default::default(),
             pagination: None,
             pool_extra_roots: Vec::new(),
             pool_exclude_paths: Vec::new(),
+            extra_surfaces: Vec::new(),
         }
     }
 
@@ -345,6 +348,7 @@ mod tests {
             type_name: name.to_ascii_lowercase(),
             prefix: name.to_ascii_lowercase(),
             fields,
+            doc: String::new(),
         }
     }
 

@@ -8,10 +8,10 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::clients::config::Config;
-use crate::clients::generators::{FallbackRecord, command_name};
+use crate::clients::generators::{FallbackRecord, command_name, ts_params_in_declaration_order};
 use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::parse::{ApiFn, ApiModule, Param};
-use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
+use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel};
 
 /// Generate TypeScript HTTP client and write to the output file.
 ///
@@ -242,27 +242,7 @@ fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config
         route_path.push_str(&format!("/{}", action));
     }
 
-    let mut ts_params = Vec::new();
-    for p in &path_params {
-        // `transport.rs` renders the same parameter through `rust_type_to_ts`.
-        // This used to guess `i32 → number`, everything else → `string`, so
-        // one endpoint got different parameter types depending on which
-        // generated file the caller imported from.
-        let ts_ty = rust_type_to_ts(&strip_ref(&p.ty));
-        ts_params.push(format!("{}: {}", snake_to_camel(&p.name), ts_ty));
-    }
-    for qp in &query_params {
-        // Derive from the Option's inner type: `Option<u64>` → `number | null`.
-        ts_params.push(format!("{}: {}", snake_to_camel(&qp.name), rust_type_to_ts(&qp.ty)));
-    }
-    if let Some(bs) = body_struct {
-        let input_type = rust_type_to_ts(&extract_input_type(&bs.ty));
-        ts_params.push(format!("input: {}", input_type));
-    }
-    for bf in &body_fields {
-        let ts_ty = rust_type_to_ts(&strip_ref(&bf.ty));
-        ts_params.push(format!("{}: {}", snake_to_camel(&bf.name), ts_ty));
-    }
+    let ts_params = ts_params_in_declaration_order(f);
 
     let ts_ret_str = if returns_unit { "null".to_string() } else { ts_ret.clone() };
 

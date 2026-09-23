@@ -26,6 +26,22 @@ Items in `draft` / `proposed` / `backlog` / `ready` / `in-progress`.
 | [OF-021](./OF-021-user-defined-generics-in-ts-emitter.md) | Low | First-class support for user-defined generic types in `ontogen-ts` (phase 1 rejects them with the concrete-type-alias workaround) |
 | [OF-022](./OF-022-richer-external-type-renderings.md) | Low | Richer external-type renderings in `ontogen-ts` (imported TS types like `moment.Moment` in addition to phase-1's primitive-only `"string"` / `"unknown"`) |
 
+## Ported from the dev monorepo (2026-09-20)
+
+Specs authored in the consuming monorepo against ontogen's source, moved here so
+the generator's own backlog carries the reasoning. Each names the PR carrying it.
+
+| Task | Status | PR |
+| --- | --- | --- |
+| [API surfaces with their own store accessor](./2026-09-07-api-surfaces-with-own-store-accessor.md) | in-progress | [#156](https://github.com/sksizer/rust-ontogen/pull/156) |
+| [Pagination declared per module](./2026-09-07-pagination-declared-per-module.md) | in-progress | folded into [#156](https://github.com/sksizer/rust-ontogen/pull/156) |
+| [Pagination pushdown into the store](./2026-09-07-pagination-pushdown-into-the-store.md) | in-progress | [#159](https://github.com/sksizer/rust-ontogen/pull/159), [#166](https://github.com/sksizer/rust-ontogen/pull/166) |
+| [Enum variants, labels and the id type](./2026-09-07-schema-enums-labels-and-id-type.md) | in-progress | [#160](https://github.com/sksizer/rust-ontogen/pull/160) |
+| [Admin layer: registry path, pickers, packaging](./2026-09-07-admin-layer-registry-path-pickers-and-packaging.md) | in-progress | [#157](https://github.com/sksizer/rust-ontogen/pull/157) (merged), [#158](https://github.com/sksizer/rust-ontogen/pull/158) |
+| [Docs stage: data-model reference and JSON Schema](./2026-09-07-docs-stage-data-model-reference-and-json-schema.md) | in-progress | [#161](https://github.com/sksizer/rust-ontogen/pull/161) |
+| [Bytes, timestamp, date and JSON columns, defaults, indexes](./2026-09-07-schema-field-types-defaults-and-indexes.md) | backlog | — |
+| [Explicit route shapes, or loud failure](./2026-08-04-explicit-route-shapes-or-loud-failure.md) | backlog | — |
+
 ## Pumice feedback round 2 (2026-05-14)
 
 Source: [`../../feedback/2026-05-14-pumice.md`](../../feedback/2026-05-14-pumice.md). Three new findings surfaced when Pumice upgraded to ontogen rev `168ff379`. Mapped to upstream IDs OF-016/17/18 to avoid collision with the existing OF-013/14/15 (the consumer's log numbers them independently as OF-013/14/15).

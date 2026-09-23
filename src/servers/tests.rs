@@ -38,6 +38,7 @@ fn test_config(api_dir: PathBuf) -> Config {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
+        extra_surfaces: Vec::new(),
     }
 }
 
@@ -60,9 +61,12 @@ fn client_test_config(api_dir: PathBuf) -> ClientsInternalConfig {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         schema_entities: Vec::new(),
+        schema_enums: Vec::new(),
+        label_overrides: HashMap::new(),
         pagination: None,
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
+        extra_surfaces: Vec::new(),
     }
 }
 
@@ -168,6 +172,7 @@ fn make_crud_module(name: &str, is_store_based: bool) -> ApiModule {
         ],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -197,6 +202,7 @@ fn make_custom_module() -> ApiModule {
         ],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -205,8 +211,12 @@ fn make_event_module() -> ApiModule {
     ApiModule {
         name: "events".to_string(),
         functions: vec![],
-        events: vec![EventFn { name: "graph_updated".to_string() }, EventFn { name: "entity_changed".to_string() }],
+        events: vec![
+            EventFn { name: "graph_updated".to_string(), surface: 0 },
+            EventFn { name: "entity_changed".to_string(), surface: 0 },
+        ],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -264,13 +274,114 @@ fn make_junction_module() -> ApiModule {
         ],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
 /// Write a synthetic API source file for parse tests.
-fn write_synthetic_api(dir: &std::path::Path, filename: &str, content: &str) {
+pub(crate) fn write_synthetic_api(dir: &std::path::Path, filename: &str, content: &str) {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join(filename), content).unwrap();
+}
+
+/// A store-scoped CRUD module source for `entity` (PascalCase `Entity`),
+/// taking `&{store_type}` as its first parameter.
+pub(crate) fn crud_module_source(entity: &str, store_type: &str) -> String {
+    let pascal = capitalize(entity);
+    format!(
+        "pub async fn list(store: &{st}) -> Result<Vec<{p}>, anyhow::Error> {{ todo!() }}
+pub async fn get_by_id(store: &{st}, id: &str) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn create(store: &{st}, input: Create{p}Input) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn update(store: &{st}, id: &str, input: Update{p}Input) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn delete(store: &{st}, id: &str) -> Result<(), anyhow::Error> {{ todo!() }}
+",
+        st = store_type,
+        p = pascal,
+    )
+}
+
+/// Two API surfaces under `root`: the primary one at `root/primary` with a
+/// store-scoped `athlete` module and a state-scoped `workout` module of custom
+/// fns, and a second one at `root/fitness` (accessor `fitness_store`, store
+/// type `FitnessStore`) with CRUD `workout` and `exercise` modules. `workout`
+/// exists in both, and both reference a type named `Workout`.
+pub(crate) fn two_surface_fixture(root: &std::path::Path) -> Vec<crate::servers::ApiSurface> {
+    let primary = root.join("primary");
+    write_synthetic_api(
+        &primary,
+        "athlete.rs",
+        "pub async fn list(store: &Store) -> Result<Vec<Athlete>, anyhow::Error> { todo!() }\n",
+    );
+    write_synthetic_api(
+        &primary,
+        "workout.rs",
+        "pub async fn start(state: &AppState, input: StartWorkoutInput) -> Result<Workout, anyhow::Error> { todo!() }
+pub async fn get_summary(state: &AppState, id: &str) -> Result<WorkoutSummary, anyhow::Error> { todo!() }
+",
+    );
+    let fitness = root.join("fitness");
+    write_synthetic_api(&fitness, "workout.rs", &crud_module_source("workout", "FitnessStore"));
+    // `exercise` is the module the pagination tests flag, so it carries the page.
+    write_synthetic_api(&fitness, "exercise.rs", &paged_crud_module_source("exercise", "FitnessStore"));
+
+    vec![
+        crate::servers::ApiSurface {
+            api_dir: primary,
+            service_import_path: "crate::api::v1".to_string(),
+            types_import_path: "crate::schema".to_string(),
+            store_accessor: None,
+            store_type: Some("Store".to_string()),
+            pagination: None,
+            paginated_modules: Vec::new(),
+            schema_dir: None,
+        },
+        crate::servers::ApiSurface {
+            api_dir: fitness,
+            service_import_path: "fitness::api".to_string(),
+            types_import_path: "fitness::schema".to_string(),
+            store_accessor: Some("fitness_store".to_string()),
+            store_type: Some("FitnessStore".to_string()),
+            pagination: None,
+            paginated_modules: Vec::new(),
+            schema_dir: None,
+        },
+    ]
+}
+
+/// A server `Config` whose primary surface is `surfaces[0]` and whose
+/// `extra_surfaces` are the rest.
+pub(crate) fn two_surface_config(surfaces: Vec<crate::servers::ApiSurface>) -> Config {
+    let mut surfaces = surfaces.into_iter();
+    let primary = surfaces.next().expect("at least one surface");
+    let mut config = test_config(primary.api_dir);
+    config.service_import_path = primary.service_import_path;
+    config.types_import_path = primary.types_import_path;
+    config.store_type = primary.store_type;
+    config.pagination = primary.pagination;
+    config.extra_surfaces = surfaces.collect();
+    config
+}
+
+/// Every name a file's `use` items bring into scope (the leaf ident, or the
+/// alias after `as`). Two entries with the same name would not compile.
+pub(crate) fn imported_names(source: &str) -> Vec<String> {
+    fn walk(tree: &syn::UseTree, out: &mut Vec<String>) {
+        match tree {
+            syn::UseTree::Path(p) => walk(&p.tree, out),
+            syn::UseTree::Name(n) => out.push(n.ident.to_string()),
+            syn::UseTree::Rename(r) => out.push(r.rename.to_string()),
+            syn::UseTree::Group(g) => g.items.iter().for_each(|t| walk(t, out)),
+            syn::UseTree::Glob(_) => {}
+        }
+    }
+    let file = syn::parse_file(source).expect("generated file must parse");
+    let mut names = Vec::new();
+    for item in &file.items {
+        if let syn::Item::Use(u) = item {
+            walk(&u.tree, &mut names);
+        }
+    }
+    names
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -791,21 +902,39 @@ fn test_naming_config_overrides() {
 #[test]
 fn test_url_for_module_singleton_uses_singular() {
     let naming = NamingConfig::default();
-    let m = ApiModule { name: "database".to_string(), functions: vec![], events: vec![], is_singleton: true };
+    let m = ApiModule {
+        name: "database".to_string(),
+        functions: vec![],
+        events: vec![],
+        is_singleton: true,
+        has_count: false,
+    };
     assert_eq!(naming.url_for_module(&m), "database", "singleton modules must NOT be pluralized");
 }
 
 #[test]
 fn test_url_for_module_entity_uses_plural() {
     let naming = NamingConfig::default();
-    let m = ApiModule { name: "workout".to_string(), functions: vec![], events: vec![], is_singleton: false };
+    let m = ApiModule {
+        name: "workout".to_string(),
+        functions: vec![],
+        events: vec![],
+        is_singleton: false,
+        has_count: false,
+    };
     assert_eq!(naming.url_for_module(&m), "workouts", "non-singleton modules go through url_plural");
 }
 
 #[test]
 fn test_url_for_module_singleton_with_underscore() {
     let naming = NamingConfig::default();
-    let m = ApiModule { name: "auto_start".to_string(), functions: vec![], events: vec![], is_singleton: true };
+    let m = ApiModule {
+        name: "auto_start".to_string(),
+        functions: vec![],
+        events: vec![],
+        is_singleton: true,
+        has_count: false,
+    };
     assert_eq!(naming.url_for_module(&m), "auto-start", "singleton URL must be kebab-cased but NOT pluralized");
 }
 
@@ -2278,6 +2407,7 @@ fn test_transport_post_with_only_optional_params_sends_them_as_query() {
         name: "doc".to_string(),
         events: vec![],
         is_singleton: false,
+        has_count: false,
         functions: vec![ApiFn {
             name: "count_matching_files".to_string(),
             is_async: true,
@@ -2374,6 +2504,7 @@ fn make_widths_module() -> ApiModule {
         ],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -2456,7 +2587,13 @@ fn test_admin_registry_generator() {
         make_custom_module(), // non-CRUD should be excluded
     ];
 
-    crate::clients::generators::admin::generate(&output, &modules, &config);
+    crate::clients::generators::admin::generate(
+        &output,
+        &modules,
+        &config,
+        &config.schema_entities,
+        &config.schema_enums,
+    );
     let content = std::fs::read_to_string(&output).unwrap();
 
     // Type import (definitions moved to @ontogen/admin-types)
@@ -2603,6 +2740,81 @@ fn test_http_generator_junction_module() {
     assert!(
         !content.contains("/api/destination_skills/"),
         "regression: snake_case plural leaked into HTTP routes (should be kebab-case)"
+    );
+}
+/// Build a module with a custom POST whose optional param is declared *after*
+/// a required one. Models SDF's `setup_project(project_id, install_harness)`.
+fn make_post_trailing_optional_module() -> ApiModule {
+    ApiModule {
+        name: "project".to_string(),
+        functions: vec![ApiFn {
+            name: "setup".to_string(),
+            is_async: true,
+            doc: "Set a project up.".to_string(),
+            params: vec![param("project_id", "&str"), param("install_harness", "Option<&str>")],
+            return_type: "ProjectSetupResult".to_string(),
+            return_type_ast: ty_ast("ProjectSetupResult"),
+            ..Default::default()
+        }],
+        events: vec![],
+        is_singleton: false,
+        has_count: false,
+    }
+}
+
+#[test]
+fn test_custom_post_keeps_declaration_order_across_transports() {
+    // Pre-fix the TS emitters grouped the `Option<_>` query params ahead of the
+    // body ones, so this fn's client read `(installHarness, projectId)` while
+    // the IPC impl — which forwards `f.params` verbatim and can emit nothing
+    // but declaration order — read `(projectId, installHarness)`. The Transport
+    // interface sided with the HTTP impl, so the IPC impl failed to typecheck
+    // and no Rust signature satisfied every transport at once.
+    let tmp = tempfile::tempdir().unwrap();
+    let transport_out = tmp.path().join("transport.ts");
+    let client_out = tmp.path().join("client.ts");
+    let mcp_out = tmp.path().join("mcp.rs");
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "export type ProjectSetupResult = { ok: boolean };\n").unwrap();
+
+    let config = test_config(tmp.path().to_path_buf());
+    let client_config = client_test_config(tmp.path().to_path_buf());
+    let modules = vec![make_post_trailing_optional_module()];
+
+    crate::clients::generators::transport::generate(&transport_out, &bindings, &modules, &client_config);
+    crate::clients::generators::ts_client::generate(&client_out, &bindings, &modules, &client_config);
+    crate::servers::generators::mcp::generate(&mcp_out, &modules, &config);
+
+    let transport = std::fs::read_to_string(&transport_out).unwrap();
+    let client = std::fs::read_to_string(&client_out).unwrap();
+    let mcp = std::fs::read_to_string(&mcp_out).unwrap();
+
+    // Formatter-agnostic: collapse all whitespace.
+    let declared = "projectSetup(projectId:string,installHarness:string|null)";
+    let hoisted = "projectSetup(installHarness:string|null,projectId:string)";
+    for (name, content) in [("transport.ts", &transport), ("ts_client.ts", &client)] {
+        let compact: String = content.split_whitespace().collect();
+        assert!(
+            !compact.contains(hoisted),
+            "regression: {name} hoisted the optional param ahead of the required one:\n{content}"
+        );
+        assert!(compact.contains(declared), "{name} must emit the params in Rust declaration order, got:\n{content}");
+    }
+
+    // transport.ts carries three signatures for the one fn — the Transport
+    // interface, the HTTP impl and the IPC impl — and all three must agree.
+    let transport_compact: String = transport.split_whitespace().collect();
+    assert_eq!(
+        transport_compact.matches(declared).count(),
+        3,
+        "interface, HTTP impl and IPC impl must each carry the declared order:\n{transport}"
+    );
+
+    // The MCP handler calls the Rust fn positionally, so it pins the order the
+    // TS surfaces are being held to.
+    assert!(
+        mcp.contains("project_id, install_harness.as_deref()"),
+        "MCP handler must call the service fn in declaration order:\n{mcp}"
     );
 }
 
@@ -2819,6 +3031,7 @@ fn make_mixed_path_query_module() -> ApiModule {
         }],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -2947,6 +3160,7 @@ fn test_e2e_generate_transport_with_real_api() {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
+        extra_surfaces: Vec::new(),
     };
 
     let modules = crate::servers::generate_transport(&server_config).expect("generate_transport failed");
@@ -2972,11 +3186,20 @@ fn test_e2e_generate_transport_with_real_api() {
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
         schema_entities: Vec::new(),
+        schema_enums: Vec::new(),
+        label_overrides: HashMap::new(),
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
+        extra_surfaces: Vec::new(),
     };
     crate::clients::generators::transport::generate(&ts_out, &bindings, &modules, &client_config);
-    crate::clients::generators::admin::generate(&admin_out, &modules, &client_config);
+    crate::clients::generators::admin::generate(
+        &admin_out,
+        &modules,
+        &client_config,
+        &client_config.schema_entities,
+        &client_config.schema_enums,
+    );
 
     // Should find a reasonable number of modules
     assert!(modules.len() >= 5, "Expected at least 5 API modules from real API dir, got {}", modules.len());
@@ -4019,6 +4242,7 @@ fn make_renamed_module(override_value: Option<&str>) -> ApiModule {
         }],
         events: vec![],
         is_singleton: false,
+        has_count: false,
     }
 }
 
@@ -4242,4 +4466,579 @@ fn test_ts_client_uses_override_camelcased() {
         !content.contains("journalGetTagHistory"),
         "default-scheme camelCase should NOT appear when override is set"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// API surfaces - a second api_dir with its own accessor, merged into one transport
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_two_surfaces_emit_each_accessor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = two_surface_config(two_surface_fixture(tmp.path()));
+    let http_out = tmp.path().join("http.rs");
+    let ipc_out = tmp.path().join("ipc.rs");
+    let mcp_out = tmp.path().join("mcp.rs");
+    config.generators = vec![
+        ServerGenerator::HttpAxum { output: http_out.clone() },
+        ServerGenerator::TauriIpc { output: ipc_out.clone() },
+        ServerGenerator::Mcp { output: mcp_out.clone() },
+    ];
+
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+
+    let http = std::fs::read_to_string(&http_out).unwrap();
+    assert!(
+        http.contains("let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;"),
+        "second-surface handlers open the store through the surface accessor:\n{http}"
+    );
+    assert!(
+        http.contains("let store = state.store().await.map_err(|e| err(e.to_string()))?;"),
+        "primary-surface handlers keep the default accessor:\n{http}"
+    );
+    assert!(http.contains("athlete::list(&store)"), "primary store module calls through its own name:\n{http}");
+
+    let ipc = std::fs::read_to_string(&ipc_out).unwrap();
+    assert!(ipc.contains("state.fitness_store().await"), "IPC uses the surface accessor:\n{ipc}");
+    assert!(ipc.contains("state.store().await"), "IPC keeps the default accessor:\n{ipc}");
+
+    let mcp = std::fs::read_to_string(&mcp_out).unwrap();
+    assert!(mcp.contains("state.fitness_store().await"), "MCP uses the surface accessor:\n{mcp}");
+    assert!(mcp.contains("state.store().await"), "MCP keeps the default accessor:\n{mcp}");
+}
+
+#[test]
+fn test_two_surfaces_merge_same_named_module() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = two_surface_config(two_surface_fixture(tmp.path()));
+    let http_out = tmp.path().join("http.rs");
+    let ipc_out = tmp.path().join("ipc.rs");
+    config.generators = vec![
+        ServerGenerator::HttpAxum { output: http_out.clone() },
+        ServerGenerator::TauriIpc { output: ipc_out.clone() },
+    ];
+
+    let modules = crate::servers::generate_transport(&config).expect("generate_transport failed");
+
+    let names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, ["athlete", "workout", "exercise"], "primary order first, new modules appended");
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert_eq!(workout.functions.len(), 7, "custom fns and CRUD five merge into one module");
+    assert_eq!(workout.base_surface(), 0);
+    assert_eq!(workout.service_ident(0), "workout");
+    assert_eq!(workout.service_ident(1), "workout_1");
+
+    let http = std::fs::read_to_string(&http_out).unwrap();
+    for route in [
+        ".route(\"/api/workouts\", get(workout_list).post(workout_create))",
+        ".route(\"/api/workouts/{id}\", get(workout_get_by_id).put(workout_update).delete(workout_delete))",
+        ".route(\"/api/workouts/start\", post(workout_start))",
+        ".route(\"/api/workouts/summary/{id}\", get(workout_get_summary))",
+        ".route(\"/api/exercises\", get(exercise_list).post(exercise_create))",
+    ] {
+        assert!(http.contains(route), "expected route {route} in:\n{http}");
+    }
+    assert!(http.contains("workout as workout_1"), "second surface's workout is aliased:\n{http}");
+    assert!(http.contains("workout_1::list(&store)"), "CRUD handlers call through the alias:\n{http}");
+    assert!(http.contains("workout::start(&state, input)"), "custom handlers call the primary module:\n{http}");
+    assert!(
+        http.contains("fitness::schema::Workout") && http.contains("Json<Workout>"),
+        "the shared type name is bare for the primary surface and qualified for the second:\n{http}"
+    );
+    let mut names = imported_names(&http);
+    let count = names.len();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), count, "no name is imported twice:\n{http}");
+
+    let ipc = std::fs::read_to_string(&ipc_out).unwrap();
+    for cmd in
+        ["workout_list", "workout_get_by_id", "workout_create", "workout_update", "workout_delete", "workout_start"]
+    {
+        assert!(ipc.contains(&format!("        {cmd},\n")), "ipc_handler lists {cmd}:\n{ipc}");
+    }
+    assert!(ipc.contains("workout_1::create(&store, input)"), "IPC CRUD calls through the alias:\n{ipc}");
+}
+
+#[test]
+fn test_two_surfaces_duplicate_fn_is_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let surfaces = two_surface_fixture(tmp.path());
+    write_synthetic_api(
+        &surfaces[1].api_dir,
+        "workout.rs",
+        &format!(
+            "{}pub async fn start(store: &FitnessStore, input: StartWorkoutInput) -> Result<Workout, anyhow::Error> {{ todo!() }}\n",
+            crud_module_source("workout", "FitnessStore")
+        ),
+    );
+    let primary_dir = surfaces[0].api_dir.display().to_string();
+    let fitness_dir = surfaces[1].api_dir.display().to_string();
+    let config = two_surface_config(surfaces);
+
+    let err = crate::servers::generate_transport(&config).expect_err("duplicate fn must fail");
+    assert!(err.contains("`workout::start`"), "names the module and fn: {err}");
+    assert!(err.contains(&primary_dir) && err.contains(&fitness_dir), "names both surfaces: {err}");
+}
+
+#[test]
+fn test_two_surfaces_crud_split_is_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let surfaces = two_surface_fixture(tmp.path());
+    write_synthetic_api(
+        &surfaces[0].api_dir,
+        "workout.rs",
+        "pub async fn list(store: &Store) -> Result<Vec<Workout>, anyhow::Error> { todo!() }\n",
+    );
+    std::fs::remove_file(surfaces[1].api_dir.join("workout.rs")).unwrap();
+    write_synthetic_api(
+        &surfaces[1].api_dir,
+        "workout.rs",
+        "pub async fn get_by_id(store: &FitnessStore, id: &str) -> Result<Workout, anyhow::Error> { todo!() }\n",
+    );
+    let config = two_surface_config(surfaces);
+
+    let err = crate::servers::generate_transport(&config).expect_err("split CRUD must fail");
+    assert!(err.contains("CRUD functions of module `workout`"), "{err}");
+    assert!(err.contains("`list`") && err.contains("`get_by_id`"), "{err}");
+}
+
+#[test]
+fn test_route_prefix_rejects_extra_surface_with_store_type() {
+    let tmp = tempfile::tempdir().unwrap();
+    let surfaces = two_surface_fixture(tmp.path());
+    let fitness_dir = surfaces[1].api_dir.display().to_string();
+    let mut config = two_surface_config(surfaces);
+    config.route_prefix = test_config_with_prefix(config.api_dir.clone()).route_prefix;
+
+    let err = crate::servers::generate_transport(&config).expect_err("route_prefix + store-scoped extra surface");
+    assert!(err.contains("`route_prefix`") && err.contains("`store_type`"), "{err}");
+    assert!(err.contains(&fitness_dir) && err.contains("`FitnessStore`"), "names the surface: {err}");
+    assert!(err.contains("`store_for`"), "names the prefix accessor: {err}");
+
+    // An extra surface with no store_type has only state-scoped fns, which
+    // route_prefix handles like the primary's, so it is still accepted.
+    config.extra_surfaces[0].store_type = None;
+    crate::servers::generate_transport(&config).expect("state-only extra surface is fine with route_prefix");
+}
+
+/// With `route_prefix`, whether a fn gets scoped-only or unscoped routes is
+/// decided per fn, not by the module's first fn - so a merged module that
+/// mixes state-scoped custom fns with store-scoped CRUD emits the same
+/// routes whichever surface's fns come first.
+#[test]
+fn test_mixed_module_routes_are_per_fn_and_order_independent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config_with_prefix(tmp.path().to_path_buf());
+
+    let custom = ApiFn {
+        name: "start".to_string(),
+        is_async: true,
+        doc: "Start a workout.".to_string(),
+        params: vec![param("input", "StartWorkoutInput")],
+        return_type: "Workout".to_string(),
+        return_type_ast: ty_ast("Workout"),
+        ..Default::default()
+    };
+    let mut state_first = make_crud_module("workout", true);
+    state_first.functions.insert(0, custom.clone());
+    let mut store_first = make_crud_module("workout", true);
+    store_first.functions.push(custom);
+
+    let mut outputs = Vec::new();
+    for (i, module) in [state_first, store_first].into_iter().enumerate() {
+        let output = tmp.path().join(format!("http_{i}.rs"));
+        crate::servers::generators::http::generate(&output, std::slice::from_ref(&module), &config);
+        let http = std::fs::read_to_string(&output).unwrap();
+
+        assert!(
+            http.contains(".route(\"/api/workouts/start\", post(workout_start))"),
+            "state-scoped fn keeps its unscoped route:\n{http}"
+        );
+        assert!(http.contains("workout::start(&state, input)"), "state-scoped fn takes &state:\n{http}");
+        assert!(
+            !http.contains(".route(\"/api/workouts\", ") && !http.contains(".route(\"/api/workouts/{id}\", "),
+            "store-scoped CRUD gets no unscoped routes:\n{http}"
+        );
+        assert!(
+            http.contains(".route(\"/api/projects/{project_id}/workouts\", get(list_workouts_scoped)"),
+            "store-scoped CRUD gets scoped routes:\n{http}"
+        );
+        assert!(!http.contains("start_scoped"), "state-scoped fn gets no scoped route:\n{http}");
+
+        let meta = crate::servers::extract_server_metadata(&[module], &config);
+        let path = |handler: &str| meta.http_routes.iter().find(|r| r.handler_name == handler).unwrap().path.clone();
+        assert_eq!(path("workout_start"), "/api/workouts/start");
+        assert_eq!(path("workout_list"), "/api/projects/{project_id}/workouts");
+
+        outputs.push(http);
+    }
+    assert_eq!(outputs[0], outputs[1], "fn order within the module does not change the output");
+}
+
+#[test]
+fn test_single_surface_stamps_default_accessor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "node.rs", &crud_module_source("node", "Store"));
+    let surfaces = vec![test_config(api_dir).primary_surface()];
+
+    let scanned = crate::servers::parse::scan_surfaces(&surfaces, "AppState").unwrap();
+    let f = &scanned.modules[0].functions[0];
+    assert_eq!(f.surface, 0);
+    assert_eq!(f.store_accessor, "store");
+    assert!(f.first_param_is_store);
+}
+
+#[test]
+fn test_surface_pagination_honours_paginated_modules() {
+    let surface = crate::servers::ApiSurface {
+        api_dir: PathBuf::from("unused"),
+        service_import_path: String::new(),
+        types_import_path: String::new(),
+        store_accessor: None,
+        store_type: None,
+        pagination: Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 }),
+        paginated_modules: vec!["exercise".to_string()],
+        schema_dir: None,
+    };
+    assert!(surface.pagination_for("exercise").is_some());
+    assert!(surface.pagination_for("workout").is_none());
+    assert_eq!(surface.store_accessor(), "store");
+
+    let mut config = test_config(PathBuf::from("unused"));
+    config.extra_surfaces = vec![surface];
+    assert!(config.pagination_for("workout", 0).is_none(), "primary surface has no pagination");
+    assert!(config.pagination_for("exercise", 1).is_some());
+    assert!(config.pagination_for("workout", 1).is_none());
+    assert!(config.any_pagination());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Pagination pushdown: the page reaches the store, the total is a count
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A CRUD module whose `list` takes the page and that carries a `count`,
+/// the shape `ApiConfig::paginated` generates.
+pub(crate) fn paged_crud_module_source(entity: &str, store_type: &str) -> String {
+    let pascal = capitalize(entity);
+    format!(
+        "pub async fn list(store: &{st}, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{p}>, anyhow::Error> {{ todo!() }}
+pub async fn count(store: &{st}) -> Result<u64, anyhow::Error> {{ todo!() }}
+pub async fn get_by_id(store: &{st}, id: &str) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn create(store: &{st}, input: Create{p}Input) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn update(store: &{st}, id: &str, input: Update{p}Input) -> Result<{p}, anyhow::Error> {{ todo!() }}
+pub async fn delete(store: &{st}, id: &str) -> Result<(), anyhow::Error> {{ todo!() }}
+",
+        st = store_type,
+        p = pascal,
+    )
+}
+
+#[test]
+fn a_paginated_list_pushes_the_page_into_the_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "Store"));
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.has_count, "`count` is recorded on the module");
+    assert!(workout.functions.iter().any(|f| f.name == "count"), "`count` is parsed like any other fn");
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation of a paginated module");
+    assert!(workout.is_crud(), "the CRUD surface is intact without `count`");
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(
+        http.contains("workout::list(&store, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        "the HTTP page handler passes the page down:\n{http}"
+    );
+    assert!(http.contains("workout::count(&store)"), "the HTTP page handler asks for the total:\n{http}");
+    assert!(!http.contains(".len() as u64"), "nothing is materialised to be counted:\n{http}");
+    assert!(!http.contains("Query(limit)"), "limit is the page, not a filter:\n{http}");
+
+    let ipc = tmp.path().join("ipc.rs");
+    crate::servers::generators::ipc::generate(&ipc, &modules, &config);
+    let ipc = std::fs::read_to_string(&ipc).unwrap();
+    assert!(
+        ipc.contains("workout::list(&store, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        "the IPC page command passes the page down:\n{ipc}"
+    );
+    assert!(ipc.contains("workout::count(&store)"), "the IPC page command asks for the total:\n{ipc}");
+    assert_eq!(ipc.matches("limit: Option<u32>").count(), 1, "the page params appear once:\n{ipc}");
+
+    let mcp = tmp.path().join("mcp.rs");
+    crate::servers::generators::mcp::generate(&mcp, &modules, &config);
+    let mcp = std::fs::read_to_string(&mcp).unwrap();
+    assert!(
+        mcp.contains("workout::list(&store, Some(limit), Some(offset))"),
+        "the MCP tool passes the page down:\n{mcp}"
+    );
+    assert!(mcp.contains("workout::count(&store)"), "the MCP tool asks for the total:\n{mcp}");
+    assert!(!mcp.contains("all_items"), "nothing is materialised to be sliced:\n{mcp}");
+    assert!(
+        !mcp.contains(r#"required_str(args, "limit")"#),
+        "the page is read from args, not demanded as a tool argument:\n{mcp}"
+    );
+}
+
+/// The same shape, scoped to the state instead of a store. An app that reaches
+/// its data through `AppState` rather than a generated `Store` still paginates:
+/// the generators take the first argument from `list`, so `count` follows it.
+#[test]
+fn a_state_scoped_count_paginates_the_same_way() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "AppState"));
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.has_count, "`count` is recorded on a state-scoped module too");
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation once paginated");
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(
+        http.contains("workout::list(&state, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        "the HTTP page handler passes the page down:\n{http}"
+    );
+    assert!(http.contains("workout::count(&state)"), "the total is asked of the state:\n{http}");
+
+    let ipc = tmp.path().join("ipc.rs");
+    crate::servers::generators::ipc::generate(&ipc, &modules, &config);
+    let ipc = std::fs::read_to_string(&ipc).unwrap();
+    assert!(
+        ipc.contains("workout::list(&state, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        "the IPC page command passes the page down:\n{ipc}"
+    );
+    assert!(ipc.contains("workout::count(&state)"), "the total is asked of the state:\n{ipc}");
+
+    let mcp = tmp.path().join("mcp.rs");
+    crate::servers::generators::mcp::generate(&mcp, &modules, &config);
+    let mcp = std::fs::read_to_string(&mcp).unwrap();
+    assert!(
+        mcp.contains("workout::list(state, Some(limit), Some(offset))"),
+        "the MCP tool passes the page down:\n{mcp}"
+    );
+    assert!(mcp.contains("workout::count(state)"), "the MCP tool asks the state for the total:\n{mcp}");
+    assert!(!mcp.contains("all_items"), "nothing is materialised to be sliced:\n{mcp}");
+}
+
+#[test]
+fn a_paginated_list_without_the_page_or_a_count_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &crud_module_source("workout", "Store"));
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    assert!(err.contains("module `workout` is paginated"), "{err}");
+    assert!(err.contains("`workout::list` must take `limit: Option<u64>, offset: Option<u64>`"), "{err}");
+
+    // Not paginated: the plain list is fine as it is.
+    config.pagination = None;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+}
+
+#[test]
+fn a_paginated_list_whose_page_params_are_not_option_u64_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store").replace("Option<u64>", "Option<usize>"),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    assert!(!modules[0].functions.iter().find(|f| f.name == "list").unwrap().takes_page());
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    assert!(err.contains("`workout::list` must take `limit: Option<u64>, offset: Option<u64>`"), "{err}");
+}
+
+/// A filtered page is fine as long as the total counts the same rows: the
+/// `count` takes the filter the `list` takes.
+#[test]
+fn a_paginated_list_may_filter_when_its_count_filters_alike() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store")
+            .replace("store: &Store, limit", "store: &Store, plan_id: &str, limit")
+            .replace("count(store: &Store)", "count(store: &Store, plan_id: &str)"),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(http.contains("workout::count(&store, &plan_id)"), "the total carries the filter:\n{http}");
+}
+
+/// The filter is usually a by-value `Query` struct. `list` consumes it, so the
+/// generators hand `list` a clone and give `count` the original.
+#[test]
+fn a_by_value_filter_is_cloned_into_the_list_and_counted_from_the_original() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store")
+            .replace("store: &Store, limit", "store: &Store, query: ListWorkoutQuery, limit")
+            .replace("count(store: &Store)", "count(store: &Store, query: ListWorkoutQuery)"),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+
+    for (name, emit) in [
+        (
+            "ipc",
+            crate::servers::generators::ipc::generate
+                as fn(&std::path::Path, &[crate::servers::parse::ApiModule], &Config),
+        ),
+        ("http", crate::servers::generators::http::generate),
+        ("mcp", crate::servers::generators::mcp::generate),
+    ] {
+        let out = tmp.path().join(format!("{name}.rs"));
+        emit(&out, &modules, &config);
+        let out = std::fs::read_to_string(&out).unwrap();
+        assert!(out.contains("workout::list(&store, query.clone()"), "{name}: the list takes a clone:\n{out}");
+        assert!(out.contains("workout::count(&store, query)"), "{name}: the total takes the original:\n{out}");
+    }
+}
+
+/// A `count` that ignores the filter would report the whole table as the total
+/// of a filtered page, so the two parameter lists must agree.
+#[test]
+fn a_filtered_page_whose_count_does_not_filter_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store")
+            .replace("store: &Store, limit", "store: &Store, plan_id: &str, limit"),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    assert!(err.contains("must take the same filter"), "{err}");
+    assert!(err.contains("`list` filters by plan_id: &str, `count` by nothing"), "{err}");
+}
+
+#[test]
+fn a_count_on_an_unpaginated_module_stays_an_operation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "Store"));
+    let config = test_config(api_dir);
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(
+        workout.functions.iter().any(|f| f.name == "count"),
+        "nothing pages, so `count` is the consumer's own endpoint"
+    );
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(http.contains("workout::count(&store)"), "`count` gets a handler:\n{http}");
+}
+
+#[test]
+fn an_unpaginated_surface_hands_a_page_taking_list_no_page() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "Store"));
+    let config = test_config(api_dir);
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(http.contains("workout::list(&store, None, None)"), "the whole table, as before:\n{http}");
+    assert!(!http.contains("Query(limit)"), "limit is not a filter:\n{http}");
+
+    let ipc = tmp.path().join("ipc.rs");
+    crate::servers::generators::ipc::generate(&ipc, &modules, &config);
+    let ipc = std::fs::read_to_string(&ipc).unwrap();
+    assert!(ipc.contains("workout::list(&store, None, None)"), "the whole table, as before:\n{ipc}");
+    assert!(!ipc.contains("limit: Option<u64>"), "limit is not a command param:\n{ipc}");
+}
+
+/// `count` is only folded into the page handler on a module some surface
+/// paginates. In a module that does not paginate it is an ordinary command,
+/// and dropping it there would lose a real operation without a word.
+#[test]
+fn a_count_beside_an_unpaged_list_stays_a_command() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    let source = format!(
+        "{}pub async fn count(state: &AppState) -> Result<u64, anyhow::Error> {{ todo!() }}\n",
+        crud_module_source("workout", "AppState")
+    );
+    write_synthetic_api(&api_dir, "workout.rs", &source);
+    let config = test_config(api_dir);
+
+    let scanned = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap();
+    assert!(scanned.skips.is_empty(), "nothing was dropped: {:?}", scanned.skips);
+    let mut modules = scanned.modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(workout.functions.iter().any(|f| f.name == "count"), "`count` is kept as an operation");
+}
+
+/// A stateless `count()` declares no argument for the generators to pass, so
+/// it is never taken for the companion: it stays an operation and a paginated
+/// module without a scoped `count` is refused rather than generating a call
+/// that does not compile.
+#[test]
+fn a_stateless_count_is_not_the_pages_companion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    let source = "pub async fn list(state: &AppState, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Workout>, anyhow::Error> { todo!() }
+#[ontogen::stateless]
+pub async fn count() -> Result<u64, anyhow::Error> { todo!() }
+";
+    write_synthetic_api(&api_dir, "workout.rs", source);
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let workout = modules.iter().find(|m| m.name == "workout").unwrap();
+    assert!(!workout.has_count, "a stateless `count()` is not recorded as the companion");
+    assert!(workout.functions.iter().any(|f| f.name == "count" && f.is_stateless), "it stays an operation");
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    assert!(err.contains("module `workout` is paginated"), "{err}");
 }

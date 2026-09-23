@@ -5,6 +5,7 @@
 //! generators. Client-side test cases were relocated here as part of the
 //! servers→clients split.
 
+use std::collections::HashMap;
 use std::fs;
 
 use ontogen_core::utils::TsFormatter;
@@ -212,4 +213,477 @@ name = \"some-binary\"
 #[test]
 fn package_name_absent_yields_none() {
     assert_eq!(package_name_from_manifest("[workspace]\nmembers = [\"a\"]\n"), None);
+}
+
+// ── admin registry: listHasQuery flag (Issue 2 follow-up) ───────────────────
+//
+// transport.rs's OpKind::List branch puts a `query?: T` param ahead of the
+// pagination args only when the Rust `list` fn takes a `Query`-typed
+// parameter — see transport.rs's `generate_transport_interface`. The admin
+// registry has to record which shape a given entity's list method uses, so
+// `useAdminEntity.fetchList` can call it correctly instead of guessing.
+
+use std::path::PathBuf as StdPathBuf;
+
+use crate::clients::config::Config as ClientsConfig;
+use crate::clients::generators::admin;
+use crate::servers::PaginationConfig;
+use crate::servers::parse::{ApiFn, ApiModule, Param};
+use crate::servers::types::NamingConfig;
+
+/// Build a `Param` from a name and a type string. Panics if the type fails to
+/// parse as a `syn::Type`. Mirrors `servers::tests::param`, duplicated here
+/// because that module's `#[cfg(test)] mod tests` is private to `servers`.
+fn admin_test_param(name: &str, ty: &str) -> Param {
+    let ty_ast: syn::Type = syn::parse_str(ty).expect("test param type must parse as syn::Type");
+    Param { name: name.to_string(), ty: ty.to_string(), ty_ast }
+}
+
+fn admin_test_ty_ast(ty: &str) -> syn::Type {
+    syn::parse_str(ty).expect("test return type must parse as syn::Type")
+}
+
+/// A minimal CRUD module (list/get_by_id/create/update/delete — the shape
+/// `admin::generate`'s `crud_modules` filter requires), with `list` optionally
+/// taking a `<Name>Query`-typed parameter.
+fn admin_test_crud_module(name: &str, list_has_query: bool) -> ApiModule {
+    let mut list_params = Vec::new();
+    if list_has_query {
+        list_params.push(admin_test_param("query", "Option<TimerSessionQuery>"));
+    }
+    ApiModule {
+        name: name.to_string(),
+        functions: vec![
+            ApiFn {
+                name: "list".to_string(),
+                is_async: true,
+                doc: format!("List all {name}s."),
+                params: list_params,
+                return_type: format!("Vec<{name}>"),
+                return_type_ast: admin_test_ty_ast(&format!("Vec<{name}>")),
+                ..Default::default()
+            },
+            ApiFn {
+                name: "get_by_id".to_string(),
+                is_async: true,
+                doc: format!("Get a {name} by ID."),
+                params: vec![admin_test_param("id", "&str")],
+                return_type: name.to_string(),
+                return_type_ast: admin_test_ty_ast(name),
+                ..Default::default()
+            },
+            ApiFn {
+                name: "create".to_string(),
+                is_async: true,
+                doc: format!("Create a new {name}."),
+                params: vec![admin_test_param("input", &format!("Create{name}Input"))],
+                return_type: name.to_string(),
+                return_type_ast: admin_test_ty_ast(name),
+                ..Default::default()
+            },
+            ApiFn {
+                name: "update".to_string(),
+                is_async: true,
+                doc: format!("Update a {name}."),
+                params: vec![admin_test_param("id", "&str"), admin_test_param("input", &format!("Update{name}Input"))],
+                return_type: name.to_string(),
+                return_type_ast: admin_test_ty_ast(name),
+                ..Default::default()
+            },
+            ApiFn {
+                name: "delete".to_string(),
+                is_async: true,
+                doc: format!("Delete a {name}."),
+                params: vec![admin_test_param("id", "&str")],
+                ..Default::default()
+            },
+        ],
+        events: vec![],
+        is_singleton: false,
+        has_count: false,
+    }
+}
+
+/// A paginated admin-registry `ClientsConfig`, with `list_has_query`
+/// controlling whether the fixture `list` fn takes a query-struct param.
+fn admin_test_config() -> ClientsConfig {
+    ClientsConfig {
+        api_dir: StdPathBuf::from("src/api/v1"),
+        state_type: "AppState".to_string(),
+        service_import_path: "crate::api::v1".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        state_import: "crate::AppState".to_string(),
+        naming: NamingConfig::default(),
+        generators: vec![],
+        ts_formatter: crate::TsFormatter::None,
+        sse_route_overrides: HashMap::new(),
+        ts_skip_commands: vec![],
+        route_prefix: None,
+        store_type: Some("Store".to_string()),
+        store_import: Some("crate::store::Store".to_string()),
+        schema_entities: Vec::new(),
+        pagination: Some(PaginationConfig { default_limit: 50, max_limit: 200 }),
+        pool_extra_roots: Vec::new(),
+        pool_exclude_paths: Vec::new(),
+        extra_surfaces: Vec::new(),
+        schema_enums: Vec::new(),
+        label_overrides: HashMap::new(),
+    }
+}
+
+#[test]
+fn paginated_list_with_a_query_struct_param_emits_list_has_query() {
+    let module = admin_test_crud_module("timer_session", true);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = dir.path().join("admin-registry.ts");
+
+    admin::generate(&output, std::slice::from_ref(&module), &admin_test_config(), &[], &[]);
+
+    let written = fs::read_to_string(&output).expect("read admin registry");
+    assert!(written.contains("paginated: true"), "registry was:\n{written}");
+    assert!(written.contains("listHasQuery: true"), "registry was:\n{written}");
+}
+
+#[test]
+fn paginated_list_without_a_query_struct_param_omits_list_has_query() {
+    let module = admin_test_crud_module("timer_session", false);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = dir.path().join("admin-registry.ts");
+
+    admin::generate(&output, std::slice::from_ref(&module), &admin_test_config(), &[], &[]);
+
+    let written = fs::read_to_string(&output).expect("read admin registry");
+    assert!(written.contains("paginated: true"), "registry was:\n{written}");
+    assert!(!written.contains("listHasQuery"), "registry was:\n{written}");
+}
+
+// ─── Multi-surface clients ────────────────────────────────────────────────────
+
+use crate::clients::ClientGenerator;
+use crate::clients::config::Config;
+use crate::servers::ApiSurface;
+use crate::servers::tests::{two_surface_fixture, write_synthetic_api};
+
+/// A clients `Config` whose primary surface is `surfaces[0]` and whose
+/// `extra_surfaces` are the rest.
+fn two_surface_client_config(surfaces: Vec<ApiSurface>) -> Config {
+    let mut surfaces = surfaces.into_iter();
+    let primary = surfaces.next().expect("at least one surface");
+    Config {
+        api_dir: primary.api_dir,
+        state_type: "AppState".to_string(),
+        service_import_path: primary.service_import_path,
+        types_import_path: primary.types_import_path,
+        state_import: "crate::AppState".to_string(),
+        naming: NamingConfig::default(),
+        generators: vec![],
+        ts_formatter: crate::TsFormatter::None,
+        sse_route_overrides: HashMap::new(),
+        ts_skip_commands: vec![],
+        route_prefix: None,
+        store_type: primary.store_type,
+        store_import: Some("crate::store::Store".to_string()),
+        schema_entities: Vec::new(),
+        schema_enums: Vec::new(),
+        label_overrides: HashMap::new(),
+        pagination: primary.pagination,
+        pool_extra_roots: Vec::new(),
+        pool_exclude_paths: Vec::new(),
+        extra_surfaces: surfaces.collect(),
+    }
+}
+
+#[test]
+fn test_two_surfaces_transport_merges_module_and_paginates_per_module() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut surfaces = two_surface_fixture(tmp.path());
+    surfaces[1].pagination = Some(PaginationConfig { default_limit: 20, max_limit: 100 });
+    surfaces[1].paginated_modules = vec!["exercise".to_string()];
+    let config = two_surface_client_config(surfaces);
+
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "export type Placeholder = unknown;\n").unwrap();
+    let ts_out = tmp.path().join("transport.ts");
+    crate::clients::generators::transport::generate(&ts_out, &bindings, &modules, &config);
+
+    let ts = std::fs::read_to_string(&ts_out).unwrap();
+    assert!(ts.contains("export interface PaginatedResult<T>"), "pagination on any surface emits the wrapper:\n{ts}");
+    assert!(
+        ts.contains("exerciseList(limit?: number, offset?: number): Promise<PaginatedResult<Exercise>>"),
+        "listed module paginates:\n{ts}"
+    );
+    assert!(ts.contains("workoutList(): Promise<Workout[]>"), "unlisted module of the same surface does not:\n{ts}");
+    assert!(ts.contains("athleteList(): Promise<Athlete[]>"), "primary surface is untouched:\n{ts}");
+    for method in ["workoutStart(", "workoutGetSummary(", "workoutGetById(", "workoutCreate("] {
+        assert!(ts.contains(method), "merged module keeps one method prefix, missing {method}:\n{ts}");
+    }
+}
+
+#[test]
+fn test_two_surfaces_admin_registry_reports_pagination_per_module() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut surfaces = two_surface_fixture(tmp.path());
+    surfaces[1].pagination = Some(PaginationConfig { default_limit: 20, max_limit: 100 });
+    surfaces[1].paginated_modules = vec!["exercise".to_string()];
+    let mut config = two_surface_client_config(surfaces);
+    let admin_out = tmp.path().join("admin-registry.ts");
+    config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
+
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::clients::generators::admin::generate(
+        &admin_out,
+        &modules,
+        &config,
+        &config.schema_entities,
+        &config.schema_enums,
+    );
+
+    let registry = std::fs::read_to_string(&admin_out).unwrap();
+    let entry = |key: &str| {
+        let start =
+            registry.find(&format!("key: '{key}'")).unwrap_or_else(|| panic!("no entry for {key}:\n{registry}"));
+        let end = registry[start..].find("},").map_or(registry.len(), |i| start + i);
+        registry[start..end].to_string()
+    };
+    assert!(entry("exercise").contains("paginated: true"), "{registry}");
+    assert!(entry("exercise").contains("defaultLimit: 20"), "{registry}");
+    assert!(entry("workout").contains("paginated: false"), "{registry}");
+    assert!(entry("workout").contains("listMethod: 'workoutList'"), "the merged module is a CRUD entity:\n{registry}");
+    assert!(!registry.contains("key: 'athlete'"), "a list-only module is not a CRUD entity:\n{registry}");
+}
+
+#[test]
+fn surface_entities_come_from_the_surfaces_that_name_a_schema_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("athlete.rs"),
+        r#"
+        #[derive(OntologyEntity)]
+        #[ontology(entity)]
+        pub struct Athlete {
+            #[ontology(id)]
+            pub id: String,
+            pub display_name: String,
+        }
+        "#,
+    )
+    .unwrap();
+    let surface = |schema_dir| ApiSurface {
+        api_dir: std::path::PathBuf::from("unused"),
+        service_import_path: String::new(),
+        types_import_path: String::new(),
+        store_accessor: None,
+        store_type: None,
+        pagination: None,
+        paginated_modules: Vec::new(),
+        schema_dir,
+    };
+
+    let entities =
+        crate::clients::surface_schema(&[surface(None), surface(Some(dir.path().to_path_buf()))]).unwrap().entities;
+    let names: Vec<_> = entities.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["Athlete"]);
+    assert!(entities[0].fields.iter().any(|f| f.name == "display_name"));
+}
+
+#[test]
+fn the_registry_says_whether_list_takes_a_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "note.rs",
+        "pub async fn list(store: &Store, query: ListNotesQuery, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Note>, anyhow::Error> { todo!() }
+pub async fn count(store: &Store) -> Result<u64, anyhow::Error> { todo!() }
+pub async fn get_by_id(store: &Store, id: &str) -> Result<Note, anyhow::Error> { todo!() }
+pub async fn create(store: &Store, input: CreateNoteInput) -> Result<Note, anyhow::Error> { todo!() }
+pub async fn update(store: &Store, id: &str, input: UpdateNoteInput) -> Result<Note, anyhow::Error> { todo!() }
+pub async fn delete(store: &Store, id: &str) -> Result<(), anyhow::Error> { todo!() }
+",
+    );
+    write_synthetic_api(&api_dir, "tag.rs", &crate::servers::tests::crud_module_source("tag", "Store"));
+    let mut config = two_surface_client_config(vec![ApiSurface {
+        api_dir,
+        service_import_path: "crate::api".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        store_accessor: None,
+        store_type: Some("Store".to_string()),
+        pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 }),
+        paginated_modules: vec!["note".to_string()],
+        schema_dir: None,
+    }]);
+    let admin_out = tmp.path().join("admin-registry.ts");
+    config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
+
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::clients::generators::admin::generate(
+        &admin_out,
+        &modules,
+        &config,
+        &config.schema_entities,
+        &config.schema_enums,
+    );
+
+    let registry = std::fs::read_to_string(&admin_out).unwrap();
+    let note = &registry[registry.find("key: 'note'").unwrap()..registry.find("key: 'tag'").unwrap()];
+    assert!(note.contains("listHasQuery: true"), "note's list takes a query:\n{note}");
+    let tag = &registry[registry.find("key: 'tag'").unwrap()..];
+    assert!(!tag.contains("listHasQuery"), "tag's list does not:\n{tag}");
+}
+
+#[test]
+fn test_two_surfaces_same_entity_name_is_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut surfaces = two_surface_fixture(tmp.path());
+    let entity = |name: &str| {
+        format!(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {name} {{\n    #[ontology(id)]\n    pub id: \
+             String,\n}}\n"
+        )
+    };
+    let primary_schema = tmp.path().join("primary_schema");
+    std::fs::create_dir_all(&primary_schema).unwrap();
+    std::fs::write(primary_schema.join("workout.rs"), entity("Workout")).unwrap();
+    let fitness_schema = tmp.path().join("fitness_schema");
+    std::fs::create_dir_all(&fitness_schema).unwrap();
+    std::fs::write(fitness_schema.join("workout.rs"), entity("Workout")).unwrap();
+    surfaces[1].schema_dir = Some(fitness_schema);
+
+    let mut config = two_surface_client_config(surfaces);
+    config.schema_entities = crate::parse_schema(&crate::SchemaConfig { schema_dir: primary_schema }).unwrap().entities;
+    config.generators = vec![ClientGenerator::AdminRegistry { output: tmp.path().join("admin-registry.ts") }];
+
+    let err = crate::clients::generate_clients(&config).expect_err("an entity name shared by two surfaces must fail");
+    assert!(err.contains("entity `Workout`"), "{err}");
+    assert!(err.contains("more than one API surface"), "{err}");
+}
+
+#[test]
+fn the_registry_carries_enum_values_label_overrides_and_the_id_type() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "source.rs", &crate::servers::tests::crud_module_source("source", "Store"));
+    write_synthetic_api(&api_dir, "reading.rs", &crate::servers::tests::crud_module_source("reading", "Store"));
+    let schema = r#"
+        #[derive(Serialize, Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        pub enum Quality {
+            PeerReviewed,
+            Community,
+        }
+
+        #[derive(OntologyEntity)]
+        #[ontology(entity)]
+        pub struct Source {
+            #[ontology(id)]
+            pub id: String,
+            #[ontology(enum_field)]
+            pub kind: Quality,
+            pub quality: Option<Quality>,
+            pub avg_hr_bpm: Option<i32>,
+        }
+
+        #[derive(OntologyEntity)]
+        #[ontology(entity)]
+        pub struct Reading {
+            #[ontology(id)]
+            pub id: i64,
+            pub avg_hr_bpm: Option<i32>,
+        }
+    "#;
+    let path = std::path::Path::new("schema.rs");
+    let mut config = two_surface_client_config(vec![ApiSurface {
+        api_dir,
+        service_import_path: "crate::api".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        store_accessor: None,
+        store_type: Some("Store".to_string()),
+        pagination: None,
+        paginated_modules: Vec::new(),
+        schema_dir: None,
+    }]);
+    config.schema_entities = crate::schema::parse::parse_schema_source(schema, path).unwrap();
+    config.schema_enums = crate::schema::parse::parse_schema_enums_source(schema, path).unwrap();
+    config.label_overrides = HashMap::from([
+        ("avg_hr_bpm".to_string(), "Average HR (bpm)".to_string()),
+        ("reading.avg_hr_bpm".to_string(), "Heart rate".to_string()),
+    ]);
+    let admin_out = tmp.path().join("admin-registry.ts");
+    config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
+
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::clients::generators::admin::generate(
+        &admin_out,
+        &modules,
+        &config,
+        &config.schema_entities,
+        &config.schema_enums,
+    );
+
+    let registry = std::fs::read_to_string(&admin_out).unwrap();
+    let reading = &registry[registry.find("key: 'reading'").unwrap()..registry.find("key: 'source'").unwrap()];
+    let source = &registry[registry.find("key: 'source'").unwrap()..];
+    assert!(source.contains("idType: 'string'"), "a String id:\n{source}");
+    assert!(reading.contains("idType: 'number'"), "an i64 id:\n{reading}");
+    let kind = &source[source.find("key: 'kind'").unwrap()..source.find("key: 'quality'").unwrap()];
+    assert!(
+        kind.contains("type: 'enum', required: true") && kind.contains("enumValues: ['peer-reviewed', 'community']"),
+        "a bare enum field is a required select:\n{kind}"
+    );
+    let quality = &source[source.find("key: 'quality'").unwrap()..source.find("key: 'avg_hr_bpm'").unwrap()];
+    assert!(
+        quality.contains("type: 'enum'")
+            && !quality.contains("required")
+            && quality.contains("enumValues: ['peer-reviewed', 'community']"),
+        "an optional enum field is an optional select:\n{quality}"
+    );
+    assert!(source.contains("label: 'Average HR (bpm)'"), "the field-wide override:\n{source}");
+    assert!(reading.contains("label: 'Heart rate'"), "the entity's own override wins:\n{reading}");
+}
+
+/// The guard on [`crate::ClientsConfig::new`]: a consumer that supplies only
+/// the five required inputs still compiles and still gets an inert
+/// configuration, so adding a field to `ClientsConfig` costs consumers
+/// nothing. Drop the `..new(..)` base from a consumer and this test stops
+/// compiling; give a defaulted field a non-inert value in `new` and the
+/// assertions below fail.
+#[test]
+fn a_config_built_from_only_its_required_inputs_is_inert() {
+    let config =
+        crate::ClientsConfig::new("src/api/v1", "AppState", "crate::api::v1", "crate::schema", "crate::AppState");
+
+    assert_eq!(config.api_dir, std::path::Path::new("src/api/v1"));
+    assert_eq!(config.state_type, "AppState");
+    assert_eq!(config.service_import_path, "crate::api::v1");
+    assert_eq!(config.types_import_path, "crate::schema");
+    assert_eq!(config.state_import, "crate::AppState");
+
+    assert!(config.generators.is_empty(), "nothing is generated until a generator is named");
+    assert!(matches!(config.ts_formatter, TsFormatter::None), "TypeScript is emitted as generated");
+    assert!(config.sse_route_overrides.is_empty());
+    assert!(config.ts_skip_commands.is_empty());
+    assert!(config.route_prefix.is_none());
+    assert!(config.store_type.is_none() && config.store_import.is_none());
+    assert!(config.pagination.is_none());
+    assert!(config.schema_entities.is_empty() && config.schema_enums.is_empty());
+    assert!(config.label_overrides.is_empty());
+    assert!(config.pool_extra_roots.is_empty() && config.pool_exclude_paths.is_empty());
+    assert!(config.extra_surfaces.is_empty(), "one surface, the primary");
+}
+
+/// The shape every consuming `build.rs` is meant to use: override the handful
+/// of fields the project cares about, inherit the rest. The overrides must
+/// survive the update syntax, and the base must not leak back over them.
+#[test]
+fn a_partial_literal_over_new_keeps_its_overrides() {
+    let config = crate::ClientsConfig {
+        generators: vec![crate::clients::ClientGenerator::AdminRegistry { output: "app/admin-registry.ts".into() }],
+        store_type: Some("Store".into()),
+        ..crate::ClientsConfig::new("src/api/v1", "AppState", "crate::api::v1", "crate::schema", "crate::AppState")
+    };
+
+    assert_eq!(config.generators.len(), 1);
+    assert_eq!(config.store_type.as_deref(), Some("Store"));
+    assert!(config.store_import.is_none(), "an unmentioned field stays at the base's default");
 }

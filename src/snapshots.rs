@@ -27,9 +27,12 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::ir::SchemaOutput;
 use crate::persistence::seaorm::gen_entity::{generate_entity_code, generate_junction_code, to_snake_case};
-use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
-use crate::{DtoConfig, StoreConfig};
+use crate::schema::model::{
+    EntityDef, EnumDef, EnumVariant, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind,
+};
+use crate::{DocsConfig, DtoConfig, StoreConfig};
 
 // ─── Fixture builders ────────────────────────────────────────────────────────
 
@@ -46,6 +49,7 @@ fn simple_role_entity() -> EntityDef {
             FieldDef::new("name", FieldType::String, FieldRole::Plain),
             FieldDef::new("body", FieldType::String, FieldRole::Body),
         ],
+        doc: String::new(),
     }
 }
 
@@ -72,6 +76,7 @@ fn comment_belongs_to_post_entity() -> EntityDef {
             ),
             FieldDef::new("body", FieldType::String, FieldRole::Body),
         ],
+        doc: String::new(),
     }
 }
 
@@ -99,6 +104,7 @@ fn article_mtm_tags_entity() -> EntityDef {
             ),
             FieldDef::new("body", FieldType::String, FieldRole::Body),
         ],
+        doc: String::new(),
     }
 }
 
@@ -226,6 +232,7 @@ fn node_has_many_entity() -> EntityDef {
             ),
             FieldDef::new("body", FieldType::String, FieldRole::Body),
         ],
+        doc: String::new(),
     }
 }
 
@@ -278,10 +285,184 @@ fn markdown_store_has_many_entity() {
 }
 
 #[test]
+fn markdown_count_walks_the_directory_without_parsing_records() {
+    // A count needs how many records there are, not what is in them.
+    // `read_all` reads and parses every file in the directory; `list_paths`
+    // only walks it. A paginated page handler calls `count` once per request
+    // beside `list`, so parsing the whole vault to take `.len()` would make a
+    // page cost two full reads of the vault where it used to cost one.
+    let code = generate_markdown_store_file(&article_mtm_tags_entity());
+    let body = &code[code.find("pub async fn count_").expect("a count method")..];
+    let body = &body[..body.find("\n    }").expect("the count method's closing brace")];
+    assert!(body.contains(".list_paths("), "the count walks the directory:\n{body}");
+    assert!(!body.contains(".read_all("), "the count never reads or parses records:\n{body}");
+}
+
+#[test]
 fn markdown_frontmatter_complex_entity() {
     // Article's m2m relation exercises the wikilink-encode/strip boundary
     // and the owned-keys constant; body field exercises the conversion
     // signature.
     let code = crate::persistence::markdown::gen_frontmatter::generate_frontmatter_module(&article_mtm_tags_entity());
     insta::assert_snapshot!(code);
+}
+
+// ─── Servers: two API surfaces ───────────────────────────────────────────────
+
+/// Run `generate_transport` over the two-surface fixture with `generator`
+/// pointed at a tempdir file, and read the generated file back.
+fn generate_two_surface_file(
+    generator: impl FnOnce(std::path::PathBuf) -> crate::servers::ServerGenerator,
+    pagination: Option<crate::servers::PaginationConfig>,
+) -> String {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut surfaces = crate::servers::tests::two_surface_fixture(tmp.path());
+    surfaces[1].pagination = pagination;
+    surfaces[1].paginated_modules = vec!["exercise".to_string()];
+    let mut config = crate::servers::tests::two_surface_config(surfaces);
+    let output = tmp.path().join("generated.rs");
+    config.generators = vec![generator(output.clone())];
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+    read_file(&output)
+}
+
+#[test]
+fn servers_two_surfaces_http() {
+    // `workout` merges custom fns from the primary surface with the CRUD five
+    // from the fitness surface; the fitness handlers open `fitness_store()`,
+    // call through the `workout_1` alias, and qualify the shared `Workout`.
+    let code = generate_two_surface_file(
+        |output| crate::servers::ServerGenerator::HttpAxum { output },
+        Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 }),
+    );
+    insta::assert_snapshot!(code);
+}
+
+#[test]
+fn servers_two_surfaces_ipc() {
+    let code = generate_two_surface_file(|output| crate::servers::ServerGenerator::TauriIpc { output }, None);
+    insta::assert_snapshot!(code);
+}
+
+// ─── Docs: the data-model reference and JSON Schema ──────────────────────────
+
+/// Every file the docs stage wrote, read back from the tempdir.
+struct DocsFiles {
+    markdown: String,
+    schemas: HashMap<String, String>,
+    export: String,
+}
+
+/// Run the docs stage over `schema` into a tempdir and read its output back.
+fn generate_docs(schema: &SchemaOutput) -> DocsFiles {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema_dir = tmp.path().join("schema");
+    let config = DocsConfig {
+        markdown_output: tmp.path().join("data-model.md"),
+        json_schema_dir: schema_dir.clone(),
+        title: "Blog data model".to_string(),
+        export_format: "blog-log".to_string(),
+    };
+    crate::gen_docs(schema, &config).expect("gen_docs failed");
+
+    let schemas = schema
+        .entities
+        .iter()
+        .map(|entity| {
+            let snake = to_snake_case(&entity.name);
+            let content = read_file(&schema_dir.join(format!("{snake}.schema.json")));
+            (snake, content)
+        })
+        .collect();
+
+    DocsFiles {
+        markdown: read_file(&config.markdown_output),
+        schemas,
+        export: read_file(&schema_dir.join("export.schema.json")),
+    }
+}
+
+fn schema_output(entities: Vec<EntityDef>, enums: Vec<EnumDef>) -> SchemaOutput {
+    SchemaOutput { entities, enums }
+}
+
+/// A documented entity that exercises the whole type mapping: an id, an
+/// optional integer, an enum, a list, and a float.
+fn documented_set_entity() -> EntityDef {
+    let documented = |doc: &str, field: FieldDef| FieldDef { doc: doc.to_string(), ..field };
+    EntityDef {
+        name: "Set".to_string(),
+        doc: "One working set of an exercise.".to_string(),
+        directory: "sets".to_string(),
+        table: "sets".to_string(),
+        type_name: "set".to_string(),
+        prefix: "set".to_string(),
+        fields: vec![
+            documented("Stable id.", FieldDef::new("id", FieldType::String, FieldRole::Id)),
+            documented("Integer metres.", FieldDef::new("distance_m", FieldType::OptionI32, FieldRole::Plain)),
+            documented(
+                "How the set was\nrecorded.",
+                FieldDef::new("kind", FieldType::OptionEnum("SetKind".to_string()), FieldRole::EnumField),
+            ),
+            documented(
+                "Free labels. Reserved: rpe | tempo.",
+                FieldDef::new("tags", FieldType::VecString, FieldRole::Plain),
+            ),
+            FieldDef::new("weight_kg", FieldType::F64, FieldRole::Plain),
+        ],
+    }
+}
+
+fn set_kind_enum() -> EnumDef {
+    EnumDef {
+        name: "SetKind".to_string(),
+        variants: vec![
+            EnumVariant { name: "Working".to_string(), value: "working".to_string() },
+            EnumVariant { name: "WarmUp".to_string(), value: "warm-up".to_string() },
+        ],
+    }
+}
+
+#[test]
+fn docs_data_model_reference() {
+    // The belongs_to fixture: one entity section, a relations block, and the
+    // erDiagram edge to the target it points at.
+    let files = generate_docs(&schema_output(vec![comment_belongs_to_post_entity()], vec![]));
+    insta::assert_snapshot!(files.markdown);
+}
+
+#[test]
+fn docs_entity_json_schema() {
+    let files = generate_docs(&schema_output(vec![comment_belongs_to_post_entity()], vec![]));
+    insta::assert_snapshot!(files.schemas["comment"]);
+}
+
+#[test]
+fn docs_json_schema_required_matches_non_optional_fields() {
+    let files = generate_docs(&schema_output(vec![documented_set_entity()], vec![set_kind_enum()]));
+
+    let schema: serde_json::Value = serde_json::from_str(&files.schemas["set"]).expect("entity schema parses");
+    assert_eq!(schema["required"], serde_json::json!(["id", "tags", "weight_kg"]));
+    assert_eq!(schema["description"], "One working set of an exercise.");
+    assert_eq!(schema["properties"]["distance_m"]["type"], "integer");
+    assert_eq!(schema["properties"]["distance_m"]["description"], "Integer metres.");
+    assert_eq!(schema["properties"]["kind"]["enum"], serde_json::json!(["working", "warm-up"]));
+    assert_eq!(schema["properties"]["tags"]["items"]["type"], "string");
+
+    let export: serde_json::Value = serde_json::from_str(&files.export).expect("export schema parses");
+    assert_eq!(export["properties"]["tables"]["properties"]["sets"]["items"]["$ref"], "set.schema.json");
+    assert_eq!(export["properties"]["manifest"]["properties"]["format"]["const"], "blog-log");
+    assert_eq!(export["x-schema-revision"], schema["x-schema-revision"]);
+}
+
+#[test]
+fn docs_markdown_prints_enum_values_and_flattens_docs() {
+    let files = generate_docs(&schema_output(vec![documented_set_entity()], vec![set_kind_enum()]));
+
+    assert!(files.markdown.contains("| distance_m | integer | no | Integer metres. |"), "{}", files.markdown);
+    assert!(files.markdown.contains("enum(working, warm-up)"), "{}", files.markdown);
+    // A multi-line field doc collapses onto the table row.
+    assert!(files.markdown.contains("How the set was recorded."), "{}", files.markdown);
+    // A pipe inside a doc would end the cell, so it is escaped.
+    assert!(files.markdown.contains(r"Reserved: rpe \| tempo."), "{}", files.markdown);
 }

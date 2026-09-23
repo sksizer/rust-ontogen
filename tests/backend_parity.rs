@@ -71,6 +71,7 @@ fn gen_api_into(entities: &[EntityDef], out: &Path) {
             state_type: "AppState".into(),
             store_type: Some("Store".into()),
             schema_module_path: "crate::schema".into(),
+            paginated: vec![],
         },
     )
     .expect("gen_api failed");

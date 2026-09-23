@@ -21,6 +21,7 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, slug_source: Op
     code.push_str("impl Store {\n");
 
     generate_list(code, entity, has_relations);
+    generate_count(code, entity);
     generate_get(code, entity, has_relations);
     generate_create(code, entity, slug_source);
     generate_update(code, entity);
@@ -96,6 +97,20 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     } else {
         code.push_str(&format!("        Ok({plural}.into_iter().skip(offset).take(limit).collect())\n"));
     }
+    code.push_str("    }\n\n");
+}
+
+fn generate_count(code: &mut String, entity: &EntityDef) {
+    let snake = to_snake_case(&entity.name);
+    let plural = pluralize(&snake);
+    let dir = dir_const(&snake);
+
+    code.push_str(&format!("    pub async fn count_{plural}(&self) -> Result<u64, AppError> {{\n"));
+    // A count needs the number of records, not their contents: `list_paths`
+    // walks the directory, where `read_all` would also read and parse every
+    // file. Both go through `list_paths`, so the list cap still applies and
+    // an oversized directory fails the same way.
+    code.push_str(&format!("        Ok(self.vault().list_paths({dir}).map_err(AppError::from)?.len() as u64)\n"));
     code.push_str("    }\n\n");
 }
 

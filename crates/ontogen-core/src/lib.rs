@@ -17,7 +17,7 @@ pub mod utils;
 
 // Re-export key types at the crate root for ergonomic use
 pub use ir::*;
-pub use model::{EntityDef, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+pub use model::{EntityDef, EnumDef, EnumVariant, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
 pub use naming::{pluralize, to_pascal_case, to_snake_case};
 pub use utils::{clean_generated_dir, emit_rerun_directives, rustfmt};
 
@@ -32,6 +32,7 @@ pub enum CodegenError {
     Api(String),
     Server(String),
     Client(String),
+    Docs(String),
     /// An external tool required by the codegen pipeline is missing or failed.
     ExternalTool {
         tool: &'static str,
@@ -48,6 +49,7 @@ impl std::fmt::Display for CodegenError {
             Self::Api(e) => write!(f, "api codegen error: {e}"),
             Self::Server(e) => write!(f, "server codegen error: {e}"),
             Self::Client(e) => write!(f, "client codegen error: {e}"),
+            Self::Docs(e) => write!(f, "docs codegen error: {e}"),
             Self::ExternalTool { tool, detail } => {
                 write!(f, "external tool `{tool}` unavailable: {detail}")
             }
