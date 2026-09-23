@@ -17,6 +17,11 @@ const { currentItem, loading, error, fields, fetchById, deleteEntity, getEntityI
 
 const deleting = ref(false)
 
+const detailLink = useAdminDetailLink()
+const hostLink = computed(() =>
+  entityConfig.value ? detailLink(entityConfig.value.key, entityId.value) : null,
+)
+
 const detailFields = computed(() => fields.value.filter((f) => f.showInDetail && !f.isBody))
 const bodyField = computed(() => fields.value.find((f) => f.isBody))
 const parsedBody = ref('')
@@ -82,6 +87,14 @@ function resolveRelationRoute(field: { relationTo?: string }, value: unknown): s
         <span class="text-sm font-semibold text-(--ui-text)">{{ entityId }}</span>
       </div>
       <div class="flex gap-2">
+        <NuxtLink
+          v-if="hostLink"
+          :to="hostLink.to"
+          data-admin-detail-link
+          class="px-3 py-1.5 text-sm rounded-md border border-(--ui-border) text-blue-600 hover:bg-(--ui-bg-accented) transition-colors"
+        >
+          {{ hostLink.label }}
+        </NuxtLink>
         <button
           class="px-3 py-1.5 text-sm rounded-md border border-(--ui-border) text-(--ui-text) hover:bg-(--ui-bg-accented) transition-colors"
           @click="navigateToEdit"

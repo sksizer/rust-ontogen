@@ -74,16 +74,7 @@ export function useAdminEntity(pluralOrKey: string | Ref<string>) {
         // subscriptions returning `Promise<() => void>`) that don't overlap
         // with this paginated return type.
         const fn = transport[method] as unknown as (...args: unknown[]) => Promise<{ items: EntityRecord[]; total: number }>
-        // The generated list method's call shape depends on whether the
-        // underlying Rust fn has a query-struct param (see
-        // src/clients/generators/transport.rs's OpKind::List branch, and
-        // src/clients/generators/admin.rs, which records this on the entity
-        // config as listHasQuery): (query?, limit?, offset?) when true,
-        // (limit?, offset?) when false/absent. Guessing the shape silently
-        // shifts every argument, so this is not optional.
-        const result = config.value.listHasQuery
-          ? await fn(undefined, limit.value, offset)
-          : await fn(limit.value, offset)
+        const result = await fn(...pageArgs(config.value, limit.value, offset))
         if (requestId !== fetchListRequestId) return // a newer fetchList has since started; drop this response
         // The total may have shrunk since `page` was chosen (e.g. rows
         // deleted elsewhere). Landing past the last real page returns an
