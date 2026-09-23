@@ -422,6 +422,7 @@ mod tests {
                 FieldDef::new("id", FieldType::String, FieldRole::Id),
                 FieldDef::new("body", FieldType::String, FieldRole::Body),
             ],
+            doc: String::new(),
         }
     }
 
@@ -467,6 +468,7 @@ mod tests {
                 ),
                 FieldDef::new("body", FieldType::String, FieldRole::Body),
             ],
+            doc: String::new(),
         }
     }
 

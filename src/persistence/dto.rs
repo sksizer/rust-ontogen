@@ -332,6 +332,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "name".to_string(),
@@ -340,6 +341,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "agent_type".to_string(),
@@ -348,6 +350,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "capabilities".to_string(),
@@ -356,6 +359,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "body".to_string(),
@@ -364,8 +368,10 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         }
     }
 
@@ -406,6 +412,7 @@ mod tests {
             table: "todos".to_string(),
             type_name: "todo".to_string(),
             prefix: "todo".to_string(),
+            doc: String::new(),
 
             fields: vec![
                 FieldDef::new("id", FieldType::String, FieldRole::Id),
@@ -478,6 +485,7 @@ mod tests {
                 FieldDef::new("name", FieldType::String, FieldRole::Plain),
                 FieldDef::new("body", FieldType::String, FieldRole::Body),
             ],
+            doc: String::new(),
         };
 
         let code = generate_dto_code(&entity);
@@ -535,6 +543,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "contains".to_string(),
@@ -548,6 +557,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "fulfills".to_string(),
@@ -561,6 +571,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "body".to_string(),
@@ -569,8 +580,10 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         };
 
         let code = generate_dto_code(&entity);
@@ -596,6 +609,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "states".to_string(),
@@ -604,6 +618,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "body".to_string(),
@@ -612,8 +627,10 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         };
 
         let code = generate_dto_code(&entity);
@@ -638,6 +655,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    doc: String::new(),
                 },
                 FieldDef {
                     name: "disposition".to_string(),
@@ -646,8 +664,10 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: Some("active".to_string()),
+                    doc: String::new(),
                 },
             ],
+            doc: String::new(),
         };
 
         let code = generate_dto_code(&entity);

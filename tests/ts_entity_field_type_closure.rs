@@ -46,6 +46,7 @@ fn timer_session_entity() -> EntityDef {
             FieldDef::new("id", FieldType::String, FieldRole::Id),
             FieldDef::new("interval_kind", FieldType::OptionEnum("IntervalKind".into()), FieldRole::EnumField),
         ],
+        doc: String::new(),
     }
 }
 

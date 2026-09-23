@@ -99,6 +99,7 @@ mod tests {
                 FieldDef::new("id", FieldType::String, FieldRole::Id),
                 FieldDef::new("body", FieldType::String, FieldRole::Body),
             ],
+            doc: String::new(),
         }
     }
 
@@ -134,6 +135,7 @@ mod tests {
             type_name: "workout".to_string(),
             prefix: "workout".to_string(),
             fields: vec![FieldDef::new("id", FieldType::String, FieldRole::Id)],
+            doc: String::new(),
         };
         let mut config = make_config();
         config.paginated = vec!["workout".to_string()];

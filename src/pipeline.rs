@@ -1,9 +1,9 @@
 //! Fluent builder API on top of the generator functions.
 //!
-//! `Pipeline` is opt-in sugar: it wires together `parse_schema`, `gen_seaorm`,
-//! `gen_markdown_io`, `gen_dtos`, `gen_store`, `gen_api`, `gen_servers`, and
-//! `gen_clients` with sensible defaults so simple `build.rs` files don't have
-//! to spell out every config struct field.
+//! `Pipeline` is opt-in sugar: it wires together `parse_schema`, `gen_docs`,
+//! `gen_seaorm`, `gen_markdown_io`, `gen_dtos`, `gen_store`, `gen_api`,
+//! `gen_servers`, and `gen_clients` with sensible defaults so simple `build.rs`
+//! files don't have to spell out every config struct field.
 //!
 //! The existing config structs and generator functions remain the canonical
 //! API - `Pipeline` is a thin wrapper that constructs them under the hood.
@@ -22,7 +22,9 @@
 //! # Stage order
 //!
 //! Method call order on the builder is irrelevant. `build()` always runs stages
-//! in the dependency order: `schema → seaorm/markdown_io/dtos → store → api → servers → clients`.
+//! in the dependency order: `schema → docs → seaorm/markdown_io/dtos → store → api → servers → clients`.
+//! The docs stage reads only the parsed schema and feeds nothing downstream, so
+//! it runs first and its position is arbitrary.
 //! Each stage's structured output (e.g., `SeaOrmOutput`, `ApiOutput`) is threaded
 //! through to the next stage automatically. The servers and clients stages are
 //! independent (neither produces input for the other); their relative ordering
@@ -36,16 +38,16 @@
 //!   AppState type, so the builder asks for it explicitly.
 //! - `store_type` (used by `api` and `servers`) defaults to `Some("Store")` once
 //!   the store stage is enabled, otherwise `None`.
-//! - All optional stages (seaorm, markdown_io, dtos, store, api, servers) are
-//!   skipped unless their builder method is called.
+//! - All optional stages (docs, seaorm, markdown_io, dtos, store, api, servers)
+//!   are skipped unless their builder method is called.
 
 use std::path::PathBuf;
 
 use crate::ir::{ApiOutput, Backend, IdStrategy, MarkdownIoOutput, MarkdownLayout, SchemaOutput, SeaOrmOutput};
 use crate::{
-    ApiConfig, ApiSurface, ClientsConfig, CodegenError, DEFAULT_SCHEMA_MODULE_PATH, DtoConfig, MarkdownIoConfig,
-    SchemaConfig, SeaOrmConfig, ServersConfig, StoreConfig, gen_api, gen_clients, gen_dtos, gen_markdown_io,
-    gen_seaorm, gen_servers, gen_store, parse_schema,
+    ApiConfig, ApiSurface, ClientsConfig, CodegenError, DEFAULT_SCHEMA_MODULE_PATH, DocsConfig, DtoConfig,
+    MarkdownIoConfig, SchemaConfig, SeaOrmConfig, ServersConfig, StoreConfig, gen_api, gen_clients, gen_docs, gen_dtos,
+    gen_markdown_io, gen_seaorm, gen_servers, gen_store, parse_schema,
 };
 
 /// Default store type name used for the `api` and `servers` stages once a
@@ -59,6 +61,11 @@ struct SeaOrmStage {
     entity_output: PathBuf,
     conversion_output: PathBuf,
     skip_conversions: Vec<String>,
+}
+
+/// Internal state for the docs stage.
+struct DocsStage {
+    config: DocsConfig,
 }
 
 /// Internal state for the markdown-io stage.
@@ -137,6 +144,7 @@ pub struct Pipeline {
     schema_dir: PathBuf,
     schema_module_path: String,
 
+    docs: Option<DocsStage>,
     seaorm: Option<SeaOrmStage>,
     markdown_io: Option<MarkdownIoStage>,
     dtos: Option<DtoStage>,
@@ -156,6 +164,7 @@ impl Pipeline {
         Self {
             schema_dir: schema_dir.into(),
             schema_module_path: DEFAULT_SCHEMA_MODULE_PATH.to_string(),
+            docs: None,
             seaorm: None,
             markdown_io: None,
             dtos: None,
@@ -173,6 +182,19 @@ impl Pipeline {
     #[must_use]
     pub fn schema_module_path(mut self, path: impl Into<String>) -> Self {
         self.schema_module_path = path.into();
+        self
+    }
+
+    // ── docs ────────────────────────────────────────────────────────
+
+    /// Enable the docs stage: a data-model reference and JSON Schema for the
+    /// parsed schema.
+    ///
+    /// Independent of every other stage — it reads the schema and writes
+    /// documentation, feeding nothing downstream.
+    #[must_use]
+    pub fn docs(mut self, config: DocsConfig) -> Self {
+        self.docs = Some(DocsStage { config });
         self
     }
 
@@ -425,7 +447,7 @@ impl Pipeline {
     /// Execute the pipeline.
     ///
     /// Stages run in the canonical order regardless of method call order:
-    /// `schema → seaorm → markdown_io → dtos → store → api → servers → clients`.
+    /// `schema → docs → seaorm → markdown_io → dtos → store → api → servers → clients`.
     /// Returns on the first error, with the originating stage's variant of
     /// [`CodegenError`].
     pub fn build(self) -> Result<(), CodegenError> {
@@ -438,6 +460,11 @@ impl Pipeline {
         // those collide with any domain type also named `Relation` and would
         // otherwise abort the long-tail resolver.
         let seaorm_entity_output: Option<PathBuf> = self.seaorm.as_ref().map(|s| s.entity_output.clone());
+
+        // Stage 1b: docs — depends on the schema alone, feeds nothing.
+        if let Some(stage) = self.docs {
+            gen_docs(&schema, &stage.config)?;
+        }
 
         // Stage 2a: SeaORM
         let seaorm_out: Option<SeaOrmOutput> = match self.seaorm {

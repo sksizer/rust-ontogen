@@ -151,7 +151,9 @@ fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityD
     validate_identifier("type_name", &type_name).map_err(|e| format!("entity `{name}`: {e}"))?;
     validate_identifier("prefix", &prefix).map_err(|e| format!("entity `{name}`: {e}"))?;
 
-    Ok(Some(EntityDef { name, directory, table, type_name, prefix, fields: field_defs }))
+    let doc = doc_comment(&input.attrs);
+
+    Ok(Some(EntityDef { name, doc, directory, table, type_name, prefix, fields: field_defs }))
 }
 
 /// Validate that a user-supplied identifier conforms to `[A-Za-z_][A-Za-z0-9_]*`.
@@ -246,12 +248,35 @@ fn parse_field(field: &Field) -> Result<FieldDef, String> {
 
     Ok(FieldDef {
         name,
+        doc: doc_comment(&field.attrs),
         field_type,
         role: ontology_attrs.role,
         serde_default,
         multiline_list: ontology_attrs.multiline_list,
         default_value: ontology_attrs.default_value,
     })
+}
+
+/// Join the `///` lines of an item into one string.
+///
+/// Rustc rewrites `/// text` into `#[doc = " text"]`, so one leading space is
+/// trimmed per line and the lines are joined with newlines. An item with no
+/// doc comment gets an empty string.
+fn doc_comment(attrs: &[Attribute]) -> String {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            if attr.path().is_ident("doc")
+                && let Meta::NameValue(nv) = &attr.meta
+                && let Expr::Lit(syn::ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+            {
+                let line = s.value();
+                return Some(line.strip_prefix(' ').unwrap_or(&line).to_string());
+            }
+            None
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Parsed field-level `#[ontology(...)]` attributes.
@@ -482,6 +507,32 @@ mod tests {
         let field = |name: &str| entities[0].fields.iter().find(|f| f.name == name).unwrap();
         assert_eq!(field("quality").enum_def(&enums).map(|e| e.name.as_str()), Some("Quality"));
         assert!(field("name").enum_def(&enums).is_none());
+    }
+
+    #[test]
+    fn doc_comments_reach_the_entity_and_its_fields() {
+        let src = r#"
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            /// A single interval.
+            /// Distances are metric.
+            pub struct Interval {
+                #[ontology(id)]
+                pub id: String,
+
+                /// Integer metres.
+                pub distance_m: i32,
+
+                pub note: Option<String>,
+            }
+        "#;
+
+        let entities = parse_schema_source(src, Path::new("interval.rs")).expect("parse entities");
+        assert_eq!(entities[0].doc, "A single interval.\nDistances are metric.");
+
+        let field = |name: &str| entities[0].fields.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(field("distance_m").doc, "Integer metres.");
+        assert_eq!(field("note").doc, "");
     }
 
     #[test]
