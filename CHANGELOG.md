@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-09-23
+
+### Added
+
+- the registry path is an option
+- relation pickers, enum-select guard, detail-link hook, 0.2.0
+- a paginated list may filter, when its count filters alike
+- a docs stage emits the data-model reference and JSON Schema
+
+### Changed
+
+- a count walks the directory instead of parsing every record
+
+### Fixed
+
+- inverse relation tables read a paginated target page by page
+- the page goes where the transport's list signature puts it
+- the picker's input handler is a method
+- an emptied optional field clears the column on edit
+- page args read the registry's listHasQuery flag and Enter on a closed picker does not submit the form
+- custom fn params in Rust declaration order on every transport
+- the enum type column separates values with commas
+- escape pipes in the markdown table cells
+- map undedicated integer primitives to their wire type
+- match the crate-prefixed tags release-plz creates
+
 ## [0.7.0] - 2026-09-22
 
 ### Added

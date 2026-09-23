@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-09-23
+
+### ⚠ BREAKING CHANGES
+
+- `EntityDef` and `FieldDef` gain a `doc` field, so an exhaustive struct
+  literal must name it
+- `CodegenError` gains a `Docs` variant, so an exhaustive match must handle it
+
+### Added
+
+- a docs stage emits the data-model reference and JSON Schema
+
 ## [0.5.0] - 2026-09-22
 
 ### Added
