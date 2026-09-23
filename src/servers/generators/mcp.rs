@@ -342,13 +342,17 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                         // beyond the page is ever materialised. A list that does not
                         // take it (not every Vec-returning op is the checked `list`)
                         // keeps the older in-memory slice.
+                        // A filtered page calls `count` with the same filter,
+                        // after `list` has consumed it.
+                        let count_args = extra_args.clone();
+                        let list_args = extra_args.replace(", query", ", query.clone()");
                         let body = if pushes_page {
                             format!(
                                 "\
 {prefix}{extraction}                    let limit = args.get(\"limit\").and_then(|v| v.as_u64()).unwrap_or({default_limit}).min({max_limit});
                     let offset = args.get(\"offset\").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let items = {svc}::list({first_arg}{extra_args}, Some(limit), Some(offset)){await_str}.map_err(|e| e.to_string())?;
-                    let total = {svc}::count({first_arg}){await_str}.map_err(|e| e.to_string())?;
+                    let items = {svc}::list({first_arg}{list_args}, Some(limit), Some(offset)){await_str}.map_err(|e| e.to_string())?;
+                    let total = {svc}::count({first_arg}{count_args}){await_str}.map_err(|e| e.to_string())?;
 "
                             )
                         } else {

@@ -4871,8 +4871,71 @@ fn a_paginated_list_whose_page_params_are_not_option_u64_is_refused() {
     assert!(err.contains("`workout::list` must take `limit: Option<u64>, offset: Option<u64>`"), "{err}");
 }
 
+/// A filtered page is fine as long as the total counts the same rows: the
+/// `count` takes the filter the `list` takes.
 #[test]
-fn a_paginated_list_with_a_filter_is_refused() {
+fn a_paginated_list_may_filter_when_its_count_filters_alike() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store")
+            .replace("store: &Store, limit", "store: &Store, plan_id: &str, limit")
+            .replace("count(store: &Store)", "count(store: &Store, plan_id: &str)"),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+
+    let http = tmp.path().join("http.rs");
+    crate::servers::generators::http::generate(&http, &modules, &config);
+    let http = std::fs::read_to_string(&http).unwrap();
+    assert!(http.contains("workout::count(&store, &plan_id)"), "the total carries the filter:\n{http}");
+}
+
+/// The filter is usually a by-value `Query` struct. `list` consumes it, so the
+/// generators hand `list` a clone and give `count` the original.
+#[test]
+fn a_by_value_filter_is_cloned_into_the_list_and_counted_from_the_original() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store")
+            .replace("store: &Store, limit", "store: &Store, query: ListWorkoutQuery, limit")
+            .replace("count(store: &Store)", "count(store: &Store, query: ListWorkoutQuery)"),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+
+    for (name, emit) in [
+        (
+            "ipc",
+            crate::servers::generators::ipc::generate
+                as fn(&std::path::Path, &[crate::servers::parse::ApiModule], &Config),
+        ),
+        ("http", crate::servers::generators::http::generate),
+        ("mcp", crate::servers::generators::mcp::generate),
+    ] {
+        let out = tmp.path().join(format!("{name}.rs"));
+        emit(&out, &modules, &config);
+        let out = std::fs::read_to_string(&out).unwrap();
+        assert!(out.contains("workout::list(&store, query.clone()"), "{name}: the list takes a clone:\n{out}");
+        assert!(out.contains("workout::count(&store, query)"), "{name}: the total takes the original:\n{out}");
+    }
+}
+
+/// A `count` that ignores the filter would report the whole table as the total
+/// of a filtered page, so the two parameter lists must agree.
+#[test]
+fn a_filtered_page_whose_count_does_not_filter_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let api_dir = tmp.path().join("api");
     write_synthetic_api(
@@ -4886,7 +4949,8 @@ fn a_paginated_list_with_a_filter_is_refused() {
 
     let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
     let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
-    assert!(err.contains("`count(store)` cannot apply the filter `plan_id: &str` to the total"), "{err}");
+    assert!(err.contains("must take the same filter"), "{err}");
+    assert!(err.contains("`list` filters by plan_id: &str, `count` by nothing"), "{err}");
 }
 
 #[test]

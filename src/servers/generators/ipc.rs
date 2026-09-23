@@ -194,6 +194,12 @@ pub struct PaginatedResult<T: Serialize> {
                         param_lines.push_str(&format!("    {}: {},\n", pp.name, owned_ty));
                         extra_args.push_str(&format!(", &{}", pp.name));
                     }
+                    // A filtered page calls `count` with the same filter, after
+                    // `list` has consumed it, so the by-value filter is cloned
+                    // into the list call and the original goes to count. With no
+                    // filter both are `extra_args` and the emission is unchanged.
+                    let count_args = extra_args.clone();
+                    let list_args = extra_args.replace(", query", ", query.clone()");
                     if let Some(pg) = pagination
                         && paginated
                     {
@@ -210,9 +216,9 @@ pub async fn {cmd_name}(
 ) -> Result<PaginatedResult<{item_type}>, String> {{
 {fn_pp_body}    let limit = limit.unwrap_or({default_limit}).min({max_limit});
     let offset = offset.unwrap_or(0);
-    let items = {svc}::list({first_arg}{extra_args}, Some(u64::from(limit)), Some(u64::from(offset))){await_str}
+    let items = {svc}::list({first_arg}{list_args}, Some(u64::from(limit)), Some(u64::from(offset))){await_str}
         .map_err(|e| e.to_string())?;
-    let total = {svc}::count({first_arg}){await_str}
+    let total = {svc}::count({first_arg}{count_args}){await_str}
         .map_err(|e| e.to_string())?;
     Ok(PaginatedResult {{ items, total, limit, offset }})
 }}

@@ -223,6 +223,12 @@ pub struct PaginationParams {
                         let item_type = inner_type(ret_type);
                         let default_limit = pg.default_limit;
                         let max_limit = pg.max_limit;
+                        // A filtered page calls `count` with the same filter,
+                        // after `list` has consumed it, so the by-value filter is
+                        // cloned into the list call and the original goes to
+                        // count. With no filter both are `extra_args`.
+                        let count_args = extra_args.clone();
+                        let list_args = extra_args.replace(", query", ", query.clone()");
                         extra_extractors.push_str("\n    Query(pagination): Query<PaginationParams>,");
                         out.push_str(&format!(
                             "\
@@ -231,9 +237,9 @@ async fn {handler_name}(
 ) -> Result<Json<PaginatedResult<{item_type}>>, ApiError> {{
 {store_let}    let limit = pagination.limit.unwrap_or({default_limit}).min({max_limit});
     let offset = pagination.offset.unwrap_or(0);
-    let items = {svc}::list({first_arg}{extra_args}, Some(u64::from(limit)), Some(u64::from(offset))){await_str}
+    let items = {svc}::list({first_arg}{list_args}, Some(u64::from(limit)), Some(u64::from(offset))){await_str}
         {err_map}?;
-    let total = {svc}::count({first_arg}){await_str}
+    let total = {svc}::count({first_arg}{count_args}){await_str}
         {err_map}?;
     Ok(Json(PaginatedResult {{ items, total, limit, offset }}))
 }}
