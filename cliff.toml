@@ -48,6 +48,10 @@ conventional_commits = true
 filter_unconventional = true
 split_commits = false
 commit_parsers = [
+    # A `merge: …` subject is a conventional commit as far as the parser is
+    # concerned, so without this the stack-merge commits form their own
+    # "### merge" section in the release notes.
+    { message = "^merge", skip = true },
     { message = "^feat", group = "Added" },
     { message = "^fix", group = "Fixed" },
     { message = "^refactor", group = "Changed" },
@@ -65,5 +69,12 @@ commit_parsers = [
 ]
 protect_breaking_commits = false
 filter_commits = false
-tag_pattern = "v[0-9].*"
+# No `tag_pattern`. release-plz creates crate-prefixed tags in a workspace
+# (`ontogen-v0.7.0`, `ontogen-core-v0.5.0`), and the previous pattern
+# `v[0-9].*` matched none of them -- only the four legacy tags from before the
+# workspace split (`v0.1.0` .. `v0.3.0`). git-cliff could then find no current
+# release to bound the range and emitted an almost-empty changelog, which is
+# how the 0.7.1 release PR came to list one commit out of fourteen. Unset,
+# every tag counts, so the newest one bounds the range correctly; release-plz
+# passes the per-package range explicitly regardless.
 sort_commits = "oldest"
