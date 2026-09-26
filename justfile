@@ -65,6 +65,22 @@ test-admin-layer:
     pnpm install --frozen-lockfile
     pnpm --filter @ontogen/admin-layer test
 
+# The examples live outside the root cargo workspace and commit their generated
+# trees so diffs stay reviewable, but nothing regenerates them automatically —
+# each one's build.rs only runs when that example is built. The Examples
+# workflow fails a PR whose committed output no longer matches.
+#
+# iron-log is a Tauri app: on Linux it needs the GTK/WebKit -dev packages the
+# Examples workflow installs. It builds as-is on macOS.
+#
+# Rebuild every example's committed generator output, then commit what moves.
+regen-examples:
+    cargo build --manifest-path examples/iron-log-md/Cargo.toml
+    cargo build --manifest-path examples/tasks-tracker/Cargo.toml
+    cargo build --manifest-path examples/notes-kb/Cargo.toml
+    cargo check --manifest-path examples/iron-log/src-tauri/Cargo.toml
+alias rex := regen-examples
+
 # Alias retained for muscle memory: same as full-check now that tests are folded in.
 ci: full-check
 
