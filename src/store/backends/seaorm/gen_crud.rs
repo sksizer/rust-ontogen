@@ -7,7 +7,9 @@
 //! - Both tiers emit events via `self.emit_change()`
 
 use crate::schema::model::EntityDef;
-use crate::store::helpers::{junction_source_col, junction_table_name, junction_target_col, pluralize, to_snake_case};
+use crate::store::helpers::{
+    junction_source_col, junction_table_name, junction_target_col, pluralize, to_pascal_case, to_snake_case,
+};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -49,6 +51,16 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
         "    pub async fn list_{plural}(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
     ));
     code.push_str(&format!("        let mut query = {snake}::Entity::find();\n"));
+    // A page only means something over a defined order. `LIMIT`/`OFFSET` with
+    // no `ORDER BY` lets the engine return rows in whatever order it likes, so
+    // the same offset can repeat a row the previous page already returned and
+    // skip another entirely. Order by the primary key — the one column every
+    // entity has, and the one the markdown backend already pages by, since its
+    // vault listing is sorted by record id.
+    if let Some(id) = entity.id_field() {
+        let col = to_pascal_case(&id.name);
+        code.push_str(&format!("        query = query.order_by_asc({snake}::Column::{col});\n"));
+    }
     code.push_str("        if let Some(l) = limit {\n");
     code.push_str("            query = query.limit(l);\n");
     code.push_str("        }\n");

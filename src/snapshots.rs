@@ -198,6 +198,26 @@ fn store_crud_complex_entity() {
     insta::assert_snapshot!(code);
 }
 
+#[test]
+fn a_sql_list_orders_before_it_takes_a_page() {
+    // `LIMIT`/`OFFSET` over no `ORDER BY` has no defined row order — the engine
+    // may answer the same query differently each time, so page 2 can repeat a
+    // row page 1 already returned and skip another entirely. The markdown
+    // backend never had this problem, because its vault listing is sorted by
+    // record id, which meant identical generated code meant two different
+    // things by "page 2" depending on the backend underneath it.
+    let code = generate_store_file(&article_mtm_tags_entity());
+    assert!(code.contains("QueryOrder"), "the ordering trait is in scope:\n{code}");
+
+    let body = &code[code.find("pub async fn list_").expect("a list method")..];
+    let body = &body[..body.find("\n    }").expect("the list method's closing brace")];
+    assert!(body.contains(".order_by_asc(article::Column::Id)"), "the list orders by primary key:\n{body}");
+
+    let order_at = body.find(".order_by_asc(").expect("an order_by");
+    let limit_at = body.find(".limit(").expect("a limit");
+    assert!(order_at < limit_at, "the order is established before the page is taken:\n{body}");
+}
+
 /// Self-referential `has_many` entity (the in-tree set_parent shape):
 /// `Node { id, label, parent_id -> Node, contains: has_many(parent_id), body }`.
 fn node_has_many_entity() -> EntityDef {
