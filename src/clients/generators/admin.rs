@@ -82,8 +82,12 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities:
         let list_has_query_js = if list_has_query { "    listHasQuery: true,\n".to_string() } else { String::new() };
 
         out.push_str(&format!(
-            "\
-  {{
+            // No `\` line-continuations in this template: inside a Rust string
+            // literal a trailing `\` eats the newline *and every leading space
+            // on the next line*, which silently stripped the indentation off
+            // the opening brace and the `fields:` key. Optional chunks carry
+            // their own trailing newline instead, and are spliced inline.
+            "  {{
     key: '{module}',
     plural: '{plural}',
     label: '{label}',
@@ -97,9 +101,7 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities:
     returnType: '{return_type}',
     createInputType: '{create_input}',
     updateInputType: '{update_input}',
-{pagination_js}\
-{list_has_query_js}\
-    fields: [{fields_js}],
+{pagination_js}{list_has_query_js}    fields: [{fields_js}],
   }},\n",
             list_method = snake_to_camel(&command_name(module, list_fn, config)),
             get_method = snake_to_camel(&get_method),
