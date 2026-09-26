@@ -2,6 +2,18 @@
 # cargo workspace, so the main CI never compiles them; this path-filtered
 # workflow is the guard. NOT a required check (a path-filtered required
 # check would permanently block PRs that don't touch examples).
+#
+# Each job also guards against generator drift. The examples commit their
+# generated trees so diffs stay reviewable, but nothing regenerates them —
+# an example's build.rs only runs when that example is built. Building here
+# regenerates in place, so a `git diff` afterwards is exactly "what the
+# committed output is missing". Without this the trees drift silently: they
+# had fallen four minor releases behind before anyone noticed, still carrying
+# ontogen 0.3.1 in a lockfile.
+#
+# The `src/**` path filter is what makes the guard meaningful — a generator
+# change is the only thing that can invalidate committed output, and it
+# always triggers this workflow.
 name: "Examples"
 
 on:
@@ -24,6 +36,8 @@ jobs:
         with:
           toolchain: "stable"
       - run: "cargo build --manifest-path examples/iron-log-md/Cargo.toml"
+      - name: "Committed generator output is current"
+        run: ".github/scripts/check-generated-drift.sh examples/iron-log-md"
 
   tasks-tracker:
     runs-on: "ubuntu-latest"
@@ -33,6 +47,8 @@ jobs:
         with:
           toolchain: "stable"
       - run: "cargo build --manifest-path examples/tasks-tracker/Cargo.toml"
+      - name: "Committed generator output is current"
+        run: ".github/scripts/check-generated-drift.sh examples/tasks-tracker"
 
   notes-kb:
     runs-on: "ubuntu-latest"
@@ -42,6 +58,8 @@ jobs:
         with:
           toolchain: "stable"
       - run: "cargo build --manifest-path examples/notes-kb/Cargo.toml"
+      - name: "Committed generator output is current"
+        run: ".github/scripts/check-generated-drift.sh examples/notes-kb"
 
   iron-log:
     runs-on: "ubuntu-latest"
@@ -65,3 +83,5 @@ jobs:
             librsvg2-dev \
             patchelf
       - run: "cargo check --manifest-path examples/iron-log/src-tauri/Cargo.toml"
+      - name: "Committed generator output is current"
+        run: ".github/scripts/check-generated-drift.sh examples/iron-log"
