@@ -2590,30 +2590,33 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "ontogen"
-version = "0.3.1"
+version = "0.7.1"
 dependencies = [
  "cruet",
  "ontogen-core",
  "ontogen-macros",
  "ontogen-ts",
  "quote",
+ "serde",
+ "serde_json",
+ "sha2",
  "syn 2.0.117",
 ]
 
 [[package]]
 name = "ontogen-core"
-version = "0.1.0"
+version = "0.6.0"
 
 [[package]]
 name = "ontogen-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "syn 2.0.117",
 ]
 
 [[package]]
 name = "ontogen-ts"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "quote",
  "syn 2.0.117",

@@ -86,6 +86,10 @@ impl Store {
         Ok(workouts)
     }
 
+    pub async fn count_workouts(&self) -> Result<u64, AppError> {
+        Ok(self.vault().list_paths(WORKOUTS_DIR).map_err(AppError::from)?.len() as u64)
+    }
+
     pub async fn get_workout(&self, id: &str) -> Result<Workout, AppError> {
         let doc = self
             .vault()

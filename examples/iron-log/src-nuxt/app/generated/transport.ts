@@ -15,47 +15,47 @@ import type {
   Workout,
   WorkoutSet,
   WorkoutStats,
-} from './types'
+} from './types';
 
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/core';
 
 // ── Transport Interface ──
 
 export interface Transport {
-  exerciseList(): Promise<Exercise[]>
-  exerciseGetById(id: string): Promise<Exercise>
-  exerciseCreate(input: CreateExerciseInput): Promise<Exercise>
-  exerciseUpdate(id: string, input: UpdateExerciseInput): Promise<Exercise>
-  exerciseDelete(id: string): Promise<null>
-  tagList(): Promise<Tag[]>
-  tagGetById(id: string): Promise<Tag>
-  tagCreate(input: CreateTagInput): Promise<Tag>
-  tagUpdate(id: string, input: UpdateTagInput): Promise<Tag>
-  tagDelete(id: string): Promise<null>
-  workoutList(): Promise<Workout[]>
-  workoutGetById(id: string): Promise<Workout>
-  workoutCreate(input: CreateWorkoutInput): Promise<Workout>
-  workoutUpdate(id: string, input: UpdateWorkoutInput): Promise<Workout>
-  workoutDelete(id: string): Promise<null>
-  workoutSetList(): Promise<WorkoutSet[]>
-  workoutSetGetById(id: string): Promise<WorkoutSet>
-  workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet>
-  workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet>
-  workoutSetDelete(id: string): Promise<null>
-  statGetWorkout(): Promise<WorkoutStats>
+  exerciseList(): Promise<Exercise[]>;
+  exerciseGetById(id: string): Promise<Exercise>;
+  exerciseCreate(input: CreateExerciseInput): Promise<Exercise>;
+  exerciseUpdate(id: string, input: UpdateExerciseInput): Promise<Exercise>;
+  exerciseDelete(id: string): Promise<null>;
+  tagList(): Promise<Tag[]>;
+  tagGetById(id: string): Promise<Tag>;
+  tagCreate(input: CreateTagInput): Promise<Tag>;
+  tagUpdate(id: string, input: UpdateTagInput): Promise<Tag>;
+  tagDelete(id: string): Promise<null>;
+  workoutList(): Promise<Workout[]>;
+  workoutGetById(id: string): Promise<Workout>;
+  workoutCreate(input: CreateWorkoutInput): Promise<Workout>;
+  workoutUpdate(id: string, input: UpdateWorkoutInput): Promise<Workout>;
+  workoutDelete(id: string): Promise<null>;
+  workoutSetList(): Promise<WorkoutSet[]>;
+  workoutSetGetById(id: string): Promise<WorkoutSet>;
+  workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet>;
+  workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet>;
+  workoutSetDelete(id: string): Promise<null>;
+  statGetWorkout(): Promise<WorkoutStats>;
 }
 
 // ── HTTP Helpers ──
 
-const BASE = '/api'
+const BASE = '/api';
 
 async function httpGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`)
+  const res = await fetch(`${BASE}${path}`);
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(body.error ?? res.statusText)
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error ?? res.statusText);
   }
-  return res.json()
+  return res.json();
 }
 
 async function httpPost<T>(path: string, body?: unknown): Promise<T> {
@@ -63,13 +63,13 @@ async function httpPost<T>(path: string, body?: unknown): Promise<T> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body != null ? JSON.stringify(body) : undefined,
-  })
+  });
   if (!res.ok) {
-    const errBody = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(errBody.error ?? res.statusText)
+    const errBody = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(errBody.error ?? res.statusText);
   }
-  if (res.status === 204) return null as T
-  return res.json()
+  if (res.status === 204) return null as T;
+  return res.json();
 }
 
 async function httpPut<T>(path: string, body: unknown): Promise<T> {
@@ -77,35 +77,35 @@ async function httpPut<T>(path: string, body: unknown): Promise<T> {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  })
+  });
   if (!res.ok) {
-    const errBody = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(errBody.error ?? res.statusText)
+    const errBody = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(errBody.error ?? res.statusText);
   }
-  return res.json()
+  return res.json();
 }
 
 async function httpDelete(path: string): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, { method: 'DELETE' })
+  const res = await fetch(`${BASE}${path}`, { method: 'DELETE' });
   if (!res.ok) {
-    const errBody = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(errBody.error ?? res.statusText)
+    const errBody = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(errBody.error ?? res.statusText);
   }
 }
 
 function toQueryString(params: Record<string, unknown>): string {
-  const parts: string[] = []
+  const parts: string[] = [];
   for (const [key, value] of Object.entries(params)) {
-    if (value == null) continue
+    if (value == null) continue;
     if (Array.isArray(value)) {
       for (const v of value) {
-        parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(v))}`)
+        parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(v))}`);
       }
     } else {
-      parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+      parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
     }
   }
-  return parts.length > 0 ? `?${parts.join('&')}` : ''
+  return parts.length > 0 ? `?${parts.join('&')}` : '';
 }
 
 // ── HTTP Transport ──
@@ -113,73 +113,73 @@ function toQueryString(params: Record<string, unknown>): string {
 export function createHttpTransport(): Transport {
   return {
     async exerciseList(): Promise<Exercise[]> {
-      return httpGet('/exercises')
+      return httpGet('/exercises');
     },
     async exerciseGetById(id: string): Promise<Exercise> {
-      return httpGet(`/exercises/${encodeURIComponent(id)}`)
+      return httpGet(`/exercises/${encodeURIComponent(id)}`);
     },
     async exerciseCreate(input: CreateExerciseInput): Promise<Exercise> {
-      return httpPost<Exercise>('/exercises', input)
+      return httpPost<Exercise>('/exercises', input);
     },
     async exerciseUpdate(id: string, input: UpdateExerciseInput): Promise<Exercise> {
-      return httpPut<Exercise>(`/exercises/${encodeURIComponent(id)}`, input)
+      return httpPut<Exercise>(`/exercises/${encodeURIComponent(id)}`, input);
     },
     async exerciseDelete(id: string): Promise<null> {
-      await httpDelete(`/exercises/${encodeURIComponent(id)}`)
-      return null
+      await httpDelete(`/exercises/${encodeURIComponent(id)}`);
+      return null;
     },
     async tagList(): Promise<Tag[]> {
-      return httpGet('/tags')
+      return httpGet('/tags');
     },
     async tagGetById(id: string): Promise<Tag> {
-      return httpGet(`/tags/${encodeURIComponent(id)}`)
+      return httpGet(`/tags/${encodeURIComponent(id)}`);
     },
     async tagCreate(input: CreateTagInput): Promise<Tag> {
-      return httpPost<Tag>('/tags', input)
+      return httpPost<Tag>('/tags', input);
     },
     async tagUpdate(id: string, input: UpdateTagInput): Promise<Tag> {
-      return httpPut<Tag>(`/tags/${encodeURIComponent(id)}`, input)
+      return httpPut<Tag>(`/tags/${encodeURIComponent(id)}`, input);
     },
     async tagDelete(id: string): Promise<null> {
-      await httpDelete(`/tags/${encodeURIComponent(id)}`)
-      return null
+      await httpDelete(`/tags/${encodeURIComponent(id)}`);
+      return null;
     },
     async workoutList(): Promise<Workout[]> {
-      return httpGet('/workouts')
+      return httpGet('/workouts');
     },
     async workoutGetById(id: string): Promise<Workout> {
-      return httpGet(`/workouts/${encodeURIComponent(id)}`)
+      return httpGet(`/workouts/${encodeURIComponent(id)}`);
     },
     async workoutCreate(input: CreateWorkoutInput): Promise<Workout> {
-      return httpPost<Workout>('/workouts', input)
+      return httpPost<Workout>('/workouts', input);
     },
     async workoutUpdate(id: string, input: UpdateWorkoutInput): Promise<Workout> {
-      return httpPut<Workout>(`/workouts/${encodeURIComponent(id)}`, input)
+      return httpPut<Workout>(`/workouts/${encodeURIComponent(id)}`, input);
     },
     async workoutDelete(id: string): Promise<null> {
-      await httpDelete(`/workouts/${encodeURIComponent(id)}`)
-      return null
+      await httpDelete(`/workouts/${encodeURIComponent(id)}`);
+      return null;
     },
     async workoutSetList(): Promise<WorkoutSet[]> {
-      return httpGet('/workout-sets')
+      return httpGet('/workout-sets');
     },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
-      return httpGet(`/workout-sets/${encodeURIComponent(id)}`)
+      return httpGet(`/workout-sets/${encodeURIComponent(id)}`);
     },
     async workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet> {
-      return httpPost<WorkoutSet>('/workout-sets', input)
+      return httpPost<WorkoutSet>('/workout-sets', input);
     },
     async workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet> {
-      return httpPut<WorkoutSet>(`/workout-sets/${encodeURIComponent(id)}`, input)
+      return httpPut<WorkoutSet>(`/workout-sets/${encodeURIComponent(id)}`, input);
     },
     async workoutSetDelete(id: string): Promise<null> {
-      await httpDelete(`/workout-sets/${encodeURIComponent(id)}`)
-      return null
+      await httpDelete(`/workout-sets/${encodeURIComponent(id)}`);
+      return null;
     },
     async statGetWorkout(): Promise<WorkoutStats> {
-      return httpGet('/stats/workout')
+      return httpGet('/stats/workout');
     },
-  }
+  };
 }
 
 // ── IPC Transport ──
@@ -187,71 +187,71 @@ export function createHttpTransport(): Transport {
 export function createIpcTransport(): Transport {
   return {
     async exerciseList(): Promise<Exercise[]> {
-      return invoke('exercise_list')
+      return invoke('exercise_list');
     },
     async exerciseGetById(id: string): Promise<Exercise> {
-      return invoke('exercise_get_by_id', { id })
+      return invoke('exercise_get_by_id', { id });
     },
     async exerciseCreate(input: CreateExerciseInput): Promise<Exercise> {
-      return invoke('exercise_create', { input })
+      return invoke('exercise_create', { input });
     },
     async exerciseUpdate(id: string, input: UpdateExerciseInput): Promise<Exercise> {
-      return invoke('exercise_update', { id, input })
+      return invoke('exercise_update', { id, input });
     },
     async exerciseDelete(id: string): Promise<null> {
-      await invoke('exercise_delete', { id })
-      return null
+      await invoke('exercise_delete', { id });
+      return null;
     },
     async tagList(): Promise<Tag[]> {
-      return invoke('tag_list')
+      return invoke('tag_list');
     },
     async tagGetById(id: string): Promise<Tag> {
-      return invoke('tag_get_by_id', { id })
+      return invoke('tag_get_by_id', { id });
     },
     async tagCreate(input: CreateTagInput): Promise<Tag> {
-      return invoke('tag_create', { input })
+      return invoke('tag_create', { input });
     },
     async tagUpdate(id: string, input: UpdateTagInput): Promise<Tag> {
-      return invoke('tag_update', { id, input })
+      return invoke('tag_update', { id, input });
     },
     async tagDelete(id: string): Promise<null> {
-      await invoke('tag_delete', { id })
-      return null
+      await invoke('tag_delete', { id });
+      return null;
     },
     async workoutList(): Promise<Workout[]> {
-      return invoke('workout_list')
+      return invoke('workout_list');
     },
     async workoutGetById(id: string): Promise<Workout> {
-      return invoke('workout_get_by_id', { id })
+      return invoke('workout_get_by_id', { id });
     },
     async workoutCreate(input: CreateWorkoutInput): Promise<Workout> {
-      return invoke('workout_create', { input })
+      return invoke('workout_create', { input });
     },
     async workoutUpdate(id: string, input: UpdateWorkoutInput): Promise<Workout> {
-      return invoke('workout_update', { id, input })
+      return invoke('workout_update', { id, input });
     },
     async workoutDelete(id: string): Promise<null> {
-      await invoke('workout_delete', { id })
-      return null
+      await invoke('workout_delete', { id });
+      return null;
     },
     async workoutSetList(): Promise<WorkoutSet[]> {
-      return invoke('workout_set_list')
+      return invoke('workout_set_list');
     },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
-      return invoke('workout_set_get_by_id', { id })
+      return invoke('workout_set_get_by_id', { id });
     },
     async workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet> {
-      return invoke('workout_set_create', { input })
+      return invoke('workout_set_create', { input });
     },
     async workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet> {
-      return invoke('workout_set_update', { id, input })
+      return invoke('workout_set_update', { id, input });
     },
     async workoutSetDelete(id: string): Promise<null> {
-      await invoke('workout_set_delete', { id })
-      return null
+      await invoke('workout_set_delete', { id });
+      return null;
     },
     async statGetWorkout(): Promise<WorkoutStats> {
-      return invoke('stat_get_workout')
+      return invoke('stat_get_workout');
     },
-  }
+  };
 }
