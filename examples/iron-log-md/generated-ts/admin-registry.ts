@@ -4,7 +4,7 @@
 import type { AdminFieldDef, AdminEntityConfig } from '@ontogen/admin-types'
 
 export const adminEntities: AdminEntityConfig[] = [
-{
+  {
     key: 'exercise',
     plural: 'exercises',
     label: 'Exercise',
@@ -19,14 +19,14 @@ export const adminEntities: AdminEntityConfig[] = [
     createInputType: 'CreateExerciseInput',
     updateInputType: 'UpdateExerciseInput',
     paginated: false,
-fields: [
+    fields: [
       { key: 'id', label: 'Id', type: 'string', required: true, showInTable: true, showInDetail: true, showInForm: true, isId: true },
       { key: 'name', label: 'Name', type: 'string', required: true, showInTable: true, showInDetail: true, showInForm: true },
       { key: 'muscle_group', label: 'Muscle Group', type: 'string', required: true, showInDetail: true, showInForm: true },
       { key: 'equipment', label: 'Equipment', type: 'string', required: true, showInDetail: true, showInForm: true },
       { key: 'notes', label: 'Notes', type: 'string', showInDetail: true, showInForm: true }],
   },
-{
+  {
     key: 'tag',
     plural: 'tags',
     label: 'Tag',
@@ -41,11 +41,11 @@ fields: [
     createInputType: 'CreateTagInput',
     updateInputType: 'UpdateTagInput',
     paginated: false,
-fields: [
+    fields: [
       { key: 'id', label: 'Id', type: 'string', required: true, showInTable: true, showInDetail: true, showInForm: true, isId: true },
       { key: 'name', label: 'Name', type: 'string', required: true, showInTable: true, showInDetail: true, showInForm: true }],
   },
-{
+  {
     key: 'workout',
     plural: 'workouts',
     label: 'Workout',
@@ -60,16 +60,16 @@ fields: [
     createInputType: 'CreateWorkoutInput',
     updateInputType: 'UpdateWorkoutInput',
     paginated: false,
-fields: [
+    fields: [
       { key: 'id', label: 'Id', type: 'string', required: true, showInTable: true, showInDetail: true, showInForm: true, isId: true },
       { key: 'name', label: 'Name', type: 'string', showInTable: true, showInDetail: true, showInForm: true },
       { key: 'date', label: 'Date', type: 'string', required: true, showInTable: true, showInDetail: true, showInForm: true },
       { key: 'duration_minutes', label: 'Duration Minutes', type: 'number', showInDetail: true, showInForm: true },
       { key: 'notes', label: 'Notes', type: 'string', showInDetail: true, showInForm: true },
       { key: 'tags', label: 'Tags', type: 'relation-array', relationTo: 'tag', showInTable: true, showInDetail: true, showInForm: true },
-      { key: 'created_at', label: 'Created At', type: 'string', required: true, showInDetail: true, readOnly: true }],
+      { key: 'created_at', label: 'Created At', type: 'string', required: true, showInDetail: true, showInForm: true }],
   },
-{
+  {
     key: 'workout_set',
     plural: 'workout_sets',
     label: 'Workout_set',
@@ -84,7 +84,7 @@ fields: [
     createInputType: 'CreateWorkoutSetInput',
     updateInputType: 'UpdateWorkoutSetInput',
     paginated: false,
-fields: [
+    fields: [
       { key: 'id', label: 'Id', type: 'string', required: true, showInTable: true, showInDetail: true, showInForm: true, isId: true },
       { key: 'workout_id', label: 'Workout Id', type: 'relation', required: true, relationTo: 'workout', showInTable: true, showInDetail: true, showInForm: true },
       { key: 'exercise_id', label: 'Exercise Id', type: 'relation', required: true, relationTo: 'exercise', showInTable: true, showInDetail: true, showInForm: true },

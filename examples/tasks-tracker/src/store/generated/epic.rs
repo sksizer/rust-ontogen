@@ -55,6 +55,10 @@ impl Store {
         Ok(epics.into_iter().skip(offset).take(limit).collect())
     }
 
+    pub async fn count_epics(&self) -> Result<u64, AppError> {
+        Ok(self.vault().list_paths(EPICS_DIR).map_err(AppError::from)?.len() as u64)
+    }
+
     pub async fn get_epic(&self, id: &str) -> Result<Epic, AppError> {
         let doc = self
             .vault()
