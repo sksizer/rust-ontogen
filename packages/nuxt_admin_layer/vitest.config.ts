@@ -11,6 +11,14 @@ import { defineConfig } from 'vitest/config'
 // otherwise inject, since these files reference them as free identifiers.
 export default defineConfig({
   plugins: [vue()],
+  // The generated transport fixture (tests/fixtures) imports Tauri's API,
+  // which this package does not install; the stubs stand in for it.
+  resolve: {
+    alias: {
+      '@tauri-apps/api/core': fileURLToPath(new URL('./tests/stubs/tauri-core.ts', import.meta.url)),
+      '@tauri-apps/api/event': fileURLToPath(new URL('./tests/stubs/tauri-event.ts', import.meta.url)),
+    },
+  },
   test: {
     environment: 'happy-dom',
     setupFiles: [fileURLToPath(new URL('./tests/setup.ts', import.meta.url))],

@@ -50,7 +50,7 @@ the client side ships in the same release.
 | Task | Status | PR |
 | --- | --- | --- |
 | [Event ops take parameters, carry a sequence, and report lag](./2026-09-28-event-ops-take-parameters-and-resume.md) | closed/done | [#184](https://github.com/sksizer/rust-ontogen/pull/184) |
-| [Generated TS subscriptions resume and report lag](./2026-09-28-generated-subscriptions-resume-and-report-lag.md) | backlog | — |
+| [Generated TS subscriptions resume and report lag](./2026-09-28-generated-subscriptions-resume-and-report-lag.md) | closed/done | [#185](https://github.com/sksizer/rust-ontogen/pull/185) |
 
 ## Pumice feedback round 2 (2026-05-14)
 

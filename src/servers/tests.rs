@@ -5230,3 +5230,49 @@ fn test_ts_transport_keeps_on_x_only_for_legacy_events() {
     assert!(content.contains("import { listen } from '@tauri-apps/api/event';"));
     assert!(!content.contains("onVaultNoteChanges"), "a parameterized op has no global onX");
 }
+/// The generated transport the admin-layer vitest suite drives
+/// (`packages/nuxt_admin_layer/tests/event-subscriptions.test.ts`). It must
+/// match the generator: rerun with `UPDATE_TS_FIXTURES=1` after an intended
+/// change and commit the result.
+#[test]
+fn ts_event_transport_fixture_is_current() {
+    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packages/nuxt_admin_layer/tests/fixtures");
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("event-transport.generated.ts");
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::copy(fixture_dir.join("bindings.ts"), &bindings).unwrap();
+    let config = client_test_config(tmp.path().to_path_buf());
+    crate::clients::generators::transport::generate(
+        &output,
+        &bindings,
+        &[make_event_module(), make_param_event_module()],
+        &config,
+    );
+    let fresh = std::fs::read_to_string(&output).unwrap();
+    let committed_path = fixture_dir.join("event-transport.generated.ts");
+    if std::env::var_os("UPDATE_TS_FIXTURES").is_some() {
+        std::fs::write(&committed_path, &fresh).unwrap();
+    }
+    let committed = std::fs::read_to_string(&committed_path).unwrap_or_default();
+    assert_eq!(committed, fresh, "stale fixture: rerun with UPDATE_TS_FIXTURES=1");
+}
+
+#[test]
+fn test_ts_transport_event_subscriptions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("transport.ts");
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "export type LoggedChange = { seq: number; };\n").unwrap();
+    let config = client_test_config(tmp.path().to_path_buf());
+    crate::clients::generators::transport::generate(&output, &bindings, &[make_param_event_module()], &config);
+    let content = std::fs::read_to_string(&output).unwrap();
+
+    let sig = "subscribeVaultNoteChanges(args: { vaultId: string; classes?: string | null; resume?: string | null }, \
+               handlers: SubscriptionHandlers<LoggedChange>): Promise<() => void>";
+    assert_eq!(content.matches(sig).count(), 3, "interface, HTTP and IPC share one signature");
+    assert!(content.contains("import { Channel, invoke } from '@tauri-apps/api/core';"));
+    assert!(content.contains("toQueryString({ classes: args.classes, resume: resume })"));
+    assert!(content.contains("'vault-note-changes',\n        args.resume ?? null,"));
+    assert!(content.contains("subscribeIpc('vault_note_changes_subscribe', 'vault_note_changes_unsubscribe'"));
+    assert!(!content.contains("import { listen }"), "no legacy op, no global listener");
+}
