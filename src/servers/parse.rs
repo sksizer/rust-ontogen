@@ -176,13 +176,108 @@ impl Default for Param {
     }
 }
 
-/// An event function that returns a `broadcast::Receiver<T>`.
-#[derive(Debug, Clone, Default)]
+/// An event function: returns `broadcast::Receiver<T>` or
+/// `Result<broadcast::Receiver<T>, E>`, sync or async.
+///
+/// Parameters after the state are subscription arguments. A parameter named
+/// [`RESUME_PARAM`] of type `Option<String>` makes the op resumable: the SSE
+/// handler fills it from `Last-Event-ID`, and the item type must implement
+/// `ontogen_core::events::EventSeq`.
+#[derive(Debug, Clone)]
 pub struct EventFn {
     /// Function name (e.g., `graph_updated`).
     pub name: String,
+    /// Doc comment text (joined from `///` lines).
+    pub doc: String,
+    /// Whether the function is async.
+    pub is_async: bool,
+    /// Parameters after the state parameter.
+    pub params: Vec<Param>,
+    /// The `T` of the returned `Receiver<T>`, normalized.
+    pub item_type: String,
+    /// The `T` of the returned `Receiver<T>`, as an AST.
+    pub item_type_ast: syn::Type,
+    /// Whether the receiver comes wrapped in a `Result`. A failed subscribe
+    /// is an HTTP error response or a rejected IPC command.
+    pub returns_result: bool,
     /// Index of the surface this event was scanned from; see [`ApiFn::surface`].
     pub surface: usize,
+}
+
+impl Default for EventFn {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            doc: String::new(),
+            is_async: false,
+            params: Vec::new(),
+            item_type: "()".to_string(),
+            item_type_ast: syn::parse_quote!(()),
+            returns_result: false,
+            surface: 0,
+        }
+    }
+}
+
+/// The parameter name that makes an event op resumable.
+pub const RESUME_PARAM: &str = "resume";
+
+/// True for an event fn's `resume: Option<String>` parameter.
+pub fn is_resume_param(p: &Param) -> bool {
+    p.name == RESUME_PARAM && p.ty == "Option<String>"
+}
+
+impl EventFn {
+    /// True when the fn declares `resume: Option<String>`.
+    pub fn is_resumable(&self) -> bool {
+        self.params.iter().any(is_resume_param)
+    }
+
+    /// Required parameters: path segments on the SSE route, as a `CustomGet`
+    /// takes them.
+    pub fn path_params(&self) -> Vec<&Param> {
+        self.params.iter().filter(|p| !p.ty.starts_with("Option<")).collect()
+    }
+
+    /// Optional parameters, `resume` included: query parameters on the SSE route.
+    pub fn query_params(&self) -> Vec<&Param> {
+        self.params.iter().filter(|p| p.ty.starts_with("Option<")).collect()
+    }
+
+    /// True for the shape that predates event parameters: sync, infallible,
+    /// no parameters. Only this shape gets the global IPC forwarding and the
+    /// TS `onX(callback)` methods.
+    pub fn is_legacy(&self) -> bool {
+        self.params.is_empty() && !self.is_async && !self.returns_result
+    }
+
+    /// The unscoped SSE route in `:name` form: the override from
+    /// `sse_route_overrides`, or `/api/events/{event-name}`, followed by any
+    /// path param the route does not already name.
+    pub fn sse_route(&self, overrides: &HashMap<String, String>) -> String {
+        let mut path = overrides
+            .get(&self.name)
+            .cloned()
+            .unwrap_or_else(|| format!("/api/events/{}", crate::servers::types::event_name(&self.name)));
+        for p in self.path_params() {
+            let segment = format!(":{}", p.name);
+            if !path.split('/').any(|s| s == segment) {
+                path.push('/');
+                path.push_str(&segment);
+            }
+        }
+        path
+    }
+
+    /// The route-prefixed SSE route in `:name` form, for `segments` such as
+    /// `projects/:project_id`.
+    pub fn sse_route_scoped(&self, overrides: &HashMap<String, String>, segments: &str) -> String {
+        let route = self.sse_route(overrides);
+        match route.strip_prefix("/api/") {
+            Some(rest) => format!("/api/{segments}/{rest}"),
+            None => format!("/api/{segments}{route}"),
+        }
+    }
 }
 
 /// A parsed API module with its functions and events.
@@ -601,16 +696,24 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 .collect::<Vec<_>>()
                 .join(" ");
 
-            // Check if this is an event function (returns broadcast::Receiver<T>)
-            if is_receiver_return_type(&func.sig.output) {
-                events.push(EventFn { name: func.sig.ident.to_string(), surface: 0 });
-                continue;
-            }
-
             // State-bearing fns: skip the leading state/store param.
             // Stateless fns: keep every declared input — there's no state arg
             // to drop.
             let skip_first = if is_stateless { 0 } else { 1 };
+
+            if let Some((item_type_ast, returns_result)) = receiver_item_type(&func.sig.output) {
+                events.push(EventFn {
+                    name: func.sig.ident.to_string(),
+                    doc,
+                    is_async: func.sig.asyncness.is_some(),
+                    params: parse_params(func, skip_first),
+                    item_type: norm_type(&item_type_ast),
+                    item_type_ast,
+                    returns_result,
+                    surface: 0,
+                });
+                continue;
+            }
 
             // Parse the per-function `#[ontogen(...)]` attribute, if present.
             // Today only `rename = "..."` is interpreted. A malformed value
@@ -631,25 +734,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 }
             };
 
-            let params: Vec<Param> = func
-                .sig
-                .inputs
-                .iter()
-                .skip(skip_first)
-                .filter_map(|arg| {
-                    if let FnArg::Typed(pat) = arg {
-                        let ty = norm_type(&pat.ty);
-                        let ty_ast = (*pat.ty).clone();
-                        let name = match pat.pat.as_ref() {
-                            syn::Pat::Ident(ident) => ident.ident.to_string(),
-                            _ => String::new(),
-                        };
-                        Some(Param { name, ty, ty_ast })
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let params = parse_params(func, skip_first);
 
             let (return_type, return_type_ast) = extract_result_ok_type(&func.sig.output);
 
@@ -725,15 +810,69 @@ pub fn apply_command_overrides(modules: &mut [ApiModule], naming: &crate::server
     }
 }
 
-/// Check if the return type is `broadcast::Receiver<T>` or `Receiver<T>`.
-fn is_receiver_return_type(ret: &ReturnType) -> bool {
-    if let ReturnType::Type(_, ty) = ret
-        && let Type::Path(tp) = ty.as_ref()
-        && let Some(seg) = tp.path.segments.last()
-    {
-        return seg.ident == "Receiver";
+/// A fn's typed parameters after the first `skip_first`.
+fn parse_params(func: &syn::ItemFn, skip_first: usize) -> Vec<Param> {
+    func.sig
+        .inputs
+        .iter()
+        .skip(skip_first)
+        .filter_map(|arg| {
+            if let FnArg::Typed(pat) = arg {
+                let ty = norm_type(&pat.ty);
+                let ty_ast = (*pat.ty).clone();
+                let name = match pat.pat.as_ref() {
+                    syn::Pat::Ident(ident) => ident.ident.to_string(),
+                    _ => String::new(),
+                };
+                Some(Param { name, ty, ty_ast })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// The `T` of a `Receiver<T>` or `Result<Receiver<T>, E>` return type, and
+/// whether it came wrapped in a `Result`.
+fn receiver_item_type(ret: &ReturnType) -> Option<(Type, bool)> {
+    let ReturnType::Type(_, ty) = ret else {
+        return None;
+    };
+    if let Some(item) = receiver_item(ty) {
+        return Some((item, false));
     }
-    false
+    let seg = last_segment(ty)?;
+    if seg.ident != "Result" {
+        return None;
+    }
+    let first_arg = first_type_arg(seg)?;
+    receiver_item(first_arg).map(|item| (item, true))
+}
+
+/// The `T` of `Receiver<T>` (any path ending in `Receiver`).
+fn receiver_item(ty: &Type) -> Option<Type> {
+    let seg = last_segment(ty)?;
+    if seg.ident != "Receiver" {
+        return None;
+    }
+    first_type_arg(seg).cloned()
+}
+
+fn last_segment(ty: &Type) -> Option<&syn::PathSegment> {
+    match ty {
+        Type::Path(tp) => tp.path.segments.last(),
+        _ => None,
+    }
+}
+
+fn first_type_arg(seg: &syn::PathSegment) -> Option<&Type> {
+    match &seg.arguments {
+        PathArguments::AngleBracketed(args) => args.args.iter().find_map(|a| match a {
+            GenericArgument::Type(t) => Some(t),
+            _ => None,
+        }),
+        _ => None,
+    }
 }
 
 /// Extract `T` from `Result<T, E>` as both a normalized string and AST.

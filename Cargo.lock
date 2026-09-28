@@ -548,7 +548,11 @@ dependencies = [
 name = "ontogen-core"
 version = "0.6.0"
 dependencies = [
+ "ontogen-core",
+ "serde",
+ "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

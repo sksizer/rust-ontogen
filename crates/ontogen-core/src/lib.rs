@@ -9,7 +9,10 @@
 //! - Naming utilities (`to_snake_case`, `to_pascal_case`, `pluralize`)
 //! - Build-time utilities (`rustfmt`, TypeScript formatting via `TsFormatter`, `clean_generated_dir`)
 //! - The shared `CodegenError` type
+//! - With the `events` feature, runtime support for generated event ops
 
+#[cfg(feature = "events")]
+pub mod events;
 pub mod ir;
 pub mod model;
 pub mod naming;

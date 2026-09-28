@@ -516,6 +516,8 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     generate_generic_mcp_tool(&mut out, m, f, config, false);
                 }
 
+                // Event ops are skipped: an MCP tool call returns one result
+                // and has no shape for a subscription.
                 OpKind::EventStream => continue,
             }
         }

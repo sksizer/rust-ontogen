@@ -18,6 +18,7 @@ import type {
 } from './types'
 
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 
 // ── Transport Interface ──
 
@@ -43,6 +44,7 @@ export interface Transport {
   workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet>
   workoutSetDelete(id: string): Promise<null>
   statGetWorkout(): Promise<WorkoutStats>
+  onActivityFeed(callback: (payload: unknown) => void): Promise<() => void>
 }
 
 // ── HTTP Helpers ──
@@ -179,6 +181,31 @@ export function createHttpTransport(): Transport {
     async statGetWorkout(): Promise<WorkoutStats> {
       return httpGet('/stats/workout')
     },
+    async onActivityFeed(callback: (payload: unknown) => void): Promise<() => void> {
+      let es: EventSource | null = null
+      let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+      function connect() {
+        es = new EventSource('/api/events/activity-feed')
+        es.addEventListener('activity-feed', (event: MessageEvent) => {
+          try {
+            callback(JSON.parse(event.data))
+          } catch {
+            callback({})
+          }
+        })
+        es.onerror = () => {
+          es?.close()
+          es = null
+          reconnectTimer = setTimeout(connect, 3000)
+        }
+      }
+      connect()
+      return () => {
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        es?.close()
+        es = null
+      }
+    },
   }
 }
 
@@ -252,6 +279,12 @@ export function createIpcTransport(): Transport {
     },
     async statGetWorkout(): Promise<WorkoutStats> {
       return invoke('stat_get_workout')
+    },
+    async onActivityFeed(callback: (payload: unknown) => void): Promise<() => void> {
+      const unlisten = await listen('activity-feed', (event: { payload: unknown }) => {
+        callback(event.payload)
+      })
+      return unlisten
     },
   }
 }

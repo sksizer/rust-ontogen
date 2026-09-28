@@ -10,7 +10,7 @@ use ontogen_core::ir::OpKind;
 use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::config::Config;
 use crate::servers::generators::surface_use_stmts;
-use crate::servers::parse::{ApiFn, ApiModule, is_page_param};
+use crate::servers::parse::{ApiFn, ApiModule, EventFn, is_page_param, is_resume_param};
 use crate::servers::types::{
     capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type, to_pascal_case,
 };
@@ -86,9 +86,8 @@ use serde::{Deserialize, Serialize};
         out.push_str(
             "\
 use std::convert::Infallible;
-use axum::response::sse::{Event, Sse};
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::StreamExt as _;
+use axum::response::sse::{Event, KeepAlive, Sse};
+use ontogen_core::events::EventFrame;
 ",
         );
     }
@@ -115,6 +114,10 @@ fn err(msg: String) -> ApiError {
 
 ",
     );
+
+    if has_events {
+        out.push_str(SSE_HELPERS);
+    }
 
     // Emit pagination support types when enabled
     if config.any_pagination() {
@@ -474,39 +477,7 @@ async fn {handler_name}(
     // Generate SSE handlers for event functions
     for m in modules {
         for ev in &m.events {
-            let fn_name = &ev.name;
-            let ev_name = event_name(fn_name);
-            let handler_name = format!("{}_sse", fn_name);
-            let svc = m.service_ident(ev.surface);
-
-            out.push_str(&format!(
-                "\
-// ── {fn_name} SSE Handler ──
-
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {{
-    let rx = {svc}::{fn_name}(&state);
-    let stream = BroadcastStream::new(rx)
-        .filter_map(|result: Result<_, _>| result.ok())
-        .map(|delta| {{
-            Ok(Event::default()
-                .event(\"{ev_name}\")
-                .json_data(&delta)
-                .unwrap())
-        }});
-    Sse::new(stream)
-}}
-
-"
-            ));
-
-            let route_path = if let Some(override_path) = config.sse_route_overrides.get(fn_name) {
-                axum_path(override_path)
-            } else {
-                format!("/api/events/{}", ev_name)
-            };
-            route_entries.push(format!("        .route(\"{route_path}\", get({handler_name}))"));
+            generate_sse_handler(&mut out, &mut route_entries, m, ev, config, None);
         }
     }
 
@@ -529,6 +500,170 @@ async fn {handler_name}(
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
     crate::write_and_format(output, out).expect("Failed to write HTTP generated file");
+}
+
+/// Shared SSE plumbing, emitted once when any module has events.
+///
+/// `sse_stream` turns an event fn's receiver into frames with
+/// `ontogen_core::events::next_frame`: a lagged receiver becomes an
+/// `event: lag` frame carrying `{"skipped":n}` and the stream stays open;
+/// closed senders end it. Keep-alive comments let a dead client's stream (and
+/// its receiver) drop before the next event.
+const SSE_HELPERS: &str = "\
+fn sse_event<T: Serialize>(name: &'static str, frame: EventFrame<T>) -> Event {
+    match frame {
+        EventFrame::Event { id, data } => {
+            let event = Event::default()
+                .event(name)
+                .json_data(&data)
+                .unwrap_or_else(|e| Event::default().event(\"error\").data(e.to_string()));
+            match id {
+                Some(id) if !id.contains(['\\n', '\\r', '\\0']) => event.id(id),
+                _ => event,
+            }
+        }
+        EventFrame::Lag { skipped } => Event::default().event(\"lag\").data(format!(\"{{\\\"skipped\\\":{skipped}}}\")),
+    }
+}
+
+fn sse_stream<T>(
+    name: &'static str,
+    rx: tokio::sync::broadcast::Receiver<T>,
+    id: ontogen_core::events::IdFn<T>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>>
+where
+    T: Clone + Serialize + Send + 'static,
+{
+    let stream = futures::stream::unfold(rx, move |mut rx| async move {
+        ontogen_core::events::next_frame(&mut rx, id).await.map(|frame| (Ok(sse_event(name, frame)), rx))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+";
+
+/// Map a path param's Rust type onto the type its `Path` extractor holds.
+fn path_extract_type(ty: &str) -> &'static str {
+    match ty {
+        "i32" => "i32",
+        "i64" => "i64",
+        "u32" => "u32",
+        "u64" => "u64",
+        _ => "String",
+    }
+}
+
+/// Generate one SSE handler and its route for an event fn.
+///
+/// Required params are path segments and optional params are query params,
+/// as for a `CustomGet`. A resumable fn's `resume` comes from the
+/// `Last-Event-ID` header, falling back to the `resume` query param (which a
+/// client that reconnects itself sends). With `scoped`, the handler takes the
+/// prefix param first and calls `state.subscribe_{fn}_for(&prefix, args…)`,
+/// which has the event fn's own async/`Result` shape.
+fn generate_sse_handler(
+    out: &mut String,
+    routes: &mut Vec<String>,
+    m: &ApiModule,
+    ev: &EventFn,
+    config: &Config,
+    scoped: Option<&crate::servers::config::RoutePrefix>,
+) {
+    let fn_name = &ev.name;
+    let ev_name = event_name(fn_name);
+    let state_type = &config.state_type;
+    let suffix = if scoped.is_some() { "_sse_scoped" } else { "_sse" };
+    let handler_name = format!("{fn_name}{suffix}");
+    let path_params = ev.path_params();
+    let query_params = ev.query_params();
+    let resumable = ev.is_resumable();
+    let query_struct = format!("{}{}EventQuery", to_pascal_case(&m.name), to_pascal_case(fn_name));
+
+    if scoped.is_none() {
+        out.push_str(&format!("// ── {fn_name} SSE Handler ──\n\n"));
+        if !query_params.is_empty() {
+            out.push_str(&format!("#[derive(Deserialize)]\nstruct {query_struct} {{\n"));
+            for qp in &query_params {
+                out.push_str(&format!("    {}: {},\n", qp.name, param_to_owned_type(&qp.ty_ast)));
+            }
+            out.push_str("}\n\n");
+        }
+    }
+
+    out.push_str(&format!("async fn {handler_name}(\n    State(state): State<Arc<{state_type}>>,\n"));
+    let mut path_names: Vec<String> = Vec::new();
+    let mut path_types: Vec<String> = Vec::new();
+    if let Some(prefix) = scoped {
+        let pp = &prefix.params[0];
+        path_names.push(pp.name.clone());
+        path_types.push(pp.rust_type.clone());
+    }
+    for p in &path_params {
+        path_names.push(p.name.clone());
+        path_types.push(path_extract_type(&p.ty).to_string());
+    }
+    match path_names.len() {
+        0 => {}
+        1 => out.push_str(&format!("    Path({}): Path<{}>,\n", path_names[0], path_types[0])),
+        _ => out.push_str(&format!("    Path(({})): Path<({})>,\n", path_names.join(", "), path_types.join(", "))),
+    }
+    if !query_params.is_empty() {
+        out.push_str(&format!("    Query(q): Query<{query_struct}>,\n"));
+    }
+    if resumable {
+        out.push_str("    headers: axum::http::HeaderMap,\n");
+    }
+    let sse_type = "Sse<impl futures::Stream<Item = Result<Event, Infallible>>>";
+    if ev.returns_result {
+        out.push_str(&format!(") -> Result<{sse_type}, ApiError> {{\n"));
+    } else {
+        out.push_str(&format!(") -> {sse_type} {{\n"));
+    }
+
+    let mut args: Vec<String> = Vec::new();
+    for p in &path_params {
+        args.push(forward_arg_expr(&p.name, &p.ty_ast));
+    }
+    for qp in &query_params {
+        if is_resume_param(qp) {
+            out.push_str(
+                "    let resume = ontogen_core::events::last_event_id(\n        \
+                 headers.get(\"last-event-id\").map(|v| v.as_bytes()),\n    )\n    .or(q.resume);\n",
+            );
+            args.push("resume".to_string());
+        } else {
+            args.push(forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast));
+        }
+    }
+    let call = match scoped {
+        Some(prefix) => {
+            let pp_name = &prefix.params[0].name;
+            let mut all = vec![format!("&{pp_name}")];
+            all.extend(args);
+            format!("state.subscribe_{fn_name}_for({})", all.join(", "))
+        }
+        None => {
+            let svc = m.service_ident(ev.surface);
+            let mut all = vec!["&state".to_string()];
+            all.extend(args);
+            format!("{svc}::{fn_name}({})", all.join(", "))
+        }
+    };
+    let await_str = if ev.is_async { ".await" } else { "" };
+    let id_fn = if resumable { "ontogen_core::events::seq_id" } else { "ontogen_core::events::no_id" };
+    if ev.returns_result {
+        out.push_str(&format!("    let rx = {call}{await_str}.map_err(|e| err(e.to_string()))?;\n"));
+        out.push_str(&format!("    Ok(sse_stream(\"{ev_name}\", rx, {id_fn}))\n}}\n\n"));
+    } else {
+        out.push_str(&format!("    let rx = {call}{await_str};\n"));
+        out.push_str(&format!("    sse_stream(\"{ev_name}\", rx, {id_fn})\n}}\n\n"));
+    }
+
+    let route_path = match scoped {
+        Some(prefix) => ev.sse_route_scoped(&config.sse_route_overrides, &prefix.segments),
+        None => ev.sse_route(&config.sse_route_overrides),
+    };
+    routes.push(format!("        .route(\"{}\", get({handler_name}))", axum_path(&route_path)));
 }
 
 fn generate_generic_http_handler(
@@ -945,41 +1080,7 @@ async fn {handler_name}(
     // Scoped SSE handlers
     for m in modules {
         for ev in &m.events {
-            let fn_name = &ev.name;
-            let ev_name = event_name(fn_name);
-            let handler_name = format!("{}_sse_scoped", fn_name);
-
-            out.push_str(&format!(
-                "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path({pp_name}): Path<{pp_type}>,
-) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {{
-    let rx = state.subscribe_{fn_name}_for(&{pp_name});
-    let stream = BroadcastStream::new(rx)
-        .filter_map(|result: Result<_, _>| result.ok())
-        .map(|delta| {{
-            Ok(Event::default()
-                .event(\"{ev_name}\")
-                .json_data(&delta)
-                .unwrap())
-        }});
-    Sse::new(stream)
-}}
-
-"
-            ));
-
-            let route_path = if let Some(override_path) = config.sse_route_overrides.get(fn_name) {
-                if let Some(rest) = override_path.strip_prefix("/api/") {
-                    format!("/api/{}/{}", prefix.segments, rest)
-                } else {
-                    format!("/api/{}{}", prefix.segments, override_path)
-                }
-            } else {
-                format!("/api/{}/events/{}", prefix.segments, ev_name)
-            };
-            routes.push(format!("        .route(\"{}\", get({handler_name}))", axum_path(&route_path)));
+            generate_sse_handler(out, routes, m, ev, config, Some(prefix));
         }
     }
 }
