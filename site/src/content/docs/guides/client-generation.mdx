@@ -192,6 +192,30 @@ const transport = window.__TAURI__
 
 Both implementations have identical signatures. Code that uses the transport doesn't know or care whether it's talking to a local server over HTTP or to the Tauri backend over IPC.
 
+### Event subscriptions
+
+Each event op gets a `subscribeX(args, handlers)` method on the `Transport` interface and both implementations:
+
+```typescript
+subscribeVaultNoteChanges(
+  args: { vaultId: string; classes?: string | null; resume?: string | null },
+  handlers: SubscriptionHandlers<LoggedChange>,
+): Promise<() => void>; // resolves to the unsubscribe function
+
+interface SubscriptionHandlers<T> {
+  onEvent: (data: T, id: string | null) => void;
+  onLag?: (skipped: number) => void;
+  onOpen?: () => void; // first connect and every reconnect
+  onError?: (err: unknown) => void;
+}
+```
+
+- **HTTP** opens an `EventSource` on the event's SSE route. On an error it closes, waits a capped exponential backoff with jitter (0.5 s doubling to 30 s), and reconnects with the last seen id as the `resume` query param. An initial `args.resume` starts from that id.
+- **IPC** calls `{fn}_subscribe` with a new Tauri `Channel`; the returned function calls `{fn}_unsubscribe`.
+- `onLag` fires when the server dropped events for this subscriber. `onOpen` fires on every (re)connect. Together they are where a consumer runs its own catch-up read; the generated client does no domain catch-up.
+
+Parameterless sync event ops also keep the older `onX(callback)` methods, which carry untyped payloads and do not report lag.
+
 ### Route prefix in client code
 
 When `route_prefix` is configured, the generated client functions accept an optional project ID parameter:
