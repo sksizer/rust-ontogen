@@ -1,7 +1,7 @@
 ---
 type: task
 schema_version: '3'
-status: backlog
+status: closed/done
 created: '2026-09-28'
 last_reviewed: '2026-09-28'
 impact: high
@@ -12,6 +12,12 @@ tags:
 - typescript
 related:
 - 2026-09-28-event-ops-take-parameters-and-resume.md
+completion_note: |
+  Shipped in [#185](https://github.com/sksizer/rust-ontogen/pull/185). Typed
+  `subscribeX(args, handlers)` on the Transport interface and both transports, with
+  onEvent/onLag/onOpen/onError. HTTP reconnects with capped exponential backoff and jitter,
+  resuming from the last seen id; IPC uses a per-subscription Channel and unsubscribes by id.
+  A vitest drives a generated fixture transport. Legacy `onX` stays for parameterless sync ops.
 relevance_note: Driven by the dev monorepo's push-channel milestone (determined decision D-0050). Ships in the same release as its server-side sibling.
 ---
 # Generated TS subscriptions resume and report lag
