@@ -99,7 +99,7 @@ Each `OpKind` maps to a specific HTTP method and path pattern:
 | `JunctionList` | GET | `/api/{parents}/{id}/{children}` | `GET /api/agents/{id}/roles` |
 | `JunctionAdd` | POST | `/api/{parents}/{id}/{children}` | `POST /api/agents/{id}/roles` |
 | `JunctionRemove` | DELETE | `/api/{parents}/{id}/{children}/{child_id}` | `DELETE /api/agents/{id}/roles/{child_id}` |
-| `EventStream` | GET | `/api/events/{name}` | `GET /api/events/task-updates` |
+| `EventStream` | GET (SSE) | `/api/events/{name}[/{param}]` | `GET /api/events/vault-changes/{vault_id}` |
 
 Entity names in URLs are pluralized and kebab-cased automatically: `work_session` becomes `work-sessions`, `unit_of_work` becomes `units-of-work`.
 
@@ -201,16 +201,31 @@ tauri::Builder::default()
     .run(tauri::generate_context!())
 ```
 
-### Event forwarding
+### Event subscriptions
 
-For modules with event stream functions, the IPC generator produces a `start_event_forwarding` function that bridges your event bus to Tauri's event system:
+An API function that returns `broadcast::Receiver<T>` is an event op. It may be async, may return `Result<broadcast::Receiver<T>, E>`, and may take parameters after the state:
 
 ```rust
-pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &AppState) {
-    // For each event stream, spawns a task that receives from the broadcast
-    // channel and emits Tauri events to the frontend
-}
+pub async fn vault_changes(
+    state: &AppState,
+    vault_id: String,
+    classes: Option<String>,
+    resume: Option<String>,
+) -> Result<broadcast::Receiver<LoggedChange>, AppError>;
 ```
+
+- **HTTP.** An SSE route. Required params are path segments and `Option` params are query params, as for a `CustomGet`: `GET /api/events/vault-changes/{vault_id}?classes=…`. A failed subscribe is an error response.
+- **Resume.** A param named `resume` of type `Option<String>` makes the op resumable. The handler fills it from the `Last-Event-ID` header, or the `resume` query param when the header is absent. The item type must implement `ontogen_core::events::EventSeq`; its `event_id()` is written as each event's `id:`. Ontogen does not replay history; the function decides what resuming means.
+- **Lag.** When a subscriber falls behind the broadcast, it receives an `event: lag` frame with `data: {"skipped": n}` and the stream stays open.
+- **IPC.** Each event op generates `{fn}_subscribe(args…, channel)` and `{fn}_unsubscribe(id)`. Subscribe forwards `EventFrame<T>` messages (`{"kind":"event","id":…,"data":…}` or `{"kind":"lag","skipped":n}`) into the caller's `tauri::ipc::Channel` and returns a subscription id. The forwarding task ends on unsubscribe, on the first failed send (the webview is gone), or when the senders close. Both commands are in `ipc_handler()`.
+
+The generated code uses `ontogen-core`'s runtime support, so a crate with event ops depends on it with the `events` feature, plus `tokio` and `futures`:
+
+```toml
+ontogen-core = { version = "…", features = ["events"] }
+```
+
+For the parameterless sync shape (`fn f(state: &AppState) -> broadcast::Receiver<T>`), the IPC generator also keeps `start_event_forwarding`, which emits every such stream to all windows as a Tauri event. Prefer the subscribe commands: they report lag to the subscriber and end with it.
 
 ## MCP generation
 
