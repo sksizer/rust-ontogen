@@ -42,6 +42,16 @@ the generator's own backlog carries the reasoning. Each names the PR carrying it
 | [Bytes, timestamp, date and JSON columns, defaults, indexes](./2026-09-07-schema-field-types-defaults-and-indexes.md) | backlog | — |
 | [Explicit route shapes, or loud failure](./2026-08-04-explicit-route-shapes-or-loud-failure.md) | backlog | — |
 
+## Resumable event ops (2026-09-28)
+
+Driven by the dev monorepo's push channel (determined D-0050). Server side first;
+the client side ships in the same release.
+
+| Task | Status | PR |
+| --- | --- | --- |
+| [Event ops take parameters, carry a sequence, and report lag](./2026-09-28-event-ops-take-parameters-and-resume.md) | backlog | — |
+| [Generated TS subscriptions resume and report lag](./2026-09-28-generated-subscriptions-resume-and-report-lag.md) | backlog | — |
+
 ## Pumice feedback round 2 (2026-05-14)
 
 Source: [`../../feedback/2026-05-14-pumice.md`](../../feedback/2026-05-14-pumice.md). Three new findings surfaced when Pumice upgraded to ontogen rev `168ff379`. Mapped to upstream IDs OF-016/17/18 to avoid collision with the existing OF-013/14/15 (the consumer's log numbers them independently as OF-013/14/15).
