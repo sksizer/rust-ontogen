@@ -131,7 +131,7 @@ For names that don't match a vocabulary entry, the classifier looks at the funct
 | `get_{name}(state, q: Option<…>)` | `CustomGet` | `GET` | `Option<…>` params → query string |
 | `get_{name}(state, body: &CustomStruct)` | `CustomPost` | `POST` | Body-carrying first param → JSON body |
 | Any other shape | `CustomPost` | `POST` | Non-`Option` non-`*Input` params → JSON body; `Option<…>` → query |
-| Returns `tokio::sync::broadcast::Receiver<T>` | `EventStream` | `GET` (SSE) | `/api/events/{event-name}` |
+| Returns `tokio::sync::broadcast::Receiver<T>` (or `Result<Receiver<T>, E>`) | `EventStream` | `GET` (SSE) | `/api/events/{event-name}`; required params → path segments, `Option<…>` → query, `resume` ← `Last-Event-ID` |
 
 <Aside type="caution" title="Zero-param functions default to POST">
 A function with no user-facing parameters carries no body, but that doesn't make it a read -- `pause(state)`, `backup(state)`, and `reset_all(state)` all mutate state with no params. Per RFC 7231 §4.2.1, GET must be safe, so the classifier defaults these to `CustomPost`.

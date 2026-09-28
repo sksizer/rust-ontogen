@@ -212,9 +212,49 @@ fn make_event_module() -> ApiModule {
         name: "events".to_string(),
         functions: vec![],
         events: vec![
-            EventFn { name: "graph_updated".to_string(), surface: 0 },
-            EventFn { name: "entity_changed".to_string(), surface: 0 },
+            EventFn {
+                name: "graph_updated".to_string(),
+                item_type: "GraphDelta".to_string(),
+                item_type_ast: syn::parse_quote!(GraphDelta),
+                ..Default::default()
+            },
+            EventFn {
+                name: "entity_changed".to_string(),
+                item_type: "EntityChange".to_string(),
+                item_type_ast: syn::parse_quote!(EntityChange),
+                ..Default::default()
+            },
         ],
+        is_singleton: false,
+        has_count: false,
+    }
+}
+
+/// A param'd, resumable, fallible async event op:
+/// `async fn vault_note_changes(state, vault_id: String, classes: Option<String>, resume: Option<String>)
+///     -> Result<Receiver<LoggedChange>, AppError>`.
+fn make_param_event_module() -> ApiModule {
+    let param = |name: &str, ty: syn::Type| Param {
+        name: name.to_string(),
+        ty: crate::servers::types::norm_type(&ty),
+        ty_ast: ty,
+    };
+    ApiModule {
+        name: "vault_notes".to_string(),
+        functions: vec![],
+        events: vec![EventFn {
+            name: "vault_note_changes".to_string(),
+            is_async: true,
+            params: vec![
+                param("vault_id", syn::parse_quote!(String)),
+                param("classes", syn::parse_quote!(Option<String>)),
+                param("resume", syn::parse_quote!(Option<String>)),
+            ],
+            item_type: "LoggedChange".to_string(),
+            item_type_ast: syn::parse_quote!(LoggedChange),
+            returns_result: true,
+            ..Default::default()
+        }],
         is_singleton: false,
         has_count: false,
     }
@@ -2114,8 +2154,139 @@ fn test_http_generator_events() {
     assert!(content.contains("graph_updated_sse"), "should generate SSE handler");
     assert!(content.contains("entity_changed_sse"));
     assert!(content.contains("Sse<impl futures::Stream"));
-    assert!(content.contains("BroadcastStream"));
+    assert!(content.contains("sse_stream(\"graph-updated\", rx, ontogen_core::events::no_id)"));
     assert!(content.contains("/api/events/graph"), "should use SSE route override");
+    assert!(!content.contains(".ok())"), "no generated path drops a lag error");
+}
+
+#[test]
+fn test_parse_parameterized_fallible_async_event_fn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "vault_notes.rs",
+        r#"
+use crate::AppState;
+use tokio::sync::broadcast;
+
+/// One vault's note changes.
+pub async fn vault_note_changes(
+    state: &AppState,
+    vault_id: String,
+    classes: Option<Vec<FileClass>>,
+    resume: Option<String>,
+) -> Result<broadcast::Receiver<LoggedChange>, AppError> {
+    todo!()
+}
+
+/// Every job status change.
+pub fn job_status_changes(state: &AppState, app: Option<String>) -> broadcast::Receiver<JobEvent> {
+    todo!()
+}
+"#,
+    );
+
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    let m = &modules[0];
+    assert!(m.functions.is_empty(), "a Result<Receiver<T>, E> fn is an event, not a function");
+    assert_eq!(m.events.len(), 2);
+
+    let ev = &m.events[0];
+    assert_eq!(ev.name, "vault_note_changes");
+    assert_eq!(ev.doc, "One vault's note changes.");
+    assert!(ev.is_async);
+    assert!(ev.returns_result);
+    assert_eq!(ev.item_type, "LoggedChange");
+    let names: Vec<&str> = ev.params.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["vault_id", "classes", "resume"]);
+    assert!(ev.is_resumable());
+    assert!(!ev.is_legacy());
+    assert_eq!(ev.path_params().len(), 1);
+    assert_eq!(ev.query_params().len(), 2);
+
+    let job = &m.events[1];
+    assert!(!job.is_async && !job.returns_result && !job.is_resumable());
+    assert_eq!(job.item_type, "JobEvent");
+    assert!(job.path_params().is_empty(), "an all-optional event op has no path params");
+}
+
+#[test]
+fn test_http_generator_parameterized_event() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("http_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    crate::servers::generators::http::generate(&output, &[make_param_event_module()], &config);
+    let content = std::fs::read_to_string(&output).unwrap();
+
+    assert!(content.contains(".route(\"/api/events/vault-note-changes/{vault_id}\", get(vault_note_changes_sse))"));
+    assert!(content.contains("Path(vault_id): Path<String>"), "required param rides the path");
+    assert!(content.contains("struct VaultNotesVaultNoteChangesEventQuery"), "optional params ride the query");
+    assert!(content.contains("headers.get(\"last-event-id\")"), "Last-Event-ID feeds resume");
+    assert!(content.contains(".or(q.resume)"), "resume query param is the fallback");
+    assert!(content.contains("vault_notes::vault_note_changes(&state, vault_id, q.classes, resume)"));
+    assert!(content.contains(".await"), "async event fn is awaited");
+    assert!(content.contains("Result<Sse<"), "fallible subscribe returns an error response");
+    assert!(content.contains("ontogen_core::events::seq_id"), "resumable op writes ids");
+    assert!(content.contains("event(\"lag\")"), "lag becomes an explicit frame");
+}
+
+#[test]
+fn test_http_generator_scoped_parameterized_event() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("http_generated.rs");
+    let config = test_config_with_prefix(tmp.path().to_path_buf());
+    crate::servers::generators::http::generate(&output, &[make_param_event_module()], &config);
+    let content = std::fs::read_to_string(&output).unwrap();
+
+    assert!(content.contains("Path((project_id, vault_id)): Path<(uuid::Uuid, String)>"));
+    assert!(content.contains(".subscribe_vault_note_changes_for(&project_id, vault_id, q.classes, resume)"));
+    assert!(content.contains("/api/projects/{project_id}/events/vault-note-changes/{vault_id}"));
+}
+
+#[test]
+fn test_ipc_generator_event_subscriptions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("ipc_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    crate::servers::generators::ipc::generate(&output, &[make_param_event_module()], &config);
+    let content = std::fs::read_to_string(&output).unwrap();
+
+    assert!(content.contains("pub async fn vault_note_changes_subscribe("));
+    assert!(content.contains("channel: tauri::ipc::Channel<ontogen_core::events::EventFrame<LoggedChange>>"));
+    assert!(content.contains("vault_notes::vault_note_changes(&state, vault_id, classes, resume).await"));
+    assert!(content.contains(".spawn(ontogen_core::events::forward(rx, ontogen_core::events::seq_id"));
+    assert!(content.contains("channel.send(frame)"));
+    assert!(content.contains("pub fn vault_note_changes_unsubscribe(id: u64) -> bool"));
+    assert!(content.contains("EVENT_SUBSCRIPTIONS.cancel(id)"));
+    assert!(content.contains("generate_handler![vault_note_changes_subscribe, vault_note_changes_unsubscribe,]"));
+    assert!(!content.contains(".emit("), "a parameterized event op never emits globally");
+    assert!(!content.contains("start_event_forwarding"), "no legacy op, no global forwarding");
+}
+
+#[test]
+fn test_ipc_generator_keeps_global_forwarding_for_legacy_events() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("ipc_generated.rs");
+    let config = test_config(tmp.path().to_path_buf());
+    crate::servers::generators::ipc::generate(&output, &[make_event_module()], &config);
+    let content = std::fs::read_to_string(&output).unwrap();
+
+    assert!(content.contains("pub fn start_event_forwarding("));
+    assert!(content.contains("handle.emit(\"graph-updated\", &delta)"));
+    assert!(content.contains("RecvError::Lagged(skipped)"), "lag is logged and forwarding goes on");
+    assert!(content.contains("pub async fn graph_updated_subscribe("), "legacy ops get subscriptions too");
+    assert!(content.contains("ontogen_core::events::no_id"));
+}
+
+#[test]
+fn test_server_metadata_lists_event_routes_and_commands() {
+    let config = test_config(PathBuf::from("/tmp"));
+    let out = super::extract_server_metadata(&[make_param_event_module()], &config);
+    assert!(out.http_routes.iter().any(|r| r.path == "/api/events/vault-note-changes/{vault_id}" && r.method == "GET"));
+    let names: Vec<&str> = out.ipc_commands.iter().map(|c| c.command_name.as_str()).collect();
+    assert_eq!(names, ["vault_note_changes_subscribe", "vault_note_changes_unsubscribe"]);
+    assert!(out.mcp_tools.is_empty(), "MCP skips event ops");
 }
 
 #[test]
@@ -3372,7 +3543,8 @@ fn test_extract_metadata_emits_event_routes() {
 
     let output = crate::servers::extract_server_metadata(&modules, &config);
 
-    assert!(output.ipc_commands.is_empty());
+    // Each event op is an IPC subscribe/unsubscribe pair; MCP skips it.
+    assert_eq!(output.ipc_commands.len(), 4);
     assert!(output.mcp_tools.is_empty());
 
     let paths: Vec<_> = output.http_routes.iter().map(|r| r.path.as_str()).collect();
@@ -5041,4 +5213,20 @@ pub async fn count() -> Result<u64, anyhow::Error> { todo!() }
     assert!(workout.functions.iter().any(|f| f.name == "count" && f.is_stateless), "it stays an operation");
     let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
     assert!(err.contains("module `workout` is paginated"), "{err}");
+}
+
+#[test]
+fn test_ts_transport_keeps_on_x_only_for_legacy_events() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("transport.ts");
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "export type LoggedChange = { seq: number; };\n").unwrap();
+    let config = client_test_config(tmp.path().to_path_buf());
+    let modules = vec![make_event_module(), make_param_event_module()];
+    crate::clients::generators::transport::generate(&output, &bindings, &modules, &config);
+    let content = std::fs::read_to_string(&output).unwrap();
+
+    assert!(content.contains("onGraphUpdated(callback: (payload: unknown) => void)"));
+    assert!(content.contains("import { listen } from '@tauri-apps/api/event';"));
+    assert!(!content.contains("onVaultNoteChanges"), "a parameterized op has no global onX");
 }

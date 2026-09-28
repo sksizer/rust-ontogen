@@ -8,10 +8,10 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::AppState;
-use crate::api::v1::{exercise, stats, tag, workout, workout_set};
+use crate::api::v1::{activity, exercise, stats, tag, workout, workout_set};
 use crate::schema::{
-    CreateExerciseInput, CreateTagInput, CreateWorkoutInput, CreateWorkoutSetInput, Exercise, Tag, UpdateExerciseInput,
-    UpdateTagInput, UpdateWorkoutInput, UpdateWorkoutSetInput, Workout, WorkoutSet, WorkoutStats,
+    Activity, CreateExerciseInput, CreateTagInput, CreateWorkoutInput, CreateWorkoutSetInput, Exercise, Tag,
+    UpdateExerciseInput, UpdateTagInput, UpdateWorkoutInput, UpdateWorkoutSetInput, Workout, WorkoutSet, WorkoutStats,
 };
 use crate::store::Store;
 
@@ -166,6 +166,80 @@ pub async fn stat_get_workout(state: State<'_, Arc<AppState>>) -> Result<Workout
     stats::get_workout(&store).await.map_err(|e| e.to_string())
 }
 
+// ── Event Subscriptions ──
+
+/// Live IPC event subscriptions, by id. A process-wide static rather than
+/// consumer state: an id only means something to the process that issued it,
+/// and the consumer has nothing to wire. A forwarding task leaves it when its
+/// receiver closes, when a `Channel::send` fails (the webview is gone; a
+/// `Channel` has no close callback), or on an explicit unsubscribe.
+static EVENT_SUBSCRIPTIONS: ontogen_core::events::Subscriptions = ontogen_core::events::Subscriptions::new();
+
+/// Every activity entry, to every subscriber. The parameterless shape.
+#[tauri::command]
+pub async fn activity_feed_subscribe(
+    channel: tauri::ipc::Channel<ontogen_core::events::EventFrame<Activity>>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<u64, String> {
+    let rx = activity::activity_feed(&state);
+    Ok(EVENT_SUBSCRIPTIONS
+        .spawn(ontogen_core::events::forward(rx, ontogen_core::events::no_id, move |frame| channel.send(frame))))
+}
+
+/// End a `activity_feed_subscribe` subscription. Returns `false` when it already ended.
+#[tauri::command]
+pub fn activity_feed_unsubscribe(id: u64) -> bool {
+    EVENT_SUBSCRIPTIONS.cancel(id)
+}
+
+/// Activity for one entity kind. Takes a parameter, can fail, and resumes from an activity `seq`.
+#[tauri::command]
+pub async fn activity_for_kind_subscribe(
+    kind: String,
+    resume: Option<String>,
+    channel: tauri::ipc::Channel<ontogen_core::events::EventFrame<Activity>>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<u64, String> {
+    let rx = activity::activity_for_kind(&state, kind, resume).await.map_err(|e| e.to_string())?;
+    Ok(EVENT_SUBSCRIPTIONS
+        .spawn(ontogen_core::events::forward(rx, ontogen_core::events::seq_id, move |frame| channel.send(frame))))
+}
+
+/// End a `activity_for_kind_subscribe` subscription. Returns `false` when it already ended.
+#[tauri::command]
+pub fn activity_for_kind_unsubscribe(id: u64) -> bool {
+    EVENT_SUBSCRIPTIONS.cancel(id)
+}
+
+// ── Event Forwarding (global) ──
+
+use tauri::Emitter;
+
+/// Emit every parameterless event stream to all windows as a Tauri event.
+/// Call this during app setup. Prefer the per-subscriber `*_subscribe`
+/// commands, which report lag to the subscriber and end with it.
+pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &AppState) {
+    // activity_feed
+    {
+        let handle = app_handle.clone();
+        let mut rx = crate::api::v1::activity::activity_feed(state);
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(delta) => {
+                        if let Err(e) = handle.emit("activity-feed", &delta) {
+                            log::error!("Failed to forward activity-feed to IPC: {:?}", e);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        log::warn!("activity-feed forwarding lagged; {} events dropped", skipped);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+}
 /// Generated IPC handler. Wire this into `tauri::Builder::invoke_handler()`.
 pub fn ipc_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
@@ -190,5 +264,9 @@ pub fn ipc_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'sta
         workout_set_update,
         workout_set_delete,
         stat_get_workout,
+        activity_feed_subscribe,
+        activity_feed_unsubscribe,
+        activity_for_kind_subscribe,
+        activity_for_kind_unsubscribe,
     ]
 }

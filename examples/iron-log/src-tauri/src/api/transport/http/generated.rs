@@ -16,12 +16,15 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-use crate::api::v1::{exercise, stats, tag, workout, workout_set};
+use crate::api::v1::{activity, exercise, stats, tag, workout, workout_set};
 use crate::schema::{
-    CreateExerciseInput, CreateTagInput, CreateWorkoutInput, CreateWorkoutSetInput, Exercise, Tag, UpdateExerciseInput,
-    UpdateTagInput, UpdateWorkoutInput, UpdateWorkoutSetInput, Workout, WorkoutSet, WorkoutStats,
+    Activity, CreateExerciseInput, CreateTagInput, CreateWorkoutInput, CreateWorkoutSetInput, Exercise, Tag,
+    UpdateExerciseInput, UpdateTagInput, UpdateWorkoutInput, UpdateWorkoutSetInput, Workout, WorkoutSet, WorkoutStats,
 };
 use crate::store::Store;
+use axum::response::sse::{Event, KeepAlive, Sse};
+use ontogen_core::events::EventFrame;
+use std::convert::Infallible;
 
 #[derive(Serialize)]
 struct ErrorResponse {
@@ -32,6 +35,36 @@ type ApiError = (StatusCode, Json<ErrorResponse>);
 
 fn err(msg: String) -> ApiError {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: msg }))
+}
+
+fn sse_event<T: Serialize>(name: &'static str, frame: EventFrame<T>) -> Event {
+    match frame {
+        EventFrame::Event { id, data } => {
+            let event = Event::default()
+                .event(name)
+                .json_data(&data)
+                .unwrap_or_else(|e| Event::default().event("error").data(e.to_string()));
+            match id {
+                Some(id) if !id.contains(['\n', '\r', '\0']) => event.id(id),
+                _ => event,
+            }
+        }
+        EventFrame::Lag { skipped } => Event::default().event("lag").data(format!("{{\"skipped\":{skipped}}}")),
+    }
+}
+
+fn sse_stream<T>(
+    name: &'static str,
+    rx: tokio::sync::broadcast::Receiver<T>,
+    id: ontogen_core::events::IdFn<T>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>>
+where
+    T: Clone + Serialize + Send + 'static,
+{
+    let stream = futures::stream::unfold(rx, move |mut rx| async move {
+        ontogen_core::events::next_frame(&mut rx, id).await.map(|frame| (Ok(sse_event(name, frame)), rx))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 // ── Exercise Handlers ──
@@ -198,6 +231,33 @@ async fn stat_get_workout(State(state): State<Arc<AppState>>) -> Result<Json<Wor
     stats::get_workout(&store).await.map(Json).map_err(|e| err(e.to_string()))
 }
 
+// ── activity_feed SSE Handler ──
+
+async fn activity_feed_sse(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let rx = activity::activity_feed(&state);
+    sse_stream("activity-feed", rx, ontogen_core::events::no_id)
+}
+
+// ── activity_for_kind SSE Handler ──
+
+#[derive(Deserialize)]
+struct ActivityActivityForKindEventQuery {
+    resume: Option<String>,
+}
+
+async fn activity_for_kind_sse(
+    State(state): State<Arc<AppState>>,
+    Path(kind): Path<String>,
+    Query(q): Query<ActivityActivityForKindEventQuery>,
+    headers: axum::http::HeaderMap,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let resume = ontogen_core::events::last_event_id(headers.get("last-event-id").map(|v| v.as_bytes())).or(q.resume);
+    let rx = activity::activity_for_kind(&state, kind, resume).await.map_err(|e| err(e.to_string()))?;
+    Ok(sse_stream("activity-for-kind", rx, ontogen_core::events::seq_id))
+}
+
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -210,4 +270,6 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
         .route("/api/workout-sets", get(workout_set_list).post(workout_set_create))
         .route("/api/workout-sets/{id}", get(workout_set_get_by_id).put(workout_set_update).delete(workout_set_delete))
         .route("/api/stats/workout", get(stat_get_workout))
+        .route("/api/events/activity-feed", get(activity_feed_sse))
+        .route("/api/events/activity-for-kind/{kind}", get(activity_for_kind_sse))
 }

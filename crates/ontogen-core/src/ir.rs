@@ -347,7 +347,9 @@ pub enum OpKind {
     CustomGet,
     /// Custom write (POST with non-standard params).
     CustomPost,
-    /// SSE event stream.
+    /// Event subscription: an SSE route and an IPC subscribe/unsubscribe
+    /// command pair. The fn's `params` are the subscription arguments and its
+    /// `return_type` is the item type.
     EventStream,
 }
 

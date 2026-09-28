@@ -15,7 +15,7 @@ use ontogen_core::ir::OpKind;
 use crate::clients::config::Config;
 use crate::clients::generators::{FallbackRecord, command_name, ts_params_in_declaration_order};
 use crate::servers::classify::{classify_op, is_read_op};
-use crate::servers::parse::{ApiModule, Param, is_page_param};
+use crate::servers::parse::{ApiModule, EventFn, Param, is_page_param};
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 
 /// Returns `", projectId?: string"` when route_prefix is configured, else `""`.
@@ -143,8 +143,8 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
     // IPC imports - must be at top level for lint compliance
     out.push_str("import { invoke } from '@tauri-apps/api/core';\n");
-    let has_events = modules.iter().any(|m| !m.events.is_empty());
-    if has_events {
+    let has_legacy_events = modules.iter().any(|m| m.events.iter().any(EventFn::is_legacy));
+    if has_legacy_events {
         out.push_str("import { listen } from '@tauri-apps/api/event';\n");
     }
     out.push('\n');
@@ -324,7 +324,7 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
 
     // Events
     for m in modules {
-        for ev in &m.events {
+        for ev in m.events.iter().filter(|ev| ev.is_legacy()) {
             let camel = snake_to_camel(&ev.name);
             out.push_str(&format!(
                 "  on{}(callback: (payload: unknown) => void{pp_trailing}): Promise<() => void>;\n",
@@ -683,7 +683,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
 
     // SSE event handlers
     for m in modules {
-        for ev in &m.events {
+        for ev in m.events.iter().filter(|ev| ev.is_legacy()) {
             let camel = snake_to_camel(&ev.name);
             let ev_name = ev.name.replace('_', "-");
             let route_path = if let Some(override_path) = config.sse_route_overrides.get(&ev.name) {
@@ -952,7 +952,7 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
 
     // Event handlers via Tauri listen
     for m in modules {
-        for ev in &m.events {
+        for ev in m.events.iter().filter(|ev| ev.is_legacy()) {
             let camel = snake_to_camel(&ev.name);
             let ev_name = ev.name.replace('_', "-");
 
