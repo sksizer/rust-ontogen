@@ -1,17 +1,17 @@
 ---
 type: task
-schema_version: '3'
-status: closed/done
-created: '2026-05-24'
-impact: low
-complexity: small
+schema_version: '9'
+state: closed/done
+created: 2026-05-24
+last_reviewed: 2026-05-24
+related: []
 tags:
 - emit-style
 - ontogen-ts
 - pumice-follow-up
-related: []
+impact: low
+complexity: small
 autonomy: supervised
-last_reviewed: '2026-05-24'
 completion_note: |
   Shipped via #79 (merge f652501, 2026-05-24). Added
   `EmitConfig::quote_style: QuoteStyle` (default `Single` preserves

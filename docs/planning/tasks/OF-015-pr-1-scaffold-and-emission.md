@@ -1,14 +1,17 @@
 ---
 type: task
-schema_version: '2'
-status: closed/done
+schema_version: '9'
+state: closed/done
 created: 2026-05-15
 last_reviewed: 2026-05-19
-completion_note: "Shipped in #55 (merge 13c2fcd, 2026-05-15). Commits 9ddfbc7 + 0633746 + 26d6c81 + 1e4abe2 — scaffold + per-type emission for AC-1/2/3."
+related:
+- OF-015
+tags:
+- ontogen-ts
+- ts-pipeline
 impact: high
 complexity: medium
-tags: [ontogen-ts, ts-pipeline]
-related: [OF-015]
+completion_note: 'Shipped in #55 (merge 13c2fcd, 2026-05-15). Commits 9ddfbc7 + 0633746 + 26d6c81 + 1e4abe2 — scaffold + per-type emission for AC-1/2/3.'
 ---
 # OF-015 PR 1 — Scaffold `crates/ontogen-ts/` + per-type emission
 

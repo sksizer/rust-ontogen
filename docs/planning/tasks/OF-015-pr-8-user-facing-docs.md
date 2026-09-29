@@ -1,13 +1,18 @@
 ---
 type: task
-schema_version: '2'
-status: closed/done
+schema_version: '9'
+state: closed/done
 created: 2026-05-19
 last_reviewed: 2026-05-20
+related:
+- OF-015
+- OF-015-pr-7
+tags:
+- ontogen-ts
+- ts-pipeline
+- docs
 impact: medium
 complexity: medium
-tags: [ontogen-ts, ts-pipeline, docs]
-related: [OF-015, OF-015-pr-7]
 completion_note: "Shipped in #68 (merge 6c5e9c5, 2026-05-20). Three commits: stale sidecar comments + FallbackRecord backstop doc-rewrite (15664f9), README + cookbook strip (646aead), new typescript-bindings guide + client-generation rewrite (532a228). All 10 AC-16 ticks satisfied. FallbackRecord kept as defensive backstop (not deleted) — investigation showed it's reachable on hand-edits / stale builds / root-set drift, not pure dead code. walkthrough.md `// Type = specta` comment left alone — DTOs still derive specta::Type."
 ---
 # OF-015 PR 8 — User-facing docs + residual sidecar cleanup

@@ -1,19 +1,20 @@
 ---
 type: task
-schema_version: '3'
-status: in-progress
-created: '2026-09-07'
-last_reviewed: '2026-09-20'
-impact: medium
-complexity: small
+schema_version: '9'
+state: in-progress
+created: 2026-09-07
+last_reviewed: 2026-09-20
+related:
+- 2026-09-07-api-surfaces-with-own-store-accessor.md
+- 2026-09-07-pagination-pushdown-into-the-store.md
 tags:
 - servers
 - clients
 - pagination
-related:
-- 2026-09-07-api-surfaces-with-own-store-accessor.md
-- 2026-09-07-pagination-pushdown-into-the-store.md
-relevance_note: Folded into #156 as ApiSurface::paginated_modules. Spec ported from the dev monorepo, where it was authored as T-7UGF.
+impact: medium
+complexity: small
+relevance_note: 'Folded into #156 as ApiSurface::paginated_modules. Spec ported from the dev monorepo, where it was authored as T-7UGF.'
+definition_gap: 'v6-to-v7 migration flagged ambiguous Files-to-touch section(s): Files to touch (renamed to Areas) was not a well-formed 3-column table — content preserved verbatim under the new heading; reshape into `| Area | Note |` by hand if desired (no longer required)'
 ---
 # Pagination declared per module, so the admin registry paginates only what needs it
 
@@ -84,7 +85,7 @@ modules keep the plain `Vec<T>` shape end to end.
    `paginated: false`; assert the marker form and the config form agree; assert
    the flagged-without-limits error.
 
-## Files to touch
+## Areas
 
 `src/lib.rs`, `src/servers/config.rs`, `src/servers/parse.rs`,
 `src/servers/mod.rs`, `src/servers/generators/http.rs`,

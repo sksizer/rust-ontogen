@@ -1,14 +1,19 @@
 ---
 type: task
-schema_version: '2'
-status: closed/done
+schema_version: '9'
+state: closed/done
 created: 2026-05-19
 last_reviewed: 2026-05-19
+related:
+- OF-015
+- OF-015-pr-5
+tags:
+- ontogen-ts
+- ts-pipeline
+- cleanup
 impact: medium
 complexity: small
-tags: [ontogen-ts, ts-pipeline, cleanup]
-related: [OF-015, OF-015-pr-5]
-completion_note: "Shipped in #65 (merge fbfe395, 2026-05-19). Commit dc01f31 — side-car infrastructure deletion + iron-log cleanup covering AC-12/13/14 (partial)."
+completion_note: 'Shipped in #65 (merge fbfe395, 2026-05-19). Commit dc01f31 — side-car infrastructure deletion + iron-log cleanup covering AC-12/13/14 (partial).'
 ---
 # OF-015 PR 6 — Delete side-car infrastructure + iron-log cleanup + `FallbackRecord` removal
 

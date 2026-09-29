@@ -1,17 +1,17 @@
 ---
 type: task
-schema_version: '3'
-status: closed/done
-created: '2026-05-23'
-impact: medium
-complexity: medium
+schema_version: '9'
+state: closed/done
+created: 2026-05-23
+last_reviewed: 2026-05-24
+related: []
 tags:
 - ontogen-ts
 - pumice-follow-up
 - serde-shape
-related: []
+impact: medium
+complexity: medium
 autonomy: supervised
-last_reviewed: '2026-05-24'
 completion_note: |
   Shipped via #75 (merge 5001844, 2026-05-24). PR was opened on
   feat/ontogen-ts-serde-default-optional rather than the

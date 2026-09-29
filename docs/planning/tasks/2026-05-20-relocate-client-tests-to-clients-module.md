@@ -1,17 +1,17 @@
 ---
 type: task
-schema_version: '3'
-status: planning/needs-definition
-created: '2026-05-20'
-impact: low
-complexity: small
+schema_version: '9'
+state: planning/needs-definition
+created: 2026-05-20
+last_reviewed: 2026-05-24
+related:
+- 2026-05-19-split-clients-from-servers
 tags:
 - clients
 - refactor
 - tests
-related:
-- 2026-05-19-split-clients-from-servers
-last_reviewed: '2026-05-24'
+impact: low
+complexity: small
 ---
 # Relocate client-side tests from src/servers/tests.rs to src/clients/tests.rs with shared fixtures
 
@@ -72,15 +72,14 @@ change in test coverage.
 4. Run `just full-check` and confirm `cargo test` still passes with the
    same test count.
 
-## Files to touch
+## Areas
 
-| Location | Kind | Change |
-|---|---|---|
-| `src/servers/tests.rs` | modify | remove client-side test cases; update imports for |
-| `src/clients/tests.rs` | modify | replace the stub with the relocated client-side |
-| `src/test_support.rs` | new | extracted shared |
-| `src/lib.rs` | new | register the new `#[cfg(test)] mod test_support;` if that |
-
+| Area | Note |
+|---|---|
+| `src/servers/tests.rs` | remove client-side test cases; update imports for |
+| `src/clients/tests.rs` | replace the stub with the relocated client-side |
+| `src/test_support.rs` | extracted shared |
+| `src/lib.rs` | register the new `#[cfg(test)] mod test_support;` if that |
 
 ## Acceptance criteria
 

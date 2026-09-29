@@ -1,18 +1,19 @@
 ---
 type: task
-schema_version: '3'
-status: backlog
-created: '2026-09-07'
-last_reviewed: '2026-09-20'
-impact: low
-complexity: large
+schema_version: '9'
+state: planning/needs-definition
+created: 2026-09-07
+last_reviewed: 2026-09-20
+related:
+- 2026-09-07-docs-stage-data-model-reference-and-json-schema.md
 tags:
 - schema
 - persistence
 - seaorm
-related:
-- 2026-09-07-docs-stage-data-model-reference-and-json-schema.md
+impact: low
+complexity: large
 relevance_note: No implementation started. Spec ported from the dev monorepo, where it was authored as T-SKHA.
+definition_gap: 'v6-to-v7 migration flagged ambiguous Files-to-touch section(s): Files to touch (renamed to Areas) was not a well-formed 3-column table — content preserved verbatim under the new heading; reshape into `| Area | Note |` by hand if desired (no longer required)'
 ---
 # Bytes, timestamp, date and JSON columns, defaults, and declared indexes
 
@@ -96,7 +97,7 @@ so a migration can loop over them instead of hand-writing SQL.
    composite unique index; `tests/ts_entity_field_type_closure.rs` covers the TS
    mapping.
 
-## Files to touch
+## Areas
 
 `crates/ontogen-core/src/model.rs`, `crates/ontogen-core/src/ir.rs`,
 `src/schema/parse.rs`, `src/persistence/seaorm/gen_entity.rs`,

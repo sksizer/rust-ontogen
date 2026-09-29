@@ -1,9 +1,9 @@
 ---
-schema_version: '3'
-status: planning/proposed
+schema_version: '9'
+state: planning/proposed
+last_reviewed: 2026-05-26
 impact: low
 complexity: small
-last_reviewed: '2026-05-26'
 definition_gap: |
   Three minor open questions remain (default-set evolution, default-export
   import syntax, OF-020 per-file dedup when hierarchical TS output lands).
@@ -64,17 +64,17 @@ Replace the `String` value type in `EmitConfig::external_types` with `ExternalTy
 9. **Backward-compat smoke test.** Existing `emit_user_override_wins_on_external_types` test should compile with at most a `.into()` change on the override value; ideally compiles unchanged via the `From<&str>` impl on the map's value.
 10. **Docs.** Add a guide section at `site/src/content/docs/guides/typescript-bindings.mdx` covering advanced external-type rendering: when to use `Imported` (Moment/Luxon/Temporal/branded-type patterns), the dedup behavior, and the collision rule.
 
-## Files to touch
+## Areas
 
-| Location | Kind | Change |
-|---|---|---|
-| `crates/ontogen-ts/src/external.rs` | modify | introduce `pub enum ExternalTypeRendering` with `Primitive` and `Imported` variants; add `From<&str>` / `From<String>` impls; change `resolve` return type to `Option<ExternalTypeRendering>`; update inline tests. |
-| `crates/ontogen-ts/src/types.rs` | modify | change `EmitConfig::external_types` value type from `String` to `ExternalTypeRendering`; add `EmitError::ExternalImportCollision { local_name, sources }` variant. |
-| `crates/ontogen-ts/src/emit.rs` | modify | add `ImportCollector` (in-emit data structure), dispatch on `ExternalTypeRendering` variants in `emit_type`, thread the collector through `emit_with_imports`, prepend import-declaration block to the joined output, raise `ExternalImportCollision` when two distinct `(module, name)` pairs map to the same `local_name`. |
-| `crates/ontogen-ts/src/lib.rs` | modify | re-export `ExternalTypeRendering` from `crate::external` at the crate root so consumers can name it without reaching through `external::`. |
-| `crates/ontogen-ts/tests/end_to_end.rs` | modify | add end-to-end tests: imported rendering produces correct import + field-site reference; dedup; rename; module-collapse; collision error. Update `emit_user_override_wins_on_external_types` if the `.into()` ergonomics need a touch. |
-| `crates/ontogen-ts/tests/fixtures/external_imported_*.rs` and `.ts` | new | golden fixtures for: single imported rendering, two-type dedup, rename, multi-name single-module import-line collapse. |
-| `site/src/content/docs/guides/typescript-bindings.mdx` | modify | add an "Advanced external-type rendering" section covering `Imported` renderings, dedup behavior, collision rule, and a canonical example (Moment is the obvious one). |
+| Area | Note |
+|---|---|
+| `crates/ontogen-ts/src/external.rs` | introduce `pub enum ExternalTypeRendering` with `Primitive` and `Imported` variants; add `From<&str>` / `From<String>` impls; change `resolve` return type to `Option<ExternalTypeRendering>`; update inline tests. |
+| `crates/ontogen-ts/src/types.rs` | change `EmitConfig::external_types` value type from `String` to `ExternalTypeRendering`; add `EmitError::ExternalImportCollision { local_name, sources }` variant. |
+| `crates/ontogen-ts/src/emit.rs` | add `ImportCollector` (in-emit data structure), dispatch on `ExternalTypeRendering` variants in `emit_type`, thread the collector through `emit_with_imports`, prepend import-declaration block to the joined output, raise `ExternalImportCollision` when two distinct `(module, name)` pairs map to the same `local_name`. |
+| `crates/ontogen-ts/src/lib.rs` | re-export `ExternalTypeRendering` from `crate::external` at the crate root so consumers can name it without reaching through `external::`. |
+| `crates/ontogen-ts/tests/end_to_end.rs` | add end-to-end tests: imported rendering produces correct import + field-site reference; dedup; rename; module-collapse; collision error. Update `emit_user_override_wins_on_external_types` if the `.into()` ergonomics need a touch. |
+| `crates/ontogen-ts/tests/fixtures/external_imported_*.rs` and `.ts` | golden fixtures for: single imported rendering, two-type dedup, rename, multi-name single-module import-line collapse. |
+| `site/src/content/docs/guides/typescript-bindings.mdx` | add an "Advanced external-type rendering" section covering `Imported` renderings, dedup behavior, collision rule, and a canonical example (Moment is the obvious one). |
 
 ## Acceptance criteria
 

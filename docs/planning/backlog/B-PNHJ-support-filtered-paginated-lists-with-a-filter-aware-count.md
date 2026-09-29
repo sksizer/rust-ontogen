@@ -1,12 +1,12 @@
 ---
 type: backlog
-schema_version: '2'
+schema_version: '3'
 id: B-PNHJ
+last_reviewed: 2026-09-22
 tags:
 - pagination
 - servers
 - api
-last_reviewed: '2026-09-22'
 ---
 
 # Support filtered + paginated lists with a filter-aware count

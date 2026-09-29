@@ -1,10 +1,9 @@
 ---
-schema_version: '3'
-status: planning/proposed
+schema_version: '9'
+state: planning/proposed
+last_reviewed: 2026-05-26
 impact: low
 complexity: large
-last_reviewed: '2026-05-26'
-low_confidence: true
 definition_gap: |
   Three unresolved design decisions block promotion to open/ready: (1)
   name-mangler spec for nested generics — terminal-ident-only with an
@@ -23,6 +22,7 @@ definition_gap: |
   written down. Also still speculative: Pumice empirical question in
   Notes — until a real consumer demonstrates the concrete-type-alias
   workaround from OF-015 is no longer acceptable, this stays parked.
+low_confidence: true
 ---
 # OF-021 - Support user-defined generic types in `ontogen-ts`
 
@@ -68,19 +68,19 @@ ontogen-ts walks each reachable user-defined generic instantiation and emits a c
 9. **Test fixtures.** Cover: simple `Paginated<Workout>` monomorphization; multiple instantiations of the same generic (`Paginated<Workout>` + `Paginated<Tag>`); nested generics for the name-mangler decision (`Paginated<HashMap<String, Vec<Workout>>>`); `#[ts_generic]` opt-in single-emission; bound-handling per the resolved policy; concrete alias over a `#[ts_generic]` type per the coexistence decision.
 10. **Update the TS bindings guide.** Rewrite `site/src/content/docs/guides/typescript-bindings.mdx` with the two-strategy explainer, the per-type opt-in attribute, and a side-by-side example showing the same Rust generic emitted both ways.
 
-## Files to touch
+## Areas
 
-| Location | Kind | Change |
-|---|---|---|
-| `crates/ontogen-macros/src/lib.rs` | modify | Add `#[proc_macro_attribute] pub fn ts_generic` mirroring `ts_opaque` / `ts_name`; no-op at Rust compile time, validates that the attribute takes no arguments. |
-| `crates/ontogen-ts/src/attr.rs` | modify | Extend `OntogenAttrs` with `ts_generic: bool`; recognise the attribute name in `parse_ontogen_attrs` alongside `ts_opaque` / `ts_name`. |
-| `crates/ontogen-ts/src/emit.rs` | modify | (a) build the instantiation collector during the top-level `emit` walk; (b) add the name-mangler implementing the step-1 spec; (c) add the type-param substitution helper; (d) extend `match_container` / the path-resolution branch to recognise pool-resident generics and dispatch to monomorphization vs. TS-generic emission; (e) loosen the `UnsupportedShape` gates for cases now handled. |
-| `crates/ontogen-ts/src/types.rs` | modify | Likely extend `EmitConfig` with strategy-B knobs (e.g. bound-handling policy default, or a `monomorphize_default: bool` override) only if the resolved-decisions step 1 calls for it. Otherwise touch only diagnostics on `EmitError`. |
-| `crates/ontogen-ts/src/order.rs` | modify | Extend `DepCollector` so it records edges for the generic-instantiation tuples the collector in `emit.rs` consumes — today's recursion records the arg-type dep but not the instantiation. Detail depends on whether the instantiation set is computed inside `order` or `emit`. |
-| `crates/ontogen-ts/tests/` | new | Fixture suite covering the cases enumerated in Approach step 9. Add a directory of new fixture files; don't displace existing fixtures. |
-| `src/clients/generators/transport.rs` | modify | At call-site emission, branch on `#[ts_generic]`: emit `Paginated<Workout>` for strategy B, mangled name for strategy A. |
-| `src/clients/generators/ts_client.rs` | modify | Same branch as transport — emit generic-instantiation syntax at use sites for strategy-B types. |
-| `site/src/content/docs/guides/typescript-bindings.mdx` | modify | Document the two strategies, the per-type opt-in attribute, side-by-side example, and the readability vs. flexibility tradeoff. |
+| Area | Note |
+|---|---|
+| `crates/ontogen-macros/src/lib.rs` | Add `#[proc_macro_attribute] pub fn ts_generic` mirroring `ts_opaque` / `ts_name`; no-op at Rust compile time, validates that the attribute takes no arguments. |
+| `crates/ontogen-ts/src/attr.rs` | Extend `OntogenAttrs` with `ts_generic: bool`; recognise the attribute name in `parse_ontogen_attrs` alongside `ts_opaque` / `ts_name`. |
+| `crates/ontogen-ts/src/emit.rs` | (a) build the instantiation collector during the top-level `emit` walk; (b) add the name-mangler implementing the step-1 spec; (c) add the type-param substitution helper; (d) extend `match_container` / the path-resolution branch to recognise pool-resident generics and dispatch to monomorphization vs. TS-generic emission; (e) loosen the `UnsupportedShape` gates for cases now handled. |
+| `crates/ontogen-ts/src/types.rs` | Likely extend `EmitConfig` with strategy-B knobs (e.g. bound-handling policy default, or a `monomorphize_default: bool` override) only if the resolved-decisions step 1 calls for it. Otherwise touch only diagnostics on `EmitError`. |
+| `crates/ontogen-ts/src/order.rs` | Extend `DepCollector` so it records edges for the generic-instantiation tuples the collector in `emit.rs` consumes — today's recursion records the arg-type dep but not the instantiation. Detail depends on whether the instantiation set is computed inside `order` or `emit`. |
+| `crates/ontogen-ts/tests/` | Fixture suite covering the cases enumerated in Approach step 9. Add a directory of new fixture files; don't displace existing fixtures. |
+| `src/clients/generators/transport.rs` | At call-site emission, branch on `#[ts_generic]`: emit `Paginated<Workout>` for strategy B, mangled name for strategy A. |
+| `src/clients/generators/ts_client.rs` | Same branch as transport — emit generic-instantiation syntax at use sites for strategy-B types. |
+| `site/src/content/docs/guides/typescript-bindings.mdx` | Document the two strategies, the per-type opt-in attribute, side-by-side example, and the readability vs. flexibility tradeoff. |
 
 ## Acceptance criteria
 

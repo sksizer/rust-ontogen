@@ -1,14 +1,19 @@
 ---
 type: task
-schema_version: '2'
-status: closed/done
+schema_version: '9'
+state: closed/done
 created: 2026-05-19
 last_reviewed: 2026-05-19
+related:
+- OF-015
+- OF-015-pr-6
+tags:
+- ontogen-ts
+- ts-pipeline
+- integration
 impact: high
 complexity: medium
 autonomy: supervised
-tags: [ontogen-ts, ts-pipeline, integration]
-related: [OF-015, OF-015-pr-6]
 completion_note: "Validation ran against Pumice 2026-05-19 (validate-ontogen-ts branch). Single EmitError variant surfaced: 4 UnresolvedReference panics on workspace-sibling pub-use re-exports. Backported pool_extra_roots via PR #67 (merge ce299d0). Re-run clean: zero errors, zero warnings, all four types emitted natively. Follow-up filed for field-type closure (Pumice's append_pumice_enum_aliases workaround) — separate task."
 ---
 # OF-015 PR 7 — Pumice integration validation

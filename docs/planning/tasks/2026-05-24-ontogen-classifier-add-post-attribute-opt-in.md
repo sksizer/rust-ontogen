@@ -1,18 +1,18 @@
 ---
 type: task
-schema_version: '3'
-status: closed/done
-created: '2026-05-24'
-impact: medium
-complexity: small
+schema_version: '9'
+state: closed/done
+created: 2026-05-24
+last_reviewed: 2026-05-24
+related: []
 tags:
 - attribute-opt-in
 - http-method
 - ontogen-classifier
 - pumice-follow-up
-related: []
+impact: medium
+complexity: small
 autonomy: supervised
-last_reviewed: '2026-05-24'
 completion_note: |
   Shipped via #77 (merge 1881f50, 2026-05-24). Initial implementation
   used `force_post: bool` and a top-level `#[ontogen::post]`; in response

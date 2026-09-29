@@ -1,9 +1,9 @@
 ---
 type: task
-schema_version: '5'
+schema_version: '9'
 id: T-YO00
-status: planning/draft
-created: '2026-06-06'
+state: planning/needs-definition
+created: 2026-06-06
 related: []
 tags:
 - ontological-integration
@@ -11,6 +11,7 @@ tags:
 need_human_review: false
 impact: high
 complexity: medium
+definition_gap: 'v6-to-v7 migration flagged ambiguous Files-to-touch section(s): Files to touch (renamed to Areas) was not a well-formed 3-column table — content preserved verbatim under the new heading; reshape into `| Area | Note |` by hand if desired (no longer required)'
 ---
 # Implement ADR-0001: markdown as a first-class store backend
 
@@ -61,7 +62,7 @@ still open inside the step.>
 2. <step>
 3. <step>
 
-## Files to touch
+## Areas
 
 <Typed table of every location you expect to touch. Location uses the
 same five-form grammar as `## Today` (see header comment). Kind is one
