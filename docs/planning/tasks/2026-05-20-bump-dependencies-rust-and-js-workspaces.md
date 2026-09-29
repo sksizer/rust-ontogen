@@ -1,18 +1,18 @@
 ---
 type: task
-schema_version: '3'
-status: closed/wontdo
-created: '2026-05-20'
-impact: medium
-complexity: medium
+schema_version: '9'
+state: closed/wontdo
+created: 2026-05-20
+last_reviewed: 2026-05-24
+related: []
 tags:
 - dependencies
 - maintenance
 - rust
 - node
 - pnpm
-related: []
-last_reviewed: '2026-05-24'
+impact: medium
+complexity: medium
 completion_note: |
   Dropped during /sdlc:orchestrate tick #1 cleanup. The task spec
   shipped with v2 migration placeholders in the Today table and

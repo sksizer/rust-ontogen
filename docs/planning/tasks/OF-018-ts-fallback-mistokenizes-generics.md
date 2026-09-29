@@ -1,10 +1,10 @@
 ---
-schema_version: '3'
-status: planning/proposed
+schema_version: '9'
+state: planning/proposed
+last_reviewed: 2026-05-26
 impact: low
 complexity: small
-last_reviewed: '2026-05-26'
-definition_gap: 'OF-015 closed/done (epic E0001 shipped 2026-05-15..05-20) kept FallbackRecord as a defensive backstop rather than deleting it (commit 15664f9), so Direction A applies. The buggy rust_type_to_ts / collect_ts_import in src/servers/types.rs:393,430 still feed both src/clients/generators/transport.rs and src/clients/generators/ts_client.rs. The Approach below mirrors the OF-008 / OF-010 AST migration on the TS side; AST forms (ApiFn.return_type_ast, Param.ty_ast) are already populated by src/servers/parse.rs and ready to consume.'
+definition_gap: OF-015 closed/done (epic E0001 shipped 2026-05-15..05-20) kept FallbackRecord as a defensive backstop rather than deleting it (commit 15664f9), so Direction A applies. The buggy rust_type_to_ts / collect_ts_import in src/servers/types.rs:393,430 still feed both src/clients/generators/transport.rs and src/clients/generators/ts_client.rs. The Approach below mirrors the OF-008 / OF-010 AST migration on the TS side; AST forms (ApiFn.return_type_ast, Param.ty_ast) are already populated by src/servers/parse.rs and ready to consume.
 ---
 # OF-018 - TS bindings fallback emitter mis-tokenizes generic return types
 
@@ -54,15 +54,15 @@ Replace `rust_type_to_ts(&str)` and `collect_ts_import(&str, ...)` with AST-driv
 6. Add an end-to-end test mirroring `test_of013_unsized_dst_owned_form_in_ipc`: feed a service fn with `Result<HashMap<String, NotificationPrefs>, AppError>` through `parse::scan_api_dir`, run the transport generator against an empty `bindings.ts`, and assert every emitted placeholder type name is a syntactically valid TS identifier (matches `/^[A-Za-z_$][A-Za-z0-9_$]*$/`).
 7. `just full-check` clean; commit one logical change per step where it tightens review.
 
-## Files to touch
+## Areas
 
-| Location | Kind | Change |
-|---|---|---|
-| `src/servers/types.rs` | modify | Add `rust_type_to_ts_ast` and `collect_ts_import_ast` (~lines 393-445 region). Convert the existing string-input functions into thin wrappers that parse via `syn::parse_str` and delegate. |
-| `src/clients/generators/transport.rs` | modify | Update the `FallbackRecord` collection block (~lines 110-115) to call the AST walkers against `f.return_type_ast` / `p.ty_ast`. Inline-rendering sites (221, 237, 242, 267, 271, 453, 468, 472, 555, 565, 773, 790) stay on the string shims for now. |
-| `src/clients/generators/ts_client.rs` | modify | Update the parallel `FallbackRecord` collection block (~lines 51-56). Same scope rule as transport.rs. |
-| `src/servers/tests.rs` | modify | Add `test_collect_ts_import_ast_matrix` and `test_rust_type_to_ts_ast`, mirroring the existing OF-008/OF-010 templates at lines 347 and 518. Optionally backfill the existing `test_rust_type_to_ts` to also cover `HashMap` / nested generics via the new AST path. |
-| `tests/` (an existing integration test file, location TBD during implementation) | modify | Add an end-to-end test that exercises the `FallbackRecord` collection path against a `Result<HashMap<…>, _>` return type and asserts emitted placeholder names are valid TS identifiers. Mirror the OF-013 IPC-shape test. |
+| Area | Note |
+|---|---|
+| `src/servers/types.rs` | Add `rust_type_to_ts_ast` and `collect_ts_import_ast` (~lines 393-445 region). Convert the existing string-input functions into thin wrappers that parse via `syn::parse_str` and delegate. |
+| `src/clients/generators/transport.rs` | Update the `FallbackRecord` collection block (~lines 110-115) to call the AST walkers against `f.return_type_ast` / `p.ty_ast`. Inline-rendering sites (221, 237, 242, 267, 271, 453, 468, 472, 555, 565, 773, 790) stay on the string shims for now. |
+| `src/clients/generators/ts_client.rs` | Update the parallel `FallbackRecord` collection block (~lines 51-56). Same scope rule as transport.rs. |
+| `src/servers/tests.rs` | Add `test_collect_ts_import_ast_matrix` and `test_rust_type_to_ts_ast`, mirroring the existing OF-008/OF-010 templates at lines 347 and 518. Optionally backfill the existing `test_rust_type_to_ts` to also cover `HashMap` / nested generics via the new AST path. |
+| `tests/` (an existing integration test file, location TBD during implementation) | Add an end-to-end test that exercises the `FallbackRecord` collection path against a `Result<HashMap<…>, _>` return type and asserts emitted placeholder names are valid TS identifiers. Mirror the OF-013 IPC-shape test. |
 
 ## Acceptance criteria
 

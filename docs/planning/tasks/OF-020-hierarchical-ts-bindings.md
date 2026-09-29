@@ -1,10 +1,9 @@
 ---
-schema_version: '3'
-status: planning/proposed
+schema_version: '9'
+state: planning/proposed
+last_reviewed: 2026-05-26
 impact: low
 complexity: large
-last_reviewed: '2026-05-26'
-low_confidence: true
 definition_gap: |
   Speculative follow-up. Implementation-ready template sections are
   populated in shape (Goal / Today / Proposed / Approach / Files to
@@ -20,6 +19,7 @@ definition_gap: |
   design pass closes the three open questions. `low_confidence: true`
   is set because the `Approach` is design-then-implement, not a
   direct execution plan.
+low_confidence: true
 ---
 # OF-020 - Hierarchical TS bindings output for codebases with name collisions at scale
 
@@ -63,22 +63,22 @@ Introduce a `BindingsLayout` config knob and a parallel nested emission path. Ph
 
 7. **Documentation.** Update `site/` (TS-bindings guide once OF-015 PR 8 lands) with a "flat vs nested" section: when to pick which, the explicit-import pattern as the canonical use, and a migration recipe for users who outgrow flat.
 
-## Files to touch
+## Areas
 
-| Location | Kind | Change |
-|---|---|---|
-| `docs/planning/tasks/OF-020-hierarchical-ts-bindings.md` | modify | (this task) record design-pass decisions resolving the three open questions before any code change. |
-| `src/clients/config.rs` | modify | introduce `BindingsLayout { Flat { path }, Nested { dir } }`; update `ClientGenerator::HttpTs` / `HttpTauriIpcSplit` to carry it (exact shape pending the backward-compat decision in step 1). |
-| `crates/ontogen-ts/src/lib.rs` | modify | re-export the new nested-mode entry point alongside `emit` / `emit_with_imports`. |
-| `crates/ontogen-ts/src/emit.rs` (or new `crates/ontogen-ts/src/emit/nested.rs`) | new or modify | `emit_nested(roots, type_pool, imports, config) -> Result<HashMap<PathBuf, String>, Vec<EmitError>>` + module-partitioning helpers + relative-import resolver. |
-| `crates/ontogen-ts/src/order.rs` | modify | likely small touch — surface per-module partitioning during reachable-set walk so `emit_nested` doesn't re-scan. Confirm during step 3. |
-| `src/clients/mod.rs` | modify | dispatch on `BindingsLayout` when handling `HttpTs` / `HttpTauriIpcSplit`; `Flat` keeps the existing `bindings_path` flow, `Nested` calls into the new directory writer. |
-| `src/clients/generators/mod.rs` | modify | update the shared `bindings_path` field on the per-generator config struct (or replace with a `BindingsLayout`). |
-| `src/clients/generators/transport.rs` | modify | accept `BindingsLayout`; in `Nested` mode emit per-module imports in the generated `transport.ts` instead of one flat import. |
-| `src/clients/generators/ts_client.rs` | modify | same shape as `transport.rs` — accept `BindingsLayout` and emit per-module imports in `Nested` mode. |
-| `src/clients/generators/ts_bindings.rs` | modify | the long-tail root-set computation likely needs no behavior change, but verify; may need to surface module-of-origin for `emit_nested` to consume. |
-| `crates/ontogen-ts/tests/` | new | nested-mode integration test with two modules defining colliding terminal idents and a cross-module reference. |
-| `site/` (TS-bindings guide page) | modify | document flat vs nested, when to pick which, migration recipe. Exact path depends on where OF-015 PR 8 lands the guide. |
+| Area | Note |
+|---|---|
+| `docs/planning/tasks/OF-020-hierarchical-ts-bindings.md` | (this task) record design-pass decisions resolving the three open questions before any code change. |
+| `src/clients/config.rs` | introduce `BindingsLayout { Flat { path }, Nested { dir } }`; update `ClientGenerator::HttpTs` / `HttpTauriIpcSplit` to carry it (exact shape pending the backward-compat decision in step 1). |
+| `crates/ontogen-ts/src/lib.rs` | re-export the new nested-mode entry point alongside `emit` / `emit_with_imports`. |
+| `crates/ontogen-ts/src/emit.rs` (or new `crates/ontogen-ts/src/emit/nested.rs`) | `emit_nested(roots, type_pool, imports, config) -> Result<HashMap<PathBuf, String>, Vec<EmitError>>` + module-partitioning helpers + relative-import resolver. |
+| `crates/ontogen-ts/src/order.rs` | likely small touch — surface per-module partitioning during reachable-set walk so `emit_nested` doesn't re-scan. Confirm during step 3. |
+| `src/clients/mod.rs` | dispatch on `BindingsLayout` when handling `HttpTs` / `HttpTauriIpcSplit`; `Flat` keeps the existing `bindings_path` flow, `Nested` calls into the new directory writer. |
+| `src/clients/generators/mod.rs` | update the shared `bindings_path` field on the per-generator config struct (or replace with a `BindingsLayout`). |
+| `src/clients/generators/transport.rs` | accept `BindingsLayout`; in `Nested` mode emit per-module imports in the generated `transport.ts` instead of one flat import. |
+| `src/clients/generators/ts_client.rs` | same shape as `transport.rs` — accept `BindingsLayout` and emit per-module imports in `Nested` mode. |
+| `src/clients/generators/ts_bindings.rs` | the long-tail root-set computation likely needs no behavior change, but verify; may need to surface module-of-origin for `emit_nested` to consume. |
+| `crates/ontogen-ts/tests/` | nested-mode integration test with two modules defining colliding terminal idents and a cross-module reference. |
+| `site/` (TS-bindings guide page) | document flat vs nested, when to pick which, migration recipe. Exact path depends on where OF-015 PR 8 lands the guide. |
 
 ## Acceptance criteria
 

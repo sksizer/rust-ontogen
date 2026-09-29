@@ -1,18 +1,18 @@
 ---
 type: task
-schema_version: '3'
-status: closed/obsoleted
-created: '2026-05-20'
-impact: medium
-complexity: small
-last_reviewed: '2026-05-24'
+schema_version: '9'
+state: closed/obsoleted
+created: 2026-05-20
+last_reviewed: 2026-05-24
+related:
+- 2026-05-19-split-clients-from-servers
 tags:
 - rust
 - sdlc
 - task-work
 - tooling
-related:
-- 2026-05-19-split-clients-from-servers
+impact: medium
+complexity: small
 completion_note: |
   Shipped upstream same-day via plugin commit 6f4f674 (2026-05-20) "feat(task-work):
   make Step 4 worktree-init language-agnostic via sdlc.yaml". Step 4 of

@@ -1,22 +1,18 @@
 ---
 type: task
-schema_version: '3'
-status: planning/draft
-created: '2026-05-20'
-impact: medium
-complexity: small
-last_reviewed: '2026-05-24'
-definition_gap: 'Files-to-touch row cites `plugin/skills/sdlc/task-work/SKILL.md`,
-  but the actual path is `plugin/skills/task-work/SKILL.md` (no `sdlc/` segment).
-  Approach Step 1 also cites the wrong path. Implementation-ready ``kind: modify``
-  rows require the path to resolve in the codebase — this one does not. Fix
-  the path in both Approach and Files to touch.'
+schema_version: '9'
+state: planning/draft
+created: 2026-05-20
+last_reviewed: 2026-05-24
+related:
+- 2026-05-19-split-clients-from-servers
 tags:
 - sdlc
 - task-work
 - tooling
-related:
-- 2026-05-19-split-clients-from-servers
+impact: medium
+complexity: small
+definition_gap: 'Files-to-touch row cites `plugin/skills/sdlc/task-work/SKILL.md`, but the actual path is `plugin/skills/task-work/SKILL.md` (no `sdlc/` segment). Approach Step 1 also cites the wrong path. Implementation-ready ``kind: modify`` rows require the path to resolve in the codebase — this one does not. Fix the path in both Approach and Files to touch.'
 ---
 # task-work brief must guard against sub-agents editing task status frontmatter
 
@@ -70,12 +66,11 @@ flips stop happening at the source rather than getting caught by post-hoc review
    owns (`readiness_verified_at`, `last_reviewed`, `closed_at` if/when added). Defer
    if scope creeps.
 
-## Files to touch
+## Areas
 
-| Location | Kind | Change |
-|---|---|---|
-| `plugin/skills/sdlc/task-work/SKILL.md` | modify | add the frontmatter-status guardrail to |
-
+| Area | Note |
+|---|---|
+| `plugin/skills/sdlc/task-work/SKILL.md` | add the frontmatter-status guardrail to |
 
 ## Acceptance criteria
 

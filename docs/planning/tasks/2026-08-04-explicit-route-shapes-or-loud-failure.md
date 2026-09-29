@@ -1,16 +1,17 @@
 ---
 type: task
-schema_version: '3'
-status: backlog
-created: '2026-08-04'
-last_reviewed: '2026-09-20'
-impact: medium
-complexity: medium
+schema_version: '9'
+state: planning/needs-definition
+created: 2026-08-04
+last_reviewed: 2026-09-20
 tags:
 - servers
 - clients
 - dx
+impact: medium
+complexity: medium
 relevance_note: No implementation started. Ported from the dev monorepo, where it was captured as backlog item B-O4GF.
+definition_gap: 'v6-to-v7 migration flagged ambiguous Files-to-touch section(s): Files to touch (renamed to Areas) was not a well-formed 3-column table — content preserved verbatim under the new heading; reshape into `| Area | Note |` by hand if desired (no longer required)'
 ---
 # Make route shapes explicit, or fail loudly on ambiguous op names
 
@@ -54,7 +55,7 @@ explicit path; this task is about making the implicit path safe or replacing it.
 Alongside, give the TS type pool a stable emission order (insertion order, or
 per-module grouping) so generated diffs stay proportional to the change.
 
-## Files to touch
+## Areas
 
 `src/servers/classify.rs`, `src/servers/parse.rs`,
 `src/clients/generators/ts_bindings.rs`, `src/servers/tests.rs`,

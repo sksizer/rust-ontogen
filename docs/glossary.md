@@ -1,3 +1,8 @@
+---
+type: Note
+okf_version: "0.2"
+---
+
 # Glossary
 
 > SDLC architecture vocabulary, defined once. **Generated** from the

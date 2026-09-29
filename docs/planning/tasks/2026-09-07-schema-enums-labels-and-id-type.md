@@ -1,19 +1,20 @@
 ---
 type: task
-schema_version: '3'
-status: in-progress
-created: '2026-09-07'
-last_reviewed: '2026-09-20'
-impact: medium
-complexity: medium
+schema_version: '9'
+state: in-progress
+created: 2026-09-07
+last_reviewed: 2026-09-20
+related:
+- 2026-09-07-docs-stage-data-model-reference-and-json-schema.md
+- 2026-09-07-admin-layer-registry-path-pickers-and-packaging.md
 tags:
 - schema
 - clients
 - admin
-related:
-- 2026-09-07-docs-stage-data-model-reference-and-json-schema.md
-- 2026-09-07-admin-layer-registry-path-pickers-and-packaging.md
-relevance_note: In review as #160. Spec ported from the dev monorepo, where it was authored as T-DM4X.
+impact: medium
+complexity: medium
+relevance_note: 'In review as #160. Spec ported from the dev monorepo, where it was authored as T-DM4X.'
+definition_gap: 'v6-to-v7 migration flagged ambiguous Files-to-touch section(s): Files to touch (renamed to Areas) was not a well-formed 3-column table — content preserved verbatim under the new heading; reshape into `| Area | Note |` by hand if desired (no longer required)'
 ---
 # Enum variants, field labels and the id type reach the admin registry
 
@@ -85,7 +86,7 @@ from the id field.
    `enumValues: ['peer-reviewed', ...]`, a label override, and
    `idType: 'number'` for an `i64` id. Snapshot the registry.
 
-## Files to touch
+## Areas
 
 `crates/ontogen-core/src/model.rs`, `crates/ontogen-core/src/ir.rs`,
 `src/schema/parse.rs`, `src/schema/mod.rs`, `src/lib.rs`,

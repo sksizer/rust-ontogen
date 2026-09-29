@@ -1,18 +1,18 @@
 ---
 type: task
-schema_version: '3'
-status: closed/done
-created: '2026-05-23'
-impact: medium
-complexity: medium
+schema_version: '9'
+state: closed/done
+created: 2026-05-23
+last_reviewed: 2026-05-24
+related:
+- 2026-05-20-ontogen-ts-entity-field-type-closure
 tags:
 - long-tail-walker
 - ontogen-ts
 - pumice-follow-up
-related:
-- 2026-05-20-ontogen-ts-entity-field-type-closure
+impact: medium
+complexity: medium
 autonomy: supervised
-last_reviewed: '2026-05-24'
 completion_note: |
   Shipped via #74 (merge 6c3db20, 2026-05-24). Deviated from the
   proposed call-site fixed-point loop: fixed the dependency graph in

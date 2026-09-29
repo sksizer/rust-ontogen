@@ -1,6 +1,6 @@
 ---
-schema_version: '3'
-status: closed/done
+schema_version: '9'
+state: closed/done
 last_reviewed: 2026-05-23
 completion_note: |
   Shipped end-to-end as epic E0001 (TypeScript bindings pipeline) — 8

@@ -1,3 +1,8 @@
+---
+type: Note
+okf_version: "0.2"
+---
+
 # References
 
 > External documentation, research, and artifacts SDLC leans on,

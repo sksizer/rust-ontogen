@@ -1,18 +1,19 @@
 ---
 type: task
-schema_version: '3'
-status: in-progress
-created: '2026-09-07'
-last_reviewed: '2026-09-20'
-impact: medium
-complexity: medium
+schema_version: '9'
+state: in-progress
+created: 2026-09-07
+last_reviewed: 2026-09-20
+related:
+- 2026-09-07-schema-enums-labels-and-id-type.md
 tags:
 - docs
 - schema
 - open-format
-related:
-- 2026-09-07-schema-enums-labels-and-id-type.md
-relevance_note: In review as #161. Spec ported from the dev monorepo, where it was authored as T-5IDQ.
+impact: medium
+complexity: medium
+relevance_note: 'In review as #161. Spec ported from the dev monorepo, where it was authored as T-5IDQ.'
+definition_gap: 'v6-to-v7 migration flagged ambiguous Files-to-touch section(s): Files to touch (renamed to Areas) was not a well-formed 3-column table — content preserved verbatim under the new heading; reshape into `| Area | Note |` by hand if desired (no longer required)'
 ---
 # A docs stage that emits the data-model reference and JSON Schema from the parsed schema
 
@@ -86,7 +87,7 @@ Schema files from the parsed schema.
    `comment_belongs_to_post_entity` fixture in `src/snapshots.rs`; a test that
    the emitted JSON parses and has `required` matching the non-optional fields.
 
-## Files to touch
+## Areas
 
 `crates/ontogen-core/src/model.rs`, `src/schema/parse.rs`, `src/docs/mod.rs`
 (new), `src/docs/markdown.rs` (new), `src/docs/json_schema.rs` (new),

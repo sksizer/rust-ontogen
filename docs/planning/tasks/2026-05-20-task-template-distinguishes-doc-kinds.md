@@ -1,18 +1,18 @@
 ---
 type: task
-schema_version: '3'
-status: planning/draft
-created: '2026-05-20'
-impact: low
-complexity: small
-last_reviewed: '2026-05-24'
-definition_gap: "Files-to-touch row 2 cites `plugin/skills/sdlc/task-define/SKILL.md` but the live path is `plugin/skills/task-define/SKILL.md` (no `sdlc/` segment) — verifier would fail the `modify` row. Change column notes are truncated (\"add the doc-kind\", \"prompt to\", \"optional;\"). Approach step 2 cites the same wrong path. ACs are observable but the spec also doesn't specify the exact marker syntax (parens after path? table column? frontmatter list?) — implementer would have to invent it."
+schema_version: '9'
+state: planning/draft
+created: 2026-05-20
+last_reviewed: 2026-05-24
+related:
+- 2026-05-19-split-clients-from-servers
 tags:
 - readiness
 - sdlc
 - tooling
-related:
-- 2026-05-19-split-clients-from-servers
+impact: low
+complexity: small
+definition_gap: Files-to-touch row 2 cites `plugin/skills/sdlc/task-define/SKILL.md` but the live path is `plugin/skills/task-define/SKILL.md` (no `sdlc/` segment) — verifier would fail the `modify` row. Change column notes are truncated ("add the doc-kind", "prompt to", "optional;"). Approach step 2 cites the same wrong path. ACs are observable but the spec also doesn't specify the exact marker syntax (parens after path? table column? frontmatter list?) — implementer would have to invent it.
 ---
 # task template should distinguish API-reference docs from design-narrative docs in Files to touch
 
@@ -75,14 +75,13 @@ the spec explicitly says otherwise.
 3. Optionally extend `plugin/entities/task/implementation-ready.md` to call
    out that doc kinds should be marked when present. Defer if scope creeps.
 
-## Files to touch
+## Areas
 
-| Location | Kind | Change |
-|---|---|---|
-| `plugin/entities/task/template.md` | modify | add the doc-kind |
-| `plugin/skills/sdlc/task-define/SKILL.md` | modify | prompt to |
-| `plugin/entities/task/implementation-ready.md` | modify | optional; |
-
+| Area | Note |
+|---|---|
+| `plugin/entities/task/template.md` | add the doc-kind |
+| `plugin/skills/sdlc/task-define/SKILL.md` | prompt to |
+| `plugin/entities/task/implementation-ready.md` | optional; |
 
 ## Acceptance criteria
 

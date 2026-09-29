@@ -1,19 +1,19 @@
 ---
 type: task
-schema_version: '3'
-status: closed/done
-created: '2026-05-20'
-impact: medium
-complexity: medium
-autonomy: supervised
+schema_version: '9'
+state: closed/done
+created: 2026-05-20
+last_reviewed: 2026-05-23
+related:
+- OF-015
+- OF-015-pr-7
 tags:
 - follow-up
 - ontogen-ts
 - ts-pipeline
-related:
-- OF-015
-- OF-015-pr-7
-last_reviewed: '2026-05-23'
+impact: medium
+complexity: medium
+autonomy: supervised
 completion_note: |
   Shipped via #72 (merge 0f771c9, 2026-05-23). ACs 1/2/4 verified
   programmatically; AC-3 (Pumice cross-repo validation) deferred to

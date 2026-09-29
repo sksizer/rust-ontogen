@@ -1,7 +1,12 @@
-# SDLC
+---
+type: Note
+okf_version: "0.2"
+---
 
-> The single front-door for SDLC. The **Narrative** lives in the prose
-> docs — [[vision]] (the why), [[PR-0001-sdlc]] (what it is and how it's
+# Ontological
+
+> The single front-door for Ontological. The **Narrative** lives in the prose
+> docs — [[vision]] (the why, the end state, and the plan), [[PR-0001-sdlc]] (what it is and how it's
 > designed), [[D-VSLI-distributed-work-runner-architecture]] (the architecture). The
 > **Reference** below is generated from the entities on disk by the
 > `docs` skill. **Do not hand-edit** — edit the source entity and
@@ -20,7 +25,7 @@
 
 | Doc                           | What it is                                     |
 | ----------------------------- | ---------------------------------------------- |
-| [[vision]]                    | The why — short read                           |
+| [[vision]]                    | The why, the end state, and the plan           |
 | [[PR-0001-sdlc]]               | The product — what it is and how it's designed |
 | [[D-VSLI-distributed-work-runner-architecture]] | The system architecture                        |
 | [[glossary]]                  | Vocabulary — every architecture term, defined once |
@@ -31,7 +36,7 @@
 The project may be **multi-product**, starting with one. Source:
 [`./planning/products/`](./planning/products/).
 
-| Product | Status | What it is |
+| Product | State | What it is |
 | --- | --- | --- |
 
 ## Drivers
@@ -58,7 +63,7 @@ Features get drafted as their releases schedule them.*
 
 | Source                                             | What it is                                                            |
 | -------------------------------------------------- | --------------------------------------------------------------------- |
-| [[D-ORMG-data-model]]                               | Authoritative roster — every entity by layer, with status and purpose |
+| [[D-ORMG-data-model]]                               | Authoritative roster — every entity by layer, with state and purpose |
 | [entity-model](./planning/decisions/entity-model/) | Design rationale and cross-entity relationships                       |
 | [[D-7F2M-why-what-verify-chain]]                    | The why→what→verify chain threaded through the Capability hinge       |
 

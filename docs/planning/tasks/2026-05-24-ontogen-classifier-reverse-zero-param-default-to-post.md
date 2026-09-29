@@ -1,18 +1,18 @@
 ---
 type: task
-schema_version: '3'
-status: closed/done
-created: '2026-05-24'
-impact: medium
-complexity: medium
+schema_version: '9'
+state: closed/done
+created: 2026-05-24
+last_reviewed: 2026-05-25
+related: []
 tags:
 - breaking-change
 - http-method
 - ontogen-classifier
 - pumice-follow-up
-related: []
+impact: medium
+complexity: medium
 autonomy: supervised
-last_reviewed: '2026-05-25'
 completion_note: |
   Shipped via #80 (merge 614e226, 2026-05-25). Breaking-change flip of
   the zero-user-param classifier default from CustomGet to CustomPost,

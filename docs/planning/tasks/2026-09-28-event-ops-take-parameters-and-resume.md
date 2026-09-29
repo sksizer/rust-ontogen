@@ -1,18 +1,19 @@
 ---
 type: task
-schema_version: '3'
-status: closed/done
-created: '2026-09-28'
-last_reviewed: '2026-09-28'
-impact: high
-complexity: large
+schema_version: '9'
+state: closed/done
+created: 2026-09-28
+last_reviewed: 2026-09-28
+related:
+- 2026-09-28-generated-subscriptions-resume-and-report-lag.md
 tags:
 - servers
 - events
 - sse
 - ipc
-related:
-- 2026-09-28-generated-subscriptions-resume-and-report-lag.md
+impact: high
+complexity: large
+relevance_note: Driven by the dev monorepo's push-channel milestone (determined decision D-0050). The consumer bumps its pin once this and its client-side sibling release.
 completion_note: |
   Shipped in [#184](https://github.com/sksizer/rust-ontogen/pull/184). Event fns take params
   (sync or async, `Receiver<T>` or `Result<Receiver<T>, E>`); SSE writes `id:` from
@@ -20,7 +21,6 @@ completion_note: |
   frame; IPC has `<fn>_subscribe` / `<fn>_unsubscribe` over a per-subscriber `Channel`.
   Runtime support is in ontogen-core's `events` feature. Deviation: `start_event_forwarding`
   and the TS `onX` stay for the parameterless sync shape so existing consumers keep building.
-relevance_note: Driven by the dev monorepo's push-channel milestone (determined decision D-0050). The consumer bumps its pin once this and its client-side sibling release.
 ---
 # Event ops take parameters, carry a sequence, and report lag
 

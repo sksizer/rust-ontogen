@@ -1,19 +1,20 @@
 ---
 type: task
-schema_version: '3'
-status: in-progress
-created: '2026-09-07'
-last_reviewed: '2026-09-20'
-impact: high
-complexity: large
+schema_version: '9'
+state: in-progress
+created: 2026-09-07
+last_reviewed: 2026-09-20
+related:
+- 2026-09-07-pagination-declared-per-module.md
+- 2026-09-07-pagination-pushdown-into-the-store.md
 tags:
 - servers
 - clients
 - surfaces
-related:
-- 2026-09-07-pagination-declared-per-module.md
-- 2026-09-07-pagination-pushdown-into-the-store.md
-relevance_note: In review as #156. Spec ported from the dev monorepo, where it was authored as T-6071.
+impact: high
+complexity: large
+relevance_note: 'In review as #156. Spec ported from the dev monorepo, where it was authored as T-6071.'
+definition_gap: 'v6-to-v7 migration flagged ambiguous Files-to-touch section(s): Files to touch (renamed to Areas) was not a well-formed 3-column table — content preserved verbatim under the new heading; reshape into `| Area | Note |` by hand if desired (no longer required)'
 ---
 # A second API surface with its own store accessor, merged into one transport
 
@@ -103,7 +104,7 @@ per-surface imports, no merge) and "merge" (same-name modules).
 7. Add the snapshot tests to `src/servers/tests.rs` and `src/clients/tests.rs`
    using `write_synthetic_api`. Run `just full-check`.
 
-## Files to touch
+## Areas
 
 `src/lib.rs`, `src/servers/config.rs`, `src/servers/parse.rs`,
 `src/servers/mod.rs`, `src/servers/generators/http.rs`,

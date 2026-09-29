@@ -1,16 +1,16 @@
 ---
 type: task
-schema_version: '3'
-status: closed/done
-created: '2026-05-24'
-last_reviewed: '2026-05-25'
-impact: low
-complexity: small
+schema_version: '9'
+state: closed/done
+created: 2026-05-24
+last_reviewed: 2026-05-25
+related:
+- 2026-05-24-ontogen-classifier-add-post-attribute-opt-in
 tags:
 - test-ergonomics
 - apifn
-related:
-- 2026-05-24-ontogen-classifier-add-post-attribute-opt-in
+impact: low
+complexity: small
 completion_note: |
   Shipped via #81. Manual `impl Default` on `ApiFn` and `Param` in
   `src/servers/parse.rs` (derive failed because `syn::Type` has no

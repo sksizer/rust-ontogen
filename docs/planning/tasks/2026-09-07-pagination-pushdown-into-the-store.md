@@ -1,19 +1,20 @@
 ---
 type: task
-schema_version: '3'
-status: in-progress
-created: '2026-09-07'
-last_reviewed: '2026-09-20'
-impact: medium
-complexity: medium
+schema_version: '9'
+state: in-progress
+created: 2026-09-07
+last_reviewed: 2026-09-20
+related:
+- 2026-09-07-pagination-declared-per-module.md
+- 2026-09-07-api-surfaces-with-own-store-accessor.md
 tags:
 - servers
 - store
 - pagination
-related:
-- 2026-09-07-pagination-declared-per-module.md
-- 2026-09-07-api-surfaces-with-own-store-accessor.md
-relevance_note: In review as #159, with #166 extending it to state-scoped modules and the MCP generator. Spec ported from the dev monorepo, where it was authored as T-P0CH.
+impact: medium
+complexity: medium
+relevance_note: 'In review as #159, with #166 extending it to state-scoped modules and the MCP generator. Spec ported from the dev monorepo, where it was authored as T-P0CH.'
+definition_gap: 'v6-to-v7 migration flagged ambiguous Files-to-touch section(s): Files to touch (renamed to Areas) was not a well-formed 3-column table — content preserved verbatim under the new heading; reshape into `| Area | Note |` by hand if desired (no longer required)'
 ---
 # Generated list handlers push limit and offset into the store
 
@@ -83,7 +84,7 @@ For a paginated module:
    unchanged. Snapshot in `src/snapshots.rs` for the new `count_<plural>` store
    method.
 
-## Files to touch
+## Areas
 
 `src/api/gen_crud.rs`, `src/api/mod.rs`, `src/store/backends/seaorm/gen_crud.rs`,
 `src/store/backends/markdown/gen_crud.rs`, `src/servers/classify.rs`,

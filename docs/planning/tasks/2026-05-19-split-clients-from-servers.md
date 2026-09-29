@@ -1,13 +1,12 @@
 ---
 type: task
-schema_version: '2'
-status: closed/done
-created: '2026-05-19'
-last_reviewed: '2026-05-20'
-readiness_verified_at: '2026-05-20T04:25:53Z'
-impact: medium
-complexity: medium
-autonomy: supervised
+schema_version: '9'
+state: closed/done
+created: 2026-05-19
+last_reviewed: 2026-05-20
+related:
+- OF-015
+- OF-022
 tags:
 - architecture
 - refactor
@@ -15,9 +14,9 @@ tags:
 - servers
 - breaking-change
 - ts-pipeline
-related:
-- OF-015
-- OF-022
+impact: medium
+complexity: medium
+autonomy: supervised
 completion_note: |
   Shipped via #69 (merge e9df71f, 2026-05-20). All 12 ACs verified —
   src/clients/ exists as a sibling module to src/servers/ with four
@@ -46,6 +45,7 @@ completion_note: |
   Pumice next: bump rust-ontogen git pin past this merge, then
   migrate src-tauri/Cargo.toml + build.rs to ClientsConfig in a
   coordinated PR (Pumice maintainer's normal cadence).
+readiness_verified_at: 2026-05-20T04:25:53Z
 ---
 # Split client SDK generation out of the `servers` module
 

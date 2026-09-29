@@ -1,14 +1,14 @@
 ---
 type: task
-schema_version: '3'
-status: planning/draft
-created: '2026-05-24'
-impact: medium
-complexity: small
-last_reviewed: '2026-05-24'
-tags: []
+schema_version: '9'
+state: planning/draft
+created: 2026-05-24
+last_reviewed: 2026-05-24
 related:
 - 2026-05-24-ontogen-ts-configurable-string-literal-quote-style
+tags: []
+impact: medium
+complexity: small
 ---
 # task-work Step 3a baseline capture needs explicit sandbox permission grant
 
@@ -40,11 +40,11 @@ Project `.claude/settings.local.json` carries an explicit allow entry for `${CLA
 2. Add the chosen entries to `.claude/settings.local.json` under `permissions.allow`.
 3. Verify by running `/sdlc:task-work` against the next available task and confirming Step 3a's `Baseline captured at <sha>: N pre-existing findings` line surfaces without prompting.
 
-## Files to touch
+## Areas
 
-| Location | Kind | Change |
-|---|---|---|
-| `.claude/settings.local.json` | modify | add allow entries for the task-work plugin scripts so Step 3a baseline capture (and the other helper shell-outs) run without per-invocation prompts. |
+| Area | Note |
+|---|---|
+| `.claude/settings.local.json` | add allow entries for the task-work plugin scripts so Step 3a baseline capture (and the other helper shell-outs) run without per-invocation prompts. |
 
 ## Acceptance criteria
 
