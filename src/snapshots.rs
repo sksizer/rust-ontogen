@@ -202,10 +202,11 @@ fn store_crud_complex_entity() {
 fn a_sql_list_orders_before_it_takes_a_page() {
     // `LIMIT`/`OFFSET` over no `ORDER BY` has no defined row order — the engine
     // may answer the same query differently each time, so page 2 can repeat a
-    // row page 1 already returned and skip another entirely. The markdown
-    // backend never had this problem, because its vault listing is sorted by
-    // record id, which meant identical generated code meant two different
-    // things by "page 2" depending on the backend underneath it.
+    // row page 1 already returned and skip another entirely.
+    //
+    // This pins determinism within the SQL backend only. It deliberately does
+    // not claim parity with a markdown page: collation decides text order in
+    // SQL, and the vault sorts by record path rather than id.
     let code = generate_store_file(&article_mtm_tags_entity());
     assert!(code.contains("QueryOrder"), "the ordering trait is in scope:\n{code}");
 
@@ -216,6 +217,41 @@ fn a_sql_list_orders_before_it_takes_a_page() {
     let order_at = body.find(".order_by_asc(").expect("an order_by");
     let limit_at = body.find(".limit(").expect("a limit");
     assert!(order_at < limit_at, "the order is established before the page is taken:\n{body}");
+}
+
+#[test]
+fn every_generated_sql_multi_row_select_is_ordered() {
+    // A `has_many` field is loaded by its own `find().filter(..)`, which is as
+    // order-free as the list was. Leaving it unordered reshuffles the field
+    // between calls, and the markdown backend returns it vault-sorted, so it
+    // is the same "identical code, two behaviours" split — just one altitude
+    // down. The count is exempt: a row count does not depend on row order.
+    let code = generate_store_file(&node_has_many_entity());
+
+    let mut checked = 0;
+    for (i, _) in code.match_indices("Entity::find()") {
+        let after = &code[i..];
+        let all_at = after.find(".all(");
+        let count_at = after.find(".count(");
+        // A count is exempt — a row count does not depend on row order. The
+        // chain is a count when `.count(` closes it before any `.all(` does;
+        // bounding the search at the terminator matters, or a later query's
+        // `order_by_asc` is found and the assert passes for the wrong reason.
+        let is_count = match (all_at, count_at) {
+            (Some(a), Some(c)) => c < a,
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if is_count {
+            continue;
+        }
+        let stmt = &after[..all_at.expect("a multi-row chain terminates in .all(")];
+        assert!(stmt.contains(".order_by_asc("), "this SELECT returns rows with no ordering:\n{stmt}");
+        checked += 1;
+    }
+    // Node has a `has_many` field, so there is the list and the relation load.
+    // Without this the loop could pass by never running.
+    assert_eq!(checked, 2, "expected to check the list and the has_many load");
 }
 
 /// Self-referential `has_many` entity (the in-tree set_parent shape):
