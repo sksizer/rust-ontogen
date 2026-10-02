@@ -73,6 +73,17 @@ test-admin-layer:
 # iron-log is a Tauri app: on Linux it needs the GTK/WebKit -dev packages the
 # Examples workflow installs. It builds as-is on macOS.
 #
+# This list is duplicated by the matrix in .github/workflows/examples-ci.yml.
+# Adding an example means editing both. They are kept separate deliberately:
+# CI runs one job per example for parallelism and to gate the apt install on
+# the Tauri entry, neither of which survives being driven from here. If they
+# disagree, CI is the one that gates, and an example missing from this recipe
+# just means a slower path to discovering that.
+#
+# Note the one difference: CI builds with `--locked` so a stale lockfile fails
+# loudly, while this recipe deliberately does not, because refreshing those
+# lockfiles is part of what it is for.
+#
 # Rebuild every example's committed generator output, then commit what moves.
 regen-examples:
     cargo build --manifest-path examples/iron-log-md/Cargo.toml
