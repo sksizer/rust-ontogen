@@ -1,0 +1,24 @@
+[package]
+name = "ontogen-jsonapi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Runtime for ontogen's generated JSON:API HTTP server: documents, links, error documents, media-type negotiation and Axum extractors"
+license = "MIT"
+repository = "https://github.com/sksizer/rust-ontogen"
+keywords = ["jsonapi", "axum", "codegen", "rest"]
+categories = ["web-programming::http-server"]
+
+[lib]
+name = "ontogen_jsonapi"
+
+[dependencies]
+axum = { version = "0.8", default-features = false }
+serde = { version = "1", features = ["derive"] }
+# `raw_value` lets an included resource keep its attributes' member order
+# without a type parameter per resource type.
+serde_json = { version = "1", features = ["raw_value"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+tower = { version = "0.5", features = ["util"] }
