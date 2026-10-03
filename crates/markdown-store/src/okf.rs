@@ -81,21 +81,94 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// Bring `dir/index.md` in line with the records at and below `dir`:
-/// written when its bytes would change, removed when no record remains,
-/// left untouched otherwise.
+/// written when its bytes would change, left untouched otherwise. With no
+/// record left to list, an index the store generated is removed and any
+/// other `index.md` is left alone (see [`remove_if_generated`]).
 pub(crate) fn sync_index(dir: &Path, is_root: bool, walk: &WalkOptions) -> Result<(), Error> {
     let path = dir.join(INDEX_FILE);
-    let wanted = render_index(dir, is_root, walk)?;
-    let current = fsops::read_opt(&path)?;
-    match (wanted, current) {
-        (Some(wanted), Some(current)) if wanted == current => Ok(()),
-        (Some(wanted), _) => fsops::write_atomic(&path, &wanted),
-        (None, Some(_)) => match fsops::remove(&path) {
+    match render_index(dir, is_root, walk)? {
+        // An unreadable current file just reads as different: it is replaced.
+        Some(wanted) if fsops::read_opt(&path).ok().flatten().as_deref() == Some(wanted.as_str()) => Ok(()),
+        Some(wanted) => fsops::write_atomic(&path, &wanted),
+        None => remove_if_generated(&path, walk),
+    }
+}
+
+/// Remove `path` if it is an index the store generated, so a directory
+/// that loses its last record loses its index, while a hand-written
+/// `index.md` in a directory without records (an Obsidian folder note, an
+/// attachments listing) is never deleted. A file that cannot be read is
+/// not provably the store's and stays.
+pub(crate) fn remove_if_generated(path: &Path, walk: &WalkOptions) -> Result<(), Error> {
+    match fsops::read_opt(path) {
+        Ok(Some(current)) if is_store_generated(&current, walk) => match fsops::remove(path) {
             Err(Error::NotFound { .. }) => Ok(()),
             other => other,
         },
-        (None, None) => Ok(()),
+        _ => Ok(()),
     }
+}
+
+/// Whether `src` has exactly the shape [`render_index`] emits: optionally
+/// the root frontmatter (`okf_version: "0.2"` and nothing else), then one or
+/// more sections, each a `# <heading>` line, a blank line and one or more
+/// `* [<text>](<link>)` entries (optionally followed by ` - <description>`),
+/// sections separated by a single blank line, ending in one newline. A link
+/// must look like one the store writes: a percent-encoded file name with a
+/// record extension from `walk`, or a percent-encoded directory name and
+/// `/`. Anything else, an empty file included, is someone else's.
+pub(crate) fn is_store_generated(src: &str, walk: &WalkOptions) -> bool {
+    #[derive(Clone, Copy)]
+    enum Next {
+        Heading,
+        Gap,
+        Entry,
+        EntryOrGap,
+    }
+    let body = src.strip_prefix(ROOT_FRONTMATTER).unwrap_or(src);
+    let Some(body) = body.strip_suffix('\n') else { return false };
+    let mut next = Next::Heading;
+    for line in body.split('\n') {
+        next = match next {
+            Next::Heading if line.strip_prefix("# ").is_some_and(|h| !h.is_empty() && !h.starts_with(' ')) => Next::Gap,
+            Next::Gap if line.is_empty() => Next::Entry,
+            Next::Entry | Next::EntryOrGap if is_store_entry(line, walk) => Next::EntryOrGap,
+            Next::EntryOrGap if line.is_empty() => Next::Heading,
+            _ => return false,
+        };
+    }
+    matches!(next, Next::EntryOrGap)
+}
+
+/// One `* [<text>](<link>)` or `* [<text>](<link>) - <description>` line
+/// as the store writes it (see [`is_store_generated`]).
+fn is_store_entry(line: &str, walk: &WalkOptions) -> bool {
+    let Some(rest) = line.strip_prefix("* [") else { return false };
+    let mut chars = rest.char_indices();
+    let close = loop {
+        match chars.next() {
+            Some((_, '\\')) => {
+                chars.next();
+            }
+            Some((i, ']')) => break i,
+            Some((_, '[')) | None => return false,
+            Some(_) => {}
+        }
+    };
+    let Some(rest) = rest[close + 1..].strip_prefix('(') else { return false };
+    let Some(end) = rest.find(')') else { return false };
+    let (link, tail) = (&rest[..end], &rest[end + 1..]);
+    let encoded = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~%".contains(&b));
+    let link_ok = match link.strip_suffix('/') {
+        Some(dir) => encoded(dir),
+        None => {
+            encoded(link)
+                && link.rsplit_once('.').is_some_and(|(stem, ext)| {
+                    !stem.is_empty() && walk.extensions.iter().any(|want| want.eq_ignore_ascii_case(ext))
+                })
+        }
+    };
+    close > 0 && link_ok && (tail.is_empty() || tail.strip_prefix(" - ").is_some_and(|d| !d.is_empty()))
 }
 
 /// The `index.md` for `dir`, or `None` when no record lives at or below it.
@@ -238,6 +311,39 @@ mod tests {
         assert_eq!(encode_url("my note (draft).md"), "my%20note%20%28draft%29.md");
         assert_eq!(encode_url("a:b%.md"), "a%3Ab%25.md");
         assert_eq!(encode_url("é.md"), "%C3%A9.md");
+    }
+
+    #[test]
+    fn only_the_shape_the_store_writes_counts_as_store_generated() {
+        let walk = WalkOptions::default();
+        for ours in [
+            "# Note\n\n* [A](a.md)\n",
+            "---\nokf_version: \"0.2\"\n---\n\n# Directories\n\n* [notes](notes/)\n",
+            "# Note\n\n* [A \\] b](a.md) - why\n* [B](my%20b.markdown)\n\n# Untyped\n\n* [c](c.MD)\n",
+        ] {
+            assert!(is_store_generated(ours, &walk), "{ours:?}");
+        }
+        for theirs in [
+            "",
+            "# Note\n",
+            "# Note\n\n* [A](a.md)",
+            "# Note\n\n* [A](a.md)\n\n",
+            "# Note\n* [A](a.md)\n",
+            "# Note\n\n* [A](a.md)\n\n\n# More\n\n* [B](b.md)\n",
+            "# Note\n\nA folder note.\n",
+            "## Note\n\n* [A](a.md)\n",
+            "# Note\n\n- [A](a.md)\n",
+            "# Note\n\n* [A](a.md) trailing\n",
+            "# Note\n\n* [A](a.md) - \n",
+            "# Files\n\n* [Diagram](diagram.png)\n",
+            "# Note\n\n* [A](../a.md)\n",
+            "# Note\n\n* [A](<a b.md>)\n",
+            "# Note\n\n* [](a.md)\n",
+            "---\nokf_version: \"0.2\"\nauthor: me\n---\n\n# Note\n\n* [A](a.md)\n",
+            "---\ntitle: x\n---\n# Note\n\n* [A](a.md)\n",
+        ] {
+            assert!(!is_store_generated(theirs, &walk), "{theirs:?}");
+        }
     }
 
     #[test]

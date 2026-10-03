@@ -50,8 +50,11 @@ type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 ///   write (a create, an update that changed something, a delete) the
 ///   record's directory and each ancestor up to the root are regenerated
 ///   under the write lock, each written atomically and only when its bytes
-///   would change; an index whose directory no longer holds a record is
-///   removed. Regenerating one index parses the records directly in its
+///   would change. The store owns the `index.md` of every directory that
+///   holds records: whatever is there is overwritten. When a directory
+///   loses its last record its index is removed, but only if the store
+///   generated it; an `index.md` of any other shape is left alone (the
+///   exact rule is under [`rebuild_indexes`](Self::rebuild_indexes)). Regenerating one index parses the records directly in its
 ///   directory and walks each subdirectory only until its first record. A
 ///   write regenerates its directory and every ancestor, so it parses the
 ///   records that sit directly in each directory on that path; under
@@ -153,8 +156,10 @@ impl VaultHandle {
     /// records, regenerated on each real write (see
     /// [OKF options](Self#okf-options)). Turning it on does not touch the
     /// vault by itself: [`rebuild_indexes`](Self::rebuild_indexes) writes
-    /// the indexes of records that already exist. A hand-written `index.md`
-    /// in a directory the store writes to is replaced.
+    /// the indexes of records that already exist. The store owns the
+    /// `index.md` of every directory holding records and overwrites a
+    /// hand-written one there; an `index.md` in a directory without records
+    /// is removed only if the store generated it.
     pub fn with_okf_index(mut self, on: bool) -> Self {
         self.okf_index = on;
         self
@@ -424,8 +429,21 @@ impl VaultHandle {
     // ── OKF indexes ─────────────────────────────────────────────────────
 
     /// Regenerate every OKF `index.md` in the vault from the records on
-    /// disk, and remove each `index.md` whose directory holds no record.
-    /// Indexes whose bytes would not change are not rewritten.
+    /// disk, and remove each index the store generated whose directory no
+    /// longer holds a record. Indexes whose bytes would not change are not
+    /// rewritten.
+    ///
+    /// An `index.md` counts as store-generated only when it has exactly the
+    /// shape the store writes: optionally the root frontmatter
+    /// (`okf_version: "0.2"` and nothing else), then one or more sections,
+    /// each a `# <heading>` line, a blank line and one or more
+    /// `* [<text>](<link>)` entries, each optionally followed by
+    /// ` - <description>`, with one blank line between sections and a
+    /// single trailing newline; every link a percent-encoded record file
+    /// name (an extension from the walk options) or a percent-encoded
+    /// directory name ending in `/`. Any other `index.md` in a directory
+    /// without records (an Obsidian folder note, a hand-kept listing of
+    /// attachments) is left alone.
     ///
     /// This is the repair path after a crash or an edit made outside the
     /// handle, and how a seed vault's indexes are produced. It runs
@@ -468,10 +486,7 @@ impl VaultHandle {
         }
         for index in walk::list_index_paths(&self.root, &self.walk)? {
             if index.parent().is_some_and(|dir| !dirs.contains(dir)) {
-                match fsops::remove(&index) {
-                    Ok(()) | Err(Error::NotFound { .. }) => {}
-                    Err(e) => return Err(e),
-                }
+                okf::remove_if_generated(&index, &self.walk)?;
             }
         }
         self.stale.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
@@ -1211,6 +1226,26 @@ mod tests {
         assert_eq!(file(root, "index.md"), None, "an empty vault has no index");
     }
 
+    #[test]
+    fn the_store_overwrites_any_index_beside_records_and_removes_only_its_own() {
+        let (dir, vault) = indexed(VaultLayout::PerEntityDir);
+        let root = dir.path();
+        let tasks = vault.entity("tasks", "Task");
+        let note = "# My tasks\n\nA folder note, kept by hand.\n";
+        fsops::write_atomic(&root.join("tasks/index.md"), note).unwrap();
+        tasks.create(Some("t"), None, titled("T", None)).unwrap();
+        assert_eq!(
+            file(root, "tasks/index.md").unwrap(),
+            "# Task\n\n* [T](t.md)\n",
+            "beside records the store owns it"
+        );
+
+        fsops::write_atomic(&root.join("tasks/index.md"), note).unwrap();
+        tasks.remove("t").unwrap();
+        assert_eq!(file(root, "tasks/index.md").unwrap(), note, "without records a hand-written index stays");
+        assert_eq!(file(root, "index.md"), None, "the root's generated index goes with its last record");
+    }
+
     #[cfg(unix)]
     #[test]
     fn writes_leave_unchanged_indexes_and_noop_updates_leave_everything_alone() {
@@ -1262,14 +1297,18 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_indexes_nested_directories_and_removes_stale_ones() {
+    fn rebuild_indexes_nested_directories_and_removes_only_its_own_stale_ones() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let vault = VaultHandle::new(root, VaultLayout::PerEntityDir, IdStrategy::Provided);
         seed(&vault, "notes", "top", "---\ntype: Note\ntitle: Top\n---\n");
         fsops::write_atomic(&root.join("notes/deep/er/leaf.md"), "---\ntype: Note\n---\n").unwrap();
         fsops::write_atomic(&root.join("notes/.hidden/secret.md"), "---\ntype: Note\n---\n").unwrap();
-        fsops::write_atomic(&root.join("gone/index.md"), "# Stale\n").unwrap();
+        fsops::write_atomic(&root.join("gone/index.md"), "# Note\n\n* [Old](old.md)\n").unwrap();
+        let folder_note = "# Attachments\n\nDiagrams for the notes.\n";
+        fsops::write_atomic(&root.join("attachments/index.md"), folder_note).unwrap();
+        let listing = "# Attachments\n\n* [Diagram](diagram.png)\n";
+        fsops::write_atomic(&root.join("figures/index.md"), listing).unwrap();
         fsops::write_atomic(&root.join("notes/my notes (old).md"), "no frontmatter at all\n").unwrap();
         assert_eq!(file(root, "index.md"), None, "indexes off: a seeded vault gets none on its own");
 
@@ -1282,7 +1321,9 @@ mod tests {
         assert_eq!(file(root, "notes/deep/index.md").unwrap(), "# Directories\n\n* [er](er/)\n");
         assert_eq!(file(root, "notes/deep/er/index.md").unwrap(), "# Note\n\n* [leaf](leaf.md)\n");
         assert_eq!(file(root, "notes/.hidden/index.md"), None, "walk options apply: hidden directories are skipped");
-        assert_eq!(file(root, "gone/index.md"), None, "an index without records below it is removed");
+        assert_eq!(file(root, "gone/index.md"), None, "a generated index without records below it is removed");
+        assert_eq!(file(root, "attachments/index.md").unwrap(), folder_note, "a hand-written note is not the store's");
+        assert_eq!(file(root, "figures/index.md").unwrap(), listing, "nor is a listing of non-records");
         assert!(file(root, "index.md").unwrap().ends_with("# Directories\n\n* [notes](notes/)\n"));
     }
 
