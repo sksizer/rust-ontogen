@@ -568,6 +568,7 @@ mod tests {
             table: "roles".to_string(),
             type_name: "role".to_string(),
             prefix: "role".to_string(),
+            id_strategy: None,
             fields: vec![
                 FieldDef::new("id", FieldType::String, FieldRole::Id),
                 FieldDef::new("body", FieldType::String, FieldRole::Body),
@@ -583,6 +584,7 @@ mod tests {
             table: "nodes".to_string(),
             type_name: "node".to_string(),
             prefix: "node".to_string(),
+            id_strategy: None,
             fields: vec![
                 FieldDef::new("id", FieldType::String, FieldRole::Id),
                 FieldDef::new("name", FieldType::String, FieldRole::Plain),

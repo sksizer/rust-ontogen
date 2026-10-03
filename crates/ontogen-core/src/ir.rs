@@ -137,16 +137,19 @@ pub enum MarkdownLayout {
 /// A derived id that is taken, or reserved, is probed as `-2`, `-3`, … .
 /// With no id to use, a create returns `AppError::{Entity}IdRequired`.
 ///
+/// There is no default: the store-wide strategy (`StoreConfig::id_strategy`)
+/// is always chosen explicitly, and an entity's
+/// `#[ontology(entity, id = "...")]` overrides it for that entity.
+///
 /// Mirrors the markdown runtime crate's `IdStrategy`, which the markdown
 /// store emits literally (the runtime crate stays free of ontogen
 /// dependencies).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdStrategy {
     /// The caller must supply the id.
-    #[default]
     Provided,
     /// Slugify the value of the named field (e.g. `title`), which must be a
-    /// `String` field on every entity.
+    /// plain `String` field on every entity the strategy applies to.
     SlugFromField(String),
     /// A fresh UUID v4. A SeaORM store needs `ontogen-core`'s `uuid` feature,
     /// a markdown store `markdown-store`'s.

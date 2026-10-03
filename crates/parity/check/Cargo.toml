@@ -11,9 +11,7 @@ publish = false
 
 [dev-dependencies]
 parity-markdown = { path = "../markdown" }
-parity-markdown-provided = { path = "../markdown-provided" }
 parity-seaorm = { path = "../seaorm" }
-parity-seaorm-provided = { path = "../seaorm-provided" }
 serde = "1"
 serde_json = "1"
 tempfile = "3"

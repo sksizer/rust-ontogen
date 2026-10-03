@@ -33,6 +33,7 @@ impl Store {
         let mut options = sea_orm::ConnectOptions::new("sqlite::memory:");
         options.max_connections(1).min_connections(1).sqlx_logging(false);
         let db = Database::connect(options).await.map_err(db_error)?;
+        create_table(&db, tables::fixed::Entity).await?;
         create_table(&db, tables::item::Entity).await?;
         create_table(&db, tables::tag::Entity).await?;
         create_table(&db, tables::item_tags::Entity).await?;

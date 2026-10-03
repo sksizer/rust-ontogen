@@ -501,6 +501,7 @@ mod tests {
             table: "nodes".into(),
             type_name: "node".into(),
             prefix: "node".into(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -677,6 +678,7 @@ mod tests {
             table: "tasks".into(),
             type_name: "task".into(),
             prefix: "task".into(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -739,6 +741,7 @@ mod tests {
             table: "contracts".into(),
             type_name: "contract".into(),
             prefix: "contract".into(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {

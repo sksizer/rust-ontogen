@@ -246,6 +246,7 @@ mod tests {
             table: "tasks".to_string(),
             type_name: "Task".to_string(),
             prefix: "task".to_string(),
+            id_strategy: None,
             fields: vec![
                 FieldDef::new("id", FieldType::String, FieldRole::Id),
                 FieldDef::new("title", FieldType::String, FieldRole::Plain),

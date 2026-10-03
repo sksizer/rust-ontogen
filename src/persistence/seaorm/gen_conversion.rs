@@ -360,6 +360,7 @@ mod tests {
             table: "agents".to_string(),
             type_name: "agent".to_string(),
             prefix: "agent".to_string(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -451,6 +452,7 @@ mod tests {
             table: "nodes".to_string(),
             type_name: "node".to_string(),
             prefix: "node".to_string(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -546,6 +548,7 @@ mod tests {
             table: "requirements".to_string(),
             type_name: "requirement".to_string(),
             prefix: "req".to_string(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -600,6 +603,7 @@ mod tests {
             table: "specifications".to_string(),
             type_name: "specification".to_string(),
             prefix: "spec".to_string(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -652,6 +656,7 @@ mod tests {
             table: "tests".to_string(),
             type_name: "test".to_string(),
             prefix: "test".to_string(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -775,6 +780,7 @@ mod tests {
             table: "counters".to_string(),
             type_name: "counter".to_string(),
             prefix: "counter".to_string(),
+            id_strategy: None,
             fields,
             doc: String::new(),
         }

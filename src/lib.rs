@@ -574,9 +574,11 @@ pub struct StoreConfig {
     /// crate.
     pub wikilink_policy: Option<WikilinkPolicy>,
     /// How `create_*` fills the id of a record created without one, on
-    /// either backend. The generated store checks it at generation time
-    /// (`SlugFromField` must name a `String` field on every entity) and
-    /// carries it into every create; nothing else configures it.
+    /// either backend: the default for every entity without its own
+    /// `#[ontology(entity, id = "...")]` ([`EntityDef::id_strategy`]). The
+    /// generated store checks each entity's strategy at generation time
+    /// (`SlugFromField` must name a plain `String` field of the entity) and
+    /// carries it into that entity's create; nothing else configures it.
     ///
     /// A SeaORM store's generated code calls `ontogen_core::id` at runtime,
     /// so the consumer depends on `ontogen-core` (with its `uuid` feature

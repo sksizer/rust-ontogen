@@ -70,7 +70,7 @@ trait Backend: Sized {
 /// The generated method calls are spelled identically in both crates, so
 /// one body serves both; only the crates and the catch-all variant differ.
 macro_rules! store_methods {
-    ($krate:ident, $provided:ident, $other:ident) => {
+    ($krate:ident, $other:ident) => {
         async fn create_item(&self, item: Value) -> R<Value> {
             let item = serde_json::from_value(item).expect("an Item");
             self.store.create_item(item).await.map(to_json).map_err(err)
@@ -109,22 +109,25 @@ macro_rules! store_methods {
         }
         async fn create_fixed(&self, fixed: Value) -> R<Value> {
             let fixed = serde_json::from_value(fixed).expect("a Fixed");
-            self.provided.create_fixed(fixed).await.map(to_json).map_err(provided_err)
+            self.store.create_fixed(fixed).await.map(to_json).map_err(err)
         }
         async fn get_fixed(&self, id: &str) -> R<Value> {
-            self.provided.get_fixed(id).await.map(to_json).map_err(provided_err)
+            self.store.get_fixed(id).await.map(to_json).map_err(err)
         }
         async fn count_fixeds(&self) -> R<u64> {
-            self.provided.count_fixeds().await.map_err(provided_err)
+            self.store.count_fixeds().await.map_err(err)
         }
     };
 }
 
 macro_rules! error_mappers {
-    ($krate:ident, $provided:ident, $other:ident) => {
+    ($krate:ident, $other:ident) => {
         fn err(e: $krate::schema::AppError) -> StoreError {
             use $krate::schema::AppError as E;
             match e {
+                E::FixedNotFound(id) => StoreError::NotFound("Fixed", id),
+                E::FixedIdRequired(r) => StoreError::IdRequired("Fixed", r),
+                E::FixedAlreadyExists(id) => StoreError::AlreadyExists("Fixed", id),
                 E::ItemNotFound(id) => StoreError::NotFound("Item", id),
                 E::ItemIdRequired(r) => StoreError::IdRequired("Item", r),
                 E::ItemAlreadyExists(id) => StoreError::AlreadyExists("Item", id),
@@ -135,16 +138,6 @@ macro_rules! error_mappers {
                 E::TagNotFound(id) => StoreError::NotFound("Tag", id),
                 E::TagIdRequired(r) => StoreError::IdRequired("Tag", r),
                 E::TagAlreadyExists(id) => StoreError::AlreadyExists("Tag", id),
-                E::$other(msg) => StoreError::Backend(msg),
-            }
-        }
-
-        fn provided_err(e: $provided::schema::AppError) -> StoreError {
-            use $provided::schema::AppError as E;
-            match e {
-                E::FixedNotFound(id) => StoreError::NotFound("Fixed", id),
-                E::FixedIdRequired(r) => StoreError::IdRequired("Fixed", r),
-                E::FixedAlreadyExists(id) => StoreError::AlreadyExists("Fixed", id),
                 E::$other(msg) => StoreError::Backend(msg),
             }
         }
@@ -160,32 +153,27 @@ mod sqlite {
 
     pub struct Sqlite {
         store: parity_seaorm::Store,
-        provided: parity_seaorm_provided::Store,
     }
 
     impl Backend for Sqlite {
         const NAME: &'static str = "seaorm";
 
         async fn open() -> Self {
-            Self {
-                store: parity_seaorm::Store::open_in_memory().await.expect("sqlite"),
-                provided: parity_seaorm_provided::Store::open_in_memory().await.expect("sqlite"),
-            }
+            Self { store: parity_seaorm::Store::open_in_memory().await.expect("sqlite") }
         }
 
-        store_methods!(parity_seaorm, parity_seaorm_provided, DbError);
+        store_methods!(parity_seaorm, DbError);
     }
 
-    error_mappers!(parity_seaorm, parity_seaorm_provided, DbError);
+    error_mappers!(parity_seaorm, DbError);
 }
 
 mod vault {
     use super::*;
 
     pub struct Vault {
-        _dirs: [tempfile::TempDir; 2],
+        _dir: tempfile::TempDir,
         store: parity_markdown::Store,
-        provided: parity_markdown_provided::Store,
     }
 
     impl Backend for Vault {
@@ -193,19 +181,15 @@ mod vault {
 
         async fn open() -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
-            let provided_dir = tempfile::tempdir().expect("tempdir");
             let store =
                 parity_markdown::Store::new(parity_markdown::persistence::markdown::generated::open_vault(dir.path()));
-            let provided = parity_markdown_provided::Store::new(
-                parity_markdown_provided::persistence::markdown::generated::open_vault(provided_dir.path()),
-            );
-            Self { _dirs: [dir, provided_dir], store, provided }
+            Self { _dir: dir, store }
         }
 
-        store_methods!(parity_markdown, parity_markdown_provided, Md);
+        store_methods!(parity_markdown, Md);
     }
 
-    error_mappers!(parity_markdown, parity_markdown_provided, Md);
+    error_mappers!(parity_markdown, Md);
 }
 
 use sqlite::Sqlite;

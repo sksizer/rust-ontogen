@@ -164,6 +164,7 @@ mod tests {
             table: "nodes".to_string(),
             type_name: "Node".to_string(),
             prefix: "node".to_string(),
+            id_strategy: None,
             fields: vec![
                 FieldDef::new("id", FieldType::String, FieldRole::Id),
                 FieldDef::new(

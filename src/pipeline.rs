@@ -14,6 +14,7 @@
 //! ontogen::Pipeline::new("src/schema")
 //!     .seaorm("src/persistence/entities", "src/persistence/conversions")
 //!     .store("src/store/generated", Some("src/store/hooks"))
+//!     .store_id_strategy(ontogen::IdStrategy::Provided)
 //!     .api("src/api/v1/generated", "AppState")
 //!     .build()
 //!     .expect("ontogen pipeline failed");
@@ -36,7 +37,9 @@
 //!   and `ApiConfig` defaults).
 //! - `api(state_type)` is required - there's no universal default for the
 //!   AppState type, so the builder asks for it explicitly.
-//! - `store_id_strategy` defaults to `IdStrategy::Provided`.
+//! - `store_id_strategy` has no default: with the store stage enabled,
+//!   `build()` fails until it is set. It is the strategy of every entity
+//!   without its own `#[ontology(entity, id = "...")]`.
 //! - `store_type` (used by `api` and `servers`) defaults to `Some("Store")` once
 //!   the store stage is enabled, otherwise `None`.
 //! - All optional stages (docs, seaorm, markdown_io, dtos, store, api, servers)
@@ -56,6 +59,11 @@ use crate::{
 /// Default store type name used for the `api` and `servers` stages once a
 /// store stage has been registered.
 const DEFAULT_STORE_TYPE: &str = "Store";
+
+const MISSING_ID_STRATEGY: &str = "the store stage needs a default id strategy: call \
+     Pipeline::store_id_strategy(IdStrategy::Provided | IdStrategy::SlugFromField(\"<field>\".into()) | \
+     IdStrategy::Uuid). It is required even when every entity sets #[ontology(entity, id = \"...\")], \
+     which overrides it per entity";
 
 // ── Per-stage staged config ─────────────────────────────────────────
 
@@ -154,7 +162,7 @@ pub struct Pipeline {
     dtos: Option<DtoStage>,
     store: Option<StoreStage>,
     store_backend: Option<StoreBackendChoice>,
-    store_id_strategy: IdStrategy,
+    store_id_strategy: Option<IdStrategy>,
     api: Option<ApiStage>,
     servers: Option<ServersStage>,
     clients: Option<ClientsStage>,
@@ -175,7 +183,7 @@ impl Pipeline {
             dtos: None,
             store: None,
             store_backend: None,
-            store_id_strategy: IdStrategy::Provided,
+            store_id_strategy: None,
             api: None,
             servers: None,
             clients: None,
@@ -285,11 +293,12 @@ impl Pipeline {
     }
 
     /// Set how the generated store fills the id of a record created without
-    /// one ([`StoreConfig::id_strategy`]), on either backend. Defaults to
-    /// [`IdStrategy::Provided`]: the caller supplies every id.
+    /// one ([`StoreConfig::id_strategy`]), on either backend. Required with
+    /// the store stage: there is no default. An entity's
+    /// `#[ontology(entity, id = "...")]` overrides it for that entity.
     #[must_use]
     pub fn store_id_strategy(mut self, strategy: IdStrategy) -> Self {
-        self.store_id_strategy = strategy;
+        self.store_id_strategy = Some(strategy);
         self
     }
 
@@ -466,6 +475,12 @@ impl Pipeline {
     /// Returns on the first error, with the originating stage's variant of
     /// [`CodegenError`].
     pub fn build(self) -> Result<(), CodegenError> {
+        // Checked before any stage writes, and even when every entity
+        // overrides it: the default is what a newly added entity gets.
+        if self.store.is_some() && self.store_id_strategy.is_none() {
+            return Err(CodegenError::Store(MISSING_ID_STRATEGY.into()));
+        }
+
         // Stage 1: parse schema (always)
         let schema: SchemaOutput = parse_schema(&SchemaConfig { schema_dir: self.schema_dir.clone() })?;
 
@@ -518,7 +533,9 @@ impl Pipeline {
         // Stage 3: store. The backend is the configured persistence stage;
         // with both enabled, `store_backend(...)` must disambiguate.
         let store_enabled = self.store.is_some();
-        if let Some(stage) = self.store {
+        if let Some(stage) = self.store
+            && let Some(id_strategy) = self.store_id_strategy
+        {
             let backend = match (self.store_backend, seaorm_out, markdown_out) {
                 (Some(StoreBackendChoice::Seaorm), seaorm, _) => Backend::Seaorm(seaorm),
                 (Some(StoreBackendChoice::Markdown), _, Some(md)) => Backend::Markdown(md),
@@ -553,7 +570,7 @@ impl Pipeline {
                     schema_module_path: self.schema_module_path.clone(),
                     backend,
                     wikilink_policy: None,
-                    id_strategy: self.store_id_strategy,
+                    id_strategy,
                 },
             )?;
         }

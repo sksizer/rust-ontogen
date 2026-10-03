@@ -26,6 +26,7 @@ pub struct Workout {
 | `directory` | No | snake_case of struct name | Subdirectory for Markdown files (e.g., `"workouts"`). Used by `gen_markdown_io()`. |
 | `type_name` | No | the struct name (e.g., `"Workout"`) | The `type:` value the markdown backend writes as the first frontmatter key of every record. Overrides the default (e.g., `"workout"`). |
 | `prefix` | No | snake_case of struct name | ID prefix for global uniqueness (e.g., `"wkt"`). Useful when IDs are prefixed like `wkt-abc123`. |
+| `id` | No | the store's [`IdStrategy`](/reference/configuration/#idstrategy) | How the store fills the id of a record of this entity created without one: `"provided"`, `"uuid"` or `"slug(<field>)"`. See [Id strategy](#id-strategy). |
 
 ### Minimal form
 
@@ -40,6 +41,28 @@ pub struct Exercise {
 ```
 
 When `directory` and `prefix` are omitted they default to the snake_case version of the struct name (e.g., `"exercise"` for `Exercise`). `type_name` defaults to the struct name as written (`"Exercise"`).
+
+### Id strategy
+
+`id = "..."` overrides the store-wide [`IdStrategy`](/reference/configuration/#idstrategy) (`Pipeline::store_id_strategy`) for one entity, on either backend:
+
+```rust
+#[derive(OntologyEntity)]
+#[ontology(entity, directory = "events", id = "uuid")]
+pub struct Event {
+    #[ontology(id)]
+    pub id: String,
+    pub title: String,
+}
+```
+
+| Value | Strategy | A create without an id |
+|-------|----------|------------------------|
+| `"provided"` | `IdStrategy::Provided` | fails with `{Entity}IdRequired` |
+| `"uuid"` | `IdStrategy::Uuid` | gets a fresh UUID v4 |
+| `"slug(<field>)"` | `IdStrategy::SlugFromField("<field>")` | gets the slug of `<field>`, probing `-2`, `-3`, ... |
+
+The value must be one of these strings, spelled exactly (lowercase, no spaces), and `slug(<field>)` must name a plain `String` field of the same entity (not `Option<String>`). Anything else fails the build with a `CodegenError` that names the entity and lists the accepted forms. An entity without `id` uses the store's default, which is required even when every entity sets its own.
 
 ---
 

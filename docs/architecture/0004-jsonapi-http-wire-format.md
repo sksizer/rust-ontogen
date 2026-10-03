@@ -117,13 +117,18 @@ the rest of the custom-op wire. Both ship in 0.9.0.
 The store generator constructs each variant it uses, so consumer
 `AppError`s must declare them, as they already declare `{Entity}NotFound`.
 
-**One source of truth for the markdown `IdStrategy`.** Today it is set
-twice: in `build.rs` (`MarkdownIoOptions.id_strategy`) and again at runtime
-(`VaultHandle::new(…, IdStrategy::…)`, e.g. tasks-tracker `main.rs`). The
-build-time value wins. The generated store passes it to each create, and
-`VaultHandle::new` loses its `IdStrategy` parameter (phase 1a). The
-generator reads the build-time value already, to emit the slug source, so
-a runtime copy can only disagree with it.
+**One source of truth for the `IdStrategy`.** Today the markdown strategy
+is set twice: in `build.rs` (`MarkdownIoOptions.id_strategy`) and again at
+runtime (`VaultHandle::new(…, IdStrategy::…)`, e.g. tasks-tracker
+`main.rs`). The build-time value wins. The generated store passes it to
+each create, and `VaultHandle::new` loses its `IdStrategy` parameter
+(phase 1a). The generator reads the build-time value already, to emit the
+slug source, so a runtime copy can only disagree with it. The build-time
+source has two parts, both read by the generator: a required store-wide
+default (`StoreConfig::id_strategy`, `Pipeline::store_id_strategy`, with
+no implicit fallback) and an optional per-entity override in the schema,
+`#[ontology(entity, id = "provided" | "uuid" | "slug(<field>)")]`. Each
+entity's create uses its override, else the default, on both backends.
 
 **Strict media type.** Request bodies must be `application/vnd.api+json`,
 and `application/json` is `415`. A client still sending the old flat body

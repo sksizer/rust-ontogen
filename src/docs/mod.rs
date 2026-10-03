@@ -190,6 +190,7 @@ mod tests {
             table: "sets".to_string(),
             type_name: "set".to_string(),
             prefix: "set".to_string(),
+            id_strategy: None,
             fields: vec![FieldDef { doc: doc.to_string(), ..field("reps", FieldType::I32) }],
         };
 

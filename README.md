@@ -74,6 +74,7 @@ fn main() {
         schema_module_path: DEFAULT_SCHEMA_MODULE_PATH.into(),
         backend: Backend::Seaorm(Some(seaorm)),
         wikilink_policy: None,
+        id_strategy: IdStrategy::Provided,
     }).unwrap();
 
     // ... continue with gen_api, gen_servers, gen_clients as needed
@@ -87,6 +88,7 @@ defaults for you:
 ontogen::Pipeline::new("src/schema")
     .seaorm("src/persistence/entities/generated", "src/persistence/conversions/generated")
     .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
+    .store_id_strategy(ontogen::IdStrategy::Provided)
     .api("src/api/v1/generated", "AppState")
     .build()
     .expect("ontogen pipeline failed");

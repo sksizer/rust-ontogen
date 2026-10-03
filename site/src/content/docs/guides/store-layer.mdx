@@ -396,9 +396,20 @@ Without the `ORDER BY`, SQLite is free to return the rows in any order and a lis
 - An id that is empty or whitespace-only counts as absent. Any other id, whether it came from the client or from `before_create`, is used as given under every strategy.
 - A given id must satisfy the id rule: not empty, not whitespace-only, none of `/`, `\`, `:` or NUL, no leading `.`, no trailing `.` or space, and not `index` or `log` in any letter case (those two are reserved for the vault's own files). An invalid id fails with the backend's error (`DbError` on SeaORM, `Md` on markdown).
 - A given id that is already taken fails with `AppError::{Entity}AlreadyExists(id)`.
-- An absent id is derived from the store's `id_strategy`: `Provided` fails with `AppError::{Entity}IdRequired(reason)`; `SlugFromField(f)` slugifies the entity's `f` field (an empty slug is `{Entity}IdRequired`); `Uuid` generates a v4 UUID. A derived id that is taken, or reserved, is probed as `base-2`, `base-3`, and so on. On SeaORM, an insert of a derived id that loses a race to another writer moves on to the next suffix.
+- An absent id is derived from the entity's id strategy: `Provided` fails with `AppError::{Entity}IdRequired(reason)`; `SlugFromField(f)` slugifies the entity's `f` field (an empty slug is `{Entity}IdRequired`); `Uuid` generates a v4 UUID. A derived id that is taken, or reserved, is probed as `base-2`, `base-3`, and so on. On SeaORM, an insert of a derived id that loses a race to another writer moves on to the next suffix.
 
-The strategy is set once for the whole store with `Pipeline::store_id_strategy` or `StoreConfig::id_strategy` (see [Configuration](/reference/configuration/#idstrategy)). It applies to both backends. The SeaORM store calls `ontogen_core::id` at runtime, so a SeaORM consumer depends on `ontogen-core`, with the `uuid` feature for `IdStrategy::Uuid`. (A markdown consumer needs the `uuid` feature of `markdown-store` instead.)
+The strategy is chosen at build time, in two places. The store-wide default is required: `Pipeline::store_id_strategy` or `StoreConfig::id_strategy` (see [Configuration](/reference/configuration/#idstrategy)); a `Pipeline` with a store stage and no strategy fails to build. An entity overrides it in the schema with `#[ontology(entity, id = "provided" | "uuid" | "slug(<field>)")]` (see [Annotations](/reference/annotations/#id-strategy)):
+
+```rust
+// build.rs: every entity derives ids from its title...
+.store_id_strategy(IdStrategy::SlugFromField("title".into()))
+
+// src/schema/event.rs: ...except Event, which gets UUIDs.
+#[ontology(entity, directory = "events", id = "uuid")]
+pub struct Event { /* ... */ }
+```
+
+Both apply to both backends. The SeaORM store calls `ontogen_core::id` at runtime, so a SeaORM consumer depends on `ontogen-core`, with the `uuid` feature for `IdStrategy::Uuid`. (A markdown consumer needs the `uuid` feature of `markdown-store` instead.)
 
 Your `AppError` declares `{Entity}IdRequired(String)` and `{Entity}AlreadyExists(String)` for every entity:
 

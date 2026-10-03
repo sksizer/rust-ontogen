@@ -55,16 +55,6 @@ release = false
 publish = false
 
 [[package]]
-name = "parity-markdown-provided"
-release = false
-publish = false
-
-[[package]]
-name = "parity-seaorm-provided"
-release = false
-publish = false
-
-[[package]]
 name = "parity-check"
 release = false
 publish = false

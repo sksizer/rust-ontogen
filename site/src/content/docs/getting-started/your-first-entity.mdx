@@ -220,6 +220,7 @@ fn main() {
         )
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
+        .store_id_strategy(ontogen::IdStrategy::Provided)
         .api("src/api/v1/generated", "AppState")
         .servers(servers_config)
         .clients(clients_config)
@@ -232,7 +233,7 @@ fn main() {
 ```
 
 <Aside type="tip">
-  Method order on `Pipeline` doesn't matter -- `build()` always runs stages in the canonical order (`schema → seaorm → markdown_io → dtos → store → api → servers`) and threads each stage's output into the next. Skip a method to skip a stage. The builder also auto-applies `schema_module_path` defaults so you don't have to repeat them on `StoreConfig` and `ApiConfig`.
+  Method order on `Pipeline` doesn't matter -- `build()` always runs stages in the canonical order (`schema → seaorm → markdown_io → dtos → store → api → servers`) and threads each stage's output into the next. Skip a method to skip a stage. The builder also auto-applies `schema_module_path` defaults so you don't have to repeat them on `StoreConfig` and `ApiConfig`. The one store setting it does not default is the id strategy: `.store_id_strategy(IdStrategy::Provided)` makes the caller supply every id (see [Creating records](/guides/store-layer/#creating-records)).
 </Aside>
 
 If you'd rather see the explicit form (every generator function called by hand), that's covered in the [Build Script Setup](/guides/build-script-setup/) guide. Both shapes work identically -- `Pipeline` is just a wrapper.

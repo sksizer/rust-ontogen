@@ -352,6 +352,7 @@ mod tests {
             table: name.to_ascii_lowercase(),
             type_name: name.to_ascii_lowercase(),
             prefix: name.to_ascii_lowercase(),
+            id_strategy: None,
             fields,
             doc: String::new(),
         }

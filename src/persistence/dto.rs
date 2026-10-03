@@ -331,6 +331,7 @@ mod tests {
             table: "agents".to_string(),
             type_name: "agent".to_string(),
             prefix: "agent".to_string(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -425,6 +426,7 @@ mod tests {
             table: "todos".to_string(),
             type_name: "todo".to_string(),
             prefix: "todo".to_string(),
+            id_strategy: None,
             doc: String::new(),
 
             fields: vec![
@@ -493,6 +495,7 @@ mod tests {
             table: "roles".to_string(),
             type_name: "role".to_string(),
             prefix: "role".to_string(),
+            id_strategy: None,
             fields: vec![
                 FieldDef::new("id", FieldType::String, FieldRole::Id),
                 FieldDef::new("name", FieldType::String, FieldRole::Plain),
@@ -547,6 +550,7 @@ mod tests {
             table: "nodes".to_string(),
             type_name: "node".to_string(),
             prefix: "node".to_string(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -617,6 +621,7 @@ mod tests {
             table: "contracts".to_string(),
             type_name: "contract".to_string(),
             prefix: "contract".to_string(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -666,6 +671,7 @@ mod tests {
             table: "requirements".to_string(),
             type_name: "requirement".to_string(),
             prefix: "req".to_string(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {

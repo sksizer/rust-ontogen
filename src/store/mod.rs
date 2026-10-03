@@ -39,8 +39,8 @@ use crate::{CodegenError, StoreConfig};
 pub fn generate(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOutput, CodegenError> {
     // Resolve and validate up front so misconfiguration fails loudly before
     // any files are written.
-    validate_id_strategy(entities, &config.id_strategy).map_err(CodegenError::Store)?;
-    let backend = backends::for_backend(&config.backend, &config.id_strategy)?;
+    validate_id_strategies(entities, &config.id_strategy).map_err(CodegenError::Store)?;
+    let backend = backends::for_backend(&config.backend)?;
     backend.validate(entities).map_err(CodegenError::Store)?;
 
     let output_dir = &config.output_dir;
@@ -108,26 +108,38 @@ pub fn generate(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOut
     Ok(StoreOutput { methods: all_methods, scaffolded_hooks, change_channels: Vec::new() })
 }
 
-/// `SlugFromField` must name a non-optional `String` field on every entity:
-/// the generated create reads `{entity}.{field}` on either backend.
-fn validate_id_strategy(entities: &[EntityDef], strategy: &IdStrategy) -> Result<(), String> {
-    let IdStrategy::SlugFromField(field) = strategy else {
-        return Ok(());
-    };
+/// The id strategy `entity`'s create uses: its own
+/// `#[ontology(entity, id = "...")]`, else the store-wide default.
+fn effective_id_strategy<'a>(entity: &'a EntityDef, default: &'a IdStrategy) -> &'a IdStrategy {
+    entity.id_strategy.as_ref().unwrap_or(default)
+}
+
+/// `SlugFromField` must name a non-optional `String` field on every entity it
+/// applies to: the generated create reads `{entity}.{field}` on either
+/// backend. The default applies only to entities without an override.
+fn validate_id_strategies(entities: &[EntityDef], default: &IdStrategy) -> Result<(), String> {
     for entity in entities {
+        let IdStrategy::SlugFromField(field) = effective_id_strategy(entity, default) else {
+            continue;
+        };
+        let source = if entity.id_strategy.is_some() {
+            format!("`#[ontology(entity, id = \"slug({field})\")]` on entity `{}`", entity.name)
+        } else {
+            format!("the store default IdStrategy::SlugFromField({field:?}), which applies to entity `{}`", entity.name)
+        };
         match entity.fields.iter().find(|f| &f.name == field) {
             Some(f) if f.field_type == FieldType::String => {}
             Some(f) => {
                 return Err(format!(
-                    "IdStrategy::SlugFromField({field:?}): field `{field}` on entity `{}` must be a plain String, \
-                     found {:?}",
-                    entity.name, f.field_type
+                    "{source}: field `{field}` must be a plain String to derive ids from, found {:?}; \
+                     give the entity its own `#[ontology(entity, id = \"provided\" | \"uuid\" | \"slug(<field>)\")]`",
+                    f.field_type
                 ));
             }
             None => {
                 return Err(format!(
-                    "IdStrategy::SlugFromField({field:?}): entity `{}` has no field `{field}` to derive ids from",
-                    entity.name
+                    "{source}: the entity has no field `{field}` to derive ids from; give the entity its own \
+                     `#[ontology(entity, id = \"provided\" | \"uuid\" | \"slug(<field>)\")]`"
                 ));
             }
         }
@@ -176,7 +188,7 @@ fn generate_entity_store(backend: &dyn backends::StoreBackend, entity: &EntityDe
     gen_update::generate_from_create_input(&mut code, entity, policy);
 
     // CRUD impl block (with hook calls) — backend-specific bodies
-    backend.emit_crud_impl(&mut code, entity);
+    backend.emit_crud_impl(&mut code, entity, effective_id_strategy(entity, &config.id_strategy));
 
     code
 }
