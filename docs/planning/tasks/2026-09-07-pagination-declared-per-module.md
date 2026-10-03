@@ -1,9 +1,9 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-09-07'
-last_reviewed: '2026-09-20'
+last_reviewed: '2026-10-03'
 impact: medium
 complexity: small
 tags:
@@ -13,7 +13,8 @@ tags:
 related:
 - 2026-09-07-api-surfaces-with-own-store-accessor.md
 - 2026-09-07-pagination-pushdown-into-the-store.md
-relevance_note: Folded into #156 as ApiSurface::paginated_modules. Spec ported from the dev monorepo, where it was authored as T-7UGF.
+completion_note: |
+  Shipped folded into #156 (merged 2026-09-21, 0.7.0) as `ApiSurface::paginated_modules`; the admin registry marks only the named modules `paginated: true`.
 ---
 # Pagination declared per module, so the admin registry paginates only what needs it
 
