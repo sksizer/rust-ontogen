@@ -11,8 +11,8 @@
 //! schema-independent rules.
 //!
 //! The Axum extractors ([`extract`]) and responses ([`response`]) sit behind
-//! the default `axum` feature. Without it the crate is the core the
-//! build-time generator depends on: error codes, documents, media-type
+//! the default `axum` feature. Without it the crate is the core meant for
+//! the build-time generator: error codes, documents, media-type
 //! checks, query parsing, links and request documents, over the `http`
 //! types.
 //!

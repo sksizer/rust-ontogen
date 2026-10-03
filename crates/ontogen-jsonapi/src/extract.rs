@@ -72,9 +72,11 @@ fn announces_body(headers: &HeaderMap) -> bool {
 ///
 /// A typed parameter that fails to parse, including one that does not
 /// percent-decode to UTF-8, is `400 invalid_path_parameter` with no
-/// `source` (§11.1). A [`LookupKey`](crate::LookupKey) never fails: an
-/// `{id}` or `{rel}` that cannot name anything is the handler's `404` (§8.1),
-/// so read those as `Path<(Uuid, LookupKey)>`, say, not as `String`.
+/// `source` (§11.1). A [`LookupKey`](crate::LookupKey) never fails, so read
+/// an `{id}` or `{rel}` as `Path<(Uuid, LookupKey)>`, say, not as `String`.
+/// The handler answers the `404`: for a `{rel}` at §13.2 step 4, before the
+/// query and the body; for an `{id}` at step 9, where it calls the store
+/// (§8.1).
 ///
 /// The segments are read from the request path as sent, because Axum fails
 /// every parameter of a path when one does not decode. A route whose

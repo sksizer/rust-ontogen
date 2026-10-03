@@ -476,36 +476,45 @@ mod tests {
 
     #[test]
     fn all_lists_every_variant_once_in_table_order() {
-        // No wildcard: a new variant does not compile until it is given its
-        // position in §13.3's table here, and the assertion then requires
-        // it in `ALL` at that position.
-        let position = |code: ErrorCode| match code {
-            ErrorCode::InvalidQueryParameter => 0,
-            ErrorCode::InvalidSortField => 1,
-            ErrorCode::InvalidIncludePath => 2,
-            ErrorCode::InvalidPathParameter => 3,
-            ErrorCode::InvalidDocument => 4,
-            ErrorCode::UnknownAttribute => 5,
-            ErrorCode::MissingAttribute => 6,
-            ErrorCode::InvalidAttribute => 7,
-            ErrorCode::UnknownRelationship => 8,
-            ErrorCode::MissingRelationship => 9,
-            ErrorCode::RelationshipRequired => 10,
-            ErrorCode::RelationshipUpdateUnsupported => 11,
-            ErrorCode::RelationshipBatchUnsupported => 12,
-            ErrorCode::RelatedResourceNotFound => 13,
-            ErrorCode::RelationshipNotFound => 14,
-            ErrorCode::MethodNotAllowed => 15,
-            ErrorCode::NotAcceptable => 16,
-            ErrorCode::TypeMismatch => 17,
-            ErrorCode::IdMismatch => 18,
-            ErrorCode::ContentTooLarge => 19,
-            ErrorCode::UnsupportedMediaType => 20,
-            ErrorCode::InternalError => 21,
-        };
-        const VARIANTS: usize = 22;
-        let positions: Vec<usize> = ErrorCode::ALL.iter().map(|&code| position(code)).collect();
-        assert_eq!(positions, (0..VARIANTS).collect::<Vec<_>>());
+        // One list drives both an exhaustive match and the comparison with
+        // `ALL`: a new variant does not compile until it is listed here, and
+        // once listed the assertion requires it in `ALL` at the same position
+        // (§13.3's table order).
+        macro_rules! assert_all_in_order {
+            ($($v:ident),* $(,)?) => {{
+                #[allow(dead_code)]
+                fn listed(c: ErrorCode) {
+                    match c {
+                        $(ErrorCode::$v)|* => {}
+                    }
+                }
+                assert_eq!(ErrorCode::ALL.as_slice(), [$(ErrorCode::$v),*].as_slice());
+            }};
+        }
+        assert_all_in_order!(
+            InvalidQueryParameter,
+            InvalidSortField,
+            InvalidIncludePath,
+            InvalidPathParameter,
+            InvalidDocument,
+            UnknownAttribute,
+            MissingAttribute,
+            InvalidAttribute,
+            UnknownRelationship,
+            MissingRelationship,
+            RelationshipRequired,
+            RelationshipUpdateUnsupported,
+            RelationshipBatchUnsupported,
+            RelatedResourceNotFound,
+            RelationshipNotFound,
+            MethodNotAllowed,
+            NotAcceptable,
+            TypeMismatch,
+            IdMismatch,
+            ContentTooLarge,
+            UnsupportedMediaType,
+            InternalError,
+        );
     }
 
     #[cfg(feature = "axum")]

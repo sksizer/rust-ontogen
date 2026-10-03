@@ -604,6 +604,11 @@ client that overshoots steps straight back to real data. With `T = 45` and
 `L = 10`, `O = 45` gives `prev` offset 40. An offset inside the last page
 (`O = 42`) gives `prev` offset 32, the page just before it.
 
+No link carries an offset a client cannot request, that is, one above the
+`page[offset]` ceiling of `4294967295`. In a collection that large, `last`
+is capped at the last multiple of `L` at or below `4294967295`, and `next`
+is `null` when it would start beyond that.
+
 **Ordering.** Pages are cut from the ADR 0006 §3 order: the requested
 `sort`, then id ascending as the final tie-break, or id ascending alone.
 Page boundaries are therefore stable while the data is unchanged. Phase 1a

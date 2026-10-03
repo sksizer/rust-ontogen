@@ -16,8 +16,8 @@ name = "ontogen_jsonapi"
 default = ["axum"]
 # The Axum extractors and responses. Without it the crate is its
 # schema-independent core (error codes, documents, media-type checks, query
-# parsing, links, request documents) over the `http` types, which the
-# build-time generator depends on with `default-features = false`.
+# parsing, links, request documents) over the `http` types, for the
+# build-time generator to depend on with `default-features = false`.
 axum = ["dep:axum"]
 
 [dependencies]

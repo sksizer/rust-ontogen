@@ -41,11 +41,12 @@ alias fmt := format
 # Run clippy lints (whole workspace, all targets, so every member crate is gated).
 # markdown-store and ontogen-jsonapi get an extra no-default-features pass:
 # their feature-gated modules can hide dead code from the default-features
-# workspace lint, and the generator builds ontogen-jsonapi without `axum`.
+# workspace lint, and ontogen-jsonapi's core is meant to build without
+# `axum` for the build-time generator.
 lint:
     cargo clippy --workspace --all-targets -- --deny warnings
     cargo clippy -p markdown-store --no-default-features -- --deny warnings
-    cargo clippy -p ontogen-jsonapi --no-default-features -- --deny warnings
+    cargo clippy -p ontogen-jsonapi --no-default-features --all-targets -- --deny warnings
 
 # Run all code checks (matches CI: format-check + lint + tests)
 full-check: format-check lint test
@@ -58,6 +59,7 @@ alias fw := full-write
 # Run tests (whole workspace, so every member crate is gated)
 test: && test-admin-layer
     cargo test --workspace
+    cargo test -p ontogen-jsonapi --no-default-features
 
 # Run packages/nuxt_admin_layer's vitest suite (regression tests for the Nuxt
 # admin layer; the layer itself has no Nuxt app of its own to build inside,

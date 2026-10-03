@@ -15,10 +15,11 @@ pub(crate) const LOOKUP_KEY_TOKEN: &str = "$ontogen_jsonapi::LookupKey";
 /// A path parameter that names something to look up: a resource's `{id}`,
 /// or a relationship's `{rel}`.
 ///
-/// The contract never validates such a key (§8.1): one that names nothing
+/// The contract never validates an `{id}` (§8.1): one that names nothing
 /// is a `404` from the store, after every query and body check (§13.2 step
 /// 9), with the entity's own `{entity}_not_found` code, which only the
-/// handler knows. So a segment that does not percent-decode to UTF-8
+/// handler knows. A `{rel}` is different: it is checked at §13.2 step 4,
+/// before the query and the body. So a segment that does not percent-decode to UTF-8
 /// (`GET /api/tasks/%FF`) is not rejected when the path is read, as it is
 /// for a typed parameter. It is carried instead, [`as_str`](Self::as_str)
 /// is `None`, and the handler answers the `404` where it would have called
@@ -48,8 +49,9 @@ pub(crate) const LOOKUP_KEY_TOKEN: &str = "$ontogen_jsonapi::LookupKey";
 /// assert_eq!(lookup(&LookupKey::from("nope")), Err(AppError::TaskNotFound("nope".to_owned())));
 /// ```
 ///
-/// A `{rel}` that does not decode is likewise not a relationship of the
-/// type: `404 relationship_not_found` (§9).
+/// A `{rel}` that does not decode is not a relationship of the type: the
+/// handler answers `404 relationship_not_found` at §13.2 step 4, before the
+/// query and the body, not at step 9 as for an `{id}` (§9).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LookupKey(Key);
 
