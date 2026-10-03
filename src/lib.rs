@@ -176,8 +176,8 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 /// *Reserved frontmatter keys*); `#[ontology(frontmatter_name = "...")]`
 /// moves a field to another key.
 ///
-/// Returns [`MarkdownIoOutput`]: the vault configuration plus per-entity
-/// metadata. Pass it to [`gen_store`] via [`Backend::Markdown`] to route the
+/// Returns [`MarkdownIoOutput`]: the id strategy plus per-entity metadata.
+/// Pass it to [`gen_store`] via [`Backend::Markdown`] to route the
 /// generated CRUD layer at this persistence backend (ADR 0001).
 ///
 /// # Errors
@@ -507,9 +507,9 @@ pub struct SeaOrmConfig {
 ///
 /// The per-entity frontmatter modules land under a single output
 /// directory; downstream code imports them as one module. The vault fields
-/// describe the
-/// markdown store's runtime shape (ADR 0001) and flow into the returned
-/// [`MarkdownIoOutput`] that [`gen_store`] consumes via
+/// describe the markdown store's runtime shape (ADR 0001) and are baked
+/// into the generated `open_vault`; the id strategy also flows into the
+/// returned [`MarkdownIoOutput`] that [`gen_store`] consumes via
 /// [`Backend::Markdown`].
 pub struct MarkdownIoConfig {
     /// Output directory for the generated frontmatter modules

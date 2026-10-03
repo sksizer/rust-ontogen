@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use ontogen::ir::{Backend, IdStrategy, MarkdownIoOutput, MarkdownLayout, StoreOutput};
+use ontogen::ir::{Backend, IdStrategy, MarkdownIoOutput, StoreOutput};
 use ontogen::{ApiConfig, EntityDef, SchemaConfig, StoreConfig};
 
 fn fixture_entities() -> Vec<EntityDef> {
@@ -29,10 +29,7 @@ fn markdown_backend(entities: &[EntityDef]) -> Backend {
     // Build the markdown metadata exactly as gen_markdown_io would, without
     // writing its files (this test only exercises the store/api layers).
     Backend::Markdown(MarkdownIoOutput {
-        vault_root: "data/vault".into(),
-        layout: MarkdownLayout::PerEntityDir,
         id_strategy: IdStrategy::SlugFromField("title".into()),
-        list_cap: 10_000,
         module_path: "crate::persistence::markdown::generated".into(),
         entities: entities
             .iter()

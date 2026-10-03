@@ -294,7 +294,7 @@ fn node_has_many_entity() -> EntityDef {
 
 /// Generate a MARKDOWN-backed store file for `entity` and read it back.
 fn generate_markdown_store_file(entity: &EntityDef) -> String {
-    use crate::ir::{Backend, IdStrategy, MarkdownEntityMeta, MarkdownIoOutput, MarkdownLayout};
+    use crate::ir::{Backend, IdStrategy, MarkdownEntityMeta, MarkdownIoOutput};
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = StoreConfig {
@@ -302,10 +302,7 @@ fn generate_markdown_store_file(entity: &EntityDef) -> String {
         hooks_dir: None,
         schema_module_path: "crate::schema".to_string(),
         backend: Backend::Markdown(MarkdownIoOutput {
-            vault_root: "data/vault".into(),
-            layout: MarkdownLayout::PerEntityDir,
             id_strategy: IdStrategy::Provided,
-            list_cap: 10_000,
             module_path: "crate::persistence::markdown::generated".into(),
             entities: vec![MarkdownEntityMeta {
                 entity_name: entity.name.clone(),

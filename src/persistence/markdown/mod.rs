@@ -35,10 +35,11 @@ use crate::{CodegenError, MarkdownIoConfig};
 /// `cargo:warning=` line.
 ///
 /// Returns the [`MarkdownIoOutput`] metadata `gen_store` consumes when the
-/// store backend is [`crate::ir::Backend::Markdown`] (ADR 0001): the vault
-/// configuration from `config`, plus one [`MarkdownEntityMeta`] row per
-/// entity derived from the schema IR. The OKF options stay out of it: only
-/// `open_vault` applies them, and the store never builds a vault.
+/// store backend is [`crate::ir::Backend::Markdown`] (ADR 0001): the id
+/// strategy from `config`, plus one [`MarkdownEntityMeta`] row per entity
+/// derived from the schema IR. The rest of the vault configuration stays
+/// out of it: only `open_vault` applies it, and the store never builds a
+/// vault.
 pub fn generate(schema: &SchemaOutput, config: &MarkdownIoConfig) -> Result<MarkdownIoOutput, CodegenError> {
     let entities = &schema.entities;
     let mut errors = Vec::new();
@@ -72,10 +73,7 @@ pub fn generate(schema: &SchemaOutput, config: &MarkdownIoConfig) -> Result<Mark
         .collect();
 
     Ok(MarkdownIoOutput {
-        vault_root: config.vault_root.clone(),
-        layout: config.layout,
         id_strategy: config.id_strategy.clone(),
-        list_cap: config.list_cap,
         module_path: "crate::persistence::markdown::generated".to_string(),
         entities: entity_meta,
     })

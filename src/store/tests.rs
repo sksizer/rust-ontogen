@@ -232,12 +232,9 @@ mod tests {
     }
 
     fn markdown_backend(id_strategy: crate::ir::IdStrategy) -> crate::ir::Backend {
-        use crate::ir::{Backend, MarkdownIoOutput, MarkdownLayout};
+        use crate::ir::{Backend, MarkdownIoOutput};
         Backend::Markdown(MarkdownIoOutput {
-            vault_root: "data/vault".into(),
-            layout: MarkdownLayout::PerEntityDir,
             id_strategy,
-            list_cap: 10_000,
             module_path: "crate::persistence::markdown::generated".into(),
             entities: Vec::new(),
         })
