@@ -182,10 +182,12 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 ///
 /// # Errors
 ///
-/// Returns [`CodegenError::Persistence`] for a reserved or colliding
-/// frontmatter key (`generated` is reserved while
-/// [`OkfOptions::generated_by`] is set), an `okf.generated_by` that is not
-/// an OKF actor for a program, or on I/O or formatting failure.
+/// Returns [`CodegenError::Persistence`] for an entity directory that is a
+/// Windows device name (`con`, `lpt0`, … in any case) under
+/// [`MarkdownLayout::PerEntityDir`], a reserved or colliding frontmatter
+/// key (`generated` is reserved while [`OkfOptions::generated_by`] is set),
+/// an `okf.generated_by` that is not an OKF actor for a program, or on I/O
+/// or formatting failure.
 ///
 /// # Example
 ///

@@ -73,7 +73,7 @@ pub struct WorkSession { ... }
 
 ### `directory`
 
-Controls the subdirectory name for markdown file I/O. When using the markdown persistence layer, entities are stored in `{base_path}/{directory}/`. Defaults to the snake_case of the struct name.
+Controls the subdirectory name for markdown file I/O. When using the markdown persistence layer, entities are stored in `{base_path}/{directory}/`. Defaults to the snake_case of the struct name. With the default `PerEntityDir` layout it cannot be a Windows device name (`con`, `prn`, `aux`, `nul`, `com0`-`com9`, `lpt0`-`lpt9`, in any case), so an entity named `Con` needs an explicit `directory`.
 
 ### `table`
 

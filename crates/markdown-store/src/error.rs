@@ -99,7 +99,8 @@ pub enum Error {
         reason: String,
     },
 
-    /// An entity directory segment failed validation (same rules as ids).
+    /// An entity directory segment failed validation: the path-safety rules
+    /// lookup ids follow, and not a Windows device name.
     #[error("invalid path segment {segment:?}: {reason}")]
     InvalidSegment {
         /// The rejected segment.

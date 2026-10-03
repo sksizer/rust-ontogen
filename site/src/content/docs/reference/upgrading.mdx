@@ -52,6 +52,10 @@ An entity can override the store-wide strategy in the schema with `#[ontology(en
 
 The field named in `SlugFromField` must be a plain `String` on every entity the strategy applies to, on SeaORM as well as markdown. Otherwise the generator fails. Pick such a field, use `Provided` or `Uuid`, or give the entities without one their own `#[ontology(entity, id = "...")]`.
 
+### Entity directories that are device names
+
+With `MarkdownLayout::PerEntityDir`, `gen_markdown_io` fails when an entity's directory is a Windows device name (`con`, `prn`, `aux`, `nul`, `com0` to `com9`, `lpt0` to `lpt9`, in any case). That covers `#[ontology(entity, directory = "con")]` and the default directory of an entity named `Con`, `Nul` or `Com1`. Windows cannot create such a directory. The error names the entity and the attribute, for example ``entity `Thing`: `directory = "con"` is a Windows device name``. Give the entity another `directory` and move its records there. A `Flat` vault has no entity directories and is not checked.
+
 ### Depend on `ontogen-core`
 
 Generated SeaORM stores call `ontogen_core::id` at runtime. See [Creating records](/guides/store-layer/#creating-records) for the dependency to add.
@@ -158,6 +162,7 @@ In a vault, rename the file and update every `[[wikilink]]` and foreign key that
 - A missing id is the new `Error::IdRequired { reason }`. It used to be `InvalidId`.
 - `Error::InvalidId` has a third field, `create_rule`: true when the create rule refused the id, whose message then states the whole rule, and false when a lookup's path-safety check did. Add it where you construct the variant; a `{ .. }` pattern needs no change.
 - `layout::validate_id` is the create rule (see [Record ids](#record-ids)). `create_record` checks it too, so it refuses an id that `record_path` accepts. `record_path`, and every read, update and delete, use the looser path-safety check `layout::validate_lookup_id`, so a record whose file stem breaks the create rule stays reachable.
+- `layout::validate_segment`, and so `record_path` and `entity_dir` under `PerEntityDir`, refuses a directory segment that is a device name (`con`, `NUL`, `lpt0`) with `Error::InvalidSegment`, on every platform.
 - `id::candidates(base)` yields the probe sequence `base`, `base-2`, … that derived ids use. New constants: `layout::MAX_ID_LEN` (200), `layout::MAX_STEM_LEN` (252), `id::SLUG_MAX_LEN` (190), `layout::DEVICE_NAMES` and `layout::ID_RULE`; `layout::is_device_name` tells whether an id is a device name.
 
 ## Store behaviour

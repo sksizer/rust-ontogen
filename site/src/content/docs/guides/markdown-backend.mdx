@@ -121,6 +121,11 @@ and reachable. On Windows, a lookup of such an id is NotFound without opening an
 opening `con.md` there opens the console device. See
 [Creating records](/guides/store-layer/#creating-records) for the whole id rule.
 
+An entity directory cannot be a device name either. With
+`MarkdownLayout::PerEntityDir`, `gen_markdown_io` fails when an entity's
+`directory`, or the default one taken from its name (`Con` gives `con`), is
+one, and names the entity.
+
 ### Reserved frontmatter keys
 
 OKF gives some frontmatter keys fixed meanings. `gen_markdown_io` checks every

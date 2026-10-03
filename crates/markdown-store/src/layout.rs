@@ -213,10 +213,18 @@ pub fn validate_lookup_id(id: &str) -> Result<(), Error> {
 /// `.` and `..`; a leading `.` (hidden files are skipped by the default
 /// walk, so a dot-leading record would be written but never listed); and a
 /// trailing `.` or space (silently stripped by Windows, aliasing two names
-/// onto one file). Unlike ids, `index` and `log` are fine: OKF reserves
-/// them as filenames, not as directory names.
+/// onto one file); and a device name (see [`is_device_name`]), which
+/// Windows cannot create as a directory, refused on every platform so a
+/// vault laid out on Linux also checks out on Windows. Unlike ids, `index`
+/// and `log` are fine: OKF reserves them as filenames, not as directory
+/// names.
 pub fn validate_segment(segment: &str) -> Result<(), Error> {
-    validate_stem(segment).map_err(|reason| Error::InvalidSegment { segment: segment.to_string(), reason })
+    let invalid = |reason: String| Error::InvalidSegment { segment: segment.to_string(), reason };
+    validate_stem(segment).map_err(invalid)?;
+    if is_device_name(segment) {
+        return Err(invalid(DEVICE_NAME_REASON.into()));
+    }
+    Ok(())
 }
 
 /// The path-safety rules ids and segments share.
@@ -396,6 +404,26 @@ mod tests {
         }
         for fine in ["console", "con-2", "xcon", "a.con", "com", "com10", "lpt10", "nulls"] {
             assert!(validate_id(fine).is_ok(), "{fine:?} must be accepted");
+        }
+    }
+
+    #[test]
+    fn device_names_are_refused_as_directory_segments() {
+        let layout = VaultLayout::PerEntityDir;
+        for device in ["con", "NUL", "com0", "Lpt9", "aux.d"] {
+            let err = layout.entity_dir(Path::new("v"), device).unwrap_err();
+            assert_eq!(err.to_string(), format!("invalid path segment {device:?}: {DEVICE_NAME_REASON}"));
+            assert!(
+                matches!(layout.record_path(Path::new("v"), device, "t-1"), Err(Error::InvalidSegment { .. })),
+                "{device:?}"
+            );
+            assert!(
+                VaultLayout::Flat.record_path(Path::new("v"), device, "t-1").is_ok(),
+                "a flat vault has no segment"
+            );
+        }
+        for fine in ["console", "com10", "contacts", "nulls"] {
+            assert!(layout.entity_dir(Path::new("v"), fine).is_ok(), "{fine:?}");
         }
     }
 
