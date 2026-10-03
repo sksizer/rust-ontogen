@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-10-03
+
+### ⚠ BREAKING CHANGES
+
+- vaults are OKF 0.2 bundles by default ([#194](https://github.com/sksizer/rust-ontogen/pull/194))
+
+- OKF index files and provenance stamps, configured once at build time ([#196](https://github.com/sksizer/rust-ontogen/pull/196))
+
+### Added
+
+- vaults are OKF 0.2 bundles by default ([#194](https://github.com/sksizer/rust-ontogen/pull/194)) **(breaking)**
+- OKF index files and provenance stamps, configured once at build time ([#196](https://github.com/sksizer/rust-ontogen/pull/196)) **(breaking)**
+
+
+
 ## [0.6.1] - 2026-09-28
 
 ### Added
