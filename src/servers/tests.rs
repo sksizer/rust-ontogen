@@ -5398,13 +5398,43 @@ fn a_resource_module_is_served_as_jsonapi() {
     }
     assert!(!flat.contains("put(task_update)"), "PATCH replaces PUT (§8.3):\n{http}");
 
-    // Extractors in §13.2 order.
-    let create = &http[http.find("async fn task_create(").unwrap()..];
-    let create = &create[..create.find("\n}\n").unwrap()];
-    let order = ["_: AcceptGuard", "_: ContentTypeGuard", "_: Query<NoParams>", "body: Body"];
-    let at: Vec<usize> = order.iter().map(|x| create.find(x).unwrap_or_else(|| panic!("{x} in {create}"))).collect();
-    assert!(at.windows(2).all(|w| w[0] < w[1]), "extractors in check order:\n{create}");
-    assert!(http.contains("Path(id): Path<LookupKey>,\n    _: Query<NoParams>,\n    body: Body,"));
+    // Checks in §13.2 order: `Accept`, the media type `Body` checks, then
+    // the path and the query, which a handler reading a body defers.
+    for (handler, order) in [
+        (
+            "task_create",
+            &[
+                "_: AcceptGuard",
+                "query: Result<Query<NoParams>, ErrorObject>",
+                "body: Body",
+                ") -> Result<Response, ErrorObject> {",
+                "query?;",
+                "let body = body.into_bytes()?;",
+                "request::parse_create(&body,",
+            ][..],
+        ),
+        (
+            "task_update",
+            &[
+                "_: AcceptGuard",
+                "path_params: Result<Path<LookupKey>, ErrorObject>",
+                "query: Result<Query<NoParams>, ErrorObject>",
+                "body: Body",
+                ") -> Result<Response, ErrorObject> {",
+                "let Path(id) = path_params?;",
+                "query?;",
+                "let body = body.into_bytes()?;",
+                "request::parse_update(&body,",
+            ][..],
+        ),
+    ] {
+        let code = &http[http.find(&format!("async fn {handler}(")).unwrap()..];
+        let code = &code[..code.find("\n}\n").unwrap()];
+        let at: Vec<usize> = order.iter().map(|x| code.find(x).unwrap_or_else(|| panic!("{x} in {code}"))).collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "checks in order:\n{code}");
+    }
+    // A handler with no body extracts its path directly.
+    assert!(http.contains("Path(id): Path<LookupKey>,\n    _: Query<NoParams>,\n) -> Result<Response, ErrorObject>"));
 
     // Documents and links come from the runtime crate.
     assert!(
@@ -5529,6 +5559,11 @@ fn scoped_resource_routes_carry_the_prefix() {
     )));
     assert!(http.contains("Path((project_id, id)): Path<(uuid::Uuid, LookupKey)>,"));
     assert!(http.contains("Path(project_id): Path<uuid::Uuid>,"));
+    // A handler reading a body checks its prefix after the media type.
+    assert!(http.contains("path_params: Result<Path<uuid::Uuid>, ErrorObject>,"));
+    assert!(http.contains("let Path(project_id) = path_params?;"));
+    assert!(http.contains("path_params: Result<Path<(uuid::Uuid, LookupKey)>, ErrorObject>,"));
+    assert!(http.contains("let Path((project_id, id)) = path_params?;"));
     assert!(flat.contains(&compact(
         "let collection = &format!(\"/api/projects/{}/tasks\", encode_path_segment(&project_id.to_string()));"
     )));

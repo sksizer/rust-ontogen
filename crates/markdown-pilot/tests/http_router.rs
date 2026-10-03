@@ -370,6 +370,26 @@ async fn media_types_are_negotiated() {
 }
 
 #[tokio::test]
+async fn the_media_type_is_checked_before_the_query() {
+    let server = Server::new();
+    server.note("Hello Vault").await;
+
+    for (method, uri) in [("POST", "/api/notes?x=1"), ("PATCH", "/api/notes/hello-vault?x=1")] {
+        // With and without a Content-Length announcing the body.
+        for announce in [false, true] {
+            let body = r#"{"data":{"type":"notes","attributes":{"title":"T"}}}"#;
+            let mut request = Request::builder().method(method).uri(uri).header(header::CONTENT_TYPE, "text/plain");
+            if announce {
+                request = request.header(header::CONTENT_LENGTH, body.len());
+            }
+            let reply = server.send(request.body(Body::from(body)).unwrap()).await;
+            let error = reply.error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type");
+            assert_eq!(error["source"], json!({ "header": "Content-Type" }), "{method} {uri}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn delete_answers_204() {
     let server = Server::new();
     server.note("Hello Vault").await;

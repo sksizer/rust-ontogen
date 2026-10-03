@@ -237,7 +237,7 @@ use ontogen_jsonapi::{
     Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
     ResourceIdentifier, ResourceObject,
     error::method_not_allowed,
-    extract::{AcceptGuard, Body, ContentTypeGuard, NoParams, Path, Query, RouteQuery},
+    extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::{CanonicalQuery, encode_path_segment, pagination_links},
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
@@ -832,9 +832,10 @@ fn write_steps(op: &ResourceOp<'_>, scoped: bool) -> (String, String) {
 /// Emit the JSON:API handler of one CRUD op (§7, §8), returning its method
 /// and its path below the collection.
 ///
-/// Extractors run in §13.2 order: `Accept`, `Content-Type`, path, query,
-/// body. With `scope`, the prefix parameter comes first in the path, and
-/// links carry the prefix (§11.1).
+/// Checks run in §13.2 order: `Accept`, then `Content-Type` when the op
+/// reads a body, then the path, the query and the body. With `scope`, the
+/// prefix parameter comes first in the path, and links carry the prefix
+/// (§11.1).
 fn resource_handler(
     out: &mut String,
     op: &ResourceOp<'_>,
@@ -853,11 +854,13 @@ fn resource_handler(
     let key = &names.key;
     let as_resource = &names.resource;
 
+    // The collection's and the item's path parameters, as a pattern and the
+    // type `Path` reads.
     let (collection, collection_path, item_path) = match scope {
         None => (
             format!("    let collection = \"/api/{url_plural}\";\n"),
-            String::new(),
-            "    Path(id): Path<LookupKey>,\n".to_string(),
+            None,
+            ("id".to_string(), "LookupKey".to_string()),
         ),
         Some(prefix) => {
             let pp = &prefix.params[0];
@@ -879,11 +882,30 @@ fn resource_handler(
                     template.join("/"),
                     args.join(", ")
                 ),
-                format!("    Path({}): Path<{}>,\n", pp.name, pp.rust_type),
-                format!("    Path(({}, id)): Path<({}, LookupKey)>,\n", pp.name, pp.rust_type),
+                Some((pp.name.clone(), pp.rust_type.clone())),
+                (format!("({}, id)", pp.name), format!("({}, LookupKey)", pp.rust_type)),
             )
         }
     };
+    let extract = |(pattern, ty): &(String, String)| format!("    Path({pattern}): Path<{ty}>,\n");
+    // A handler that reads a body answers its media type (§13.2 step 3)
+    // before its path and query (steps 4 and 5), but Axum runs `Body` last:
+    // so it takes those two as `Result`s and answers them after `Body`.
+    let deferred = |path: Option<&(String, String)>| {
+        let (extractors, checks) = match path {
+            Some((pattern, ty)) => (
+                format!("    path_params: Result<Path<{ty}>, ErrorObject>,\n"),
+                format!("    let Path({pattern}) = path_params?;\n"),
+            ),
+            None => (String::new(), String::new()),
+        };
+        (
+            format!("{extractors}    query: Result<Query<NoParams>, ErrorObject>,\n    body: Body,\n"),
+            format!("{checks}    query?;\n    let body = body.into_bytes()?;\n"),
+        )
+    };
+    let collection_extract = collection_path.as_ref().map(extract).unwrap_or_default();
+    let item_extract = extract(&item_path);
     let head = format!("async fn {handler_name}(\n    State(state): State<Arc<{state_type}>>,\n    _: AcceptGuard,\n");
     let tail = ") -> Result<Response, ErrorObject> {\n";
     let single_response = format!(
@@ -917,7 +939,7 @@ fn resource_handler(
                 }
             };
             out.push_str(&format!(
-                "{head}{collection_path}    query: Query<{params}>,\n{tail}    refuse_sort(&query, \
+                "{head}{collection_extract}    query: Query<{params}>,\n{tail}    refuse_sort(&query, \
                  \"{type_name}\")?;\n    refuse_include(&query, \"{type_name}\")?;\n{page}{open}{call}{collection}    \
                  let data: Vec<_> = items.iter().map(|entity| {as_resource}(entity, \
                  collection)).collect();\n{document}}}\n\n"
@@ -926,7 +948,7 @@ fn resource_handler(
         }
         OpKind::GetById => {
             out.push_str(&format!(
-                "{head}{item_path}    query: Query<GetParams>,\n{tail}    refuse_include(&query, \
+                "{head}{item_extract}    query: Query<GetParams>,\n{tail}    refuse_include(&query, \
                  \"{type_name}\")?;\n{open}    let entity = {svc}::get_by_id({arg}, \
                  {key}(&id)?){aw}{map_err}?;\n{collection}{single_response}"
             ));
@@ -951,10 +973,10 @@ fn resource_handler(
                 ),
                 None => map_err.to_string(),
             };
+            let (extractors, checks_first) = deferred(collection_path.as_ref());
             out.push_str(&format!(
-                "{head}    _: ContentTypeGuard,\n{collection_path}    _: Query<NoParams>,\n    body: \
-                 Body,\n{tail}{collection}    let endpoint = Endpoint {{ type_name: \"{type_name}\", path: collection \
-                 }};\n    let data = request::parse_create(&body.0, endpoint, |id| {{\n        \
+                "{head}{extractors}{tail}{checks_first}{collection}    let endpoint = Endpoint {{ type_name: \
+                 \"{type_name}\", path: collection }};\n    let data = request::parse_create(&body, endpoint, |id| {{\n        \
                  ontogen_core::id::validate_id(id).map_err(|e| e.reason)\n    }})?;\n{fields}    let input: \
                  {input_ty} = from_fields(fields)?;\n{open}{checks}    let entity = {svc}::create({arg}, \
                  input){aw}{create_err}?;\n    let resource = {as_resource}(&entity, collection);\n    let location \
@@ -966,11 +988,11 @@ fn resource_handler(
         OpKind::Update => {
             let input_ty = extract_input_type(&f.params[1].ty);
             let (fields, checks) = write_steps(op, scope.is_some());
+            let (extractors, checks_first) = deferred(Some(&item_path));
             out.push_str(&format!(
-                "{head}    _: ContentTypeGuard,\n{item_path}    _: Query<NoParams>,\n    body: \
-                 Body,\n{tail}{collection}    let path = format!(\"{{collection}}/{{id}}\");\n    let endpoint = \
-                 Endpoint {{ type_name: \"{type_name}\", path: &path }};\n    let data = \
-                 request::parse_update(&body.0, endpoint, &id)?;\n{fields}    let input: {input_ty} = \
+                "{head}{extractors}{tail}{checks_first}{collection}    let path = \
+                 format!(\"{{collection}}/{{id}}\");\n    let endpoint = Endpoint {{ type_name: \"{type_name}\", path: \
+                 &path }};\n    let data = request::parse_update(&body, endpoint, &id)?;\n{fields}    let input: {input_ty} = \
                  from_fields(fields)?;\n{open}{checks}    let entity = {svc}::update({arg}, {key}(&id)?, \
                  input){aw}{map_err}?;\n{single_response}"
             ));
@@ -978,7 +1000,7 @@ fn resource_handler(
         }
         OpKind::Delete => {
             out.push_str(&format!(
-                "{head}{item_path}    _: Query<NoParams>,\n{tail}{open}    {svc}::delete({arg}, \
+                "{head}{item_extract}    _: Query<NoParams>,\n{tail}{open}    {svc}::delete({arg}, \
                  {key}(&id)?){aw}{map_err}?;\n    Ok(response::no_content())\n}}\n\n"
             ));
             ("delete", "/{id}")

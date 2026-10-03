@@ -23,14 +23,17 @@
 # A create handler
 
 A generated handler lists its extractors in the order of §13.2, since Axum
-runs them in argument order and answers with the first rejection, then reads
-and writes documents with the plain functions:
+runs them in argument order and answers with the first rejection. `Body`
+must come last, yet its media type (step 3) precedes the path and the query
+(steps 4 and 5), so the handler takes those two as `Result`s and answers
+them once `Body` has run. It then reads and writes documents with the plain
+functions:
 
 ```no_run
 use axum::{Router, response::Response, routing::post};
 use ontogen_jsonapi::{
     Document, ErrorObject, Links, ResourceObject,
-    extract::{AcceptGuard, Body, ContentTypeGuard, NoParams, Path, Query},
+    extract::{AcceptGuard, Body, NoParams, Path, Query},
     links::encode_path_segment,
     request::{Endpoint, parse_create},
     response,
@@ -44,16 +47,18 @@ struct TaskAttributes {
 
 // POST /api/projects/{project_id}/tasks
 async fn create_task(
-    _: AcceptGuard,              // step 2: 406 not_acceptable
-    _: ContentTypeGuard,         // step 3: 415 unsupported_media_type
-    Path(project_id): Path<u32>, // step 4: 400 invalid_path_parameter
-    _: Query<NoParams>,          // step 5: 400 invalid_query_parameter
-    body: Body,                  // step 7 reads the body
+    _: AcceptGuard,                             // step 2: 406 not_acceptable
+    path: Result<Path<u32>, ErrorObject>,       // step 4
+    query: Result<Query<NoParams>, ErrorObject>, // step 5
+    body: Body,                                 // step 3: 415 unsupported_media_type
 ) -> Result<Response, ErrorObject> {
+    let Path(project_id) = path?; // 400 invalid_path_parameter
+    query?; // 400 invalid_query_parameter
+    let body = body.into_bytes()?; // step 7: 413 content_too_large
     let collection = format!("/api/projects/{project_id}/tasks");
     let endpoint = Endpoint { type_name: "tasks", path: &collection };
     // The shared id-validity rule (§8.2) goes where this closure is.
-    let data = parse_create(&body.0, endpoint, |_id| Ok::<(), String>(()))?;
+    let data = parse_create(&body, endpoint, |_id| Ok::<(), String>(()))?;
     // Generated code checks `data.attributes` and `data.relationships()`
     // against the schema, then calls the store (steps 7 to 9).
     let title = data

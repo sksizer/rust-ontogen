@@ -19,7 +19,7 @@ use ontogen_jsonapi::{
     Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
     ResourceIdentifier, ResourceObject,
     error::method_not_allowed,
-    extract::{AcceptGuard, Body, ContentTypeGuard, NoParams, Path, Query, RouteQuery},
+    extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::{CanonicalQuery, encode_path_segment, pagination_links},
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
@@ -459,13 +459,14 @@ async fn note_get_by_id(
 async fn note_create(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    _: Query<NoParams>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/notes";
     let endpoint = Endpoint { type_name: "notes", path: collection };
-    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let fields = note_request_fields(&data, true)?;
     let input: CreateNoteInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -484,15 +485,17 @@ async fn note_create(
 async fn note_update(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/notes";
     let path = format!("{collection}/{id}");
     let endpoint = Endpoint { type_name: "notes", path: &path };
-    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let data = request::parse_update(&body, endpoint, &id)?;
     let fields = note_request_fields(&data, false)?;
     let input: UpdateNoteInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -550,13 +553,14 @@ async fn section_get_by_id(
 async fn section_create(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    _: Query<NoParams>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/sections";
     let endpoint = Endpoint { type_name: "sections", path: collection };
-    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let (fields, linked) = section_request_fields(&data, true)?;
     let input: CreateSectionInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -589,15 +593,17 @@ async fn section_create(
 async fn section_update(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/sections";
     let path = format!("{collection}/{id}");
     let endpoint = Endpoint { type_name: "sections", path: &path };
-    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let data = request::parse_update(&body, endpoint, &id)?;
     let (fields, linked) = section_request_fields(&data, false)?;
     let input: UpdateSectionInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -669,13 +675,14 @@ async fn tag_get_by_id(
 async fn tag_create(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    _: Query<NoParams>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/tags";
     let endpoint = Endpoint { type_name: "tags", path: collection };
-    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let fields = tag_request_fields(&data, true)?;
     let input: CreateTagInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -692,15 +699,17 @@ async fn tag_create(
 async fn tag_update(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/tags";
     let path = format!("{collection}/{id}");
     let endpoint = Endpoint { type_name: "tags", path: &path };
-    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let data = request::parse_update(&body, endpoint, &id)?;
     let fields = tag_request_fields(&data, false)?;
     let input: UpdateTagInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -758,13 +767,14 @@ async fn task_get_by_id(
 async fn task_create(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    _: Query<NoParams>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/tasks";
     let endpoint = Endpoint { type_name: "tasks", path: collection };
-    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let (fields, linked) = task_request_fields(&data, true)?;
     let input: CreateTaskInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -804,15 +814,17 @@ async fn task_create(
 async fn task_update(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/tasks";
     let path = format!("{collection}/{id}");
     let endpoint = Endpoint { type_name: "tasks", path: &path };
-    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let data = request::parse_update(&body, endpoint, &id)?;
     let (fields, linked) = task_request_fields(&data, false)?;
     let input: UpdateTaskInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
