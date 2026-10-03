@@ -1,4 +1,5 @@
 ---
+type: Note
 title: Wikilinks are edges
 links:
 - '[[the-vault-is-the-database]]'
