@@ -29,7 +29,11 @@ Epic decisions (2026-10-03):
 3. **Relation encoding stays `[[id]]` wikilinks.** `LinkEncoding::MarkdownPath`
    is a deferred opt-in.
 4. **Scope.** `log.md` is dropped (git history is the change log) but the id
-   `log` stays reserved; the docs phase is removed from the epic.
+   `log` stays reserved. (Amended after phase 2: `log.md` was dropped as
+   decided; `LinkEncoding::MarkdownPath` was deferred to a follow-up, the
+   backlog item
+   [B-OKFM](../planning/backlog/B-OKFM-okf-markdown-path-link-encoding.md);
+   and the docs phase was renumbered to phase 3 and shipped.)
 5. **A `status` field with a non-OKF vocabulary is a build-time warning**, not
    an error. `#[ontology(frontmatter_name = "...")]` is the fix path.
 

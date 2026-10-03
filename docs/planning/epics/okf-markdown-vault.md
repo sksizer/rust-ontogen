@@ -132,8 +132,11 @@ Settled with the maintainer; [ADR 0005](../../architecture/0005-okf-markdown-vau
    is an opt-in that renders `/<dir>/<id>.md`. The T-9NJO pilot decides
    whether the SDLC corpus flips it.
 4. **Scope.** `log.md` is dropped: git history already is the change log,
-   and the epic rated it low value. `LinkEncoding::MarkdownPath` is deferred
-   to a follow-up task; phase 3 is removed from this epic.
+   and the epic rated it low value; the id `log` stays reserved.
+   (Amended after phase 2: `log.md` was dropped as decided,
+   `LinkEncoding::MarkdownPath` was deferred to a follow-up, filed as
+   [B-OKFM](../backlog/B-OKFM-okf-markdown-path-link-encoding.md), and the docs phase was renumbered to phase 3 and shipped in
+   [#196](https://github.com/sksizer/rust-ontogen/pull/196).)
 5. **A `status` field with a non-OKF vocabulary is a build-time warning**,
    not an error; the consumer's vocabulary is not wrong, it is just not
    OKF's. `#[ontology(frontmatter_name = "…")]` is the fix path.
@@ -149,6 +152,8 @@ Settled with the maintainer; [ADR 0005](../../architecture/0005-okf-markdown-vau
   answer open questions 2 and 3.
 
 ## Tasks
+
+Follow-up: [B-OKFM](../backlog/B-OKFM-okf-markdown-path-link-encoding.md) — `LinkEncoding::MarkdownPath` opt-in (deferred by decision 4).
 
 Filed as each phase opens; one task per phase.
 
