@@ -35,7 +35,7 @@ use crate::schema::{
 use crate::store::Store;
 
 /// An `AppError` as an error object: the status its variant's name gives,
-/// and the name in snake_case as the code (§13.4).
+/// and the name in snake_case as the code.
 fn app_error(e: crate::schema::AppError) -> ErrorObject {
     let (status, code) = match &e {
         crate::schema::AppError::NoteNotFound(..) => (StatusCode::NOT_FOUND, "note_not_found"),
@@ -57,12 +57,12 @@ fn app_error(e: crate::schema::AppError) -> ErrorObject {
 }
 
 /// A failure no `AppError` describes: opening the store, a scope accessor,
-/// or an op with another error type (§13.3).
+/// or an op with another error type.
 fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
 
-/// The method fallback of a route serving `allowed` (§13.5).
+/// The method fallback of a route serving `allowed`: `405` with `Allow`.
 fn allow<const N: usize>(
     allowed: [Method; N],
 ) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
@@ -103,8 +103,8 @@ impl RouteQuery for GetParams {
     const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
 }
 
-/// No list takes an `order` argument yet, so every `sort` asks for an order
-/// the server does not support (§7.4).
+/// No list takes an `order` argument, so every `sort` asks for an order the
+/// server does not support.
 fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
     match query.sort()? {
         None => Ok(()),
@@ -113,8 +113,8 @@ fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> 
     }
 }
 
-/// No route includes related resources yet, so every `include` names a path
-/// the server cannot include (§7.5).
+/// No route includes related resources, so every `include` names a path the
+/// server cannot include.
 fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
     match query.include()? {
         None => Ok(()),
@@ -126,7 +126,7 @@ fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObjec
     }
 }
 
-/// The effective `(offset, limit)` of a paginated list (§7.2).
+/// The effective `(offset, limit)` of a paginated list.
 fn page(query: &QueryParams, default_limit: u32, max_limit: u32) -> Result<(u32, u32), ErrorObject> {
     let offset = query.page_offset()?.unwrap_or(0);
     let limit = query.page_limit()?.unwrap_or(default_limit).min(max_limit);
@@ -151,7 +151,7 @@ fn from_fields<T: serde::de::DeserializeOwned>(
 // ── `notes` ──
 
 /// `Note`'s attributes: every field but the id and the relations, in
-/// declaration order (§5.3).
+/// declaration order.
 struct NoteResourceAttributes<'a>(&'a Note);
 
 impl Serialize for NoteResourceAttributes<'_> {
@@ -164,20 +164,20 @@ impl Serialize for NoteResourceAttributes<'_> {
     }
 }
 
-/// A `notes` resource object whose `links.self` sits under `collection`
-/// (§5.2).
+/// `entity` as a resource object of type `notes`, its `links.self`
+/// under `collection`.
 fn note_as_resource<'a>(entity: &'a Note, collection: &str) -> ResourceObject<NoteResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
     ResourceObject::new("notes", entity.id.clone(), NoteResourceAttributes(entity), self_link)
 }
 
-/// The id an `{id}` path segment names (§8.1).
+/// The id an `{id}` path segment names.
 fn note_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
     id.as_str().ok_or_else(|| app_error(crate::schema::AppError::NoteNotFound(id.to_string())))
 }
 
-/// Step 7 of a `notes` create or update document (§8.2, §8.3): the fields
-/// it sets, named as the input's fields.
+/// The fields a create or update document for `notes` sets, named as
+/// the input's fields, each member checked against the schema.
 fn note_request_fields(
     data: &ResourceData,
     create: bool,
@@ -197,7 +197,7 @@ fn note_request_fields(
 // ── `sections` ──
 
 /// `Section`'s attributes: every field but the id and the relations, in
-/// declaration order (§5.3).
+/// declaration order.
 struct SectionResourceAttributes<'a>(&'a Section);
 
 impl Serialize for SectionResourceAttributes<'_> {
@@ -209,8 +209,8 @@ impl Serialize for SectionResourceAttributes<'_> {
     }
 }
 
-/// A `sections` resource object whose `links.self` sits under `collection`
-/// (§5.2).
+/// `entity` as a resource object of type `sections`, its `links.self`
+/// under `collection`.
 fn section_as_resource<'a>(entity: &'a Section, collection: &str) -> ResourceObject<SectionResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
     ResourceObject::new("sections", entity.id.clone(), SectionResourceAttributes(entity), self_link)
@@ -229,21 +229,21 @@ fn section_as_resource<'a>(entity: &'a Section, collection: &str) -> ResourceObj
         )
 }
 
-/// The id an `{id}` path segment names (§8.1).
+/// The id an `{id}` path segment names.
 fn section_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
     id.as_str().ok_or_else(|| app_error(crate::schema::AppError::SectionNotFound(id.to_string())))
 }
 
-/// The ids a `sections` request document links, by relationship, for the
-/// linked-resource checks (§13.2 step 8).
+/// The ids a request document for `sections` links, by relationship, to
+/// be checked to name resources that exist.
 #[derive(Default)]
 struct SectionLinkedIds {
     parent: Option<LinkedId>,
     children: Vec<LinkedId>,
 }
 
-/// Step 7 of a `sections` create or update document (§8.2, §8.3): the fields
-/// it sets, named as the input's fields.
+/// The fields a create or update document for `sections` sets, named as
+/// the input's fields, each member checked against the schema.
 fn section_request_fields(
     data: &ResourceData,
     create: bool,
@@ -281,8 +281,8 @@ fn section_request_fields(
     Ok((fields, linked))
 }
 
-/// Step 8 of a `sections` create or update: each id the document links
-/// names a resource that exists, checked in step-7 order.
+/// Checks that each id a create or update document for `sections` links
+/// names a resource that exists, in the order the document was read.
 async fn section_check_linked(state: &AppState, linked: &SectionLinkedIds) -> Result<(), ErrorObject> {
     let store = state.store().await.map_err(internal_error)?;
     if let Some(linked) = &linked.parent {
@@ -305,7 +305,7 @@ async fn section_check_linked(state: &AppState, linked: &SectionLinkedIds) -> Re
 // ── `tags` ──
 
 /// `Tag`'s attributes: every field but the id and the relations, in
-/// declaration order (§5.3).
+/// declaration order.
 struct TagResourceAttributes<'a>(&'a Tag);
 
 impl Serialize for TagResourceAttributes<'_> {
@@ -317,20 +317,20 @@ impl Serialize for TagResourceAttributes<'_> {
     }
 }
 
-/// A `tags` resource object whose `links.self` sits under `collection`
-/// (§5.2).
+/// `entity` as a resource object of type `tags`, its `links.self`
+/// under `collection`.
 fn tag_as_resource<'a>(entity: &'a Tag, collection: &str) -> ResourceObject<TagResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
     ResourceObject::new("tags", entity.id.clone(), TagResourceAttributes(entity), self_link)
 }
 
-/// The id an `{id}` path segment names (§8.1).
+/// The id an `{id}` path segment names.
 fn tag_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
     id.as_str().ok_or_else(|| app_error(crate::schema::AppError::TagNotFound(id.to_string())))
 }
 
-/// Step 7 of a `tags` create or update document (§8.2, §8.3): the fields
-/// it sets, named as the input's fields.
+/// The fields a create or update document for `tags` sets, named as
+/// the input's fields, each member checked against the schema.
 fn tag_request_fields(
     data: &ResourceData,
     create: bool,
@@ -349,7 +349,7 @@ fn tag_request_fields(
 // ── `tasks` ──
 
 /// `Task`'s attributes: every field but the id and the relations, in
-/// declaration order (§5.3).
+/// declaration order.
 struct TaskResourceAttributes<'a>(&'a Task);
 
 impl Serialize for TaskResourceAttributes<'_> {
@@ -363,8 +363,8 @@ impl Serialize for TaskResourceAttributes<'_> {
     }
 }
 
-/// A `tasks` resource object whose `links.self` sits under `collection`
-/// (§5.2).
+/// `entity` as a resource object of type `tasks`, its `links.self`
+/// under `collection`.
 fn task_as_resource<'a>(entity: &'a Task, collection: &str) -> ResourceObject<TaskResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
     ResourceObject::new("tasks", entity.id.clone(), TaskResourceAttributes(entity), self_link)
@@ -388,13 +388,13 @@ fn task_as_resource<'a>(entity: &'a Task, collection: &str) -> ResourceObject<Ta
         )
 }
 
-/// The id an `{id}` path segment names (§8.1).
+/// The id an `{id}` path segment names.
 fn task_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
     id.as_str().ok_or_else(|| app_error(crate::schema::AppError::TaskNotFound(id.to_string())))
 }
 
-/// The ids a `tasks` request document links, by relationship, for the
-/// linked-resource checks (§13.2 step 8).
+/// The ids a request document for `tasks` links, by relationship, to
+/// be checked to name resources that exist.
 #[derive(Default)]
 struct TaskLinkedIds {
     parent: Option<LinkedId>,
@@ -402,8 +402,8 @@ struct TaskLinkedIds {
     tags: Vec<LinkedId>,
 }
 
-/// Step 7 of a `tasks` create or update document (§8.2, §8.3): the fields
-/// it sets, named as the input's fields.
+/// The fields a create or update document for `tasks` sets, named as
+/// the input's fields, each member checked against the schema.
 fn task_request_fields(
     data: &ResourceData,
     create: bool,
@@ -443,8 +443,8 @@ fn task_request_fields(
     Ok((fields, linked))
 }
 
-/// Step 8 of a `tasks` create or update: each id the document links
-/// names a resource that exists, checked in step-7 order.
+/// Checks that each id a create or update document for `tasks` links
+/// names a resource that exists, in the order the document was read.
 async fn task_check_linked(state: &AppState, linked: &TaskLinkedIds) -> Result<(), ErrorObject> {
     let store = state.store().await.map_err(internal_error)?;
     if let Some(linked) = &linked.parent {

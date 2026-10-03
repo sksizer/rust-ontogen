@@ -4,9 +4,9 @@
 //!
 //! A resource module's CRUD ops are served as JSON:API (wire contract §7,
 //! §8) through the `ontogen-jsonapi` runtime crate. Custom ops, junction
-//! ops, modules with no entity behind them and event streams keep their own
-//! success shapes until phase 1c, but every error the server returns is an
-//! `errors[]` document (§13).
+//! ops, a list that takes a filter, modules with no entity behind them and
+//! event streams keep their own flat success shapes, but every error the
+//! server returns is an `errors[]` document (§13).
 
 use std::fs;
 use std::path::Path;
@@ -165,8 +165,9 @@ fn unscoped_access(f: &ApiFn) -> Access {
     }
 }
 
-/// A scoped handler's access through the prefix accessor. Its failure stays
-/// a `500` until E0003 settles the accessor's error type (§11.1).
+/// A scoped handler's access through the prefix accessor. Its failure is a
+/// `500`: the accessor's error does not say whether the scope is missing
+/// (§11.1).
 fn scoped_access(prefix: &RoutePrefix) -> Access {
     Access {
         open: format!(
@@ -421,7 +422,7 @@ fn emit_error_helpers(out: &mut String, config: &Config) {
             let path = app_error_path(config);
             out.push_str(&format!(
                 "/// An `AppError` as an error object: the status its variant's name gives,\n/// and the name in \
-                 snake_case as the code (§13.4).\nfn app_error(e: {path}) -> ErrorObject {{\n    let (status, code) \
+                 snake_case as the code.\nfn app_error(e: {path}) -> ErrorObject {{\n    let (status, code) \
                  = match &e {{\n"
             ));
             for v in &map.variants {
@@ -437,7 +438,7 @@ fn emit_error_helpers(out: &mut String, config: &Config) {
         None => out.push_str(
             "\
 /// No `AppError` was found in the schema directory, so no error carries a
-/// status of its own: every one is a `500` (§13.4).
+/// status of its own: every one is a `500`.
 fn app_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
@@ -448,7 +449,7 @@ fn app_error(e: impl std::fmt::Display) -> ErrorObject {
     out.push_str(
         "\
 /// A failure no `AppError` describes: opening the store, a scope accessor,
-/// or an op with another error type (§13.3).
+/// or an op with another error type.
 fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
@@ -472,7 +473,7 @@ fn status_const(status: u16) -> String {
 /// error documents for the Axum extractors the ops outside a resource still
 /// use.
 const ROUTE_HELPERS: &str = "\
-/// The method fallback of a route serving `allowed` (§13.5).
+/// The method fallback of a route serving `allowed`: `405` with `Allow`.
 fn allow<const N: usize>(
     allowed: [Method; N],
 ) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
@@ -518,8 +519,8 @@ impl RouteQuery for GetParams {
     const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
 }
 
-/// No list takes an `order` argument yet, so every `sort` asks for an order
-/// the server does not support (§7.4).
+/// No list takes an `order` argument, so every `sort` asks for an order the
+/// server does not support.
 fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
     match query.sort()? {
         None => Ok(()),
@@ -528,8 +529,8 @@ fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> 
     }
 }
 
-/// No route includes related resources yet, so every `include` names a path
-/// the server cannot include (§7.5).
+/// No route includes related resources, so every `include` names a path the
+/// server cannot include.
 fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
     match query.include()? {
         None => Ok(()),
@@ -541,7 +542,7 @@ fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObjec
     }
 }
 
-/// The effective `(offset, limit)` of a paginated list (§7.2).
+/// The effective `(offset, limit)` of a paginated list.
 fn page(query: &QueryParams, default_limit: u32, max_limit: u32) -> Result<(u32, u32), ErrorObject> {
     let offset = query.page_offset()?.unwrap_or(0);
     let limit = query.page_limit()?.unwrap_or(default_limit).min(max_limit);
@@ -615,8 +616,8 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule],
     if let Some(entity_ty) = entity_type(m) {
         let attrs = &names.attributes;
         out.push_str(&format!(
-            "/// `{entity}`'s attributes: every field but the id and the relations, in\n/// declaration order \
-             (§5.3).\nstruct {attrs}<'a>(&'a {entity_ty});\n\nimpl Serialize for {attrs}<'_> {{\n    fn \
+            "/// `{entity}`'s attributes: every field but the id and the relations, in\n/// declaration \
+             order.\nstruct {attrs}<'a>(&'a {entity_ty});\n\nimpl Serialize for {attrs}<'_> {{\n    fn \
              serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {{\n        use \
              serde::ser::SerializeStruct;\n        let mut attributes = serializer.serialize_struct(\"{attrs}\", \
              {})?;\n",
@@ -628,7 +629,7 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule],
         out.push_str("        attributes.end()\n    }\n}\n\n");
 
         out.push_str(&format!(
-            "/// A `{type_name}` resource object whose `links.self` sits under `collection`\n/// (§5.2).\nfn \
+            "/// `entity` as a resource object of type `{type_name}`, its `links.self`\n/// under `collection`.\nfn \
              {}<'a>(entity: &'a {entity_ty}, collection: &str) -> ResourceObject<{attrs}<'a>> {{\n    let self_link \
              = format!(\"{{collection}}/{{}}\", encode_path_segment(&entity.{id_field}));\n    \
              ResourceObject::new(\"{type_name}\", entity.{id_field}.clone(), {attrs}(entity), self_link)",
@@ -668,7 +669,7 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule],
         _ => format!("ErrorObject::internal(format!(\"`{{id}}` names no `{type_name}`\"))"),
     };
     out.push_str(&format!(
-        "/// The id an `{{id}}` path segment names (§8.1).\nfn {}(id: &LookupKey) -> Result<&str, ErrorObject> {{\n    \
+        "/// The id an `{{id}}` path segment names.\nfn {}(id: &LookupKey) -> Result<&str, ErrorObject> {{\n    \
          id.as_str().ok_or_else(|| {missing})\n}}\n\n",
         names.key
     ));
@@ -680,8 +681,8 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule],
     let has_relationships = !resource.relationships.is_empty();
     if has_relationships {
         out.push_str(&format!(
-            "/// The ids a `{type_name}` request document links, by relationship, for the\n/// linked-resource \
-             checks (§13.2 step 8).\n#[derive(Default)]\nstruct {} {{\n",
+            "/// The ids a request document for `{type_name}` links, by relationship, to\n/// be checked to name \
+             resources that exist.\n#[derive(Default)]\nstruct {} {{\n",
             names.linked
         ));
         for rel in &resource.relationships {
@@ -700,8 +701,8 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule],
     let rel_fields: Vec<String> =
         resource.relationships.iter().map(|r| format!("(\"{}\", \"{}\")", member_name(&r.field), r.name)).collect();
     out.push_str(&format!(
-        "/// Step 7 of a `{type_name}` create or update document (§8.2, §8.3): the fields\n/// it sets, named as \
-         the input's fields.\nfn {}(data: &ResourceData, create: bool) -> Result<{returns}, ErrorObject> {{\n    let \
+        "/// The fields a create or update document for `{type_name}` sets, named as\n/// the input's fields, \
+         each member checked against the schema.\nfn {}(data: &ResourceData, create: bool) -> Result<{returns}, ErrorObject> {{\n    let \
          attributes = data.attributes.as_ref();\n    request::check_attribute_names(attributes, \"{type_name}\", \
          &[{}], &[{}])?;\n    let mut fields = serde_json::Map::new();\n    if create {{\n        \
          fields.insert(\"{}\".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));\n    \
@@ -865,8 +866,8 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
             ));
         }
         out.push_str(&format!(
-            "/// Step 8 of a `{type_name}` create or update: each id the document links\n/// names a resource that \
-             exists, checked in step-7 order.\nasync fn {}(state: &{state_type}, {}linked: &{linked_ty}) -> \
+            "/// Checks that each id a create or update document for `{type_name}` links\n/// names a resource \
+             that exists, in the order the document was read.\nasync fn {}(state: &{state_type}, {}linked: &{linked_ty}) -> \
              Result<(), ErrorObject> {{\n{}{checks}    Ok(())\n}}\n\n",
             check_linked_fn(&m.name, scoped),
             scope_param.unwrap_or_default(),
@@ -1318,8 +1319,7 @@ async fn {handler_name}(
 
         OpKind::JunctionAdd { child_segment } => {
             let child_id_param = if f.params.len() >= 2 { &f.params[1].name } else { "child_id" };
-            // A missing child id is the client's mistake: `400`, not `500`
-            // (E0003 phase 1).
+            // A missing child id is the client's mistake: `400`, not `500`.
             out.push_str(&format!(
                 "\
 async fn {handler_name}(
@@ -1574,9 +1574,9 @@ impl<'a> CustomParams<'a> {
         }
     }
 
-    /// The query and body extractors, Axum's own until phase 1c gives
-    /// custom ops their documents, with their rejections turned into error
-    /// documents. Returns the lines that unwrap them.
+    /// The query and body extractors: Axum's own, since a custom op's
+    /// request is not a JSON:API document, with their rejections turned into
+    /// error documents. Returns the lines that unwrap them.
     fn emit_extractors(&self, out: &mut String, module: &str, fn_name: &str) -> String {
         let mut unwraps = String::new();
         if !self.query.is_empty() {
@@ -1884,8 +1884,8 @@ async fn {handler_name}(
                     routes.add(&format!("{scoped_base}/{{id}}"), "delete", &handler_name);
                 }
 
-                // Scoped junction ops are action-style routes until phase 3a
-                // gives them the `{parent_id}/{child}` form.
+                // Scoped junction ops are served as action-style routes, like
+                // custom ops, not in the unscoped `{parent_id}/{child}` form.
                 OpKind::JunctionList { .. }
                 | OpKind::JunctionAdd { .. }
                 | OpKind::JunctionRemove { .. }

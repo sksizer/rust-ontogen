@@ -38,7 +38,7 @@ use fitness::api::{exercise, workout as workout_1};
 use fitness::schema::{CreateExerciseInput, CreateWorkoutInput, Exercise, UpdateExerciseInput, UpdateWorkoutInput};
 
 /// An `AppError` as an error object: the status its variant's name gives,
-/// and the name in snake_case as the code (§13.4).
+/// and the name in snake_case as the code.
 fn app_error(e: crate::schema::AppError) -> ErrorObject {
     let (status, code) = match &e {
         crate::schema::AppError::WorkoutNotFound(..) => (StatusCode::NOT_FOUND, "workout_not_found"),
@@ -47,12 +47,12 @@ fn app_error(e: crate::schema::AppError) -> ErrorObject {
 }
 
 /// A failure no `AppError` describes: opening the store, a scope accessor,
-/// or an op with another error type (§13.3).
+/// or an op with another error type.
 fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
 
-/// The method fallback of a route serving `allowed` (§13.5).
+/// The method fallback of a route serving `allowed`: `405` with `Allow`.
 fn allow<const N: usize>(
     allowed: [Method; N],
 ) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {

@@ -177,7 +177,7 @@ async fn list_query_parameters_are_checked() {
     // The generated list takes no filter.
     server.get("/api/notes?filter[title]=x").await.error(StatusCode::BAD_REQUEST, "invalid_query_parameter");
 
-    // `sort` and `include` are accepted names that nothing honours yet, and
+    // `sort` and `include` are accepted names that no route honours, and
     // `sort` is checked first (§13.2 step 5).
     let error =
         server.get("/api/notes?include=x&sort=title").await.error(StatusCode::BAD_REQUEST, "invalid_sort_field");

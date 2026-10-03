@@ -5456,7 +5456,7 @@ fn a_resource_module_is_served_as_jsonapi() {
         ".with_relationship(\"epic\", Relationship::from_data(Linkage::ToOne(entity.epic_id.as_ref()\
          .map(|id| ResourceIdentifier::new(\"epics\", id.as_str())))))"
     )));
-    assert!(!http.contains("Relationship::new("), "no relationship links before phase 3a:\n{http}");
+    assert!(!http.contains("Relationship::new("), "a relationship carries no links:\n{http}");
 
     // Requiredness follows `CreateTaskInput`: `title` and `body` have no
     // default, `notes` is an `Option` and `done` carries `#[serde(default)]`.
@@ -5535,7 +5535,7 @@ fn a_module_with_no_entity_keeps_its_handlers() {
             ".route(\"/api/reports/{id}\", get(report_get_by_id).put(report_update).delete(report_delete)\
              .fallback(allow([Method::GET, Method::PUT, Method::DELETE])))"
         )),
-        "an entity-less module keeps PUT until phase 1c:\n{http}"
+        "an entity-less module keeps PUT:\n{http}"
     );
     assert!(http.contains("Result<Json<PaginatedResult<Report>>, ErrorObject>"), "and its success shape:\n{http}");
     assert!(http.contains("input: Result<Json<UpdateReportInput>, JsonRejection>"), "its body stays flat JSON");
@@ -5629,7 +5629,7 @@ fn a_filtered_list_in_a_resource_module_keeps_its_handler() {
     let http = generate_http(tmp.path(), config);
     assert!(
         http.contains("query: Result<axum::extract::Query<ListTagsQuery>, QueryRejection>"),
-        "the filter family is phase 2, so the list keeps its query struct:\n{http}"
+        "no filter is read from the wire, so the list keeps its query struct:\n{http}"
     );
     assert!(http.contains("Result<Json<Vec<Tag>>, ErrorObject>"));
     assert!(compact(&http).contains(&compact("get(tag_get_by_id).patch(tag_update)")), "the rest is served:\n{http}");
