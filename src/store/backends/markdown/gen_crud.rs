@@ -56,6 +56,16 @@ pub(super) fn dir_const(snake: &str) -> String {
     format!("{}_DIR", pluralize(snake).to_uppercase())
 }
 
+fn type_const(snake: &str) -> String {
+    format!("{}_TYPE", snake.to_uppercase())
+}
+
+/// The runtime's typed view of this entity's records, which stamps the OKF
+/// `type` on write and filters a flat vault by it on read.
+fn records(snake: &str) -> String {
+    format!("entity({}, {})", dir_const(snake), type_const(snake))
+}
+
 /// The `into_{snake}` call: bodyful entities thread the document body
 /// through; bodyless entities take only the id.
 fn into_call(snake: &str, entity: &EntityDef, id_expr: &str, doc_var: &str) -> String {
@@ -73,13 +83,13 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let snake = to_snake_case(name);
     let plural = pluralize(&snake);
     let fm = fm_type(name);
-    let dir = dir_const(&snake);
+    let records = records(&snake);
 
     code.push_str(&format!(
         "    pub async fn list_{plural}(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
     ));
     code.push_str(&format!("        let mut {plural} = Vec::new();\n"));
-    code.push_str(&format!("        for (id, doc) in self.vault().read_all({dir}).map_err(AppError::from)? {{\n"));
+    code.push_str(&format!("        for (id, doc) in self.vault().{records}.read_all().map_err(AppError::from)? {{\n"));
     code.push_str(&format!("            let fm: {fm} = doc.deserialize().map_err(AppError::from)?;\n"));
     code.push_str(&format!("            {plural}.push({});\n", into_call(&snake, entity, "id", "doc")));
     code.push_str("        }\n");
@@ -103,14 +113,15 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
 fn generate_count(code: &mut String, entity: &EntityDef) {
     let snake = to_snake_case(&entity.name);
     let plural = pluralize(&snake);
-    let dir = dir_const(&snake);
+    let records = records(&snake);
 
     code.push_str(&format!("    pub async fn count_{plural}(&self) -> Result<u64, AppError> {{\n"));
-    // A count needs the number of records, not their contents: `list_paths`
-    // walks the directory, where `read_all` would also read and parse every
-    // file. Both go through `list_paths`, so the list cap still applies and
-    // an oversized directory fails the same way.
-    code.push_str(&format!("        Ok(self.vault().list_paths({dir}).map_err(AppError::from)?.len() as u64)\n"));
+    // A count needs the number of records, not their contents: the runtime's
+    // `count` walks a per-entity directory without reading a file, where
+    // `read_all` would also parse every one. Both go through `list_paths`,
+    // so the list cap still applies and an oversized directory fails the
+    // same way.
+    code.push_str(&format!("        Ok(self.vault().{records}.count().map_err(AppError::from)? as u64)\n"));
     code.push_str("    }\n\n");
 }
 
@@ -118,13 +129,14 @@ fn generate_get(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let fm = fm_type(name);
-    let dir = dir_const(&snake);
+    let records = records(&snake);
     let not_found = not_found_variant(name);
 
     code.push_str(&format!("    pub async fn get_{snake}(&self, id: &str) -> Result<{name}, AppError> {{\n"));
     code.push_str("        let doc = self\n");
     code.push_str("            .vault()\n");
-    code.push_str(&format!("            .read_record_opt({dir}, id)\n"));
+    code.push_str(&format!("            .{records}\n"));
+    code.push_str("            .read_opt(id)\n");
     code.push_str("            .map_err(AppError::from)?\n");
     code.push_str(&format!("            .ok_or_else(|| AppError::{not_found}(id.to_string()))?;\n"));
     code.push_str(&format!("        let fm: {fm} = doc.deserialize().map_err(AppError::from)?;\n"));
@@ -144,7 +156,7 @@ fn generate_create(code: &mut String, entity: &EntityDef, slug_source: Option<&s
     let snake = to_snake_case(name);
     let fm = fm_type(name);
     let fields = fields_const(&snake);
-    let dir = dir_const(&snake);
+    let records = records(&snake);
     let entity_kind = entity_kind_variant(name);
 
     code.push_str(&format!(
@@ -173,11 +185,11 @@ fn generate_create(code: &mut String, entity: &EntityDef, slug_source: Option<&s
 
     code.push_str("        let id = self\n");
     code.push_str("            .vault()\n");
-    code.push_str("            .create_record_derived(\n");
-    code.push_str(&format!("                {dir},\n"));
+    code.push_str(&format!("            .{records}\n"));
+    code.push_str("            .create(\n");
     code.push_str(&format!("                Some({snake}.id.as_str()).filter(|s| !s.is_empty()),\n"));
     code.push_str(&format!("                {},\n", slug_source_expr(&snake, slug_source)));
-    code.push_str("                &doc,\n");
+    code.push_str("                doc,\n");
     code.push_str("            )\n");
     code.push_str("            .map_err(AppError::from)?;\n\n");
 
@@ -201,7 +213,7 @@ fn generate_update(code: &mut String, entity: &EntityDef) {
     let snake = to_snake_case(name);
     let fm = fm_type(name);
     let fields = fields_const(&snake);
-    let dir = dir_const(&snake);
+    let records = records(&snake);
     let entity_kind = entity_kind_variant(name);
 
     code.push_str(&format!(
@@ -224,7 +236,8 @@ fn generate_update(code: &mut String, entity: &EntityDef) {
     }
 
     code.push_str("        self.vault()\n");
-    code.push_str(&format!("            .modify_record({dir}, id, |doc| {{\n"));
+    code.push_str(&format!("            .{records}\n"));
+    code.push_str("            .modify(id, |doc| {\n");
     code.push_str(&format!("                let fm: {fm} = doc.deserialize()?;\n"));
     code.push_str(&format!(
         "                let mut {snake} = {};\n",
@@ -267,14 +280,14 @@ fn generate_update(code: &mut String, entity: &EntityDef) {
 fn generate_delete(code: &mut String, entity: &EntityDef) {
     let name = &entity.name;
     let snake = to_snake_case(name);
-    let dir = dir_const(&snake);
+    let records = records(&snake);
     let not_found = not_found_variant(name);
     let entity_kind = entity_kind_variant(name);
 
     code.push_str(&format!("    pub async fn delete_{snake}(&self, id: &str) -> Result<(), AppError> {{\n"));
     code.push_str("        hooks::before_delete(self, id).await?;\n\n");
 
-    code.push_str(&format!("        match self.vault().remove_record({dir}, id) {{\n"));
+    code.push_str(&format!("        match self.vault().{records}.remove(id) {{\n"));
     code.push_str("            Ok(()) => {}\n");
     code.push_str("            Err(markdown_store::Error::NotFound { .. }) => {\n");
     code.push_str(&format!("                return Err(AppError::{not_found}(id.to_string()));\n"));
@@ -296,7 +309,7 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let fm = fm_type(name);
-    let dir = dir_const(&snake);
+    let records = records(&snake);
 
     code.push_str(&format!("    pub(crate) async fn populate_{snake}_relations(\n"));
     code.push_str(&format!("        &self,\n        {snake}: &mut crate::schema::{name},\n"));
@@ -318,7 +331,7 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
         let Some(ref fk) = info.foreign_key else { continue };
         code.push_str(&format!("        let mut {fname} = Vec::new();\n", fname = field.name));
         code.push_str(&format!(
-            "        for (child_id, doc) in self.vault().read_all({dir}).map_err(AppError::from)? {{\n"
+            "        for (child_id, doc) in self.vault().{records}.read_all().map_err(AppError::from)? {{\n"
         ));
         code.push_str(&format!("            if child_id == {snake}.id {{\n"));
         code.push_str("                continue;\n");
@@ -348,7 +361,7 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str) {
     let snake = to_snake_case(name);
     let fm = fm_type(name);
     let fields = fields_const(&snake);
-    let dir = dir_const(&snake);
+    let records = records(&snake);
 
     code.push_str(&format!("    async fn set_{snake}_parent(\n"));
     code.push_str("        &self,\n");
@@ -356,7 +369,8 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str) {
     code.push_str("        parent_id: Option<&str>,\n");
     code.push_str("    ) -> Result<(), AppError> {\n");
     code.push_str("        self.vault()\n");
-    code.push_str(&format!("            .modify_record({dir}, child_id, |doc| {{\n"));
+    code.push_str(&format!("            .{records}\n"));
+    code.push_str("            .modify(child_id, |doc| {\n");
     code.push_str(&format!("                let mut fm: {fm} = doc.deserialize()?;\n"));
     code.push_str(&format!("                fm.{fk} = parent_id.map(markdown_store::wikilink::encode);\n"));
     code.push_str(&format!("                doc.merge_serialize(&fm, {fields})\n"));

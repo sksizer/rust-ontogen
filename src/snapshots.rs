@@ -42,7 +42,7 @@ fn simple_role_entity() -> EntityDef {
         name: "Role".to_string(),
         directory: "roles".to_string(),
         table: "roles".to_string(),
-        type_name: "role".to_string(),
+        type_name: "Role".to_string(),
         prefix: "role".to_string(),
         fields: vec![
             FieldDef::new("id", FieldType::String, FieldRole::Id),
@@ -60,7 +60,7 @@ fn comment_belongs_to_post_entity() -> EntityDef {
         name: "Comment".to_string(),
         directory: "comments".to_string(),
         table: "comments".to_string(),
-        type_name: "comment".to_string(),
+        type_name: "Comment".to_string(),
         prefix: "comment".to_string(),
         fields: vec![
             FieldDef::new("id", FieldType::String, FieldRole::Id),
@@ -87,7 +87,7 @@ fn article_mtm_tags_entity() -> EntityDef {
         name: "Article".to_string(),
         directory: "articles".to_string(),
         table: "articles".to_string(),
-        type_name: "article".to_string(),
+        type_name: "Article".to_string(),
         prefix: "article".to_string(),
         fields: vec![
             FieldDef::new("id", FieldType::String, FieldRole::Id),
@@ -205,7 +205,7 @@ fn node_has_many_entity() -> EntityDef {
         name: "Node".to_string(),
         directory: "nodes".to_string(),
         table: "nodes".to_string(),
-        type_name: "node".to_string(),
+        type_name: "Node".to_string(),
         prefix: "node".to_string(),
         fields: vec![
             FieldDef::new("id", FieldType::String, FieldRole::Id),
@@ -287,14 +287,16 @@ fn markdown_store_has_many_entity() {
 #[test]
 fn markdown_count_walks_the_directory_without_parsing_records() {
     // A count needs how many records there are, not what is in them.
-    // `read_all` reads and parses every file in the directory; `list_paths`
-    // only walks it. A paginated page handler calls `count` once per request
+    // `read_all` reads and parses every file in the directory; the entity
+    // view's `count` only walks it (under the per-entity-directory layout;
+    // markdown-store's `per_entity_dir_count_walks_without_parsing` pins
+    // that side). A paginated page handler calls `count` once per request
     // beside `list`, so parsing the whole vault to take `.len()` would make a
     // page cost two full reads of the vault where it used to cost one.
     let code = generate_markdown_store_file(&article_mtm_tags_entity());
     let body = &code[code.find("pub async fn count_").expect("a count method")..];
     let body = &body[..body.find("\n    }").expect("the count method's closing brace")];
-    assert!(body.contains(".list_paths("), "the count walks the directory:\n{body}");
+    assert!(body.contains(".entity(ARTICLES_DIR, ARTICLE_TYPE).count()"), "the count asks the runtime:\n{body}");
     assert!(!body.contains(".read_all("), "the count never reads or parses records:\n{body}");
 }
 
@@ -395,7 +397,7 @@ fn documented_set_entity() -> EntityDef {
         doc: "One working set of an exercise.".to_string(),
         directory: "sets".to_string(),
         table: "sets".to_string(),
-        type_name: "set".to_string(),
+        type_name: "Set".to_string(),
         prefix: "set".to_string(),
         fields: vec![
             documented("Stable id.", FieldDef::new("id", FieldType::String, FieldRole::Id)),

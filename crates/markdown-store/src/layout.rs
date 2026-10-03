@@ -17,9 +17,9 @@ pub enum VaultLayout {
     /// One directory per entity: `<root>/<dir_segment>/<id>.md`. The
     /// default, and the layout ADR 0001 documents.
     PerEntityDir,
-    /// All records directly under the root: `<root>/<id>.md`. With more
-    /// than one entity this relies on a frontmatter type discriminator and
-    /// id prefixes for disambiguation; listings see every entity's files.
+    /// All records directly under the root: `<root>/<id>.md`. Every entity
+    /// shares one id space and raw listings see every entity's files;
+    /// the store's `EntityRecords` view tells them apart by their OKF `type`.
     Flat,
 }
 

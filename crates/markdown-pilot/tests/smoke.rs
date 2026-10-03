@@ -1,8 +1,9 @@
 //! Smoke tests driving the GENERATED markdown store over a real temp vault —
 //! the CI-enforced proof that ADR 0001's markdown backend not only compiles
 //! but behaves: derived slug ids, wikilinked relations on disk, hand-edit
-//! preservation, derived has_many views, and the read-mutate-rewrite
-//! set_parent path.
+//! preservation, derived has_many views, the read-mutate-rewrite
+//! set_parent path, and OKF-shaped records (a `type` first key, reserved
+//! ids, a field renamed off a reserved key).
 
 use markdown_pilot::Store;
 use markdown_pilot::schema::{Note, Task};
@@ -147,4 +148,65 @@ async fn change_events_fire_per_lifecycle() {
     assert_eq!(first.id, created.id);
     let second = rx.try_recv().expect("deleted event");
     assert!(matches!(second.op, markdown_pilot::schema::ChangeOp::Deleted));
+}
+
+#[tokio::test]
+async fn records_are_okf_typed_with_the_renamed_status_key() {
+    let (dir, store) = store();
+    let created = store.create_task(task("Typed record", None, &["codegen"])).await.expect("create");
+
+    let raw = std::fs::read_to_string(dir.path().join(format!("tasks/{}.md", created.id))).expect("file");
+    assert!(raw.starts_with("---\ntype: Task\ntitle: Typed record\n"), "type is the first key: {raw}");
+    assert!(raw.contains("\ntask_status: open\n"), "status is stored under its frontmatter_name: {raw}");
+    assert!(!raw.contains("\nstatus:"), "the OKF-reserved key is never written: {raw}");
+
+    // The rename is invisible above the frontmatter boundary.
+    assert_eq!(created.status, "open");
+    let updated = store
+        .update_task(
+            &created.id,
+            markdown_pilot::store::generated::task::TaskUpdate { status: Some("closed".into()), ..Default::default() },
+        )
+        .await
+        .expect("update");
+    assert_eq!(updated.status, "closed");
+    let raw = std::fs::read_to_string(dir.path().join(format!("tasks/{}.md", created.id))).expect("file");
+    assert!(raw.starts_with("---\ntype: Task\n") && raw.contains("\ntask_status: closed\n"), "{raw}");
+}
+
+#[tokio::test]
+async fn untyped_records_read_and_gain_a_type_on_their_next_real_write() {
+    let (dir, store) = store();
+    let path = dir.path().join("notes/legacy.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let legacy = "---\ntitle: Legacy\n---\nOld body.\n";
+    std::fs::write(&path, legacy).unwrap();
+
+    assert_eq!(store.get_note("legacy").await.expect("untyped reads fine").title, "Legacy");
+    assert_eq!(store.count_notes().await.expect("count"), 1);
+
+    let unchanged = markdown_pilot::store::generated::note::NoteUpdate { title: Some("Legacy".into()), body: None };
+    store.update_note("legacy", unchanged).await.expect("no-op update");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy, "a no-op update writes nothing, type included");
+
+    let edit = markdown_pilot::store::generated::note::NoteUpdate { title: Some("Renamed".into()), body: None };
+    store.update_note("legacy", edit).await.expect("update");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\ntype: Note\ntitle: Renamed\n---\nOld body.\n");
+}
+
+#[tokio::test]
+async fn reserved_ids_dedupe_and_okf_index_files_are_not_records() {
+    let (dir, store) = store();
+    let created = store.create_note(note("Index", "Not a directory listing.\n")).await.expect("create");
+    assert_eq!(created.id, "index-2", "a slug that lands on a reserved id dedupes like a collision");
+
+    std::fs::write(dir.path().join("notes/index.md"), "# Notes\n\n* [Index](index-2.md)\n").unwrap();
+    std::fs::write(dir.path().join("notes/log.md"), "# Log\n\n## 2026-10-03\n* **Creation**: index-2\n").unwrap();
+    let all = store.list_notes(None, None).await.expect("list");
+    assert_eq!(all.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), vec!["index-2"]);
+    assert_eq!(store.count_notes().await.expect("count"), 1);
+
+    let mut explicit = note("Whatever", "");
+    explicit.id = "log".into();
+    assert!(store.create_note(explicit).await.is_err(), "an explicit reserved id is rejected");
 }

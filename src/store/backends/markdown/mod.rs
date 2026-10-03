@@ -59,7 +59,7 @@ impl StoreBackend for MarkdownBackend {
         let shout = snake.to_uppercase();
         let module = &self.md.module_path;
 
-        code.push_str(&format!("use {module}::{snake}::{{{shout}_FM_FIELDS, {name}Frontmatter}};\n"));
+        code.push_str(&format!("use {module}::{snake}::{{{shout}_FM_FIELDS, {shout}_TYPE, {name}Frontmatter}};\n"));
     }
 
     fn emit_declarations(&self, code: &mut String, entity: &EntityDef) {

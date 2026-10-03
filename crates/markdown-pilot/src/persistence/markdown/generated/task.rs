@@ -10,6 +10,7 @@ use crate::schema::Task;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskFrontmatter {
     pub title: String,
+    #[serde(rename = "task_status")]
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
@@ -19,7 +20,11 @@ pub struct TaskFrontmatter {
 
 /// The frontmatter keys this type owns — the full field set, so
 /// `merge_serialize` removes cleared options and preserves hand-added keys.
-pub const TASK_FM_FIELDS: &[&str] = &["title", "status", "parent_id", "tags"];
+pub const TASK_FM_FIELDS: &[&str] = &["title", "task_status", "parent_id", "tags"];
+
+/// The OKF `type` every Task record carries, stamped by the store on
+/// write. Not a field above: reads tolerate it missing or different.
+pub const TASK_TYPE: &str = "Task";
 
 impl TaskFrontmatter {
     pub fn from_task(value: &Task) -> Self {

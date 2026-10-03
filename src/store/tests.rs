@@ -286,7 +286,11 @@ mod tests {
         }
         // Markdown primitives, not SeaORM ones.
         assert!(content.contains("self.vault()"), "markdown store talks to the vault: {content}");
-        assert!(content.contains("create_record_derived"), "create derives ids: {content}");
+        assert!(
+            content.contains(".entity(TAGS_DIR, TAG_TYPE)\n            .create("),
+            "create derives ids through the typed entity view: {content}"
+        );
+        assert!(content.contains("TAG_TYPE"), "the store imports the entity's OKF type: {content}");
         assert!(!content.contains("sea_orm"), "no SeaORM in a markdown module: {content}");
         assert!(!content.contains("self.db()"), "no db() in a markdown module: {content}");
     }

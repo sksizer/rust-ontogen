@@ -131,10 +131,11 @@ fn pilot_committed_generated_trees_match_a_fresh_generation() {
     }
 }
 
-/// The typed-write vault exemplar: building the seeded record through the
-/// runtime's typed path must reproduce `seeded-by-writer.md.golden` byte for
-/// byte — pinning the emitter-side scalar cosmetics (unquoted date-like
-/// strings, single-quoted wikilinks, block lists).
+/// The typed-write vault exemplar: creating the seeded record through the
+/// runtime's typed entity view must reproduce `seeded-by-writer.md.golden`
+/// byte for byte — pinning the OKF `type` as the first key and the
+/// emitter-side scalar cosmetics (unquoted date-like strings, single-quoted
+/// wikilinks, block lists).
 #[test]
 fn typed_write_reproduces_the_seeded_vault_golden() {
     #[derive(serde::Serialize)]
@@ -167,7 +168,16 @@ fn typed_write_reproduces_the_seeded_vault_golden() {
          the two roles are deliberately separate files.\n",
     );
 
-    let rendered = doc.render().expect("render");
+    let vault_dir = tempfile::tempdir().expect("tempdir");
+    let vault = markdown_store::VaultHandle::new(
+        vault_dir.path(),
+        markdown_store::VaultLayout::PerEntityDir,
+        markdown_store::IdStrategy::SlugFromField("title".into()),
+    );
+    let id = vault.entity("tasks", "Task").create(None, Some("Seeded by the typed writer"), doc).expect("typed create");
+    assert_eq!(id, "seeded-by-the-typed-writer");
+
+    let written = read(&vault_dir.path().join("tasks/seeded-by-the-typed-writer.md"));
     let golden = read(&repo().join("tests/golden/markdown-backend/vault/tasks/seeded-by-writer.md.golden"));
-    assert_eq!(rendered, golden, "typed-write output must match the seeded vault golden byte for byte");
+    assert_eq!(written, golden, "typed-write output must match the seeded vault golden byte for byte");
 }

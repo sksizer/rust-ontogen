@@ -8,7 +8,11 @@
 //!   walk — storing them would create dual-write drift with the child FKs).
 //! - `{ENTITY}_FM_FIELDS` — the full owned-key set, passed to
 //!   `markdown_store::Document::merge_serialize` so cleared options are
-//!   removed and hand-added keys survive.
+//!   removed and hand-added keys survive. Keys are the fields' effective
+//!   frontmatter keys (`#[ontology(frontmatter_name)]` renames them).
+//! - `{ENTITY}_TYPE` — the OKF `type` every record carries. The store's
+//!   entity view stamps it on write; the frontmatter struct does not model
+//!   it, so reads tolerate a record without one or with another value.
 //! - `from_{entity}` / `into_{entity}` — the only place wikilink syntax is
 //!   handled: relation ids are encoded (`id` → `[[id]]`) on the way out and
 //!   stripped on the way back. Generated CRUD code never touches brackets.
@@ -76,6 +80,9 @@ pub fn generate_frontmatter_module(entity: &EntityDef) -> String {
         for attr in serde_attrs(field) {
             code.push_str(&format!("    {attr}\n"));
         }
+        if let Some(key) = &field.frontmatter_name {
+            code.push_str(&format!("    #[serde(rename = {key:?})]\n"));
+        }
         code.push_str(&format!("    pub {}: {},\n", field.name, rust_type(field)));
     }
     code.push_str("}\n\n");
@@ -87,9 +94,16 @@ pub fn generate_frontmatter_module(entity: &EntityDef) -> String {
     );
     code.push_str(&format!("pub const {shout}_FM_FIELDS: &[&str] = &[\n"));
     for field in &fields {
-        code.push_str(&format!("    \"{}\",\n", field.name));
+        code.push_str(&format!("    {:?},\n", field.frontmatter_key()));
     }
     code.push_str("];\n\n");
+
+    // ── OKF type ──
+    code.push_str(&format!(
+        "/// The OKF `type` every {name} record carries, stamped by the store on\n\
+         /// write. Not a field above: reads tolerate it missing or different.\n"
+    ));
+    code.push_str(&format!("pub const {shout}_TYPE: &str = {:?};\n\n", entity.type_name));
 
     // ── conversions ──
     code.push_str(&format!("impl {name}Frontmatter {{\n"));
@@ -127,7 +141,7 @@ pub fn generate_frontmatter_module(entity: &EntityDef) -> String {
 
 /// Fields that live in frontmatter: everything except id, body, skip,
 /// persistence-only legacy fields, and `has_many` derived views.
-fn frontmatter_fields(entity: &EntityDef) -> Vec<&FieldDef> {
+pub(crate) fn frontmatter_fields(entity: &EntityDef) -> Vec<&FieldDef> {
     entity
         .fields
         .iter()
@@ -263,7 +277,7 @@ mod tests {
             name: "Task".to_string(),
             directory: "tasks".to_string(),
             table: "tasks".to_string(),
-            type_name: "task".to_string(),
+            type_name: "Task".to_string(),
             prefix: "task".to_string(),
             fields: vec![
                 FieldDef::new("id", FieldType::String, FieldRole::Id),
@@ -307,6 +321,42 @@ mod tests {
         }
         assert!(!code.contains("\"subtasks\""), "derived views are not owned keys: {code}");
         assert!(!code.contains("\"body\""));
+    }
+
+    #[test]
+    fn type_const_carries_the_entity_type_and_is_not_an_owned_key() {
+        let code = generate_frontmatter_module(&task_entity());
+        assert!(code.contains("pub const TASK_TYPE: &str = \"Task\";"), "{code}");
+        assert!(!code.contains("\"type\","), "type is the store's key, not a frontmatter field: {code}");
+        assert!(!code.contains("pub r#type"), "{code}");
+    }
+
+    #[test]
+    fn frontmatter_name_renames_only_the_key() {
+        let mut entity = task_entity();
+        for field in &mut entity.fields {
+            match field.name.as_str() {
+                "estimate" => field.frontmatter_name = Some("task_estimate".into()),
+                "epic_id" => field.frontmatter_name = Some("epic".into()),
+                _ => {}
+            }
+        }
+        let code = generate_frontmatter_module(&entity);
+        assert!(
+            code.contains(
+                "    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n    #[serde(rename = \"task_estimate\")]\n    pub estimate: Option<i64>,"
+            ),
+            "the Rust field keeps its name, serde renames the key: {code}"
+        );
+        assert!(code.contains("#[serde(rename = \"epic\")]\n    pub epic_id: Option<String>,"), "{code}");
+        for key in ["\"title\"", "\"task_estimate\"", "\"epic\"", "\"tags\""] {
+            assert!(code.contains(&format!("    {key},\n")), "owned keys list the effective key {key}: {code}");
+        }
+        assert!(!code.contains("    \"estimate\",\n"), "{code}");
+        // The renamed relation still wikilink-encodes and strips by Rust name.
+        assert!(code.contains("epic_id: value.epic_id.as_deref().map(markdown_store::wikilink::encode)"));
+        assert!(code.contains("epic_id: markdown_store::wikilink::strip_opt(self.epic_id)"));
+        syn::parse_file(&code).expect("valid Rust");
     }
 
     #[test]

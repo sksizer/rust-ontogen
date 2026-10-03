@@ -22,8 +22,9 @@ pub struct EntityDef {
     /// Defaults to snake_case of `name` if not specified.
     pub table: String,
 
-    /// The `type:` value in frontmatter YAML (e.g., `"node"`).
-    /// Defaults to snake_case of `name` if not specified.
+    /// The OKF `type:` value the markdown backend writes into every
+    /// record's frontmatter (e.g., `"Node"`). Defaults to `name`, the
+    /// struct name, if not specified.
     pub type_name: String,
 
     /// ID prefix for global uniqueness (e.g., `"node"`, `"req"`).
@@ -60,6 +61,12 @@ pub struct FieldDef {
     /// If set, only render this field when the value differs from the default.
     /// E.g., `default_value = "active"` means skip rendering when value == "active".
     pub default_value: Option<String>,
+
+    /// `#[ontology(frontmatter_name = "...")]`: the markdown frontmatter key
+    /// for this field when it differs from the Rust name, e.g. to keep a
+    /// `status` field off the key OKF reserves. Only the markdown backend
+    /// reads it; every other layer keeps the Rust name.
+    pub frontmatter_name: Option<String>,
 }
 
 /// Simplified representation of a Rust field type, capturing only what codegen
@@ -190,6 +197,17 @@ impl FieldDef {
             serde_default: false,
             multiline_list: false,
             default_value: None,
+            frontmatter_name: None,
+        }
+    }
+
+    /// The key this field is stored under in markdown frontmatter: its
+    /// `frontmatter_name` if set, else the Rust name without any `r#`
+    /// prefix (serde strips it too, so `r#type` is stored as `type`).
+    pub fn frontmatter_key(&self) -> &str {
+        match &self.frontmatter_name {
+            Some(key) => key,
+            None => self.name.strip_prefix("r#").unwrap_or(&self.name),
         }
     }
 
@@ -241,5 +259,22 @@ impl EntityDef {
             FieldRole::Relation(info) if info.kind == RelationKind::BelongsTo => Some((f, info)),
             _ => None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frontmatter_key_prefers_the_rename_and_strips_raw_prefixes() {
+        let plain = FieldDef::new("status", FieldType::String, FieldRole::Plain);
+        assert_eq!(plain.frontmatter_key(), "status");
+
+        let raw = FieldDef::new("r#type", FieldType::String, FieldRole::Plain);
+        assert_eq!(raw.frontmatter_key(), "type");
+
+        let renamed = FieldDef { frontmatter_name: Some("task_status".into()), ..plain };
+        assert_eq!(renamed.frontmatter_key(), "task_status");
     }
 }

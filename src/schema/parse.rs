@@ -143,7 +143,7 @@ fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityD
     let default_snake = to_snake_case(&name);
     let directory = struct_attrs.directory.unwrap_or_else(|| default_snake.clone());
     let table = struct_attrs.table.unwrap_or_else(|| default_snake.clone());
-    let type_name = struct_attrs.type_name.unwrap_or_else(|| default_snake.clone());
+    let type_name = struct_attrs.type_name.unwrap_or_else(|| name.clone());
     let prefix = struct_attrs.prefix.unwrap_or_else(|| default_snake.clone());
 
     validate_identifier("directory", &directory).map_err(|e| format!("entity `{name}`: {e}"))?;
@@ -254,6 +254,7 @@ fn parse_field(field: &Field) -> Result<FieldDef, String> {
         serde_default,
         multiline_list: ontology_attrs.multiline_list,
         default_value: ontology_attrs.default_value,
+        frontmatter_name: ontology_attrs.frontmatter_name,
     })
 }
 
@@ -284,11 +285,17 @@ struct FieldOntologyAttrs {
     role: FieldRole,
     multiline_list: bool,
     default_value: Option<String>,
+    frontmatter_name: Option<String>,
 }
 
 /// Parse all `#[ontology(...)]` field-level attributes, collecting role and rendering hints.
 fn parse_field_ontology_attrs(field_name: &str, attrs: &[Attribute]) -> Result<FieldOntologyAttrs, String> {
-    let mut result = FieldOntologyAttrs { role: FieldRole::Plain, multiline_list: false, default_value: None };
+    let mut result = FieldOntologyAttrs {
+        role: FieldRole::Plain,
+        multiline_list: false,
+        default_value: None,
+        frontmatter_name: None,
+    };
 
     for attr in attrs {
         if !attr.path().is_ident("ontology") {
@@ -318,12 +325,28 @@ fn parse_field_ontology_attrs(field_name: &str, attrs: &[Attribute]) -> Result<F
                 Meta::NameValue(nv) if nv.path.is_ident("default_value") => {
                     result.default_value = expr_to_string(&nv.value);
                 }
+                Meta::NameValue(nv) if nv.path.is_ident("frontmatter_name") => {
+                    let key = expr_to_string(&nv.value).ok_or("frontmatter_name must be a string literal")?;
+                    validate_frontmatter_key(&key)?;
+                    result.frontmatter_name = Some(key);
+                }
                 _ => {}
             }
         }
     }
 
     Ok(result)
+}
+
+/// Validate a `frontmatter_name` value: a plain YAML key that never needs
+/// quoting, `[A-Za-z_][A-Za-z0-9_-]*`. Key-level rules that need the whole
+/// entity (collisions, the reserved `type`) are checked by the markdown
+/// generator, the only consumer of the key.
+fn validate_frontmatter_key(key: &str) -> Result<(), String> {
+    let mut chars = key.chars();
+    let valid = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if valid { Ok(()) } else { Err(format!("invalid frontmatter_name=`{key}`: must match [A-Za-z_][A-Za-z0-9_-]*")) }
 }
 
 /// Parse `#[ontology(relation(kind, target = "...", ...))]` into a `RelationInfo`.
@@ -610,7 +633,7 @@ mod tests {
         assert_eq!(node.name, "Node");
         assert_eq!(node.directory, "nodes");
         assert_eq!(node.table, "nodes");
-        assert_eq!(node.type_name, "node");
+        assert_eq!(node.type_name, "Node", "the OKF type defaults to the struct name");
         assert_eq!(node.prefix, "node");
 
         // id field
@@ -746,7 +769,7 @@ mod tests {
         let agent = &entities[0];
         assert_eq!(agent.directory, "agent");
         assert_eq!(agent.table, "agent");
-        assert_eq!(agent.type_name, "agent");
+        assert_eq!(agent.type_name, "Agent");
         assert_eq!(agent.prefix, "agent");
     }
 
@@ -770,7 +793,7 @@ mod tests {
         let ws = &entities[0];
         assert_eq!(ws.directory, "work_session"); // inferred from name
         assert_eq!(ws.table, "work_sessions"); // overridden
-        assert_eq!(ws.type_name, "work_session"); // inferred
+        assert_eq!(ws.type_name, "WorkSession"); // inferred from the struct name
         assert_eq!(ws.prefix, "session"); // overridden
     }
 
@@ -792,6 +815,76 @@ mod tests {
 
         let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
         assert_eq!(entities[0].type_name, "work_session");
+    }
+
+    #[test]
+    fn parse_frontmatter_name() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity, directory = "tasks")]
+            pub struct Task {
+                #[ontology(id)]
+                pub id: String,
+
+                #[ontology(frontmatter_name = "task_status")]
+                pub status: String,
+
+                #[ontology(relation(belongs_to, target = "Task"), frontmatter_name = "parent")]
+                pub parent_id: Option<String>,
+
+                pub title: String,
+            }
+        "#;
+
+        let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
+        let field = |name: &str| entities[0].fields.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(field("status").frontmatter_name.as_deref(), Some("task_status"));
+        assert_eq!(field("status").frontmatter_key(), "task_status");
+        assert_eq!(field("parent_id").frontmatter_key(), "parent");
+        assert!(matches!(field("parent_id").role, FieldRole::Relation(_)), "the rename leaves the role alone");
+        assert_eq!(field("title").frontmatter_name, None);
+        assert_eq!(field("title").frontmatter_key(), "title");
+    }
+
+    #[test]
+    fn frontmatter_name_must_be_a_plain_yaml_key() {
+        for bad in ["", "1st", "task status", "task:status", "-lead", "k\u{e9}y", "a.b"] {
+            let source = format!(
+                r#"
+                #[derive(OntologyEntity)]
+                #[ontology(entity)]
+                pub struct Task {{
+                    #[ontology(id)]
+                    pub id: String,
+                    #[ontology(frontmatter_name = "{bad}")]
+                    pub status: String,
+                }}
+                "#
+            );
+            let err = parse_schema_source(&source, Path::new("test.rs")).unwrap_err();
+            assert!(err.contains("field `status`") && err.contains("frontmatter_name"), "{bad:?}: {err}");
+        }
+        for good in ["task_status", "_private", "kebab-key", "Key2"] {
+            assert!(validate_frontmatter_key(good).is_ok(), "{good:?} must be accepted");
+        }
+    }
+
+    #[test]
+    fn frontmatter_name_must_be_a_string_literal() {
+        let source = r#"
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Task {
+                #[ontology(id)]
+                pub id: String,
+                #[ontology(frontmatter_name = 3)]
+                pub status: String,
+            }
+        "#;
+        let err = parse_schema_source(source, Path::new("test.rs")).unwrap_err();
+        assert!(err.contains("string literal"), "{err}");
     }
 
     #[test]
