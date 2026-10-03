@@ -9,8 +9,10 @@
 //! concurrent writers in other processes.
 
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
+    time::SystemTime,
 };
 
 use crate::{
@@ -19,6 +21,7 @@ use crate::{
     fsops,
     id::IdStrategy,
     layout::VaultLayout,
+    okf,
     walk::{self, WalkOptions},
 };
 
@@ -27,8 +30,109 @@ use crate::{
 /// makes exceeding it a loud error instead of a slow surprise.
 pub const DEFAULT_LIST_CAP: usize = 10_000;
 
+/// The OKF 0.2 artifacts a [`VaultHandle`] writes beside its records, set
+/// with [`VaultHandle::with_okf`]. The default writes neither; the vault is
+/// an OKF 0.2 bundle either way.
+///
+/// ```
+/// use std::{sync::Arc, time::{Duration, SystemTime}};
+/// use markdown_store::{Document, IdStrategy, OkfPolicy, VaultHandle, VaultLayout};
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let fixed = SystemTime::UNIX_EPOCH + Duration::from_secs(1_791_036_309);
+/// let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::Provided).with_okf(OkfPolicy {
+///     index: true,
+///     generated_by: Some("my-app/1.0.0".into()),
+///     clock: Arc::new(move || fixed),
+/// });
+/// vault.entity("notes", "Note").create(Some("n-1"), None, Document::new())?;
+/// let read = |p: &str| std::fs::read_to_string(dir.path().join(p)).unwrap();
+/// assert_eq!(read("notes/n-1.md"), "---\ntype: Note\ngenerated:\n  by: my-app/1.0.0\n  at: 2026-10-03T14:05:09Z\n---\n");
+/// assert_eq!(read("notes/index.md"), "# Note\n\n* [n-1](n-1.md)\n");
+/// # Ok::<(), markdown_store::Error>(())
+/// ```
+#[derive(Clone)]
+pub struct OkfPolicy {
+    /// Keep an `index.md` (OKF §8) in the vault root and in every directory
+    /// that holds records at any depth.
+    ///
+    /// Each lists that directory's records under one `# <type>` heading per
+    /// OKF `type` (sorted; records without a string `type` last, under
+    /// `# Untyped`) as `* [<title>](<file>) - <description>`, then its
+    /// subdirectories that hold records under `# Directories`. A type that
+    /// would read as one of those two headings is headed `<type> (type)`.
+    /// Titles, descriptions and types are written as they are, except that
+    /// `` \ ` * _ [ ] < & # ~ $ % = ^ `` are backslash-escaped, so a
+    /// record's text never turns into markup (CommonMark or Obsidian's)
+    /// while an agent reading the file raw sees it nearly verbatim. The
+    /// root index carries `okf_version: "0.2"` as its only frontmatter.
+    ///
+    /// After every real write (a create, an update that changed something,
+    /// a delete) the record's directory and each ancestor up to the root are
+    /// regenerated under the write lock, each written atomically and only
+    /// when its bytes would change. The store owns the `index.md` of every
+    /// directory that holds records and overwrites whatever is there, a
+    /// hand-written one included. When a directory loses its last record its
+    /// index is removed if it has the store's shape and every link in it
+    /// dangles; any other `index.md` is left alone (the exact rule is under
+    /// [`VaultHandle::rebuild_indexes`]). Turning the option on does not
+    /// touch the vault by itself: `rebuild_indexes` writes the indexes of
+    /// records that already exist.
+    ///
+    /// Regenerating one index parses the records directly in its directory
+    /// and walks each subdirectory only until its first record. A write
+    /// regenerates its directory and every ancestor, so it parses the
+    /// records that sit directly in each directory on that path; under
+    /// [`VaultLayout::Flat`] that is every record in the vault. That fits
+    /// the backend's small-N stance.
+    pub index: bool,
+    /// Stamp `generated: { by: <actor>, at: <now> }` (OKF §5.2) on every
+    /// real write: every create, and every update that changes the record.
+    /// The stamp replaces an existing `generated` value in place, or is
+    /// appended after the other keys; an update that changes nothing leaves
+    /// the file and its stamp alone.
+    ///
+    /// The actor is written verbatim. It should be an OKF §7 actor naming a
+    /// program, `<producer>/<version>` or `process:<id>`, never
+    /// `human:<id>`, which trust tiers reserve for people; ontogen's
+    /// generator validates the value it emits into `open_vault`.
+    pub generated_by: Option<String>,
+    /// The time source for `generated.at`, [`SystemTime::now`] by default.
+    /// Stamps are UTC with second precision. A test fixes it to make stamps
+    /// deterministic.
+    pub clock: Arc<dyn Fn() -> SystemTime + Send + Sync>,
+}
+
+impl Default for OkfPolicy {
+    fn default() -> Self {
+        Self { index: false, generated_by: None, clock: Arc::new(SystemTime::now) }
+    }
+}
+
+impl std::fmt::Debug for OkfPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OkfPolicy")
+            .field("index", &self.index)
+            .field("generated_by", &self.generated_by)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Handle to one markdown vault: root path, layout, id strategy, walk
-/// options, list cap, and the shared write lock.
+/// options, list cap, the [`OkfPolicy`], and the shared write lock.
+///
+/// # Index files and failures
+///
+/// With [`OkfPolicy::index`] on, the record and its indexes are separate
+/// atomic renames, not one transaction. Once the record is written the
+/// write has succeeded: a failure to refresh an index afterwards does not
+/// fail it, because reporting an error for a committed record invites a
+/// retry that would create the record twice. The index is left stale but
+/// still valid and listed by [`stale_indexes`](Self::stale_indexes) until
+/// the next real write in that directory, or
+/// [`rebuild_indexes`](Self::rebuild_indexes), brings it current. A crash
+/// between the two renames leaves the same stale-but-valid index, which is
+/// not listed (the list lives in memory).
 ///
 /// ```
 /// use markdown_store::{Document, IdStrategy, VaultHandle, VaultLayout};
@@ -53,7 +157,11 @@ pub struct VaultHandle {
     id_strategy: IdStrategy,
     walk: WalkOptions,
     list_cap: usize,
+    okf: OkfPolicy,
     write_guard: Arc<Mutex<()>>,
+    /// Directories whose index refresh failed after a committed write and
+    /// has not succeeded since. Shared by clones, like the write lock.
+    stale: Arc<Mutex<BTreeSet<PathBuf>>>,
 }
 
 impl VaultHandle {
@@ -66,7 +174,9 @@ impl VaultHandle {
             id_strategy,
             walk: WalkOptions::default(),
             list_cap: DEFAULT_LIST_CAP,
+            okf: OkfPolicy::default(),
             write_guard: Arc::new(Mutex::new(())),
+            stale: Arc::default(),
         }
     }
 
@@ -76,9 +186,19 @@ impl VaultHandle {
         self
     }
 
-    /// Override the walk options used for listing.
+    /// Override the walk options used for listing. Index files see the
+    /// vault through the same options.
     pub fn with_walk_options(mut self, walk: WalkOptions) -> Self {
         self.walk = walk;
+        self
+    }
+
+    /// Write the OKF artifacts `policy` asks for on every real write: index
+    /// files, `generated` stamps, or both (see [`OkfPolicy`]). With
+    /// [`OkfPolicy::index`] on, the store owns the `index.md` of every
+    /// directory holding records and overwrites a hand-written one there.
+    pub fn with_okf(mut self, policy: OkfPolicy) -> Self {
+        self.okf = policy;
         self
     }
 
@@ -100,6 +220,11 @@ impl VaultHandle {
     /// The configured per-list cap.
     pub fn list_cap(&self) -> usize {
         self.list_cap
+    }
+
+    /// The OKF artifacts writes produce.
+    pub fn okf(&self) -> &OkfPolicy {
+        &self.okf
     }
 
     // ── paths ───────────────────────────────────────────────────────────
@@ -156,7 +281,7 @@ impl VaultHandle {
         if fsops::exists(&path) {
             return Err(Error::AlreadyExists { path });
         }
-        fsops::write_atomic(&path, &doc.render()?)
+        self.write_new(&path, doc)
     }
 
     /// Create a record whose id is derived by the vault's [`IdStrategy`],
@@ -186,7 +311,7 @@ impl VaultHandle {
         if fsops::exists(&path) {
             return Err(Error::AlreadyExists { path });
         }
-        fsops::write_atomic(&path, &doc.render()?)?;
+        self.write_new(&path, doc)?;
         Ok(id)
     }
 
@@ -199,7 +324,7 @@ impl VaultHandle {
     {
         let path = self.record_path(dir_segment, id)?;
         let _guard = self.lock();
-        fsops::read_modify_write(&path, f)
+        self.rewrite(&path, f)
     }
 
     /// Remove a record under the write lock. Missing record is
@@ -207,7 +332,180 @@ impl VaultHandle {
     pub fn remove_record(&self, dir_segment: &str, id: &str) -> Result<(), Error> {
         let path = self.record_path(dir_segment, id)?;
         let _guard = self.lock();
-        fsops::remove(&path)
+        self.delete(&path)
+    }
+
+    // ── the write paths every mutation funnels through ─────────────────
+    //
+    // Callers hold the write lock. Keeping provenance stamping and index
+    // upkeep here, and nowhere else, is what keeps the typed and untyped
+    // paths from drifting apart.
+
+    /// Write a new record: always a real write, so always stamped.
+    fn write_new(&self, path: &Path, doc: &Document) -> Result<(), Error> {
+        let rendered = match &self.okf.generated_by {
+            Some(by) => {
+                let mut doc = doc.clone();
+                doc.set(okf::GENERATED_KEY, okf::generated_stamp(by, (self.okf.clock)()));
+                doc.render()?
+            }
+            None => doc.render()?,
+        };
+        fsops::write_atomic(path, &rendered)?;
+        self.refresh_indexes(path);
+        Ok(())
+    }
+
+    /// Read-modify-write a record. `f` runs any typed stamping itself;
+    /// only a document still dirty afterwards is stamped and written, so a
+    /// no-op leaves the record and every index untouched.
+    fn rewrite<F>(&self, path: &Path, f: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut Document) -> Result<(), Error>,
+    {
+        let mut written = false;
+        fsops::read_modify_write(path, |doc| {
+            f(doc)?;
+            if doc.is_dirty() {
+                if let Some(by) = &self.okf.generated_by {
+                    doc.set(okf::GENERATED_KEY, okf::generated_stamp(by, (self.okf.clock)()));
+                }
+                written = true;
+            }
+            Ok(())
+        })?;
+        if written {
+            self.refresh_indexes(path);
+        }
+        Ok(())
+    }
+
+    fn delete(&self, path: &Path) -> Result<(), Error> {
+        fsops::remove(path)?;
+        self.refresh_indexes(path);
+        Ok(())
+    }
+
+    /// Regenerate the index of the record's directory and of each ancestor
+    /// up to the root, when indexes are on. Runs after the record is
+    /// committed, so a failure only marks that directory's index stale (see
+    /// [`stale_indexes`](Self::stale_indexes)) and the remaining ancestors
+    /// are still tried.
+    fn refresh_indexes(&self, record: &Path) {
+        if !self.okf.index {
+            return;
+        }
+        let mut dir = record.parent();
+        while let Some(current) = dir.filter(|d| d.starts_with(&self.root)) {
+            let is_root = current == self.root;
+            let _ = self.sync_index(current);
+            if is_root {
+                break;
+            }
+            dir = current.parent();
+        }
+    }
+
+    /// Bring one directory's index current, keeping the stale list in step
+    /// with the outcome.
+    fn sync_index(&self, dir: &Path) -> Result<(), Error> {
+        let result = okf::sync_index(dir, dir == self.root, &self.walk);
+        let mut stale = self.stale.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if result.is_ok() {
+            stale.remove(dir);
+        } else {
+            stale.insert(dir.to_path_buf());
+        }
+        result
+    }
+
+    // ── OKF indexes ─────────────────────────────────────────────────────
+
+    /// Regenerate every OKF `index.md` in the vault from the records on
+    /// disk, and remove each stale one the store wrote for a directory that
+    /// no longer holds a record. Indexes whose bytes would not change are
+    /// not rewritten.
+    ///
+    /// A directory that holds records at any depth gets the store's index
+    /// whatever its `index.md` held before, so a hand-written list of the
+    /// records beside it is replaced. In a directory without records an
+    /// `index.md` is removed only when both hold:
+    ///
+    /// - It has exactly the shape the store writes: optionally the root
+    ///   frontmatter (`okf_version: "0.2"` and nothing else), then one or
+    ///   more sections, each a `# <heading>` line, a blank line and one or
+    ///   more `* [<text>](<link>)` entries, each optionally followed by
+    ///   ` - <description>`, with one blank line between sections and a
+    ///   single trailing newline; every link a percent-encoded record file
+    ///   name (an extension from the walk options) or a percent-encoded
+    ///   directory name ending in `/`.
+    /// - Every link in it dangles: a file link names a file that does not
+    ///   exist, and a directory link names a directory that does not exist
+    ///   or in which the walk finds no file but `index.md` files.
+    ///
+    /// A store-shaped file whose links all dangle is treated as the store's
+    /// and removed. Anything else stays: an Obsidian folder note, a
+    /// hand-kept listing of attachments, or a list in the store's shape
+    /// that links a folder of images or another file that is still there.
+    /// The same rule applies when a write empties a directory.
+    ///
+    /// This is the repair path after a crash or an edit made outside the
+    /// handle, and how a seed vault's indexes are produced. It runs
+    /// whether or not [`OkfPolicy::index`] is on: it is
+    /// an explicit request, though without the option later writes will
+    /// not keep the indexes current. Reads every record in the vault.
+    /// Unlike a record write it fails on the first index it cannot write;
+    /// on success [`stale_indexes`](Self::stale_indexes) is empty.
+    ///
+    /// ```
+    /// use markdown_store::{Document, IdStrategy, VaultHandle, VaultLayout};
+    ///
+    /// let dir = tempfile::tempdir().unwrap();
+    /// let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::Provided);
+    /// let mut doc = Document::new();
+    /// doc.set("title", "First note");
+    /// doc.set("description", "Where it starts.");
+    /// vault.entity("notes", "Note").create(Some("first"), None, doc)?;
+    ///
+    /// vault.rebuild_indexes()?;
+    /// let read = |p: &str| std::fs::read_to_string(dir.path().join(p)).unwrap();
+    /// assert_eq!(read("index.md"), "---\nokf_version: \"0.2\"\n---\n\n# Directories\n\n* [notes](notes/)\n");
+    /// assert_eq!(read("notes/index.md"), "# Note\n\n* [First note](first.md) - Where it starts.\n");
+    /// # Ok::<(), markdown_store::Error>(())
+    /// ```
+    pub fn rebuild_indexes(&self) -> Result<(), Error> {
+        let _guard = self.lock();
+        let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
+        for record in walk::list_record_paths(&self.root, &self.walk)? {
+            let mut dir = record.parent();
+            while let Some(current) = dir.filter(|d| d.starts_with(&self.root)) {
+                if !dirs.insert(current.to_path_buf()) || current == self.root {
+                    break;
+                }
+                dir = current.parent();
+            }
+        }
+        for dir in &dirs {
+            self.sync_index(dir)?;
+        }
+        for index in walk::list_index_paths(&self.root, &self.walk)? {
+            if index.parent().is_some_and(|dir| !dirs.contains(dir)) {
+                okf::remove_if_dangling(&index, &self.walk)?;
+            }
+        }
+        self.stale.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+        Ok(())
+    }
+
+    /// The `index.md` files whose refresh failed (an I/O error, say) after
+    /// a write had committed its record, sorted. Each stays listed until a
+    /// later real write in its directory, or
+    /// [`rebuild_indexes`](Self::rebuild_indexes), refreshes it. The list
+    /// lives in memory and is shared by clones; it knows nothing of edits
+    /// made outside the handle.
+    pub fn stale_indexes(&self) -> Vec<PathBuf> {
+        let stale = self.stale.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        stale.iter().map(|dir| dir.join(okf::INDEX_FILE)).collect()
     }
 
     // ── listing ─────────────────────────────────────────────────────────
@@ -441,7 +739,7 @@ impl<'a> EntityRecords<'a> {
     {
         let path = self.vault.record_path(self.dir_segment, id)?;
         let _guard = self.vault.lock();
-        fsops::read_modify_write(&path, |doc| {
+        self.vault.rewrite(&path, |doc| {
             if !self.admits(doc) {
                 return Err(Error::NotFound { path: path.clone() });
             }
@@ -467,7 +765,7 @@ impl<'a> EntityRecords<'a> {
                 return Err(Error::NotFound { path });
             }
         }
-        fsops::remove(&path)
+        self.vault.delete(&path)
     }
 }
 
@@ -834,5 +1132,453 @@ mod tests {
 
         let read = vault.read_record("tasks", "t").unwrap();
         assert_eq!(read.get("count").and_then(|v| v.as_i64()), Some(100), "no lost updates");
+    }
+
+    // ── OKF index files ─────────────────────────────────────────────────
+
+    fn indexed(layout: VaultLayout) -> (tempfile::TempDir, VaultHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = VaultHandle::new(dir.path(), layout, IdStrategy::Provided)
+            .with_okf(OkfPolicy { index: true, ..OkfPolicy::default() });
+        (dir, handle)
+    }
+
+    fn file(root: &Path, rel: &str) -> Option<String> {
+        fsops::read_opt(&root.join(rel)).unwrap()
+    }
+
+    fn titled(title: &str, description: Option<&str>) -> Document {
+        let mut d = Document::new();
+        d.set("title", title);
+        if let Some(description) = description {
+            d.set("description", description);
+        }
+        d
+    }
+
+    #[cfg(unix)]
+    fn stamp_of(path: &Path) -> (u64, i64, i64) {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).unwrap();
+        (meta.ino(), meta.mtime(), meta.mtime_nsec())
+    }
+
+    #[test]
+    fn indexes_group_records_by_type_and_list_subdirectories() {
+        let (dir, vault) = indexed(VaultLayout::PerEntityDir);
+        let root = dir.path();
+        let tasks = vault.entity("tasks", "Task");
+        tasks.create(Some("b-ship"), None, titled("Ship [v2]", Some("Cut the\n  release."))).unwrap();
+        tasks.create(Some("a-plan"), None, titled("Plan", None)).unwrap();
+        vault.entity("tasks", "Chore").create(Some("c-sweep"), None, Document::new()).unwrap();
+        vault.create_record("tasks", "d-loose", &titled("Loose", Some("no type"))).unwrap();
+        vault.entity("notes", "Note").create(Some("n"), None, titled("A note", None)).unwrap();
+
+        assert_eq!(
+            file(root, "index.md").unwrap(),
+            "---\nokf_version: \"0.2\"\n---\n\n# Directories\n\n* [notes](notes/)\n* [tasks](tasks/)\n"
+        );
+        assert_eq!(
+            file(root, "tasks/index.md").unwrap(),
+            "# Chore\n\n\
+             * [c-sweep](c-sweep.md)\n\
+             \n\
+             # Task\n\n\
+             * [Plan](a-plan.md)\n\
+             * [Ship \\[v2\\]](b-ship.md) - Cut the release.\n\
+             \n\
+             # Untyped\n\n\
+             * [Loose](d-loose.md) - no type\n",
+            "sections sorted by type, untyped last; entries by id; titles fall back to the id; text is escaped"
+        );
+        assert_eq!(file(root, "notes/index.md").unwrap(), "# Note\n\n* [A note](n.md)\n");
+        assert_eq!(
+            vault.list_ids("tasks").unwrap(),
+            ["a-plan", "b-ship", "c-sweep", "d-loose"],
+            "index.md is no record"
+        );
+    }
+
+    #[test]
+    fn index_text_is_inert_markdown_and_types_never_take_the_stores_own_headings() {
+        let (dir, vault) = indexed(VaultLayout::PerEntityDir);
+        let mk = |type_name: &str, id: &str, title: &str, description: Option<&str>| {
+            vault.entity("things", type_name).create(Some(id), None, titled(title, description)).unwrap();
+        };
+        mk("Directories", "a", "A", None);
+        mk("Untyped", "b", "B", None);
+        mk("C# *notes*", "c", "<!-- hidden", Some("<b>bold</b> & `code` | _x_ $y$ %%z%% ==w== #tag"));
+        vault.create_record("things", "d", &titled("D", None)).unwrap();
+        fsops::write_atomic(&dir.path().join("things/sub/e.md"), "---\ntype: Note\n---\n").unwrap();
+        vault.rebuild_indexes().unwrap();
+
+        assert_eq!(
+            file(dir.path(), "things/index.md").unwrap(),
+            "# C\\# \\*notes\\*\n\n\
+             * [\\<!-- hidden](c.md) - \\<b>bold\\</b> \\& \\`code\\` | \\_x\\_ \\$y\\$ \\%\\%z\\%\\% \\=\\=w\\=\\= \\#tag\n\
+             \n\
+             # Directories (type)\n\n\
+             * [A](a.md)\n\
+             \n\
+             # Untyped (type)\n\n\
+             * [B](b.md)\n\
+             \n\
+             # Untyped\n\n\
+             * [D](d.md)\n\
+             \n\
+             # Directories\n\n\
+             * [sub](sub/)\n"
+        );
+        let index = file(dir.path(), "things/index.md").unwrap();
+        assert!(okf::store_links(&index, &WalkOptions::default()).is_some(), "escaped text keeps the store's shape");
+    }
+
+    #[test]
+    fn writes_keep_indexes_current_and_empty_directories_lose_theirs() {
+        let (dir, vault) = indexed(VaultLayout::PerEntityDir);
+        let root = dir.path();
+        let (tasks, notes) = (vault.entity("tasks", "Task"), vault.entity("notes", "Note"));
+        tasks.create(Some("t"), None, titled("Before", None)).unwrap();
+        notes.create(Some("n"), None, titled("Note", None)).unwrap();
+
+        tasks
+            .modify("t", |d| {
+                d.set("title", "After");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(file(root, "tasks/index.md").unwrap(), "# Task\n\n* [After](t.md)\n");
+
+        tasks.create(Some("u"), None, titled("Second", None)).unwrap();
+        tasks.remove("t").unwrap();
+        assert_eq!(file(root, "tasks/index.md").unwrap(), "# Task\n\n* [Second](u.md)\n");
+
+        tasks.remove("u").unwrap();
+        assert_eq!(file(root, "tasks/index.md"), None, "a directory without records has no index");
+        assert_eq!(
+            file(root, "index.md").unwrap(),
+            "---\nokf_version: \"0.2\"\n---\n\n# Directories\n\n* [notes](notes/)\n",
+            "and the root stops linking it"
+        );
+
+        vault.remove_record("notes", "n").unwrap();
+        assert_eq!(file(root, "index.md"), None, "an empty vault has no index");
+    }
+
+    #[test]
+    fn the_store_overwrites_any_index_beside_records_and_removes_only_its_own() {
+        let (dir, vault) = indexed(VaultLayout::PerEntityDir);
+        let root = dir.path();
+        let tasks = vault.entity("tasks", "Task");
+        let note = "# My tasks\n\nA folder note, kept by hand.\n";
+        fsops::write_atomic(&root.join("tasks/index.md"), note).unwrap();
+        tasks.create(Some("t"), None, titled("T", None)).unwrap();
+        assert_eq!(
+            file(root, "tasks/index.md").unwrap(),
+            "# Task\n\n* [T](t.md)\n",
+            "beside records the store owns it"
+        );
+
+        fsops::write_atomic(&root.join("tasks/index.md"), note).unwrap();
+        tasks.remove("t").unwrap();
+        assert_eq!(file(root, "tasks/index.md").unwrap(), note, "without records a hand-written index stays");
+        assert_eq!(file(root, "index.md"), None, "the root's generated index goes with its last record");
+
+        tasks.create(Some("t"), None, titled("T", None)).unwrap();
+        fsops::write_atomic(&root.join("tasks/diagrams/flow.png"), "png").unwrap();
+        let listing = "# Files\n\n* [Diagrams](diagrams/)\n* [T](t.md)\n";
+        fsops::write_atomic(&root.join("tasks/index.md"), listing).unwrap();
+        tasks.remove("t").unwrap();
+        assert_eq!(file(root, "tasks/index.md").unwrap(), listing, "a store-shaped list stays while a link resolves");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_leave_unchanged_indexes_and_noop_updates_leave_everything_alone() {
+        let (dir, vault) = indexed(VaultLayout::PerEntityDir);
+        let root = dir.path();
+        let tasks = vault.entity("tasks", "Task");
+        tasks.create(Some("t"), None, titled("Title", None)).unwrap();
+        let root_index = stamp_of(&root.join("index.md"));
+        let task_index = stamp_of(&root.join("tasks/index.md"));
+        let record = stamp_of(&root.join("tasks/t.md"));
+
+        tasks
+            .modify("t", |d| {
+                d.set("title", "Title");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(stamp_of(&root.join("tasks/t.md")), record, "a no-op update writes no record");
+        assert_eq!(stamp_of(&root.join("tasks/index.md")), task_index, "a no-op update writes no index");
+
+        tasks
+            .modify("t", |d| {
+                d.set_body("A new body.\n");
+                Ok(())
+            })
+            .unwrap();
+        assert_ne!(stamp_of(&root.join("tasks/t.md")), record, "a real write rewrites the record");
+        assert_eq!(
+            stamp_of(&root.join("tasks/index.md")),
+            task_index,
+            "an index whose bytes stay the same is not rewritten"
+        );
+        assert_eq!(stamp_of(&root.join("index.md")), root_index);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rebuilds_are_deterministic_and_rewrite_nothing_that_is_current() {
+        let (dir, vault) = indexed(VaultLayout::PerEntityDir);
+        let root = dir.path();
+        vault.entity("tasks", "Task").create(Some("t"), None, titled("T", Some("d"))).unwrap();
+        let before = (file(root, "index.md"), file(root, "tasks/index.md"));
+        let stamps = (stamp_of(&root.join("index.md")), stamp_of(&root.join("tasks/index.md")));
+
+        vault.rebuild_indexes().unwrap();
+        vault.rebuild_indexes().unwrap();
+        assert_eq!((file(root, "index.md"), file(root, "tasks/index.md")), before);
+        assert_eq!((stamp_of(&root.join("index.md")), stamp_of(&root.join("tasks/index.md"))), stamps);
+    }
+
+    #[test]
+    fn rebuild_indexes_nested_directories_and_removes_only_dangling_store_shaped_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let vault = VaultHandle::new(root, VaultLayout::PerEntityDir, IdStrategy::Provided);
+        let put = |rel: &str, content: &str| fsops::write_atomic(&root.join(rel), content).unwrap();
+        seed(&vault, "notes", "top", "---\ntype: Note\ntitle: Top\n---\n");
+        put("notes/deep/er/leaf.md", "---\ntype: Note\n---\n");
+        put("notes/.hidden/secret.md", "---\ntype: Note\n---\n");
+        put("notes/my notes (old).md", "no frontmatter at all\n");
+        // Store-shaped, every link dangling: a stale index of the store's.
+        put("gone/index.md", "# Note\n\n* [Old](old.md)\n");
+        put("emptied/index.md", "# Note\n\n* [Old](old.md)\n\n# Directories\n\n* [old](old/)\n");
+        put("emptied/old/index.md", "# Note\n\n* [Old](old.md)\n");
+        put("emptied/old/.DS_Store", "hidden: the walk does not see it");
+        // Not the store's shape.
+        let folder_note = "# Attachments\n\nDiagrams for the notes.\n";
+        put("attachments/index.md", folder_note);
+        let listing = "# Attachments\n\n* [Diagram](diagram.png)\n";
+        put("figures/index.md", listing);
+        // The store's shape, but a link still resolves to something that is no record.
+        let folders = "# Folders\n\n* [Logos](logos/)\n";
+        put("assets/index.md", folders);
+        put("assets/logos/logo.png", "png");
+        let reading = "# Reading list\n\n* [Changes](log.md) - read first\n* [Spec](spec.md)\n";
+        put("reading/index.md", reading);
+        put("reading/log.md", "# Log\n");
+        // Beside a record the index is the store's, whatever it held.
+        put("shelf/index.md", "# Reading list\n\n* [Spec](spec.md) - read first\n");
+        put("shelf/spec.md", "---\ntype: Doc\ntitle: Spec\n---\n");
+        assert_eq!(file(root, "index.md"), None, "indexes off: a seeded vault gets none on its own");
+
+        vault.rebuild_indexes().unwrap();
+        assert_eq!(
+            file(root, "notes/index.md").unwrap(),
+            "# Note\n\n* [Top](top.md)\n\n# Untyped\n\n* [my notes (old)](my%20notes%20%28old%29.md)\n\n\
+             # Directories\n\n* [deep](deep/)\n"
+        );
+        assert_eq!(file(root, "notes/deep/index.md").unwrap(), "# Directories\n\n* [er](er/)\n");
+        assert_eq!(file(root, "notes/deep/er/index.md").unwrap(), "# Note\n\n* [leaf](leaf.md)\n");
+        assert_eq!(file(root, "notes/.hidden/index.md"), None, "walk options apply: hidden directories are skipped");
+        assert_eq!(file(root, "gone/index.md"), None, "a store-shaped index whose links all dangle is removed");
+        assert_eq!(file(root, "emptied/old/index.md"), None);
+        assert_eq!(
+            file(root, "emptied/index.md"),
+            None,
+            "a directory holding only an index and hidden files is no link target"
+        );
+        assert_eq!(file(root, "attachments/index.md").unwrap(), folder_note, "a hand-written note is not the store's");
+        assert_eq!(file(root, "figures/index.md").unwrap(), listing, "nor is a listing of non-records");
+        assert_eq!(file(root, "assets/index.md").unwrap(), folders, "a linked directory still holds a file");
+        assert_eq!(file(root, "reading/index.md").unwrap(), reading, "one link still resolves");
+        assert_eq!(file(root, "shelf/index.md").unwrap(), "# Doc\n\n* [Spec](spec.md)\n");
+        assert_eq!(
+            file(root, "index.md").unwrap(),
+            "---\nokf_version: \"0.2\"\n---\n\n# Directories\n\n* [notes](notes/)\n* [shelf](shelf/)\n"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_record_never_blocks_a_write_and_is_listed_by_its_id() {
+        // Under Flat every record shares the root, so one bad file there
+        // used to fail every write in the vault after it was committed.
+        let (dir, vault) = indexed(VaultLayout::Flat);
+        std::fs::write(dir.path().join("latin1.md"), b"---\ntitle: caf\xe9\n---\n").unwrap();
+        let tasks = vault.entity("tasks", "Task");
+        tasks.create(Some("t"), None, titled("Ship", None)).unwrap();
+        tasks
+            .modify("t", |d| {
+                d.set("title", "Shipped");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            file(dir.path(), "index.md").unwrap(),
+            "---\nokf_version: \"0.2\"\n---\n\n# Task\n\n* [Shipped](t.md)\n\n# Untyped\n\n* [latin1](latin1.md)\n"
+        );
+        tasks.remove("t").unwrap();
+        assert_eq!(vault.stale_indexes(), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn a_failed_index_refresh_leaves_the_write_committed_and_reports_the_stale_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let vault = VaultHandle::new(root, VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()))
+            .with_okf(OkfPolicy { index: true, ..OkfPolicy::default() });
+        let tasks = vault.entity("tasks", "Task");
+        // A directory where the index file belongs makes every write of it fail.
+        let blocker = root.join("tasks/index.md");
+        std::fs::create_dir_all(&blocker).unwrap();
+
+        assert_eq!(tasks.create(None, Some("Ship"), titled("Ship", None)).unwrap(), "ship");
+        assert_eq!(vault.list_ids("tasks").unwrap(), ["ship"], "one record: nothing invites a retry");
+        assert_eq!(vault.stale_indexes(), vec![blocker.clone()]);
+        assert!(
+            file(root, "index.md").unwrap().ends_with("# Directories\n\n* [tasks](tasks/)\n"),
+            "the other directories on the path are still refreshed"
+        );
+
+        std::fs::remove_dir(&blocker).unwrap();
+        tasks
+            .modify("ship", |d| {
+                d.set("title", "Shipped");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(vault.stale_indexes(), Vec::<PathBuf>::new(), "the next real write repairs it");
+        assert_eq!(file(root, "tasks/index.md").unwrap(), "# Task\n\n* [Shipped](ship.md)\n");
+
+        std::fs::remove_file(&blocker).unwrap();
+        std::fs::create_dir_all(&blocker).unwrap();
+        tasks.create(None, Some("Plan"), titled("Plan", None)).unwrap();
+        assert_eq!(vault.clone().stale_indexes(), vec![blocker.clone()], "clones share the list");
+        assert!(vault.rebuild_indexes().is_err(), "a rebuild reports what it cannot write");
+        std::fs::remove_dir(&blocker).unwrap();
+        vault.rebuild_indexes().unwrap();
+        assert_eq!(vault.stale_indexes(), Vec::<PathBuf>::new(), "a rebuild repairs it too");
+        assert_eq!(file(root, "tasks/index.md").unwrap(), "# Task\n\n* [Plan](plan.md)\n* [Shipped](ship.md)\n");
+    }
+
+    #[test]
+    fn a_flat_vault_indexes_its_root_by_type() {
+        let (dir, vault) = indexed(VaultLayout::Flat);
+        vault.entity("tasks", "Task").create(Some("t-1"), None, titled("Ship", None)).unwrap();
+        vault.entity("notes", "Note").create(Some("n-1"), None, titled("Idea", Some("why"))).unwrap();
+        assert_eq!(
+            file(dir.path(), "index.md").unwrap(),
+            "---\nokf_version: \"0.2\"\n---\n\n# Note\n\n* [Idea](n-1.md) - why\n\n# Task\n\n* [Ship](t-1.md)\n"
+        );
+        assert_eq!(vault.entity("tasks", "Task").count().unwrap(), 1, "the index is no record");
+    }
+
+    #[test]
+    fn indexes_and_stamps_are_off_by_default() {
+        let (dir, vault) = vault(IdStrategy::Provided);
+        vault.entity("tasks", "Task").create(Some("t"), None, titled("T", None)).unwrap();
+        assert_eq!(file(dir.path(), "index.md"), None);
+        assert_eq!(file(dir.path(), "tasks/index.md"), None);
+        assert_eq!(raw(&vault, "tasks", "t"), "---\ntype: Task\ntitle: T\n---\n");
+    }
+
+    // ── OKF generated stamps ────────────────────────────────────────────
+
+    /// A vault stamped by `app/1.0` whose clock reads the returned cell.
+    fn stamped() -> (tempfile::TempDir, VaultHandle, Arc<std::sync::atomic::AtomicU64>) {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(1_791_036_309));
+        let clock = Arc::clone(&now);
+        let handle =
+            VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::Provided).with_okf(OkfPolicy {
+                generated_by: Some("app/1.0".into()),
+                clock: Arc::new(move || {
+                    SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_secs(clock.load(std::sync::atomic::Ordering::SeqCst))
+                }),
+                ..OkfPolicy::default()
+            });
+        (dir, handle, now)
+    }
+
+    #[test]
+    fn creates_stamp_and_real_updates_restamp_after_type() {
+        let (_dir, vault, now) = stamped();
+        let tasks = vault.entity("tasks", "Task");
+        tasks.create(Some("t"), None, titled("T", None)).unwrap();
+        assert_eq!(
+            raw(&vault, "tasks", "t"),
+            "---\ntype: Task\ntitle: T\ngenerated:\n  by: app/1.0\n  at: 2026-10-03T14:05:09Z\n---\n"
+        );
+
+        now.store(1_791_036_309 + 3_600, std::sync::atomic::Ordering::SeqCst);
+        tasks
+            .modify("t", |d| {
+                d.set("title", "T2");
+                d.set("extra", 1);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            raw(&vault, "tasks", "t"),
+            "---\ntype: Task\ntitle: T2\ngenerated:\n  by: app/1.0\n  at: 2026-10-03T15:05:09Z\nextra: 1\n---\n",
+            "the stamp is replaced in place with the new time"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_noop_update_keeps_the_old_stamp_and_the_file() {
+        let (dir, vault, now) = stamped();
+        let tasks = vault.entity("tasks", "Task");
+        tasks.create(Some("t"), None, titled("T", None)).unwrap();
+        let before = (raw(&vault, "tasks", "t"), stamp_of(&dir.path().join("tasks/t.md")));
+
+        now.store(1_791_036_309 + 60, std::sync::atomic::Ordering::SeqCst);
+        tasks
+            .modify("t", |d| {
+                d.set("title", "T");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!((raw(&vault, "tasks", "t"), stamp_of(&dir.path().join("tasks/t.md"))), before);
+    }
+
+    #[test]
+    fn a_stamp_on_a_hand_authored_record_lands_after_type_and_its_keys() {
+        let (_dir, vault, _now) = stamped();
+        seed(&vault, "tasks", "legacy", "---\ntitle: Legacy\nstatus: open\n---\nBody.\n");
+        vault
+            .entity("tasks", "Task")
+            .modify("legacy", |d| {
+                d.set("status", "done");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            raw(&vault, "tasks", "legacy"),
+            "---\ntype: Task\ntitle: Legacy\nstatus: done\ngenerated:\n  by: app/1.0\n  at: 2026-10-03T14:05:09Z\n---\nBody.\n"
+        );
+    }
+
+    #[test]
+    fn untyped_writes_stamp_too() {
+        let (_dir, vault, _now) = stamped();
+        vault.create_record("notes", "a", &titled("A", None)).unwrap();
+        let id = vault.create_record_derived("notes", Some("b"), None, &titled("B", None)).unwrap();
+        vault
+            .modify_record("notes", "a", |d| {
+                d.set("title", "A2");
+                Ok(())
+            })
+            .unwrap();
+        for id in ["a", id.as_str()] {
+            let doc = vault.read_record("notes", id).unwrap();
+            let stamp = doc.get("generated").and_then(|v| v.as_mapping()).expect("stamped");
+            assert_eq!(stamp.get("by").and_then(|v| v.as_str()), Some("app/1.0"), "{id}");
+            assert_eq!(stamp.get("at").and_then(|v| v.as_str()), Some("2026-10-03T14:05:09Z"), "{id}");
+        }
     }
 }

@@ -43,6 +43,7 @@ export default defineConfig({
 						{ label: 'Architecture', slug: 'concepts/architecture' },
 						{ label: 'The Pipeline', slug: 'concepts/pipeline' },
 						{ label: 'Design Philosophy', slug: 'concepts/design-philosophy' },
+						{ label: 'OKF Bundles', slug: 'concepts/okf-bundles' },
 					],
 				},
 				{

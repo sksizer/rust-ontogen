@@ -43,7 +43,9 @@
 
 use std::path::PathBuf;
 
-use crate::ir::{ApiOutput, Backend, IdStrategy, MarkdownIoOutput, MarkdownLayout, SchemaOutput, SeaOrmOutput};
+use crate::ir::{
+    ApiOutput, Backend, IdStrategy, MarkdownIoOutput, MarkdownLayout, OkfOptions, SchemaOutput, SeaOrmOutput,
+};
 use crate::{
     ApiConfig, ApiSurface, ClientsConfig, CodegenError, DEFAULT_SCHEMA_MODULE_PATH, DocsConfig, DtoConfig,
     MarkdownIoConfig, SchemaConfig, SeaOrmConfig, ServersConfig, StoreConfig, gen_api, gen_clients, gen_docs, gen_dtos,
@@ -78,8 +80,9 @@ struct MarkdownIoStage {
 /// [`MarkdownIoConfig`] — `output_dir` is passed positionally).
 #[derive(Debug, Clone)]
 pub struct MarkdownIoOptions {
-    /// Where the `.md` records live at runtime, relative to the consumer
-    /// crate root (e.g. `data/vault`).
+    /// Where the `.md` records live at runtime (e.g. `data/vault`), emitted
+    /// as the generated `VAULT_ROOT`. A relative path resolves against the
+    /// working directory the program runs from, not the crate root.
     pub vault_root: PathBuf,
     /// On-disk arrangement of record files under the vault root.
     pub layout: MarkdownLayout,
@@ -87,6 +90,8 @@ pub struct MarkdownIoOptions {
     pub id_strategy: IdStrategy,
     /// Hard cap on records parsed per `list()` before the runtime errors.
     pub list_cap: usize,
+    /// The opt-in OKF index files and `generated` stamps.
+    pub okf: OkfOptions,
 }
 
 /// Explicit store-backend choice for pipelines with BOTH persistence stages
@@ -490,6 +495,7 @@ impl Pipeline {
                     layout: stage.options.layout,
                     id_strategy: stage.options.id_strategy,
                     list_cap: stage.options.list_cap,
+                    okf: stage.options.okf,
                 },
             )?),
             None => None,

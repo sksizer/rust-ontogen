@@ -161,8 +161,12 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 }
 
 /// Generate the markdown frontmatter boundary: one typed
-/// `{Entity}Frontmatter` module per entity, with its owned-key list and OKF
-/// `type` constant.
+/// `{Entity}Frontmatter` module per entity, with its owned-key list, and a
+/// `mod.rs` declaring them that also holds `VAULT_ROOT` and
+/// `open_vault(root)`. `open_vault` builds the runtime
+/// `markdown_store::VaultHandle` with this configuration's layout, id
+/// strategy, list cap and [`OkfOptions`], and `VAULT_ROOT` is `vault_root`;
+/// consumers construct their vault through it rather than by hand.
 ///
 /// Takes the whole [`SchemaOutput`] because it checks every frontmatter key
 /// against the keys OKF 0.2 reserves, which needs the schema's enums: a
@@ -172,19 +176,21 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 /// *Reserved frontmatter keys*); `#[ontology(frontmatter_name = "...")]`
 /// moves a field to another key.
 ///
-/// Returns [`MarkdownIoOutput`]: the vault configuration plus per-entity
-/// metadata. Pass it to [`gen_store`] via [`Backend::Markdown`] to route the
+/// Returns [`MarkdownIoOutput`]: the id strategy plus per-entity metadata.
+/// Pass it to [`gen_store`] via [`Backend::Markdown`] to route the
 /// generated CRUD layer at this persistence backend (ADR 0001).
 ///
 /// # Errors
 ///
 /// Returns [`CodegenError::Persistence`] for a reserved or colliding
-/// frontmatter key, or on I/O or formatting failure.
+/// frontmatter key (`generated` is reserved while
+/// [`OkfOptions::generated_by`] is set), an `okf.generated_by` that is not
+/// an OKF actor for a program, or on I/O or formatting failure.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use ontogen::{gen_markdown_io, parse_schema, IdStrategy, MarkdownIoConfig, MarkdownLayout, SchemaConfig};
+/// use ontogen::{gen_markdown_io, parse_schema, IdStrategy, MarkdownIoConfig, MarkdownLayout, OkfOptions, SchemaConfig};
 /// use std::path::PathBuf;
 ///
 /// let schema = parse_schema(&SchemaConfig {
@@ -197,6 +203,7 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 ///     layout: MarkdownLayout::PerEntityDir,
 ///     id_strategy: IdStrategy::SlugFromField("title".into()),
 ///     list_cap: 10_000,
+///     okf: OkfOptions::default(),
 /// })?;
 /// # let _ = md;
 /// # Ok::<(), ontogen::CodegenError>(())
@@ -500,16 +507,18 @@ pub struct SeaOrmConfig {
 ///
 /// The per-entity frontmatter modules land under a single output
 /// directory; downstream code imports them as one module. The vault fields
-/// describe the
-/// markdown store's runtime shape (ADR 0001) and flow into the returned
-/// [`MarkdownIoOutput`] that [`gen_store`] consumes via
+/// describe the markdown store's runtime shape (ADR 0001) and are baked
+/// into the generated `open_vault`; the id strategy also flows into the
+/// returned [`MarkdownIoOutput`] that [`gen_store`] consumes via
 /// [`Backend::Markdown`].
 pub struct MarkdownIoConfig {
     /// Output directory for the generated frontmatter modules
     /// (e.g., `src/persistence/markdown/generated`).
     pub output_dir: PathBuf,
-    /// Where the `.md` records live at runtime, relative to the consumer
-    /// crate root (e.g., `data/vault`).
+    /// Where the `.md` records live at runtime (e.g., `data/vault`),
+    /// emitted as the generated `VAULT_ROOT`. A relative path resolves
+    /// against the working directory the program runs from, not the crate
+    /// root.
     pub vault_root: PathBuf,
     /// On-disk arrangement of record files under the vault root.
     pub layout: MarkdownLayout,
@@ -518,6 +527,8 @@ pub struct MarkdownIoConfig {
     /// Hard cap on records parsed per `list()` before the runtime errors —
     /// the ADR's explicit scale ceiling.
     pub list_cap: usize,
+    /// The opt-in OKF index files and `generated` stamps.
+    pub okf: OkfOptions,
 }
 
 /// Configuration for [`gen_dtos`].

@@ -40,6 +40,8 @@ fn main() {
                 layout: ontogen::MarkdownLayout::PerEntityDir,
                 id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
                 list_cap: 10_000,
+                // Knobs off: the pilot pins the default vault.
+                okf: ontogen::OkfOptions::default(),
             },
         )
         .dtos("src/schema/dto")

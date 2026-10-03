@@ -40,6 +40,7 @@ fn markdown_store_emission_matches_note_golden() {
             layout: ontogen::MarkdownLayout::PerEntityDir,
             id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
+            okf: ontogen::OkfOptions::default(),
         },
     )
     .expect("gen_markdown_io failed");
@@ -100,6 +101,7 @@ fn pilot_committed_generated_trees_match_a_fresh_generation() {
             layout: ontogen::MarkdownLayout::PerEntityDir,
             id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
+            okf: ontogen::OkfOptions::default(),
         },
     )
     .expect("gen_markdown_io");

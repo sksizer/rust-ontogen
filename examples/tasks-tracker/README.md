@@ -32,3 +32,7 @@ keep the example dependency-free.
 Epic membership is a derived question (walk `tasks/`, filter `epic_id`) —
 deliberately not stored on the epic. The vault stays greppable, diffable,
 and Obsidian-navigable; the tracker is just one lens over it.
+
+The vault is an OKF 0.2 bundle (every record carries a `type`); the optional
+index files and `generated` stamps are left off here. See [the markdown backend
+guide](../../site/src/content/docs/guides/markdown-backend.mdx).

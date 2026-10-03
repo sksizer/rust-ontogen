@@ -24,13 +24,21 @@ let md = ontogen::gen_markdown_io(&schema, &ontogen::MarkdownIoConfig {
     layout: ontogen::MarkdownLayout::PerEntityDir,          // data/vault/<entity>/<id>.md
     id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
     list_cap: 10_000,                                       // loud error past this many records
+    okf: ontogen::OkfOptions::default(),                    // index files, generated stamps: off
 })?;
 ```
 
 `gen_markdown_io` takes the whole `SchemaOutput`, and checks frontmatter keys against the keys OKF reserves; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys).
 
-The vault fields describe the store's runtime shape and flow into the
-returned `MarkdownIoOutput`; the generated files land in `output_dir`.
+The vault fields describe the store's runtime shape and go into the generated
+`open_vault`; the generated files land in `output_dir`. The returned
+`MarkdownIoOutput` carries the id strategy and per-entity metadata.
+
+The same config also drives the generated `mod.rs`, which emits `open_vault` and
+`VAULT_ROOT` so consumers open the vault with the build's settings; see [the
+generated `open_vault`](/guides/markdown-backend/#the-generated-open_vault).
+`okf` switches on generated [`index.md` files](/guides/markdown-backend/#index-files)
+and [`generated` provenance stamps](/guides/markdown-backend/#generated-stamps).
 
 ## What gets generated
 
@@ -104,6 +112,6 @@ let fm: TaskFrontmatter = doc.deserialize()?;
 let task = fm.into_task("ship-the-emitter".into(), doc.body().to_string());
 ```
 
-(The four vault config fields are still required in `MarkdownIoConfig` even
+(The vault config fields are still required in `MarkdownIoConfig` even
 for leaf-only use — the deliberate cost of the backend being a first-class
 citizen rather than a side door.)

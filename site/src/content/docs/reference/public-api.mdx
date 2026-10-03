@@ -101,7 +101,7 @@ This generator is the sibling of `gen_seaorm`: both consume `SchemaOutput` indep
 | `schema` | `&SchemaOutput` | Output of `parse_schema`. Entities plus enum definitions; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys). |
 | `config` | `&MarkdownIoConfig` | Output directory plus the runtime vault shape (root, layout, id strategy, list cap). |
 
-**Returns:** `MarkdownIoOutput` -- the vault layout, id strategy, and per-entity directory mapping. Pass it into `Backend::Markdown` to wire the generated store at the markdown vault runtime; the markdown emitter genuinely needs this metadata, so unlike `SeaOrmOutput` it isn't optional.
+**Returns:** `MarkdownIoOutput` -- the id strategy and per-entity directory mapping (the vault settings go into the generated `open_vault`). Pass it into `Backend::Markdown` to wire the generated store at the markdown vault runtime; the markdown emitter genuinely needs this metadata, so unlike `SeaOrmOutput` it isn't optional.
 
 ```rust
 let md = gen_markdown_io(&schema, &MarkdownIoConfig {
@@ -110,6 +110,7 @@ let md = gen_markdown_io(&schema, &MarkdownIoConfig {
     layout: ontogen::MarkdownLayout::PerEntityDir,
     id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
     list_cap: 10_000,
+    okf: ontogen::OkfOptions::default(),
 })?;
 ```
 
@@ -407,7 +408,7 @@ ontogen::Pipeline::new("src/schema")
 The same pipeline on the markdown backend -- `seaorm()` swaps for `markdown_io()`, nothing else changes:
 
 ```rust
-use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout};
+use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout, OkfOptions};
 
 ontogen::Pipeline::new("src/schema")
     .markdown_io(
@@ -417,6 +418,7 @@ ontogen::Pipeline::new("src/schema")
             layout: MarkdownLayout::PerEntityDir,
             id_strategy: IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
+            okf: OkfOptions::default(),
         },
     )
     .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))

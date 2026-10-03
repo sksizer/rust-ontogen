@@ -8,13 +8,12 @@
 
 use std::sync::Arc;
 
-use markdown_store::{IdStrategy, VaultHandle, VaultLayout};
 use tasks_tracker::AppState;
+use tasks_tracker::persistence::markdown::generated::{VAULT_ROOT, open_vault};
 
 #[tokio::main]
 async fn main() {
-    let vault = VaultHandle::new("data/vault", VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()));
-    let state = Arc::new(AppState::new(vault));
+    let state = Arc::new(AppState::new(open_vault(VAULT_ROOT)));
 
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {

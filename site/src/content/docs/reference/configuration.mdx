@@ -53,15 +53,18 @@ The `entity_output` and `conversion_output` directories are cleaned on each buil
 
 Used by [`gen_markdown_io()`](/reference/public-api/#gen_markdown_io), which takes the whole `SchemaOutput` and checks frontmatter keys against the keys OKF reserves; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys).
 
-The `output_dir` field controls where generated code lands. The rest describe the **runtime** shape of the vault (ADR 0001) and flow into the returned `MarkdownIoOutput`, which [`gen_store`](/reference/public-api/#gen_store) consumes via `Backend::Markdown`.
+The `output_dir` field controls where generated code lands. The rest describe the **runtime** shape of the vault (ADR 0001) and go into the generated `open_vault`. The returned `MarkdownIoOutput` carries the id strategy and per-entity metadata, which [`gen_store`](/reference/public-api/#gen_store) consumes via `Backend::Markdown`.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `output_dir` | `PathBuf` | Output directory for the generated per-entity frontmatter modules. |
-| `vault_root` | `PathBuf` | Where the `.md` records live at runtime, relative to the consumer crate root (e.g., `data/vault`). |
+| `vault_root` | `PathBuf` | Where the `.md` records live at runtime. Relative paths resolve against the program's working directory (e.g., `data/vault`). |
 | `layout` | `MarkdownLayout` | On-disk arrangement of record files under the vault root. |
 | `id_strategy` | `IdStrategy` | How a new record derives an id when the caller didn't supply one. A derived id that collides with a [reserved id](/guides/markdown-backend/#reserved-ids) is deduped. |
 | `list_cap` | `usize` | Hard cap on records parsed per `list()` before the runtime errors -- ADR 0001's explicit scale ceiling. |
+| `okf` | `OkfOptions` | Opt-in OKF artifacts; see below. `OkfOptions::default()` turns both off. |
+
+`OkfOptions` turns on the generated `index.md` files and the `generated` provenance stamp; the [markdown backend guide](/guides/markdown-backend/#an-okf-vault) is canonical for both, and the build configuration also produces a generated `open_vault` ([details](/guides/markdown-backend/#the-generated-open_vault)).
 
 ```rust
 MarkdownIoConfig {
@@ -70,6 +73,7 @@ MarkdownIoConfig {
     layout: ontogen::MarkdownLayout::PerEntityDir,
     id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
     list_cap: 10_000,
+    okf: ontogen::OkfOptions::default(),
 }
 ```
 
@@ -149,7 +153,7 @@ pub enum Backend {
 
 The persistence backend is a **generation-time** choice (ADR 0001), not a runtime one. `gen_store` emits one CRUD module per entity wired to that backend's primitives, and everything above the store -- `gen_api`, `gen_servers`, `gen_clients` -- is byte-identical between the two.
 
-`Seaorm`'s payload is optional enrichment: pass the `SeaOrmOutput` you got from `gen_seaorm` for exact table and column references, or `None` to fall back to naming conventions. `Markdown` **always** carries metadata -- the emitter genuinely needs the vault layout, id strategy, and per-entity directory mapping, so you must pass the `MarkdownIoOutput` that `gen_markdown_io` returned.
+`Seaorm`'s payload is optional enrichment: pass the `SeaOrmOutput` you got from `gen_seaorm` for exact table and column references, or `None` to fall back to naming conventions. `Markdown` **always** carries metadata -- the emitter genuinely needs the id strategy and per-entity directory mapping (the vault layout goes into the generated `open_vault` instead), so you must pass the `MarkdownIoOutput` that `gen_markdown_io` returned.
 
 <Aside type="note">
 `Backend` is a closed enum by design. ADR 0001 (alternative C) rejected an out-of-tree backend trait; new backends land here by upstream PR.
