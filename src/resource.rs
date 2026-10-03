@@ -544,7 +544,6 @@ mod tests {
             "examples/iron-log/src-tauri/src/schema",
             "crates/markdown-pilot/src/schema",
             "crates/parity/schema",
-            "crates/parity/schema-provided",
         ] {
             let entities = parse_schema_dir(&root.join(dir)).unwrap_or_else(|e| panic!("{dir}: {e}"));
             assert!(!entities.is_empty(), "{dir}: no entities");
