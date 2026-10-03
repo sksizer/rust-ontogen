@@ -7,12 +7,16 @@ two ways from one generated pipeline.
 
 ## HTTP
 
+The HTTP API speaks JSON:API ([wire contract](../../docs/jsonapi-wire-contract.md)).
+Lists page 20 at a time.
+
 ```sh
 cargo run
 curl -s localhost:3002/api/tasks | jq
+curl -s 'localhost:3002/api/tasks?page[offset]=0&page[limit]=5' | jq '.meta, .links'
 # POST without an id — the slug derives from the title:
-curl -s -X POST localhost:3002/api/tasks -H 'content-type: application/json' \
-  -d '{"title":"Review the stack","status":"open/ready","created":"2026-06-06","epic_id":"markdown-backend","tags":["codegen"],"body":"## Goal\n\nReview.\n"}'
+curl -s -X POST localhost:3002/api/tasks -H 'content-type: application/vnd.api+json' \
+  -d '{"data":{"type":"tasks","attributes":{"title":"Review the stack","status":"open/ready","created":"2026-06-06","body":"## Goal\n\nReview.\n"},"relationships":{"epic":{"data":{"type":"epics","id":"markdown-backend"}},"tags":{"data":[{"type":"tags","id":"codegen"}]}}}}'
 cat data/vault/tasks/review-the-stack.md
 ```
 

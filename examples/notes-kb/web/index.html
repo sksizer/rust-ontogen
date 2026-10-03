@@ -30,7 +30,14 @@
 // Talks to the generated HTTP API (see generated-ts/ for the typed client;
 // this page stays framework-free on purpose — the full app frontend is the
 // consumer's to shape).
-const notes = await (await fetch('/api/notes')).json();
+const response = await fetch('/api/notes', { headers: { Accept: 'application/vnd.api+json' } });
+// A JSON:API collection: each resource's `links` relationship carries the
+// wikilinked notes' identifiers.
+const notes = (await response.json()).data.map((r) => ({
+  id: r.id,
+  ...r.attributes,
+  links: r.relationships.links.data.map((linked) => linked.id),
+}));
 const svg = document.getElementById('graph');
 const W = svg.clientWidth, H = svg.clientHeight;
 const idx = new Map(notes.map((n, i) => [n.id, i]));

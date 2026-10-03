@@ -1978,6 +1978,7 @@ dependencies = [
  "log",
  "ontogen",
  "ontogen-core",
+ "ontogen-jsonapi",
  "ontogen-macros",
  "schemars 0.8.22",
  "sea-orm",
@@ -2635,6 +2636,7 @@ dependencies = [
 name = "ontogen-jsonapi"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "http",
  "serde",
  "serde_json",

@@ -6,9 +6,14 @@ use crate::schema::{CreateEpicInput, UpdateEpicInput};
 use crate::store::Store;
 use crate::store::epic::EpicUpdate;
 
-/// List all epics
-pub async fn list(store: &Store) -> Result<Vec<Epic>, AppError> {
-    store.list_epics(None, None).await
+/// One page of epics
+pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Epic>, AppError> {
+    store.list_epics(limit, offset).await
+}
+
+/// How many epics there are — the total behind a page of `list`
+pub async fn count(store: &Store) -> Result<u64, AppError> {
+    store.count_epics().await
 }
 
 /// Get a single epic by ID

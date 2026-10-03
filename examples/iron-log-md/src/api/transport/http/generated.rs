@@ -7,12 +7,23 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::Json,
-    routing::{delete, get, post, put},
+    extract::{
+        State,
+        rejection::{JsonRejection, QueryRejection},
+    },
+    http::{Method, StatusCode},
+    response::{Json, Response},
+    routing::{delete, get, patch, post, put},
 };
-
+use ontogen_jsonapi::{
+    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
+    ResourceIdentifier, ResourceObject,
+    error::method_not_allowed,
+    extract::{AcceptGuard, Body, ContentTypeGuard, NoParams, Path, Query, RouteQuery},
+    links::{CanonicalQuery, encode_path_segment, pagination_links},
+    request::{self, Endpoint, LinkedId, ResourceData},
+    response,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -23,183 +34,831 @@ use crate::schema::{
 };
 use crate::store::Store;
 
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
+/// An `AppError` as an error object: the status its variant's name gives,
+/// and the name in snake_case as the code (§13.4).
+fn app_error(e: crate::schema::AppError) -> ErrorObject {
+    let (status, code) = match &e {
+        crate::schema::AppError::ExerciseNotFound(..) => (StatusCode::NOT_FOUND, "exercise_not_found"),
+        crate::schema::AppError::ExerciseIdRequired(..) => (StatusCode::BAD_REQUEST, "exercise_id_required"),
+        crate::schema::AppError::ExerciseAlreadyExists(..) => (StatusCode::CONFLICT, "exercise_already_exists"),
+        crate::schema::AppError::WorkoutNotFound(..) => (StatusCode::NOT_FOUND, "workout_not_found"),
+        crate::schema::AppError::WorkoutIdRequired(..) => (StatusCode::BAD_REQUEST, "workout_id_required"),
+        crate::schema::AppError::WorkoutAlreadyExists(..) => (StatusCode::CONFLICT, "workout_already_exists"),
+        crate::schema::AppError::WorkoutSetNotFound(..) => (StatusCode::NOT_FOUND, "workout_set_not_found"),
+        crate::schema::AppError::WorkoutSetIdRequired(..) => (StatusCode::BAD_REQUEST, "workout_set_id_required"),
+        crate::schema::AppError::WorkoutSetAlreadyExists(..) => (StatusCode::CONFLICT, "workout_set_already_exists"),
+        crate::schema::AppError::TagNotFound(..) => (StatusCode::NOT_FOUND, "tag_not_found"),
+        crate::schema::AppError::TagIdRequired(..) => (StatusCode::BAD_REQUEST, "tag_id_required"),
+        crate::schema::AppError::TagAlreadyExists(..) => (StatusCode::CONFLICT, "tag_already_exists"),
+        crate::schema::AppError::Md(..) => (StatusCode::INTERNAL_SERVER_ERROR, "md"),
+    };
+    ErrorObject::app(status, code, e.to_string())
 }
 
-type ApiError = (StatusCode, Json<ErrorResponse>);
+/// A failure no `AppError` describes: opening the store, a scope accessor,
+/// or an op with another error type (§13.3).
+fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
+    ErrorObject::internal(e.to_string())
+}
 
-fn err(msg: String) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: msg }))
+/// The method fallback of a route serving `allowed` (§13.5).
+fn allow<const N: usize>(
+    allowed: [Method; N],
+) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
+    move |method| std::future::ready(method_not_allowed(&method, &allowed))
+}
+
+fn json_rejection(e: JsonRejection) -> ErrorObject {
+    match e.status() {
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => {
+            ErrorObject::new(ErrorCode::UnsupportedMediaType, e.body_text()).with_header("Content-Type")
+        }
+        StatusCode::PAYLOAD_TOO_LARGE => ErrorObject::new(ErrorCode::ContentTooLarge, e.body_text()),
+        _ => ErrorObject::new(ErrorCode::InvalidDocument, e.body_text()),
+    }
+}
+
+fn query_rejection(e: QueryRejection) -> ErrorObject {
+    ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
+}
+
+// ── JSON:API resources ──
+
+struct ListParams;
+
+impl RouteQuery for ListParams {
+    const SPEC: QuerySpec = QuerySpec { sort: true, include: true, ..QuerySpec::NONE };
+}
+
+struct PagedListParams;
+
+impl RouteQuery for PagedListParams {
+    const SPEC: QuerySpec = QuerySpec { sort: true, include: true, page: true, ..QuerySpec::NONE };
+}
+
+struct GetParams;
+
+impl RouteQuery for GetParams {
+    const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
+}
+
+/// No list takes an `order` argument yet, so every `sort` asks for an order
+/// the server does not support (§7.4).
+fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
+    match query.sort()? {
+        None => Ok(()),
+        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
+            .with_parameter("sort")),
+    }
+}
+
+/// No route includes related resources yet, so every `include` names a path
+/// the server cannot include (§7.5).
+fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
+    match query.include()? {
+        None => Ok(()),
+        Some(_) => Err(ErrorObject::new(
+            ErrorCode::InvalidIncludePath,
+            format!("`{type_name}` has no relationship that can be included"),
+        )
+        .with_parameter("include")),
+    }
+}
+
+/// The effective `(offset, limit)` of a paginated list (§7.2).
+fn page(query: &QueryParams, default_limit: u32, max_limit: u32) -> Result<(u32, u32), ErrorObject> {
+    let offset = query.page_offset()?.unwrap_or(0);
+    let limit = query.page_limit()?.unwrap_or(default_limit).min(max_limit);
+    Ok((offset, limit))
+}
+
+/// Sets `name` when the request document carried it.
+fn set_field(fields: &mut serde_json::Map<String, serde_json::Value>, name: &str, value: Option<&serde_json::Value>) {
+    if let Some(value) = value {
+        fields.insert(name.to_owned(), value.clone());
+    }
+}
+
+/// A create or update input from the fields its request document set. Each
+/// field was checked against its type, so a failure here is the server's.
+fn from_fields<T: serde::de::DeserializeOwned>(
+    fields: serde_json::Map<String, serde_json::Value>,
+) -> Result<T, ErrorObject> {
+    serde_json::from_value(serde_json::Value::Object(fields)).map_err(internal_error)
+}
+
+// ── `exercises` ──
+
+/// `Exercise`'s attributes: every field but the id and the relations, in
+/// declaration order (§5.3).
+struct ExerciseResourceAttributes<'a>(&'a Exercise);
+
+impl Serialize for ExerciseResourceAttributes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut attributes = serializer.serialize_struct("ExerciseResourceAttributes", 4)?;
+        attributes.serialize_field("name", &self.0.name)?;
+        attributes.serialize_field("muscle_group", &self.0.muscle_group)?;
+        attributes.serialize_field("equipment", &self.0.equipment)?;
+        attributes.serialize_field("notes", &self.0.notes)?;
+        attributes.end()
+    }
+}
+
+/// A `exercises` resource object whose `links.self` sits under `collection`
+/// (§5.2).
+fn exercise_as_resource<'a>(entity: &'a Exercise, collection: &str) -> ResourceObject<ExerciseResourceAttributes<'a>> {
+    let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
+    ResourceObject::new("exercises", entity.id.clone(), ExerciseResourceAttributes(entity), self_link)
+}
+
+/// The id an `{id}` path segment names (§8.1).
+fn exercise_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
+    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::ExerciseNotFound(id.to_string())))
+}
+
+/// Step 7 of a `exercises` create or update document (§8.2, §8.3): the fields
+/// it sets, named as the input's fields.
+fn exercise_request_fields(
+    data: &ResourceData,
+    create: bool,
+) -> Result<serde_json::Map<String, serde_json::Value>, ErrorObject> {
+    let attributes = data.attributes.as_ref();
+    request::check_attribute_names(attributes, "exercises", &["name", "muscle_group", "equipment", "notes"], &[])?;
+    let mut fields = serde_json::Map::new();
+    if create {
+        fields.insert("id".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));
+    }
+    set_field(&mut fields, "name", request::attribute::<String>(attributes, "name", create)?);
+    set_field(&mut fields, "muscle_group", request::attribute::<String>(attributes, "muscle_group", create)?);
+    set_field(&mut fields, "equipment", request::attribute::<String>(attributes, "equipment", create)?);
+    set_field(&mut fields, "notes", request::attribute::<Option<String>>(attributes, "notes", false)?);
+    request::check_relationship_names(data.relationships()?, "exercises", &[])?;
+    Ok(fields)
+}
+
+// ── `tags` ──
+
+/// `Tag`'s attributes: every field but the id and the relations, in
+/// declaration order (§5.3).
+struct TagResourceAttributes<'a>(&'a Tag);
+
+impl Serialize for TagResourceAttributes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut attributes = serializer.serialize_struct("TagResourceAttributes", 1)?;
+        attributes.serialize_field("name", &self.0.name)?;
+        attributes.end()
+    }
+}
+
+/// A `tags` resource object whose `links.self` sits under `collection`
+/// (§5.2).
+fn tag_as_resource<'a>(entity: &'a Tag, collection: &str) -> ResourceObject<TagResourceAttributes<'a>> {
+    let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
+    ResourceObject::new("tags", entity.id.clone(), TagResourceAttributes(entity), self_link)
+}
+
+/// The id an `{id}` path segment names (§8.1).
+fn tag_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
+    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::TagNotFound(id.to_string())))
+}
+
+/// Step 7 of a `tags` create or update document (§8.2, §8.3): the fields
+/// it sets, named as the input's fields.
+fn tag_request_fields(
+    data: &ResourceData,
+    create: bool,
+) -> Result<serde_json::Map<String, serde_json::Value>, ErrorObject> {
+    let attributes = data.attributes.as_ref();
+    request::check_attribute_names(attributes, "tags", &["name"], &[])?;
+    let mut fields = serde_json::Map::new();
+    if create {
+        fields.insert("id".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));
+    }
+    set_field(&mut fields, "name", request::attribute::<String>(attributes, "name", create)?);
+    request::check_relationship_names(data.relationships()?, "tags", &[])?;
+    Ok(fields)
+}
+
+// ── `workouts` ──
+
+/// `Workout`'s attributes: every field but the id and the relations, in
+/// declaration order (§5.3).
+struct WorkoutResourceAttributes<'a>(&'a Workout);
+
+impl Serialize for WorkoutResourceAttributes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut attributes = serializer.serialize_struct("WorkoutResourceAttributes", 5)?;
+        attributes.serialize_field("name", &self.0.name)?;
+        attributes.serialize_field("date", &self.0.date)?;
+        attributes.serialize_field("duration_minutes", &self.0.duration_minutes)?;
+        attributes.serialize_field("notes", &self.0.notes)?;
+        attributes.serialize_field("created_at", &self.0.created_at)?;
+        attributes.end()
+    }
+}
+
+/// A `workouts` resource object whose `links.self` sits under `collection`
+/// (§5.2).
+fn workout_as_resource<'a>(entity: &'a Workout, collection: &str) -> ResourceObject<WorkoutResourceAttributes<'a>> {
+    let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
+    ResourceObject::new("workouts", entity.id.clone(), WorkoutResourceAttributes(entity), self_link).with_relationship(
+        "tags",
+        Relationship::from_data(Linkage::ToMany(
+            entity.tags.iter().map(|id| ResourceIdentifier::new("tags", id.as_str())).collect(),
+        )),
+    )
+}
+
+/// The id an `{id}` path segment names (§8.1).
+fn workout_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
+    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::WorkoutNotFound(id.to_string())))
+}
+
+/// The ids a `workouts` request document links, by relationship, for the
+/// linked-resource checks (§13.2 step 8).
+#[derive(Default)]
+struct WorkoutLinkedIds {
+    tags: Vec<LinkedId>,
+}
+
+/// Step 7 of a `workouts` create or update document (§8.2, §8.3): the fields
+/// it sets, named as the input's fields.
+fn workout_request_fields(
+    data: &ResourceData,
+    create: bool,
+) -> Result<(serde_json::Map<String, serde_json::Value>, WorkoutLinkedIds), ErrorObject> {
+    let attributes = data.attributes.as_ref();
+    request::check_attribute_names(
+        attributes,
+        "workouts",
+        &["name", "date", "duration_minutes", "notes", "created_at"],
+        &[("tags", "tags")],
+    )?;
+    let mut fields = serde_json::Map::new();
+    if create {
+        fields.insert("id".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));
+    }
+    set_field(&mut fields, "name", request::attribute::<Option<String>>(attributes, "name", false)?);
+    set_field(&mut fields, "date", request::attribute::<String>(attributes, "date", create)?);
+    set_field(
+        &mut fields,
+        "duration_minutes",
+        request::attribute::<Option<i32>>(attributes, "duration_minutes", false)?,
+    );
+    set_field(&mut fields, "notes", request::attribute::<Option<String>>(attributes, "notes", false)?);
+    set_field(&mut fields, "created_at", request::attribute::<String>(attributes, "created_at", create)?);
+    let relationships = data.relationships()?;
+    request::check_relationship_names(relationships, "workouts", &["tags"])?;
+    let mut linked = WorkoutLinkedIds::default();
+    if let Some(rel) = relationships.and_then(|r| r.get("tags")) {
+        let ids = request::to_many_linked(rel, "/data/relationships/tags", "tags", None)?;
+        fields.insert("tags".to_owned(), ids.iter().map(|l| serde_json::Value::String(l.id.clone())).collect());
+        linked.tags = ids;
+    }
+    Ok((fields, linked))
+}
+
+// ── `workout-sets` ──
+
+/// `WorkoutSet`'s attributes: every field but the id and the relations, in
+/// declaration order (§5.3).
+struct WorkoutSetResourceAttributes<'a>(&'a WorkoutSet);
+
+impl Serialize for WorkoutSetResourceAttributes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut attributes = serializer.serialize_struct("WorkoutSetResourceAttributes", 5)?;
+        attributes.serialize_field("set_number", &self.0.set_number)?;
+        attributes.serialize_field("weight_grams", &self.0.weight_grams)?;
+        attributes.serialize_field("reps", &self.0.reps)?;
+        attributes.serialize_field("rpe", &self.0.rpe)?;
+        attributes.serialize_field("notes", &self.0.notes)?;
+        attributes.end()
+    }
+}
+
+/// A `workout-sets` resource object whose `links.self` sits under `collection`
+/// (§5.2).
+fn workout_set_as_resource<'a>(
+    entity: &'a WorkoutSet,
+    collection: &str,
+) -> ResourceObject<WorkoutSetResourceAttributes<'a>> {
+    let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
+    ResourceObject::new("workout-sets", entity.id.clone(), WorkoutSetResourceAttributes(entity), self_link)
+        .with_relationship(
+            "workout",
+            Relationship::from_data(Linkage::ToOne(Some(ResourceIdentifier::new(
+                "workouts",
+                entity.workout_id.as_str(),
+            )))),
+        )
+        .with_relationship(
+            "exercise",
+            Relationship::from_data(Linkage::ToOne(Some(ResourceIdentifier::new(
+                "exercises",
+                entity.exercise_id.as_str(),
+            )))),
+        )
+}
+
+/// The id an `{id}` path segment names (§8.1).
+fn workout_set_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
+    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::WorkoutSetNotFound(id.to_string())))
+}
+
+/// The ids a `workout-sets` request document links, by relationship, for the
+/// linked-resource checks (§13.2 step 8).
+#[derive(Default)]
+struct WorkoutSetLinkedIds {
+    workout: Option<LinkedId>,
+    exercise: Option<LinkedId>,
+}
+
+/// Step 7 of a `workout-sets` create or update document (§8.2, §8.3): the fields
+/// it sets, named as the input's fields.
+fn workout_set_request_fields(
+    data: &ResourceData,
+    create: bool,
+) -> Result<(serde_json::Map<String, serde_json::Value>, WorkoutSetLinkedIds), ErrorObject> {
+    let attributes = data.attributes.as_ref();
+    request::check_attribute_names(
+        attributes,
+        "workout-sets",
+        &["set_number", "weight_grams", "reps", "rpe", "notes"],
+        &[("workout_id", "workout"), ("exercise_id", "exercise")],
+    )?;
+    let mut fields = serde_json::Map::new();
+    if create {
+        fields.insert("id".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));
+    }
+    set_field(&mut fields, "set_number", request::attribute::<i32>(attributes, "set_number", create)?);
+    set_field(&mut fields, "weight_grams", request::attribute::<i32>(attributes, "weight_grams", create)?);
+    set_field(&mut fields, "reps", request::attribute::<i32>(attributes, "reps", create)?);
+    set_field(&mut fields, "rpe", request::attribute::<Option<i32>>(attributes, "rpe", false)?);
+    set_field(&mut fields, "notes", request::attribute::<Option<String>>(attributes, "notes", false)?);
+    let relationships = data.relationships()?;
+    request::check_relationship_names(relationships, "workout-sets", &["workout", "exercise"])?;
+    let mut linked = WorkoutSetLinkedIds::default();
+    match relationships.and_then(|r| r.get("workout")) {
+        Some(rel) => {
+            let id = request::to_one(rel, "/data/relationships/workout", "workouts", false)?;
+            fields
+                .insert("workout_id".to_owned(), id.clone().map_or(serde_json::Value::Null, serde_json::Value::String));
+            linked.workout = id.map(|id| LinkedId { id, pointer: "/data/relationships/workout/data".to_owned() });
+        }
+        None if create => return Err(request::missing_relationship("workout", relationships)),
+        None => {}
+    }
+    match relationships.and_then(|r| r.get("exercise")) {
+        Some(rel) => {
+            let id = request::to_one(rel, "/data/relationships/exercise", "exercises", false)?;
+            fields.insert(
+                "exercise_id".to_owned(),
+                id.clone().map_or(serde_json::Value::Null, serde_json::Value::String),
+            );
+            linked.exercise = id.map(|id| LinkedId { id, pointer: "/data/relationships/exercise/data".to_owned() });
+        }
+        None if create => return Err(request::missing_relationship("exercise", relationships)),
+        None => {}
+    }
+    Ok((fields, linked))
 }
 
 // ── Exercise Handlers ──
 
-async fn exercise_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Exercise>>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    exercise::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+async fn exercise_list(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    query: Query<ListParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_sort(&query, "exercises")?;
+    refuse_include(&query, "exercises")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let items = exercise::list(&store).await.map_err(app_error)?;
+    let collection = "/api/exercises";
+    let data: Vec<_> = items.iter().map(|entity| exercise_as_resource(entity, collection)).collect();
+    Ok(response::ok(&Document::new(data, Links::new(collection))))
 }
 
 async fn exercise_get_by_id(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Json<Exercise>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    exercise::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "exercises")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = exercise::get_by_id(&store, exercise_lookup_key(&id)?).await.map_err(app_error)?;
+    let collection = "/api/exercises";
+    let resource = exercise_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn exercise_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateExerciseInput>,
-) -> Result<(StatusCode, Json<Exercise>), ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    exercise::create(&store, input)
-        .await
-        .map(|entity| (StatusCode::CREATED, Json(entity)))
-        .map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    _: ContentTypeGuard,
+    _: Query<NoParams>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let collection = "/api/exercises";
+    let endpoint = Endpoint { type_name: "exercises", path: collection };
+    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let fields = exercise_request_fields(&data, true)?;
+    let input: CreateExerciseInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = exercise::create(&store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::ExerciseAlreadyExists(..) if data.id.is_some() => {
+            app_error(e).with_pointer("/data/id")
+        }
+        e => app_error(e),
+    })?;
+    let resource = exercise_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
 }
 
 async fn exercise_update(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(input): Json<UpdateExerciseInput>,
-) -> Result<Json<Exercise>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    exercise::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    _: ContentTypeGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let collection = "/api/exercises";
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "exercises", path: &path };
+    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let fields = exercise_request_fields(&data, false)?;
+    let input: UpdateExerciseInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = exercise::update(&store, exercise_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let resource = exercise_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
-async fn exercise_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    exercise::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+async fn exercise_delete(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    exercise::delete(&store, exercise_lookup_key(&id)?).await.map_err(app_error)?;
+    Ok(response::no_content())
 }
 
 // ── Tag Handlers ──
 
-async fn tag_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Tag>>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+async fn tag_list(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    query: Query<ListParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_sort(&query, "tags")?;
+    refuse_include(&query, "tags")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let items = tag::list(&store).await.map_err(app_error)?;
+    let collection = "/api/tags";
+    let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
+    Ok(response::ok(&Document::new(data, Links::new(collection))))
 }
 
-async fn tag_get_by_id(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Tag>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+async fn tag_get_by_id(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "tags")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = tag::get_by_id(&store, tag_lookup_key(&id)?).await.map_err(app_error)?;
+    let collection = "/api/tags";
+    let resource = tag_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn tag_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateTagInput>,
-) -> Result<(StatusCode, Json<Tag>), ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    _: ContentTypeGuard,
+    _: Query<NoParams>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let collection = "/api/tags";
+    let endpoint = Endpoint { type_name: "tags", path: collection };
+    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let fields = tag_request_fields(&data, true)?;
+    let input: CreateTagInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = tag::create(&store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::TagAlreadyExists(..) if data.id.is_some() => app_error(e).with_pointer("/data/id"),
+        e => app_error(e),
+    })?;
+    let resource = tag_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
 }
 
 async fn tag_update(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(input): Json<UpdateTagInput>,
-) -> Result<Json<Tag>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    _: ContentTypeGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let collection = "/api/tags";
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "tags", path: &path };
+    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let fields = tag_request_fields(&data, false)?;
+    let input: UpdateTagInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = tag::update(&store, tag_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let resource = tag_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
-async fn tag_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+async fn tag_delete(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    tag::delete(&store, tag_lookup_key(&id)?).await.map_err(app_error)?;
+    Ok(response::no_content())
 }
 
 // ── Workout Handlers ──
 
-async fn workout_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Workout>>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+async fn workout_list(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    query: Query<ListParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_sort(&query, "workouts")?;
+    refuse_include(&query, "workouts")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let items = workout::list(&store).await.map_err(app_error)?;
+    let collection = "/api/workouts";
+    let data: Vec<_> = items.iter().map(|entity| workout_as_resource(entity, collection)).collect();
+    Ok(response::ok(&Document::new(data, Links::new(collection))))
 }
 
 async fn workout_get_by_id(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Json<Workout>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "workouts")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = workout::get_by_id(&store, workout_lookup_key(&id)?).await.map_err(app_error)?;
+    let collection = "/api/workouts";
+    let resource = workout_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn workout_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateWorkoutInput>,
-) -> Result<(StatusCode, Json<Workout>), ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout::create(&store, input)
-        .await
-        .map(|entity| (StatusCode::CREATED, Json(entity)))
-        .map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    _: ContentTypeGuard,
+    _: Query<NoParams>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let collection = "/api/workouts";
+    let endpoint = Endpoint { type_name: "workouts", path: collection };
+    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let (fields, linked) = workout_request_fields(&data, true)?;
+    let input: CreateWorkoutInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    for linked in &linked.tags {
+        match tag::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    let entity = workout::create(&store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::WorkoutAlreadyExists(..) if data.id.is_some() => {
+            app_error(e).with_pointer("/data/id")
+        }
+        e => app_error(e),
+    })?;
+    let resource = workout_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
 }
 
 async fn workout_update(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(input): Json<UpdateWorkoutInput>,
-) -> Result<Json<Workout>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    _: ContentTypeGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let collection = "/api/workouts";
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "workouts", path: &path };
+    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let (fields, linked) = workout_request_fields(&data, false)?;
+    let input: UpdateWorkoutInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    for linked in &linked.tags {
+        match tag::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    let entity = workout::update(&store, workout_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let resource = workout_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
-async fn workout_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+async fn workout_delete(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    workout::delete(&store, workout_lookup_key(&id)?).await.map_err(app_error)?;
+    Ok(response::no_content())
 }
 
 // ── Workout_set Handlers ──
 
-async fn workout_set_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<WorkoutSet>>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout_set::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+async fn workout_set_list(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    query: Query<ListParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_sort(&query, "workout-sets")?;
+    refuse_include(&query, "workout-sets")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let items = workout_set::list(&store).await.map_err(app_error)?;
+    let collection = "/api/workout-sets";
+    let data: Vec<_> = items.iter().map(|entity| workout_set_as_resource(entity, collection)).collect();
+    Ok(response::ok(&Document::new(data, Links::new(collection))))
 }
 
 async fn workout_set_get_by_id(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Json<WorkoutSet>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout_set::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "workout-sets")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = workout_set::get_by_id(&store, workout_set_lookup_key(&id)?).await.map_err(app_error)?;
+    let collection = "/api/workout-sets";
+    let resource = workout_set_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn workout_set_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateWorkoutSetInput>,
-) -> Result<(StatusCode, Json<WorkoutSet>), ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout_set::create(&store, input)
-        .await
-        .map(|entity| (StatusCode::CREATED, Json(entity)))
-        .map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    _: ContentTypeGuard,
+    _: Query<NoParams>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let collection = "/api/workout-sets";
+    let endpoint = Endpoint { type_name: "workout-sets", path: collection };
+    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let (fields, linked) = workout_set_request_fields(&data, true)?;
+    let input: CreateWorkoutSetInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    if let Some(linked) = &linked.workout {
+        match workout::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::WorkoutNotFound(..)) => return Err(linked.not_found("workouts")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    if let Some(linked) = &linked.exercise {
+        match exercise::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::ExerciseNotFound(..)) => return Err(linked.not_found("exercises")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    let entity = workout_set::create(&store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::WorkoutSetAlreadyExists(..) if data.id.is_some() => {
+            app_error(e).with_pointer("/data/id")
+        }
+        e => app_error(e),
+    })?;
+    let resource = workout_set_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
 }
 
 async fn workout_set_update(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(input): Json<UpdateWorkoutSetInput>,
-) -> Result<Json<WorkoutSet>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout_set::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    _: ContentTypeGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let collection = "/api/workout-sets";
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "workout-sets", path: &path };
+    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let (fields, linked) = workout_set_request_fields(&data, false)?;
+    let input: UpdateWorkoutSetInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    if let Some(linked) = &linked.workout {
+        match workout::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::WorkoutNotFound(..)) => return Err(linked.not_found("workouts")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    if let Some(linked) = &linked.exercise {
+        match exercise::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::ExerciseNotFound(..)) => return Err(linked.not_found("exercises")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    let entity = workout_set::update(&store, workout_set_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let resource = workout_set_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn workout_set_delete(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    workout_set::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    workout_set::delete(&store, workout_set_lookup_key(&id)?).await.map_err(app_error)?;
+    Ok(response::no_content())
 }
 
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/exercises", get(exercise_list).post(exercise_create))
-        .route("/api/exercises/{id}", get(exercise_get_by_id).put(exercise_update).delete(exercise_delete))
-        .route("/api/tags", get(tag_list).post(tag_create))
-        .route("/api/tags/{id}", get(tag_get_by_id).put(tag_update).delete(tag_delete))
-        .route("/api/workouts", get(workout_list).post(workout_create))
-        .route("/api/workouts/{id}", get(workout_get_by_id).put(workout_update).delete(workout_delete))
-        .route("/api/workout-sets", get(workout_set_list).post(workout_set_create))
-        .route("/api/workout-sets/{id}", get(workout_set_get_by_id).put(workout_set_update).delete(workout_set_delete))
+        .route("/api/exercises", get(exercise_list).post(exercise_create).fallback(allow([Method::GET, Method::POST])))
+        .route(
+            "/api/exercises/{id}",
+            get(exercise_get_by_id).patch(exercise_update).delete(exercise_delete).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
+        .route("/api/tags", get(tag_list).post(tag_create).fallback(allow([Method::GET, Method::POST])))
+        .route(
+            "/api/tags/{id}",
+            get(tag_get_by_id).patch(tag_update).delete(tag_delete).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
+        .route("/api/workouts", get(workout_list).post(workout_create).fallback(allow([Method::GET, Method::POST])))
+        .route(
+            "/api/workouts/{id}",
+            get(workout_get_by_id).patch(workout_update).delete(workout_delete).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
+        .route(
+            "/api/workout-sets",
+            get(workout_set_list).post(workout_set_create).fallback(allow([Method::GET, Method::POST])),
+        )
+        .route(
+            "/api/workout-sets/{id}",
+            get(workout_set_get_by_id).patch(workout_set_update).delete(workout_set_delete).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
 }

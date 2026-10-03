@@ -435,9 +435,12 @@ dependencies = [
  "axum",
  "markdown-store",
  "ontogen",
+ "ontogen-core",
+ "ontogen-jsonapi",
  "ontogen-macros",
  "schemars",
  "serde",
+ "serde_json",
  "specta",
  "tokio",
 ]
@@ -542,6 +545,7 @@ version = "0.6.1"
 name = "ontogen-jsonapi"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "http",
  "serde",
  "serde_json",

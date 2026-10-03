@@ -8,13 +8,13 @@ matters — the store backend. Workouts live as editable markdown files under
 ```sh
 cargo run
 # in another shell:
-curl -s localhost:3001/api/workouts | jq
-curl -s -X POST localhost:3001/api/workouts -H 'content-type: application/json' \
-  -d '{"id":"w-1","date":"2026-06-06","tags":["strength"],"created_at":"2026-06-06T08:00:00Z"}'
+curl -s localhost:3001/api/workouts | jq   # a JSON:API collection
+curl -s -X POST localhost:3001/api/workouts -H 'content-type: application/vnd.api+json' \
+  -d '{"data":{"type":"workouts","id":"w-1","attributes":{"date":"2026-06-06","created_at":"2026-06-06T08:00:00Z"},"relationships":{"tags":{"data":[{"type":"tags","id":"strength"}]}}}}'
 cat data/vault/workouts/w-1.md      # wikilinked tags, plain YAML
 $EDITOR data/vault/workouts/w-1.md  # add a field, edit prose…
-curl -s -X PUT localhost:3001/api/workouts/w-1 -H 'content-type: application/json' \
-  -d '{"duration_minutes":60}'
+curl -s -X PATCH localhost:3001/api/workouts/w-1 -H 'content-type: application/vnd.api+json' \
+  -d '{"data":{"type":"workouts","id":"w-1","attributes":{"duration_minutes":60}}}'
 cat data/vault/workouts/w-1.md      # …your edits survived the generated update
 ```
 
