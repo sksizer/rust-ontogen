@@ -161,8 +161,10 @@ impl VaultHandle {
     /// `provided` follows [`IdStrategy::make_id`] semantics: a non-empty
     /// caller-supplied id always wins and is *not* de-duplicated — an
     /// explicit duplicate fails with [`Error::AlreadyExists`], because
-    /// silently renaming an explicit id would be worse than failing.
-    /// `source_value` feeds [`IdStrategy::SlugFromField`].
+    /// silently renaming an explicit id would be worse than failing. For
+    /// the same reason an explicit reserved id (`index`, `log`) is
+    /// [`Error::InvalidId`], while a *derived* one is treated as taken and
+    /// becomes `index-2`. `source_value` feeds [`IdStrategy::SlugFromField`].
     pub fn create_record_derived(
         &self,
         dir_segment: &str,
@@ -171,10 +173,7 @@ impl VaultHandle {
         doc: &Document,
     ) -> Result<String, Error> {
         let _guard = self.lock();
-        let had_provided = provided.is_some_and(|p| !p.trim().is_empty());
-        let base = self.id_strategy.make_id(provided, source_value)?;
-        crate::layout::validate_id(&base)?;
-        let id = if had_provided { base } else { self.next_free_id(dir_segment, &base)? };
+        let id = self.derive_id(dir_segment, provided, source_value)?;
         let path = self.record_path(dir_segment, &id)?;
         if fsops::exists(&path) {
             return Err(Error::AlreadyExists { path });
@@ -260,13 +259,7 @@ impl VaultHandle {
         provided: Option<&str>,
         source_value: Option<&str>,
     ) -> Result<String, Error> {
-        let had_provided = provided.is_some_and(|p| !p.trim().is_empty());
-        let base = self.id_strategy.make_id(provided, source_value)?;
-        crate::layout::validate_id(&base)?;
-        if had_provided {
-            return Ok(base);
-        }
-        self.next_free_id(dir_segment, &base)
+        self.derive_id(dir_segment, provided, source_value)
     }
 
     /// Return `base` if no record with that id exists, otherwise the first
@@ -278,12 +271,30 @@ impl VaultHandle {
         self.next_free_id(dir_segment, base)
     }
 
+    /// Id derivation shared by [`make_record_id`](Self::make_record_id) and
+    /// the locked create path.
+    fn derive_id(
+        &self,
+        dir_segment: &str,
+        provided: Option<&str>,
+        source_value: Option<&str>,
+    ) -> Result<String, Error> {
+        let had_provided = provided.is_some_and(|p| !p.trim().is_empty());
+        let base = self.id_strategy.make_id(provided, source_value)?;
+        if had_provided {
+            crate::layout::validate_id(&base)?;
+            return Ok(base);
+        }
+        self.next_free_id(dir_segment, &base)
+    }
+
     /// Suffix search shared by the public previews and the locked create
     /// path. Named for how [`create_record_derived`] uses it — the *caller*
     /// is responsible for holding the lock when atomicity matters; the
-    /// probe itself is just existence checks.
+    /// probe itself is just existence checks. A reserved base counts as
+    /// taken, so a title that slugs to `index` lands on `index-2`.
     fn next_free_id(&self, dir_segment: &str, base: &str) -> Result<String, Error> {
-        if !self.record_exists(dir_segment, base)? {
+        if !crate::layout::is_reserved_id(base) && !self.record_exists(dir_segment, base)? {
             return Ok(base.to_string());
         }
         for n in 2.. {
@@ -428,6 +439,39 @@ mod tests {
         vault.create_record("tasks", &id2, &doc("Same Title")).unwrap();
         let id3 = vault.make_record_id("tasks", None, Some("Same Title")).unwrap();
         assert_eq!((id1.as_str(), id2.as_str(), id3.as_str()), ("same-title", "same-title-2", "same-title-3"));
+    }
+
+    #[test]
+    fn derived_reserved_ids_dedupe_like_a_collision() {
+        let (_dir, vault) = vault(IdStrategy::SlugFromField("title".into()));
+        assert_eq!(vault.make_record_id("tasks", None, Some("Index")).unwrap(), "index-2");
+        assert_eq!(vault.create_record_derived("tasks", None, Some("Index"), &doc("Index")).unwrap(), "index-2");
+        assert_eq!(vault.create_record_derived("tasks", None, Some("LOG"), &doc("LOG")).unwrap(), "log-2");
+        assert_eq!(vault.create_record_derived("tasks", None, Some("index"), &doc("index")).unwrap(), "index-3");
+        assert_eq!(vault.ensure_unique_id("tasks", "log").unwrap(), "log-3");
+        assert_eq!(vault.list_ids("tasks").unwrap(), vec!["index-2", "index-3", "log-2"]);
+    }
+
+    #[test]
+    fn explicit_reserved_ids_are_invalid() {
+        let (_dir, vault) = vault(IdStrategy::SlugFromField("title".into()));
+        for id in ["index", "log", "Index"] {
+            let err = vault.create_record_derived("tasks", Some(id), Some("ignored"), &doc("x")).unwrap_err();
+            assert!(matches!(err, Error::InvalidId { .. }), "{id}: {err}");
+            assert!(matches!(vault.make_record_id("tasks", Some(id), None), Err(Error::InvalidId { .. })));
+            assert!(matches!(vault.create_record("tasks", id, &doc("x")), Err(Error::InvalidId { .. })));
+        }
+    }
+
+    #[test]
+    fn index_and_log_files_never_surface_as_records() {
+        let (_dir, vault) = vault(IdStrategy::Provided);
+        vault.create_record("tasks", "real", &doc("real")).unwrap();
+        let tasks = vault.entity_dir("tasks").unwrap();
+        fsops::write_atomic(&tasks.join("index.md"), "# Tasks\n\n* [Real](real.md)\n").unwrap();
+        fsops::write_atomic(&tasks.join("log.md"), "# Log\n\n## 2026-10-03\n* **Creation**: real\n").unwrap();
+        assert_eq!(vault.list_ids("tasks").unwrap(), vec!["real"]);
+        assert_eq!(vault.read_all("tasks").unwrap().len(), 1);
     }
 
     #[test]

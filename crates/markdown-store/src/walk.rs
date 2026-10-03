@@ -53,6 +53,11 @@ impl Default for WalkOptions {
 /// suffix boundaries: `x-2.md` < `x.md` because `-` < `.`, yet the ids sort
 /// `x` < `x-2`.) Full path breaks ties.
 ///
+/// OKF's reserved `index` and `log` files (any configured extension, any
+/// depth, any ASCII case) are skipped: they are directory listings and
+/// update logs, not records, and their ids could never be read back anyway
+/// (see [`crate::layout::validate_id`]).
+///
 /// A missing directory yields `Ok(vec![])` — a store whose entity directory
 /// hasn't been created yet is empty, not broken.
 pub fn list_record_paths(dir: &Path, opts: &WalkOptions) -> Result<Vec<PathBuf>, Error> {
@@ -75,7 +80,8 @@ pub fn list_record_paths(dir: &Path, opts: &WalkOptions) -> Result<Vec<PathBuf>,
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|ext| opts.extensions.iter().any(|want| want.eq_ignore_ascii_case(ext)));
-        if matches_ext {
+        let reserved = path.file_stem().and_then(|s| s.to_str()).is_some_and(crate::layout::is_reserved_id);
+        if matches_ext && !reserved {
             paths.push(path);
         }
     }
@@ -129,6 +135,24 @@ mod tests {
         let paths = list_record_paths(root, &WalkOptions::default()).unwrap();
         let stems: Vec<&str> = paths.iter().filter_map(|p| p.file_stem().and_then(|s| s.to_str())).collect();
         assert_eq!(stems, vec!["x", "x-10", "x-2"], "lexicographic by id, not by raw path");
+    }
+
+    #[test]
+    fn okf_index_and_log_files_are_never_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        touch(&root.join("index.md"));
+        touch(&root.join("log.md"));
+        touch(&root.join("record.md"));
+        touch(&root.join("nested/Index.markdown"));
+        touch(&root.join("nested/LOG.md"));
+        touch(&root.join("nested/changelog.md"));
+        touch(&root.join("log/entry.md"));
+
+        let paths = list_record_paths(root, &WalkOptions::default()).unwrap();
+        let names: Vec<String> =
+            paths.iter().map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["log/entry.md", "nested/changelog.md", "record.md"]);
     }
 
     #[test]
