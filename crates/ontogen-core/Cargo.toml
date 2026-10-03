@@ -12,14 +12,17 @@ repository = "https://github.com/sksizer/rust-ontogen"
 # Runtime support for generated event ops (`events` module). A crate whose
 # API declares event ops depends on ontogen-core with this feature.
 events = ["dep:serde", "dep:tokio"]
+# `id::new_uuid`, which generated SeaORM stores call under `IdStrategy::Uuid`.
+uuid = ["dep:uuid"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
 tokio = { version = "1", features = ["sync", "rt"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
-# Enables `events` for this crate's own tests and lints.
-ontogen-core = { path = ".", features = ["events"] }
+# Enables `events` and `uuid` for this crate's own tests and lints.
+ontogen-core = { path = ".", features = ["events", "uuid"] }
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
