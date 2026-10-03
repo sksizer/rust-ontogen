@@ -46,6 +46,7 @@ fn builder_realistic_schema_seaorm_store_api() {
     Pipeline::new(fixture_schema_dir())
         .seaorm(&entities, &conversions)
         .store(&store_out, Some(&hooks))
+        .store_id_strategy(IdStrategy::Provided)
         .api(&api_out, "AppState")
         .build()
         .expect("realistic pipeline failed");
@@ -90,6 +91,7 @@ fn builder_markdown_pipeline_generates_store_and_api() {
     Pipeline::new(fixture_schema_dir())
         .markdown_io(&md_out, markdown_options())
         .store(&store_out, Some(&hooks))
+        .store_id_strategy(IdStrategy::Provided)
         .api(&api_out, "AppState")
         .build()
         .expect("markdown pipeline failed");
@@ -104,7 +106,7 @@ fn builder_markdown_pipeline_generates_store_and_api() {
     assert!(store_code.contains("self.vault()"), "markdown store talks to the vault:\n{store_code}");
     assert!(
         store_code.contains("&markdown_store::IdStrategy::Provided,"),
-        "with no store_id_strategy the caller supplies every id:\n{store_code}"
+        "under IdStrategy::Provided the caller supplies every id:\n{store_code}"
     );
     assert!(!store_code.contains("sea_orm"), "no SeaORM in a markdown store:\n{store_code}");
     assert!(hooks.exists(), "hooks scaffolded");
@@ -134,6 +136,7 @@ fn builder_with_both_persistence_stages_requires_explicit_backend() {
         .seaorm(tmp.path().join("entities"), tmp.path().join("conversions"))
         .markdown_io(tmp.path().join("markdown"), markdown_options())
         .store(tmp.path().join("store"), None::<PathBuf>)
+        .store_id_strategy(IdStrategy::Provided)
         .build()
         .expect_err("ambiguous backend must be an error");
     assert!(format!("{err}").contains("store_backend"), "error should point at the disambiguator: {err}");
@@ -144,6 +147,7 @@ fn builder_with_both_persistence_stages_requires_explicit_backend() {
         .seaorm(tmp2.path().join("entities"), tmp2.path().join("conversions"))
         .markdown_io(tmp2.path().join("markdown"), markdown_options())
         .store(tmp2.path().join("store"), None::<PathBuf>)
+        .store_id_strategy(IdStrategy::Provided)
         .store_backend(StoreBackendChoice::Seaorm)
         .build()
         .expect("explicit seaorm choice should build");
@@ -155,6 +159,7 @@ fn builder_store_without_persistence_stage_errors() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let err = Pipeline::new(fixture_schema_dir())
         .store(tmp.path().join("store"), None::<PathBuf>)
+        .store_id_strategy(IdStrategy::Provided)
         .build()
         .expect_err("store without a persistence backend must be an error");
     assert!(format!("{err}").contains("persistence backend"), "got: {err}");
@@ -268,4 +273,121 @@ fn builder_servers_and_clients_refuse_an_entity_that_cannot_be_a_resource() {
         .build()
         .expect_err("an i64 id cannot be a resource id");
     assert!(matches!(err, ontogen::CodegenError::Client(ref e) if e.contains("Note.id")), "got: {err}");
+}
+
+#[test]
+fn builder_store_without_id_strategy_errors_before_writing() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let err = Pipeline::new(fixture_schema_dir())
+        .seaorm(tmp.path().join("entities"), tmp.path().join("conversions"))
+        .store(tmp.path().join("store"), None::<PathBuf>)
+        .build()
+        .expect_err("a store stage without a default id strategy must be an error");
+    let msg = format!("{err}");
+    assert!(msg.contains("call Pipeline::store_id_strategy("), "the error names the setter: {msg}");
+    assert!(!tmp.path().join("entities").exists(), "no stage runs before the check");
+    assert!(!tmp.path().join("store").exists(), "nothing is written");
+
+    // Without a store stage there is nothing to default.
+    Pipeline::new(fixture_schema_dir())
+        .seaorm(tmp.path().join("entities"), tmp.path().join("conversions"))
+        .build()
+        .expect("no store, no id strategy needed");
+}
+
+/// A schema whose entities set their own id strategy, written to a temp dir.
+fn override_schema(dir: &Path, task_id: &str) {
+    std::fs::write(
+        dir.join("note.rs"),
+        r#"
+            #[derive(OntologyEntity)]
+            #[ontology(entity, directory = "notes", table = "notes")]
+            pub struct Note {
+                #[ontology(id)]
+                pub id: String,
+                pub title: String,
+            }
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("task.rs"),
+        format!(
+            r#"
+            #[derive(OntologyEntity)]
+            #[ontology(entity, directory = "tasks", table = "tasks", id = "{task_id}")]
+            pub struct Task {{
+                #[ontology(id)]
+                pub id: String,
+                pub summary: String,
+                pub points: Option<i32>,
+            }}
+        "#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn builder_entity_id_override_beats_the_store_default() {
+    for (task_id, task_needle) in [
+        ("uuid", "ontogen_core::id::new_uuid()"),
+        ("slug(summary)", "ontogen_core::id::slugify(&task.summary)"),
+        ("provided", "this store requires the caller to supply an id"),
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let schema = tmp.path().join("schema");
+        std::fs::create_dir_all(&schema).unwrap();
+        // Task has no `title`: the default alone would be refused for it.
+        override_schema(&schema, task_id);
+        Pipeline::new(&schema)
+            .seaorm(tmp.path().join("entities"), tmp.path().join("conversions"))
+            .store(tmp.path().join("store"), None::<PathBuf>)
+            .store_id_strategy(IdStrategy::SlugFromField("title".into()))
+            .build()
+            .unwrap_or_else(|e| panic!("id = {task_id:?}: {e}"));
+        let task = std::fs::read_to_string(tmp.path().join("store/task.rs")).unwrap();
+        let note = std::fs::read_to_string(tmp.path().join("store/note.rs")).unwrap();
+        assert!(task.contains(task_needle), "id = {task_id:?}: the override wins:\n{task}");
+        assert!(!task.contains("&task.title"), "id = {task_id:?}: not the default:\n{task}");
+        assert!(note.contains("ontogen_core::id::slugify(&note.title)"), "the default applies to Note:\n{note}");
+    }
+}
+
+#[test]
+fn builder_entity_id_override_is_checked_at_build_time() {
+    for (task_id, needle) in [
+        ("slug(points)", "field `points` must be a plain String"),
+        ("slug(missing)", "has no field `missing`"),
+        ("random", "expected `id = \"provided\"`, `id = \"uuid\"` or `id = \"slug(<field>)\"`"),
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let schema = tmp.path().join("schema");
+        std::fs::create_dir_all(&schema).unwrap();
+        override_schema(&schema, task_id);
+        let err = Pipeline::new(&schema)
+            .seaorm(tmp.path().join("entities"), tmp.path().join("conversions"))
+            .store(tmp.path().join("store"), None::<PathBuf>)
+            .store_id_strategy(IdStrategy::Provided)
+            .build()
+            .expect_err("a bad override must fail the build");
+        let msg = format!("{err}");
+        assert!(msg.contains("entity `Task`") && msg.contains(needle), "id = {task_id:?}: {msg}");
+        assert!(!tmp.path().join("store").exists(), "nothing is written");
+    }
+}
+
+#[test]
+fn builder_requires_the_default_even_when_every_entity_overrides_it() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema = tmp.path().join("schema");
+    std::fs::create_dir_all(&schema).unwrap();
+    override_schema(&schema, "uuid");
+    std::fs::remove_file(schema.join("note.rs")).unwrap();
+    let err = Pipeline::new(&schema)
+        .markdown_io(tmp.path().join("markdown"), markdown_options())
+        .store(tmp.path().join("store"), None::<PathBuf>)
+        .build()
+        .expect_err("the default is required");
+    assert!(format!("{err}").contains("call Pipeline::store_id_strategy("), "got: {err}");
 }

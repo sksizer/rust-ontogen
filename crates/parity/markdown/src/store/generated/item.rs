@@ -30,6 +30,7 @@ pub struct ItemUpdate {
     pub n_u8: Option<u8>,
     pub n_u16: Option<u16>,
     pub n_u32: Option<u32>,
+    pub n_u64: Option<u64>,
     pub n_usize: Option<usize>,
     pub n_u128: Option<u128>,
     pub n_i8: Option<i8>,
@@ -37,6 +38,7 @@ pub struct ItemUpdate {
     pub n_isize: Option<isize>,
     pub n_i128: Option<i128>,
     pub maybe_u32: Option<Option<u32>>,
+    pub maybe_u64: Option<Option<u64>>,
     pub parent_id: Option<Option<String>>,
     pub children: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
@@ -96,6 +98,9 @@ impl ItemUpdate {
         if let Some(n_u32) = &self.n_u32 {
             item.n_u32.clone_from(n_u32);
         }
+        if let Some(n_u64) = &self.n_u64 {
+            item.n_u64.clone_from(n_u64);
+        }
         if let Some(n_usize) = &self.n_usize {
             item.n_usize.clone_from(n_usize);
         }
@@ -116,6 +121,9 @@ impl ItemUpdate {
         }
         if let Some(maybe_u32) = &self.maybe_u32 {
             item.maybe_u32.clone_from(maybe_u32);
+        }
+        if let Some(maybe_u64) = &self.maybe_u64 {
+            item.maybe_u64.clone_from(maybe_u64);
         }
         if let Some(parent_id) = &self.parent_id {
             item.parent_id.clone_from(parent_id);
@@ -152,6 +160,7 @@ impl From<crate::schema::UpdateItemInput> for ItemUpdate {
             n_u8: input.n_u8,
             n_u16: input.n_u16,
             n_u32: input.n_u32,
+            n_u64: input.n_u64,
             n_usize: input.n_usize,
             n_u128: input.n_u128,
             n_i8: input.n_i8,
@@ -159,6 +168,7 @@ impl From<crate::schema::UpdateItemInput> for ItemUpdate {
             n_isize: input.n_isize,
             n_i128: input.n_i128,
             maybe_u32: input.maybe_u32,
+            maybe_u64: input.maybe_u64,
             parent_id: input.parent_id.map(markdown_store::wikilink::strip_opt),
             children: input.children.map(markdown_store::wikilink::strip_vec),
             tags: input.tags.map(markdown_store::wikilink::strip_vec),
@@ -188,6 +198,7 @@ impl From<crate::schema::CreateItemInput> for Item {
             n_u8: input.n_u8,
             n_u16: input.n_u16,
             n_u32: input.n_u32,
+            n_u64: input.n_u64,
             n_usize: input.n_usize,
             n_u128: input.n_u128,
             n_i8: input.n_i8,
@@ -195,6 +206,7 @@ impl From<crate::schema::CreateItemInput> for Item {
             n_isize: input.n_isize,
             n_i128: input.n_i128,
             maybe_u32: input.maybe_u32,
+            maybe_u64: input.maybe_u64,
             parent_id: markdown_store::wikilink::strip_opt(input.parent_id),
             children: markdown_store::wikilink::strip_vec(input.children),
             tags: markdown_store::wikilink::strip_vec(input.tags),
@@ -248,6 +260,37 @@ impl Store {
             }
         }
 
+        if let Some(v) = Some(item.n_u64).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.n_u64: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = Some(item.n_usize).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.n_usize: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = Some(item.n_u128).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.n_u128: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = Some(item.n_isize).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.n_isize: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = Some(item.n_i128).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.n_i128: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = item.maybe_u64.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.maybe_u64: value {v} is out of range for i64"),
+            }));
+        }
+
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&ItemFrontmatter::from_item(&item), ITEM_FM_FIELDS).map_err(AppError::from)?;
         doc.set_body(item.body.clone());
@@ -289,6 +332,37 @@ impl Store {
             Some(new_ids) => current.children.iter().filter(|c| !new_ids.contains(c)).cloned().collect(),
             None => Vec::new(),
         };
+
+        if let Some(v) = updates.n_u64.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.n_u64: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = updates.n_usize.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.n_usize: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = updates.n_u128.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.n_u128: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = updates.n_isize.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.n_isize: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = updates.n_i128.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.n_i128: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = updates.maybe_u64.flatten().filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Item.maybe_u64: value {v} is out of range for i64"),
+            }));
+        }
 
         self.vault()
             .entity(ITEMS_DIR, ITEM_TYPE)

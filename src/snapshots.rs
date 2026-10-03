@@ -44,6 +44,7 @@ fn simple_role_entity() -> EntityDef {
         table: "roles".to_string(),
         type_name: "Role".to_string(),
         prefix: "role".to_string(),
+        id_strategy: None,
         fields: vec![
             FieldDef::new("id", FieldType::String, FieldRole::Id),
             FieldDef::new("name", FieldType::String, FieldRole::Plain),
@@ -62,6 +63,7 @@ fn comment_belongs_to_post_entity() -> EntityDef {
         table: "comments".to_string(),
         type_name: "Comment".to_string(),
         prefix: "comment".to_string(),
+        id_strategy: None,
         fields: vec![
             FieldDef::new("id", FieldType::String, FieldRole::Id),
             FieldDef::new(
@@ -89,6 +91,7 @@ fn article_mtm_tags_entity() -> EntityDef {
         table: "articles".to_string(),
         type_name: "Article".to_string(),
         prefix: "article".to_string(),
+        id_strategy: None,
         fields: vec![
             FieldDef::new("id", FieldType::String, FieldRole::Id),
             FieldDef::new("title", FieldType::String, FieldRole::Plain),
@@ -118,6 +121,7 @@ fn counter_integers_entity() -> EntityDef {
         table: "counters".to_string(),
         type_name: "Counter".to_string(),
         prefix: "counter".to_string(),
+        id_strategy: None,
         fields: vec![
             FieldDef::new("id", FieldType::String, FieldRole::Id),
             FieldDef::new("hits", FieldType::Other("u32".to_string()), FieldRole::Plain),
@@ -311,6 +315,7 @@ fn node_has_many_entity() -> EntityDef {
         table: "nodes".to_string(),
         type_name: "Node".to_string(),
         prefix: "node".to_string(),
+        id_strategy: None,
         fields: vec![
             FieldDef::new("id", FieldType::String, FieldRole::Id),
             FieldDef::new("label", FieldType::String, FieldRole::Plain),
@@ -560,6 +565,7 @@ fn documented_set_entity() -> EntityDef {
         table: "sets".to_string(),
         type_name: "Set".to_string(),
         prefix: "set".to_string(),
+        id_strategy: None,
         fields: vec![
             documented("Stable id.", FieldDef::new("id", FieldType::String, FieldRole::Id)),
             documented("Integer metres.", FieldDef::new("distance_m", FieldType::OptionI32, FieldRole::Plain)),

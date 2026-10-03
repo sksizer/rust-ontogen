@@ -117,7 +117,7 @@ Used by [`gen_store()`](/reference/public-api/#gen_store).
 | `schema_module_path` | `String` | Rust import path for the schema module in generated code. Use [`ontogen::DEFAULT_SCHEMA_MODULE_PATH`](/reference/public-api/#default_schema_module_path) (`"crate::schema"`) for the canonical default. |
 | `backend` | `Backend` | Which persistence backend the generated CRUD bodies are wired to. See [`Backend`](#backend) below and the [markdown backend guide](/guides/markdown-backend/). |
 | `wikilink_policy` | `Option<WikilinkPolicy>` | Whether the DTO `From` impls strip wikilink-shaped relation ids (`[[id]]` to `id`). `None` uses the backend's default. See [`WikilinkPolicy`](#wikilinkpolicy) below. |
-| `id_strategy` | `IdStrategy` | How `create_*` fills the id of a record created without one, on either backend. See [`IdStrategy`](#idstrategy). `Pipeline` sets it with `store_id_strategy(..)` and defaults to `IdStrategy::Provided`. |
+| `id_strategy` | `IdStrategy` | How `create_*` fills the id of a record created without one, on either backend: the default for every entity without its own `#[ontology(entity, id = "...")]`. See [`IdStrategy`](#idstrategy). Required; `Pipeline` sets it with `store_id_strategy(..)`. |
 
 ```rust
 StoreConfig {
@@ -136,13 +136,21 @@ When `hooks_dir` is `None`, the generated CRUD code still compiles -- but it exp
 
 ```rust
 pub enum IdStrategy {
-    Provided,                  // the caller must supply the id (the default)
+    Provided,                  // the caller must supply the id
     SlugFromField(String),     // slugify the named field, probing -2, -3, ...
     Uuid,                      // fresh UUID v4
 }
 ```
 
-One setting for both backends. `SlugFromField(f)` requires `f` to be a plain `String` field on every entity; the generator fails otherwise. `Uuid` needs the `uuid` feature of `markdown-store` in a markdown consumer. [Creating records](/guides/store-layer/#creating-records) describes how a create uses the strategy, and the SeaORM dependency on `ontogen-core`.
+One build-time setting for both backends, with no default. The store-wide strategy is `StoreConfig::id_strategy`; with `Pipeline`, call `.store_id_strategy(..)` whenever the `store` stage is enabled, or `build()` fails with:
+
+```text
+store codegen error: the store stage needs a default id strategy: call Pipeline::store_id_strategy(IdStrategy::Provided | IdStrategy::SlugFromField("<field>".into()) | IdStrategy::Uuid). It is required even when every entity sets #[ontology(entity, id = "...")], which overrides it per entity
+```
+
+An entity overrides the default in the schema with `#[ontology(entity, id = "provided" | "uuid" | "slug(<field>)")]` (see [Annotations](/reference/annotations/#id-strategy)). Each entity's create uses its override, else the default.
+
+`SlugFromField(f)` requires `f` to be a plain `String` field on every entity it applies to: every entity without an override for the default, the one entity for a `slug(f)` override. The generator fails otherwise, naming the entity. `Uuid` needs the `uuid` feature of `markdown-store` in a markdown consumer. [Creating records](/guides/store-layer/#creating-records) describes how a create uses the strategy, and the SeaORM dependency on `ontogen-core`.
 
 ### `Backend`
 

@@ -24,8 +24,7 @@ enum StoreError {
     IdRequired(&'static str, String),
     AlreadyExists(&'static str, String),
     ParentRequired(&'static str, String),
-    // Read only by `Debug`, in failure messages.
-    Backend(#[allow(dead_code)] String),
+    Backend(String),
 }
 
 impl PartialEq for StoreError {
@@ -65,12 +64,16 @@ trait Backend: Sized {
     async fn create_fixed(&self, fixed: Value) -> R<Value>;
     async fn get_fixed(&self, id: &str) -> R<Value>;
     async fn count_fixeds(&self) -> R<u64>;
+
+    /// Rename a stored item the way an edit made outside the store would
+    /// (an SQL `UPDATE`, a file rename), to reach ids no create can make.
+    async fn rename_item(&self, from: &str, to: &str);
 }
 
 /// The generated method calls are spelled identically in both crates, so
 /// one body serves both; only the crates and the catch-all variant differ.
 macro_rules! store_methods {
-    ($krate:ident, $provided:ident, $other:ident) => {
+    ($krate:ident, $other:ident) => {
         async fn create_item(&self, item: Value) -> R<Value> {
             let item = serde_json::from_value(item).expect("an Item");
             self.store.create_item(item).await.map(to_json).map_err(err)
@@ -109,22 +112,25 @@ macro_rules! store_methods {
         }
         async fn create_fixed(&self, fixed: Value) -> R<Value> {
             let fixed = serde_json::from_value(fixed).expect("a Fixed");
-            self.provided.create_fixed(fixed).await.map(to_json).map_err(provided_err)
+            self.store.create_fixed(fixed).await.map(to_json).map_err(err)
         }
         async fn get_fixed(&self, id: &str) -> R<Value> {
-            self.provided.get_fixed(id).await.map(to_json).map_err(provided_err)
+            self.store.get_fixed(id).await.map(to_json).map_err(err)
         }
         async fn count_fixeds(&self) -> R<u64> {
-            self.provided.count_fixeds().await.map_err(provided_err)
+            self.store.count_fixeds().await.map_err(err)
         }
     };
 }
 
 macro_rules! error_mappers {
-    ($krate:ident, $provided:ident, $other:ident) => {
+    ($krate:ident, $other:ident) => {
         fn err(e: $krate::schema::AppError) -> StoreError {
             use $krate::schema::AppError as E;
             match e {
+                E::FixedNotFound(id) => StoreError::NotFound("Fixed", id),
+                E::FixedIdRequired(r) => StoreError::IdRequired("Fixed", r),
+                E::FixedAlreadyExists(id) => StoreError::AlreadyExists("Fixed", id),
                 E::ItemNotFound(id) => StoreError::NotFound("Item", id),
                 E::ItemIdRequired(r) => StoreError::IdRequired("Item", r),
                 E::ItemAlreadyExists(id) => StoreError::AlreadyExists("Item", id),
@@ -135,16 +141,6 @@ macro_rules! error_mappers {
                 E::TagNotFound(id) => StoreError::NotFound("Tag", id),
                 E::TagIdRequired(r) => StoreError::IdRequired("Tag", r),
                 E::TagAlreadyExists(id) => StoreError::AlreadyExists("Tag", id),
-                E::$other(msg) => StoreError::Backend(msg),
-            }
-        }
-
-        fn provided_err(e: $provided::schema::AppError) -> StoreError {
-            use $provided::schema::AppError as E;
-            match e {
-                E::FixedNotFound(id) => StoreError::NotFound("Fixed", id),
-                E::FixedIdRequired(r) => StoreError::IdRequired("Fixed", r),
-                E::FixedAlreadyExists(id) => StoreError::AlreadyExists("Fixed", id),
                 E::$other(msg) => StoreError::Backend(msg),
             }
         }
@@ -160,32 +156,34 @@ mod sqlite {
 
     pub struct Sqlite {
         store: parity_seaorm::Store,
-        provided: parity_seaorm_provided::Store,
     }
 
     impl Backend for Sqlite {
         const NAME: &'static str = "seaorm";
 
         async fn open() -> Self {
-            Self {
-                store: parity_seaorm::Store::open_in_memory().await.expect("sqlite"),
-                provided: parity_seaorm_provided::Store::open_in_memory().await.expect("sqlite"),
-            }
+            Self { store: parity_seaorm::Store::open_in_memory().await.expect("sqlite") }
         }
 
-        store_methods!(parity_seaorm, parity_seaorm_provided, DbError);
+        store_methods!(parity_seaorm, DbError);
+
+        async fn rename_item(&self, from: &str, to: &str) {
+            use sea_orm::ConnectionTrait;
+            let sql = format!("UPDATE items SET id = '{to}' WHERE id = '{from}'");
+            let renamed = self.store.db().execute_unprepared(&sql).await.expect("rename");
+            assert_eq!(renamed.rows_affected(), 1, "rename {from:?}");
+        }
     }
 
-    error_mappers!(parity_seaorm, parity_seaorm_provided, DbError);
+    error_mappers!(parity_seaorm, DbError);
 }
 
 mod vault {
     use super::*;
 
     pub struct Vault {
-        _dirs: [tempfile::TempDir; 2],
+        _dir: tempfile::TempDir,
         store: parity_markdown::Store,
-        provided: parity_markdown_provided::Store,
     }
 
     impl Backend for Vault {
@@ -193,19 +191,20 @@ mod vault {
 
         async fn open() -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
-            let provided_dir = tempfile::tempdir().expect("tempdir");
             let store =
                 parity_markdown::Store::new(parity_markdown::persistence::markdown::generated::open_vault(dir.path()));
-            let provided = parity_markdown_provided::Store::new(
-                parity_markdown_provided::persistence::markdown::generated::open_vault(provided_dir.path()),
-            );
-            Self { _dirs: [dir, provided_dir], store, provided }
+            Self { _dir: dir, store }
         }
 
-        store_methods!(parity_markdown, parity_markdown_provided, Md);
+        store_methods!(parity_markdown, Md);
+
+        async fn rename_item(&self, from: &str, to: &str) {
+            let dir = self.store.vault().root().join("items");
+            std::fs::rename(dir.join(format!("{from}.md")), dir.join(format!("{to}.md"))).expect("rename");
+        }
     }
 
-    error_mappers!(parity_markdown, parity_markdown_provided, Md);
+    error_mappers!(parity_markdown, Md);
 }
 
 use sqlite::Sqlite;
@@ -277,8 +276,8 @@ fn item(id: &str, overrides: Value) -> Value {
         "int32": 0, "int64": 0, "float32": 0.0, "float64": 0.0, "flag": false, "kind": "alpha",
         "maybe_text": null, "maybe_int32": null, "maybe_int64": null, "maybe_float32": null,
         "maybe_float64": null, "maybe_flag": null, "maybe_kind": null,
-        "n_u8": 0, "n_u16": 0, "n_u32": 0, "n_usize": 0, "n_u128": 0,
-        "n_i8": 0, "n_i16": 0, "n_isize": 0, "n_i128": 0, "maybe_u32": null,
+        "n_u8": 0, "n_u16": 0, "n_u32": 0, "n_u64": 0, "n_usize": 0, "n_u128": 0,
+        "n_i8": 0, "n_i16": 0, "n_isize": 0, "n_i128": 0, "maybe_u32": null, "maybe_u64": null,
         "parent_id": null, "children": [], "tags": [], "body": "",
     });
     for (k, v) in overrides.as_object().expect("an object") {
@@ -302,10 +301,10 @@ fn ok_ids(list: &[&str]) -> R<Vec<String>> {
 
 // ─── Default order and pagination ───────────────────────────────────────────
 
-/// Ids chosen so byte order differs from case-folded, locale and length
-/// order, and so a prefix's separator decides: `-` < `.` < digits <
-/// uppercase < `_` < lowercase < multi-byte UTF-8.
-const ORDER_IDS: &[&str] = &["z", "é", "a", "B", "a-2", "a.b", "a2", "a_b", "Zeta", "alpha", "Ω", "a b", "10", "9"];
+/// Ids chosen so byte order differs from locale (punctuation-blind) and
+/// length order, and so a prefix's separator decides: `-` < `.` < digits <
+/// `_` < lowercase < `~`.
+const ORDER_IDS: &[&str] = &["z", "a~b", "a", "_x", "a-2", "a.b", "a2", "a_b", "~", "alpha", "-z", "z.z", "10", "9"];
 
 async fn default_order_and_pages<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     for id in ORDER_IDS {
@@ -314,7 +313,7 @@ async fn default_order_and_pages<B: Backend>(b: &B, mut t: Transcript) -> Transc
     }
     let mut expected: Vec<&str> = ORDER_IDS.to_vec();
     expected.sort_unstable(); // `str: Ord` is byte order
-    assert_eq!(expected, ["10", "9", "B", "Zeta", "a", "a b", "a-2", "a.b", "a2", "a_b", "alpha", "z", "é", "Ω"]);
+    assert_eq!(expected, ["-z", "10", "9", "_x", "a", "a-2", "a.b", "a2", "a_b", "alpha", "a~b", "z", "z.z", "~"]);
 
     t.expect("list", listed_ids(b.list_items(None, None).await), ok_ids(&expected));
     t.expect("count", b.count_items().await, Ok(expected.len() as u64));
@@ -388,9 +387,9 @@ async fn field_values_round_trip<B: Backend>(b: &B, mut t: Transcript) -> Transc
             "flag": true, "kind": "gamma",
             "maybe_text": "", "maybe_int32": i32::MAX, "maybe_int64": i64::MIN, "maybe_float32": -0.25,
             "maybe_float64": 1e-300, "maybe_flag": false, "maybe_kind": "beta",
-            "n_u8": u8::MAX, "n_u16": u16::MAX, "n_u32": 3_000_000_000u32, "n_usize": i64::MAX,
+            "n_u8": u8::MAX, "n_u16": u16::MAX, "n_u32": 3_000_000_000u32, "n_u64": i64::MAX, "n_usize": i64::MAX,
             "n_u128": i64::MAX, "n_i8": i8::MIN, "n_i16": i16::MIN, "n_isize": i64::MIN, "n_i128": i64::MIN,
-            "maybe_u32": 3_000_000_000u32, "body": "# Body\n\nwith *markdown*\n",
+            "maybe_u32": 3_000_000_000u32, "maybe_u64": i64::MAX, "body": "# Body\n\nwith *markdown*\n",
         }),
     );
     let max = item("max", json!({ "n_u32": u32::MAX, "maybe_u32": u32::MAX }));
@@ -421,6 +420,38 @@ async fn every_field_type_round_trips_exactly() {
     parity!(field_values_round_trip);
 }
 
+/// A value outside `i64` is refused on both backends with the catch-all,
+/// before anything is written: SeaORM cannot store it (ADR 0006 §4), so the
+/// markdown store refuses it too, although a vault could hold it.
+async fn integers_outside_i64<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let huge = i64::MAX as u64 + 1;
+    let cases =
+        [("n_u64", huge), ("n_u64", u64::MAX), ("maybe_u64", u64::MAX), ("n_usize", huge), ("n_u128", u64::MAX)];
+    for (i, (field, value)) in cases.iter().enumerate() {
+        let label = format!("create {field} = {value}");
+        let result = b.create_item(item(&format!("big{i}"), json!({ *field: value }))).await;
+        assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] {label}: {result:?}", B::NAME);
+        t.record(label, &result).unwrap_err();
+    }
+    t.expect("nothing was stored", b.count_items().await, Ok(0));
+
+    let base = item("base", json!({ "maybe_u64": 7 }));
+    t.expect("create base", b.create_item(base.clone()).await, Ok(base.clone()));
+    for (field, value) in cases {
+        let label = format!("update {field} = {value}");
+        let result = b.update_item("base", json!({ field: value })).await;
+        assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] {label}: {result:?}", B::NAME);
+        t.record(label, &result).unwrap_err();
+    }
+    t.expect("base is unchanged", b.get_item("base").await, Ok(base));
+    t
+}
+
+#[tokio::test]
+async fn an_integer_outside_i64_fails_the_write() {
+    parity!(integers_outside_i64);
+}
+
 // ─── Linkage order ──────────────────────────────────────────────────────────
 
 async fn linkage_order<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
@@ -430,19 +461,19 @@ async fn linkage_order<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 
     // has_many: id ascending, whatever order the children were written in.
     t.record("create p", &b.create_item(item("p", json!({}))).await).unwrap();
-    for child in ["c3", "c1", "é", "C2"] {
+    for child in ["c3", "c1", "c~", "c-2"] {
         t.record(format!("create {child}"), &b.create_item(item(child, json!({ "parent_id": "p" }))).await).unwrap();
     }
     let children = |v: R<Value>| v.map(|p| p["children"].clone());
-    t.expect("children of p", children(b.get_item("p").await), Ok(json!(["C2", "c1", "c3", "é"])));
+    t.expect("children of p", children(b.get_item("p").await), Ok(json!(["c-2", "c1", "c3", "c~"])));
 
     // Children listed on create are pointed at the new record.
     t.expect(
         "create q listing two of p's children",
-        children(b.create_item(item("q", json!({ "children": ["é", "c1"] }))).await),
-        Ok(json!(["c1", "é"])),
+        children(b.create_item(item("q", json!({ "children": ["c~", "c1"] }))).await),
+        Ok(json!(["c1", "c~"])),
     );
-    t.expect("p keeps the rest", children(b.get_item("p").await), Ok(json!(["C2", "c3"])));
+    t.expect("p keeps the rest", children(b.get_item("p").await), Ok(json!(["c-2", "c3"])));
 
     // A record that is its own parent is not its own child.
     t.expect(
@@ -541,7 +572,26 @@ async fn create_ids<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     t.expect("the original is untouched", b.get_item("dup").await.map(|r| r["title"].clone()), Ok(json!("First")));
 
     // An invalid provided id is a server-side bug: the backend's catch-all.
-    for id in ["a/b", "index", "Log", ".hidden", "trailing.", "trailing ", "c:d"] {
+    // Uppercase, non-ASCII and over-long ids break the create rule like
+    // path syntax does.
+    let too_long = "a".repeat(201);
+    for id in [
+        "a/b",
+        "index",
+        "Log",
+        ".hidden",
+        "trailing.",
+        "trailing ",
+        "c:d",
+        "B",
+        "Zeta",
+        "é",
+        "Ω",
+        "café",
+        "a b",
+        "a+b",
+        too_long.as_str(),
+    ] {
         let result = created_id(b.create_item(item(id, json!({}))).await);
         assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] create {id:?}: {result:?}", B::NAME);
         t.record(format!("invalid id {id:?}"), &result).unwrap_err();
@@ -577,13 +627,150 @@ async fn create_fills_and_refuses_ids_the_same_way() {
     parity!(create_ids);
 }
 
+/// The 200-byte limit, and slugs cut to fit it, on provided and derived ids.
+async fn id_length<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let created_id = |v: R<Value>| v.map(|r| r["id"].as_str().unwrap().to_string());
+    let derive = |title: &str| item("", json!({ "title": title }));
+
+    let longest = "x".repeat(200);
+    t.expect("a 200-byte id", created_id(b.create_item(item(&longest, json!({}))).await), Ok(longest.clone()));
+    t.expect("get the 200-byte id", created_id(b.get_item(&longest).await), Ok(longest.clone()));
+    let too_long = format!("{longest}x");
+    let result = created_id(b.create_item(item(&too_long, json!({}))).await);
+    assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] a 201-byte id: {result:?}", B::NAME);
+    t.record("a 201-byte id", &result).unwrap_err();
+    t.expect(
+        "the 201-byte id was not stored",
+        b.get_item(&too_long).await,
+        Err(StoreError::NotFound("Item", too_long)),
+    );
+
+    // A slug is cut to 190 bytes (a dangling `-` trimmed), whatever the
+    // title's length, and probing keeps the cut base whole.
+    let words = "Word ".repeat(100);
+    let cut = "word-".repeat(38).trim_end_matches('-').to_string();
+    assert_eq!(cut.len(), 189);
+    t.expect("a long title", created_id(b.create_item(derive(&words)).await), Ok(cut.clone()));
+    t.expect("the same long title", created_id(b.create_item(derive(&words)).await), Ok(format!("{cut}-2")));
+    t.expect(
+        "a longer title with the same first 190 bytes",
+        created_id(b.create_item(derive(&format!("{words} and more"))).await),
+        Ok(format!("{cut}-3")),
+    );
+    let run = "x".repeat(300);
+    t.expect("a 300-character title", created_id(b.create_item(derive(&run)).await), Ok("x".repeat(190)));
+    t.expect("again", created_id(b.create_item(derive(&run)).await), Ok(format!("{}-2", "x".repeat(190))));
+
+    // Latin letters fold to ASCII; anything else separates.
+    t.expect(
+        "a title with diacritics",
+        created_id(b.create_item(derive("Crème Brûlée à Łódź")).await),
+        Ok("creme-brulee-a-lodz".into()),
+    );
+    t.expect("Straße", created_id(b.create_item(derive("Straße")).await), Ok("strasse".into()));
+    t.expect("a title with no Latin letters", created_id(b.create_item(derive("日本 Ω 2")).await), Ok("2".into()));
+    let folded = "é".repeat(120);
+    t.expect("a long title of two-byte letters", created_id(b.create_item(derive(&folded)).await), Ok("e".repeat(120)));
+
+    let mut expected = vec![
+        "2".to_string(),
+        cut.clone(),
+        format!("{cut}-2"),
+        format!("{cut}-3"),
+        "creme-brulee-a-lodz".into(),
+        "e".repeat(120),
+        "strasse".into(),
+        longest,
+        "x".repeat(190),
+        format!("{}-2", "x".repeat(190)),
+    ];
+    expected.sort_unstable();
+    let listed = listed_ids(b.list_items(None, None).await);
+    assert_eq!(listed, Ok(expected.clone()), "[{}] list", B::NAME);
+    t.record("list", &listed).unwrap();
+    t
+}
+
+#[tokio::test]
+async fn ids_are_at_most_200_bytes_and_long_slugs_are_cut_alike() {
+    parity!(id_length);
+}
+
+/// Windows device names are refused as provided ids, whole or before the
+/// first `.` and in any case; a title that slugs to one probes past it.
+async fn device_names<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let created_id = |v: R<Value>| v.map(|r| r["id"].as_str().unwrap().to_string());
+    let derive = |title: &str| item("", json!({ "title": title }));
+
+    for id in ["con", "nul.x", "com1.backup", "lpt9", "CON", "Aux.md", "com0", "Lpt0.txt"] {
+        let result = created_id(b.create_item(item(id, json!({}))).await);
+        let Err(StoreError::Backend(message)) = &result else {
+            panic!("[{}] create {id:?}: {result:?}", B::NAME);
+        };
+        assert!(
+            message.contains(&format!("invalid id {id:?}: is reserved: Windows has no file named con"))
+                && message.ends_with("and not a reserved name: choose another id"),
+            "[{}] the message states the clause and the rule: {message}",
+            B::NAME
+        );
+        t.record(format!("device name {id:?}"), &result).unwrap_err();
+        t.expect(&format!("{id:?} was not stored"), b.get_item(id).await, Err(StoreError::NotFound("Item", id.into())));
+    }
+    for id in ["console", "con-2x", "xcon", "a.con", "com10", "lpt10"] {
+        t.expect(
+            &format!("{id:?} is no device name"),
+            created_id(b.create_item(item(id, json!({}))).await),
+            Ok(id.into()),
+        );
+    }
+    t.expect("Con derives con-2", created_id(b.create_item(derive("Con")).await), Ok("con-2".into()));
+    t.expect("CON again derives con-3", created_id(b.create_item(derive("CON")).await), Ok("con-3".into()));
+    t.expect("nul.x slugs to nul-x", created_id(b.create_item(derive("nul.x")).await), Ok("nul-x".into()));
+    t.expect("LPT1 derives lpt1-2", created_id(b.create_item(derive("LPT1")).await), Ok("lpt1-2".into()));
+    t.expect("COM0 derives com0-2", created_id(b.create_item(derive("COM0")).await), Ok("com0-2".into()));
+    t.expect(
+        "only the valid creates were stored",
+        listed_ids(b.list_items(None, None).await),
+        ok_ids(&[
+            "a.con", "com0-2", "com10", "con-2", "con-2x", "con-3", "console", "lpt1-2", "lpt10", "nul-x", "xcon",
+        ]),
+    );
+    t
+}
+
+#[tokio::test]
+async fn device_names_are_refused_and_derived_past_alike() {
+    parity!(device_names);
+}
+
 // ─── Lookups ────────────────────────────────────────────────────────────────
 
 async fn lookups<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     t.record("create kept", &b.create_item(item("kept", json!({}))).await).unwrap();
     // Ids no record can have (markdown cannot even hold them; SeaORM never
-    // created them), and a valid id that was never created.
-    for id in ["index", "LOG", "a/b", ".hidden", "..", " ", "\t", "trailing.", "c:d", "never"] {
+    // created them); ids a lookup accepts but no create could have made
+    // (uppercase, non-ASCII, over 200 bytes); and a valid id that was never
+    // created.
+    let (long, longer) = ("l".repeat(201), "l".repeat(300));
+    for id in [
+        "index",
+        "LOG",
+        "a/b",
+        ".hidden",
+        "..",
+        " ",
+        "\t",
+        "trailing.",
+        "c:d",
+        "Ghost",
+        "NEVER",
+        "é",
+        "Ω",
+        "a b",
+        long.as_str(),
+        longer.as_str(),
+        "never",
+    ] {
         let not_found = StoreError::NotFound("Item", id.to_string());
         t.expect(&format!("get {id:?}"), b.get_item(id).await, Err(not_found.clone()));
         t.expect(&format!("update {id:?}"), b.update_item(id, json!({ "title": "x" })).await, Err(not_found.clone()));
@@ -599,6 +786,34 @@ async fn lookups<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 #[tokio::test]
 async fn lookups_of_missing_and_impossible_ids_are_not_found() {
     parity!(lookups);
+}
+
+/// Spellings of a stored id that macOS and Windows filesystems resolve to
+/// the stored file: other letter cases, and the other Unicode
+/// normalization form.
+async fn spelling_variants<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let kept = t.record("create kept", &b.create_item(item("kept", json!({}))).await).unwrap();
+    t.record("create hand", &b.create_item(item("hand", json!({ "title": "Hand-named" }))).await).unwrap();
+    let cafe = "caf\u{e9}";
+    b.rename_item("hand", cafe).await;
+    let hand = t.record("get the hand-named record", &b.get_item(cafe).await).unwrap();
+    assert_eq!((hand["id"].as_str(), hand["title"].as_str()), (Some(cafe), Some("Hand-named")));
+
+    for id in ["KEPT", "Kept", "kepT", "cafe\u{301}", "CAF\u{c9}", "Caf\u{e9}"] {
+        let not_found = StoreError::NotFound("Item", id.to_string());
+        t.expect(&format!("get {id:?}"), b.get_item(id).await, Err(not_found.clone()));
+        t.expect(&format!("update {id:?}"), b.update_item(id, json!({ "title": "x" })).await, Err(not_found.clone()));
+        t.expect(&format!("delete {id:?}"), b.delete_item(id).await, Err(not_found));
+    }
+    t.expect("kept is unchanged", b.get_item("kept").await, Ok(kept));
+    t.expect("the hand-named record is unchanged", b.get_item(cafe).await, Ok(hand));
+    t.expect("nothing was removed", listed_ids(b.list_items(None, None).await), ok_ids(&[cafe, "kept"]));
+    t
+}
+
+#[tokio::test]
+async fn a_case_or_normalization_variant_of_an_id_is_not_found() {
+    parity!(spelling_variants);
 }
 
 // ─── has_many writes ────────────────────────────────────────────────────────

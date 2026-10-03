@@ -11,7 +11,6 @@ use crate::store::helpers::to_snake_case;
 
 pub(crate) struct MarkdownBackend {
     pub(crate) md: MarkdownIoOutput,
-    pub(crate) id_strategy: IdStrategy,
 }
 
 impl StoreBackend for MarkdownBackend {
@@ -34,8 +33,8 @@ impl StoreBackend for MarkdownBackend {
         code.push_str(&format!("const {}: &str = {type_name:?};\n\n", gen_crud::type_const(&snake)));
     }
 
-    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef) {
-        gen_crud::generate_crud_impl(code, entity, &self.id_strategy);
+    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
+        gen_crud::generate_crud_impl(code, entity, id_strategy);
     }
 
     fn wikilink_policy(&self) -> WikilinkPolicy {

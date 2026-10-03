@@ -36,6 +36,9 @@ impl Item {
             n_u32: u32::try_from(model.n_u32).map_err(|_| {
                 AppError::DbError(format!("Item.n_u32: stored value {} is out of range for u32", model.n_u32))
             })?,
+            n_u64: u64::try_from(model.n_u64).map_err(|_| {
+                AppError::DbError(format!("Item.n_u64: stored value {} is out of range for u64", model.n_u64))
+            })?,
             n_usize: usize::try_from(model.n_usize).map_err(|_| {
                 AppError::DbError(format!("Item.n_usize: stored value {} is out of range for usize", model.n_usize))
             })?,
@@ -57,6 +60,14 @@ impl Item {
                 .map(|v| {
                     u32::try_from(v).map_err(|_| {
                         AppError::DbError(format!("Item.maybe_u32: stored value {v} is out of range for u32"))
+                    })
+                })
+                .transpose()?,
+            maybe_u64: model
+                .maybe_u64
+                .map(|v| {
+                    u64::try_from(v).map_err(|_| {
+                        AppError::DbError(format!("Item.maybe_u64: stored value {v} is out of range for u64"))
                     })
                 })
                 .transpose()?,
@@ -89,6 +100,8 @@ impl Item {
             n_u8: Set(i64::from(self.n_u8)),
             n_u16: Set(i64::from(self.n_u16)),
             n_u32: Set(i64::from(self.n_u32)),
+            n_u64: Set(i64::try_from(self.n_u64)
+                .map_err(|_| AppError::DbError(format!("Item.n_u64: value {} is out of range for i64", self.n_u64)))?),
             n_usize: Set(i64::try_from(self.n_usize).map_err(|_| {
                 AppError::DbError(format!("Item.n_usize: value {} is out of range for i64", self.n_usize))
             })?),
@@ -104,6 +117,13 @@ impl Item {
                 AppError::DbError(format!("Item.n_i128: value {} is out of range for i64", self.n_i128))
             })?),
             maybe_u32: Set(self.maybe_u32.map(i64::from)),
+            maybe_u64: Set(self
+                .maybe_u64
+                .map(|v| {
+                    i64::try_from(v)
+                        .map_err(|_| AppError::DbError(format!("Item.maybe_u64: value {v} is out of range for i64")))
+                })
+                .transpose()?),
             parent_id: Set(self.parent_id.clone()),
             body: Set(self.body.clone()),
         })

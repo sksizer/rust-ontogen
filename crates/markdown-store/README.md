@@ -61,6 +61,23 @@ Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
 - **Creation never overwrites** (`create_record` → `AlreadyExists`), and
   **ids cannot escape the vault** (path construction validates ids and
   segments — no separators, no `..`, no hidden-file stems).
+- **New ids are portable.** A create takes only lowercase `[a-z0-9._~-]`
+  ids of at most 200 bytes, with no leading or trailing `.`, that are not
+  OKF's `index` or `log` nor a Windows device name such as `con` or `nul.x`
+  (`layout::validate_id`), so every new record file can exist on Linux,
+  macOS and Windows; slugs fold accented Latin letters to ASCII and
+  are cut to 190 bytes. Lookups only check path safety
+  (`layout::validate_lookup_id`), so a hand-named `Draft.md` stays
+  reachable. On Windows a lookup of a device name (`con`, `nul.x`) is
+  `NotFound` without opening anything, since `con.md` opens the console.
+- **Lookups match the stored name exactly.** A record is found only under
+  its file stem byte for byte, also on filesystems that resolve another
+  letter case or Unicode normalization form to the same file (macOS,
+  Windows): there a lookup of `KEPT` for a stored `kept.md` is `NotFound`
+  and modifies or removes nothing. A create treats a name the filesystem
+  resolves to any existing file as taken. The handle probes once whether
+  the filesystem aliases names; where it does, each lookup also lists the
+  record's directory.
 - **Byte-stable while untouched.** A parsed document renders as its original
   source byte-for-byte — comments, quoting style, spacing — until a
   *semantic* change occurs; mutators are change-aware, so no-op writes are

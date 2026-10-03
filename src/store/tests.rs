@@ -369,8 +369,101 @@ mod tests {
                     store::generate(std::slice::from_ref(target), &config).expect_err("a bad slug field must fail");
                 let msg = format!("{err}");
                 assert!(msg.contains(*needle), "{backend:?}: the error says what is wrong: {msg}");
+                assert!(
+                    msg.contains(&format!("the store default IdStrategy::SlugFromField({field:?})"))
+                        && msg.contains(&format!("give `{}` its own `#[ontology(entity, id = ", target.name))
+                        && msg.contains("or choose a store default that fits every entity without one"),
+                    "{backend:?}: the error blames the default and says how to fix it: {msg}"
+                );
                 assert!(!out_dir.exists(), "validation failures must not write files");
             }
+        }
+    }
+
+    /// An entity's own `id = "..."` beats the store default on both
+    /// backends; entities without one keep the default. Workout has no plain
+    /// `String` `name`, so the default alone would be refused for it.
+    #[test]
+    fn entity_id_override_beats_the_store_default_on_both_backends() {
+        use crate::ir::IdStrategy;
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        let entity = |name: &str| entities.iter().find(|e| e.name == name).expect("fixture entity").clone();
+        let tag = entity("Tag");
+        let mut workout = entity("Workout");
+        workout.id_strategy = Some(IdStrategy::Uuid);
+        let mut exercise = entity("Exercise");
+        exercise.id_strategy = Some(IdStrategy::Provided);
+
+        for backend in [crate::ir::Backend::Seaorm(None), markdown_backend()] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let config = StoreConfig {
+                output_dir: tmp.path().to_path_buf(),
+                hooks_dir: None,
+                schema_module_path: "crate::schema".to_string(),
+                backend: backend.clone(),
+                wikilink_policy: None,
+                id_strategy: IdStrategy::SlugFromField("name".into()),
+            };
+            store::generate(&[tag.clone(), workout.clone(), exercise.clone()], &config)
+                .unwrap_or_else(|e| panic!("{backend:?}: {e}"));
+            let read = |file: &str| std::fs::read_to_string(tmp.path().join(file)).unwrap();
+            let (tag_code, workout_code, exercise_code) = (read("tag.rs"), read("workout.rs"), read("exercise.rs"));
+
+            let (default, uuid, provided) = match backend {
+                crate::ir::Backend::Seaorm(_) => (
+                    "ontogen_core::id::slugify(&tag.name)",
+                    "ontogen_core::id::new_uuid()",
+                    "AppError::ExerciseIdRequired(\"this store requires the caller to supply an id\"",
+                ),
+                crate::ir::Backend::Markdown(_) => (
+                    "&markdown_store::IdStrategy::SlugFromField(\"name\".into()),",
+                    "&markdown_store::IdStrategy::Uuid,",
+                    "&markdown_store::IdStrategy::Provided,",
+                ),
+            };
+            assert!(tag_code.contains(default), "{backend:?}: Tag keeps the default:\n{tag_code}");
+            assert!(workout_code.contains(uuid), "{backend:?}: Workout's override wins:\n{workout_code}");
+            assert!(exercise_code.contains(provided), "{backend:?}: Exercise's override wins:\n{exercise_code}");
+            for code in [&workout_code, &exercise_code] {
+                assert!(!code.contains("slugify") && !code.contains("SlugFromField"), "{backend:?}:\n{code}");
+            }
+        }
+    }
+
+    /// An override is validated for its own entity, with an error that names
+    /// the attribute; the default is not checked against that entity.
+    #[test]
+    fn entity_slug_override_is_validated_per_entity() {
+        use crate::ir::IdStrategy;
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        let mut workout = entities.iter().find(|e| e.name == "Workout").expect("Workout").clone();
+        workout.id_strategy = Some(IdStrategy::SlugFromField("name".into()));
+
+        for backend in [crate::ir::Backend::Seaorm(None), markdown_backend()] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let out_dir = tmp.path().join("generated");
+            let config = StoreConfig {
+                output_dir: out_dir.clone(),
+                hooks_dir: None,
+                schema_module_path: "crate::schema".to_string(),
+                backend: backend.clone(),
+                wikilink_policy: None,
+                id_strategy: IdStrategy::Provided,
+            };
+            let err = store::generate(std::slice::from_ref(&workout), &config).expect_err("Workout.name is optional");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("`#[ontology(entity, id = \"slug(name)\")]` on entity `Workout`")
+                    && msg.contains("must be a plain String")
+                    && msg.contains(
+                        "name a plain String field of `Workout` in `slug(...)`, or use `id = \"provided\"` or `id = \"uuid\"`"
+                    ),
+                "{backend:?}: the error blames the override and says how to fix it: {msg}"
+            );
+            assert!(!msg.contains("store default"), "{backend:?}: the default is not involved: {msg}");
+            assert!(!out_dir.exists(), "validation failures must not write files");
         }
     }
 
@@ -404,5 +497,45 @@ mod tests {
             "Strip override must emit wikilink stripping in From impls: {content}"
         );
         assert!(content.contains("sea_orm"), "CRUD bodies stay SeaORM under the override: {content}");
+    }
+
+    /// A `has_many` whose target is another entity fails generation on both
+    /// backends, before any file is written.
+    #[test]
+    fn cross_entity_has_many_fails_on_both_backends() {
+        use crate::schema::model::{FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        let mut workout = entities.iter().find(|e| e.name == "Workout").expect("Workout entity not found").clone();
+        workout.fields.push(FieldDef::new(
+            "sets",
+            FieldType::VecString,
+            FieldRole::Relation(RelationInfo {
+                kind: RelationKind::HasMany,
+                target: "WorkoutSet".to_string(),
+                junction: None,
+                foreign_key: Some("workout_id".to_string()),
+            }),
+        ));
+
+        for backend in [crate::ir::Backend::Seaorm(None), markdown_backend()] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let out_dir = tmp.path().join("generated");
+            let config = StoreConfig {
+                output_dir: out_dir.clone(),
+                hooks_dir: None,
+                schema_module_path: "crate::schema".to_string(),
+                backend: backend.clone(),
+                wikilink_policy: None,
+                id_strategy: crate::ir::IdStrategy::Provided,
+            };
+
+            let err = store::generate(std::slice::from_ref(&workout), &config)
+                .expect_err("a cross-entity has_many must fail");
+            let msg = format!("{err}");
+            assert!(msg.contains("`Workout.sets`: has_many target `WorkoutSet`"), "{backend:?}: {msg}");
+            assert!(!out_dir.exists(), "validation failures must not write files");
+        }
     }
 }

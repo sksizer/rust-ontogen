@@ -293,6 +293,8 @@ fn field_db_type(field: &FieldDef) -> &'static str {
         FieldType::Bool => "bool",
         FieldType::OptionBool => "Option<bool>",
         FieldType::VecString | FieldType::VecStruct(_) => "String", // JSON
+        // sqlite-only: an existing i32 column reads as i64 in place only on SQLite
+        // (one INTEGER storage class); a wrapped u32 needs the upgrade guide's SQLite UPDATE.
         FieldType::OptionEnum(t) if is_integer_primitive(t) => "Option<i64>",
         FieldType::OptionEnum(_) => "Option<String>",
         FieldType::Other(t) if is_integer_primitive(t) => "i64",
@@ -454,7 +456,7 @@ mod tests {
     }
 
     /// ADR 0006 §2's integer primitives that reach `OptionEnum` / `Other`.
-    const WIDENED_INTEGERS: [&str; 9] = ["u8", "u16", "u32", "usize", "u128", "i8", "i16", "isize", "i128"];
+    const WIDENED_INTEGERS: [&str; 10] = ["u8", "u16", "u32", "u64", "usize", "u128", "i8", "i16", "isize", "i128"];
 
     #[test]
     fn integer_primitives_get_i64_columns() {
@@ -501,6 +503,7 @@ mod tests {
             table: "nodes".into(),
             type_name: "node".into(),
             prefix: "node".into(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -677,6 +680,7 @@ mod tests {
             table: "tasks".into(),
             type_name: "task".into(),
             prefix: "task".into(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {
@@ -739,6 +743,7 @@ mod tests {
             table: "contracts".into(),
             type_name: "contract".into(),
             prefix: "contract".into(),
+            id_strategy: None,
 
             fields: vec![
                 FieldDef {

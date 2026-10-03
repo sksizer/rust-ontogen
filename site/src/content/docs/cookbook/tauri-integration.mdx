@@ -145,6 +145,7 @@ my-app/
            )
            .dtos("src/schema/dto")
            .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
+           .store_id_strategy(ontogen::IdStrategy::Provided)
            .api("src/api/v1/generated", "AppState")
            .servers(servers_config)
            .clients(clients_config)

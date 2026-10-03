@@ -112,6 +112,22 @@ comes out as `index` is deduped like any collision and becomes `index-2`. The
 vault walk skips any `index.md` and `log.md`, so `list`, `count` and `read_all`
 never return them.
 
+A new id also cannot be a Windows device name (`con`, `prn`, `aux`, `nul`,
+`com0`-`com9`, `lpt0`-`lpt9`), in any case, either as the whole id or as the
+part before its first `.`. Windows has no file of that name, so `con.md` could
+not exist there. A slug that comes out as `con` becomes `con-2`. The rule
+applies to creates only: on Linux and macOS an existing `con.md` stays listed
+and reachable. On Windows, a lookup of such an id, or of a superscript form
+(`com¹`-`com³`, `lpt¹`-`lpt³`), is NotFound without opening any file, because
+opening `con.md` there opens the console device. See
+[Creating records](/guides/store-layer/#creating-records) for the whole id
+rule.
+
+An entity directory cannot be a device name either. With
+`MarkdownLayout::PerEntityDir`, `gen_markdown_io` fails when an entity's
+`directory`, or the default one taken from its name (`Con` gives `con`), is
+one, and names the entity.
+
 ### Reserved frontmatter keys
 
 OKF gives some frontmatter keys fixed meanings. `gen_markdown_io` checks every
@@ -422,17 +438,36 @@ let state = AppState::new(open_vault(VAULT_ROOT));
   `#[serde(default)]` on `id`) and the store's id strategy fills it:
   `SlugFromField` slugifies the configured field, de-duplicating with `-2`,
   `-3`, … — atomically with the write. The strategy is a store setting
-  (`Pipeline::store_id_strategy`, default `Provided`) shared with the SeaORM
-  backend; [Creating records](/guides/store-layer/#creating-records) has the
+  (`Pipeline::store_id_strategy`, required, with per-entity overrides in the
+  schema) shared with the SeaORM backend; [Creating records](/guides/store-layer/#creating-records) has the
   full rules, including `IdRequired` and `AlreadyExists`.
 - **An id that cannot exist is NotFound.** `get`, `update` and `delete` of an
-  id the vault cannot hold (one containing `/`, a reserved name, and so on)
-  answer `{Entity}NotFound`, as they do for an id that is merely absent.
+  id the vault cannot hold (one containing `/`, a reserved name, one over
+  252 bytes, and so on) answer `{Entity}NotFound`, as they do for an id that
+  is merely absent.
+- **Hand-named files stay reachable.** Creates follow the
+  [id rule](/guides/store-layer/#creating-records) (lowercase
+  `[a-z0-9._~-]`, at most 200 bytes), but lookups check only that the id is
+  a safe file stem, so a hand-written `Draft.md` or `café.md` is listed,
+  read, updated and deleted under its stem.
+- **Lookups match the stored name exactly, on every filesystem.** macOS and
+  Windows resolve `KEPT.md` to a stored `kept.md` (and macOS resolves either
+  Unicode normalization form of `café.md` to the other). The store does not:
+  `get`, `update` and `delete` of `KEPT` answer `{Entity}NotFound` and change
+  nothing, and a relation id spelled `Markdown-Backend` does not resolve to
+  `markdown-backend.md`. A create counts an id as taken when its file name
+  resolves to an existing file under any spelling, since writing it would
+  replace that file: on macOS, creating `draft` beside a hand-written
+  `Draft.md` is `{Entity}AlreadyExists`, and a slug probes on to `draft-2`.
+  The handle learns once, with a hidden probe file in the vault, whether the
+  filesystem aliases names; where it does, each lookup also lists the
+  record's directory.
 - **Hand edits survive.** The runtime's `Document` round-trip preserves
   unknown keys, key order, and the body; untouched files re-render
   byte-for-byte, and a no-op update doesn't even touch the file.
 - **Stable order, loud ceiling.** `list` returns records in id byte order
-  (`B` before `a`, whatever the layout or filesystem) and
+  (`a-2` before `a2`, and a hand-named `B` before `a`, whatever the layout
+  or filesystem) and
   errors past `list_cap` — the deliberate "wrong backend for this N" signal.
 - **Single-record atomicity only** (same-dir tempfile + fsync + rename).
   Need batch transactions? That's the other backend.

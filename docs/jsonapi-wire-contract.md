@@ -956,34 +956,75 @@ Ontogen accepts any valid id:
 
 - **Validity.** One rule binds both backends. The HTTP handler sits above
   the store and must be byte-identical across backends
-  (`tests/backend_parity.rs`), so SeaORM ids are held to it too. It matches
-  `markdown_store::layout::validate_id`. An id is valid when it:
-  - is a non-empty string that is not whitespace-only;
-  - contains no `/`, `\`, `:` or NUL;
-  - does not start with `.`;
-  - does not end with `.` or a space;
-  - is not `index` or `log`, compared case-insensitively. OKF reserves
-    those stems ([ADR 0005](architecture/0005-okf-markdown-vaults.md)).
+  (`tests/backend_parity.rs`), so SeaORM ids are held to it too. It is
+  `ontogen_core::id::validate_id`, and markdown's create check
+  `markdown_store::layout::validate_id` matches it. An id is valid when it:
+  - consists only of lowercase ASCII letters, digits, `.`, `_`, `~` and
+    `-` (the URL unreserved set without uppercase), so it needs no
+    escaping in a URL path;
+  - is 1 to 200 bytes long;
+  - does not start with `.` (this also excludes `.` and `..`);
+  - does not end with `.`;
+  - is not `index` or `log`. OKF reserves those stems
+    ([ADR 0005](architecture/0005-okf-markdown-vaults.md));
+  - is not a Windows device name (`con`, `prn`, `aux`, `nul`, `com0` to
+    `com9`, `lpt0` to `lpt9`), in any case, either whole or as the part
+    before its first `.`: `con`, `nul.x` and `com1.backup` are refused,
+    `console`, `con-2` and `xcon` are not. Windows opens the device for
+    such a filename, so no `con.md` can exist there.
 
-  `validate_id` does not yet reject a whitespace-only id (it accepts
-  `"\t"`). Phase 1a adds that rule to it, so the store and the handler
-  agree.
-- **Derived ids.** A derived slug that would be reserved dedupes like a
-  collision, to `index-2`, per ADR 0005.
+  These clauses make every valid id a filename on Linux, macOS and
+  Windows. An invalid id is reported with the clause it broke (for
+  example `must not contain uppercase letters` or `must be at most 200
+  bytes`), followed by the whole rule and `choose another id`. A reserved
+  name is reported as reserved even when it has uppercase letters
+  (`Index`, `CON`), since lowercasing it would not help.
+- **Derived ids.** The slug function lowercases ASCII letters, folds the
+  letters of the Latin-1 Supplement and Latin Extended-A blocks to ASCII
+  (`é` to `e`, `ß` to `ss`, `æ` to `ae`, `ł` to `l`), drops combining
+  accents, turns every run of anything else into one `-`, and trims `-`
+  from both ends. A slug longer than 190 bytes is cut to 190 (and a `-`
+  left at the end of the cut is trimmed), so the probes `base-2`,
+  `base-3`, … stay within 200 bytes. No probe is ever longer than 200
+  bytes. A derived slug that would be reserved dedupes like a collision,
+  to `index-2` (per ADR 0005) or `con-2`. A slug has no `.`, so only the
+  unsuffixed slug can be reserved.
 - **Scope.** The rule governs ids being created: a client `data.id`, and a
   derived or hook-assigned id, which the store checks. A path `{id}` is
   only a lookup key and is never checked against it (§8.1). The server
   must serve every link it emits, and a SeaORM row created before the rule
-  (an id containing `:`, or `Index`, say) is still listed. It stays
-  readable, updatable and deletable at its `links.self`. It can no longer
-  be created under that id. The exception is ids `.`, `..` and `""`: they
-  are listed but unreachable, because clients resolve the dot segments of
-  `/tasks/.` and `/tasks/..` away (RFC 3986 §5.2.4; WHATWG URL parsing
-  also decodes `%2E`), and `/tasks/` is the collection path. Such rows
-  must be renamed before upgrading. ADR 0004 carries the migration note.
-- **Markdown lookups.** On markdown such an id cannot exist. The store
-  answers a lookup of one with `{Entity}NotFound` (phase 1a) instead of
-  passing `markdown_store::Error::InvalidId` through as a `500`.
+  (an id containing `:` or uppercase letters, `Index`, `café`, or one over
+  200 bytes, say) is still listed. It stays readable, updatable and
+  deletable at its `links.self`. It can no longer be created under that
+  id. The exception is ids `.`, `..` and `""`: they are listed but
+  unreachable, because clients resolve the dot segments of `/tasks/.` and
+  `/tasks/..` away (RFC 3986 §5.2.4; WHATWG URL parsing also decodes
+  `%2E`), and `/tasks/` is the collection path. Such rows must be renamed
+  before upgrading. ADR 0004 carries the migration note.
+- **Markdown lookups.** A markdown lookup goes through a looser
+  path-safety check (`markdown_store::layout::validate_lookup_id`): no
+  path separator, `:` or NUL, no dot path or leading `.`, no trailing `.`
+  or space, not whitespace-only, at most 252 bytes (a 255-byte filename
+  less `.md`), and not `index` or `log` in any case. A record whose file
+  stem breaks the create rule but passes this check (`Draft.md`,
+  `café.md`) is listed and reachable. An id that fails it cannot name a
+  record file; the store answers a lookup of one with `{Entity}NotFound`
+  instead of passing `markdown_store::Error::InvalidId` through as a
+  `500`.
+
+  A lookup matches the stored file name byte for byte on every
+  filesystem. macOS and Windows filesystems resolve a name to a file
+  stored under another letter case, and macOS also across Unicode
+  normalization forms (`café` with a precomposed `é`, or with `e` and a
+  combining accent). There a `get`,
+  `update` or `delete` of such a variant (`KEPT` for a stored `kept.md`)
+  is `{Entity}NotFound`, as on SeaORM, and reads, rewrites or removes
+  nothing; a relation id spelled as a variant does not resolve either. A
+  create counts an id as taken when its file name resolves to an existing
+  file under any spelling, because writing it would replace that file: a
+  client id is `409` and a derived id probes on to `-2`. On a
+  case-sensitive filesystem the variant is a different name and the
+  create proceeds.
 - **An invalid client id is `400`, not `403`.** The spec's `403` is for a
   server that does not support client ids, and this one does.
 - **Uniqueness** within the type is the store's `409`. The id's format is
@@ -2075,7 +2116,7 @@ the section that states each and its reason.
 | Filter names are the `*Query` struct's field names | 7.3 | The struct is user-authored, and ontogen does not rename it |
 | `id` is the implicit last sort key | 7.4 | A total order makes pages stable (ADR 0006) |
 | Dangling linkage is skipped in `included` and related links, not an error | 7.5 | Markdown tolerates dangling wikilinks by design |
-| One id-validity rule on both backends, applied to ids being created; an invalid one is `400` | 8.2 | A malformed id is a bad request, not a store `500`, and the backends agree |
+| One id-validity rule on both backends, applied to ids being created: lowercase `[a-z0-9._~-]`, at most 200 bytes, not `index`/`log`, not a Windows device name (`con`, `nul.x`, …); an invalid one is `400` | 8.2 | A malformed id is a bad request, not a store `500`; the backends agree, and every id is a filename on Linux, macOS and Windows and a URL segment |
 | A path `{id}` is a lookup key, never validated | 8.1 | Every row the store lists stays servable at its `links.self`, including SeaORM rows that predate the rule |
 | Unknown attributes are `400` | 8.2 | Catches clients still sending the flat shape |
 | Body members are checked in schema order, unknown names in byte order | 8.2, 13.2 | Deterministic without an order-preserving parser |
