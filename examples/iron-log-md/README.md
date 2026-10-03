@@ -44,3 +44,7 @@ Declared omission: the TauriIpc transport generator (compiling the Tauri
 stack for a headless demo buys nothing; iron-log exercises it). The schema
 files add explicit `directory = "…"` attributes — the markdown backend reads
 them; SeaORM never did.
+
+The vault is an OKF 0.2 bundle (every record carries a `type`); the optional
+index files and `generated` stamps are left off here. See [the markdown backend
+guide](../../site/src/content/docs/guides/markdown-backend.mdx).

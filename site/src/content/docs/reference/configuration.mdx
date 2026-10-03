@@ -62,6 +62,9 @@ The `output_dir` field controls where generated code lands. The rest describe th
 | `layout` | `MarkdownLayout` | On-disk arrangement of record files under the vault root. |
 | `id_strategy` | `IdStrategy` | How a new record derives an id when the caller didn't supply one. A derived id that collides with a [reserved id](/guides/markdown-backend/#reserved-ids) is deduped. |
 | `list_cap` | `usize` | Hard cap on records parsed per `list()` before the runtime errors -- ADR 0001's explicit scale ceiling. |
+| `okf` | `OkfOptions` | Opt-in OKF artifacts; see below. `OkfOptions::default()` turns both off. |
+
+`OkfOptions` has two fields. `index: bool` keeps a generated [`index.md`](/guides/markdown-backend/#index-files) in the vault root and every directory holding records. `generated_by: Option<String>` stamps [`generated: { by, at }`](/guides/markdown-backend/#generated-stamps) on every real write and must be an OKF actor naming a program (`<producer>/<version>` or `process:<id>`, never `human:<id>`). The same config also emits `vault.rs` with `open_vault` and `VAULT_ROOT`; see [the generated `open_vault`](/guides/markdown-backend/#the-generated-open_vault).
 
 ```rust
 MarkdownIoConfig {
@@ -70,6 +73,7 @@ MarkdownIoConfig {
     layout: ontogen::MarkdownLayout::PerEntityDir,
     id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
     list_cap: 10_000,
+    okf: ontogen::OkfOptions::default(),
 }
 ```
 

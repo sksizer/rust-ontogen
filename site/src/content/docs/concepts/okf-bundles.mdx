@@ -1,0 +1,28 @@
+---
+title: Ontogen Vaults Are OKF Bundles
+description: How a markdown vault maps onto the Open Knowledge Format, and which parts are opt-in.
+---
+
+[OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+(Open Knowledge Format) is a specification for a bundle of knowledge: a
+directory of markdown files with YAML frontmatter, where each file declares a
+`type`, a handful of keys have fixed meanings, and generated `index.md` files
+make the bundle navigable without a database. An ontogen markdown vault follows
+it, so other OKF consumers can read the vault while it stays plain markdown for
+editors, Obsidian and git. Ontogen targets OKF 0.2.
+
+The rules themselves live in the [markdown backend guide](/guides/markdown-backend/#an-okf-vault);
+this page only maps the spec onto what ontogen does.
+
+| OKF feature | What ontogen does | Details |
+|---|---|---|
+| Every record has a `type` | The generator writes `type` as the first frontmatter key, defaulting to the struct name. Always on. | [Every record carries a `type`](/guides/markdown-backend/#every-record-carries-a-type) |
+| `index.md` and `log.md` are reserved files | Both names are rejected as record ids and skipped by the vault walk. Always on. | [Reserved ids](/guides/markdown-backend/#reserved-ids) |
+| Reserved frontmatter keys (`status`, `resource`, `generated`, ...) | Checked at build time: `type` is an error, the rest warn. Always on. | [Reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys) |
+| Generated `index.md` (§8) | Opt-in with `okf.index`: one per directory holding records, kept current on every real write, `okf_version` in the root. | [Index files](/guides/markdown-backend/#index-files) |
+| Provenance, the `generated` key (§5.2) and actors (§7) | Opt-in with `okf.generated_by`: every real write stamps `by` and `at`; the actor must name a program. | [Generated stamps](/guides/markdown-backend/#generated-stamps) |
+| Where the settings live | The build script sets both knobs; the generated `open_vault` applies them. | [The generated `open_vault`](/guides/markdown-backend/#the-generated-open_vault) |
+
+The [`notes-kb` example](/examples/notes-kb/) turns both knobs on and commits
+its index files; its test checks them against the spec's structural rules.
+The decision record is [ADR 0005](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0005-okf-markdown-vaults.md).

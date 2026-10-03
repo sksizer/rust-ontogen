@@ -104,7 +104,10 @@ and transport handlers. Add a new entity to your schema and rebuild -- everythin
   between them.
 - **SeaORM persistence** including entity models, junction tables, and model conversions
 - **Markdown persistence** where records are `.md` files with YAML frontmatter -- editable in any editor, diffable in
-  git, navigable in Obsidian -- with hand edits preserved across generated writes
+  git, navigable in Obsidian -- with hand edits preserved across generated writes. The vault is an
+  [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle, with optional generated
+  `index.md` files and `generated` provenance stamps
+  ([guide](site/src/content/docs/guides/markdown-backend.mdx))
 - **Store generation** with CRUD methods, update structs, and relation population
 - **Lifecycle hooks** scaffolded once per entity, never overwritten -- you own the hook files
 - **API layer** that merges generated CRUD with hand-written custom endpoints

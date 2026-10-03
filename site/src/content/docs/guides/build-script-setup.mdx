@@ -406,7 +406,7 @@ You don't need to run everything. Pick the generators you need.
   </TabItem>
   <TabItem label="Markdown store">
     ```rust
-    use ontogen::{IdStrategy, MarkdownLayout};
+    use ontogen::{IdStrategy, MarkdownLayout, OkfOptions};
 
     let schema = unwrap_codegen(
         ontogen::parse_schema(&ontogen::SchemaConfig {
@@ -422,6 +422,7 @@ You don't need to run everything. Pick the generators you need.
             layout: MarkdownLayout::PerEntityDir,
             id_strategy: IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
+            okf: OkfOptions::default(),
         }),
         "gen_markdown_io",
     );
@@ -441,7 +442,7 @@ You don't need to run everything. Pick the generators you need.
 
     Or, with `Pipeline` -- the backend is inferred from the single persistence stage:
     ```rust
-    use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout};
+    use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout, OkfOptions};
 
     ontogen::Pipeline::new("src/schema")
         .markdown_io(
@@ -451,6 +452,7 @@ You don't need to run everything. Pick the generators you need.
                 layout: MarkdownLayout::PerEntityDir,
                 id_strategy: IdStrategy::SlugFromField("title".into()),
                 list_cap: 10_000,
+                okf: OkfOptions::default(),
             },
         )
         .store(

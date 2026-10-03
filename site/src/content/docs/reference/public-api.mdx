@@ -110,6 +110,7 @@ let md = gen_markdown_io(&schema, &MarkdownIoConfig {
     layout: ontogen::MarkdownLayout::PerEntityDir,
     id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
     list_cap: 10_000,
+    okf: ontogen::OkfOptions::default(),
 })?;
 ```
 
@@ -407,7 +408,7 @@ ontogen::Pipeline::new("src/schema")
 The same pipeline on the markdown backend -- `seaorm()` swaps for `markdown_io()`, nothing else changes:
 
 ```rust
-use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout};
+use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout, OkfOptions};
 
 ontogen::Pipeline::new("src/schema")
     .markdown_io(
@@ -417,6 +418,7 @@ ontogen::Pipeline::new("src/schema")
             layout: MarkdownLayout::PerEntityDir,
             id_strategy: IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
+            okf: OkfOptions::default(),
         },
     )
     .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
