@@ -238,7 +238,7 @@ impl Store {
                 Value::from(child_id.to_string()),
             ],
         );
-        self.db().execute_raw(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        self.db().execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
         Ok(())
     }
 }

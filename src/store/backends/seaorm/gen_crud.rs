@@ -487,7 +487,7 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, f
     code.push_str("            ],\n");
     code.push_str("        );\n");
     code.push_str("        self.db()\n");
-    code.push_str("            .execute_raw(stmt)\n");
+    code.push_str("            .execute(stmt)\n");
     code.push_str("            .await\n");
     code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?;\n");
     code.push_str("        Ok(())\n");
