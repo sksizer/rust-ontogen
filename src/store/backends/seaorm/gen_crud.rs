@@ -7,7 +7,9 @@
 //! - Both tiers emit events via `self.emit_change()`
 
 use crate::schema::model::EntityDef;
-use crate::store::helpers::{junction_source_col, junction_table_name, junction_target_col, pluralize, to_snake_case};
+use crate::store::helpers::{
+    junction_source_col, junction_table_name, junction_target_col, pluralize, to_pascal_case, to_snake_case,
+};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -44,11 +46,26 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let plural = pluralize(&snake);
+    let id_col = id_column(entity);
 
     code.push_str(&format!(
         "    pub async fn list_{plural}(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
     ));
     code.push_str(&format!("        let mut query = {snake}::Entity::find();\n"));
+    // A page only means something over a defined order. `LIMIT`/`OFFSET` with
+    // no `ORDER BY` lets the engine return rows in whatever order it likes, so
+    // the same offset can repeat a row the previous page already returned and
+    // skip another entirely.
+    //
+    // This buys determinism *within* this backend. It does not make a SQL page
+    // and a markdown page interleave identically: `ORDER BY` on a text column
+    // uses that column's collation, so Postgres under `en_US.UTF-8` sorts
+    // `["Zeta", "alpha"]` as `alpha, Zeta` where a vault sorts byte-wise, and
+    // MySQL's default collation is case-insensitive besides. The vault also
+    // sorts by record *path*, not id, so a nested vault disagrees whatever the
+    // collation does. Each backend is internally stable; they are not each
+    // other's mirror.
+    code.push_str(&format!("        query = query.order_by_asc({snake}::Column::{id_col});\n"));
     code.push_str("        if let Some(l) = limit {\n");
     code.push_str("            query = query.limit(l);\n");
     code.push_str("        }\n");
@@ -314,12 +331,18 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
     for (field, info) in entity.has_many_relations() {
         if let Some(ref fk) = info.foreign_key {
             let target_snake = to_snake_case(&info.target);
-            let fk_col = fk_to_column_enum(fk);
+            let fk_col = to_pascal_case(fk);
 
             code.push_str(&format!("        {snake}.{fname} = {{\n", fname = field.name,));
             code.push_str(&format!("            use crate::persistence::db::entities::{target_snake};\n"));
             code.push_str(&format!("            let children = {target_snake}::Entity::find()\n"));
             code.push_str(&format!("                .filter({target_snake}::Column::{fk_col}.eq(&{snake}.id))\n"));
+            // Same reason the list orders: this is a multi-row SELECT, so
+            // without an `ORDER BY` the engine picks the order and a
+            // `has_many` field comes back shuffled between calls. The markdown
+            // backend returns these vault-sorted, so leaving it unordered is
+            // the same "identical code, two behaviours" split the list had.
+            code.push_str(&format!("                .order_by_asc({target_snake}::Column::Id)\n"));
             code.push_str("                .all(self.db())\n");
             code.push_str("                .await\n");
             code.push_str("                .map_err(|e| crate::schema::AppError::DbError(e.to_string()))?;\n");
@@ -378,22 +401,17 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str) {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Convert a snake_case foreign key name to its SeaORM Column enum variant.
-/// E.g., `parent_id` → `ParentId`.
-fn fk_to_column_enum(fk: &str) -> String {
-    fk.split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(c) => {
-                    let mut s = c.to_uppercase().collect::<String>();
-                    s.push_str(chars.as_str());
-                    s
-                }
-                None => String::new(),
-            }
-        })
-        .collect()
+/// The SeaORM `Column` variant for an entity's primary key, e.g. `Id`.
+///
+/// Every other method this generator writes hardcodes `.id`, `find_by_id` or
+/// `Column::Id`, so an entity with no `#[ontology(id)]` field already cannot
+/// produce compiling SeaORM output — `gen_entity` would emit a
+/// `DeriveEntityModel` with no `primary_key`. Reading the field keeps a
+/// renamed id correct; falling back to `Id` keeps the emitted ordering
+/// unconditional, so the ordering and the `QueryOrder` import it needs cannot
+/// drift out of lockstep.
+pub(crate) fn id_column(entity: &EntityDef) -> String {
+    entity.id_field().map(|f| to_pascal_case(&f.name)).unwrap_or_else(|| "Id".to_string())
 }
 
 /// Map entity name to its `AppError::*NotFound` variant.
