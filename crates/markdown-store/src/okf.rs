@@ -102,9 +102,10 @@ pub(crate) fn sync_index(dir: &Path, is_root: bool, walk: &WalkOptions) -> Resul
 ///
 /// Lists the directory's own records, grouped by `type`, then the
 /// subdirectories that hold records at any depth. Records are parsed for
-/// their `type`, `title` and `description`; one whose frontmatter does not
-/// parse is still listed, untyped and titled by its id, so a hand-broken
-/// file never blocks a write elsewhere in the directory.
+/// their `type`, `title` and `description`; one that cannot be read (not
+/// UTF-8, say) or whose frontmatter does not parse is still listed, untyped
+/// and titled by its id, so a hand-broken file never blocks a write
+/// elsewhere in the directory.
 pub(crate) fn render_index(dir: &Path, is_root: bool, walk: &WalkOptions) -> Result<Option<String>, Error> {
     let paths = walk::list_record_paths(dir, walk)?;
     if paths.is_empty() {
@@ -123,7 +124,7 @@ pub(crate) fn render_index(dir: &Path, is_root: bool, walk: &WalkOptions) -> Res
             continue;
         }
         let Some(id) = path.file_stem().and_then(|s| s.to_str()) else { continue };
-        let doc = Document::parse(&fsops::read(path)?).ok();
+        let doc = fsops::read(path).ok().and_then(|src| Document::parse(&src).ok());
         let field = |key: &str| doc.as_ref().and_then(|d| d.get(key)).and_then(|v| v.as_str()).map(collapse_whitespace);
         let mut entry = format!(
             "* [{}]({})",

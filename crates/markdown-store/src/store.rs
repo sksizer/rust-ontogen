@@ -59,10 +59,15 @@ type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 ///   real write.
 ///
 /// The record and its indexes are separate atomic renames, not one
-/// transaction. A crash or I/O error between them leaves an index that is
-/// stale but still valid; the next real write in that directory, or
-/// [`rebuild_indexes`](Self::rebuild_indexes), repairs it. A write that
-/// returns an error after the record was written has still written it.
+/// transaction. Once the record is written the write has succeeded: a
+/// failure to refresh an index afterwards does not fail it, because
+/// reporting an error for a committed record invites a retry that would
+/// create the record twice. The index is left stale but still valid and
+/// listed by [`stale_indexes`](Self::stale_indexes) until the next real
+/// write in that directory, or
+/// [`rebuild_indexes`](Self::rebuild_indexes), brings it current. A crash
+/// between the two renames leaves the same stale-but-valid index, which is
+/// not listed (the list lives in memory).
 ///
 /// ```
 /// use markdown_store::{Document, IdStrategy, VaultHandle, VaultLayout};
@@ -91,6 +96,9 @@ pub struct VaultHandle {
     generated_by: Option<String>,
     clock: Clock,
     write_guard: Arc<Mutex<()>>,
+    /// Directories whose index refresh failed after a committed write and
+    /// has not succeeded since. Shared by clones, like the write lock.
+    stale: Arc<Mutex<BTreeSet<PathBuf>>>,
 }
 
 impl std::fmt::Debug for VaultHandle {
@@ -121,6 +129,7 @@ impl VaultHandle {
             generated_by: None,
             clock: Arc::new(SystemTime::now),
             write_guard: Arc::new(Mutex::new(())),
+            stale: Arc::default(),
         }
     }
 
@@ -342,7 +351,8 @@ impl VaultHandle {
             None => doc.render()?,
         };
         fsops::write_atomic(path, &rendered)?;
-        self.refresh_indexes(path)
+        self.refresh_indexes(path);
+        Ok(())
     }
 
     /// Read-modify-write a record. `f` runs any typed stamping itself;
@@ -364,33 +374,48 @@ impl VaultHandle {
             Ok(())
         })?;
         if written {
-            self.refresh_indexes(path)
-        } else {
-            Ok(())
+            self.refresh_indexes(path);
         }
+        Ok(())
     }
 
     fn delete(&self, path: &Path) -> Result<(), Error> {
         fsops::remove(path)?;
-        self.refresh_indexes(path)
+        self.refresh_indexes(path);
+        Ok(())
     }
 
     /// Regenerate the index of the record's directory and of each ancestor
-    /// up to the root, when indexes are on.
-    fn refresh_indexes(&self, record: &Path) -> Result<(), Error> {
+    /// up to the root, when indexes are on. Runs after the record is
+    /// committed, so a failure only marks that directory's index stale (see
+    /// [`stale_indexes`](Self::stale_indexes)) and the remaining ancestors
+    /// are still tried.
+    fn refresh_indexes(&self, record: &Path) {
         if !self.okf_index {
-            return Ok(());
+            return;
         }
         let mut dir = record.parent();
         while let Some(current) = dir.filter(|d| d.starts_with(&self.root)) {
             let is_root = current == self.root;
-            okf::sync_index(current, is_root, &self.walk)?;
+            let _ = self.sync_index(current);
             if is_root {
                 break;
             }
             dir = current.parent();
         }
-        Ok(())
+    }
+
+    /// Bring one directory's index current, keeping the stale list in step
+    /// with the outcome.
+    fn sync_index(&self, dir: &Path) -> Result<(), Error> {
+        let result = okf::sync_index(dir, dir == self.root, &self.walk);
+        let mut stale = self.stale.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if result.is_ok() {
+            stale.remove(dir);
+        } else {
+            stale.insert(dir.to_path_buf());
+        }
+        result
     }
 
     // ── OKF indexes ─────────────────────────────────────────────────────
@@ -404,6 +429,8 @@ impl VaultHandle {
     /// whether or not [`with_okf_index`](Self::with_okf_index) is on: it is
     /// an explicit request, though without the option later writes will
     /// not keep the indexes current. Reads every record in the vault.
+    /// Unlike a record write it fails on the first index it cannot write;
+    /// on success [`stale_indexes`](Self::stale_indexes) is empty.
     ///
     /// ```
     /// use markdown_store::{Document, IdStrategy, VaultHandle, VaultLayout};
@@ -434,7 +461,7 @@ impl VaultHandle {
             }
         }
         for dir in &dirs {
-            okf::sync_index(dir, *dir == self.root, &self.walk)?;
+            self.sync_index(dir)?;
         }
         for index in walk::list_index_paths(&self.root, &self.walk)? {
             if index.parent().is_some_and(|dir| !dirs.contains(dir)) {
@@ -444,7 +471,19 @@ impl VaultHandle {
                 }
             }
         }
+        self.stale.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
         Ok(())
+    }
+
+    /// The `index.md` files whose refresh failed (an I/O error, say) after
+    /// a write had committed its record, sorted. Each stays listed until a
+    /// later real write in its directory, or
+    /// [`rebuild_indexes`](Self::rebuild_indexes), refreshes it. The list
+    /// lives in memory and is shared by clones; it knows nothing of edits
+    /// made outside the handle.
+    pub fn stale_indexes(&self) -> Vec<PathBuf> {
+        let stale = self.stale.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        stale.iter().map(|dir| dir.join(okf::INDEX_FILE)).collect()
     }
 
     // ── listing ─────────────────────────────────────────────────────────
@@ -1242,6 +1281,68 @@ mod tests {
         assert_eq!(file(root, "notes/.hidden/index.md"), None, "walk options apply: hidden directories are skipped");
         assert_eq!(file(root, "gone/index.md"), None, "an index without records below it is removed");
         assert!(file(root, "index.md").unwrap().ends_with("# Directories\n\n* [notes](notes/)\n"));
+    }
+
+    #[test]
+    fn an_unreadable_record_never_blocks_a_write_and_is_listed_by_its_id() {
+        // Under Flat every record shares the root, so one bad file there
+        // used to fail every write in the vault after it was committed.
+        let (dir, vault) = indexed(VaultLayout::Flat);
+        std::fs::write(dir.path().join("latin1.md"), b"---\ntitle: caf\xe9\n---\n").unwrap();
+        let tasks = vault.entity("tasks", "Task");
+        tasks.create(Some("t"), None, titled("Ship", None)).unwrap();
+        tasks
+            .modify("t", |d| {
+                d.set("title", "Shipped");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            file(dir.path(), "index.md").unwrap(),
+            "---\nokf_version: \"0.2\"\n---\n\n# Task\n\n* [Shipped](t.md)\n\n# Untyped\n\n* [latin1](latin1.md)\n"
+        );
+        tasks.remove("t").unwrap();
+        assert_eq!(vault.stale_indexes(), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn a_failed_index_refresh_leaves_the_write_committed_and_reports_the_stale_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let vault = VaultHandle::new(root, VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()))
+            .with_okf_index(true);
+        let tasks = vault.entity("tasks", "Task");
+        // A directory where the index file belongs makes every write of it fail.
+        let blocker = root.join("tasks/index.md");
+        std::fs::create_dir_all(&blocker).unwrap();
+
+        assert_eq!(tasks.create(None, Some("Ship"), titled("Ship", None)).unwrap(), "ship");
+        assert_eq!(vault.list_ids("tasks").unwrap(), ["ship"], "one record: nothing invites a retry");
+        assert_eq!(vault.stale_indexes(), vec![blocker.clone()]);
+        assert!(
+            file(root, "index.md").unwrap().ends_with("# Directories\n\n* [tasks](tasks/)\n"),
+            "the other directories on the path are still refreshed"
+        );
+
+        std::fs::remove_dir(&blocker).unwrap();
+        tasks
+            .modify("ship", |d| {
+                d.set("title", "Shipped");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(vault.stale_indexes(), Vec::<PathBuf>::new(), "the next real write repairs it");
+        assert_eq!(file(root, "tasks/index.md").unwrap(), "# Task\n\n* [Shipped](ship.md)\n");
+
+        std::fs::remove_file(&blocker).unwrap();
+        std::fs::create_dir_all(&blocker).unwrap();
+        tasks.create(None, Some("Plan"), titled("Plan", None)).unwrap();
+        assert_eq!(vault.clone().stale_indexes(), vec![blocker.clone()], "clones share the list");
+        assert!(vault.rebuild_indexes().is_err(), "a rebuild reports what it cannot write");
+        std::fs::remove_dir(&blocker).unwrap();
+        vault.rebuild_indexes().unwrap();
+        assert_eq!(vault.stale_indexes(), Vec::<PathBuf>::new(), "a rebuild repairs it too");
+        assert_eq!(file(root, "tasks/index.md").unwrap(), "# Task\n\n* [Plan](plan.md)\n* [Shipped](ship.md)\n");
     }
 
     #[test]
