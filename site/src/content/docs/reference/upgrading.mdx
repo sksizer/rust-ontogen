@@ -108,7 +108,7 @@ Also refused at build time: an id field that is not a `String`, an attribute or 
 
 ### Depend on `ontogen-jsonapi`, `ontogen-core` and `serde_json`
 
-The generated HTTP file uses the `ontogen-jsonapi` crate for documents, links, errors and extractors, `ontogen_core::id::validate_id` to check a client-supplied id, and `serde_json`. Add all three to the crate that contains the generated server, as you add `markdown-store`. The examples use path dependencies; a consumer names the crates:
+The generated HTTP file uses the `ontogen-jsonapi` crate for documents, links, errors and extractors, `ontogen_core::id::validate_id` to check a client-supplied id, and `serde_json`. Add all three to the crate that contains the generated server, as you add `markdown-store`. Generated SeaORM stores call `ontogen_core::id` too; see [Creating records](/guides/store-layer/#creating-records). The examples use path dependencies; a consumer names the crates:
 
 ```toml
 ontogen-jsonapi = "…"
@@ -121,10 +121,6 @@ serde_json = "1"
 ### Mount the router at the root
 
 Links and `Location` headers are built from the route templates ontogen generated (`/api/...`), not from the request URI. Mount the generated router at the root of your Axum app. If you nest it under another prefix, the links it emits lack that prefix.
-
-### Depend on `ontogen-core`
-
-Generated SeaORM stores call `ontogen_core::id` at runtime, and the generated HTTP server does too (see above). See [Creating records](/guides/store-layer/#creating-records) for the dependency to add.
 
 ## AppError
 
@@ -404,6 +400,7 @@ Ids being created follow a stricter rule, the same on both backends. It applies 
 
 - An id consists only of lowercase ASCII letters, digits, `.`, `_`, `~` and `-`. It is at most 200 bytes, does not start or end with `.`, and is not `index` or `log`. An uppercase letter, a non-ASCII character, a space, other punctuation, or a length over 200 bytes now fails the create with the backend's error (`DbError` on SeaORM, `Md` on markdown). The rule used to allow all of these except `/`, `\`, `:` and NUL.
 - An id is not a Windows device name: `con`, `prn`, `aux`, `nul`, `com0` to `com9` or `lpt0` to `lpt9`, in any case, either whole or before its first `.`. So `con`, `nul.x` and `com1.backup` are refused, while `console`, `con-2` and `xcon` are fine. Windows cannot hold a file with such a name (`con.md`), so a vault holding one could not be checked out there. A title that slugs to one derives the next free probe, `con-2`, as `index` derives `index-2`.
+- Over HTTP the generated handler checks a client `data.id` against the same rule before the store runs: a create with an invalid id is `400 invalid_document` with `source.pointer: "/data/id"`, and the rule's message is the `detail`. An id that no strategy can supply is `400 {entity}_id_required`, whose `detail` is the store's reason.
 - The error message names the clause the id broke, then states the whole rule: `invalid id "Ship": must not contain uppercase letters; an id is 1-200 bytes of a-z, 0-9, '.', '_', '~', '-', not starting or ending with '.', and not a reserved name: choose another id`.
 - `SlugFromField` folds Latin letters with diacritics to ASCII instead of treating them as separators: `Crème brûlée` slugs to `creme-brulee` (it used to be `cr-me-br-l-e`), and `Straße` to `strasse`. Other non-ASCII characters still separate. A slug longer than 190 bytes is cut to 190, so a probe `base-N` stays within 200 bytes. Ids already stored are not rewritten; a new record with the same title gets the new slug.
 - Lookups are not validated against the new rule. A record whose id breaks it (`Draft`, `café`, `con`, a 250-byte id) is still listed, readable, updatable and deletable, on SeaORM and in a vault, under its stored id.
