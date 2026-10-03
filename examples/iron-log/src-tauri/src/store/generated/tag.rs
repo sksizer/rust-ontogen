@@ -39,7 +39,7 @@ impl Store {
     pub async fn list_tags(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Tag>, AppError> {
         let mut query = tag::Entity::find();
         query = query.order_by_asc(tag::Column::Id);
-        if let Some(l) = limit {
+        if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
         if let Some(o) = offset {

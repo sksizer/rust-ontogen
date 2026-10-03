@@ -84,7 +84,7 @@ impl Store {
     ) -> Result<Vec<WorkoutSet>, AppError> {
         let mut query = workout_set::Entity::find();
         query = query.order_by_asc(workout_set::Column::Id);
-        if let Some(l) = limit {
+        if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
         if let Some(o) = offset {
