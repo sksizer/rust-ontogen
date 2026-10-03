@@ -11,7 +11,11 @@ backend's primitives. With `Backend::Markdown`, your records are plain
 markdown files with YAML frontmatter — editable in any editor, diffable in
 git, navigable in Obsidian — and the generated store reads and writes them
 through the [`markdown-store`](https://github.com/sksizer/rust-ontogen/tree/main/crates/markdown-store)
-runtime crate.
+runtime crate. Generated store code reaches records through the typed view
+`VaultHandle::entity(dir_segment, type_name)`, which returns an `EntityRecords`
+(`read_all`, `count`, `read_opt`, `create`, `modify`, `remove`, `admits`). Under
+the `Flat` layout it filters by the `type` key, so entities sharing a directory
+stay apart.
 
 The load-bearing invariant: **everything above the store is byte-identical
 between backends.** `gen_api`, `gen_servers`, and `gen_clients` output the
@@ -113,7 +117,9 @@ field's effective key (see below) at build time:
   `draft`, `stable`, `deprecated`.
 - `resource` and `stale_after` warn unless the field is `String` or
   `Option<String>`.
-- `generated`, `verified` and `usage_window` warn unless the field is a struct.
+- `generated` and `usage_window` warn unless the field is a struct.
+- `verified` warns unless the field is a struct or a `Vec` of structs (OKF
+  allows one verification or a list).
 - `sources` warns unless the field is a `Vec` of structs.
 - `title`, `description` and `tags` are never flagged.
 
@@ -131,7 +137,9 @@ pub status: String,
 `frontmatter_name` renames only the frontmatter key. The Rust field, DTOs,
 API, servers, clients and SeaORM columns keep the Rust name. The key must
 match `[A-Za-z_][A-Za-z0-9_-]*`, must not be `type`, and must not collide with
-another field's effective key.
+another field's effective key. Setting it on a field that is never stored in
+frontmatter (the id, the body, a `skip` field or a `has_many` view) is a build
+error.
 
 ## What the consumer writes by hand
 

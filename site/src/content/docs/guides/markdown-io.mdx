@@ -9,7 +9,9 @@ import { Aside } from '@astrojs/starlight/components';
 entities and their on-disk YAML-frontmatter form: one `{Entity}Frontmatter`
 module per entity, built on the
 [`markdown-store`](https://github.com/sksizer/rust-ontogen/tree/main/crates/markdown-store)
-runtime crate. It also returns the `MarkdownIoOutput` metadata that
+runtime crate. The generated store calls it through the typed view `VaultHandle::entity(dir_segment, type_name)` (an `EntityRecords` with `read_all`, `count`, `read_opt`, `create`, `modify`, `remove` and `admits`), which filters by `type` under the `Flat` layout.
+
+It also returns the `MarkdownIoOutput` metadata that
 [`gen_store`](/guides/store-layer/) consumes when the store backend is
 `Backend::Markdown` — see [the markdown backend
 guide](/guides/markdown-backend/) for the full store story; this page covers

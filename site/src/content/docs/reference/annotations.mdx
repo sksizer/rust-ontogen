@@ -102,7 +102,7 @@ Renames the field's key in markdown frontmatter. Nothing else changes: the Rust 
 pub status: String,
 ```
 
-The key must be a plain YAML key (`[A-Za-z_][A-Za-z0-9_-]*`), must not be `type` (the generator owns it), and must not collide with another field's effective key in the same entity. Use it to step around the keys OKF reserves; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys).
+The key must be a plain YAML key (`[A-Za-z_][A-Za-z0-9_-]*`), must not be `type` (the generator owns it), and must not collide with another field's effective key in the same entity. Use it to step around the keys OKF reserves; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys). Setting it on a field that is never stored in frontmatter (the id, the body, a `skip` field or a `has_many` view) is a build error.
 
 ### `#[ontology(skip)]`
 
