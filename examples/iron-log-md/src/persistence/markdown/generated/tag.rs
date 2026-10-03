@@ -16,10 +16,6 @@ pub struct TagFrontmatter {
 /// `merge_serialize` removes cleared options and preserves hand-added keys.
 pub const TAG_FM_FIELDS: &[&str] = &["name"];
 
-/// The OKF `type` every Tag record carries, stamped by the store on
-/// write. Not a field above: reads tolerate it missing or different.
-pub const TAG_TYPE: &str = "Tag";
-
 impl TagFrontmatter {
     pub fn from_tag(value: &Tag) -> Self {
         Self { name: value.name.clone() }

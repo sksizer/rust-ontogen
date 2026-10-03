@@ -20,10 +20,6 @@ pub struct ExerciseFrontmatter {
 /// `merge_serialize` removes cleared options and preserves hand-added keys.
 pub const EXERCISE_FM_FIELDS: &[&str] = &["name", "muscle_group", "equipment", "notes"];
 
-/// The OKF `type` every Exercise record carries, stamped by the store on
-/// write. Not a field above: reads tolerate it missing or different.
-pub const EXERCISE_TYPE: &str = "Exercise";
-
 impl ExerciseFrontmatter {
     pub fn from_exercise(value: &Exercise) -> Self {
         Self {
