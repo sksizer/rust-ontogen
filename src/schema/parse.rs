@@ -137,7 +137,7 @@ fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityD
 
     let mut field_defs = Vec::new();
     for field in fields {
-        field_defs.push(parse_field(field)?);
+        field_defs.push(parse_field(field).map_err(|e| format!("entity `{name}` in {}: {e}", path.display()))?);
     }
 
     let default_snake = to_snake_case(&name);
@@ -346,7 +346,24 @@ fn validate_frontmatter_key(key: &str) -> Result<(), String> {
     let mut chars = key.chars();
     let valid = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    if valid { Ok(()) } else { Err(format!("invalid frontmatter_name=`{key}`: must match [A-Za-z_][A-Za-z0-9_-]*")) }
+    if !valid {
+        return Err(format!("invalid frontmatter_name=`{key}`: must match [A-Za-z_][A-Za-z0-9_-]*"));
+    }
+    if is_yaml_scalar_word(key) {
+        return Err(format!(
+            "invalid frontmatter_name=`{key}`: YAML reads it as a bool or null, not a string key; choose another name"
+        ));
+    }
+    Ok(())
+}
+
+/// Plain words a YAML parser resolves to a bool or null rather than a
+/// string. YAML 1.2's core schema only has true/false/null; YAML 1.1 (which
+/// many vault tools still parse with) adds yes/no/on/off/y/n. Rejecting the
+/// union keeps the key a string for every reader.
+fn is_yaml_scalar_word(key: &str) -> bool {
+    const WORDS: &[&str] = &["true", "false", "null", "yes", "no", "on", "off", "y", "n"];
+    WORDS.iter().any(|w| key.eq_ignore_ascii_case(w))
 }
 
 /// Parse `#[ontology(relation(kind, target = "...", ...))]` into a `RelationInfo`.
@@ -864,11 +881,26 @@ mod tests {
                 "#
             );
             let err = parse_schema_source(&source, Path::new("test.rs")).unwrap_err();
-            assert!(err.contains("field `status`") && err.contains("frontmatter_name"), "{bad:?}: {err}");
+            assert!(
+                err.contains("entity `Task` in test.rs: field `status`: invalid frontmatter_name"),
+                "{bad:?}: {err}"
+            );
         }
-        for good in ["task_status", "_private", "kebab-key", "Key2"] {
+        for good in ["task_status", "_private", "kebab-key", "Key2", "nothing", "online", "Truest"] {
             assert!(validate_frontmatter_key(good).is_ok(), "{good:?} must be accepted");
         }
+    }
+
+    #[test]
+    fn frontmatter_name_must_not_be_a_yaml_bool_or_null_word() {
+        for bad in
+            ["true", "True", "TRUE", "false", "False", "null", "Null", "NULL", "yes", "No", "ON", "off", "y", "N"]
+        {
+            let err = validate_frontmatter_key(bad).unwrap_err();
+            assert!(err.contains("YAML reads it as a bool or null"), "{bad:?}: {err}");
+        }
+        // `~` is null too, already outside the key grammar.
+        assert!(validate_frontmatter_key("~").is_err());
     }
 
     #[test]
