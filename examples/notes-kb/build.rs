@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use ontogen::clients::ClientGenerator;
 use ontogen::servers::{NamingConfig, ServerGenerator};
-use ontogen::{ClientsConfig, IdStrategy, MarkdownIoOptions, MarkdownLayout, Pipeline, ServersConfig};
+use ontogen::{ClientsConfig, IdStrategy, MarkdownIoOptions, MarkdownLayout, OkfOptions, Pipeline, ServersConfig};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -45,6 +45,7 @@ fn main() {
                 layout: MarkdownLayout::PerEntityDir,
                 id_strategy: IdStrategy::SlugFromField("title".into()),
                 list_cap: 10_000,
+                okf: OkfOptions::default(),
             },
         )
         .dtos("src/schema/dto")

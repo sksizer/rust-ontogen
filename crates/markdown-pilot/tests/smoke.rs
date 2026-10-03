@@ -6,12 +6,12 @@
 //! ids, a field renamed off a reserved key).
 
 use markdown_pilot::Store;
+use markdown_pilot::persistence::markdown::generated::vault::open_vault;
 use markdown_pilot::schema::{Note, Task};
-use markdown_store::{IdStrategy, VaultHandle, VaultLayout};
 
 fn store() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()));
+    let vault = open_vault(dir.path());
     (dir, Store::new(vault))
 }
 
@@ -44,6 +44,9 @@ async fn note_crud_lifecycle() {
     let raw = std::fs::read_to_string(dir.path().join("notes/hello-vault.md")).expect("file on disk");
     assert!(raw.contains("title: Hello Vault"));
     assert!(raw.ends_with("---\nFirst body.\n"));
+    // The pilot's build leaves both OKF options off.
+    assert!(!raw.contains("generated:"), "no provenance stamp unless configured:\n{raw}");
+    assert!(!dir.path().join("index.md").exists() && !dir.path().join("notes/index.md").exists());
 
     // get / list.
     let got = store.get_note("hello-vault").await.expect("get");

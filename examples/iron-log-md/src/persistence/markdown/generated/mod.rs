@@ -2,5 +2,6 @@
 
 pub mod exercise;
 pub mod tag;
+pub mod vault;
 pub mod workout;
 pub mod workout_set;

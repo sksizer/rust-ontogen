@@ -1,15 +1,20 @@
-//! OKF 0.2 frontmatter-key checks for the markdown generator.
+//! OKF 0.2 build-time checks for the markdown generator.
 //!
 //! OKF fixes the meaning of some frontmatter keys (§4.1, §5). `type` is the
-//! generator's own, so a field stored there is an error. The others are
-//! warnings when the field's shape cannot carry what OKF means by the key:
-//! a vault with its own vocabulary under `status` is legitimate, just not
-//! OKF-conformant for that key. Checked here rather than in the schema
-//! parser because only the markdown backend writes frontmatter; a
-//! SeaORM-only schema may name a field `status` freely.
+//! generator's own, so a field stored there is an error, and so is one
+//! stored under `generated` when `okf.generated_by` makes the vault stamp
+//! it. The others are warnings when the field's shape cannot carry what OKF
+//! means by the key: a vault with its own vocabulary under `status` is
+//! legitimate, just not OKF-conformant for that key. Checked here rather
+//! than in the schema parser because only the markdown backend writes
+//! frontmatter; a SeaORM-only schema may name a field `status` freely.
+//!
+//! The `okf.generated_by` actor is checked here too, so a vault never
+//! stamps a value OKF consumers would misread.
 
 use std::collections::HashMap;
 
+use crate::ir::OkfOptions;
 use crate::persistence::markdown::gen_frontmatter::frontmatter_fields;
 use crate::schema::model::{EntityDef, EnumDef, FieldDef, FieldRole, FieldType, RelationKind};
 
@@ -32,8 +37,10 @@ pub(crate) struct KeyDiagnostics {
 /// Check every frontmatter field's effective key
 /// ([`FieldDef::frontmatter_key`]) against the keys OKF reserves, and the
 /// keys of one entity against each other. `enums` resolves enum-typed
-/// fields for the `status` check.
-pub(crate) fn check_frontmatter_keys(entities: &[EntityDef], enums: &[EnumDef]) -> KeyDiagnostics {
+/// fields for the `status` check; `okf` says which keys the vault itself
+/// writes.
+pub(crate) fn check_frontmatter_keys(entities: &[EntityDef], enums: &[EnumDef], okf: &OkfOptions) -> KeyDiagnostics {
+    let stamps_generated = okf.generated_by.is_some();
     let mut out = KeyDiagnostics::default();
     for entity in entities {
         let stored = frontmatter_fields(entity);
@@ -58,7 +65,7 @@ pub(crate) fn check_frontmatter_keys(entities: &[EntityDef], enums: &[EnumDef]) 
                     entity.name, field.name
                 ));
             }
-            match check_key(field, key, enums) {
+            match check_key(field, key, enums, stamps_generated) {
                 Some(Finding::Error(msg)) => {
                     out.errors.push(format!("entity `{}`, field `{}`: {msg}", entity.name, field.name))
                 }
@@ -91,13 +98,18 @@ fn why_not_stored(field: &FieldDef) -> &'static str {
     }
 }
 
-fn check_key(field: &FieldDef, key: &str, enums: &[EnumDef]) -> Option<Finding> {
+fn check_key(field: &FieldDef, key: &str, enums: &[EnumDef], stamps_generated: bool) -> Option<Finding> {
     let ty = &field.field_type;
     let found = format!("`{}`", rust_type(ty));
     match key {
         "type" => Some(Finding::Error(format!(
             "frontmatter key `type` is reserved: the generator writes each record's {OKF} type there. \
              Store the field under another key with {RENAME_HINT} (spec: {OKF_SPEC})"
+        ))),
+        "generated" if stamps_generated => Some(Finding::Error(format!(
+            "frontmatter key `generated` is reserved while `okf.generated_by` is set: the vault stamps each \
+             record's {OKF} provenance there on every write. Store the field under another key with \
+             {RENAME_HINT}, or unset `okf.generated_by` (spec: {OKF_SPEC})"
         ))),
         "status" => {
             let Some(def) = field.enum_def(enums) else {
@@ -139,6 +151,40 @@ fn check_key(field: &FieldDef, key: &str, enums: &[EnumDef]) -> Option<Finding> 
             warn(key, "the materials a concept derives from (a list of mappings)", "a `Vec` of structs", &found)
         }
         _ => None,
+    }
+}
+
+/// Check an `okf.generated_by` value against the OKF §7 actor convention.
+///
+/// The vault's writer is a program, so the value must name one:
+/// `<producer>/<version>` (non-empty on both sides of the first `/`) or
+/// `process:<id>` (non-empty id). `human:<id>` is refused because OKF trust
+/// tiers (§5.3) read it as a person's sign-off. No actor may contain
+/// whitespace or control characters. Returns the build error on failure.
+pub(crate) fn check_generated_by(actor: &str) -> Result<(), String> {
+    let problem = if actor.is_empty() {
+        Some("it is empty")
+    } else if actor.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        Some("it contains whitespace or a control character")
+    } else if actor.get(..6).is_some_and(|prefix| prefix.eq_ignore_ascii_case("human:")) {
+        Some(
+            "`human:` actors mark content a person wrote or confirmed, and OKF trust tiers read them that way; \
+             the vault's writer is a program",
+        )
+    } else if let Some(id) = actor.strip_prefix("process:") {
+        id.is_empty().then_some("`process:` needs an id after the colon")
+    } else if let Some((producer, version)) = actor.split_once('/') {
+        (producer.is_empty() || version.is_empty())
+            .then_some("`<producer>/<version>` needs both a producer and a version")
+    } else {
+        Some("it is neither `<producer>/<version>` nor `process:<id>`")
+    };
+    match problem {
+        None => Ok(()),
+        Some(problem) => Err(format!(
+            "okf.generated_by = {actor:?} is not an {OKF} actor for a program: {problem}. \
+             Use `<producer>/<version>` (e.g. `my-app/1.2.0`) or `process:<id>` (spec §7: {OKF_SPEC})"
+        )),
     }
 }
 
@@ -256,7 +302,11 @@ mod tests {
     }
 
     fn check(fields: Vec<FieldDef>, enums: &[EnumDef]) -> KeyDiagnostics {
-        check_frontmatter_keys(&[entity(fields)], enums)
+        check_frontmatter_keys(&[entity(fields)], enums, &OkfOptions::default())
+    }
+
+    fn stamping() -> OkfOptions {
+        OkfOptions { generated_by: Some("app/1.0".into()), ..OkfOptions::default() }
     }
 
     #[test]
@@ -501,9 +551,126 @@ mod tests {
             layout: crate::ir::MarkdownLayout::PerEntityDir,
             id_strategy: crate::ir::IdStrategy::Provided,
             list_cap: 10_000,
+            okf: OkfOptions::default(),
         };
         let err = crate::gen_markdown_io(&schema, &config).unwrap_err();
         assert!(matches!(&err, crate::CodegenError::Persistence(msg) if msg.contains("`type` is reserved")), "{err}");
         assert!(!out.exists(), "nothing is generated for a schema the vault could not hold");
+    }
+
+    #[test]
+    fn generation_fails_on_a_bad_actor_or_a_stamped_generated_key_before_writing_anything() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("generated");
+        let generate = |fields: Vec<FieldDef>, generated_by: &str| {
+            let schema = crate::ir::SchemaOutput { entities: vec![entity(fields)], enums: vec![] };
+            let config = crate::MarkdownIoConfig {
+                output_dir: out.clone(),
+                vault_root: "data/vault".into(),
+                layout: crate::ir::MarkdownLayout::PerEntityDir,
+                id_strategy: crate::ir::IdStrategy::Provided,
+                list_cap: 10_000,
+                okf: OkfOptions { index: true, generated_by: Some(generated_by.into()) },
+            };
+            match crate::gen_markdown_io(&schema, &config) {
+                Err(crate::CodegenError::Persistence(msg)) => msg,
+                other => panic!("expected a persistence error, got {other:?}"),
+            }
+        };
+
+        let msg = generate(vec![plain("title", FieldType::String)], "human:me");
+        assert!(msg.contains("okf.generated_by = \"human:me\" is not an OKF"), "{msg}");
+        let msg = generate(vec![plain("generated", FieldType::Other("Stamp".into()))], "app/1.0");
+        assert!(msg.contains("`generated` is reserved while `okf.generated_by` is set"), "{msg}");
+        assert!(!out.exists(), "nothing is generated");
+    }
+
+    #[test]
+    fn an_entity_named_vault_cannot_shadow_open_vault() {
+        let mut vault = entity(vec![]);
+        vault.name = "Vault".into();
+        let schema = crate::ir::SchemaOutput { entities: vec![vault], enums: vec![] };
+        let tmp = tempfile::tempdir().unwrap();
+        let config = crate::MarkdownIoConfig {
+            output_dir: tmp.path().join("generated"),
+            vault_root: "data/vault".into(),
+            layout: crate::ir::MarkdownLayout::PerEntityDir,
+            id_strategy: crate::ir::IdStrategy::Provided,
+            list_cap: 10_000,
+            okf: OkfOptions::default(),
+        };
+        let err = crate::gen_markdown_io(&schema, &config).unwrap_err();
+        assert!(err.to_string().contains("entity `Vault` would generate the frontmatter module `vault.rs`"), "{err}");
+    }
+
+    #[test]
+    fn a_generated_key_is_an_error_only_while_the_vault_stamps_it() {
+        for field in [
+            plain("generated", FieldType::Other("Stamp".into())),
+            renamed("provenance", FieldType::String, "generated"),
+        ] {
+            let name = field.name.clone();
+            assert!(check(vec![field.clone()], &[]).errors.is_empty(), "{name}: knob off, the phase-1 rules apply");
+
+            let found = check_frontmatter_keys(&[entity(vec![field])], &[], &stamping());
+            assert_eq!(found.errors.len(), 1, "{name}: {found:?}");
+            assert!(found.warnings.is_empty(), "{name}: the error replaces the shape warning: {found:?}");
+            for part in [
+                &format!("entity `Task`, field `{name}`"),
+                "frontmatter key `generated` is reserved while `okf.generated_by` is set",
+                "#[ontology(frontmatter_name = \"...\")]",
+                "or unset `okf.generated_by`",
+                OKF_SPEC,
+            ] {
+                assert!(found.errors[0].contains(part), "missing {part:?} in {}", found.errors[0]);
+            }
+        }
+        let other = check_frontmatter_keys(&[entity(vec![plain("made_by", FieldType::String)])], &[], &stamping());
+        assert_eq!(other, KeyDiagnostics::default());
+    }
+
+    #[test]
+    fn program_actors_pass() {
+        for actor in [
+            "notes-kb/0.1.0",
+            "reference_agent/gemini-2.5-pro",
+            "a/b",
+            "tool/1.0/beta",
+            "process:finance-nightly",
+            "process:x",
+        ] {
+            assert_eq!(check_generated_by(actor), Ok(()), "{actor}");
+        }
+    }
+
+    #[test]
+    fn anything_but_a_program_actor_fails_and_says_why() {
+        for (actor, why) in [
+            ("", "it is empty"),
+            ("human:ahormati", "`human:` actors mark content a person wrote or confirmed"),
+            ("Human:someone/1.0", "`human:` actors"),
+            ("process:", "`process:` needs an id"),
+            ("/1.0", "needs both a producer and a version"),
+            ("app/", "needs both a producer and a version"),
+            ("my app/1.0", "whitespace or a control character"),
+            ("app/1.0\n", "whitespace or a control character"),
+            ("app", "neither `<producer>/<version>` nor `process:<id>`"),
+            ("agent:x", "neither `<producer>/<version>` nor `process:<id>`"),
+        ] {
+            let err = check_generated_by(actor).unwrap_err();
+            assert!(err.contains(why), "{actor:?}: {err}");
+            assert!(
+                err.starts_with(&format!(
+                    "okf.generated_by = {actor:?} is not an OKF (Open Knowledge Format) 0.2 actor"
+                )),
+                "{err}"
+            );
+            assert!(
+                err.contains(
+                    "(spec §7: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)"
+                ),
+                "{err}"
+            );
+        }
     }
 }

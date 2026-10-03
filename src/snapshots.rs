@@ -365,6 +365,22 @@ fn markdown_frontmatter_complex_entity() {
     insta::assert_snapshot!(code);
 }
 
+#[test]
+fn markdown_vault_module_with_okf_options() {
+    // The generated vault constructor with both OKF options on; the
+    // knobs-off shape is pinned byte for byte by the pilot's committed
+    // `vault.rs` (tests/golden_conformance.rs).
+    let code = crate::persistence::markdown::gen_vault::generate_vault_module(&crate::MarkdownIoConfig {
+        output_dir: "unused".into(),
+        vault_root: "data/vault".into(),
+        layout: crate::ir::MarkdownLayout::PerEntityDir,
+        id_strategy: crate::ir::IdStrategy::SlugFromField("title".into()),
+        list_cap: 10_000,
+        okf: crate::ir::OkfOptions { index: true, generated_by: Some("notes-kb/0.1.0".into()) },
+    });
+    insta::assert_snapshot!(code);
+}
+
 // ─── Servers: two API surfaces ───────────────────────────────────────────────
 
 /// Run `generate_transport` over the two-surface fixture with `generator`

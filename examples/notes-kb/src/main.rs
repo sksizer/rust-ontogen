@@ -6,13 +6,12 @@
 
 use std::sync::Arc;
 
-use markdown_store::{IdStrategy, VaultHandle, VaultLayout};
 use notes_kb::AppState;
+use notes_kb::persistence::markdown::generated::vault::{VAULT_ROOT, open_vault};
 
 #[tokio::main]
 async fn main() {
-    let vault = VaultHandle::new("data/vault", VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()));
-    let state = Arc::new(AppState::new(vault));
+    let state = Arc::new(AppState::new(open_vault(VAULT_ROOT)));
 
     let app = notes_kb::api::transport::http::generated::entity_routes()
         .fallback_service(tower_http::services::ServeDir::new("web"))

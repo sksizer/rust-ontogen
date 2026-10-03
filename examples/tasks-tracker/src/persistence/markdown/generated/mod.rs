@@ -3,3 +3,4 @@
 pub mod epic;
 pub mod tag;
 pub mod task;
+pub mod vault;
