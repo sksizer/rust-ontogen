@@ -89,7 +89,7 @@ fn pilot_committed_generated_trees_match_a_fresh_generation() {
     let schema = ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: pilot.join("src/schema") })
         .expect("parse pilot schema");
     let entities = &schema.entities;
-    assert_eq!(entities.len(), 3, "pilot schema: Note, Tag, Task");
+    assert_eq!(entities.len(), 4, "pilot schema: Note, Section, Tag, Task");
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let md = ontogen::gen_markdown_io(

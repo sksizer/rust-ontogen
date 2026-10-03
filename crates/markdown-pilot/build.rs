@@ -9,6 +9,7 @@ use ontogen::servers::{NamingConfig, ServerGenerator};
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/schema/note.rs");
+    println!("cargo:rerun-if-changed=src/schema/section.rs");
     println!("cargo:rerun-if-changed=src/schema/task.rs");
     println!("cargo:rerun-if-changed=src/schema/tag.rs");
 
