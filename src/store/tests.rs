@@ -374,6 +374,46 @@ mod tests {
         }
     }
 
+    /// A `has_many` whose target is another entity fails generation on both
+    /// backends, before any file is written.
+    #[test]
+    fn cross_entity_has_many_fails_on_both_backends() {
+        use crate::schema::model::{FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        let mut workout = entities.iter().find(|e| e.name == "Workout").expect("Workout entity not found").clone();
+        workout.fields.push(FieldDef::new(
+            "sets",
+            FieldType::VecString,
+            FieldRole::Relation(RelationInfo {
+                kind: RelationKind::HasMany,
+                target: "WorkoutSet".to_string(),
+                junction: None,
+                foreign_key: Some("workout_id".to_string()),
+            }),
+        ));
+
+        for backend in [crate::ir::Backend::Seaorm(None), markdown_backend()] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let out_dir = tmp.path().join("generated");
+            let config = StoreConfig {
+                output_dir: out_dir.clone(),
+                hooks_dir: None,
+                schema_module_path: "crate::schema".to_string(),
+                backend: backend.clone(),
+                wikilink_policy: None,
+                id_strategy: crate::ir::IdStrategy::Provided,
+            };
+
+            let err = store::generate(std::slice::from_ref(&workout), &config)
+                .expect_err("a cross-entity has_many must fail");
+            let msg = format!("{err}");
+            assert!(msg.contains("`Workout.sets`: has_many target `WorkoutSet`"), "{backend:?}: {msg}");
+            assert!(!out_dir.exists(), "validation failures must not write files");
+        }
+    }
+
     /// `wikilink_policy: Some(Strip)` overrides the SQL backend's default
     /// Passthrough: the DTO `From` impls strip `[[id]]` on relation fields
     /// even though the CRUD bodies stay SeaORM. This is the hybrid contract

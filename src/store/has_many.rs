@@ -9,12 +9,34 @@
 //! that does not exist fails a create or update with `{Child}NotFound`, also
 //! before anything is written.
 //!
-//! Like the rest of the store emission, this assumes the self-referential
-//! shape: the children are records of the declaring entity, whose
-//! `set_{snake}_parent` helper rewrites them.
+//! Only the self-referential shape is supported: the children are records
+//! of the declaring entity, whose `set_{snake}_parent` helper rewrites them.
+//! [`validate_targets`] refuses any other `has_many` at build time.
 
 use crate::schema::model::{EntityDef, FieldType};
 use crate::store::helpers::to_snake_case;
+
+/// Refuse a `has_many` whose target is not the declaring entity. Both
+/// backends would emit it against the declaring entity's own records (the
+/// SeaORM set-parent rewrites the wrong table; the markdown store does not
+/// compile), so it fails the build instead.
+pub(crate) fn validate_targets(entities: &[EntityDef]) -> Result<(), String> {
+    for entity in entities {
+        for (field, info) in entity.has_many_relations() {
+            if info.target != entity.name {
+                return Err(format!(
+                    "`{entity}.{field}`: has_many target `{target}` is not `{entity}`. Only the self-referential \
+                     has_many (target = \"{entity}\") is supported. Declare the belongs_to on `{target}` instead and \
+                     list `{target}` records by that foreign key in a hand-written API function.",
+                    entity = entity.name,
+                    field = field.name,
+                    target = info.target,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// One `has_many` field whose children carry a foreign key back to the
 /// record.
@@ -42,8 +64,7 @@ pub(crate) fn has_many_writes(entity: &EntityDef) -> Vec<HasManyWrite<'_>> {
 }
 
 /// Whether the declaring entity's `fk` field is a plain `String`. A missing
-/// field (a cross-entity `has_many`, whose foreign key lives elsewhere)
-/// keeps the `Option` emission.
+/// field keeps the `Option` emission.
 pub(crate) fn fk_required(entity: &EntityDef, fk: &str) -> bool {
     entity.fields.iter().any(|f| f.name == fk && f.field_type == FieldType::String)
 }
@@ -188,6 +209,23 @@ mod tests {
                 ),
             ],
             doc: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_self_referential_has_many_is_accepted() {
+        validate_targets(&[node(FieldType::OptionString)]).expect("the self-referential shape is supported");
+    }
+
+    #[test]
+    fn a_cross_entity_has_many_fails_the_build() {
+        let mut entity = node(FieldType::OptionString);
+        if let FieldRole::Relation(info) = &mut entity.fields[2].role {
+            info.target = "Leaf".to_string();
+        }
+        let err = validate_targets(&[entity]).expect_err("a cross-entity has_many must be refused");
+        for needle in ["`Node.children`", "target `Leaf`", "self-referential", "belongs_to on `Leaf`", "hand-written"] {
+            assert!(err.contains(needle), "missing {needle}: {err}");
         }
     }
 

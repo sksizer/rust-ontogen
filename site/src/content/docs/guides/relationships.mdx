@@ -100,7 +100,7 @@ A `has_many` is the reverse side of a `belongs_to`. It represents "other entitie
 pub contains: Vec<String>,
 ```
 
-The `foreign_key` parameter is required and must name the FK column on the target entity.
+The `foreign_key` parameter is required and must name the FK column on the target entity. The target must be the declaring entity itself; a `has_many` to another entity fails the build (see [has_many writes](/guides/store-layer/#has_many-writes) for the workaround).
 
 ### What gets generated
 

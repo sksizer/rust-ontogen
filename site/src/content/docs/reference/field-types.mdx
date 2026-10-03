@@ -128,11 +128,11 @@ The `workout_id` column exists on this entity's table. SeaORM generates a `Belon
 ### `HasMany` example
 
 ```rust
-#[ontology(relation(has_many, target = "WorkoutSet", foreign_key = "workout_id"))]
-pub sets: Vec<String>,
+#[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
+pub contains: Vec<String>,
 ```
 
-No column on this entity's table. The `WorkoutSet` entity has a `workout_id` column. At read time, `populate_*_relations()` queries `workout_sets` where `workout_id` matches.
+No column for `contains` on this entity's table. The children are `Node` records whose `parent_id` column holds this record's id; at read time, `populate_*_relations()` queries `nodes` where `parent_id` matches. The target must be the declaring entity (see [has_many writes](/guides/store-layer/#has_many-writes)).
 
 ### `ManyToMany` example
 

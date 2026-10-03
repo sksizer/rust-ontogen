@@ -179,16 +179,16 @@ pub workout_id: String,
 
 ### `has_many`
 
-A one-to-many reverse relationship. The target entity has a FK column pointing back to this entity. No additional column is needed on this entity.
+A one-to-many reverse relationship. The target entity has a FK column pointing back to this entity. No additional column is needed on this entity. The target must be the declaring entity itself; see [has_many writes](/guides/store-layer/#has_many-writes).
 
 ```rust
-#[ontology(relation(has_many, target = "WorkoutSet", foreign_key = "workout_id"))]
-pub sets: Vec<String>,
+#[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
+pub contains: Vec<String>,
 ```
 
 | Attribute | Required | Description |
 |-----------|----------|-------------|
-| `target` | Yes | The target entity name. |
+| `target` | Yes | The target entity name. Must be the declaring entity. |
 | `foreign_key` | Yes | The FK column on the target entity that references this entity's ID. |
 
 **Field type:** `Vec<String>`. Populated at read time by querying the target table.
@@ -241,7 +241,7 @@ Here's what's valid and what's not:
 | `multiline_list` | `Vec<String>`, `Vec<T>` | Markdown rendering only. |
 | `default_value` | `String`, `Option<String>` | Markdown rendering only. |
 | `relation(belongs_to)` | `String`, `Option<String>` | FK column on this entity. |
-| `relation(has_many)` | `Vec<String>` | Reverse FK on the target. Requires `foreign_key`. |
+| `relation(has_many)` | `Vec<String>` | Reverse FK on the target, which must be the declaring entity. Requires `foreign_key`. |
 | `relation(many_to_many)` | `Vec<String>` | Junction table. Optional `junction` attribute. |
 
 Fields with no `#[ontology(...)]` annotation are treated as `FieldRole::Plain`. They're included in all generated code as regular data fields.

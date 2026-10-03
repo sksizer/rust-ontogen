@@ -371,10 +371,10 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
 // ─── set_parent helper ───────────────────────────────────────────────────────
 
 /// `set_{snake}_parent`: read-mutate-rewrite the child's FK field — the
-/// markdown replacement for SeaORM's raw-SQL fast path. (Like the SeaORM
-/// emission, this assumes the self-referential has_many shape: children are
-/// records of the same entity.) A required FK takes a parent, an optional
-/// one `None` to clear it.
+/// markdown replacement for SeaORM's raw-SQL fast path. The children are
+/// records of the same entity (`has_many::validate_targets` refuses any
+/// other shape). A required FK takes a parent, an optional one `None` to
+/// clear it.
 fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, fk_required: bool) {
     let name = &entity.name;
     let snake = to_snake_case(name);
