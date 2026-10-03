@@ -19,7 +19,7 @@ use ontogen_jsonapi::{
     Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
     ResourceIdentifier, ResourceObject,
     error::method_not_allowed,
-    extract::{AcceptGuard, Body, ContentTypeGuard, NoParams, Path, Query, RouteQuery},
+    extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::{CanonicalQuery, encode_path_segment, pagination_links},
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
@@ -38,7 +38,7 @@ use ontogen_core::events::EventFrame;
 use std::convert::Infallible;
 
 /// An `AppError` as an error object: the status its variant's name gives,
-/// and the name in snake_case as the code (§13.4).
+/// and the name in snake_case as the code.
 fn app_error(e: crate::schema::AppError) -> ErrorObject {
     let (status, code) = match &e {
         crate::schema::AppError::ExerciseNotFound(..) => (StatusCode::NOT_FOUND, "exercise_not_found"),
@@ -59,12 +59,12 @@ fn app_error(e: crate::schema::AppError) -> ErrorObject {
 }
 
 /// A failure no `AppError` describes: opening the store, a scope accessor,
-/// or an op with another error type (§13.3).
+/// or an op with another error type.
 fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
 
-/// The method fallback of a route serving `allowed` (§13.5).
+/// The method fallback of a route serving `allowed`: `405` with `Allow`.
 fn allow<const N: usize>(
     allowed: [Method; N],
 ) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
@@ -135,8 +135,8 @@ impl RouteQuery for GetParams {
     const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
 }
 
-/// No list takes an `order` argument yet, so every `sort` asks for an order
-/// the server does not support (§7.4).
+/// No list takes an `order` argument, so every `sort` asks for an order the
+/// server does not support.
 fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
     match query.sort()? {
         None => Ok(()),
@@ -145,8 +145,8 @@ fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> 
     }
 }
 
-/// No route includes related resources yet, so every `include` names a path
-/// the server cannot include (§7.5).
+/// No route includes related resources, so every `include` names a path the
+/// server cannot include.
 fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
     match query.include()? {
         None => Ok(()),
@@ -158,7 +158,7 @@ fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObjec
     }
 }
 
-/// The effective `(offset, limit)` of a paginated list (§7.2).
+/// The effective `(offset, limit)` of a paginated list.
 fn page(query: &QueryParams, default_limit: u32, max_limit: u32) -> Result<(u32, u32), ErrorObject> {
     let offset = query.page_offset()?.unwrap_or(0);
     let limit = query.page_limit()?.unwrap_or(default_limit).min(max_limit);
@@ -183,7 +183,7 @@ fn from_fields<T: serde::de::DeserializeOwned>(
 // ── `exercises` ──
 
 /// `Exercise`'s attributes: every field but the id and the relations, in
-/// declaration order (§5.3).
+/// declaration order.
 struct ExerciseResourceAttributes<'a>(&'a Exercise);
 
 impl Serialize for ExerciseResourceAttributes<'_> {
@@ -198,20 +198,20 @@ impl Serialize for ExerciseResourceAttributes<'_> {
     }
 }
 
-/// A `exercises` resource object whose `links.self` sits under `collection`
-/// (§5.2).
+/// `entity` as a resource object of type `exercises`, its `links.self`
+/// under `collection`.
 fn exercise_as_resource<'a>(entity: &'a Exercise, collection: &str) -> ResourceObject<ExerciseResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
     ResourceObject::new("exercises", entity.id.clone(), ExerciseResourceAttributes(entity), self_link)
 }
 
-/// The id an `{id}` path segment names (§8.1).
+/// The id an `{id}` path segment names.
 fn exercise_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
     id.as_str().ok_or_else(|| app_error(crate::schema::AppError::ExerciseNotFound(id.to_string())))
 }
 
-/// Step 7 of a `exercises` create or update document (§8.2, §8.3): the fields
-/// it sets, named as the input's fields.
+/// The fields a create or update document for `exercises` sets, named as
+/// the input's fields, each member checked against the schema.
 fn exercise_request_fields(
     data: &ResourceData,
     create: bool,
@@ -233,7 +233,7 @@ fn exercise_request_fields(
 // ── `tags` ──
 
 /// `Tag`'s attributes: every field but the id and the relations, in
-/// declaration order (§5.3).
+/// declaration order.
 struct TagResourceAttributes<'a>(&'a Tag);
 
 impl Serialize for TagResourceAttributes<'_> {
@@ -245,20 +245,20 @@ impl Serialize for TagResourceAttributes<'_> {
     }
 }
 
-/// A `tags` resource object whose `links.self` sits under `collection`
-/// (§5.2).
+/// `entity` as a resource object of type `tags`, its `links.self`
+/// under `collection`.
 fn tag_as_resource<'a>(entity: &'a Tag, collection: &str) -> ResourceObject<TagResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
     ResourceObject::new("tags", entity.id.clone(), TagResourceAttributes(entity), self_link)
 }
 
-/// The id an `{id}` path segment names (§8.1).
+/// The id an `{id}` path segment names.
 fn tag_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
     id.as_str().ok_or_else(|| app_error(crate::schema::AppError::TagNotFound(id.to_string())))
 }
 
-/// Step 7 of a `tags` create or update document (§8.2, §8.3): the fields
-/// it sets, named as the input's fields.
+/// The fields a create or update document for `tags` sets, named as
+/// the input's fields, each member checked against the schema.
 fn tag_request_fields(
     data: &ResourceData,
     create: bool,
@@ -277,7 +277,7 @@ fn tag_request_fields(
 // ── `workouts` ──
 
 /// `Workout`'s attributes: every field but the id and the relations, in
-/// declaration order (§5.3).
+/// declaration order.
 struct WorkoutResourceAttributes<'a>(&'a Workout);
 
 impl Serialize for WorkoutResourceAttributes<'_> {
@@ -293,8 +293,8 @@ impl Serialize for WorkoutResourceAttributes<'_> {
     }
 }
 
-/// A `workouts` resource object whose `links.self` sits under `collection`
-/// (§5.2).
+/// `entity` as a resource object of type `workouts`, its `links.self`
+/// under `collection`.
 fn workout_as_resource<'a>(entity: &'a Workout, collection: &str) -> ResourceObject<WorkoutResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
     ResourceObject::new("workouts", entity.id.clone(), WorkoutResourceAttributes(entity), self_link).with_relationship(
@@ -305,20 +305,20 @@ fn workout_as_resource<'a>(entity: &'a Workout, collection: &str) -> ResourceObj
     )
 }
 
-/// The id an `{id}` path segment names (§8.1).
+/// The id an `{id}` path segment names.
 fn workout_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
     id.as_str().ok_or_else(|| app_error(crate::schema::AppError::WorkoutNotFound(id.to_string())))
 }
 
-/// The ids a `workouts` request document links, by relationship, for the
-/// linked-resource checks (§13.2 step 8).
+/// The ids a request document for `workouts` links, by relationship, to
+/// be checked to name resources that exist.
 #[derive(Default)]
 struct WorkoutLinkedIds {
     tags: Vec<LinkedId>,
 }
 
-/// Step 7 of a `workouts` create or update document (§8.2, §8.3): the fields
-/// it sets, named as the input's fields.
+/// The fields a create or update document for `workouts` sets, named as
+/// the input's fields, each member checked against the schema.
 fn workout_request_fields(
     data: &ResourceData,
     create: bool,
@@ -354,10 +354,24 @@ fn workout_request_fields(
     Ok((fields, linked))
 }
 
+/// Checks that each id a create or update document for `workouts` links
+/// names a resource that exists, in the order the document was read.
+async fn workout_check_linked(state: &AppState, linked: &WorkoutLinkedIds) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    for linked in &linked.tags {
+        match tag::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    Ok(())
+}
+
 // ── `workout-sets` ──
 
 /// `WorkoutSet`'s attributes: every field but the id and the relations, in
-/// declaration order (§5.3).
+/// declaration order.
 struct WorkoutSetResourceAttributes<'a>(&'a WorkoutSet);
 
 impl Serialize for WorkoutSetResourceAttributes<'_> {
@@ -373,8 +387,8 @@ impl Serialize for WorkoutSetResourceAttributes<'_> {
     }
 }
 
-/// A `workout-sets` resource object whose `links.self` sits under `collection`
-/// (§5.2).
+/// `entity` as a resource object of type `workout-sets`, its `links.self`
+/// under `collection`.
 fn workout_set_as_resource<'a>(
     entity: &'a WorkoutSet,
     collection: &str,
@@ -397,21 +411,21 @@ fn workout_set_as_resource<'a>(
         )
 }
 
-/// The id an `{id}` path segment names (§8.1).
+/// The id an `{id}` path segment names.
 fn workout_set_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
     id.as_str().ok_or_else(|| app_error(crate::schema::AppError::WorkoutSetNotFound(id.to_string())))
 }
 
-/// The ids a `workout-sets` request document links, by relationship, for the
-/// linked-resource checks (§13.2 step 8).
+/// The ids a request document for `workout-sets` links, by relationship, to
+/// be checked to name resources that exist.
 #[derive(Default)]
 struct WorkoutSetLinkedIds {
     workout: Option<LinkedId>,
     exercise: Option<LinkedId>,
 }
 
-/// Step 7 of a `workout-sets` create or update document (§8.2, §8.3): the fields
-/// it sets, named as the input's fields.
+/// The fields a create or update document for `workout-sets` sets, named as
+/// the input's fields, each member checked against the schema.
 fn workout_set_request_fields(
     data: &ResourceData,
     create: bool,
@@ -460,6 +474,27 @@ fn workout_set_request_fields(
     Ok((fields, linked))
 }
 
+/// Checks that each id a create or update document for `workout-sets` links
+/// names a resource that exists, in the order the document was read.
+async fn workout_set_check_linked(state: &AppState, linked: &WorkoutSetLinkedIds) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    if let Some(linked) = &linked.workout {
+        match workout::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::WorkoutNotFound(..)) => return Err(linked.not_found("workouts")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    if let Some(linked) = &linked.exercise {
+        match exercise::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::ExerciseNotFound(..)) => return Err(linked.not_found("exercises")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    Ok(())
+}
+
 // ── Exercise Handlers ──
 
 async fn exercise_list(
@@ -494,13 +529,14 @@ async fn exercise_get_by_id(
 async fn exercise_create(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    _: Query<NoParams>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/exercises";
     let endpoint = Endpoint { type_name: "exercises", path: collection };
-    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let fields = exercise_request_fields(&data, true)?;
     let input: CreateExerciseInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -519,15 +555,17 @@ async fn exercise_create(
 async fn exercise_update(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/exercises";
     let path = format!("{collection}/{id}");
     let endpoint = Endpoint { type_name: "exercises", path: &path };
-    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let data = request::parse_update(&body, endpoint, &id)?;
     let fields = exercise_request_fields(&data, false)?;
     let input: UpdateExerciseInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -582,13 +620,14 @@ async fn tag_get_by_id(
 async fn tag_create(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    _: Query<NoParams>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/tags";
     let endpoint = Endpoint { type_name: "tags", path: collection };
-    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let fields = tag_request_fields(&data, true)?;
     let input: CreateTagInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -605,15 +644,17 @@ async fn tag_create(
 async fn tag_update(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/tags";
     let path = format!("{collection}/{id}");
     let endpoint = Endpoint { type_name: "tags", path: &path };
-    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let data = request::parse_update(&body, endpoint, &id)?;
     let fields = tag_request_fields(&data, false)?;
     let input: UpdateTagInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
@@ -668,23 +709,18 @@ async fn workout_get_by_id(
 async fn workout_create(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    _: Query<NoParams>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/workouts";
     let endpoint = Endpoint { type_name: "workouts", path: collection };
-    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let (fields, linked) = workout_request_fields(&data, true)?;
     let input: CreateWorkoutInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
-    for linked in &linked.tags {
-        match tag::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
+    workout_check_linked(&state, &linked).await?;
     let entity = workout::create(&store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::WorkoutAlreadyExists(..) if data.id.is_some() => {
             app_error(e).with_pointer("/data/id")
@@ -700,25 +736,21 @@ async fn workout_create(
 async fn workout_update(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/workouts";
     let path = format!("{collection}/{id}");
     let endpoint = Endpoint { type_name: "workouts", path: &path };
-    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let data = request::parse_update(&body, endpoint, &id)?;
     let (fields, linked) = workout_request_fields(&data, false)?;
     let input: UpdateWorkoutInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
-    for linked in &linked.tags {
-        match tag::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
+    workout_check_linked(&state, &linked).await?;
     let entity = workout::update(&store, workout_lookup_key(&id)?, input).await.map_err(app_error)?;
     let resource = workout_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -770,30 +802,18 @@ async fn workout_set_get_by_id(
 async fn workout_set_create(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    _: Query<NoParams>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/workout-sets";
     let endpoint = Endpoint { type_name: "workout-sets", path: collection };
-    let data = request::parse_create(&body.0, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let (fields, linked) = workout_set_request_fields(&data, true)?;
     let input: CreateWorkoutSetInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
-    if let Some(linked) = &linked.workout {
-        match workout::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::WorkoutNotFound(..)) => return Err(linked.not_found("workouts")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
-    if let Some(linked) = &linked.exercise {
-        match exercise::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::ExerciseNotFound(..)) => return Err(linked.not_found("exercises")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
+    workout_set_check_linked(&state, &linked).await?;
     let entity = workout_set::create(&store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::WorkoutSetAlreadyExists(..) if data.id.is_some() => {
             app_error(e).with_pointer("/data/id")
@@ -809,32 +829,21 @@ async fn workout_set_create(
 async fn workout_set_update(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
-    _: ContentTypeGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
 ) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
     let collection = "/api/workout-sets";
     let path = format!("{collection}/{id}");
     let endpoint = Endpoint { type_name: "workout-sets", path: &path };
-    let data = request::parse_update(&body.0, endpoint, &id)?;
+    let data = request::parse_update(&body, endpoint, &id)?;
     let (fields, linked) = workout_set_request_fields(&data, false)?;
     let input: UpdateWorkoutSetInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
-    if let Some(linked) = &linked.workout {
-        match workout::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::WorkoutNotFound(..)) => return Err(linked.not_found("workouts")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
-    if let Some(linked) = &linked.exercise {
-        match exercise::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::ExerciseNotFound(..)) => return Err(linked.not_found("exercises")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
+    workout_set_check_linked(&state, &linked).await?;
     let entity = workout_set::update(&store, workout_set_lookup_key(&id)?, input).await.map_err(app_error)?;
     let resource = workout_set_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
