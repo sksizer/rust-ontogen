@@ -7,7 +7,7 @@ a golden and the conformance harness forces the generators to follow.
 
 | File | Pins |
 |---|---|
-| `build.rs.golden` | The consumer wiring: `MarkdownIoOptions` (vault_root/layout/id_strategy/list_cap), `gen_markdown_io → MarkdownIoOutput`, `StoreConfig.backend: Backend::Markdown(md)`, the Pipeline builder shape + backend-inference rule, the hand-written `Store`/`AppError::Md` consumer contract |
+| `build.rs.golden` | The consumer wiring: `MarkdownIoOptions` (vault_root/layout/list_cap), `gen_markdown_io → MarkdownIoOutput`, `StoreConfig.backend: Backend::Markdown(md)` and `StoreConfig.id_strategy` (`store_id_strategy` on the builder), the Pipeline builder shape + backend-inference rule, the hand-written `Store`/`AppError` consumer contract |
 | `store/note.rs.golden` | The generated-store **shape contract** for one minimal entity (see below) |
 | `vault/**.md.golden` | The on-disk record format, in two deliberate roles (see below) |
 

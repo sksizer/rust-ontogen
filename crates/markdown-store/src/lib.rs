@@ -38,11 +38,8 @@
 //! }
 //!
 //! let dir = tempfile::tempdir().unwrap();
-//! let vault = VaultHandle::new(
-//!     dir.path(),
-//!     VaultLayout::PerEntityDir,
-//!     IdStrategy::SlugFromField("title".into()),
-//! );
+//! let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir);
+//! let by_title = IdStrategy::SlugFromField("title".into());
 //!
 //! // Create: derive an id from the title, wikilink the epic reference.
 //! let task = Task {
@@ -50,7 +47,7 @@
 //!     status: "open".into(),
 //!     epic: Some(markdown_store::wikilink::encode("E0042")),
 //! };
-//! let id = vault.make_record_id("tasks", None, Some(&task.title))?;
+//! let id = vault.make_record_id("tasks", &by_title, None, Some(&task.title))?;
 //! let mut doc = Document::new();
 //! doc.merge_serialize(&task, &["title", "status", "epic"])?;
 //! doc.set_body("Parser notes go here.\n");
@@ -81,7 +78,7 @@
 //! - **Single-record atomicity**: a write is a same-directory tempfile +
 //!   fsync + rename; readers see old-or-new, never torn. Multi-record
 //!   transactions are deliberately not offered.
-//! - **Stable list order**: lexicographic by filename (= by id).
+//! - **Stable list order**: by id, comparing UTF-8 bytes.
 //! - **Single-process stance**: clones of a [`VaultHandle`] share a write
 //!   lock; concurrent writers in *other* processes are out of scope.
 //! - **Byte-stable while untouched**: a parsed document renders as its

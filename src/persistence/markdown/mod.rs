@@ -56,7 +56,6 @@ pub fn generate(schema: &SchemaOutput, config: &MarkdownIoConfig) -> Result<Mark
     Ok(MarkdownIoOutput {
         vault_root: config.vault_root.clone(),
         layout: config.layout,
-        id_strategy: config.id_strategy.clone(),
         list_cap: config.list_cap,
         module_path: "crate::persistence::markdown::generated".to_string(),
         entities: entity_meta,

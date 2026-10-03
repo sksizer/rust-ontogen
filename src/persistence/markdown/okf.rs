@@ -499,7 +499,6 @@ mod tests {
             output_dir: out.clone(),
             vault_root: "data/vault".into(),
             layout: crate::ir::MarkdownLayout::PerEntityDir,
-            id_strategy: crate::ir::IdStrategy::Provided,
             list_cap: 10_000,
         };
         let err = crate::gen_markdown_io(&schema, &config).unwrap_err();

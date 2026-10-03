@@ -7,11 +7,11 @@
 
 use markdown_pilot::Store;
 use markdown_pilot::schema::{Note, Task};
-use markdown_store::{IdStrategy, VaultHandle, VaultLayout};
+use markdown_store::{VaultHandle, VaultLayout};
 
 fn store() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()));
+    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir);
     (dir, Store::new(vault))
 }
 

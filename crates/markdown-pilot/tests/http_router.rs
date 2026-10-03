@@ -11,7 +11,7 @@ use std::sync::Arc;
 use markdown_pilot::api::transport::http::generated::entity_routes;
 use markdown_pilot::schema::Note;
 use markdown_pilot::{AppState, Store};
-use markdown_store::{IdStrategy, VaultHandle, VaultLayout};
+use markdown_store::{VaultHandle, VaultLayout};
 use tower::util::ServiceExt;
 
 #[test]
@@ -24,7 +24,7 @@ fn entity_routes_constructs_router() {
 #[tokio::test]
 async fn generated_routes_serve_requests() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()));
+    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir);
     let store = Store::new(vault);
     let created = store
         .create_note(Note { id: String::new(), title: "Hello Vault".into(), body: "Body.\n".into() })

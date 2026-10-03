@@ -35,12 +35,12 @@ fn create_task(vault: &VaultHandle, title: &str, epic: Option<&str>, tags: &[&st
     let mut doc = Document::new();
     doc.merge_serialize(&task, TASK_FIELDS)?;
     // Id derivation + dedup + write happen atomically under the write lock.
-    vault.create_record_derived("tasks", None, Some(title), &doc)
+    vault.create_record_derived("tasks", &IdStrategy::SlugFromField("title".into()), None, Some(title), &doc)
 }
 
 fn main() -> Result<(), Error> {
     let dir = tempfile::tempdir().expect("tempdir");
-    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()));
+    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir);
 
     // One epic, three tasks pointing at it (two sharing a tag).
     let mut epic_doc = Document::new();

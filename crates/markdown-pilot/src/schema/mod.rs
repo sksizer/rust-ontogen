@@ -14,14 +14,21 @@ pub use dto::tag::{CreateTagInput, UpdateTagInput};
 pub use dto::task::{CreateTaskInput, UpdateTaskInput};
 
 // ── Error type ──────────────────────────────────────────────────────────────
-// The markdown consumer contract: per-entity NotFound variants plus a single
-// Md variant carrying everything from the runtime crate.
+// The markdown consumer contract: the typed variants the generated store
+// constructs (per entity NotFound, IdRequired and AlreadyExists), and a
+// single Md variant carrying everything else from the runtime crate.
 
 #[derive(Debug)]
 pub enum AppError {
     NoteNotFound(String),
+    NoteIdRequired(String),
+    NoteAlreadyExists(String),
     TaskNotFound(String),
+    TaskIdRequired(String),
+    TaskAlreadyExists(String),
     TagNotFound(String),
+    TagIdRequired(String),
+    TagAlreadyExists(String),
     Md(String),
 }
 
@@ -31,6 +38,12 @@ impl std::fmt::Display for AppError {
             AppError::NoteNotFound(id) => write!(f, "Note not found: {id}"),
             AppError::TaskNotFound(id) => write!(f, "Task not found: {id}"),
             AppError::TagNotFound(id) => write!(f, "Tag not found: {id}"),
+            AppError::NoteIdRequired(reason) | AppError::TaskIdRequired(reason) | AppError::TagIdRequired(reason) => {
+                write!(f, "id required: {reason}")
+            }
+            AppError::NoteAlreadyExists(id) | AppError::TaskAlreadyExists(id) | AppError::TagAlreadyExists(id) => {
+                write!(f, "already exists: {id}")
+            }
             AppError::Md(msg) => write!(f, "markdown store error: {msg}"),
         }
     }

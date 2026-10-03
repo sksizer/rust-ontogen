@@ -13,9 +13,9 @@ ontogen dependencies** — usable as a plain library.
 ## The core idea: a lossless round-trip
 
 ```rust
-use markdown_store::{Document, IdStrategy, VaultHandle, VaultLayout};
+use markdown_store::{Document, VaultHandle, VaultLayout};
 
-let vault = VaultHandle::new("docs/data", VaultLayout::PerEntityDir, IdStrategy::Provided);
+let vault = VaultHandle::new("docs/data", VaultLayout::PerEntityDir);
 
 // Files are parsed into an order-preserving frontmatter mapping + verbatim body.
 vault.modify_record("tasks", "t-1", |doc| {
@@ -54,7 +54,7 @@ Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
 - **Single-record atomicity.** A write lands via same-directory tempfile +
   fsync + rename: readers see old-or-new, never torn. There are **no
   multi-record transactions** — by design (see the ADR).
-- **Stable list order**: lexicographic by filename (= record id).
+- **Stable list order**: by record id, comparing UTF-8 bytes, wherever the record sits under the entity directory.
 - **Single-process stance.** Clones of a `VaultHandle` share a write lock,
   so concurrent tasks in one process serialize; concurrent writers in other
   processes are out of scope.

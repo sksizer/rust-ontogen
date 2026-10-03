@@ -129,6 +129,11 @@ fn generate_dto_file(entity: &EntityDef) -> String {
 
 /// Call `store::generate` into a tempdir and return the generated file for `entity`.
 fn generate_store_file(entity: &EntityDef) -> String {
+    generate_store_file_with(entity, crate::ir::IdStrategy::Provided)
+}
+
+/// [`generate_store_file`] under a given id strategy.
+fn generate_store_file_with(entity: &EntityDef, id_strategy: crate::ir::IdStrategy) -> String {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = StoreConfig {
         output_dir: tmp.path().to_path_buf(),
@@ -136,6 +141,7 @@ fn generate_store_file(entity: &EntityDef) -> String {
         schema_module_path: "crate::schema".to_string(),
         backend: crate::ir::Backend::Seaorm(None),
         wikilink_policy: None,
+        id_strategy,
     };
     crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store failed");
 
@@ -204,9 +210,8 @@ fn a_sql_list_orders_before_it_takes_a_page() {
     // may answer the same query differently each time, so page 2 can repeat a
     // row page 1 already returned and skip another entirely.
     //
-    // This pins determinism within the SQL backend only. It deliberately does
-    // not claim parity with a markdown page: collation decides text order in
-    // SQL, and the vault sorts by record path rather than id.
+    // This pins the SQL half of the default id order (ADR 0006 §3); the
+    // markdown runtime lists in id byte order, the other half.
     let code = generate_store_file(&article_mtm_tags_entity());
     assert!(code.contains("QueryOrder"), "the ordering trait is in scope:\n{code}");
 
@@ -292,9 +297,30 @@ fn node_has_many_entity() -> EntityDef {
     }
 }
 
+/// The node fixture with its `parent_id` foreign key made required, so a
+/// child cannot be dropped from `contains`.
+fn node_required_parent_entity() -> EntityDef {
+    let mut entity = node_has_many_entity();
+    entity.fields.iter_mut().find(|f| f.name == "parent_id").expect("parent_id").field_type = FieldType::String;
+    entity
+}
+
+#[test]
+fn store_crud_has_many_entity() {
+    // The SeaORM create under a slug strategy (derive, probe, retry a lost
+    // race) and the has_many update that clears dropped children.
+    let code = generate_store_file_with(&node_has_many_entity(), crate::ir::IdStrategy::SlugFromField("label".into()));
+    insta::assert_snapshot!(code);
+}
+
 /// Generate a MARKDOWN-backed store file for `entity` and read it back.
 fn generate_markdown_store_file(entity: &EntityDef) -> String {
-    use crate::ir::{Backend, IdStrategy, MarkdownEntityMeta, MarkdownIoOutput, MarkdownLayout};
+    generate_markdown_store_file_with(entity, crate::ir::IdStrategy::Provided)
+}
+
+/// [`generate_markdown_store_file`] under a given id strategy.
+fn generate_markdown_store_file_with(entity: &EntityDef, id_strategy: crate::ir::IdStrategy) -> String {
+    use crate::ir::{Backend, MarkdownEntityMeta, MarkdownIoOutput, MarkdownLayout};
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = StoreConfig {
@@ -304,7 +330,6 @@ fn generate_markdown_store_file(entity: &EntityDef) -> String {
         backend: Backend::Markdown(MarkdownIoOutput {
             vault_root: "data/vault".into(),
             layout: MarkdownLayout::PerEntityDir,
-            id_strategy: IdStrategy::Provided,
             list_cap: 10_000,
             module_path: "crate::persistence::markdown::generated".into(),
             entities: vec![MarkdownEntityMeta {
@@ -316,6 +341,7 @@ fn generate_markdown_store_file(entity: &EntityDef) -> String {
             }],
         }),
         wikilink_policy: None,
+        id_strategy,
     };
     crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store(markdown) failed");
 
@@ -337,6 +363,17 @@ fn markdown_store_has_many_entity() {
     // read-mutate-rewrite set_parent helper (SeaORM's raw-SQL fast path
     // replacement).
     let code = generate_markdown_store_file(&node_has_many_entity());
+    insta::assert_snapshot!(code);
+}
+
+#[test]
+fn markdown_store_has_many_required_parent() {
+    // A required foreign key: the update refuses to drop a child before
+    // writing anything, and set_parent takes a parent, never `None`.
+    let code = generate_markdown_store_file_with(
+        &node_required_parent_entity(),
+        crate::ir::IdStrategy::SlugFromField("label".into()),
+    );
     insta::assert_snapshot!(code);
 }
 

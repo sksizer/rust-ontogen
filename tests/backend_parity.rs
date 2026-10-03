@@ -31,7 +31,6 @@ fn markdown_backend(entities: &[EntityDef]) -> Backend {
     Backend::Markdown(MarkdownIoOutput {
         vault_root: "data/vault".into(),
         layout: MarkdownLayout::PerEntityDir,
-        id_strategy: IdStrategy::SlugFromField("title".into()),
         list_cap: 10_000,
         module_path: "crate::persistence::markdown::generated".into(),
         entities: entities
@@ -56,6 +55,7 @@ fn gen_store_with(entities: &[EntityDef], backend: Backend, out: &Path) -> Store
             schema_module_path: "crate::schema".into(),
             backend,
             wikilink_policy: None,
+            id_strategy: IdStrategy::SlugFromField("title".into()),
         },
     )
     .expect("gen_store failed")

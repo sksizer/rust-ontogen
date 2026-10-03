@@ -24,8 +24,8 @@ const WORKOUT_FIELDS: &[&str] = &["name", "date", "duration_minutes"];
 
 fn main() -> Result<(), Error> {
     let dir = tempfile::tempdir().expect("tempdir");
-    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::SlugFromField("date".into()))
-        .with_list_cap(100);
+    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir).with_list_cap(100);
+    let by_date = IdStrategy::SlugFromField("date".into());
 
     // ── create ──────────────────────────────────────────────────────────
     // Id derivation + slug dedup + the write happen atomically under the
@@ -34,16 +34,19 @@ fn main() -> Result<(), Error> {
     let mut doc = Document::new();
     doc.merge_serialize(&workout, WORKOUT_FIELDS)?;
     doc.set_body("Felt strong on squats.\n");
-    let id = vault.create_record_derived("workouts", None, Some(&workout.date), &doc)?;
+    let id = vault.create_record_derived("workouts", &by_date, None, Some(&workout.date), &doc)?;
     println!("created workouts/{id}.md");
 
     // Creating with the same explicit id fails loudly — never a silent overwrite.
-    assert!(matches!(vault.create_record_derived("workouts", Some(&id), None, &doc), Err(Error::AlreadyExists { .. })));
+    assert!(matches!(
+        vault.create_record_derived("workouts", &by_date, Some(&id), None, &doc),
+        Err(Error::AlreadyExists { .. })
+    ));
 
     // A second workout on the same date gets a deduped slug.
     let mut doc2 = Document::new();
     doc2.merge_serialize(&Workout { name: None, date: workout.date.clone(), duration_minutes: None }, WORKOUT_FIELDS)?;
-    let id2 = vault.create_record_derived("workouts", None, Some(&workout.date), &doc2)?;
+    let id2 = vault.create_record_derived("workouts", &by_date, None, Some(&workout.date), &doc2)?;
     println!("created workouts/{id2}.md (slug deduped)");
     assert_eq!(id2, format!("{id}-2"));
 
@@ -68,7 +71,7 @@ fn main() -> Result<(), Error> {
         let extra = Workout { name: None, date: format!("2026-06-{:02}", 10 + i), duration_minutes: None };
         let mut d = Document::new();
         d.merge_serialize(&extra, WORKOUT_FIELDS)?;
-        vault.create_record_derived("workouts", None, Some(&extra.date), &d)?;
+        vault.create_record_derived("workouts", &by_date, None, Some(&extra.date), &d)?;
     }
     let all = vault.read_all("workouts")?;
     println!("listed {} workouts (lexicographic by id)", all.len());

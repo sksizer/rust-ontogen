@@ -38,12 +38,12 @@ fn main() {
             ontogen::MarkdownIoOptions {
                 vault_root: "data/vault".into(),
                 layout: ontogen::MarkdownLayout::PerEntityDir,
-                id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
                 list_cap: 10_000,
             },
         )
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
+        .store_id_strategy(ontogen::IdStrategy::SlugFromField("title".into()))
         .api("src/api/generated", "AppState")
         .servers(servers_config)
         .build()

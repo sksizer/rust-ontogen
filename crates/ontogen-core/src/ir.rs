@@ -79,8 +79,9 @@ pub struct ConversionMeta {
 /// Markdown-backend output. Produced by `gen_markdown_io`; consumed by
 /// `gen_store` when emitting CRUD bodies against the markdown runtime
 /// (ADR 0001). Carries the vault configuration plus the per-entity
-/// metadata the store emitter needs to resolve paths, frontmatter type
-/// discriminators, and id derivation.
+/// metadata the store emitter needs to resolve paths and frontmatter type
+/// discriminators. How ids are derived is the store's choice, not the
+/// vault's: see `StoreConfig::id_strategy`.
 #[derive(Debug, Clone)]
 pub struct MarkdownIoOutput {
     /// Where the `.md` records live, relative to the consumer crate root
@@ -88,8 +89,6 @@ pub struct MarkdownIoOutput {
     pub vault_root: PathBuf,
     /// On-disk arrangement of record files under the vault root.
     pub layout: MarkdownLayout,
-    /// How new records derive an id when the caller didn't supply one.
-    pub id_strategy: IdStrategy,
     /// Hard cap on records parsed per `list()` before the runtime errors —
     /// the ADR's explicit scale ceiling, threaded into the generated
     /// vault construction.
@@ -136,18 +135,27 @@ pub enum MarkdownLayout {
     Flat,
 }
 
-/// Id-derivation strategy for new markdown records.
+/// How the generated store fills the id of a record created without one,
+/// on either backend.
 ///
-/// Generator-side mirror of the markdown runtime crate's `IdStrategy`
-/// (same bridging rationale as [`MarkdownLayout`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An id that is empty or whitespace-only is absent; any other id (from the
+/// caller or a `before_create` hook) is used as given under every strategy.
+/// A derived id that is taken, or reserved, is probed as `-2`, `-3`, … .
+/// With no id to use, a create returns `AppError::{Entity}IdRequired`.
+///
+/// Mirrors the markdown runtime crate's `IdStrategy`, which the markdown
+/// store emits literally (the runtime crate stays free of ontogen
+/// dependencies).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum IdStrategy {
-    /// The caller must supply the id; an empty one is a runtime error.
+    /// The caller must supply the id.
+    #[default]
     Provided,
-    /// Slugify the value of the named field (e.g. `title`) when the id is
-    /// absent, de-duplicating with `-2`, `-3`, … suffixes.
+    /// Slugify the value of the named field (e.g. `title`), which must be a
+    /// `String` field on every entity.
     SlugFromField(String),
-    /// A fresh UUID v4 (requires the runtime crate's `uuid` feature).
+    /// A fresh UUID v4. A SeaORM store needs `ontogen-core`'s `uuid` feature,
+    /// a markdown store `markdown-store`'s.
     Uuid,
 }
 

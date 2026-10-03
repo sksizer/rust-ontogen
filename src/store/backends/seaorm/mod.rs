@@ -1,15 +1,16 @@
-//! SeaORM store backend: the emission previously hardwired into the store
-//! generator, now behind the [`StoreBackend`] seam. Pure relocation — the
-//! generated output is byte-identical to the pre-lift generator, which the
-//! snapshot suite enforces.
+//! SeaORM store backend: CRUD bodies against SeaORM, behind the
+//! [`StoreBackend`] seam.
 
 pub(crate) mod gen_crud;
 
 use super::StoreBackend;
+use crate::ir::IdStrategy;
 use crate::schema::model::EntityDef;
 use crate::store::helpers::to_snake_case;
 
-pub(crate) struct SeaormBackend;
+pub(crate) struct SeaormBackend {
+    pub(crate) id_strategy: IdStrategy,
+}
 
 impl StoreBackend for SeaormBackend {
     fn emit_preamble(&self, code: &mut String, entity: &EntityDef) {
@@ -30,7 +31,7 @@ impl StoreBackend for SeaormBackend {
     }
 
     fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef) {
-        gen_crud::generate_crud_impl(code, entity);
+        gen_crud::generate_crud_impl(code, entity, &self.id_strategy);
     }
 
     fn wikilink_policy(&self) -> super::WikilinkPolicy {

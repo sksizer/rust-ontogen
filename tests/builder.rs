@@ -68,16 +68,7 @@ fn builder_realistic_schema_seaorm_store_api() {
 }
 
 fn markdown_options() -> MarkdownIoOptions {
-    MarkdownIoOptions {
-        vault_root: "data/vault".into(),
-        layout: MarkdownLayout::PerEntityDir,
-        // The fixture schema has no slug-able String field shared by every
-        // entity (Workout.name is Option<String>, which SlugFromField
-        // rejects at generation time), so the builder tests use caller-
-        // supplied ids; slug derivation is covered by the store unit tests.
-        id_strategy: IdStrategy::Provided,
-        list_cap: 10_000,
-    }
+    MarkdownIoOptions { vault_root: "data/vault".into(), layout: MarkdownLayout::PerEntityDir, list_cap: 10_000 }
 }
 
 #[test]
@@ -103,6 +94,10 @@ fn builder_markdown_pipeline_generates_store_and_api() {
     assert!(store_out.join("mod.rs").exists(), "missing store mod.rs");
     let store_code = std::fs::read_to_string(store_out.join("exercise.rs")).unwrap();
     assert!(store_code.contains("self.vault()"), "markdown store talks to the vault:\n{store_code}");
+    assert!(
+        store_code.contains("&markdown_store::IdStrategy::Provided,"),
+        "with no store_id_strategy the caller supplies every id:\n{store_code}"
+    );
     assert!(!store_code.contains("sea_orm"), "no SeaORM in a markdown store:\n{store_code}");
     assert!(hooks.exists(), "hooks scaffolded");
     assert!(api_out.join("exercise.rs").exists(), "missing api module");
@@ -140,4 +135,41 @@ fn builder_store_without_persistence_stage_errors() {
         .build()
         .expect_err("store without a persistence backend must be an error");
     assert!(format!("{err}").contains("persistence backend"), "got: {err}");
+}
+
+#[test]
+fn builder_store_id_strategy_reaches_either_backend() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    Pipeline::new(fixture_schema_dir())
+        .seaorm(tmp.path().join("entities"), tmp.path().join("conversions"))
+        .store(tmp.path().join("store"), None::<PathBuf>)
+        .store_id_strategy(IdStrategy::Uuid)
+        .build()
+        .expect("seaorm pipeline");
+    let seaorm = std::fs::read_to_string(tmp.path().join("store/tag.rs")).unwrap();
+    assert!(seaorm.contains("ontogen_core::id::new_uuid()"), "{seaorm}");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    Pipeline::new(fixture_schema_dir())
+        .store_id_strategy(IdStrategy::Uuid)
+        .markdown_io(tmp.path().join("markdown"), markdown_options())
+        .store(tmp.path().join("store"), None::<PathBuf>)
+        .build()
+        .expect("markdown pipeline");
+    let markdown = std::fs::read_to_string(tmp.path().join("store/tag.rs")).unwrap();
+    assert!(markdown.contains("&markdown_store::IdStrategy::Uuid,"), "{markdown}");
+}
+
+#[test]
+fn builder_slug_strategy_is_validated_on_the_seaorm_backend_too() {
+    // Workout.name is Option<String>: no slug source on every entity.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let err = Pipeline::new(fixture_schema_dir())
+        .seaorm(tmp.path().join("entities"), tmp.path().join("conversions"))
+        .store(tmp.path().join("store"), None::<PathBuf>)
+        .store_id_strategy(IdStrategy::SlugFromField("name".into()))
+        .build()
+        .expect_err("an optional slug source must be refused");
+    assert!(format!("{err}").contains("must be a plain String"), "got: {err}");
+    assert!(!tmp.path().join("store").exists(), "nothing is written");
 }
