@@ -23,15 +23,15 @@ fn read(path: &Path) -> String {
 
 #[test]
 fn markdown_store_emission_matches_note_golden() {
-    let entities =
+    let schema =
         ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: repo().join("tests/fixtures/golden-note") })
-            .expect("parse golden-note fixture")
-            .entities;
+            .expect("parse golden-note fixture");
+    let entities = &schema.entities;
     assert_eq!(entities.len(), 1, "the golden-note fixture holds exactly the Note entity");
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let md = ontogen::gen_markdown_io(
-        &entities,
+        &schema,
         &ontogen::MarkdownIoConfig {
             output_dir: tmp.path().join("markdown"),
             vault_root: "data/vault".into(),
@@ -43,7 +43,7 @@ fn markdown_store_emission_matches_note_golden() {
     .expect("gen_markdown_io failed");
 
     ontogen::gen_store(
-        &entities,
+        entities,
         &ontogen::StoreConfig {
             output_dir: tmp.path().join("store"),
             hooks_dir: None,
@@ -84,14 +84,14 @@ fn markdown_store_emission_matches_note_golden() {
 #[test]
 fn pilot_committed_generated_trees_match_a_fresh_generation() {
     let pilot = repo().join("crates/markdown-pilot");
-    let entities = ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: pilot.join("src/schema") })
-        .expect("parse pilot schema")
-        .entities;
+    let schema = ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: pilot.join("src/schema") })
+        .expect("parse pilot schema");
+    let entities = &schema.entities;
     assert_eq!(entities.len(), 3, "pilot schema: Note, Tag, Task");
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let md = ontogen::gen_markdown_io(
-        &entities,
+        &schema,
         &ontogen::MarkdownIoConfig {
             output_dir: tmp.path().join("persistence"),
             vault_root: "data/vault".into(),
@@ -102,7 +102,7 @@ fn pilot_committed_generated_trees_match_a_fresh_generation() {
     )
     .expect("gen_markdown_io");
     ontogen::gen_store(
-        &entities,
+        entities,
         &ontogen::StoreConfig {
             output_dir: tmp.path().join("store"),
             hooks_dir: None,

@@ -228,7 +228,7 @@ impl Pipeline {
 
     // ── markdown_io ─────────────────────────────────────────────────
 
-    /// Enable markdown I/O generation (parser dispatch, writers, fs ops) and
+    /// Enable markdown I/O generation (the typed frontmatter boundary) and
     /// describe the vault the generated store will operate on.
     ///
     /// When the store stage is also enabled and SeaORM is not, the store is
@@ -483,7 +483,7 @@ impl Pipeline {
         // markdown backend is selected (ADR 0001).
         let markdown_out: Option<MarkdownIoOutput> = match self.markdown_io {
             Some(stage) => Some(gen_markdown_io(
-                &schema.entities,
+                &schema,
                 &MarkdownIoConfig {
                     output_dir: stage.output_dir,
                     vault_root: stage.options.vault_root,

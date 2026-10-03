@@ -12,18 +12,32 @@
 //! follow-up on top of `VaultHandle` if a consumer earns it.
 
 pub mod gen_frontmatter;
+pub mod okf;
 
-use crate::ir::{MarkdownEntityMeta, MarkdownIoOutput};
-use crate::schema::EntityDef;
+use crate::ir::{MarkdownEntityMeta, MarkdownIoOutput, SchemaOutput};
 use crate::{CodegenError, MarkdownIoConfig};
 
 /// Generate the markdown I/O code: per-entity `{Entity}Frontmatter` modules.
+///
+/// Checks every frontmatter key against the keys OKF reserves first (see
+/// [`okf::check_frontmatter_keys`]): an error fails generation before
+/// anything is written, and each warning is printed as a `cargo:warning=`
+/// line.
 ///
 /// Returns the [`MarkdownIoOutput`] metadata `gen_store` consumes when the
 /// store backend is [`crate::ir::Backend::Markdown`] (ADR 0001): the vault
 /// configuration verbatim from `config`, plus one [`MarkdownEntityMeta`]
 /// row per entity derived from the schema IR.
-pub fn generate(entities: &[EntityDef], config: &MarkdownIoConfig) -> Result<MarkdownIoOutput, CodegenError> {
+pub fn generate(schema: &SchemaOutput, config: &MarkdownIoConfig) -> Result<MarkdownIoOutput, CodegenError> {
+    let entities = &schema.entities;
+    let diagnostics = okf::check_frontmatter_keys(entities, &schema.enums);
+    if !diagnostics.errors.is_empty() {
+        return Err(CodegenError::Persistence(diagnostics.errors.join("\n")));
+    }
+    for warning in &diagnostics.warnings {
+        println!("cargo:warning={warning}");
+    }
+
     gen_frontmatter::generate(entities, &config.output_dir).map_err(CodegenError::Persistence)?;
 
     let entity_meta = entities

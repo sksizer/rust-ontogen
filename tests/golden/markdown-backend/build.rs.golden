@@ -47,7 +47,7 @@ fn main() {
 //     let schema = ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: "src/schema".into() })?;
 //
 //     let md = ontogen::gen_markdown_io(
-//         &schema.entities,
+//         &schema, // the whole SchemaOutput: OKF key checks need the enums
 //         &ontogen::MarkdownIoConfig {
 //             output_dir: "src/persistence/markdown/generated".into(),
 //             vault_root: "data/vault".into(),

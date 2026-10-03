@@ -8,7 +8,7 @@
 //! parse_schema → SchemaOutput
 //!     ├── gen_docs        → ()             (data-model reference + JSON Schema)
 //!     ├── gen_seaorm      → SeaOrmOutput
-//!     ├── gen_markdown_io → ()
+//!     ├── gen_markdown_io → MarkdownIoOutput
 //!     ├── gen_dtos        → ()
 //!     └── gen_store       → StoreOutput
 //!         └── gen_api     → ApiOutput
@@ -160,10 +160,17 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
     persistence::seaorm::generate(entities, config)
 }
 
-/// Generate markdown I/O helpers: parser dispatch, writers, path helpers, and `fs_ops`.
+/// Generate the markdown frontmatter boundary: one typed
+/// `{Entity}Frontmatter` module per entity, with its owned-key list and OKF
+/// `type` constant.
 ///
-/// Use this when entities round-trip through markdown files on disk. The generated
-/// code provides per-entity read and write functions plus a generic dispatcher.
+/// Takes the whole [`SchemaOutput`] because it checks every frontmatter key
+/// against the keys OKF 0.2 reserves, which needs the schema's enums: a
+/// field stored under `type` is an error, and a field under `status`,
+/// `resource`, `stale_after`, `generated`, `verified`, `usage_window` or
+/// `sources` whose type can't carry OKF's meaning prints a
+/// `cargo:warning=`. `#[ontology(frontmatter_name = "...")]` moves a field
+/// to another key.
 ///
 /// Returns [`MarkdownIoOutput`]: the vault configuration plus per-entity
 /// metadata. Pass it to [`gen_store`] via [`Backend::Markdown`] to route the
@@ -171,7 +178,8 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 ///
 /// # Errors
 ///
-/// Returns [`CodegenError::Persistence`] on I/O or formatting failure.
+/// Returns [`CodegenError::Persistence`] for a reserved or colliding
+/// frontmatter key, or on I/O or formatting failure.
 ///
 /// # Example
 ///
@@ -183,7 +191,7 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 ///     schema_dir: PathBuf::from("src/schema"),
 /// })?;
 ///
-/// let md = gen_markdown_io(&schema.entities, &MarkdownIoConfig {
+/// let md = gen_markdown_io(&schema, &MarkdownIoConfig {
 ///     output_dir: PathBuf::from("src/persistence/markdown/generated"),
 ///     vault_root: PathBuf::from("data/vault"),
 ///     layout: MarkdownLayout::PerEntityDir,
@@ -193,8 +201,8 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 /// # let _ = md;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
-pub fn gen_markdown_io(entities: &[EntityDef], config: &MarkdownIoConfig) -> Result<MarkdownIoOutput, CodegenError> {
-    persistence::markdown::generate(entities, config)
+pub fn gen_markdown_io(schema: &SchemaOutput, config: &MarkdownIoConfig) -> Result<MarkdownIoOutput, CodegenError> {
+    persistence::markdown::generate(schema, config)
 }
 
 /// Generate `Create` / `Update` input DTOs as standalone types.
@@ -490,14 +498,14 @@ pub struct SeaOrmConfig {
 
 /// Configuration for [`gen_markdown_io`].
 ///
-/// All markdown helpers (parser dispatch, writers, path helpers, and the
-/// `fs_ops` module) land under a single output directory; downstream code
-/// imports them as one cohesive module. The vault fields describe the
+/// The per-entity frontmatter modules land under a single output
+/// directory; downstream code imports them as one module. The vault fields
+/// describe the
 /// markdown store's runtime shape (ADR 0001) and flow into the returned
 /// [`MarkdownIoOutput`] that [`gen_store`] consumes via
 /// [`Backend::Markdown`].
 pub struct MarkdownIoConfig {
-    /// Output directory for generated writer, parser dispatch, and `fs_ops`
+    /// Output directory for the generated frontmatter modules
     /// (e.g., `src/persistence/markdown/generated`).
     pub output_dir: PathBuf,
     /// Where the `.md` records live at runtime, relative to the consumer
