@@ -28,6 +28,8 @@ curl -s -X POST localhost:3002/api/tasks \
 cat data/vault/tasks/review-the-stack.md
 ```
 
+Lists page 20 at a time (`GET /api/tasks?page[offset]=0&page[limit]=5` answers with `meta.total` and `links.next`), because `build.rs` sets `pagination` and `.api_paginated(..)` for `task`, `epic` and `tag`. The MCP list tools take `limit` and `offset` and return `{items, total, limit, offset}`.
+
 The response is `201` with a `Location: /api/tasks/review-the-stack` header and the new task as a JSON:API resource: the fields are under `attributes`, and `epic` and `tags` are under `relationships`. The filename came from the title. The store's `IdStrategy::SlugFromField("title")` (set with `.store_id_strategy(..)` in `build.rs`) slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
 
 ## Over MCP

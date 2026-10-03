@@ -100,11 +100,15 @@ example in this document live once its phase lands:
 
 | Addition | Lands in | Used by |
 |---|---|---|
-| `pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 })`, `paginated: ["task"]` | 1b | §7.2 |
+| `pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 })`, `paginated: ["task", "epic", "tag"]` | 1b | §7.2 |
 | A hand-written `task::list(store, query: ListTasksQuery, limit, offset)` with `ListTasksQuery { status: Option<String>, epic_id: Option<String> }` and a matching `count`, replacing the generated `list` (§7.3) | 2 | §7.3 |
 | `order: &[OrderBy<TaskSortField>]` added to that hand-written `list` | 3c | §7.4 |
 | `Task.parent_id: Option<String>` (`belongs_to Task`) and `Task.subtasks: Vec<String>` (`has_many Task`, `foreign_key = "parent_id"`), as in `crates/markdown-pilot` | 3a | §5.4, §9 |
 | A second tag, `release` | 3a | §9.2 |
+
+`epic` and `tag` are paginated too because pagination belongs to a surface,
+not a module: the primary surface's `pagination` covers every module on it,
+and tasks-tracker has one surface.
 
 Examples show the wire after every phase has landed. Before phase 3a:
 - relationship objects carry `data` only, without the `links` shown here;
@@ -512,7 +516,8 @@ client excluded.
 
 ### 7.1 List, unpaginated
 
-tasks-tracker as configured today.
+This is an unpaginated configuration. It is not tasks-tracker as shipped,
+which paginates every list from 1b (§2).
 
 ```http
 GET /api/tasks HTTP/1.1
@@ -655,7 +660,8 @@ the size of that write. The contract does not promise a snapshot.
 ### 7.3 Filter
 
 Phase 2. Filters are hand-written: the store takes none, and the generated
-CRUD `list` takes none.
+CRUD `list` takes none. Until phase 2, a hand-written `list` with filter
+parameters in a resource module keeps its pre-JSON:API handler.
 
 **A hand-written list replaces the generated one.** A `list` written in
 `api_dir/{module}.rs` replaces the generated `list` for that module, and
@@ -1600,8 +1606,9 @@ relationship, related, custom and event routes alike.
 Scoped and unscoped routes MUST have identical wire behaviour. Today they
 diverge in two places:
 
-- Scoped pagination slices in memory instead of calling the page-taking
-  list. Phase 1c removes this.
+- A scoped list that is not served as a resource slices its page in memory
+  instead of calling the page-taking list. Phase 1c removes this. A scoped
+  resource list passes the page to the store from 1b, like an unscoped one.
 - Scoped junction ops become action-style routes instead of the
   `{parent_id}/{child}` form. Phase 3a removes this.
 
@@ -1884,7 +1891,9 @@ no source change.
 - Every request sends `Accept: application/vnd.api+json`.
 - Every request with a body sends
   `Content-Type: application/vnd.api+json`.
-- The `httpPut` helper is removed, and `httpPatch` replaces it.
+- The `httpPut` helper is removed, and `httpPatch` replaces it. Until phase 1c
+  it is still emitted when a module with no entity behind it has an `update`
+  op, since that module keeps its flat `PUT` route.
 
 ### 14.2 Per-operation mapping
 
@@ -2103,8 +2112,8 @@ Phases 1a, 1b and 1c ship together as `0.9.0`.
 | Phase | Sections |
 |---|---|
 | 1a | Store and runtime prerequisites. The `ontogen-jsonapi` crate (documents, link building, error document, extractors). The id-validity rule and slug function shared by both backends. `IdStrategy` on SeaORM, with one build-time source of truth and derived-id retry. `{Entity}AlreadyExists` and `{Entity}IdRequired` (§13.4). The `has_many` fix and `{Child}ParentRequired` (§5.4). The markdown id-ascending default order, many_to_many order and the parity fixture's default cases (ADR 0006 §6). The SeaORM `i64` field for integer primitives under `OptionEnum`/`Other` (ADR 0006 §4). Markdown lookups of an uncreatable id answer `{Entity}NotFound` (§8.2) |
-| 1b | CRUD over JSON:API. Schema input (§5.1). §3 media type, §4 documents, §5 resource objects (relationship `data` only), §6 query rules, §7.1–§7.2 list and pagination, §8 get, create, update and delete, §13 errors with the E0003 phase 0-1 scan, §13.5 `405`. §14 for CRUD methods, `JsonApiError`. Scoped CRUD routes. Modules with no entity behind them are left unchanged until 1c |
-| 1c | Everything else on the 0.9.0 wire. §10 custom ops (`meta.args`, `opArg`, singleton check, §10.4 ops served as custom, junction ops included). §12 event frames. §11.1 scoped pagination. §14 for custom, junction and subscription methods |
+| 1b | CRUD over JSON:API. Schema input (§5.1). §3 media type, §4 documents, §5 resource objects (relationship `data` only), §6 query rules, §7.1–§7.2 list and pagination, §8 get, create, update and delete, §13 errors with the E0003 phase 0-1 scan, §13.5 `405`. §14 for CRUD methods, `JsonApiError`. Scoped CRUD routes, including their pagination (the page goes to the store). Modules with no entity behind them are left unchanged until 1c, and a `list` that takes filter parameters keeps its pre-JSON:API handler until phase 2 |
+| 1c | Everything else on the 0.9.0 wire. §10 custom ops (`meta.args`, `opArg`, singleton check, §10.4 ops served as custom, junction ops included). §12 event frames. §11.1 scoped pagination of what 1b leaves, the lists not served as resources. §14 for custom, junction and subscription methods |
 | 2 | §7.3 filter, including the hand-written-list precedence and the bare-parameter fix |
 | 3a | §9 relationship endpoints, related links and relationship `links`. The junction classification change. Scoped junction routes. TS junction methods |
 | 3b | §7.5 include |

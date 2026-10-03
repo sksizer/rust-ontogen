@@ -72,7 +72,7 @@ Whatever formatter you configure runs **in memory, before** the write-if-changed
 
 The `HttpTs` generator produces a typed, fetch-based HTTP client. For each API function, it generates a TypeScript function that makes the appropriate HTTP request.
 
-The server speaks JSON:API for CRUD routes (see [Server Transports](/guides/server-transports/#httpaxum-generation)), and the client hides that. The functions keep their flat signatures: entities go in and come out as plain objects with the schema's field names, `null` for cleared optionals and id arrays for relations. The client turns each resource object into a flat entity (`id`, then `attributes`, then relationships as `epic_id` or a `tags` id array) and turns flat inputs back into `{ data: { type, id?, attributes, relationships } }` request bodies.
+The server speaks JSON:API for CRUD routes (see [Server Transports](/guides/server-transports/#httpaxum-generation)), and the client hides that. The functions keep their flat signatures: entities go in and come out as plain objects with the schema's field names, `null` for cleared optionals and id arrays for relations. The client turns each resource object into a flat entity (`flattenTask`: the id under the entity's own id field name, then `attributes`, then relationships as `epic_id` or a `tags` id array) and turns flat inputs back into `{ data: { type, id?, attributes, relationships } }` request bodies (`unflattenTask`). Each entity's resource type, id field and relationships come from a generated per-entity resource table.
 
 ```typescript
 // Auto-generated HTTP client. DO NOT EDIT.
@@ -109,13 +109,14 @@ Function names follow the same entity-first convention as the server transports:
 On the wire:
 
 - Every request sends `Accept: application/vnd.api+json`. Requests with a body send `Content-Type: application/vnd.api+json`.
-- Updates use `PATCH`. There is no `httpPut` helper.
+- Updates use `PATCH` (`httpPatch`). `httpPut` is generated only when a module with no schema entity behind it has an `update` op, because that module keeps its flat `PUT` route.
 - A key whose value is `undefined` is left out of an update body, which means "unchanged". `null` is sent and clears the field. A relation field moves into `relationships`; every other key goes in `attributes`. The id goes in `data.id`, never in `attributes`.
-- A paginated list sends `page[offset]` and `page[limit]` and still returns `PaginatedResult<T>` (`items`, `total`, `limit`, `offset`), built from `data` and `meta`. `limit` and `offset` are the effective values the server used.
+- A paginated list in the `HttpTauriIpcSplit` HTTP transport sends `page[offset]` and `page[limit]` and still returns `PaginatedResult<T>` (`items`, `total`, `limit`, `offset`), built from `data` and `meta`. `limit` and `offset` are the effective values the server used. The HTTP-only client (`HttpTs`) takes no page arguments: its list methods send no `page` parameters and return the flat entities of the server's default first page.
+- A list that takes a query struct still sends the struct's fields flat in the query string; the `filter[...]` family arrives in a later phase of 0.9.
 
 ### Errors
 
-Any non-2xx response, from a CRUD route or any other generated route, throws a `JsonApiError`:
+Any non-2xx response, from a CRUD route or any other generated route, throws a `JsonApiError` (the file also exports `JsonApiErrorObject` and `JsonApiResource`):
 
 ```typescript
 class JsonApiError extends Error {

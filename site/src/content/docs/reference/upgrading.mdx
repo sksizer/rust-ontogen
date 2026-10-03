@@ -69,6 +69,14 @@ ontogen::gen_clients(&schema.entities, Some(&api), &scan_dirs, &clients_config)?
 
 `Pipeline` users change nothing. A direct caller with no schema passes `&[]`; every module is then served with the pre-JSON:API shapes, and the admin registry has no field metadata.
 
+The same argument is the first parameter of `ontogen::servers::generate` and `ontogen::clients::generate`, which `gen_servers` and `gen_clients` call.
+
+An entity-backed module must then be servable as a resource, or the stage fails the build: its CRUD functions must take the shapes the generated ones take (`get_by_id` and `delete` take an `id: &str`, `create` its input, `update` an `id: &str` and its input), return the entity (`Vec<Entity>` for `list`), and the module that a relationship points at needs a `get_by_id`, which the create and update handlers use to check linked ids.
+
+### `ontogen::servers::Config` has crate-internal fields
+
+`ontogen::servers::Config`, the internal form of `ServersConfig`, gained fields that only the crate can set (the resource model and the scanned `AppError`). It can no longer be built with a struct literal, or with `..Default::default()`, outside the crate. Build it with `Config::default()` and assign the public fields, or use `ServersConfig` with `gen_servers`, which is the supported entry point.
+
 ### `ServersConfig` has `error_source_dir`
 
 `ServersConfig` has a new field, `error_source_dir: Option<PathBuf>`: the directory scanned for your `enum AppError`. Add it to every `ServersConfig` literal.
@@ -80,7 +88,7 @@ ServersConfig {
 }
 ```
 
-`Pipeline` sets it to its schema directory when it is `None`, so Pipeline users can leave it `None`. With `None` and no `Pipeline`, no scan happens and every error from an `AppError`-typed function is `500 internal_error`.
+`Pipeline` sets it to its schema directory when it is `None`, so Pipeline users can leave it `None`. With `None` and no `Pipeline`, no scan happens and every error from an `AppError`-typed function is `500 internal_error`. A directory that cannot be read or parsed fails the build.
 
 ### Entity structs may not carry shape-changing serde attributes
 
@@ -88,13 +96,17 @@ The HTTP wire builds a resource's `attributes` from the entity's serde shape, so
 
 Also refused at build time: an id field that is not a `String`, an attribute or relationship name that is not a legal JSON:API member name (for example one that starts or ends with `_`) or is `type` or `id`, a relationship that shares its name with an attribute or another relationship (or is named `relationships`), and a relation whose target is not in the schema.
 
-### Depend on `ontogen-jsonapi`
+### Depend on `ontogen-jsonapi`, `ontogen-core` and `serde_json`
 
-The generated HTTP file uses the `ontogen-jsonapi` crate. Add it to the crate that contains the generated server, as you add `markdown-store`:
+The generated HTTP file uses the `ontogen-jsonapi` crate for documents, links, errors and extractors, `ontogen_core::id::validate_id` to check a client-supplied id, and `serde_json`. Add all three to the crate that contains the generated server, as you add `markdown-store`. The examples use path dependencies; a consumer names the crates:
 
 ```toml
 ontogen-jsonapi = "…"
+ontogen-core = "…"
+serde_json = "1"
 ```
+
+`ontogen-jsonapi` is part of the release set with `ontogen`, so use the version released alongside the `ontogen` you build with. A server with no resource module (`gen_servers` called with `&[]`) does not use these.
 
 ### Mount the router at the root
 
@@ -102,7 +114,7 @@ Links and `Location` headers are built from the route templates ontogen generate
 
 ### Depend on `ontogen-core`
 
-Generated SeaORM stores call `ontogen_core::id` at runtime. See [Creating records](/guides/store-layer/#creating-records) for the dependency to add.
+Generated SeaORM stores call `ontogen_core::id` at runtime, and the generated HTTP server does too (see above). See [Creating records](/guides/store-layer/#creating-records) for the dependency to add.
 
 ## AppError
 
@@ -148,7 +160,7 @@ A variant whose snake_case name equals one of ontogen's own error codes fails th
 Every CRUD route of a module backed by a schema entity now speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/). The examples use the tasks-tracker example.
 
 <Aside type="caution">
-Custom ops, junction ops, event streams and modules with no entity behind them keep their current routes and success bodies for now. They change in a later phase of 0.9, and this page will list that change then. Their errors already use the new error document, described below.
+Custom ops, junction ops, event streams, modules with no entity behind them, and a hand-written `list` with filter parameters in a resource module keep their current routes and success bodies for now. They change in a later phase of 0.9, and this page will list that change then. Their errors already use the new error document, described below.
 </Aside>
 
 ### Media type
@@ -204,7 +216,7 @@ After:
 
 ### Create
 
-Before, `POST /api/tasks` took a flat body and answered `200` with the entity. Now:
+Before, `POST /api/tasks` took a flat body and answered `201` with the bare entity. Now:
 
 ```http
 POST /api/tasks
@@ -222,7 +234,11 @@ Content-Type: application/vnd.api+json
 }
 ```
 
-The response is `201 Created` with `Location: /api/tasks/review-the-stack` and the resource in a document. `data.id` is optional and honoured under every `IdStrategy`. An attribute the type does not have, including a relation field written as an attribute (`epic_id`), is `400 unknown_attribute`: the old flat body is refused, not ignored.
+The status is still `201 Created`; the response now has `Location: /api/tasks/review-the-stack` and carries the resource in a document. `data.id` is optional and honoured under every `IdStrategy`. An attribute the type does not have, including a relation field written as an attribute (`epic_id`), is `400 unknown_attribute`: the old flat body is refused, not ignored.
+
+### Request bodies are checked member by member
+
+A body is a single JSON object with a `data` resource object. A `type` that is not the route's is `409 type_mismatch`, as is a linked identifier of the wrong `type`. A required attribute that is absent from a create is `400 missing_attribute`, a required to-one relationship `400 missing_relationship`, an unknown relationship `400 unknown_relationship`, and a body that is not a valid document `400 invalid_document` with a `pointer`. A client-supplied id that is already taken is `409` with `source.pointer: "/data/id"`. A body over the server's size limit is `413 content_too_large`.
 
 ### Update is `PATCH`
 
@@ -270,11 +286,11 @@ After, `GET /api/tasks?page[offset]=20&page[limit]=10`:
 }
 ```
 
-`meta` holds exactly the old fields (`limit` and `offset` are the effective values). `prev` is `null` on the first page and `next` on the last. `page[limit]=0`, a non-integer, and any other `page[…]` member (`page[number]`, `page[size]`) are `400`.
+`meta` holds exactly the old fields (`limit` and `offset` are the effective values). `pagination` belongs to an API surface and its primary surface's value covers every module on it, so setting it pages every entity module of that surface. The tasks-tracker example now sets `.api_paginated(..)` for `task`, `epic` and `tag`, so its three lists page, over HTTP and as MCP tools. A scoped list (`route_prefix`) pages like an unscoped one: the page goes to the store. `prev` is `null` on the first page and `next` on the last. `page[limit]=0`, a non-integer, and any other `page[…]` member (`page[number]`, `page[size]`) are `400`.
 
 ### Unknown query parameters are refused
 
-A query parameter a route does not accept is `400 invalid_query_parameter`, with `source.parameter` naming it. That includes `limit` and `offset` (use `page[…]`), `page[…]` on a list that is not paginated, and `fields[…]`. A request that sends stray parameters and used to work now fails.
+A query parameter a route does not accept is `400 invalid_query_parameter`, with `source.parameter` naming it. That includes `limit` and `offset` (use `page[…]`), `page[…]` on a list that is not paginated, `fields[…]` and `filter[…]`. A request that sends stray parameters and used to work now fails. `sort` on a list and `include` on a list or a get are recognised but cannot be honoured yet: they are `400 invalid_sort_field` and `400 invalid_include_path`.
 
 ### Related resources must exist
 
@@ -302,13 +318,13 @@ After, with `Content-Type: application/vnd.api+json`:
 }
 ```
 
-`detail` is the old `error` text. `status`, `code`, `title` and `source` are stable; do not parse `detail`. `source` is present for request problems and holds a `pointer` into the body, a `parameter`, or a `header`. Besides the `AppError` codes above, the server raises its own codes for malformed requests (`invalid_document`, `unknown_attribute`, `missing_attribute`, `invalid_attribute`, `unknown_relationship`, `missing_relationship`, `type_mismatch`, `id_mismatch`, `related_resource_not_found`, `method_not_allowed`, `content_too_large` and others); the full table is in [Server Transports](/guides/server-transports/#errors). Axum's own plain-text extractor rejections are replaced by these documents.
+`detail` is the old `error` text. `status`, `code`, `title` and `source` are stable; do not parse `detail`. `source` is present for request problems and holds a `pointer` into the body, a `parameter`, or a `header`. Besides the `AppError` codes above, the server raises its own codes for malformed requests (`invalid_document`, `unknown_attribute`, `missing_attribute`, `invalid_attribute`, `unknown_relationship`, `missing_relationship`, `type_mismatch`, `id_mismatch`, `related_resource_not_found`, `method_not_allowed`, `content_too_large` and others); the full table is in [Server Transports](/guides/server-transports/#errors). Axum's own plain-text extractor rejections are replaced by these documents. Every route also answers a method it does not serve with `405`, an `Allow` header and a `method_not_allowed` document. An event-stream function that fails before the stream opens answers `500 internal_error` for now, whatever its error type.
 
 ## TypeScript clients
 
-The generated `Transport` interface is unchanged: the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally.
+The generated `Transport` interface is unchanged: the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. The HTTP-only client (`HttpTs`) list methods take no page arguments and return the server's default first page. A list that takes a query struct still sends its fields flat until filters arrive in a later phase of 0.9.
 
-One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone; updates use `httpPatch`. Regenerate the TypeScript; the IPC transport and MCP payloads are unchanged.
+One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone for entity-backed modules; updates use `httpPatch`. It is still emitted when a module with no entity behind it has an `update` op. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript; the IPC transport and MCP payloads are unchanged.
 
 ## Calling the HTTP API directly
 
@@ -321,7 +337,7 @@ If you call the generated HTTP routes from something other than the generated Ty
 - Replace `limit` and `offset` with `page[limit]` and `page[offset]`, and read `meta.total`, `meta.limit` and `meta.offset` instead of the `PaginatedResult` fields.
 - Read errors from `errors[0]` (`status`, `code`, `detail`) instead of `error`.
 - Drop any query parameter the route does not accept.
-- Custom ops, junction ops and event streams: no change for now.
+- Custom ops, junction ops, event streams and filtered `list`s: no change for now, except that their errors are `errors` documents.
 
 ## SeaORM data and code
 
