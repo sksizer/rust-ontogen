@@ -40,6 +40,8 @@ fn main() {
                 vault_root: "data/vault".into(),
                 layout: ontogen::MarkdownLayout::PerEntityDir,
                 list_cap: 10_000,
+                // Knobs off: the pilot pins the default vault.
+                okf: ontogen::OkfOptions::default(),
             },
         )
         .dtos("src/schema/dto")

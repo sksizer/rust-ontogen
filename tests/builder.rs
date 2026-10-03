@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout, Pipeline, StoreBackendChoice};
+use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout, OkfOptions, Pipeline, StoreBackendChoice};
 
 /// Returns the path to the embedded schema fixture directory.
 fn fixture_schema_dir() -> PathBuf {
@@ -68,7 +68,12 @@ fn builder_realistic_schema_seaorm_store_api() {
 }
 
 fn markdown_options() -> MarkdownIoOptions {
-    MarkdownIoOptions { vault_root: "data/vault".into(), layout: MarkdownLayout::PerEntityDir, list_cap: 10_000 }
+    MarkdownIoOptions {
+        vault_root: "data/vault".into(),
+        layout: MarkdownLayout::PerEntityDir,
+        list_cap: 10_000,
+        okf: OkfOptions::default(),
+    }
 }
 
 #[test]
@@ -91,6 +96,9 @@ fn builder_markdown_pipeline_generates_store_and_api() {
 
     assert!(md_out.join("mod.rs").exists(), "missing markdown generated mod.rs");
     assert!(md_out.join("exercise.rs").exists(), "missing frontmatter module");
+    let vault = std::fs::read_to_string(md_out.join("mod.rs")).expect("mod.rs");
+    assert!(vault.contains("pub fn open_vault("), "{vault}");
+    assert!(vault.contains(".with_list_cap(10000)\n}"), "both OKF options off: the default policy\n{vault}");
     assert!(store_out.join("mod.rs").exists(), "missing store mod.rs");
     let store_code = std::fs::read_to_string(store_out.join("exercise.rs")).unwrap();
     assert!(store_code.contains("self.vault()"), "markdown store talks to the vault:\n{store_code}");
@@ -101,6 +109,21 @@ fn builder_markdown_pipeline_generates_store_and_api() {
     assert!(!store_code.contains("sea_orm"), "no SeaORM in a markdown store:\n{store_code}");
     assert!(hooks.exists(), "hooks scaffolded");
     assert!(api_out.join("exercise.rs").exists(), "missing api module");
+}
+
+#[test]
+fn builder_threads_okf_options_into_open_vault() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let md_out = tmp.path().join("markdown");
+    let okf = OkfOptions { index: true, generated_by: Some("process:builder-test".into()) };
+    Pipeline::new(fixture_schema_dir())
+        .markdown_io(&md_out, MarkdownIoOptions { okf, ..markdown_options() })
+        .build()
+        .expect("markdown pipeline failed");
+
+    let mod_rs = std::fs::read_to_string(md_out.join("mod.rs")).expect("mod.rs");
+    assert!(mod_rs.contains("index: true,"), "{mod_rs}");
+    assert!(mod_rs.contains("generated_by: Some(\"process:builder-test\".into()),"), "{mod_rs}");
 }
 
 #[test]

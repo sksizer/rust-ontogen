@@ -8,12 +8,11 @@
 use std::sync::Arc;
 
 use iron_log_md::AppState;
-use markdown_store::{IdStrategy, VaultHandle, VaultLayout};
+use iron_log_md::persistence::markdown::generated::{VAULT_ROOT, open_vault};
 
 #[tokio::main]
 async fn main() {
-    let vault = VaultHandle::new("data/vault", VaultLayout::PerEntityDir, IdStrategy::Provided);
-    let state = Arc::new(AppState::new(vault));
+    let state = Arc::new(AppState::new(open_vault(VAULT_ROOT)));
 
     let app = iron_log_md::api::transport::http::generated::entity_routes().with_state(state);
 

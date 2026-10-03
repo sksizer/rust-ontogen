@@ -39,6 +39,7 @@ fn markdown_store_emission_matches_note_golden() {
             vault_root: "data/vault".into(),
             layout: ontogen::MarkdownLayout::PerEntityDir,
             list_cap: 10_000,
+            okf: ontogen::OkfOptions::default(),
         },
     )
     .expect("gen_markdown_io failed");
@@ -99,6 +100,7 @@ fn pilot_committed_generated_trees_match_a_fresh_generation() {
             vault_root: "data/vault".into(),
             layout: ontogen::MarkdownLayout::PerEntityDir,
             list_cap: 10_000,
+            okf: ontogen::OkfOptions::default(),
         },
     )
     .expect("gen_markdown_io");

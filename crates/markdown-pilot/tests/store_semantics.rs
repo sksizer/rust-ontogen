@@ -5,14 +5,14 @@
 //! have, id byte order, and dropped `has_many` children.
 
 use markdown_pilot::Store;
+use markdown_pilot::persistence::markdown::generated::open_vault;
 use markdown_pilot::schema::{AppError, Note, Section, Task};
 use markdown_pilot::store::generated::section::SectionUpdate;
 use markdown_pilot::store::generated::task::TaskUpdate;
-use markdown_store::{VaultHandle, VaultLayout};
 
 fn store() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir);
+    let vault = open_vault(dir.path());
     (dir, Store::new(vault))
 }
 

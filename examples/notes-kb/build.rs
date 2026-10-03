@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use ontogen::clients::ClientGenerator;
 use ontogen::servers::{NamingConfig, ServerGenerator};
-use ontogen::{ClientsConfig, IdStrategy, MarkdownIoOptions, MarkdownLayout, Pipeline, ServersConfig};
+use ontogen::{ClientsConfig, IdStrategy, MarkdownIoOptions, MarkdownLayout, OkfOptions, Pipeline, ServersConfig};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -45,6 +45,13 @@ fn main() {
                 layout: MarkdownLayout::PerEntityDir,
                 id_strategy: IdStrategy::SlugFromField("title".into()),
                 list_cap: 10_000,
+                // An OKF-navigable vault: an index.md in every directory,
+                // and each record names the notes-kb release that last
+                // wrote it.
+                okf: OkfOptions {
+                    index: true,
+                    generated_by: Some(format!("notes-kb/{}", env!("CARGO_PKG_VERSION"))),
+                },
             },
         )
         .dtos("src/schema/dto")

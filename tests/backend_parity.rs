@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use ontogen::clients::ClientGenerator;
-use ontogen::ir::{Backend, IdStrategy, MarkdownIoOutput, MarkdownLayout, StoreOutput};
+use ontogen::ir::{Backend, IdStrategy, MarkdownIoOutput, StoreOutput};
 use ontogen::servers::{NamingConfig, ServerGenerator};
 use ontogen::{ApiConfig, ApiOutput, ClientsConfig, EntityDef, SchemaConfig, ServersConfig, StoreConfig};
 use quote::ToTokens;
@@ -44,9 +44,6 @@ fn markdown_backend(entities: &[EntityDef]) -> Backend {
     // Build the markdown metadata exactly as gen_markdown_io would, without
     // writing its files (this test only exercises the store/api layers).
     Backend::Markdown(MarkdownIoOutput {
-        vault_root: "data/vault".into(),
-        layout: MarkdownLayout::PerEntityDir,
-        list_cap: 10_000,
         module_path: "crate::persistence::markdown::generated".into(),
         entities: entities
             .iter()

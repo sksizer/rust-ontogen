@@ -363,7 +363,7 @@ fn generate_markdown_store_file(entity: &EntityDef) -> String {
 
 /// [`generate_markdown_store_file`] under a given id strategy.
 fn generate_markdown_store_file_with(entity: &EntityDef, id_strategy: crate::ir::IdStrategy) -> String {
-    use crate::ir::{Backend, MarkdownEntityMeta, MarkdownIoOutput, MarkdownLayout};
+    use crate::ir::{Backend, MarkdownEntityMeta, MarkdownIoOutput};
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = StoreConfig {
@@ -371,9 +371,6 @@ fn generate_markdown_store_file_with(entity: &EntityDef, id_strategy: crate::ir:
         hooks_dir: None,
         schema_module_path: "crate::schema".to_string(),
         backend: Backend::Markdown(MarkdownIoOutput {
-            vault_root: "data/vault".into(),
-            layout: MarkdownLayout::PerEntityDir,
-            list_cap: 10_000,
             module_path: "crate::persistence::markdown::generated".into(),
             entities: vec![MarkdownEntityMeta {
                 entity_name: entity.name.clone(),
@@ -442,6 +439,21 @@ fn markdown_frontmatter_complex_entity() {
     // and the owned-keys constant; body field exercises the conversion
     // signature.
     let code = crate::persistence::markdown::gen_frontmatter::generate_frontmatter_module(&article_mtm_tags_entity());
+    insta::assert_snapshot!(code);
+}
+
+#[test]
+fn markdown_open_vault_with_okf_options() {
+    // The generated vault constructor with both OKF options on; the
+    // knobs-off shape is pinned byte for byte by the pilot's committed
+    // generated `mod.rs` (tests/golden_conformance.rs).
+    let code = crate::persistence::markdown::gen_vault::generate_open_vault(&crate::MarkdownIoConfig {
+        output_dir: "unused".into(),
+        vault_root: "data/vault".into(),
+        layout: crate::ir::MarkdownLayout::PerEntityDir,
+        list_cap: 10_000,
+        okf: crate::ir::OkfOptions { index: true, generated_by: Some("notes-kb/0.1.0".into()) },
+    });
     insta::assert_snapshot!(code);
 }
 

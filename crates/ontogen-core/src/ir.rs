@@ -78,21 +78,15 @@ pub struct ConversionMeta {
 
 /// Markdown-backend output. Produced by `gen_markdown_io`; consumed by
 /// `gen_store` when emitting CRUD bodies against the markdown runtime
-/// (ADR 0001). Carries the vault configuration plus the per-entity
-/// metadata the store emitter needs to resolve paths and frontmatter type
-/// discriminators. How ids are derived is the store's choice, not the
-/// vault's: see `StoreConfig::id_strategy`.
+/// (ADR 0001). Carries what the store emitter needs: the per-entity
+/// metadata that resolves directories, frontmatter type discriminators and
+/// the frontmatter module path. The layout, vault root, list cap and OKF
+/// options are not here: they reach the runtime only through the generated
+/// `open_vault`, and the store code never builds a vault. How ids are
+/// derived is the store's choice, not the vault's: see
+/// `StoreConfig::id_strategy`.
 #[derive(Debug, Clone)]
 pub struct MarkdownIoOutput {
-    /// Where the `.md` records live, relative to the consumer crate root
-    /// (e.g. `data/vault`).
-    pub vault_root: PathBuf,
-    /// On-disk arrangement of record files under the vault root.
-    pub layout: MarkdownLayout,
-    /// Hard cap on records parsed per `list()` before the runtime errors —
-    /// the ADR's explicit scale ceiling, threaded into the generated
-    /// vault construction.
-    pub list_cap: usize,
     /// Module path (in the consumer crate) of the markdown-io generated
     /// module the store emitter imports `{Entity}Frontmatter` types from,
     /// e.g. `crate::persistence::markdown::generated`.
@@ -159,6 +153,25 @@ pub enum IdStrategy {
     Uuid,
 }
 
+/// The opt-in OKF 0.2 artifacts a markdown vault writes beside its records.
+/// Both are off by default; the vault is an OKF bundle either way.
+///
+/// The generator bakes them into the emitted `open_vault` constructor, so
+/// the build configuration is the one place a consumer sets them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OkfOptions {
+    /// Keep a generated `index.md` (OKF §8) in the vault root and in every
+    /// directory holding records, regenerated on each real write. The root
+    /// index declares `okf_version: "0.2"`.
+    pub index: bool,
+    /// Stamp `generated: { by, at }` (OKF §5.2) on every real write, with
+    /// this value as `by`. It must be an OKF §7 actor naming a program,
+    /// `<producer>/<version>` or `process:<id>`; anything else, `human:<id>`
+    /// included, fails the build. A schema field stored under the
+    /// `generated` key is then a build error too.
+    pub generated_by: Option<String>,
+}
+
 /// Generation-time persistence backend selector for `gen_store` (ADR 0001).
 ///
 /// Owned (no lifetime) so it can sit in `StoreConfig` and be threaded
@@ -172,8 +185,7 @@ pub enum Backend {
     /// `None` is accepted wherever the metadata isn't available.
     Seaorm(Option<SeaOrmOutput>),
     /// Markdown-file backend. Always carries metadata: the markdown
-    /// emitter genuinely needs the vault layout, id strategy, and
-    /// per-entity mapping to emit correct code.
+    /// emitter genuinely needs the per-entity mapping to emit correct code.
     Markdown(MarkdownIoOutput),
 }
 
