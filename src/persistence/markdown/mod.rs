@@ -30,7 +30,7 @@ use crate::{CodegenError, MarkdownIoConfig};
 ///
 /// Checks run first and fail generation before anything is written: under
 /// [`MarkdownLayout::PerEntityDir`], every entity directory against the
-/// Windows device names (see [`check_directories`]); the
+/// Windows device names (see `check_directories`); the
 /// `okf.generated_by` actor (see `okf::check_generated_by`); and every
 /// frontmatter key against the keys OKF reserves (see
 /// `okf::check_frontmatter_keys`). Each key warning is printed as a

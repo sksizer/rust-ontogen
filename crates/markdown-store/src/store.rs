@@ -699,9 +699,10 @@ impl VaultHandle {
     }
 
     /// Suffix search shared by the public previews and the locked create
-    /// path. Named for how [`create_record_derived`] uses it — the *caller*
-    /// is responsible for holding the lock when atomicity matters; the
-    /// probe itself is just existence checks. The probes are
+    /// path. Named for how
+    /// [`create_record_derived`](Self::create_record_derived) uses it — the
+    /// *caller* is responsible for holding the lock when atomicity matters;
+    /// the probe itself is just existence checks. The probes are
     /// [`crate::id::candidates`]: a reserved base counts as taken, so a
     /// title that slugs to `index` lands on `index-2`.
     fn next_free_id(&self, dir_segment: &str, base: &str) -> Result<String, Error> {
