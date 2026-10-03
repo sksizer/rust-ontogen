@@ -12,6 +12,7 @@ use syn::{Attribute, Expr, Field, Fields, ItemStruct, Lit, Meta, Type};
 
 use ontogen_core::naming::to_snake_case;
 
+use crate::ir::IdStrategy;
 use crate::schema::model::{
     EntityDef, EnumDef, EnumVariant, FieldDef, FieldRole, FieldType, RelationInfo, RelationKind,
 };
@@ -151,9 +152,46 @@ fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityD
     validate_identifier("type_name", &type_name).map_err(|e| format!("entity `{name}`: {e}"))?;
     validate_identifier("prefix", &prefix).map_err(|e| format!("entity `{name}`: {e}"))?;
 
+    let id_strategy = struct_attrs
+        .id
+        .map(|expr| parse_id_strategy(&expr, &field_defs))
+        .transpose()
+        .map_err(|e| format!("entity `{name}` in {}: {e}", path.display()))?;
+
     let doc = doc_comment(&input.attrs);
 
-    Ok(Some(EntityDef { name, doc, directory, table, type_name, prefix, fields: field_defs }))
+    Ok(Some(EntityDef { name, doc, directory, table, type_name, prefix, id_strategy, fields: field_defs }))
+}
+
+/// The accepted spellings of `#[ontology(entity, id = "...")]`, for errors.
+const ID_FORMS: &str = r#"expected `id = "provided"`, `id = "uuid"` or `id = "slug(<field>)"`"#;
+
+/// Parse the value of `#[ontology(entity, id = "...")]`: `"provided"`,
+/// `"uuid"`, or `"slug(<field>)"` naming a plain `String` field of the entity
+/// (the generated create reads it on either backend).
+fn parse_id_strategy(expr: &Expr, fields: &[FieldDef]) -> Result<IdStrategy, String> {
+    let Some(value) = expr_to_string(expr) else {
+        return Err(format!("`id` must be a string literal; {ID_FORMS}"));
+    };
+    match value.as_str() {
+        "provided" => return Ok(IdStrategy::Provided),
+        "uuid" => return Ok(IdStrategy::Uuid),
+        _ => {}
+    }
+    let Some(field) = value.strip_prefix("slug(").and_then(|rest| rest.strip_suffix(')')) else {
+        return Err(format!("invalid `id = {value:?}`: {ID_FORMS}"));
+    };
+    if validate_identifier("slug field", field).is_err() {
+        return Err(format!("invalid `id = {value:?}`: the slug field must be a field name; {ID_FORMS}"));
+    }
+    match fields.iter().find(|f| f.name == field) {
+        Some(f) if f.field_type == FieldType::String => Ok(IdStrategy::SlugFromField(field.to_string())),
+        Some(f) => Err(format!(
+            "`id = {value:?}`: field `{field}` must be a plain String to derive ids from, found {:?}",
+            f.field_type
+        )),
+        None => Err(format!("`id = {value:?}`: the entity has no field `{field}` to derive ids from")),
+    }
 }
 
 /// Validate that a user-supplied identifier conforms to `[A-Za-z_][A-Za-z0-9_]*`.
@@ -186,6 +224,8 @@ struct StructOntologyAttrs {
     table: Option<String>,
     type_name: Option<String>,
     prefix: Option<String>,
+    /// The raw `id = ...` value, checked against the fields once they are parsed.
+    id: Option<Expr>,
 }
 
 /// Parse the `#[ontology(entity, ...)]` attribute.
@@ -208,6 +248,7 @@ fn parse_struct_ontology_attrs(struct_name: &str, attrs: &[Attribute]) -> Option
         let mut table = None;
         let mut type_name = None;
         let mut prefix = None;
+        let mut id = None;
 
         for meta in &nested {
             match meta {
@@ -226,12 +267,15 @@ fn parse_struct_ontology_attrs(struct_name: &str, attrs: &[Attribute]) -> Option
                 Meta::NameValue(nv) if nv.path.is_ident("prefix") => {
                     prefix = expr_to_string(&nv.value);
                 }
+                Meta::NameValue(nv) if nv.path.is_ident("id") => {
+                    id = Some(nv.value.clone());
+                }
                 _ => {}
             }
         }
 
         if is_entity {
-            return Some(StructOntologyAttrs { directory, table, type_name, prefix });
+            return Some(StructOntologyAttrs { directory, table, type_name, prefix, id });
         }
     }
 
@@ -447,7 +491,7 @@ fn classify_type(ty: &Type) -> FieldType {
             match segments.last().map(String::as_str) {
                 Some("String") if segments.len() == 1 => FieldType::String,
                 Some("i32") if segments.len() == 1 => FieldType::I32,
-                Some("i64" | "u64") if segments.len() == 1 => FieldType::I64,
+                Some("i64") if segments.len() == 1 => FieldType::I64,
                 Some("f32") if segments.len() == 1 => FieldType::F32,
                 Some("f64") if segments.len() == 1 => FieldType::F64,
                 Some("bool") if segments.len() == 1 => FieldType::Bool,
@@ -456,7 +500,7 @@ fn classify_type(ty: &Type) -> FieldType {
                     match inner.as_deref() {
                         Some("String") => FieldType::OptionString,
                         Some("i32") => FieldType::OptionI32,
-                        Some("i64" | "u64") => FieldType::OptionI64,
+                        Some("i64") => FieldType::OptionI64,
                         Some("f32") => FieldType::OptionF32,
                         Some("f64") => FieldType::OptionF64,
                         Some("bool") => FieldType::OptionBool,
@@ -832,6 +876,91 @@ mod tests {
 
         let entities = parse_schema_source(source, Path::new("test.rs")).unwrap();
         assert_eq!(entities[0].type_name, "work_session");
+    }
+
+    /// An entity with `id = "<value>"` on its `#[ontology(entity, ...)]`.
+    fn entity_with_id(value: &str) -> Result<Vec<EntityDef>, String> {
+        let source = format!(
+            r#"
+            #[derive(OntologyEntity)]
+            #[ontology(entity, directory = "tasks", id = {value})]
+            pub struct Task {{
+                #[ontology(id)]
+                pub id: String,
+                pub title: String,
+                pub summary: Option<String>,
+                pub points: i32,
+            }}
+        "#
+        );
+        parse_schema_source(&source, Path::new("task.rs"))
+    }
+
+    #[test]
+    fn entity_id_strategy_is_absent_without_the_key() {
+        let source = r#"
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Tag {
+                #[ontology(id)]
+                pub id: String,
+            }
+        "#;
+        let entities = parse_schema_source(source, Path::new("tag.rs")).unwrap();
+        assert_eq!(entities[0].id_strategy, None, "no key: the store default applies");
+    }
+
+    #[test]
+    fn entity_id_strategy_accepts_every_form() {
+        for (value, expected) in [
+            (r#""provided""#, IdStrategy::Provided),
+            (r#""uuid""#, IdStrategy::Uuid),
+            (r#""slug(title)""#, IdStrategy::SlugFromField("title".into())),
+        ] {
+            let entities = entity_with_id(value).unwrap_or_else(|e| panic!("id = {value}: {e}"));
+            assert_eq!(entities[0].id_strategy, Some(expected), "id = {value}");
+        }
+    }
+
+    #[test]
+    fn entity_id_strategy_rejects_unknown_and_malformed_values() {
+        for value in [
+            r#""Provided""#,
+            r#""UUID""#,
+            r#""random""#,
+            r#""""#,
+            r#""slug""#,
+            r#""slug()""#,
+            r#""slug(title""#,
+            r#""slug title""#,
+            r#""slug( title )""#,
+            r#""slug(title, summary)""#,
+            r#""slug(1title)""#,
+            r#""slugify(title)""#,
+            "uuid",
+            "1",
+        ] {
+            let err = entity_with_id(value).expect_err(value);
+            assert!(err.contains("entity `Task` in task.rs"), "id = {value}: the error names the entity: {err}");
+            assert!(
+                err.contains(r#"expected `id = "provided"`, `id = "uuid"` or `id = "slug(<field>)"`"#),
+                "id = {value}: the error lists the accepted forms: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn entity_id_slug_must_name_a_plain_string_field() {
+        let err = entity_with_id(r#""slug(missing)""#).unwrap_err();
+        assert!(err.contains("entity `Task`") && err.contains("has no field `missing`"), "{err}");
+
+        for field in ["summary", "points"] {
+            let err = entity_with_id(&format!(r#""slug({field})""#)).unwrap_err();
+            assert!(
+                err.contains("entity `Task`") && err.contains(&format!("field `{field}` must be a plain String")),
+                "{err}"
+            );
+        }
     }
 
     #[test]

@@ -42,6 +42,7 @@ fn timer_session_entity() -> EntityDef {
         table: "timer_sessions".to_string(),
         type_name: "timer_session".to_string(),
         prefix: "timer".to_string(),
+        id_strategy: None,
         fields: vec![
             FieldDef::new("id", FieldType::String, FieldRole::Id),
             FieldDef::new("interval_kind", FieldType::OptionEnum("IntervalKind".into()), FieldRole::EnumField),

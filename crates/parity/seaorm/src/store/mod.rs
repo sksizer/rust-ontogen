@@ -30,9 +30,11 @@ impl Store {
     pub async fn open_in_memory() -> Result<Self, AppError> {
         // One connection: each SQLite `:memory:` connection is its own
         // database, so a pool of several would see different data.
+        // sqlite-only: the parity harness runs the SeaORM store on in-memory SQLite.
         let mut options = sea_orm::ConnectOptions::new("sqlite::memory:");
         options.max_connections(1).min_connections(1).sqlx_logging(false);
         let db = Database::connect(options).await.map_err(db_error)?;
+        create_table(&db, tables::fixed::Entity).await?;
         create_table(&db, tables::item::Entity).await?;
         create_table(&db, tables::tag::Entity).await?;
         create_table(&db, tables::item_tags::Entity).await?;
@@ -59,6 +61,7 @@ impl Store {
         source_id: &str,
         target_ids: &[String],
     ) -> Result<(), AppError> {
+        // sqlite-only: list order survives only because SQLite's rowid follows insertion order.
         let delete = format!("DELETE FROM {table} WHERE {source_col} = ?");
         self.db.execute(sqlite(&delete, vec![source_id.into()])).await.map_err(db_error)?;
         let insert = format!("INSERT INTO {table} ({source_col}, {target_col}) VALUES (?, ?)");
@@ -81,6 +84,7 @@ impl Store {
         target_col: &str,
         source_id: &str,
     ) -> Result<Vec<String>, AppError> {
+        // sqlite-only: `rowid` is SQLite's implicit insertion-order column.
         let select = format!("SELECT {target_col} FROM {table} WHERE {source_col} = ? ORDER BY rowid");
         let rows = self.db.query_all(sqlite(&select, vec![source_id.into()])).await.map_err(db_error)?;
         rows.iter().map(|row| row.try_get_by_index::<String>(0).map_err(db_error)).collect()
@@ -94,6 +98,7 @@ async fn create_table<E: EntityTrait>(db: &DatabaseConnection, entity: E) -> Res
     Ok(())
 }
 
+// sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.
 fn sqlite(sql: &str, values: Vec<sea_orm::Value>) -> Statement {
     Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite, sql, values)
 }

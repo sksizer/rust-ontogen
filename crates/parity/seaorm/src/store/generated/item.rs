@@ -30,6 +30,7 @@ pub struct ItemUpdate {
     pub n_u8: Option<u8>,
     pub n_u16: Option<u16>,
     pub n_u32: Option<u32>,
+    pub n_u64: Option<u64>,
     pub n_usize: Option<usize>,
     pub n_u128: Option<u128>,
     pub n_i8: Option<i8>,
@@ -37,6 +38,7 @@ pub struct ItemUpdate {
     pub n_isize: Option<isize>,
     pub n_i128: Option<i128>,
     pub maybe_u32: Option<Option<u32>>,
+    pub maybe_u64: Option<Option<u64>>,
     pub parent_id: Option<Option<String>>,
     pub children: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
@@ -96,6 +98,9 @@ impl ItemUpdate {
         if let Some(n_u32) = &self.n_u32 {
             item.n_u32.clone_from(n_u32);
         }
+        if let Some(n_u64) = &self.n_u64 {
+            item.n_u64.clone_from(n_u64);
+        }
         if let Some(n_usize) = &self.n_usize {
             item.n_usize.clone_from(n_usize);
         }
@@ -116,6 +121,9 @@ impl ItemUpdate {
         }
         if let Some(maybe_u32) = &self.maybe_u32 {
             item.maybe_u32.clone_from(maybe_u32);
+        }
+        if let Some(maybe_u64) = &self.maybe_u64 {
+            item.maybe_u64.clone_from(maybe_u64);
         }
         if let Some(parent_id) = &self.parent_id {
             item.parent_id.clone_from(parent_id);
@@ -152,6 +160,7 @@ impl From<crate::schema::UpdateItemInput> for ItemUpdate {
             n_u8: input.n_u8,
             n_u16: input.n_u16,
             n_u32: input.n_u32,
+            n_u64: input.n_u64,
             n_usize: input.n_usize,
             n_u128: input.n_u128,
             n_i8: input.n_i8,
@@ -159,6 +168,7 @@ impl From<crate::schema::UpdateItemInput> for ItemUpdate {
             n_isize: input.n_isize,
             n_i128: input.n_i128,
             maybe_u32: input.maybe_u32,
+            maybe_u64: input.maybe_u64,
             parent_id: input.parent_id,
             children: input.children,
             tags: input.tags,
@@ -188,6 +198,7 @@ impl From<crate::schema::CreateItemInput> for Item {
             n_u8: input.n_u8,
             n_u16: input.n_u16,
             n_u32: input.n_u32,
+            n_u64: input.n_u64,
             n_usize: input.n_usize,
             n_u128: input.n_u128,
             n_i8: input.n_i8,
@@ -195,6 +206,7 @@ impl From<crate::schema::CreateItemInput> for Item {
             n_isize: input.n_isize,
             n_i128: input.n_i128,
             maybe_u32: input.maybe_u32,
+            maybe_u64: input.maybe_u64,
             parent_id: input.parent_id,
             children: input.children,
             tags: input.tags,
@@ -206,9 +218,11 @@ impl From<crate::schema::CreateItemInput> for Item {
 impl Store {
     pub async fn list_items(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Item>, AppError> {
         let mut query = item::Entity::find();
+        // sqlite-only: ids sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_asc(item::Column::Id);
         let limit = limit.map(|l| l.min(i64::MAX as u64));
         let offset = offset.map(|o| o.min(i64::MAX as u64));
+        // sqlite-only: SQLite rejects OFFSET without LIMIT, so an offset alone takes i64::MAX rows.
         if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
@@ -366,6 +380,7 @@ impl Store {
     ) -> Result<(), crate::schema::AppError> {
         item.children = {
             use crate::persistence::db::entities::item;
+            // sqlite-only: child ids sort in byte order under SQLite's default BINARY collation.
             let children = item::Entity::find()
                 .filter(item::Column::ParentId.eq(&item.id))
                 .filter(item::Column::Id.ne(&item.id))
@@ -397,6 +412,7 @@ impl Store {
 
     async fn set_item_parent(&self, child_id: &str, parent_id: Option<&str>) -> Result<(), AppError> {
         use sea_orm::{ConnectionTrait, Value};
+        // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.
         let stmt = sea_orm::Statement::from_sql_and_values(
             sea_orm::DatabaseBackend::Sqlite,
             "UPDATE items SET parent_id = ? WHERE id = ?",

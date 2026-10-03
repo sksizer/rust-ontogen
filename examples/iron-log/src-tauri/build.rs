@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use ontogen::clients::ClientGenerator;
 use ontogen::servers::{NamingConfig, ServerGenerator};
-use ontogen::{ClientsConfig, Pipeline, ServersConfig};
+use ontogen::{ClientsConfig, IdStrategy, Pipeline, ServersConfig};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -60,6 +60,9 @@ fn main() {
         .seaorm("src/persistence/db/entities/generated", "src/persistence/db/conversions/generated")
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
+        // Workout.name is Option<String>, so SlugFromField is out; the
+        // caller supplies every id.
+        .store_id_strategy(IdStrategy::Provided)
         .api("src/api/v1/generated", "AppState")
         .servers(servers_config)
         .clients(clients_config);

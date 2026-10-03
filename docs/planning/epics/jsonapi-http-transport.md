@@ -192,7 +192,8 @@ each of its sections to a phase.
 
 - **3a.** `/relationships/{rel}` and related-resource endpoints:
   - every relation field is served from the generated store, `has_many`
-    writable (decision 9);
+    writable (decision 9; self-referential only, cross-entity is backlog
+    B-XEHM);
   - junction ops in resource modules are re-routed onto the same endpoints;
     a lone `list_X` stops classifying as a junction op;
   - `links.self`/`links.related` go on every relationship;
@@ -268,6 +269,30 @@ specified in detail by the [wire contract](../../jsonapi-wire-contract.md).
    A child whose foreign key is not `Option` cannot be dropped:
    `403 {child}_parent_required`, as the spec requires for a refused
    relationship removal or replacement.
+
+Added 2026-10-03, after phase 1a review, and implemented by the phase 1a
+follow-ups:
+
+10. **Portable ASCII ids.** Every id being created (client, derived or
+    hook-assigned) matches `[a-z0-9._~-]`, is at most 200 bytes, is not
+    `index` or `log`, and neither starts nor ends with `.`, on both backends.
+    Lookup keys are never validated against it, so existing rows stay
+    reachable. `slugify` lowercases, folds Latin diacritics to ASCII, and
+    truncates its base so `-N` probes stay within 200 bytes (contract §8.2).
+    Refined after review: a created id is also not a Windows device name
+    (`con`, `prn`, `aux`, `nul`, `com0`-`com9`, `lpt0`-`lpt9`, in any case,
+    whole or before its first `.`), since Windows cannot hold `con.md`; a
+    title that slugs to one derives `con-2`, as `index` derives `index-2`.
+11. **Per-entity id strategy over a required default.**
+    `#[ontology(entity, id = "provided" | "uuid" | "slug(field)")]` overrides
+    the store's default, which every pipeline with a store stage must set:
+    `IdStrategy` has no `Default`, and `Pipeline::build` fails without
+    `store_id_strategy` (ADR 0004).
+12. **SeaORM is SQLite-only for now.** Every SQLite-specific location carries
+    a `// sqlite-only:` comment, and backlog item B-SQLT inventories them with
+    their multi-engine replacements (ADR 0006 §4). A cross-entity `has_many`
+    is a build error until it is supported on both backends (backlog B-XEHM),
+    and `u64` fields keep their type, stored in an `i64` column.
 
 ## Dependencies
 

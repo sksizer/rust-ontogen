@@ -42,11 +42,14 @@ alias fmt := format
 # markdown-store and ontogen-jsonapi get an extra no-default-features pass:
 # their feature-gated modules can hide dead code from the default-features
 # workspace lint, and ontogen-jsonapi's core is meant to build without
-# `axum` for the build-time generator.
+# `axum` for the build-time generator. Their rustdoc, private items
+# included, must also build without warnings (broken intra-doc links).
 lint:
     cargo clippy --workspace --all-targets -- --deny warnings
     cargo clippy -p markdown-store --no-default-features -- --deny warnings
     cargo clippy -p ontogen-jsonapi --no-default-features --all-targets -- --deny warnings
+    RUSTDOCFLAGS="-D warnings" cargo doc -p markdown-store --no-deps --document-private-items
+    RUSTDOCFLAGS="-D warnings" cargo doc -p ontogen-jsonapi --no-deps --document-private-items
 
 # Run all code checks (matches CI: format-check + lint + tests)
 full-check: format-check lint test

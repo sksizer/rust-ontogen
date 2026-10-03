@@ -42,6 +42,7 @@ pub struct Item {
     pub n_u8: u8,
     pub n_u16: u16,
     pub n_u32: u32,
+    pub n_u64: u64,
     pub n_usize: usize,
     pub n_u128: u128,
     pub n_i8: i8,
@@ -49,6 +50,7 @@ pub struct Item {
     pub n_isize: isize,
     pub n_i128: i128,
     pub maybe_u32: Option<u32>,
+    pub maybe_u64: Option<u64>,
 
     #[ontology(relation(belongs_to, target = "Item"))]
     pub parent_id: Option<String>,

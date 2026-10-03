@@ -282,6 +282,7 @@ mod tests {
             table: "tasks".into(),
             type_name: "Task".into(),
             prefix: "task".into(),
+            id_strategy: None,
             fields: all,
         }
     }

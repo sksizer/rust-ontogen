@@ -64,8 +64,11 @@ does not provide:
   whose `T` is not one of its recognised primitives as `OptionEnum(T)`, so
   `Option<u32>` and `Option<SomeStruct>` are `OptionEnum` as well as
   `Option<SomeEnum>`. A bare type it does not recognise, `u32` included, is
-  `Other(T)`. Bare and optional `i32`, `i64` and `u64` are recognised
-  (`u64` becomes `I64`), so they never reach `OptionEnum` or `Other`.
+  `Other(T)`. Bare and optional `i32` and `i64` are recognised, so they
+  never reach `OptionEnum` or `Other`. (`u64` was recognised too and filed
+  as `I64`, so a `u64` field did not compile on SeaORM and its DTOs said
+  `i64`. Since 2026-10-03 it reaches `Other` / `OptionEnum` like the other
+  integer widths.)
 - **Integer storage on SeaORM.** For an integer primitive under
   `OptionEnum` or `Other`, the SeaORM model field is `i32` or `Option<i32>`
   (`field_db_type` in `src/persistence/seaorm/gen_entity.rs`).
@@ -289,8 +292,8 @@ An entity's sortable fields are its id field plus every field with role
 - `OptionEnum(T)` or `Other(T)`, where `T` resolves to a schema `EnumDef`
   (sorted by stored string);
 - `OptionEnum(T)` or `Other(T)`, where `T` is an integer primitive that
-  reaches those variants: `u8`, `u16`, `u32`, `usize`, `u128`, `i8`, `i16`,
-  `isize` or `i128`. These are sorted numerically. A type alias of an
+  reaches those variants: `u8`, `u16`, `u32`, `u64`, `usize`, `u128`, `i8`,
+  `i16`, `isize` or `i128`. These are sorted numerically. A type alias of an
   integer (`type Count = u32`) is not recognised, and stays an unsortable
   `Other`.
 
@@ -394,6 +397,12 @@ calls it before `limit` and `offset`.
   A consumer who declares `NOCASE` on a column, or runs another engine, is
   outside the parity guarantee. The generated store does not try to detect
   that.
+- **SQLite only (2026-10-03, maintainer decision D12).** The SeaORM backend
+  supports SQLite only, for now; other engines are not a supported target.
+  Every SQLite-specific location in the generator, the generated store and
+  the in-tree consumer helpers carries a `sqlite-only` comment that says why,
+  and `docs/planning/backlog/B-SQLT-seaorm-multi-engine-support.md`
+  inventories them with their multi-engine replacements.
 - **NaN.** The NaN check (§3) is generated into `create_*` and `update_*`,
   over the fields the write sets, and returns `AppError::DbError` before
   the statement runs.
@@ -409,9 +418,10 @@ calls it before `limit` and `offset`.
   - `is_integer_primitive` gains `usize`, `isize`, `u128` and `i128`, so
     those fields get an `i64` column for the first time (§Context).
   - `u8`, `u16`, `u32`, `i8` and `i16` convert losslessly with `i64::from`.
-  - `usize`, `isize`, `u128` and `i128` convert with `i64::try_from`. A
-    value outside `i64` fails the write with `AppError::DbError` naming the
-    field, instead of wrapping.
+  - `u64`, `usize`, `isize`, `u128` and `i128` convert with
+    `i64::try_from`. A value outside `i64` fails the write with
+    `AppError::DbError` naming the field, instead of wrapping. The markdown
+    store refuses the same values (§5).
   - Reads convert back with `T::try_from`. A stored value outside `T`'s
     range fails the read the same way. That includes a `u32` row that
     today's wrap stored negative, so the upgrade needs the migration below.
@@ -431,6 +441,7 @@ calls it before `limit` and `offset`.
   | `u8`, `u16` (and `Option`) | none: values fit in `i32` and never wrapped |
   | `i8`, `i16` (and `Option`) | none: signed values were stored as is |
   | `usize`, `isize`, `u128`, `i128` | none: no SeaORM column exists today |
+  | `u64`, `Option<u64>` | none: such a field did not compile on SeaORM |
 
   Without it, every `get` or `list` that reaches a wrapped `u32` row fails
   with `AppError::DbError`, and the row cannot be updated through the API.
@@ -469,6 +480,13 @@ only.
   true.
 - **has_many.** The derived child-id list is sorted by id.
 - **many_to_many.** Linkage keeps the frontmatter list order.
+- **Integer range.** A vault could hold any `u64` or `u128`, but SeaORM
+  cannot (§4). So `create_*` and `update_*` refuse a `u64`, `usize`,
+  `isize`, `u128` or `i128` value outside `i64`, over the fields the write
+  sets, before the file is written. The error is the catch-all
+  (`markdown_store::Error::Serialize` into `AppError`), with SeaORM's
+  message. A value above `i64::MAX` put into a vault file by hand still
+  reads back; that is outside the parity guarantee.
 
 ### 6. Phasing
 
@@ -538,7 +556,11 @@ records into both and asserts identical id sequences for each of these:
 - a multi-key order with mixed directions;
 - `Option` fields holding nulls, and empty strings beside nulls;
 - strings that differ only in case, and non-ASCII strings (`"B"`, `"a"`,
-  `"é"`, `"z"`), which pin byte order. This is the case #178 says breaks;
+  `"é"`, `"z"`), which pin byte order. This is the case #178 says breaks.
+  Ids cannot hold them (wire contract §8.2), so the default order pins
+  byte order with the punctuation ids allow (`"a-2"`, `"a.b"`, `"a2"`,
+  `"a_b"`, `"a~b"`) and sortable string fields carry the case and
+  non-ASCII values;
 - a float `-0.0` beside `0.0`;
 - an `Option<u32>` field, which pins numeric order (`9 < 10`), holding a
   value above `i32::MAX` (3 000 000 000) to pin the widened column;

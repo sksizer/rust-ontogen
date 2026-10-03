@@ -32,6 +32,7 @@ pub struct CreateItemInput {
     pub n_u8: u8,
     pub n_u16: u16,
     pub n_u32: u32,
+    pub n_u64: u64,
     pub n_usize: usize,
     pub n_u128: u128,
     pub n_i8: i8,
@@ -40,6 +41,8 @@ pub struct CreateItemInput {
     pub n_i128: i128,
     #[serde(default)]
     pub maybe_u32: Option<u32>,
+    #[serde(default)]
+    pub maybe_u64: Option<u64>,
     #[serde(default)]
     pub parent_id: Option<String>,
     #[serde(default)]
@@ -88,6 +91,8 @@ pub struct UpdateItemInput {
     #[serde(default)]
     pub n_u32: Option<u32>,
     #[serde(default)]
+    pub n_u64: Option<u64>,
+    #[serde(default)]
     pub n_usize: Option<usize>,
     #[serde(default)]
     pub n_u128: Option<u128>,
@@ -101,6 +106,8 @@ pub struct UpdateItemInput {
     pub n_i128: Option<i128>,
     #[serde(default, deserialize_with = "double_option")]
     pub maybe_u32: Option<Option<u32>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub maybe_u64: Option<Option<u64>>,
     #[serde(default, deserialize_with = "double_option")]
     pub parent_id: Option<Option<String>>,
     #[serde(default)]
