@@ -166,7 +166,8 @@ each of its sections to a phase.
 - The `errors[]` document with E0003 phases 0-1 and the new suffixes, the
   `405` fallback, and scoped CRUD routes.
 - TS: flatten and unflatten for CRUD methods, and `JsonApiError`.
-- Snapshots and examples regenerated, with tasks-tracker paginating `task`.
+- Snapshots and examples regenerated, with tasks-tracker paginating `task`, `epic` and `tag` (pagination is per
+  surface, contract §2).
 
 **Phase 1c — the rest of the 0.9.0 wire.**
 

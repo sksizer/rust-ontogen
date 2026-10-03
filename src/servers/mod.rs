@@ -14,9 +14,7 @@ pub(crate) mod tests;
 pub(crate) mod types;
 
 // Re-export key types at the servers module level
-pub use config::{
-    ApiSurface, Config, DEFAULT_STORE_ACCESSOR, PaginationConfig, PrefixParam, RoutePrefix, ServerGenerator,
-};
+pub use config::{ApiSurface, DEFAULT_STORE_ACCESSOR, PaginationConfig, PrefixParam, RoutePrefix, ServerGenerator};
 pub use parse::{ApiFn, ApiModule, EventFn, Param};
 pub use types::NamingConfig;
 
@@ -61,20 +59,30 @@ pub fn generate(
         state_import: config.state_import.clone(),
         naming: config.naming.clone(),
         generators: config.generators.clone(),
-        rustfmt_edition: config.rustfmt_edition.clone(),
         sse_route_overrides: config.sse_route_overrides.clone(),
         route_prefix: config.route_prefix.clone(),
         store_type: config.store_type.clone(),
         store_import: config.store_import.clone(),
         pagination: config.pagination.clone(),
         extra_surfaces: config.extra_surfaces.clone(),
-        error_source_dir: config.error_source_dir.clone(),
         resources,
         error_map,
     };
 
     // Run the transport generation pipeline
     let modules = generate_transport(&legacy_config).map_err(CodegenError::Server)?;
+
+    if let (Some(dir), None) = (&config.error_source_dir, &legacy_config.error_map) {
+        let affected: Vec<String> = modules
+            .iter()
+            .flat_map(|m| {
+                m.functions.iter().filter(|f| f.returns_app_error()).map(move |f| format!("{}::{}", m.name, f.name))
+            })
+            .collect();
+        if let Some(warning) = error_map::missing_enum_warning(dir, &affected) {
+            println!("{warning}");
+        }
+    }
 
     Ok(extract_server_metadata(&modules, &legacy_config))
 }
@@ -221,7 +229,7 @@ fn http_route_for(
 /// Parses API modules and generates server code for each configured
 /// [`ServerGenerator`]. Returns the parsed `ApiModule` list so callers can
 /// use it for test generation or other downstream tasks.
-pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModule>, String> {
+pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModule>, String> {
     // Project-scoped handlers open the store through the one
     // `route_prefix.state_accessor`, which yields the primary surface's store
     // type; an extra surface's store-scoped fns expect their own store, so

@@ -13,7 +13,7 @@ use crate::servers::types::NamingConfig;
 /// reached publicly as [`crate::ClientsConfig`]; the two pipelines no longer
 /// share a config.
 #[derive(Debug, Clone)]
-pub struct Config {
+pub(crate) struct Config {
     /// Directory containing API source files (e.g., `src/api/v1`).
     pub api_dir: PathBuf,
 
@@ -36,9 +36,6 @@ pub struct Config {
 
     /// Which server-side generators to run and their output paths.
     pub generators: Vec<ServerGenerator>,
-
-    /// Rust edition for `rustfmt` (e.g., `"2021"`).
-    pub rustfmt_edition: String,
 
     /// SSE route overrides: map from event function name to custom route path
     /// (e.g., `"graph_updated"` → `"/api/events/graph"`).
@@ -79,15 +76,11 @@ pub struct Config {
     /// fields above. See [`ApiSurface`].
     pub extra_surfaces: Vec<ApiSurface>,
 
-    /// Directory scanned for the consumer's `enum AppError`; see
-    /// [`ServersConfig::error_source_dir`](crate::ServersConfig::error_source_dir).
-    pub error_source_dir: Option<PathBuf>,
-
     /// The schema's entities as JSON:API resources. A module is served as a
     /// resource exactly when this has a resource for its name.
     pub(crate) resources: ResourceModel,
 
-    /// The `AppError` found under `error_source_dir`, if any.
+    /// The `AppError` found under `ServersConfig::error_source_dir`, if any.
     pub(crate) error_map: Option<ErrorMap>,
 }
 
@@ -218,14 +211,12 @@ impl Default for Config {
             state_import: "crate::AppState".to_string(),
             naming: NamingConfig::default(),
             generators: Vec::new(),
-            rustfmt_edition: "2021".to_string(),
             sse_route_overrides: HashMap::new(),
             route_prefix: None,
             store_type: None,
             store_import: None,
             pagination: None,
             extra_surfaces: Vec::new(),
-            error_source_dir: None,
             resources: ResourceModel::default(),
             error_map: None,
         }

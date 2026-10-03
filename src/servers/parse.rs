@@ -884,9 +884,10 @@ fn first_type_arg(seg: &syn::PathSegment) -> Option<&Type> {
 /// Extract `T` from `Result<T, E>` as both a normalized string and AST, and
 /// `E` as a normalized string.
 ///
-/// When the return type is not a `Result<...>`, returns `("()", syn::Type::Tuple(_))`
-/// for the unit type. `E` is `None` unless the `Result` names both arguments:
-/// a one-argument alias such as `anyhow::Result<T>` hides its error type.
+/// `E` is `None` unless the `Result` names both arguments: a one-argument
+/// alias such as `anyhow::Result<T>` hides its error type. When the return
+/// type is not a `Result<...>` at all, the result is `("()", syn::Type::Tuple(_))`
+/// for the unit type.
 fn extract_result_types(ret: &ReturnType) -> (String, Type, Option<String>) {
     if let ReturnType::Type(_, ty) = ret
         && let Type::Path(tp) = ty.as_ref()
