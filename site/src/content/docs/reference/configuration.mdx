@@ -51,7 +51,7 @@ The `entity_output` and `conversion_output` directories are cleaned on each buil
 
 ## `MarkdownIoConfig`
 
-Used by [`gen_markdown_io()`](/reference/public-api/#gen_markdown_io).
+Used by [`gen_markdown_io()`](/reference/public-api/#gen_markdown_io), which takes the whole `SchemaOutput` (`gen_markdown_io(&schema, &config)`): it checks each frontmatter field against the keys OKF reserves, and needs the enum definitions to do so. A reserved `type` key is a build error; the other reserved keys emit `cargo:warning=` lines. See [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys).
 
 The `output_dir` field controls where generated code lands. The rest describe the **runtime** shape of the vault (ADR 0001) and flow into the returned `MarkdownIoOutput`, which [`gen_store`](/reference/public-api/#gen_store) consumes via `Backend::Markdown`.
 
@@ -60,7 +60,7 @@ The `output_dir` field controls where generated code lands. The rest describe th
 | `output_dir` | `PathBuf` | Output directory for generated parser, writer, and filesystem operation modules. |
 | `vault_root` | `PathBuf` | Where the `.md` records live at runtime, relative to the consumer crate root (e.g., `data/vault`). |
 | `layout` | `MarkdownLayout` | On-disk arrangement of record files under the vault root. |
-| `id_strategy` | `IdStrategy` | How a new record derives an id when the caller didn't supply one. |
+| `id_strategy` | `IdStrategy` | How a new record derives an id when the caller didn't supply one. A derived id that would be the reserved `index` or `log` becomes `index-2` / `log-2`. |
 | `list_cap` | `usize` | Hard cap on records parsed per `list()` before the runtime errors -- ADR 0001's explicit scale ceiling. |
 
 ```rust

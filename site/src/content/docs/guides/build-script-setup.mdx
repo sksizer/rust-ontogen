@@ -416,7 +416,7 @@ You don't need to run everything. Pick the generators you need.
     );
 
     let md = unwrap_codegen(
-        ontogen::gen_markdown_io(&schema.entities, &ontogen::MarkdownIoConfig {
+        ontogen::gen_markdown_io(&schema, &ontogen::MarkdownIoConfig {
             output_dir: "src/persistence/markdown/generated".into(),
             vault_root: "data/vault".into(),
             layout: MarkdownLayout::PerEntityDir,

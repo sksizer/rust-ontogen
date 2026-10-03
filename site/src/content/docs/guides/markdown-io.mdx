@@ -18,7 +18,7 @@ the persistence layer itself.
 ## Configuration
 
 ```rust
-let md = ontogen::gen_markdown_io(&schema.entities, &ontogen::MarkdownIoConfig {
+let md = ontogen::gen_markdown_io(&schema, &ontogen::MarkdownIoConfig {
     output_dir: "src/persistence/markdown/generated".into(),
     vault_root: "data/vault".into(),                        // where the .md files live
     layout: ontogen::MarkdownLayout::PerEntityDir,          // data/vault/<entity>/<id>.md
@@ -26,6 +26,8 @@ let md = ontogen::gen_markdown_io(&schema.entities, &ontogen::MarkdownIoConfig {
     list_cap: 10_000,                                       // loud error past this many records
 })?;
 ```
+
+`gen_markdown_io` takes the whole `SchemaOutput` rather than just the entities, because it checks frontmatter keys against enum definitions. The frontmatter struct does not model `type`: the store owns it, so reads tolerate it being absent or different. A field renamed with `#[ontology(frontmatter_name = "...")]` gets a `#[serde(rename = "...")]`, and `TASK_FM_FIELDS` lists the renamed key.
 
 The vault fields describe the store's runtime shape and flow into the
 returned `MarkdownIoOutput`; the generated files land in `output_dir`.
@@ -47,6 +49,9 @@ pub struct TaskFrontmatter {
 }
 
 pub const TASK_FM_FIELDS: &[&str] = &["title", "epic_id", "tags"];
+
+/// The `type:` value stamped as the first key of every record.
+pub const TASK_TYPE: &str = "Task";
 
 impl TaskFrontmatter {
     pub fn from_task(value: &Task) -> Self { /* wikilink-encodes relations */ }

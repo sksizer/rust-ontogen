@@ -24,7 +24,7 @@ pub struct Workout {
 | `entity` | Yes | -- | Marks this struct as an Ontogen entity. Required for the struct to be picked up by `parse_schema()`. |
 | `table` | No | snake_case of struct name | SeaORM table name (e.g., `"workouts"`). |
 | `directory` | No | snake_case of struct name | Subdirectory for Markdown files (e.g., `"workouts"`). Used by `gen_markdown_io()`. |
-| `type_name` | No | snake_case of struct name | The `type:` value in frontmatter YAML (e.g., `"workout"`). Used by the Markdown parser dispatch. |
+| `type_name` | No | the struct name (e.g., `"Workout"`) | The `type:` value the markdown backend writes as the first frontmatter key of every record. Overrides the default (e.g., `"workout"`). |
 | `prefix` | No | snake_case of struct name | ID prefix for global uniqueness (e.g., `"wkt"`). Useful when IDs are prefixed like `wkt-abc123`. |
 
 ### Minimal form
@@ -39,7 +39,7 @@ pub struct Exercise {
 }
 ```
 
-When `directory`, `type_name`, and `prefix` are omitted, they all default to the snake_case version of the struct name (e.g., `"exercise"` for `Exercise`).
+When `directory` and `prefix` are omitted they default to the snake_case version of the struct name (e.g., `"exercise"` for `Exercise`). `type_name` defaults to the struct name as written (`"Exercise"`).
 
 ---
 
@@ -92,6 +92,17 @@ pub status: Option<TaskStatus>,
 <Aside type="note">
 The enum type itself (e.g., `TaskStatus`) must implement `Display` and `FromStr` (or be `Serialize`/`Deserialize` with string representation). Ontogen doesn't generate the enum -- you define it yourself.
 </Aside>
+
+### `#[ontology(frontmatter_name = "...")]`
+
+Renames the field's key in markdown frontmatter. Nothing else changes: the Rust field, DTOs, API, servers, clients and SeaORM columns keep the Rust name.
+
+```rust
+#[ontology(frontmatter_name = "task_status")]
+pub status: String,
+```
+
+The key must be a plain YAML key (`[A-Za-z_][A-Za-z0-9_-]*`), must not be `type` (the generator owns it), and must not collide with another field's effective key in the same entity. Use it to step around the keys OKF reserves; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys).
 
 ### `#[ontology(skip)]`
 

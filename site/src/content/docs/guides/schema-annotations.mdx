@@ -67,13 +67,13 @@ You'll commonly override this for proper pluralization since the automatic defau
 
 ### `type_name = "..."`
 
-The YAML frontmatter `type:` value for markdown files.
+The YAML frontmatter `type:` value for markdown files. Every record the markdown backend writes carries it as its first key.
 
 ```rust
 #[ontology(entity, type_name = "work_session")]
 ```
 
-Default: `to_snake_case(StructName)`.
+Default: the struct name as written (`WorkSession`), not the snake_case form.
 
 ### `prefix = "..."`
 
@@ -95,7 +95,7 @@ All struct-level attributes can be combined freely. You only need to specify wha
 #[ontology(entity, table = "capabilities", prefix = "cap")]
 pub struct Capability { ... }
 // directory = "capability" (inferred)
-// type_name = "capability" (inferred)
+// type_name = "Capability" (inferred)
 // table = "capabilities" (overridden)
 // prefix = "cap" (overridden)
 ```
@@ -250,7 +250,7 @@ You can stack `#[serde(...)]` and `#[ontology(...)]` on the same field in any or
 | `entity` | Yes | -- | Marks struct as an Ontogen entity |
 | `directory = "..."` | No | `to_snake_case(Name)` | Markdown I/O subdirectory |
 | `table = "..."` | No | `to_snake_case(Name)` | SeaORM table name |
-| `type_name = "..."` | No | `to_snake_case(Name)` | YAML frontmatter `type:` value |
+| `type_name = "..."` | No | `Name` (struct name) | YAML frontmatter `type:` value |
 | `prefix = "..."` | No | `to_snake_case(Name)` | ID generation prefix |
 
 ### Field-Level
@@ -263,6 +263,7 @@ You can stack `#[serde(...)]` and `#[ontology(...)]` on the same field in any or
 | `skip` | Any | Keeps DB column but excludes from DTOs, writers, Update struct. |
 | `multiline_list` | `Vec<String>` | Renders YAML as block sequence instead of inline. |
 | `default_value = "..."` | `String` | Omits field from markdown when value matches default. |
+| `frontmatter_name = "..."` | Any persisted field | Renames the key in markdown frontmatter only; the Rust name is unchanged everywhere else. |
 | `relation(belongs_to, ...)` | `Option<String>`, `String` | FK column on this table pointing to target entity. |
 | `relation(has_many, ...)` | `Vec<String>` | Reverse side of a belongs_to. Requires `foreign_key`. |
 | `relation(many_to_many, ...)` | `Vec<String>` | Junction table relation. Optional `junction` override. |

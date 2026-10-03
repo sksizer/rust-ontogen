@@ -62,6 +62,77 @@ The vault folder for an entity comes from `#[ontology(entity, directory =
 the store walks a folder your records aren't in.
 </Aside>
 
+## An OKF vault
+
+An ontogen vault is an [OKF 0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+bundle: a directory of markdown files with YAML frontmatter, each carrying a
+`type`. Other OKF consumers can read it, and it stays plain markdown for
+everything else. This is always on; there is no switch.
+
+### Every record carries a `type`
+
+The generator owns the `type:` key and writes it as the **first** frontmatter
+key. It defaults to the struct name (`Task`), and
+`#[ontology(entity, type_name = "...")]` overrides it.
+
+```yaml
+---
+type: Task
+title: Ship the emitter
+status: closed/done
+---
+```
+
+- A record with no `type` still reads. It gains one on its next real write; a
+  no-op update writes nothing, so merely reading or re-saving unchanged data
+  never rewrites the file.
+- With `MarkdownLayout::PerEntityDir` the directory decides what a record is.
+  A record whose `type` disagrees is tolerated on read and normalized on its
+  next real write, so `count` stays a path walk.
+- With `MarkdownLayout::Flat`, entities share the vault root, so `list`,
+  `count` and `get` filter by `type`: a record whose `type` differs from the
+  entity's is excluded (and `get` returns NotFound). Records with no `type`
+  are included.
+
+### Reserved ids
+
+`index` and `log` are reserved for OKF's `index.md` and `log.md`. They are
+rejected as ids, case-insensitively (macOS and Windows filesystems treat
+`Index.md` and `index.md` as the same file). A slug derived from a field that
+comes out as `index` is deduped like any collision and becomes `index-2`. The
+vault walk skips any `index.md` and `log.md`, so `list`, `count` and `read_all`
+never return them.
+
+### Reserved frontmatter keys
+
+OKF gives some frontmatter keys fixed meanings. `gen_markdown_io` checks every
+field's effective key (see below) at build time:
+
+- `type` is a **build error**. The generator owns it.
+- `status` warns unless the field is an enum whose variants are all among
+  `draft`, `stable`, `deprecated`.
+- `resource` and `stale_after` warn unless the field is `String` or
+  `Option<String>`.
+- `generated`, `verified` and `usage_window` warn unless the field is a struct.
+- `sources` warns unless the field is a `Vec` of structs.
+- `title`, `description` and `tags` are never flagged.
+
+A warning is a `cargo:warning=` line naming the entity, field and key. It is
+not an error: a vault with its own `status` vocabulary (like the
+`tasks-tracker` example, which mirrors SDLC statuses) is legitimate, it just
+isn't OKF-conformant for that key. To resolve either, rename the key without
+touching the Rust field:
+
+```rust
+#[ontology(frontmatter_name = "task_status")]
+pub status: String,
+```
+
+`frontmatter_name` renames only the frontmatter key. The Rust field, DTOs,
+API, servers, clients and SeaORM columns keep the Rust name. The key must
+match `[A-Za-z_][A-Za-z0-9_-]*`, must not be `type`, and must not collide with
+another field's effective key.
+
 ## What the consumer writes by hand
 
 The entire delta from a SeaORM consumer:

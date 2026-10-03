@@ -65,7 +65,7 @@ The `#[ontology(entity, ...)]` attribute accepts four optional parameters. All h
     entity,
     directory = "work_sessions",    // defaults to snake_case of struct name
     table = "work_sessions",        // defaults to snake_case of struct name
-    type_name = "work_session",     // defaults to snake_case of struct name
+    type_name = "WorkSession",      // defaults to the struct name
     prefix = "session"              // defaults to snake_case of struct name
 )]
 pub struct WorkSession { ... }
@@ -91,7 +91,7 @@ pub struct AcceptanceCriterion { ... }
 
 ### `type_name`
 
-The value written to YAML frontmatter as the `type:` field in markdown files. Used by the markdown parser to dispatch to the correct entity parser. Defaults to the snake_case of the struct name.
+The value written to YAML frontmatter as the `type:` field in markdown files. Defaults to the struct name (`WorkSession`), not the snake_case form. See [the markdown backend guide](/guides/markdown-backend/#every-record-carries-a-type).
 
 ### `prefix`
 
@@ -116,7 +116,7 @@ pub struct EntityDef {
     pub name: String,       // "WorkSession"
     pub directory: String,  // "work_sessions"
     pub table: String,      // "work_sessions"
-    pub type_name: String,  // "work_session"
+    pub type_name: String,  // "WorkSession"
     pub prefix: String,     // "work_session" (or override)
     pub fields: Vec<FieldDef>,
 }
@@ -126,13 +126,13 @@ This struct is the input to every generator in the pipeline. Every decision abou
 
 ## Default Inference Rules
 
-When you omit optional attributes, Ontogen derives them from the struct name using `to_snake_case`:
+When you omit optional attributes, Ontogen derives them from the struct name (snake_cased, except `type_name`, which keeps the struct name as written):
 
 | Struct Name | `directory` | `table` | `type_name` | `prefix` |
 |---|---|---|---|---|
-| `Agent` | `agent` | `agent` | `agent` | `agent` |
-| `WorkSession` | `work_session` | `work_session` | `work_session` | `work_session` |
-| `AcceptanceCriterion` | `acceptance_criterion` | `acceptance_criterion` | `acceptance_criterion` | `acceptance_criterion` |
+| `Agent` | `agent` | `agent` | `Agent` | `agent` |
+| `WorkSession` | `work_session` | `work_session` | `WorkSession` | `work_session` |
+| `AcceptanceCriterion` | `acceptance_criterion` | `acceptance_criterion` | `AcceptanceCriterion` | `acceptance_criterion` |
 
 You can override any subset. The rest still infer from the struct name:
 
@@ -140,7 +140,7 @@ You can override any subset. The rest still infer from the struct name:
 #[ontology(entity, table = "work_sessions", prefix = "session")]
 pub struct WorkSession { ... }
 // directory = "work_session" (inferred)
-// type_name = "work_session" (inferred)
+// type_name = "WorkSession" (inferred)
 // table = "work_sessions" (overridden)
 // prefix = "session" (overridden)
 ```
