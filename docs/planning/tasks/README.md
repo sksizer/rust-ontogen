@@ -33,14 +33,20 @@ the generator's own backlog carries the reasoning. Each names the PR carrying it
 
 | Task | Status | PR |
 | --- | --- | --- |
-| [API surfaces with their own store accessor](./2026-09-07-api-surfaces-with-own-store-accessor.md) | in-progress | [#156](https://github.com/sksizer/rust-ontogen/pull/156) |
-| [Pagination declared per module](./2026-09-07-pagination-declared-per-module.md) | in-progress | folded into [#156](https://github.com/sksizer/rust-ontogen/pull/156) |
-| [Pagination pushdown into the store](./2026-09-07-pagination-pushdown-into-the-store.md) | in-progress | [#159](https://github.com/sksizer/rust-ontogen/pull/159), [#166](https://github.com/sksizer/rust-ontogen/pull/166) |
-| [Enum variants, labels and the id type](./2026-09-07-schema-enums-labels-and-id-type.md) | in-progress | [#160](https://github.com/sksizer/rust-ontogen/pull/160) |
-| [Admin layer: registry path, pickers, packaging](./2026-09-07-admin-layer-registry-path-pickers-and-packaging.md) | in-progress | [#157](https://github.com/sksizer/rust-ontogen/pull/157) (merged), [#158](https://github.com/sksizer/rust-ontogen/pull/158) |
-| [Docs stage: data-model reference and JSON Schema](./2026-09-07-docs-stage-data-model-reference-and-json-schema.md) | in-progress | [#161](https://github.com/sksizer/rust-ontogen/pull/161) |
+| [API surfaces with their own store accessor](./2026-09-07-api-surfaces-with-own-store-accessor.md) | closed/done | [#156](https://github.com/sksizer/rust-ontogen/pull/156) |
+| [Pagination declared per module](./2026-09-07-pagination-declared-per-module.md) | closed/done | folded into [#156](https://github.com/sksizer/rust-ontogen/pull/156) |
+| [Pagination pushdown into the store](./2026-09-07-pagination-pushdown-into-the-store.md) | closed/done | [#159](https://github.com/sksizer/rust-ontogen/pull/159), [#166](https://github.com/sksizer/rust-ontogen/pull/166), [#172](https://github.com/sksizer/rust-ontogen/pull/172) |
+| [Enum variants, labels and the id type](./2026-09-07-schema-enums-labels-and-id-type.md) | closed/done | [#160](https://github.com/sksizer/rust-ontogen/pull/160) |
+| [Admin layer: registry path, pickers, packaging](./2026-09-07-admin-layer-registry-path-pickers-and-packaging.md) | closed/done | [#157](https://github.com/sksizer/rust-ontogen/pull/157), [#158](https://github.com/sksizer/rust-ontogen/pull/158) |
+| [Docs stage: data-model reference and JSON Schema](./2026-09-07-docs-stage-data-model-reference-and-json-schema.md) | closed/done | [#161](https://github.com/sksizer/rust-ontogen/pull/161) |
 | [Bytes, timestamp, date and JSON columns, defaults, indexes](./2026-09-07-schema-field-types-defaults-and-indexes.md) | backlog | — |
 | [Explicit route shapes, or loud failure](./2026-08-04-explicit-route-shapes-or-loud-failure.md) | backlog | — |
+
+## Standard formats (2026-10-03)
+
+Two epics, tasks filed as each phase opens: [JSON:API as the generated HTTP
+wire format](../epics/jsonapi-http-transport.md) and [OKF-conformant markdown
+vaults by default](../epics/okf-markdown-vault.md). See [`../../roadmap.md`](../../roadmap.md) M4.
 
 ## Resumable event ops (2026-09-28)
 
