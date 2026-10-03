@@ -116,6 +116,8 @@ pub mod fsops;
 pub mod walk;
 
 #[cfg(feature = "store")]
+mod names;
+#[cfg(feature = "store")]
 mod okf;
 #[cfg(feature = "store")]
 pub mod store;

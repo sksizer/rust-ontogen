@@ -434,6 +434,18 @@ let state = AppState::new(open_vault(VAULT_ROOT));
   `[a-z0-9._~-]`, at most 200 bytes), but lookups check only that the id is
   a safe file stem, so a hand-written `Draft.md` or `café.md` is listed,
   read, updated and deleted under its stem.
+- **Lookups match the stored name exactly, on every filesystem.** macOS and
+  Windows resolve `KEPT.md` to a stored `kept.md` (and macOS resolves either
+  Unicode normalization form of `café.md` to the other). The store does not:
+  `get`, `update` and `delete` of `KEPT` answer `{Entity}NotFound` and change
+  nothing, and a relation id spelled `Markdown-Backend` does not resolve to
+  `markdown-backend.md`. A create counts an id as taken when its file name
+  resolves to an existing file under any spelling, since writing it would
+  replace that file: on macOS, creating `draft` beside a hand-written
+  `Draft.md` is `{Entity}AlreadyExists`, and a slug probes on to `draft-2`.
+  The handle learns once, with a hidden probe file in the vault, whether the
+  filesystem aliases names; where it does, each lookup also lists the
+  record's directory.
 - **Hand edits survive.** The runtime's `Document` round-trip preserves
   unknown keys, key order, and the body; untouched files re-render
   byte-for-byte, and a no-op update doesn't even touch the file.

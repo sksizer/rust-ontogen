@@ -2,7 +2,8 @@
 //! rules (JSON:API wire contract §5.4 and §8.2, ADR 0006 §3), driven over a
 //! real temp vault: the typed `IdRequired` / `AlreadyExists` /
 //! `ParentRequired` errors, `-2` probing, lookups of ids no record can
-//! have, id byte order, and dropped `has_many` children.
+//! have and of case variants of ids that do, id byte order, and dropped
+//! `has_many` children.
 
 use markdown_pilot::Store;
 use markdown_pilot::persistence::markdown::generated::open_vault;
@@ -202,4 +203,35 @@ async fn dropping_a_child_whose_parent_is_required_writes_nothing() {
         .expect("an update that drops nothing");
     assert_eq!(updated.children, ["appendix", "ch1", "ch2"]);
     assert_eq!(store.get_section("appendix").await.unwrap().parent_id, "book");
+}
+
+#[tokio::test]
+async fn a_case_variant_of_an_id_resolves_to_nothing() {
+    let (dir, store) = store();
+    store.create_task(task("parent", None)).await.unwrap();
+    store.create_task(task("kept", Some("parent"))).await.unwrap();
+    let orphan = store.create_task(task("orphan", Some("PARENT"))).await.unwrap();
+    let before = snapshot(dir.path());
+
+    // On macOS and Windows, KEPT.md and PARENT.md open kept.md and
+    // parent.md; the store still answers for exact ids only.
+    let parent_ref = orphan.parent_id.as_deref().expect("a belongs_to reference");
+    assert!(
+        matches!(store.get_task(parent_ref).await, Err(AppError::TaskNotFound(id)) if id == "PARENT"),
+        "a belongs_to reference spelled in another case does not resolve"
+    );
+    for id in ["KEPT", "Kept"] {
+        assert!(matches!(store.get_task(id).await, Err(AppError::TaskNotFound(got)) if got == id), "get {id}");
+        let update = TaskUpdate { title: Some("overwritten".into()), ..Default::default() };
+        assert!(matches!(store.update_task(id, update).await, Err(AppError::TaskNotFound(_))), "update {id}");
+        assert!(matches!(store.delete_task(id).await, Err(AppError::TaskNotFound(_))), "delete {id}");
+        let adopt = TaskUpdate { subtasks: Some(vec![id.into()]), ..Default::default() };
+        assert!(
+            matches!(store.update_task("parent", adopt).await, Err(AppError::TaskNotFound(got)) if got == id),
+            "a has_many child named {id} does not resolve"
+        );
+    }
+    assert_eq!(snapshot(dir.path()), before, "nothing was written or removed");
+    assert_eq!(store.get_task("parent").await.unwrap().subtasks, ["kept"]);
+    assert_eq!(store.get_task("kept").await.unwrap().title, "Task kept");
 }

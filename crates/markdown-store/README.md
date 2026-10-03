@@ -67,6 +67,14 @@ Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
   are cut to 190 bytes. Lookups only check path safety
   (`layout::validate_lookup_id`), so a hand-named `Draft.md` stays
   reachable.
+- **Lookups match the stored name exactly.** A record is found only under
+  its file stem byte for byte, also on filesystems that resolve another
+  letter case or Unicode normalization form to the same file (macOS,
+  Windows): there a lookup of `KEPT` for a stored `kept.md` is `NotFound`
+  and modifies or removes nothing. A create treats a name the filesystem
+  resolves to any existing file as taken. The handle probes once whether
+  the filesystem aliases names; where it does, each lookup also lists the
+  record's directory.
 - **Byte-stable while untouched.** A parsed document renders as its original
   source byte-for-byte — comments, quoting style, spacing — until a
   *semantic* change occurs; mutators are change-aware, so no-op writes are

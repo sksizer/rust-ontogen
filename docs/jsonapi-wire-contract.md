@@ -995,6 +995,20 @@ Ontogen accepts any valid id:
   record file; the store answers a lookup of one with `{Entity}NotFound`
   instead of passing `markdown_store::Error::InvalidId` through as a
   `500`.
+
+  A lookup matches the stored file name byte for byte on every
+  filesystem. macOS and Windows filesystems resolve a name to a file
+  stored under another letter case, and macOS also across Unicode
+  normalization forms (`café` with a precomposed `é`, or with `e` and a
+  combining accent). There a `get`,
+  `update` or `delete` of such a variant (`KEPT` for a stored `kept.md`)
+  is `{Entity}NotFound`, as on SeaORM, and reads, rewrites or removes
+  nothing; a relation id spelled as a variant does not resolve either. A
+  create counts an id as taken when its file name resolves to an existing
+  file under any spelling, because writing it would replace that file: a
+  client id is `409` and a derived id probes on to `-2`. On a
+  case-sensitive filesystem the variant is a different name and the
+  create proceeds.
 - **An invalid client id is `400`, not `403`.** The spec's `403` is for a
   server that does not support client ids, and this one does.
 - **Uniqueness** within the type is the store's `409`. The id's format is

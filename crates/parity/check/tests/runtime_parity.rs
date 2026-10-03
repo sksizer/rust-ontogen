@@ -65,6 +65,10 @@ trait Backend: Sized {
     async fn create_fixed(&self, fixed: Value) -> R<Value>;
     async fn get_fixed(&self, id: &str) -> R<Value>;
     async fn count_fixeds(&self) -> R<u64>;
+
+    /// Rename a stored item the way an edit made outside the store would
+    /// (an SQL `UPDATE`, a file rename), to reach ids no create can make.
+    async fn rename_item(&self, from: &str, to: &str);
 }
 
 /// The generated method calls are spelled identically in both crates, so
@@ -163,6 +167,13 @@ mod sqlite {
         }
 
         store_methods!(parity_seaorm, DbError);
+
+        async fn rename_item(&self, from: &str, to: &str) {
+            use sea_orm::ConnectionTrait;
+            let sql = format!("UPDATE items SET id = '{to}' WHERE id = '{from}'");
+            let renamed = self.store.db().execute_unprepared(&sql).await.expect("rename");
+            assert_eq!(renamed.rows_affected(), 1, "rename {from:?}");
+        }
     }
 
     error_mappers!(parity_seaorm, DbError);
@@ -187,6 +198,11 @@ mod vault {
         }
 
         store_methods!(parity_markdown, Md);
+
+        async fn rename_item(&self, from: &str, to: &str) {
+            let dir = self.store.vault().root().join("items");
+            std::fs::rename(dir.join(format!("{from}.md")), dir.join(format!("{to}.md"))).expect("rename");
+        }
     }
 
     error_mappers!(parity_markdown, Md);
@@ -687,9 +703,8 @@ async fn lookups<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     t.record("create kept", &b.create_item(item("kept", json!({}))).await).unwrap();
     // Ids no record can have (markdown cannot even hold them; SeaORM never
     // created them); ids a lookup accepts but no create could have made
-    // (uppercase, non-ASCII, over 200 bytes; none of them a case variant of
-    // `kept`, which a case-insensitive filesystem would find); and a valid
-    // id that was never created.
+    // (uppercase, non-ASCII, over 200 bytes); and a valid id that was never
+    // created.
     let (long, longer) = ("l".repeat(201), "l".repeat(300));
     for id in [
         "index",
@@ -725,6 +740,34 @@ async fn lookups<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 #[tokio::test]
 async fn lookups_of_missing_and_impossible_ids_are_not_found() {
     parity!(lookups);
+}
+
+/// Spellings of a stored id that macOS and Windows filesystems resolve to
+/// the stored file: other letter cases, and the other Unicode
+/// normalization form.
+async fn spelling_variants<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let kept = t.record("create kept", &b.create_item(item("kept", json!({}))).await).unwrap();
+    t.record("create hand", &b.create_item(item("hand", json!({ "title": "Hand-named" }))).await).unwrap();
+    let cafe = "caf\u{e9}";
+    b.rename_item("hand", cafe).await;
+    let hand = t.record("get the hand-named record", &b.get_item(cafe).await).unwrap();
+    assert_eq!((hand["id"].as_str(), hand["title"].as_str()), (Some(cafe), Some("Hand-named")));
+
+    for id in ["KEPT", "Kept", "kepT", "cafe\u{301}", "CAF\u{c9}", "Caf\u{e9}"] {
+        let not_found = StoreError::NotFound("Item", id.to_string());
+        t.expect(&format!("get {id:?}"), b.get_item(id).await, Err(not_found.clone()));
+        t.expect(&format!("update {id:?}"), b.update_item(id, json!({ "title": "x" })).await, Err(not_found.clone()));
+        t.expect(&format!("delete {id:?}"), b.delete_item(id).await, Err(not_found));
+    }
+    t.expect("kept is unchanged", b.get_item("kept").await, Ok(kept));
+    t.expect("the hand-named record is unchanged", b.get_item(cafe).await, Ok(hand));
+    t.expect("nothing was removed", listed_ids(b.list_items(None, None).await), ok_ids(&[cafe, "kept"]));
+    t
+}
+
+#[tokio::test]
+async fn a_case_or_normalization_variant_of_an_id_is_not_found() {
+    parity!(spelling_variants);
 }
 
 // ─── has_many writes ────────────────────────────────────────────────────────

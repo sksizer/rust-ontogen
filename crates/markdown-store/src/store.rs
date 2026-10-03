@@ -21,6 +21,7 @@ use crate::{
     fsops,
     id::IdStrategy,
     layout::VaultLayout,
+    names::NameCheck,
     okf,
     walk::{self, WalkOptions},
 };
@@ -138,6 +139,29 @@ impl std::fmt::Debug for OkfPolicy {
 /// between the two renames leaves the same stale-but-valid index, which is
 /// not listed (the list lives in memory).
 ///
+/// # Lookups match the stored name exactly
+///
+/// A record's id is its file stem, byte for byte. Every lookup (read,
+/// [`record_exists`](Self::record_exists), modify, remove, and the
+/// [`EntityRecords`] wrappers of each) finds a record only when its file is
+/// stored under exactly `<id>.md`, on every filesystem. macOS and Windows
+/// filesystems resolve `KEPT.md` to a stored `kept.md` (and macOS resolves
+/// one Unicode normalization form of a name to a file stored under the
+/// other); there a lookup of `KEPT` is [`Error::NotFound`] and nothing is
+/// read, rewritten or removed.
+///
+/// A create counts an id as taken when the filesystem resolves its file
+/// name to any existing file, since writing it would replace that file: on
+/// macOS, creating `a` beside a hand-named `A.md` is
+/// [`Error::AlreadyExists`], and a derived id probes on to `a-2`.
+///
+/// The handle learns whether the filesystem aliases names on the first
+/// lookup, by creating and removing a hidden probe file in the record's
+/// directory, and keeps the answer (clones share it); a vault it cannot
+/// write to is treated as aliasing. Where names do not alias, a lookup
+/// costs what the open costs. Where they do, a lookup that opens a file
+/// also lists that file's directory until it finds the exact name.
+///
 /// ```
 /// use markdown_store::{Document, VaultHandle, VaultLayout};
 ///
@@ -162,6 +186,9 @@ pub struct VaultHandle {
     list_cap: usize,
     okf: OkfPolicy,
     write_guard: Arc<Mutex<()>>,
+    /// Whether lookups must confirm the stored name; probed once, shared by
+    /// clones.
+    names: Arc<NameCheck>,
     /// Directories whose index refresh failed after a committed write and
     /// has not succeeded since. Shared by clones, like the write lock.
     stale: Arc<Mutex<BTreeSet<PathBuf>>>,
@@ -178,6 +205,7 @@ impl VaultHandle {
             list_cap: DEFAULT_LIST_CAP,
             okf: OkfPolicy::default(),
             write_guard: Arc::new(Mutex::new(())),
+            names: Arc::default(),
             stale: Arc::default(),
         }
     }
@@ -246,19 +274,25 @@ impl VaultHandle {
 
     // ── single-record ops ───────────────────────────────────────────────
 
-    /// Whether a record exists.
+    /// Whether a record is stored under exactly `id` (see
+    /// [lookups](Self#lookups-match-the-stored-name-exactly)).
     pub fn record_exists(&self, dir_segment: &str, id: &str) -> Result<bool, Error> {
-        Ok(fsops::exists(&self.record_path(dir_segment, id)?))
+        let path = self.record_path(dir_segment, id)?;
+        Ok(fsops::exists(&path) && self.names.exact(&path)?)
     }
 
-    /// Read and parse one record. Missing record is [`Error::NotFound`].
+    /// Read and parse one record. A record not stored under exactly `id` is
+    /// [`Error::NotFound`] (see
+    /// [lookups](Self#lookups-match-the-stored-name-exactly)).
     pub fn read_record(&self, dir_segment: &str, id: &str) -> Result<Document, Error> {
         let path = self.record_path(dir_segment, id)?;
         let raw = fsops::read(&path)?;
+        self.require_exact(&path)?;
         Document::parse(&raw).map_err(|e| Error::parse_at(&path, e))
     }
 
-    /// Read and parse one record; missing record is `Ok(None)`.
+    /// Read and parse one record; a missing record, or one not stored under
+    /// exactly `id`, is `Ok(None)`.
     pub fn read_record_opt(&self, dir_segment: &str, id: &str) -> Result<Option<Document>, Error> {
         match self.read_record(dir_segment, id) {
             Ok(doc) => Ok(Some(doc)),
@@ -270,7 +304,10 @@ impl VaultHandle {
     /// Create a record. `id` must pass the create rule
     /// ([`crate::layout::validate_id`]), or it is [`Error::InvalidId`].
     /// Fails with [`Error::AlreadyExists`] if the file is already present —
-    /// creation never overwrites. The existence check and write happen under
+    /// creation never overwrites, so a file the filesystem resolves the name
+    /// to under another spelling counts as present (see
+    /// [lookups](Self#lookups-match-the-stored-name-exactly)). The existence
+    /// check and write happen under
     /// the vault's write lock. (The check is racy against writers in *other
     /// processes*; single-process ownership of a vault is the documented
     /// stance.)
@@ -278,7 +315,7 @@ impl VaultHandle {
         crate::layout::validate_id(id)?;
         let path = self.record_path(dir_segment, id)?;
         let _guard = self.lock();
-        if fsops::exists(&path) {
+        if self.taken(&path) {
             return Err(Error::AlreadyExists { path });
         }
         self.write_new(&path, doc)
@@ -311,7 +348,7 @@ impl VaultHandle {
         let _guard = self.lock();
         let id = self.derive_id(dir_segment, strategy, provided, source_value)?;
         let path = self.record_path(dir_segment, &id)?;
-        if fsops::exists(&path) {
+        if self.taken(&path) {
             return Err(Error::AlreadyExists { path });
         }
         self.write_new(&path, doc)?;
@@ -320,22 +357,45 @@ impl VaultHandle {
 
     /// Read-modify-write one record under the write lock. The mutation
     /// closure receives the parsed [`Document`]; on `Ok` the document is
-    /// re-rendered and atomically written back.
+    /// re-rendered and atomically written back. A record not stored under
+    /// exactly `id` is [`Error::NotFound`] and nothing is written.
     pub fn modify_record<F>(&self, dir_segment: &str, id: &str, f: F) -> Result<(), Error>
     where
         F: FnOnce(&mut Document) -> Result<(), Error>,
     {
         let path = self.record_path(dir_segment, id)?;
         let _guard = self.lock();
+        self.require_exact(&path)?;
         self.rewrite(&path, f)
     }
 
-    /// Remove a record under the write lock. Missing record is
-    /// [`Error::NotFound`].
+    /// Remove a record under the write lock. A missing record, or one not
+    /// stored under exactly `id`, is [`Error::NotFound`] and nothing is
+    /// removed.
     pub fn remove_record(&self, dir_segment: &str, id: &str) -> Result<(), Error> {
         let path = self.record_path(dir_segment, id)?;
         let _guard = self.lock();
+        self.require_exact(&path)?;
         self.delete(&path)
+    }
+
+    /// [`Error::NotFound`] when `path` would reach a file stored under
+    /// another spelling. Every lookup runs this before it uses what it
+    /// opened, and a write runs it under the write lock before touching the
+    /// file: an atomic rename onto a variant would replace the other
+    /// record's content and keep its old name.
+    fn require_exact(&self, path: &Path) -> Result<(), Error> {
+        if self.names.exact(path)? {
+            Ok(())
+        } else {
+            Err(Error::NotFound { path: path.to_path_buf() })
+        }
+    }
+
+    /// Whether a create at `path` would land on an existing file under any
+    /// spelling the filesystem resolves to it.
+    fn taken(&self, path: &Path) -> bool {
+        fsops::exists(path)
     }
 
     // ── the write paths every mutation funnels through ─────────────────
@@ -584,7 +644,8 @@ impl VaultHandle {
     }
 
     /// Return `base` if no record with that id exists, otherwise the first
-    /// free `base-2`, `base-3`, … . Same non-atomicity caveat as
+    /// free `base-2`, `base-3`, … . An id whose file name the filesystem
+    /// resolves to an existing file under another spelling is not free. Same non-atomicity caveat as
     /// [`make_record_id`](Self::make_record_id): pair with
     /// [`create_record_derived`](Self::create_record_derived) for the
     /// race-free create path.
@@ -616,7 +677,7 @@ impl VaultHandle {
     /// title that slugs to `index` lands on `index-2`.
     fn next_free_id(&self, dir_segment: &str, base: &str) -> Result<String, Error> {
         for candidate in crate::id::candidates(base) {
-            if !self.record_exists(dir_segment, &candidate)? {
+            if !self.taken(&self.record_path(dir_segment, &candidate)?) {
                 return Ok(candidate);
             }
         }
@@ -723,7 +784,8 @@ impl<'a> EntityRecords<'a> {
         }
     }
 
-    /// Read one record; missing, or another entity's under
+    /// Read one record; missing, not stored under exactly `id` (see
+    /// [`VaultHandle`]'s lookups), or another entity's under
     /// [`VaultLayout::Flat`], is `Ok(None)`.
     pub fn read_opt(&self, id: &str) -> Result<Option<Document>, Error> {
         Ok(self.vault.read_record_opt(self.dir_segment, id)?.filter(|doc| self.admits(doc)))
@@ -744,13 +806,15 @@ impl<'a> EntityRecords<'a> {
 
     /// Read-modify-write one record under the write lock, then stamp its
     /// `type` if the mutation changed anything. A clean document is not
-    /// written at all.
+    /// written at all. A record not stored under exactly `id` is
+    /// [`Error::NotFound`].
     pub fn modify<F>(&self, id: &str, f: F) -> Result<(), Error>
     where
         F: FnOnce(&mut Document) -> Result<(), Error>,
     {
         let path = self.vault.record_path(self.dir_segment, id)?;
         let _guard = self.vault.lock();
+        self.vault.require_exact(&path)?;
         self.vault.rewrite(&path, |doc| {
             if !self.admits(doc) {
                 return Err(Error::NotFound { path: path.clone() });
@@ -761,8 +825,9 @@ impl<'a> EntityRecords<'a> {
         })
     }
 
-    /// Remove one record under the write lock. Missing, or another
-    /// entity's under [`VaultLayout::Flat`], is [`Error::NotFound`].
+    /// Remove one record under the write lock. Missing, not stored under
+    /// exactly `id`, or another entity's under [`VaultLayout::Flat`], is
+    /// [`Error::NotFound`].
     ///
     /// Under [`VaultLayout::Flat`] a record whose frontmatter does not parse
     /// cannot be removed here ([`Error::Parse`]): without its `type` there is
@@ -771,6 +836,7 @@ impl<'a> EntityRecords<'a> {
     pub fn remove(&self, id: &str) -> Result<(), Error> {
         let path = self.vault.record_path(self.dir_segment, id)?;
         let _guard = self.vault.lock();
+        self.vault.require_exact(&path)?;
         if self.vault.layout == VaultLayout::Flat {
             let doc = Document::parse(&fsops::read(&path)?).map_err(|e| Error::parse_at(&path, e))?;
             if !self.admits(&doc) {
@@ -950,6 +1016,103 @@ mod tests {
             vault.read_record("tasks", &"l".repeat(crate::layout::MAX_STEM_LEN + 1)),
             Err(Error::InvalidId { .. })
         ));
+    }
+
+    /// Whether the test machine's filesystem would open `variant` in the
+    /// entity's directory when only another spelling is stored there.
+    fn resolves(vault: &VaultHandle, dir: &str, variant: &str) -> bool {
+        vault.record_path(dir, variant).unwrap().exists()
+    }
+
+    fn assert_not_found<T: std::fmt::Debug>(result: Result<T, Error>, what: &str) {
+        assert!(matches!(result, Err(Error::NotFound { .. })), "{what}: {result:?}");
+    }
+
+    /// Every lookup of `variant` finds nothing, through the handle and the
+    /// typed view, and leaves `stored`'s file byte for byte as it was.
+    fn assert_variant_misses(vault: &VaultHandle, dir: &str, stored: &str, variant: &str) {
+        let before = raw(vault, dir, stored);
+        let tasks = vault.entity(dir, "Task");
+        let edit = |d: &mut Document| {
+            d.set("title", "overwritten");
+            Ok(())
+        };
+        assert!(!vault.record_exists(dir, variant).unwrap(), "exists {variant:?}");
+        assert_not_found(vault.read_record(dir, variant), &format!("read {variant:?}"));
+        assert_eq!(vault.read_record_opt(dir, variant).unwrap(), None, "read_opt {variant:?}");
+        assert_eq!(tasks.read_opt(variant).unwrap(), None, "typed read_opt {variant:?}");
+        assert_not_found(vault.modify_record(dir, variant, edit), &format!("modify {variant:?}"));
+        assert_not_found(tasks.modify(variant, edit), &format!("typed modify {variant:?}"));
+        assert_not_found(vault.remove_record(dir, variant), &format!("remove {variant:?}"));
+        assert_not_found(tasks.remove(variant), &format!("typed remove {variant:?}"));
+        assert_eq!(raw(vault, dir, stored), before, "{stored:?} is untouched by lookups of {variant:?}");
+        assert!(vault.record_exists(dir, stored).unwrap(), "{stored:?} is still there");
+    }
+
+    #[test]
+    fn a_case_variant_of_an_id_finds_nothing_and_changes_nothing() {
+        for layout in [VaultLayout::PerEntityDir, VaultLayout::Flat] {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = VaultHandle::new(dir.path(), layout);
+            vault.entity("tasks", "Task").create(&IdStrategy::Provided, Some("kept"), None, doc("kept")).unwrap();
+            // On macOS and Windows the variants open kept.md; elsewhere they
+            // name no file. Either way they are not the record.
+            for variant in ["KEPT", "Kept"] {
+                assert_variant_misses(&vault, "tasks", "kept", variant);
+            }
+            assert_eq!(vault.list_ids("tasks").unwrap(), ["kept"], "{layout:?}");
+            assert_eq!(vault.read_record("tasks", "kept").unwrap().get("title").and_then(|v| v.as_str()), Some("kept"));
+        }
+    }
+
+    #[test]
+    fn a_normalization_variant_of_an_id_finds_nothing_and_changes_nothing() {
+        let (_dir, vault) = vault();
+        seed(&vault, "tasks", "caf\u{e9}", "---\ntitle: hand-named\n---\n");
+        // HFS+ stores names decomposed; take the name as the directory has it.
+        let stored = vault.list_ids("tasks").unwrap().remove(0);
+        let variant = if stored.contains('\u{e9}') {
+            stored.replace('\u{e9}', "e\u{301}")
+        } else {
+            stored.replace("e\u{301}", "\u{e9}")
+        };
+        assert_ne!(stored, variant);
+        assert_variant_misses(&vault, "tasks", &stored, &variant);
+        assert_eq!(
+            vault.read_record("tasks", &stored).unwrap().get("title").and_then(|v| v.as_str()),
+            Some("hand-named"),
+            "the stored spelling still reads"
+        );
+        assert_eq!(vault.list_ids("tasks").unwrap(), [stored]);
+    }
+
+    #[test]
+    fn a_create_never_lands_on_a_file_stored_under_another_spelling() {
+        let (_dir, vault) = vault();
+        let tasks = vault.entity("tasks", "Task");
+        let (draft, ship) = ("---\ntitle: Draft\n---\n", "---\ntitle: Ship It\n---\n");
+        seed(&vault, "tasks", "Draft", draft);
+        seed(&vault, "tasks", "Ship-It", ship);
+        let folds = resolves(&vault, "tasks", "draft");
+
+        let explicit = tasks.create(&IdStrategy::Provided, Some("draft"), None, doc("new draft"));
+        let derived = tasks.create(&slug(), None, Some("Ship It"), doc("Ship It")).unwrap();
+        if folds {
+            // draft.md would open Draft.md, so `draft` is taken.
+            assert!(matches!(explicit, Err(Error::AlreadyExists { .. })), "{explicit:?}");
+            assert_eq!(derived, "ship-it-2", "a derived id probes past the taken spelling");
+            assert_eq!(vault.ensure_unique_id("tasks", "draft").unwrap(), "draft-2");
+        } else {
+            assert_eq!(explicit.unwrap(), "draft", "a distinct file on a case-sensitive filesystem");
+            assert_eq!(derived, "ship-it");
+            assert_eq!(
+                vault.read_record("tasks", "draft").unwrap().get("title").and_then(|v| v.as_str()),
+                Some("new draft")
+            );
+        }
+        assert_eq!(raw(&vault, "tasks", "Draft"), draft, "the hand-named file is untouched");
+        assert_eq!(raw(&vault, "tasks", "Ship-It"), ship, "the hand-named file is untouched");
+        assert!(vault.list_ids("tasks").unwrap().iter().any(|id| id == "Draft"));
     }
 
     #[test]
