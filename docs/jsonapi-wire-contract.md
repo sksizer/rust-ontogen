@@ -954,16 +954,25 @@ Ontogen accepts any valid id:
   `ontogen_core::id::validate_id`, and markdown's create check
   `markdown_store::layout::validate_id` matches it. An id is valid when it:
   - consists only of lowercase ASCII letters, digits, `.`, `_`, `~` and
-    `-` (the URL unreserved set without uppercase), so it is a portable
-    filename and needs no escaping in a URL path;
+    `-` (the URL unreserved set without uppercase), so it needs no
+    escaping in a URL path;
   - is 1 to 200 bytes long;
   - does not start with `.` (this also excludes `.` and `..`);
   - does not end with `.`;
   - is not `index` or `log`. OKF reserves those stems
-    ([ADR 0005](architecture/0005-okf-markdown-vaults.md)).
+    ([ADR 0005](architecture/0005-okf-markdown-vaults.md));
+  - is not a Windows device name (`con`, `prn`, `aux`, `nul`, `com1` to
+    `com9`, `lpt1` to `lpt9`), in any case, either whole or as the part
+    before its first `.`: `con`, `nul.x` and `com1.backup` are refused,
+    `console`, `con-2` and `xcon` are not. Windows opens the device for
+    such a filename, so no `con.md` can exist there.
 
-  An invalid id is reported with the clause it broke (for example
-  `must not contain uppercase letters` or `must be at most 200 bytes`).
+  These clauses make every valid id a filename on Linux, macOS and
+  Windows. An invalid id is reported with the clause it broke (for
+  example `must not contain uppercase letters` or `must be at most 200
+  bytes`), followed by the whole rule and `choose another id`. A reserved
+  name is reported as reserved even when it has uppercase letters
+  (`Index`, `CON`), since lowercasing it would not help.
 - **Derived ids.** The slug function lowercases ASCII letters, folds the
   letters of the Latin-1 Supplement and Latin Extended-A blocks to ASCII
   (`é` to `e`, `ß` to `ss`, `æ` to `ae`, `ł` to `l`), drops combining
@@ -972,7 +981,8 @@ Ontogen accepts any valid id:
   left at the end of the cut is trimmed), so the probes `base-2`,
   `base-3`, … stay within 200 bytes. No probe is ever longer than 200
   bytes. A derived slug that would be reserved dedupes like a collision,
-  to `index-2`, per ADR 0005.
+  to `index-2` (per ADR 0005) or `con-2`. A slug has no `.`, so only the
+  unsuffixed slug can be reserved.
 - **Scope.** The rule governs ids being created: a client `data.id`, and a
   derived or hook-assigned id, which the store checks. A path `{id}` is
   only a lookup key and is never checked against it (§8.1). The server
@@ -2097,7 +2107,7 @@ the section that states each and its reason.
 | Filter names are the `*Query` struct's field names | 7.3 | The struct is user-authored, and ontogen does not rename it |
 | `id` is the implicit last sort key | 7.4 | A total order makes pages stable (ADR 0006) |
 | Dangling linkage is skipped in `included` and related links, not an error | 7.5 | Markdown tolerates dangling wikilinks by design |
-| One id-validity rule on both backends, applied to ids being created: lowercase `[a-z0-9._~-]`, at most 200 bytes; an invalid one is `400` | 8.2 | A malformed id is a bad request, not a store `500`; the backends agree, and every id is a portable filename and URL segment |
+| One id-validity rule on both backends, applied to ids being created: lowercase `[a-z0-9._~-]`, at most 200 bytes, not `index`/`log`, not a Windows device name (`con`, `nul.x`, …); an invalid one is `400` | 8.2 | A malformed id is a bad request, not a store `500`; the backends agree, and every id is a filename on Linux, macOS and Windows and a URL segment |
 | A path `{id}` is a lookup key, never validated | 8.1 | Every row the store lists stays servable at its `links.self`, including SeaORM rows that predate the rule |
 | Unknown attributes are `400` | 8.2 | Catches clients still sending the flat shape |
 | Body members are checked in schema order, unknown names in byte order | 8.2, 13.2 | Deterministic without an order-preserving parser |

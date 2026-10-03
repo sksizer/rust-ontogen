@@ -2,7 +2,8 @@
 //! contract §8.2), but it has two implementations: `ontogen_core::id`,
 //! which generated SeaORM stores call, and `markdown_store::layout`, which
 //! the vault enforces on create (markdown-store takes no ontogen
-//! dependency). This test holds them to the same answers and reasons, and
+//! dependency). This test holds them to the same answers, reasons and
+//! messages, and
 //! their slug functions and probe sequences to the same output, so an id
 //! one backend creates the other creates too.
 
@@ -46,6 +47,34 @@ const CORPUS: &[&str] = &[
     "INDEX",
     "Log",
     "lOg",
+    // Windows device names, whole and before the first dot, in any case
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "com1",
+    "com9",
+    "lpt1",
+    "lpt9",
+    "CON",
+    "Nul",
+    "nul.x",
+    "com1.backup",
+    "con.a.b",
+    "LPT3.TXT",
+    "con.",
+    // near the device names
+    "console",
+    "con-2",
+    "xcon",
+    "a.con",
+    ".con",
+    "com",
+    "com0",
+    "com10",
+    "lpt0",
+    "nulls",
+    "con_x",
     // near the reserved stems
     "index-2",
     "logs",
@@ -117,22 +146,23 @@ fn both_validators_agree_on_every_id() {
     let mut disagreements = Vec::new();
     for candidate in everything() {
         let candidate = candidate.as_str();
-        // The reserved-id reason is worded per backend; every other names
-        // the same broken clause in the same words.
-        let core = id::validate_id(candidate).map_err(|e| e.reason.to_string());
+        let core = id::validate_id(candidate).map_err(|e| (e.reason.to_string(), e.to_string()));
         let vault = layout::validate_id(candidate).map_err(|e| match e {
-            markdown_store::Error::InvalidId { reason, .. } => reason,
+            markdown_store::Error::InvalidId { ref reason, .. } => (reason.clone(), e.to_string()),
             other => panic!("{candidate:?}: {other:?}"),
         });
-        let same = match (&core, &vault) {
-            (Err(_), Err(_)) if id::is_reserved_id(candidate) => true,
-            _ => core == vault,
-        };
-        if !same {
+        if core != vault {
             disagreements.push(format!("{candidate:?}: ontogen_core says {core:?}, markdown_store says {vault:?}"));
         }
     }
     assert!(disagreements.is_empty(), "the two id rules disagree:\n{}", disagreements.join("\n"));
+}
+
+#[test]
+fn both_state_the_same_rule() {
+    assert_eq!(id::ID_RULE, layout::ID_RULE);
+    assert_eq!(id::RESERVED_REASON, layout::RESERVED_REASON);
+    assert_eq!(id::DEVICE_NAME_REASON, layout::DEVICE_NAME_REASON);
 }
 
 #[test]
@@ -171,6 +201,8 @@ fn both_probe_the_same_candidates() {
         "draft".to_string(),
         "index".to_string(),
         "LOG".to_string(),
+        "con".to_string(),
+        "lpt9".to_string(),
         "b".repeat(250),
         format!("{}-tail", "c".repeat(197)),
     ];
@@ -190,8 +222,10 @@ fn both_probe_the_same_candidates() {
 fn both_agree_on_what_is_reserved() {
     for &candidate in CORPUS {
         assert_eq!(id::is_reserved_id(candidate), layout::is_reserved_id(candidate), "{candidate:?}");
+        assert_eq!(id::is_device_name(candidate), layout::is_device_name(candidate), "{candidate:?}");
     }
     assert_eq!(id::RESERVED_IDS, layout::RESERVED_IDS);
+    assert_eq!(id::DEVICE_NAMES, layout::DEVICE_NAMES);
 }
 
 #[test]
@@ -205,6 +239,9 @@ fn both_slug_functions_agree() {
         "Äpfel und Birnen",
         "日本語のタイトル",
         "Index",
+        "Con",
+        "nul.x",
+        "COM1 backup",
         "MiXeD 123 case",
         "a",
         "trailing-",
@@ -224,8 +261,15 @@ fn every_nonempty_slug_is_a_valid_id_unless_reserved() {
     for title in everything() {
         let slug = id::slugify(&title);
         assert!(slug.len() <= id::SLUG_MAX_LEN, "{title:?} slugified to {} bytes", slug.len());
-        if !slug.is_empty() && !id::is_reserved_id(&slug) {
+        if !slug.is_empty() && !id::is_reserved_id(&slug) && !id::is_device_name(&slug) {
             assert!(id::validate_id(&slug).is_ok(), "{title:?} slugified to the invalid id {slug:?}");
+        }
+        // With no `.` in a slug, the first probe `candidates` yields is
+        // creatable even when the slug itself is reserved.
+        assert!(!slug.contains('.'), "{title:?} slugified to {slug:?}");
+        if !slug.is_empty() {
+            let first = id::candidates(&slug).next().expect("an endless sequence");
+            assert!(id::validate_id(&first).is_ok(), "{title:?} probes {first:?} first");
         }
     }
 }

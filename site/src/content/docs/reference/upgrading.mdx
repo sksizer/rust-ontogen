@@ -133,15 +133,20 @@ Your `load_junction_ids` must return ids in the order they were written, because
 Ids being created follow a stricter rule, the same on both backends. It applies to a client id, an id `before_create` assigns, and a derived id.
 
 - An id consists only of lowercase ASCII letters, digits, `.`, `_`, `~` and `-`. It is at most 200 bytes, does not start or end with `.`, and is not `index` or `log`. An uppercase letter, a non-ASCII character, a space, other punctuation, or a length over 200 bytes now fails the create with the backend's error (`DbError` on SeaORM, `Md` on markdown). The rule used to allow all of these except `/`, `\`, `:` and NUL.
+- An id is not a Windows device name: `con`, `prn`, `aux`, `nul`, `com1` to `com9` or `lpt1` to `lpt9`, in any case, either whole or before its first `.`. So `con`, `nul.x` and `com1.backup` are refused, while `console`, `con-2` and `xcon` are fine. Windows cannot hold a file with such a name (`con.md`), so a vault holding one could not be checked out there. A title that slugs to one derives the next free probe, `con-2`, as `index` derives `index-2`.
+- The error message names the clause the id broke, then states the whole rule: `invalid id "Ship": must not contain uppercase letters; an id is 1-200 bytes of a-z, 0-9, '.', '_', '~', '-', not starting or ending with '.', and not a reserved name: choose another id`.
 - `SlugFromField` folds Latin letters with diacritics to ASCII instead of treating them as separators: `Crème brûlée` slugs to `creme-brulee` (it used to be `cr-me-br-l-e`), and `Straße` to `strasse`. Other non-ASCII characters still separate. A slug longer than 190 bytes is cut to 190, so a probe `base-N` stays within 200 bytes. Ids already stored are not rewritten; a new record with the same title gets the new slug.
-- Lookups do not change. A record whose id breaks the new rule (`Draft`, `café`, a 250-byte id) is still listed, readable, updatable and deletable, on SeaORM and in a vault.
+- Lookups do not change. A record whose id breaks the new rule (`Draft`, `café`, `con`, a 250-byte id) is still listed, readable, updatable and deletable, on SeaORM and in a vault.
 
-Migration: rename records whose ids break the rule before you rely on creating them under those ids, and before you move SeaORM data into a markdown vault. On SQLite, this lists them:
+Migration: rename records whose ids break the rule before you rely on creating them under those ids, and before you move SeaORM data into a markdown vault. On SQLite, this lists them. Run it once per entity table, with `<table>` replaced by the table's name:
 
 ```sql
-SELECT id FROM task
+SELECT id FROM <table>
 WHERE id GLOB '*[^a-z0-9._~-]*' OR length(CAST(id AS BLOB)) > 200
-   OR id GLOB '.*' OR id GLOB '*.' OR lower(id) IN ('index', 'log') OR id = '';
+   OR id GLOB '.*' OR id GLOB '*.' OR lower(id) IN ('index', 'log') OR id = ''
+   OR substr(lower(id), 1, instr(id || '.', '.') - 1) IN ('con', 'prn', 'aux', 'nul',
+      'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+      'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9');
 ```
 
 In a vault, rename the file and update every `[[wikilink]]` and foreign key that names the old id.
@@ -151,8 +156,9 @@ In a vault, rename the file and update every `[[wikilink]]` and foreign key that
 - `VaultHandle::new(root, layout)` takes no strategy, and the `id_strategy()` accessor is removed. Drop the third argument, or use the generated `open_vault`.
 - `create_record_derived`, `make_record_id` and `EntityRecords::create` take `&IdStrategy` as their second argument. Pass the store's strategy on each create.
 - A missing id is the new `Error::IdRequired { reason }`. It used to be `InvalidId`.
+- `Error::InvalidId` has a third field, `create_rule`: true when the create rule refused the id, whose message then states the whole rule, and false when a lookup's path-safety check did. Add it where you construct the variant; a `{ .. }` pattern needs no change.
 - `layout::validate_id` is the create rule (see [Record ids](#record-ids)). `create_record` checks it too, so it refuses an id that `record_path` accepts. `record_path`, and every read, update and delete, use the looser path-safety check `layout::validate_lookup_id`, so a record whose file stem breaks the create rule stays reachable.
-- `id::candidates(base)` yields the probe sequence `base`, `base-2`, … that derived ids use. New constants: `layout::MAX_ID_LEN` (200), `layout::MAX_STEM_LEN` (252) and `id::SLUG_MAX_LEN` (190).
+- `id::candidates(base)` yields the probe sequence `base`, `base-2`, … that derived ids use. New constants: `layout::MAX_ID_LEN` (200), `layout::MAX_STEM_LEN` (252), `id::SLUG_MAX_LEN` (190), `layout::DEVICE_NAMES` and `layout::ID_RULE`; `layout::is_device_name` tells whether an id is a device name.
 
 ## Store behaviour
 

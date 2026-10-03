@@ -192,7 +192,8 @@ each of its sections to a phase.
 
 - **3a.** `/relationships/{rel}` and related-resource endpoints:
   - every relation field is served from the generated store, `has_many`
-    writable (decision 9);
+    writable (decision 9; self-referential only, cross-entity is backlog
+    B-XEHM);
   - junction ops in resource modules are re-routed onto the same endpoints;
     a lone `list_X` stops classifying as a junction op;
   - `links.self`/`links.related` go on every relationship;
@@ -278,6 +279,10 @@ follow-ups:
     Lookup keys are never validated against it, so existing rows stay
     reachable. `slugify` lowercases, folds Latin diacritics to ASCII, and
     truncates its base so `-N` probes stay within 200 bytes (contract §8.2).
+    Refined after review: a created id is also not a Windows device name
+    (`con`, `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`, in any case,
+    whole or before its first `.`), since Windows cannot hold `con.md`; a
+    title that slugs to one derives `con-2`, as `index` derives `index-2`.
 11. **Per-entity id strategy over a required default.**
     `#[ontology(entity, id = "provided" | "uuid" | "slug(field)")]` overrides
     the store's default, which every pipeline with a store stage must set:

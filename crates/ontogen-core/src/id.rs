@@ -32,6 +32,40 @@ pub fn is_reserved_id(id: &str) -> bool {
     RESERVED_IDS.iter().any(|r| r.eq_ignore_ascii_case(id))
 }
 
+/// The Windows device names. Windows opens the device for a file named
+/// one of these, in any case and with any extension (`con.md`,
+/// `NUL.tar.gz`), so no record file can carry one as its stem.
+pub const DEVICE_NAMES: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2",
+    "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Whether `id`, or the part of it before its first `.`, is one of
+/// [`DEVICE_NAMES`], compared ASCII case-insensitively.
+///
+/// ```
+/// use ontogen_core::id::is_device_name;
+/// assert!(is_device_name("con") && is_device_name("nul.x") && is_device_name("COM1.backup"));
+/// assert!(!is_device_name("console") && !is_device_name("con-2") && !is_device_name("x.con"));
+/// ```
+pub fn is_device_name(id: &str) -> bool {
+    let stem = id.split('.').next().unwrap_or(id);
+    DEVICE_NAMES.iter().any(|d| d.eq_ignore_ascii_case(stem))
+}
+
+/// The whole create rule, as an [`InvalidId`] states it after the clause
+/// the id broke.
+pub const ID_RULE: &str = "an id is 1-200 bytes of a-z, 0-9, '.', '_', '~', '-', not starting or ending with '.', \
+                           and not a reserved name";
+
+/// Why [`validate_id`] refuses an id in [`RESERVED_IDS`].
+pub const RESERVED_REASON: &str =
+    "is reserved: OKF (Open Knowledge Format) uses index and log for directory listings and update logs";
+
+/// Why [`validate_id`] refuses a device name (see [`is_device_name`]).
+pub const DEVICE_NAME_REASON: &str =
+    "is reserved: Windows has no file named con, prn, aux, nul, com1-com9 or lpt1-lpt9, with or without an extension";
+
 /// An id rejected by [`validate_id`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidId {
@@ -43,7 +77,7 @@ pub struct InvalidId {
 
 impl fmt::Display for InvalidId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid id {:?}: {}", self.id, self.reason)
+        write!(f, "invalid id {:?}: {}; {ID_RULE}: choose another id", self.id, self.reason)
     }
 }
 
@@ -52,9 +86,11 @@ impl std::error::Error for InvalidId {}
 /// Check an id being created against the shared rule.
 ///
 /// Valid: 1 to [`MAX_ID_LEN`] bytes of lowercase ASCII letters, digits,
-/// `.`, `_`, `~` and `-`, not starting or ending with `.`, and not a
-/// reserved id (see [`is_reserved_id`]). Every such id is a portable
-/// filename stem and a URL path segment that needs no escaping.
+/// `.`, `_`, `~` and `-`, not starting or ending with `.`, not a reserved
+/// id (see [`is_reserved_id`]) and not a device name (see
+/// [`is_device_name`]). Every such id names a file on Linux, macOS and
+/// Windows, and is a URL path segment that needs no escaping. A reserved
+/// name is reported before a case error, since lowercasing cannot fix it.
 ///
 /// ```
 /// use ontogen_core::id::validate_id;
@@ -63,6 +99,7 @@ impl std::error::Error for InvalidId {}
 /// assert!(validate_id("Ship").is_err());
 /// assert!(validate_id("café").is_err());
 /// assert!(validate_id("index").is_err());
+/// assert!(validate_id("nul.txt").is_err());
 /// assert!(validate_id("a/b").is_err());
 /// ```
 pub fn validate_id(id: &str) -> Result<(), InvalidId> {
@@ -74,7 +111,10 @@ pub fn validate_id(id: &str) -> Result<(), InvalidId> {
         return reject("must be at most 200 bytes");
     }
     if is_reserved_id(id) {
-        return reject("is reserved: OKF uses index and log for directory listings and update logs");
+        return reject(RESERVED_REASON);
+    }
+    if is_device_name(id) {
+        return reject(DEVICE_NAME_REASON);
     }
     if id.starts_with('.') {
         return reject("must not start with '.'");
@@ -195,21 +235,25 @@ fn is_combining_mark(c: char) -> bool {
 }
 
 /// The ids a derived base is probed under, in order: `base`, then `base-2`,
-/// `base-3`, and so on without end. A reserved base is skipped, so a title
-/// that slugifies to `index` lands on `index-2`. No candidate is longer
-/// than [`MAX_ID_LEN`]: where `base` and its suffix would be, `base` is cut
-/// to fit, and a `-` the cut leaves at the end is trimmed.
+/// `base-3`, and so on without end. A reserved base or device name is
+/// skipped, so a title that slugifies to `index` lands on `index-2` and
+/// one that slugifies to `con` on `con-2`. The suffixed probes are never
+/// reserved when `base` has no `.`, as no [`slugify`] output does. No
+/// candidate is longer than [`MAX_ID_LEN`]: where `base` and its suffix
+/// would be, `base` is cut to fit, and a `-` the cut leaves at the end is
+/// trimmed.
 ///
 /// ```
 /// use ontogen_core::id::candidates;
 /// let first: Vec<String> = candidates("draft").take(3).collect();
 /// assert_eq!(first, ["draft", "draft-2", "draft-3"]);
 /// assert_eq!(candidates("index").next().as_deref(), Some("index-2"));
+/// assert_eq!(candidates("con").next().as_deref(), Some("con-2"));
 /// ```
 pub fn candidates(base: &str) -> impl Iterator<Item = String> + use<> {
     let base = base.to_string();
     let head = truncate_id(&base, MAX_ID_LEN);
-    let first = (!is_reserved_id(head)).then(|| head.to_string());
+    let first = (!is_reserved_id(head) && !is_device_name(head)).then(|| head.to_string());
     first.into_iter().chain((2u64..).map(move |n| {
         let suffix = format!("-{n}");
         format!("{}{suffix}", truncate_id(&base, MAX_ID_LEN - suffix.len()))
@@ -262,12 +306,34 @@ mod tests {
     }
 
     #[test]
+    fn device_names_are_refused_whole_and_before_a_dot() {
+        for device in ["con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9", "nul.x", "com1.backup", "con.a.b"] {
+            assert_eq!(validate_id(device).unwrap_err().reason, DEVICE_NAME_REASON, "{device:?}");
+        }
+        for fine in ["console", "con-2", "xcon", "a.con", "com", "com10", "lpt0", "com0", "nulls", "aux_x", "prn~"] {
+            assert!(validate_id(fine).is_ok(), "{fine:?} must be accepted");
+        }
+        for any_case in ["CON", "Nul.x", "cOm1", "LPT9.TXT"] {
+            assert!(is_device_name(any_case), "{any_case:?}");
+            assert_eq!(validate_id(any_case).unwrap_err().reason, DEVICE_NAME_REASON, "reserved before uppercase");
+        }
+        assert_eq!(validate_id(".con").unwrap_err().reason, "must not start with '.'");
+        assert_eq!(validate_id("con.").unwrap_err().reason, DEVICE_NAME_REASON, "reserved before the trailing dot");
+        assert_eq!(validate_id("Index").unwrap_err().reason, RESERVED_REASON, "reserved before uppercase");
+    }
+
+    #[test]
     fn the_error_names_the_id_and_the_rule_it_broke() {
-        assert_eq!(validate_id("Ab").unwrap_err().to_string(), "invalid id \"Ab\": must not contain uppercase letters");
+        assert_eq!(
+            validate_id("Ship").unwrap_err().to_string(),
+            "invalid id \"Ship\": must not contain uppercase letters; an id is 1-200 bytes of a-z, 0-9, '.', '_', \
+             '~', '-', not starting or ending with '.', and not a reserved name: choose another id"
+        );
         let reason = |id: &str| validate_id(id).unwrap_err().reason;
         assert_eq!(reason(""), "must not be empty");
         assert_eq!(reason(&"a".repeat(MAX_ID_LEN + 1)), "must be at most 200 bytes");
-        assert!(reason("log").starts_with("is reserved"));
+        assert_eq!(reason("log"), RESERVED_REASON);
+        assert_eq!(reason("aux"), DEVICE_NAME_REASON);
         assert_eq!(reason(".."), "must not start with '.'");
         assert_eq!(reason("a."), "must not end with '.'");
         assert_eq!(reason("café"), "must be ASCII");
@@ -278,6 +344,9 @@ mod tests {
     #[test]
     fn candidates_skip_a_reserved_base() {
         assert_eq!(candidates("log").take(2).collect::<Vec<_>>(), ["log-2", "log-3"]);
+        assert_eq!(candidates("con").take(2).collect::<Vec<_>>(), ["con-2", "con-3"]);
+        assert_eq!(candidates("lpt1").next().as_deref(), Some("lpt1-2"));
+        assert_eq!(candidates("console").next().as_deref(), Some("console"));
         assert_eq!(candidates("a").nth(9).as_deref(), Some("a-10"));
     }
 
@@ -344,9 +413,11 @@ mod tests {
     #[test]
     fn every_nonempty_slug_is_valid_or_reserved() {
         let long = "Long title ".repeat(40);
-        for title in ["Index", "LOG", "Hello", &long, "Ça va?", "...dots..."] {
+        for title in ["Index", "LOG", "Con", "nul.x", "COM1.backup", "Hello", &long, "Ça va?", "...dots..."] {
             let slug = slugify(title);
-            assert!(slug.is_empty() || is_reserved_id(&slug) || validate_id(&slug).is_ok(), "{title:?} -> {slug:?}");
+            assert!(!slug.contains('.'), "{title:?} -> {slug:?}: a slug has no '.', so only its head can be reserved");
+            let reserved = is_reserved_id(&slug) || is_device_name(&slug);
+            assert!(slug.is_empty() || reserved || validate_id(&slug).is_ok(), "{title:?} -> {slug:?}");
         }
     }
 

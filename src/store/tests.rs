@@ -369,6 +369,12 @@ mod tests {
                     store::generate(std::slice::from_ref(target), &config).expect_err("a bad slug field must fail");
                 let msg = format!("{err}");
                 assert!(msg.contains(*needle), "{backend:?}: the error says what is wrong: {msg}");
+                assert!(
+                    msg.contains(&format!("the store default IdStrategy::SlugFromField({field:?})"))
+                        && msg.contains(&format!("give `{}` its own `#[ontology(entity, id = ", target.name))
+                        && msg.contains("or choose a store default that fits every entity without one"),
+                    "{backend:?}: the error blames the default and says how to fix it: {msg}"
+                );
                 assert!(!out_dir.exists(), "validation failures must not write files");
             }
         }
@@ -450,9 +456,13 @@ mod tests {
             let msg = format!("{err}");
             assert!(
                 msg.contains("`#[ontology(entity, id = \"slug(name)\")]` on entity `Workout`")
-                    && msg.contains("must be a plain String"),
-                "{backend:?}: {msg}"
+                    && msg.contains("must be a plain String")
+                    && msg.contains(
+                        "name a plain String field of `Workout` in `slug(...)`, or use `id = \"provided\"` or `id = \"uuid\"`"
+                    ),
+                "{backend:?}: the error blames the override and says how to fix it: {msg}"
             );
+            assert!(!msg.contains("store default"), "{backend:?}: the default is not involved: {msg}");
             assert!(!out_dir.exists(), "validation failures must not write files");
         }
     }

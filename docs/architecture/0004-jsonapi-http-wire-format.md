@@ -192,11 +192,13 @@ only.
   parameter, and `VaultHandle::new` loses one.
 - **Breaking for SeaORM data whose ids break the shared id rule**
   (wire contract §8.2: lowercase `[a-z0-9._~-]`, at most 200 bytes, not
-  `index` or `log`, no leading or trailing `.`). That covers an id that
-  contains an uppercase letter (`Draft`), a non-ASCII character (`café`),
-  a space, `/`, `\`, `:`, NUL or other punctuation outside `._~-`; that
-  is longer than 200 bytes; that is empty or `index` or `log` in any case;
-  or that starts or ends with `.`.
+  `index` or `log`, not a Windows device name, no leading or trailing
+  `.`). That covers an id that contains an uppercase letter (`Draft`), a
+  non-ASCII character (`café`), a space, `/`, `\`, `:`, NUL or other
+  punctuation outside `._~-`; that is longer than 200 bytes; that is
+  empty or `index` or `log` in any case; that is `con`, `prn`, `aux`,
+  `nul`, `com1`-`com9` or `lpt1`-`lpt9` in any case, whole or before its
+  first `.` (`nul.x`); or that starts or ends with `.`.
   - Such a row cannot be created again under that id: a create is `400`.
   - The server must serve every link it emits, so a path `{id}` is only a
     lookup key and is never validated. Existing rows are therefore still

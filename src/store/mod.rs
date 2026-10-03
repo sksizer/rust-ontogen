@@ -123,27 +123,29 @@ fn validate_id_strategies(entities: &[EntityDef], default: &IdStrategy) -> Resul
         let IdStrategy::SlugFromField(field) = effective_id_strategy(entity, default) else {
             continue;
         };
-        let source = if entity.id_strategy.is_some() {
-            format!("`#[ontology(entity, id = \"slug({field})\")]` on entity `{}`", entity.name)
-        } else {
-            format!("the store default IdStrategy::SlugFromField({field:?}), which applies to entity `{}`", entity.name)
+        let problem = match entity.fields.iter().find(|f| &f.name == field) {
+            Some(f) if f.field_type == FieldType::String => continue,
+            Some(f) => format!("field `{field}` must be a plain String to derive ids from, found {:?}", f.field_type),
+            None => format!("the entity has no field `{field}` to derive ids from"),
         };
-        match entity.fields.iter().find(|f| &f.name == field) {
-            Some(f) if f.field_type == FieldType::String => {}
-            Some(f) => {
-                return Err(format!(
-                    "{source}: field `{field}` must be a plain String to derive ids from, found {:?}; \
-                     give the entity its own `#[ontology(entity, id = \"provided\" | \"uuid\" | \"slug(<field>)\")]`",
-                    f.field_type
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "{source}: the entity has no field `{field}` to derive ids from; give the entity its own \
-                     `#[ontology(entity, id = \"provided\" | \"uuid\" | \"slug(<field>)\")]`"
-                ));
-            }
-        }
+        let name = &entity.name;
+        let (source, remedy) = if entity.id_strategy.is_some() {
+            (
+                format!("`#[ontology(entity, id = \"slug({field})\")]` on entity `{name}`"),
+                format!(
+                    "name a plain String field of `{name}` in `slug(...)`, or use `id = \"provided\"` or `id = \"uuid\"`"
+                ),
+            )
+        } else {
+            (
+                format!("the store default IdStrategy::SlugFromField({field:?}), which applies to entity `{name}`"),
+                format!(
+                    "give `{name}` its own `#[ontology(entity, id = \"provided\" | \"uuid\" | \"slug(<field>)\")]`, \
+                     or choose a store default that fits every entity without one"
+                ),
+            )
+        };
+        return Err(format!("{source}: {problem}; {remedy}"));
     }
     Ok(())
 }
