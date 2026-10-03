@@ -5471,7 +5471,9 @@ fn a_resource_module_is_served_as_jsonapi() {
          &[(\"epic_id\", \"epic\"), (\"tags\", \"tags\")])?;"
     )));
 
-    // Step 8: each linked id is looked up with its target's `get_by_id`.
+    // Step 8: each linked id is looked up with its target's `get_by_id`, in
+    // one helper both writes call.
+    assert_eq!(http.matches("task_check_linked(&state, &linked).await?;").count(), 2, "{http}");
     assert!(flat.contains(&compact(
         "if let Some(linked) = &linked.epic { match epic::get_by_id(&store, &linked.id).await { Ok(_) => {} \
          Err(crate::schema::AppError::EpicNotFound(..)) => return Err(linked.not_found(\"epics\")), \
@@ -5564,6 +5566,13 @@ fn scoped_resource_routes_carry_the_prefix() {
     assert!(http.contains("let Path(project_id) = path_params?;"));
     assert!(http.contains("path_params: Result<Path<(uuid::Uuid, LookupKey)>, ErrorObject>,"));
     assert!(http.contains("let Path((project_id, id)) = path_params?;"));
+    // The linked-resource checks open the scoped store, once per resource.
+    assert!(flat.contains(&compact(
+        "async fn task_check_linked_scoped(state: &AppState, project_id: &uuid::Uuid, linked: &TaskLinkedIds) \
+         -> Result<(), ErrorObject> { let store = state.store_for(project_id).map_err(internal_error)?;"
+    )));
+    assert_eq!(http.matches("task_check_linked_scoped(&state, &project_id, &linked).await?;").count(), 2, "{http}");
+    assert!(!http.contains("async fn task_check_linked("), "no unscoped handler links:\n{http}");
     assert!(flat.contains(&compact(
         "let collection = &format!(\"/api/projects/{}/tasks\", encode_path_segment(&project_id.to_string()));"
     )));

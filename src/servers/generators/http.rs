@@ -315,7 +315,7 @@ pub struct PaginationParams {
     if modules.iter().any(|m| m.functions.iter().any(|f| served_resource(m, f, config).is_some())) {
         out.push_str(RESOURCE_HELPERS);
         for m in modules {
-            emit_resource_helpers(&mut out, m, config);
+            emit_resource_helpers(&mut out, m, modules, config);
         }
     }
 
@@ -355,7 +355,7 @@ pub struct PaginationParams {
             let handler_name = crate::servers::generators::ipc::command_name(module, f, config);
 
             if let Some(resource) = served_resource(m, f, config) {
-                let op = ResourceOp { m, f, resource, handler_name: &handler_name, modules, config };
+                let op = ResourceOp { m, f, resource, handler_name: &handler_name, config };
                 let (method, path) = resource_handler(&mut out, &op, unscoped_access(f), None);
                 routes.add(&format!("{base}{path}"), method, &handler_name);
                 continue;
@@ -598,7 +598,7 @@ fn resource_names(module: &str) -> ResourceNames {
 /// Per resource, emitted once whichever handlers serve it: the attributes
 /// serializer and resource builder (§5), the `{id}` lookup key (§8.1), and
 /// the reader of create and update documents (§8.2, §8.3 step 7).
-fn emit_resource_helpers(out: &mut String, m: &ApiModule, config: &Config) {
+fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule], config: &Config) {
     let served: Vec<OpKind> =
         m.functions.iter().filter(|f| served_resource(m, f, config).is_some()).map(classify_op).collect();
     if served.is_empty() {
@@ -769,6 +769,7 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, config: &Config) {
         }
     }
     out.push_str("    Ok((fields, linked))\n}\n\n");
+    emit_check_linked(out, m, resource, modules, config);
 }
 
 /// One CRUD op served as its resource.
@@ -778,55 +779,119 @@ struct ResourceOp<'a> {
     f: &'a ApiFn,
     resource: &'a Resource,
     handler_name: &'a str,
-    modules: &'a [ApiModule],
     config: &'a Config,
 }
 
-/// The step-7 read of a create or update body, then its step-8 lookups:
-/// every linked id, in declared relationship order, fetched with its
-/// target's `get_by_id` (§13.2).
-fn write_steps(op: &ResourceOp<'_>, scoped: bool) -> (String, String) {
+/// Whether `f`'s handler is the scoped one: a store-scoped fn under a
+/// `route_prefix` has no other.
+fn is_scoped(f: &ApiFn, config: &Config) -> bool {
+    f.first_param_is_store && config.route_prefix.is_some()
+}
+
+/// `{module}_check_linked`, or `{module}_check_linked_scoped` for the scoped
+/// handlers.
+fn check_linked_fn(module: &str, scoped: bool) -> String {
+    if scoped { format!("{module}_check_linked_scoped") } else { format!("{module}_check_linked") }
+}
+
+/// Step 8 of a create or update (§13.2), once per resource and handler
+/// kind: every linked id, in declared relationship order, fetched with its
+/// target's `get_by_id`.
+///
+/// The helper opens each store it reads through the accessor its handler
+/// would use, since the store's type cannot be named here: the handler's own
+/// store is opened twice, which costs one accessor call.
+fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modules: &[ApiModule], config: &Config) {
+    let writes = m.functions.iter().filter(|f| {
+        matches!(classify_op(f), OpKind::Create | OpKind::Update) && served_resource(m, f, config).is_some()
+    });
+    let mut kinds: Vec<bool> = writes.map(|f| is_scoped(f, config)).collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+
+    let type_name = &resource.resource_type;
+    let state_type = &config.state_type;
+    let linked_ty = resource_names(&m.name).linked;
+    for scoped in kinds {
+        let prefix = config.route_prefix.as_ref().filter(|_| scoped);
+        let scope_param = prefix.map(|p| format!("{}: &{}, ", p.params[0].name, p.params[0].rust_type));
+        let mut opens: Vec<String> = Vec::new();
+        let mut checks = String::new();
+        for rel in &resource.relationships {
+            let Some((tm, tf)) = linked_lookup(modules, &rel.target_module) else { continue };
+            let svc = tm.service_ident(tf.surface);
+            let arg = match (tf.first_param_is_store, prefix) {
+                (false, _) => "state".to_string(),
+                (true, Some(prefix)) => {
+                    let open = format!(
+                        "    let store = state.{}({}).map_err(internal_error)?;\n",
+                        prefix.state_accessor, prefix.params[0].name
+                    );
+                    if !opens.contains(&open) {
+                        opens.push(open);
+                    }
+                    "&store".to_string()
+                }
+                (true, None) => {
+                    let accessor = &tf.store_accessor;
+                    let open = format!("    let {accessor} = state.{accessor}().await.map_err(internal_error)?;\n");
+                    if !opens.contains(&open) {
+                        opens.push(open);
+                    }
+                    format!("&{accessor}")
+                }
+            };
+            let not_found = format!("{}NotFound", rel.target_entity);
+            let not_found_arm = config
+                .error_map
+                .as_ref()
+                .and_then(|map| map.variants.iter().find(|v| v.name == not_found))
+                .filter(|_| returns_app_error(tf, config))
+                .map(|v| {
+                    format!(
+                        "            Err({}) => return Err(linked.not_found(\"{}\")),\n",
+                        v.pattern(&app_error_path(config)),
+                        rel.target_type
+                    )
+                })
+                .unwrap_or_default();
+            let fallback = if returns_app_error(tf, config) { "app_error" } else { "internal_error" };
+            let each = if rel.is_to_many() { "for linked in" } else { "if let Some(linked) =" };
+            checks.push_str(&format!(
+                "    {each} &linked.{} {{\n        match {svc}::get_by_id({arg}, &linked.id){} {{\n            \
+                 Ok(_) => {{}}\n{not_found_arm}            Err(e) => return Err({fallback}(e)),\n        }}\n    }}\n",
+                rel.name,
+                await_str(tf.is_async),
+            ));
+        }
+        out.push_str(&format!(
+            "/// Step 8 of a `{type_name}` create or update: each id the document links\n/// names a resource that \
+             exists, checked in step-7 order.\nasync fn {}(state: &{state_type}, {}linked: &{linked_ty}) -> \
+             Result<(), ErrorObject> {{\n{}{checks}    Ok(())\n}}\n\n",
+            check_linked_fn(&m.name, scoped),
+            scope_param.unwrap_or_default(),
+            opens.concat(),
+        ));
+    }
+}
+
+/// The step-7 read of a create or update body, and the step-8 call that
+/// checks every id it links (§13.2).
+fn write_steps(op: &ResourceOp<'_>) -> (String, String) {
     let fields_fn = resource_names(&op.m.name).fields;
     let create = classify_op(op.f) == OpKind::Create;
     if op.resource.relationships.is_empty() {
         return (format!("    let fields = {fields_fn}(&data, {create})?;\n"), String::new());
     }
-    let mut checks = String::new();
-    for rel in &op.resource.relationships {
-        let Some((tm, tf)) = linked_lookup(op.modules, &rel.target_module) else { continue };
-        let svc = tm.service_ident(tf.surface);
-        let arg = if !tf.first_param_is_store {
-            "&state".to_string()
-        } else if scoped || (op.f.first_param_is_store && tf.store_accessor == op.f.store_accessor) {
-            "&store".to_string()
-        } else {
-            format!("&state.{}().await.map_err(internal_error)?", tf.store_accessor)
-        };
-        let not_found = format!("{}NotFound", rel.target_entity);
-        let not_found_arm = op
-            .config
-            .error_map
-            .as_ref()
-            .and_then(|map| map.variants.iter().find(|v| v.name == not_found))
-            .filter(|_| returns_app_error(tf, op.config))
-            .map(|v| {
-                format!(
-                    "            Err({}) => return Err(linked.not_found(\"{}\")),\n",
-                    v.pattern(&app_error_path(op.config)),
-                    rel.target_type
-                )
-            })
-            .unwrap_or_default();
-        let fallback = if returns_app_error(tf, op.config) { "app_error" } else { "internal_error" };
-        let each = if rel.is_to_many() { "for linked in" } else { "if let Some(linked) =" };
-        checks.push_str(&format!(
-            "    {each} &linked.{} {{\n        match {svc}::get_by_id({arg}, &linked.id){} {{\n            \
-             Ok(_) => {{}}\n{not_found_arm}            Err(e) => return Err({fallback}(e)),\n        }}\n    }}\n",
-            rel.name,
-            await_str(tf.is_async),
-        ));
-    }
-    (format!("    let (fields, linked) = {fields_fn}(&data, {create})?;\n"), checks)
+    let scoped = is_scoped(op.f, op.config);
+    let scope_arg = match op.config.route_prefix.as_ref().filter(|_| scoped) {
+        Some(prefix) => format!("&{}, ", prefix.params[0].name),
+        None => String::new(),
+    };
+    (
+        format!("    let (fields, linked) = {fields_fn}(&data, {create})?;\n"),
+        format!("    {}(&state, {scope_arg}&linked).await?;\n", check_linked_fn(&op.m.name, scoped)),
+    )
 }
 
 /// Emit the JSON:API handler of one CRUD op (§7, §8), returning its method
@@ -956,7 +1021,7 @@ fn resource_handler(
         }
         OpKind::Create => {
             let input_ty = extract_input_type(&f.params[0].ty);
-            let (fields, checks) = write_steps(op, scope.is_some());
+            let (fields, checks) = write_steps(op);
             let already_exists = format!("{}AlreadyExists", resource.entity.name);
             let variant = config
                 .error_map
@@ -987,7 +1052,7 @@ fn resource_handler(
         }
         OpKind::Update => {
             let input_ty = extract_input_type(&f.params[1].ty);
-            let (fields, checks) = write_steps(op, scope.is_some());
+            let (fields, checks) = write_steps(op);
             let (extractors, checks_first) = deferred(Some(&item_path));
             out.push_str(&format!(
                 "{head}{extractors}{tail}{checks_first}{collection}    let path = \
@@ -1676,7 +1741,7 @@ fn generate_scoped_handlers(
             };
 
             if let Some(resource) = served_resource(m, f, config) {
-                let op = ResourceOp { m, f, resource, handler_name: &handler_name, modules, config };
+                let op = ResourceOp { m, f, resource, handler_name: &handler_name, config };
                 let (method, path) = resource_handler(out, &op, scoped_access(prefix), Some(prefix));
                 routes.add(&format!("{scoped_base}{path}"), method, &handler_name);
                 continue;

@@ -281,6 +281,27 @@ fn section_request_fields(
     Ok((fields, linked))
 }
 
+/// Step 8 of a `sections` create or update: each id the document links
+/// names a resource that exists, checked in step-7 order.
+async fn section_check_linked(state: &AppState, linked: &SectionLinkedIds) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    if let Some(linked) = &linked.parent {
+        match section::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::SectionNotFound(..)) => return Err(linked.not_found("sections")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    for linked in &linked.children {
+        match section::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::SectionNotFound(..)) => return Err(linked.not_found("sections")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    Ok(())
+}
+
 // ── `tags` ──
 
 /// `Tag`'s attributes: every field but the id and the relations, in
@@ -420,6 +441,34 @@ fn task_request_fields(
         linked.tags = ids;
     }
     Ok((fields, linked))
+}
+
+/// Step 8 of a `tasks` create or update: each id the document links
+/// names a resource that exists, checked in step-7 order.
+async fn task_check_linked(state: &AppState, linked: &TaskLinkedIds) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    if let Some(linked) = &linked.parent {
+        match task::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    for linked in &linked.subtasks {
+        match task::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    for linked in &linked.tags {
+        match tag::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    Ok(())
 }
 
 // ── Note Handlers ──
@@ -564,20 +613,7 @@ async fn section_create(
     let (fields, linked) = section_request_fields(&data, true)?;
     let input: CreateSectionInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
-    if let Some(linked) = &linked.parent {
-        match section::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::SectionNotFound(..)) => return Err(linked.not_found("sections")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
-    for linked in &linked.children {
-        match section::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::SectionNotFound(..)) => return Err(linked.not_found("sections")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
+    section_check_linked(&state, &linked).await?;
     let entity = section::create(&store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::SectionAlreadyExists(..) if data.id.is_some() => {
             app_error(e).with_pointer("/data/id")
@@ -607,20 +643,7 @@ async fn section_update(
     let (fields, linked) = section_request_fields(&data, false)?;
     let input: UpdateSectionInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
-    if let Some(linked) = &linked.parent {
-        match section::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::SectionNotFound(..)) => return Err(linked.not_found("sections")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
-    for linked in &linked.children {
-        match section::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::SectionNotFound(..)) => return Err(linked.not_found("sections")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
+    section_check_linked(&state, &linked).await?;
     let entity = section::update(&store, section_lookup_key(&id)?, input).await.map_err(app_error)?;
     let resource = section_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -778,27 +801,7 @@ async fn task_create(
     let (fields, linked) = task_request_fields(&data, true)?;
     let input: CreateTaskInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
-    if let Some(linked) = &linked.parent {
-        match task::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
-    for linked in &linked.subtasks {
-        match task::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
-    for linked in &linked.tags {
-        match tag::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
+    task_check_linked(&state, &linked).await?;
     let entity = task::create(&store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::TaskAlreadyExists(..) if data.id.is_some() => {
             app_error(e).with_pointer("/data/id")
@@ -828,27 +831,7 @@ async fn task_update(
     let (fields, linked) = task_request_fields(&data, false)?;
     let input: UpdateTaskInput = from_fields(fields)?;
     let store = state.store().await.map_err(internal_error)?;
-    if let Some(linked) = &linked.parent {
-        match task::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
-    for linked in &linked.subtasks {
-        match task::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
-    for linked in &linked.tags {
-        match tag::get_by_id(&store, &linked.id).await {
-            Ok(_) => {}
-            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
-            Err(e) => return Err(app_error(e)),
-        }
-    }
+    task_check_linked(&state, &linked).await?;
     let entity = task::update(&store, task_lookup_key(&id)?, input).await.map_err(app_error)?;
     let resource = task_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
