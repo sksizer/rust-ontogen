@@ -10,17 +10,81 @@
 //! fields, include paths) stays in generated code; this crate holds only the
 //! schema-independent rules.
 //!
+//! The Axum extractors ([`extract`]) and responses ([`response`]) sit behind
+//! the default `axum` feature. Without it the crate is the core the
+//! build-time generator depends on: error codes, documents, media-type
+//! checks, query parsing, links and request documents, over the `http`
+//! types.
+//!
 //! [wire contract]: https://github.com/sksizer/rust-ontogen/blob/main/docs/jsonapi-wire-contract.md
+#![cfg_attr(
+    feature = "axum",
+    doc = r#"
+# A create handler
 
+A generated handler lists its extractors in the order of §13.2, since Axum
+runs them in argument order and answers with the first rejection, then reads
+and writes documents with the plain functions:
+
+```no_run
+use axum::{Router, response::Response, routing::post};
+use ontogen_jsonapi::{
+    Document, ErrorObject, Links, ResourceObject,
+    extract::{AcceptGuard, Body, ContentTypeGuard, NoParams, Path, Query},
+    links::encode_path_segment,
+    request::{Endpoint, parse_create},
+    response,
+};
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct TaskAttributes {
+    title: String,
+}
+
+// POST /api/projects/{project_id}/tasks
+async fn create_task(
+    _: AcceptGuard,              // step 2: 406 not_acceptable
+    _: ContentTypeGuard,         // step 3: 415 unsupported_media_type
+    Path(project_id): Path<u32>, // step 4: 400 invalid_path_parameter
+    _: Query<NoParams>,          // step 5: 400 invalid_query_parameter
+    body: Body,                  // step 7 reads the body
+) -> Result<Response, ErrorObject> {
+    let collection = format!("/api/projects/{project_id}/tasks");
+    let endpoint = Endpoint { type_name: "tasks", path: &collection };
+    // The shared id-validity rule (§8.2) goes where this closure is.
+    let data = parse_create(&body.0, endpoint, |_id| Ok::<(), String>(()))?;
+    // Generated code checks `data.attributes` and `data.relationships()`
+    // against the schema, then calls the store (steps 7 to 9).
+    let title = data
+        .attributes
+        .as_ref()
+        .and_then(|attributes| attributes.get("title")?.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    let id = data.id.unwrap_or_else(|| "derived-by-the-store".to_owned());
+    let self_link = format!("{collection}/{}", encode_path_segment(&id));
+    let resource = ResourceObject::new("tasks", id, TaskAttributes { title }, self_link.clone());
+    let document = Document::new(resource, Links::new(self_link.clone()));
+    Ok(response::created(&self_link, &document))
+}
+
+let app: Router = Router::new().route("/api/projects/{project_id}/tasks", post(create_task));
+```
+"#
+)]
 #![forbid(unsafe_code)]
 
 pub mod document;
 pub mod error;
+#[cfg(feature = "axum")]
 pub mod extract;
 pub mod links;
 pub mod media;
+pub mod path;
 pub mod query;
 pub mod request;
+#[cfg(feature = "axum")]
 pub mod response;
 
 pub use document::{
@@ -29,6 +93,7 @@ pub use document::{
 };
 pub use error::{ErrorCode, ErrorObject, ErrorSource};
 pub use links::CanonicalQuery;
+pub use path::LookupKey;
 pub use query::{QueryParams, QuerySpec};
 
 /// The JSON:API media type, written without parameters on every response (§3.1).

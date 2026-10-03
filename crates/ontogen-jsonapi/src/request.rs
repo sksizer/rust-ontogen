@@ -11,7 +11,10 @@ use std::{collections::HashSet, fmt::Display, hash::Hash};
 
 use serde_json::{Map, Value};
 
-use crate::error::{ErrorCode, ErrorObject};
+use crate::{
+    error::{ErrorCode, ErrorObject},
+    path::LookupKey,
+};
 
 /// The resource endpoint a document was sent to: its resource type and its
 /// path, used in error details.
@@ -65,10 +68,9 @@ pub fn parse_object(body: &[u8]) -> Result<Map<String, Value>, ErrorObject> {
 /// Reads a create document (`POST /api/{type}`, §8.2) up to the attribute
 /// checks.
 ///
-/// `check_id` validates a client `data.id` against the id-validity rule;
-/// its error becomes `400 invalid_document` at `/data/id`, ahead of the
-/// `lid` and attribute rows as the table orders them. Generated code passes
-/// the shared rule from `ontogen-core`.
+/// `check_id` validates a client `data.id` against the shared id-validity
+/// rule (§8.2); its error becomes `400 invalid_document` at `/data/id`,
+/// ahead of the `lid` and attribute rows as the table orders them.
 pub fn parse_create<F, E>(body: &[u8], endpoint: Endpoint<'_>, check_id: F) -> Result<ResourceData, ErrorObject>
 where
     F: FnOnce(&str) -> Result<(), E>,
@@ -88,15 +90,17 @@ where
 
 /// Reads an update document (`PATCH /api/{type}/{id}`, §8.3) up to the
 /// attribute checks. The body id must equal `url_id` exactly; neither is
-/// checked against the id-validity rule.
-pub fn parse_update(body: &[u8], endpoint: Endpoint<'_>, url_id: &str) -> Result<ResourceData, ErrorObject> {
+/// checked against the id-validity rule. A `url_id` that does not decode
+/// equals no body id, so it is a `409 id_mismatch` here and never reaches
+/// the store.
+pub fn parse_update(body: &[u8], endpoint: Endpoint<'_>, url_id: &LookupKey) -> Result<ResourceData, ErrorObject> {
     let mut data = read_data(body, endpoint, "updated")?;
     let id = match data.remove("id") {
         None => return Err(invalid_document("`data.id` is required to update a resource", "/data")),
         Some(Value::String(id)) => id,
         Some(_) => return Err(invalid_document("`data.id` must be a string", "/data/id")),
     };
-    if id != url_id {
+    if url_id.as_str() != Some(id.as_str()) {
         return Err(ErrorObject::new(
             ErrorCode::IdMismatch,
             format!("body id `{id}` does not match URL id `{url_id}`"),
@@ -182,14 +186,31 @@ pub fn to_one(
 /// (§5.4).
 ///
 /// Checks, in order: the object and its `data` member; the arity (an
-/// array); every identifier's string `type` and `id`; then every
-/// identifier's type against `target_type`. Pointers name the request's
-/// array index.
-pub fn to_many(relationship: &Value, pointer: &str, target_type: &str) -> Result<Vec<String>, ErrorObject> {
+/// array); with `max_identifiers`, the array's length (`403
+/// relationship_batch_unsupported`); every identifier's string `type` and
+/// `id`; then every identifier's type against `target_type`. Pointers name
+/// the request's array index.
+///
+/// A relationship `POST` or `DELETE` passes `Some(1)`, since each takes one
+/// identifier (§9); a `PATCH` and a resource document pass `None`. The
+/// length counts identifiers as sent, before duplicates collapse.
+pub fn to_many(
+    relationship: &Value,
+    pointer: &str,
+    target_type: &str,
+    max_identifiers: Option<usize>,
+) -> Result<Vec<String>, ErrorObject> {
     let data_pointer = format!("{pointer}/data");
     let Value::Array(items) = linkage(relationship, pointer)? else {
         return Err(invalid_document("a to-many relationship's `data` must be an array", data_pointer));
     };
+    if let Some(max) = max_identifiers.filter(|&max| items.len() > max) {
+        return Err(ErrorObject::new(
+            ErrorCode::RelationshipBatchUnsupported,
+            format!("this request takes at most {max} identifier(s); {} were sent", items.len()),
+        )
+        .with_pointer(data_pointer));
+    }
     let identifiers = items
         .iter()
         .enumerate()
@@ -202,7 +223,7 @@ pub fn to_many(relationship: &Value, pointer: &str, target_type: &str) -> Result
 }
 
 /// Keeps the first occurrence of each item, in order (§5.4).
-pub fn collapse_duplicates<T: Eq + Hash>(items: Vec<T>) -> Vec<T> {
+pub(crate) fn collapse_duplicates<T: Eq + Hash>(items: Vec<T>) -> Vec<T> {
     let keep: Vec<bool> = {
         let mut seen = HashSet::with_capacity(items.len());
         items.iter().map(|item| seen.insert(item)).collect()
@@ -279,7 +300,7 @@ mod tests {
     }
 
     fn update(body: &str) -> (u16, String, Option<String>) {
-        failure(parse_update(body.as_bytes(), TASK, "ship-the-emitter"))
+        failure(parse_update(body.as_bytes(), TASK, &LookupKey::from("ship-the-emitter")))
     }
 
     fn bad(pointer: &str) -> (u16, String, Option<String>) {
@@ -379,11 +400,21 @@ mod tests {
     }
 
     #[test]
+    fn an_undecodable_url_id_matches_no_body_id() {
+        let undecodable = LookupKey::undecodable("%FF");
+        for body_id in ["%FF", "\u{FF}", "\u{FFFD}"] {
+            let body = format!(r#"{{"data":{{"type":"tasks","id":"{body_id}"}}}}"#);
+            let err = parse_update(body.as_bytes(), TASK, &undecodable).unwrap_err();
+            assert_eq!(err.code(), "id_mismatch", "{body_id}");
+        }
+    }
+
+    #[test]
     fn update_takes_the_url_id_and_does_not_validate_it() {
         let data = parse_update(
             br#"{"data":{"type":"tasks","id":"index"}}"#,
             Endpoint { path: "/api/tasks/index", ..TASK },
-            "index",
+            &LookupKey::from("index"),
         )
         .unwrap();
         assert_eq!(data.id.as_deref(), Some("index"));
@@ -391,7 +422,9 @@ mod tests {
 
     #[test]
     fn id_mismatch_document_matches_the_contract_example() {
-        let err = parse_update(br#"{"data":{"type":"tasks","id":"other"}}"#, TASK, "ship-the-emitter").unwrap_err();
+        let err =
+            parse_update(br#"{"data":{"type":"tasks","id":"other"}}"#, TASK, &LookupKey::from("ship-the-emitter"))
+                .unwrap_err();
         assert_eq!(
             serde_json::to_string(&err.document()).unwrap(),
             concat!(
@@ -441,7 +474,7 @@ mod tests {
 
     #[test]
     fn to_many_linkage() {
-        let read = |v: Value| to_many(&v, TAGS, "tags");
+        let read = |v: Value| to_many(&v, TAGS, "tags", None);
         assert_eq!(read(json!({"data": []})).unwrap(), Vec::<String>::new());
         assert_eq!(
             read(
@@ -470,14 +503,50 @@ mod tests {
     #[test]
     fn relationship_endpoint_bodies_use_the_empty_pointer() {
         // §9.2: the whole body is the relationship object.
-        assert_eq!(rel_failure(to_many(&json!({}), "", "tags")), (400, "invalid_document".to_owned(), String::new()));
-        assert_eq!(rel_failure(to_many(&json!({"data": {}}), "", "tags")).2, "/data");
+        assert_eq!(
+            rel_failure(to_many(&json!({}), "", "tags", None)),
+            (400, "invalid_document".to_owned(), String::new())
+        );
+        assert_eq!(rel_failure(to_many(&json!({"data": {}}), "", "tags", None)).2, "/data");
         assert_eq!(rel_failure(to_one(&json!({"data": [{"type": "epics", "id": "x"}]}), "", "epics", true)).2, "/data");
         assert_eq!(
             rel_failure(to_one(&json!({"data": null}), "", "epics", false)),
             (403, "relationship_required".to_owned(), "/data".to_owned())
         );
-        assert_eq!(rel_failure(to_many(&json!({"data": [{"type": "x", "id": "1"}]}), "", "tags")).2, "/data/0");
+        assert_eq!(rel_failure(to_many(&json!({"data": [{"type": "x", "id": "1"}]}), "", "tags", None)).2, "/data/0");
+    }
+
+    #[test]
+    fn a_relationship_post_or_delete_takes_one_identifier() {
+        // §9.2: after the arity row, before the identifier rows.
+        let read = |v: Value| to_many(&v, "", "tags", Some(1));
+        let batch = (403, "relationship_batch_unsupported".to_owned(), "/data".to_owned());
+        assert_eq!(read(json!({"data": []})).unwrap(), Vec::<String>::new());
+        assert_eq!(read(json!({"data": [{"type": "tags", "id": "a"}]})).unwrap(), vec!["a"]);
+        assert_eq!(
+            rel_failure(read(json!({"data": [{"type": "tags", "id": "a"}, {"type": "tags", "id": "b"}]}))),
+            batch
+        );
+        // Duplicates count as sent.
+        assert_eq!(
+            rel_failure(read(json!({"data": [{"type": "tags", "id": "a"}, {"type": "tags", "id": "a"}]}))),
+            batch
+        );
+        // The arity row comes first...
+        assert_eq!(
+            rel_failure(read(json!({"data": {"type": "tags", "id": "a"}}))),
+            (400, "invalid_document".to_owned(), "/data".to_owned())
+        );
+        // ...and the identifier and type rows after.
+        assert_eq!(rel_failure(read(json!({"data": [{"id": "a"}, {"type": "tags"}]}))), batch);
+        assert_eq!(
+            rel_failure(read(json!({"data": [{"type": "epics", "id": "a"}, {"type": "tags", "id": "b"}]}))),
+            batch
+        );
+        assert_eq!(
+            rel_failure(read(json!({"data": [{"id": "a"}]}))),
+            (400, "invalid_document".to_owned(), "/data/0".to_owned())
+        );
     }
 
     #[test]

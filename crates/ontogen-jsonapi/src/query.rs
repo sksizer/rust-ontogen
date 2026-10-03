@@ -224,10 +224,17 @@ fn repeated(name: &str) -> ErrorObject {
     invalid(name, format!("`{name}` is given more than once"))
 }
 
-/// Percent-decodes a query-string component, reading `+` as a space. A `%`
-/// not followed by two hex digits stays literal, and bytes that do not form
-/// UTF-8 decode lossily, as `axum::extract::Query` treats them.
+/// Percent-decodes a query-string component, reading `+` as a space.
+/// Bytes that do not form UTF-8 decode lossily, as `axum::extract::Query`
+/// treats them.
 fn decode(s: &str) -> String {
+    String::from_utf8_lossy(&percent_decode(s, true)).into_owned()
+}
+
+/// Percent-decodes `s` to bytes, reading `+` as a space when
+/// `plus_as_space` (a query component, not a path segment). A `%` not
+/// followed by two hex digits stays literal.
+pub(crate) fn percent_decode(s: &str, plus_as_space: bool) -> Vec<u8> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -241,7 +248,7 @@ fn decode(s: &str) -> String {
                 out.push(byte);
                 i += 3;
             }
-            (None, b'+') => {
+            (None, b'+') if plus_as_space => {
                 out.push(b' ');
                 i += 1;
             }
@@ -251,7 +258,7 @@ fn decode(s: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 fn hex(b: u8) -> Option<u8> {
@@ -260,7 +267,7 @@ fn hex(b: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::StatusCode;
+    use http::StatusCode;
 
     use super::*;
 
@@ -434,5 +441,7 @@ mod tests {
         assert_eq!(decode("%2B"), "+");
         assert_eq!(decode("%C3%A9"), "é");
         assert_eq!(decode("%FF"), "\u{FFFD}");
+        assert_eq!(percent_decode("a+b%20c", false), b"a+b c");
+        assert_eq!(percent_decode("%FF", false), [0xFF]);
     }
 }

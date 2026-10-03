@@ -1,6 +1,6 @@
 //! Media-type negotiation (§3.2).
 
-use axum::http::{HeaderMap, header};
+use http::{HeaderMap, header};
 
 use crate::{
     MEDIA_TYPE,
@@ -181,7 +181,7 @@ fn unquote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{HeaderValue, StatusCode};
+    use http::{HeaderValue, StatusCode};
 
     use super::*;
 

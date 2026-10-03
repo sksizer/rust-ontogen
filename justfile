@@ -39,11 +39,13 @@ format:
 alias fmt := format
 
 # Run clippy lints (whole workspace, all targets, so every member crate is gated).
-# markdown-store gets an extra no-default-features pass: its feature-gated
-# modules can hide dead code from the default-features workspace lint.
+# markdown-store and ontogen-jsonapi get an extra no-default-features pass:
+# their feature-gated modules can hide dead code from the default-features
+# workspace lint, and the generator builds ontogen-jsonapi without `axum`.
 lint:
     cargo clippy --workspace --all-targets -- --deny warnings
     cargo clippy -p markdown-store --no-default-features -- --deny warnings
+    cargo clippy -p ontogen-jsonapi --no-default-features -- --deny warnings
 
 # Run all code checks (matches CI: format-check + lint + tests)
 full-check: format-check lint test

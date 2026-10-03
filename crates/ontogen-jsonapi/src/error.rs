@@ -2,10 +2,11 @@
 
 use std::{borrow::Cow, fmt};
 
-use axum::{
-    http::{HeaderValue, Method, StatusCode, header},
-    response::{IntoResponse, Response},
-};
+#[cfg(feature = "axum")]
+use axum::response::{IntoResponse, Response};
+use http::StatusCode;
+#[cfg(feature = "axum")]
+use http::{HeaderValue, Method, header};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use crate::document::JsonApiObject;
@@ -54,6 +55,8 @@ pub enum ErrorCode {
     TypeMismatch,
     /// `409 id_mismatch`
     IdMismatch,
+    /// `413 content_too_large`
+    ContentTooLarge,
     /// `415 unsupported_media_type`
     UnsupportedMediaType,
     /// `500 internal_error`
@@ -64,7 +67,7 @@ impl ErrorCode {
     /// Every code, in the order of §13.3's table. The generator checks
     /// `AppError` variant names against these so a code means one thing
     /// (§13.4).
-    pub const ALL: [ErrorCode; 21] = [
+    pub const ALL: [ErrorCode; 22] = [
         ErrorCode::InvalidQueryParameter,
         ErrorCode::InvalidSortField,
         ErrorCode::InvalidIncludePath,
@@ -84,6 +87,7 @@ impl ErrorCode {
         ErrorCode::NotAcceptable,
         ErrorCode::TypeMismatch,
         ErrorCode::IdMismatch,
+        ErrorCode::ContentTooLarge,
         ErrorCode::UnsupportedMediaType,
         ErrorCode::InternalError,
     ];
@@ -110,6 +114,7 @@ impl ErrorCode {
             ErrorCode::NotAcceptable => "not_acceptable",
             ErrorCode::TypeMismatch => "type_mismatch",
             ErrorCode::IdMismatch => "id_mismatch",
+            ErrorCode::ContentTooLarge => "content_too_large",
             ErrorCode::UnsupportedMediaType => "unsupported_media_type",
             ErrorCode::InternalError => "internal_error",
         }
@@ -135,6 +140,7 @@ impl ErrorCode {
             ErrorCode::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ErrorCode::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
             ErrorCode::TypeMismatch | ErrorCode::IdMismatch => StatusCode::CONFLICT,
+            ErrorCode::ContentTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ErrorCode::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             ErrorCode::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -173,8 +179,8 @@ impl Serialize for ErrorSource {
 }
 
 /// One JSON:API error object (§13.1). A response carries exactly one, so
-/// this type is also the response: its [`IntoResponse`] writes the whole
-/// error document with the object's status.
+/// this type is also the response: with the `axum` feature its
+/// `IntoResponse` writes the whole error document with the object's status.
 ///
 /// Members serialize as `status`, `code`, `title`, `detail`, `source`.
 /// `title` is derived from the status. There is deliberately no way to set
@@ -278,6 +284,7 @@ impl fmt::Display for ErrorObject {
 
 impl std::error::Error for ErrorObject {}
 
+#[cfg(feature = "axum")]
 impl IntoResponse for ErrorObject {
     fn into_response(self) -> Response {
         crate::response::error_response(&self)
@@ -337,6 +344,7 @@ pub fn reason_phrase(status: StatusCode) -> &'static str {
 /// serves it. Install it per route, where the methods are known, with
 /// `MethodRouter::fallback`; Axum leaves an `Allow` header the handler set
 /// untouched.
+#[cfg(feature = "axum")]
 pub fn method_not_allowed(method: &Method, allowed: &[Method]) -> Response {
     let allow = allow_header(allowed);
     let mut response =
@@ -354,10 +362,12 @@ pub fn method_not_allowed(method: &Method, allowed: &[Method]) -> Response {
 /// from the route's method router (listing `HEAD` with `GET`). Axum writes
 /// that list without spaces and in registration order; [`method_not_allowed`]
 /// gives the canonical form when the route's methods are known.
+#[cfg(feature = "axum")]
 pub async fn method_not_allowed_fallback(method: Method) -> Response {
     ErrorObject::new(ErrorCode::MethodNotAllowed, format!("{method} is not allowed here")).into_response()
 }
 
+#[cfg(feature = "axum")]
 fn allow_header(allowed: &[Method]) -> String {
     const ORDER: [Method; 9] = [
         Method::GET,
@@ -447,6 +457,7 @@ mod tests {
             ("not_acceptable", 406),
             ("type_mismatch", 409),
             ("id_mismatch", 409),
+            ("content_too_large", 413),
             ("unsupported_media_type", 415),
             ("internal_error", 500),
         ];
@@ -463,6 +474,41 @@ mod tests {
         assert_eq!(reason_phrase(StatusCode::TOO_MANY_REQUESTS), "Too Many Requests");
     }
 
+    #[test]
+    fn all_lists_every_variant_once_in_table_order() {
+        // No wildcard: a new variant does not compile until it is given its
+        // position in §13.3's table here, and the assertion then requires
+        // it in `ALL` at that position.
+        let position = |code: ErrorCode| match code {
+            ErrorCode::InvalidQueryParameter => 0,
+            ErrorCode::InvalidSortField => 1,
+            ErrorCode::InvalidIncludePath => 2,
+            ErrorCode::InvalidPathParameter => 3,
+            ErrorCode::InvalidDocument => 4,
+            ErrorCode::UnknownAttribute => 5,
+            ErrorCode::MissingAttribute => 6,
+            ErrorCode::InvalidAttribute => 7,
+            ErrorCode::UnknownRelationship => 8,
+            ErrorCode::MissingRelationship => 9,
+            ErrorCode::RelationshipRequired => 10,
+            ErrorCode::RelationshipUpdateUnsupported => 11,
+            ErrorCode::RelationshipBatchUnsupported => 12,
+            ErrorCode::RelatedResourceNotFound => 13,
+            ErrorCode::RelationshipNotFound => 14,
+            ErrorCode::MethodNotAllowed => 15,
+            ErrorCode::NotAcceptable => 16,
+            ErrorCode::TypeMismatch => 17,
+            ErrorCode::IdMismatch => 18,
+            ErrorCode::ContentTooLarge => 19,
+            ErrorCode::UnsupportedMediaType => 20,
+            ErrorCode::InternalError => 21,
+        };
+        const VARIANTS: usize = 22;
+        let positions: Vec<usize> = ErrorCode::ALL.iter().map(|&code| position(code)).collect();
+        assert_eq!(positions, (0..VARIANTS).collect::<Vec<_>>());
+    }
+
+    #[cfg(feature = "axum")]
     #[test]
     fn allow_lists_head_with_get_in_canonical_order() {
         assert_eq!(allow_header(&[Method::DELETE, Method::PATCH, Method::GET]), "GET, HEAD, PATCH, DELETE");

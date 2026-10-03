@@ -52,7 +52,7 @@ pub struct CanonicalQuery {
     filter: BTreeMap<String, String>,
     sort: Option<Vec<String>>,
     include: Option<Vec<String>>,
-    page: Option<(u64, u64)>,
+    page: Option<(u32, u32)>,
 }
 
 impl CanonicalQuery {
@@ -91,7 +91,7 @@ impl CanonicalQuery {
     }
 
     /// Sets `page[offset]` and `page[limit]` to the effective values.
-    pub fn set_page(&mut self, offset: u64, limit: u64) -> &mut Self {
+    pub fn set_page(&mut self, offset: u32, limit: u32) -> &mut Self {
         self.page = Some((offset, limit));
         self
     }
@@ -135,23 +135,38 @@ fn join_encoded(items: &[String]) -> String {
 /// `offset` and `limit` are the effective values after clamping and
 /// `total` the filter-aware count. `limit` is at least 1, because
 /// `page[limit]=0` is rejected before a page is read.
+///
+/// The arithmetic is done in `u64`, so it cannot overflow. A request
+/// cannot name an offset above `u32::MAX` (§7.2), so in a collection
+/// larger than that, `last` is the last page that can be requested, and
+/// `next` is `null` once the next page would start beyond it.
 pub fn pagination_links(path: &str, query: &CanonicalQuery, offset: u32, limit: u32, total: u64) -> Links {
-    let (offset, limit) = (u64::from(offset), u64::from(limit.max(1)));
-    let last_offset = if total == 0 { 0 } else { (total - 1) / limit * limit };
+    let limit = limit.max(1);
+    let (wide_offset, wide_limit) = (u64::from(offset), u64::from(limit));
+    let last_requestable = u64::from(u32::MAX) / wide_limit * wide_limit;
+    let last_offset = if total == 0 { 0 } else { ((total - 1) / wide_limit * wide_limit).min(last_requestable) };
+    // Every offset passed here is the request's own or at most
+    // `last_requestable`, so it fits a u32.
     let page = |at: u64| {
         let mut q = query.clone();
-        q.set_page(at, limit);
+        q.set_page(u32::try_from(at).unwrap_or(u32::MAX), limit);
         q.href(path)
     };
-    let prev = if offset == 0 {
+    let prev = if wide_offset == 0 {
         None
-    } else if offset >= total {
+    } else if wide_offset >= total {
         Some(page(last_offset))
     } else {
-        Some(page(offset.saturating_sub(limit)))
+        Some(page(wide_offset.saturating_sub(wide_limit)))
     };
-    let next = if offset + limit >= total { None } else { Some(page(offset + limit)) };
-    Links::new(page(offset)).with_pagination(PaginationLinks { first: page(0), prev, next, last: page(last_offset) })
+    let next_offset = wide_offset + wide_limit;
+    let next = if next_offset >= total || next_offset > last_requestable { None } else { Some(page(next_offset)) };
+    Links::new(page(wide_offset)).with_pagination(PaginationLinks {
+        first: page(0),
+        prev,
+        next,
+        last: page(last_offset),
+    })
 }
 
 #[cfg(test)]
@@ -238,7 +253,7 @@ mod tests {
         ]
     }
 
-    fn at(offset: u64, limit: u64) -> Option<String> {
+    fn at(offset: u64, limit: u32) -> Option<String> {
         Some(format!("/api/tasks?page%5Boffset%5D={offset}&page%5Blimit%5D={limit}"))
     }
 
@@ -283,6 +298,28 @@ mod tests {
         );
         // Exact multiple: the last page starts at total - limit.
         assert_eq!(offsets(&pagination_links("/api/tasks", &q, 0, 10, 40)).last().cloned().flatten(), at(30, 10));
+    }
+
+    #[test]
+    fn pagination_links_stay_within_requestable_offsets() {
+        let q = CanonicalQuery::new();
+        let max = u64::from(u32::MAX);
+        // The largest offset and limit: no overflow, and no next page.
+        assert_eq!(
+            offsets(&pagination_links("/api/tasks", &q, u32::MAX, u32::MAX, u64::MAX)),
+            [at(max, u32::MAX), at(0, u32::MAX), at(0, u32::MAX), None, at(max, u32::MAX)]
+        );
+        // More rows than offsets: `last` is the last requestable page.
+        let last = max / 10 * 10;
+        assert_eq!(
+            offsets(&pagination_links("/api/tasks", &q, 0, 10, u64::MAX)),
+            [at(0, 10), at(0, 10), None, at(10, 10), at(last, 10)]
+        );
+        // On that page, the next would start beyond u32::MAX.
+        assert_eq!(
+            offsets(&pagination_links("/api/tasks", &q, u32::try_from(last).unwrap(), 10, u64::MAX)),
+            [at(last, 10), at(0, 10), at(last - 10, 10), None, at(last, 10)]
+        );
     }
 
     #[test]

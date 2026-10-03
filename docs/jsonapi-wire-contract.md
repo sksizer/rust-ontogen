@@ -1723,8 +1723,10 @@ is the response:
      byte order of member name.
 6. **Route-level refusals** decidable without the body: the `403`s of §9's
    table.
-7. **The request body**, in the order of the operation's table. Members
-   are checked in schema order, so no order-preserving parser is needed.
+7. **The request body**, in the order of the operation's table. A body
+   larger than the server accepts is `413 content_too_large`, ahead of
+   every row of the table. Members are checked in schema order, so no
+   order-preserving parser is needed.
    The rule applies per member family, families in this order:
    1. unknown attribute names, in byte order;
    2. declared attributes, in declaration order;
@@ -1770,6 +1772,7 @@ consumer's `AppError`:
 | 406 | `not_acceptable` | §3.2 |
 | 409 | `type_mismatch` | a `type` that is not the endpoint's or the relationship's (§8.2, §8.3, §9) |
 | 409 | `id_mismatch` | a `PATCH` body id differs from the URL id (§8.3) |
+| 413 | `content_too_large` | the body is larger than the server's body-size limit (Axum's `DefaultBodyLimit`: 2 MB unless the consumer's router sets another) |
 | 415 | `unsupported_media_type` | §3.2 |
 | 500 | `internal_error` | a store-construction or scope-accessor failure; a custom op whose error type is not `AppError`; an `AppError`-typed site in a consumer with no `AppError` in its schema directory |
 
@@ -2073,6 +2076,7 @@ the section that states each and its reason.
 | Non-entity event payloads and custom results are `{meta:{result}}` | 10.1, 12 | One rule for every non-resource payload |
 | Event frames carry no links | 12 | A frame has no request URL, and links would double its size |
 | One error object per response, first failure in §13.2 order | 13.1, 13.2 | Every request has exactly one correct error |
+| A body over the size limit is `413`, not `400` | 13.2, 13.3 | RFC 9110 defines the status for it, and a client can tell a body that is too big from one that is malformed |
 | `code` is the `AppError` variant in snake_case, or a fixed ontogen code | 13.3, 13.4 | Machine-readable without parsing `detail` |
 | `title` is the reason phrase of the status | 13.1 | Constant per problem, as the spec asks |
 | `detail` is not normative | 13.1 | Wording can improve without a contract change |

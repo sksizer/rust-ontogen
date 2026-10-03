@@ -4,11 +4,8 @@
 //! have been a `406` (§3.3). Bodies are `application/vnd.api+json` with no
 //! parameters; a `204` has neither body nor `Content-Type`.
 
-use axum::{
-    body::Body,
-    http::{HeaderValue, StatusCode, header},
-    response::Response,
-};
+use axum::{body::Body, response::Response};
+use http::{HeaderValue, StatusCode, header};
 use serde::Serialize;
 
 use crate::{MEDIA_TYPE, error::ErrorObject};
