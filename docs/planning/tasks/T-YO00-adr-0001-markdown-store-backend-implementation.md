@@ -2,7 +2,7 @@
 type: task
 schema_version: '5'
 id: T-YO00
-status: planning/draft
+status: closed/done
 created: '2026-06-06'
 related: []
 tags:
@@ -11,6 +11,9 @@ tags:
 need_human_review: false
 impact: high
 complexity: medium
+last_reviewed: '2026-10-03'
+completion_note: |
+  Shipped as epic E0002 (docs/planning/epics/markdown-backend.md): the 15-PR stack #95–#110 merged 2026-07-12. `StoreConfig.backend` selects `Backend::Seaorm | Backend::Markdown`; `tests/backend_parity.rs` enforces byte-identical api/servers/clients output; ADR 0001 accepted with amendments in #110.
 ---
 # Implement ADR-0001: markdown as a first-class store backend
 

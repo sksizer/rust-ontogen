@@ -1,9 +1,9 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-09-07'
-last_reviewed: '2026-09-20'
+last_reviewed: '2026-10-03'
 impact: medium
 complexity: medium
 tags:
@@ -12,7 +12,8 @@ tags:
 - open-format
 related:
 - 2026-09-07-schema-enums-labels-and-id-type.md
-relevance_note: In review as #161. Spec ported from the dev monorepo, where it was authored as T-5IDQ.
+completion_note: |
+  Shipped via #161 (merged 2026-09-23, released in 0.7.1). The `docs` stage emits the per-entity data-model reference with a Mermaid ER diagram and JSON Schema files from the parsed schema; `EntityDef.doc` / `FieldDef.doc` carry the doc comments.
 ---
 # A docs stage that emits the data-model reference and JSON Schema from the parsed schema
 

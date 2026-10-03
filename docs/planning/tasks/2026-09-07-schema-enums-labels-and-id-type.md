@@ -1,9 +1,9 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-09-07'
-last_reviewed: '2026-09-20'
+last_reviewed: '2026-10-03'
 impact: medium
 complexity: medium
 tags:
@@ -13,7 +13,8 @@ tags:
 related:
 - 2026-09-07-docs-stage-data-model-reference-and-json-schema.md
 - 2026-09-07-admin-layer-registry-path-pickers-and-packaging.md
-relevance_note: In review as #160. Spec ported from the dev monorepo, where it was authored as T-DM4X.
+completion_note: |
+  Shipped via #160 (merged 2026-09-21, released in 0.7.1). The parser reads enums declared beside entities; `enumValues`, readable labels and `idType` reach `admin-registry.ts`.
 ---
 # Enum variants, field labels and the id type reach the admin registry
 

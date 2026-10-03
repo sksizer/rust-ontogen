@@ -13,7 +13,12 @@ tags: [servers, http, errors, dx]
 **Milestone:** M3 — Observability & extensibility ("First-class error-type
 specification … the wire error shape is consumer-controlled rather than
 ontogen-imposed", [roadmap](../../roadmap.md))
-**Status:** proposed — design pass complete, no implementation started
+**Status:** proposed — design pass complete, no implementation started.
+**Superseded in part by** [E0004 — JSON:API as the generated HTTP wire format](./jsonapi-http-transport.md):
+the `{"error": string}` body this epic keeps as a wire contract becomes the
+JSON:API `errors[]` document there; the `AppError` scan, status mapping and
+consumer overrides in phases 0–3 here are unchanged. Phases 0–1 are
+implemented inside E0004 phase 1; phases 2–3 remain here.
 **Design source:** [design document](../../http-error-mapping-design.md) —
 exact surfaces, generated-output spec, scanning semantics, call-site
 routing, test plan

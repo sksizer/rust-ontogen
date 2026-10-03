@@ -1,9 +1,9 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-09-07'
-last_reviewed: '2026-09-20'
+last_reviewed: '2026-10-03'
 impact: high
 complexity: large
 tags:
@@ -13,7 +13,8 @@ tags:
 related:
 - 2026-09-07-pagination-declared-per-module.md
 - 2026-09-07-pagination-pushdown-into-the-store.md
-relevance_note: In review as #156. Spec ported from the dev monorepo, where it was authored as T-6071.
+completion_note: |
+  Shipped via #156 (merged 2026-09-21, released in 0.7.0). `ApiSurface` carries its own `api_dir`, store accessor and `paginated_modules`; same-named modules from several surfaces merge into the one Axum router, `ipc_handler()` and TS `Transport`.
 ---
 # A second API surface with its own store accessor, merged into one transport
 

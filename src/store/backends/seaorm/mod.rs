@@ -15,7 +15,11 @@ impl StoreBackend for SeaormBackend {
     fn emit_preamble(&self, code: &mut String, entity: &EntityDef) {
         let snake = to_snake_case(&entity.name);
 
-        code.push_str("use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QuerySelect};\n\n");
+        // `QueryOrder` backs the `order_by_asc` every multi-row SELECT emits.
+        // `list_*` is always generated and always ordered (see `id_column`), so
+        // the import is always used — no condition here to keep in lockstep
+        // with the one in gen_crud.
+        code.push_str("use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect};\n\n");
 
         // Additional imports for entities with has_many relations
         if entity.has_many_relations().next().is_some() {
