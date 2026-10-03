@@ -108,12 +108,14 @@ The scanner classifies each function into an `OpKind` that drives HTTP verb and 
 
 ### CRUD and junction vocabulary
 
+The CRUD rows are served as JSON:API resources when the module is backed by a schema entity; see [Server Transports](/guides/server-transports/#httpaxum-generation). Custom operations, junction operations and event streams keep their current request and response bodies for now, and change in a later phase of 0.9. A module with CRUD-named functions but no entity behind it is also served as it was, with `PUT` for `update`.
+
 | Function name | `OpKind` | HTTP | Route example |
 |---------------|----------|------|---------------|
 | `list` | `List` | `GET` | `/api/workouts` |
 | `get_by_id` | `GetById` | `GET` | `/api/workouts/{id}` |
 | `create` | `Create` | `POST` | `/api/workouts` |
-| `update` | `Update` | `PUT` | `/api/workouts/{id}` |
+| `update` | `Update` | `PATCH` | `/api/workouts/{id}` |
 | `delete` | `Delete` | `DELETE` | `/api/workouts/{id}` |
 | `add_{child}(parent_id, child_id)` | `JunctionAdd` | `POST` | `/api/workouts/{parent_id}/{child}` |
 | `remove_{child}(parent_id, child_id)` | `JunctionRemove` | `DELETE` | `/api/workouts/{parent_id}/{child}/{child_id}` |
@@ -154,6 +156,10 @@ For custom functions, the module name becomes part of the route path. The functi
 
 If you need to force a method regardless of name or param shape, use the source-side `#[ontogen::http::post]` / `#[ontogen::http::get]` attributes -- see [Forcing a method](#forcing-a-method) below.
 </Aside>
+
+### Errors from custom endpoints
+
+A custom endpoint's success body is unchanged, but its errors are not. A failure from a generated route, custom ones included, is a JSON:API error document (`application/vnd.api+json`, an `errors` array with one object). If the function returns your `AppError`, the variant decides the status and `code` through the same suffix rule as the CRUD routes (`*NotFound` 404, `*IdRequired` 400, `*AlreadyExists` 409, `*ParentRequired` 403, otherwise 500, `code` the variant name in snake_case); `detail` is the error's `Display` text. A function whose error type is not `AppError` answers `500 internal_error`. A malformed query parameter, or a method the route does not serve (`405` with `Allow`), is also an `errors` document. The scan reads `ServersConfig::error_source_dir`; see the [upgrade notes](/reference/upgrading/#apperror).
 
 ## Organizing custom endpoints
 

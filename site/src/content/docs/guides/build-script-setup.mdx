@@ -50,6 +50,8 @@ fn main() {
         store_import: Some("crate::store::Store".into()),
         pagination: None,
         extra_surfaces: vec![],
+        // Pipeline fills this with the schema directory when it is None.
+        error_source_dir: None,
     };
 
     let clients_config = ClientsConfig {
@@ -76,8 +78,7 @@ fn main() {
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
         pagination: None,
-        // Pipeline auto-fills these two; leave them empty.
-        schema_entities: Vec::new(),
+        // Pipeline auto-fills this one; leave it empty.
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
         extra_surfaces: vec![],
@@ -108,7 +109,7 @@ That's roughly 80 lines for a full Tauri + Nuxt pipeline -- HTTP, IPC, TypeScrip
 <Aside type="tip">
 The builder's defaults: `schema_module_path` defaults to `ontogen::DEFAULT_SCHEMA_MODULE_PATH` (`"crate::schema"`) and propagates to both the store and API stages; when you opt into `store(...)`, the API stage's `store_type` defaults to `Some("Store")`. Override either with `.schema_module_path(...)` or `.api_store_type(Some(_))`.
 
-`Pipeline` also fills in `ClientsConfig.schema_entities` from the schema stage and `pool_exclude_paths` from the `seaorm()` stage, which is why both are left empty above. And it **infers the store backend** when exactly one persistence stage is configured -- if you enable both `seaorm(...)` and `markdown_io(...)`, disambiguate with `.store_backend(StoreBackendChoice::Seaorm)`.
+`Pipeline` also passes the parsed schema entities to the servers and clients stages, sets `ServersConfig.error_source_dir` to the schema directory when it is `None`, and fills in `pool_exclude_paths` from the `seaorm()` stage, which is why those are left empty above. And it **infers the store backend** when exactly one persistence stage is configured -- if you enable both `seaorm(...)` and `markdown_io(...)`, disambiguate with `.store_backend(StoreBackendChoice::Seaorm)`.
 
 The id strategy for records created without an id is a store setting: `.store_id_strategy(IdStrategy::SlugFromField("title".into()))` applies to either backend and defaults to `IdStrategy::Provided`. See [Creating records](/guides/store-layer/#creating-records).
 </Aside>
@@ -224,6 +225,7 @@ fn main() {
     // ── 5. Server transports ─────────────────────────────────────
     let _servers = unwrap_codegen(
         ontogen::gen_servers(
+            &schema.entities,
             Some(&api),
             &["src/api/v1".into()],
             &ontogen::ServersConfig {
@@ -248,6 +250,10 @@ fn main() {
                 store_import: Some("crate::store::Store".to_string()),
                 pagination: None,
                 extra_surfaces: vec![],
+                // Directory scanned for `enum AppError`; its variants set the
+                // HTTP status and `code` of each error. Pipeline defaults it
+                // to its schema directory.
+                error_source_dir: Some("src/schema".into()),
             },
         ),
         "gen_servers",
@@ -256,6 +262,7 @@ fn main() {
     // ── 6. TypeScript clients + admin registry ───────────────────
     unwrap_codegen(
         ontogen::gen_clients(
+            &schema.entities,
             Some(&api),
             &["src/api/v1".into()],
             &ontogen::ClientsConfig {
@@ -281,10 +288,6 @@ fn main() {
                 store_type: Some("Store".to_string()),
                 store_import: Some("crate::store::Store".to_string()),
                 pagination: None,
-                // Required for the admin-registry generator. Pipeline does
-                // this for you; the explicit form must pass it manually,
-                // otherwise admin-registry.ts ships with empty `fields: []`.
-                schema_entities: schema.entities.clone(),
                 pool_extra_roots: vec![],
                 // Also automatic under Pipeline. Without it, the per-entity
                 // `Relation` enums gen_seaorm emitted make the long-tail
@@ -301,9 +304,9 @@ fn main() {
 ```
 
 <Aside type="caution">
-Two `ClientsConfig` fields that `Pipeline` fills in for you and the explicit form must pass manually:
+Two things `Pipeline` does for you that the explicit form must do manually:
 
-- **`schema_entities`** -- required if any of your generators is `AdminRegistry`. Without it the generator silently emits empty `fields: []` for every entity and the admin UI has nothing to render.
+- **The schema entities** -- `gen_servers` and `gen_clients` take them as their first argument. Pass `&schema.entities` (from `parse_schema`). With `&[]`, the HTTP transport has no resources to build and the `AdminRegistry` generator silently emits empty `fields: []` for every entity.
 - **`pool_exclude_paths`** -- point it at your `gen_seaorm` `entity_output`. `gen_seaorm` emits a `Relation` enum per entity, so a consumer with its own `Relation` type otherwise hits an ambiguous-match abort.
 </Aside>
 

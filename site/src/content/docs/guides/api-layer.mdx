@@ -52,6 +52,8 @@ These are intentionally thin. The forwarding pattern keeps a clean separation: t
 
 The `create` and `update` functions accept DTO types (`CreateTaskInput`, `UpdateTaskInput`) and convert them to domain types before calling the store. This conversion layer is where Ontogen handles the translation between what clients send and what your store expects.
 
+Over HTTP, these five functions become the CRUD routes of a JSON:API resource. The generated server builds the resource object from the schema entity, not from the function's Rust return type, so the forwarding functions stay flat: `Task` in, `Task` out. Errors that the functions return as `AppError` reach HTTP clients as JSON:API error documents, with the status and `code` taken from the variant name (`TaskNotFound` becomes `404 task_not_found`). The mapping and the variants your `AppError` must declare are in [Server Transports](/guides/server-transports/#errors).
+
 ## ApiConfig options
 
 ```rust
@@ -152,7 +154,7 @@ pub struct ApiFnMeta {
 }
 ```
 
-The `OpKind` classification drives how downstream generators produce routes and commands. The standard CRUD operations (`List`, `GetById`, `Create`, `Update`, `Delete`) get predictable HTTP methods and paths. Junction operations (`JunctionList`, `JunctionAdd`, `JunctionRemove`) are recognized for `list_*`/`add_*`/`remove_*` functions that take a parent ID plus a child ID and produce nested routes like `/api/agents/{parent_id}/roles`. Custom operations are classified as either `CustomGet` or `CustomPost`: the classifier first checks the function name (so `get_*` is a `CustomGet` candidate, anything else defaults to `CustomPost`), then consults the AST of the first user-facing parameter — a `get_*` function whose first param is a body-carrying custom struct gets reclassified as `CustomPost` so the HTTP transport can emit a JSON body instead of an unworkable `Path<String>` extraction. See the [function classification table](/cookbook/custom-api-endpoints/#function-classification-rules) in the custom endpoints cookbook for the full ruleset. Event-stream functions are classified as `EventStream`.
+The `OpKind` classification drives how downstream generators produce routes and commands. The standard CRUD operations (`List`, `GetById`, `Create`, `Update`, `Delete`) get predictable HTTP methods and paths (`GET`, `GET`, `POST`, `PATCH`, `DELETE`), and over HTTP they are served as JSON:API resources when the module is backed by a schema entity -- see [Server Transports](/guides/server-transports/#httpaxum-generation). Junction operations (`JunctionList`, `JunctionAdd`, `JunctionRemove`) are recognized for `list_*`/`add_*`/`remove_*` functions that take a parent ID plus a child ID and produce nested routes like `/api/agents/{parent_id}/roles`. Custom operations are classified as either `CustomGet` or `CustomPost`: the classifier first checks the function name (so `get_*` is a `CustomGet` candidate, anything else defaults to `CustomPost`), then consults the AST of the first user-facing parameter — a `get_*` function whose first param is a body-carrying custom struct gets reclassified as `CustomPost` so the HTTP transport can emit a JSON body instead of an unworkable `Path<String>` extraction. See the [function classification table](/cookbook/custom-api-endpoints/#function-classification-rules) in the custom endpoints cookbook for the full ruleset. Event-stream functions are classified as `EventStream`.
 
 ## The Source enum
 
@@ -237,6 +239,7 @@ let config = ServersConfig {
     },
     // ...
     extra_surfaces: vec![],
+    error_source_dir: None,
 };
 ```
 
