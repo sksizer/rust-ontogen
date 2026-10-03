@@ -41,7 +41,7 @@ at a vault people also edit in Obsidian or a text editor.
 | `layout`, `id` | id ↔ filename mapping with **validated, traversal-proof** path construction; `IdStrategy` (`Provided` / `SlugFromField` / `Uuid`*) |
 | `fsops` | atomic single-file write (same-dir tempfile + fsync + rename), read-modify-write |
 | `walk` | gitignore-aware record listing, **sorted** (the backend's stable order) |
-| `store` | `VaultHandle`: create / read / modify / remove / list / id-derivation, with a shared intra-process write lock |
+| `store` | `VaultHandle`: create / read / modify / remove / list / id-derivation, with a shared intra-process write lock; `EntityRecords` (`vault.entity(dir, type)`): the typed per-entity view that stamps each record's OKF `type` and filters flat vaults by it |
 
 \* `Uuid` needs the `uuid` cargo feature.
 
@@ -73,6 +73,11 @@ Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
 - **Scale ceiling.** Listing parses every record; the configurable list cap
   (default 10k) turns overgrowth into a loud error. This crate is for
   small-N, human-editable, read-heavy data — not a database.
+- **OKF-shaped vaults.** Through `EntityRecords`, a created record carries
+  `type` as its first frontmatter key, and a record that really changes gains
+  or corrects it; a no-op update still writes nothing. `index` and `log` are
+  reserved ids (OKF's directory listing and update log) and the walk never
+  lists those files.
 - **Strict reads.** A malformed record fails the operation; it is never
   silently skipped (and read-modify-write refuses to rewrite a file it
   couldn't parse).
