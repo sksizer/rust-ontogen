@@ -121,6 +121,24 @@ pub(crate) fn contains_record(dir: &Path, opts: &WalkOptions, max_depth: Option<
     Ok(false)
 }
 
+/// Whether the walk finds a file anywhere under `dir`, at any depth, other
+/// than an `index.md`, stopping at the first one.
+#[cfg(feature = "store")]
+pub(crate) fn holds_non_index_file(dir: &Path, opts: &WalkOptions) -> Result<bool, Error> {
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+    for entry in builder(dir, opts, None).build() {
+        let entry = entry.map_err(|e| walk_error(dir, e))?;
+        if entry.file_type().is_some_and(|t| t.is_file())
+            && entry.file_name() != std::ffi::OsStr::new(crate::okf::INDEX_FILE)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Every `index.md` the store may have written under `dir`, sorted, walked
 /// with the same options as records so a rebuild sees the vault the way a
 /// listing does.
@@ -282,6 +300,14 @@ mod tests {
         assert!(!contains_record(&root.join("full"), &opts, Some(2)).unwrap(), "the depth limit applies");
         assert!(!contains_record(&root.join("bare"), &opts, None).unwrap(), "an index is no record");
         assert!(!contains_record(&root.join("missing"), &opts, None).unwrap());
+
+        assert!(holds_non_index_file(&root.join("bare"), &opts).unwrap(), "any file but an index counts");
+        assert!(holds_non_index_file(&root.join("full"), &opts).unwrap(), "at any depth");
+        touch(&root.join("only-index/sub/index.md"));
+        touch(&root.join("only-hidden/.DS_Store"));
+        for empty in ["only-index", "only-hidden", "missing", "x.md"] {
+            assert!(!holds_non_index_file(&root.join(empty), &opts).unwrap(), "{empty}");
+        }
     }
 
     #[test]

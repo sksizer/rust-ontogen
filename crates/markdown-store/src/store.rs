@@ -73,8 +73,8 @@ pub struct OkfPolicy {
     /// when its bytes would change. The store owns the `index.md` of every
     /// directory that holds records and overwrites whatever is there, a
     /// hand-written one included. When a directory loses its last record its
-    /// index is removed, but only if the store generated it; an `index.md`
-    /// of any other shape is left alone (the exact rule is under
+    /// index is removed if it has the store's shape and every link in it
+    /// dangles; any other `index.md` is left alone (the exact rule is under
     /// [`VaultHandle::rebuild_indexes`]). Turning the option on does not
     /// touch the vault by itself: `rebuild_indexes` writes the indexes of
     /// records that already exist.
@@ -422,21 +422,32 @@ impl VaultHandle {
     // ── OKF indexes ─────────────────────────────────────────────────────
 
     /// Regenerate every OKF `index.md` in the vault from the records on
-    /// disk, and remove each index the store generated whose directory no
-    /// longer holds a record. Indexes whose bytes would not change are not
-    /// rewritten.
+    /// disk, and remove each stale one the store wrote for a directory that
+    /// no longer holds a record. Indexes whose bytes would not change are
+    /// not rewritten.
     ///
-    /// An `index.md` counts as store-generated only when it has exactly the
-    /// shape the store writes: optionally the root frontmatter
-    /// (`okf_version: "0.2"` and nothing else), then one or more sections,
-    /// each a `# <heading>` line, a blank line and one or more
-    /// `* [<text>](<link>)` entries, each optionally followed by
-    /// ` - <description>`, with one blank line between sections and a
-    /// single trailing newline; every link a percent-encoded record file
-    /// name (an extension from the walk options) or a percent-encoded
-    /// directory name ending in `/`. Any other `index.md` in a directory
-    /// without records (an Obsidian folder note, a hand-kept listing of
-    /// attachments) is left alone.
+    /// A directory that holds records at any depth gets the store's index
+    /// whatever its `index.md` held before, so a hand-written list of the
+    /// records beside it is replaced. In a directory without records an
+    /// `index.md` is removed only when both hold:
+    ///
+    /// - It has exactly the shape the store writes: optionally the root
+    ///   frontmatter (`okf_version: "0.2"` and nothing else), then one or
+    ///   more sections, each a `# <heading>` line, a blank line and one or
+    ///   more `* [<text>](<link>)` entries, each optionally followed by
+    ///   ` - <description>`, with one blank line between sections and a
+    ///   single trailing newline; every link a percent-encoded record file
+    ///   name (an extension from the walk options) or a percent-encoded
+    ///   directory name ending in `/`.
+    /// - Every link in it dangles: a file link names a file that does not
+    ///   exist, and a directory link names a directory that does not exist
+    ///   or in which the walk finds no file but `index.md` files.
+    ///
+    /// A store-shaped file whose links all dangle is treated as the store's
+    /// and removed. Anything else stays: an Obsidian folder note, a
+    /// hand-kept listing of attachments, or a list in the store's shape
+    /// that links a folder of images or another file that is still there.
+    /// The same rule applies when a write empties a directory.
     ///
     /// This is the repair path after a crash or an edit made outside the
     /// handle, and how a seed vault's indexes are produced. It runs
@@ -479,7 +490,7 @@ impl VaultHandle {
         }
         for index in walk::list_index_paths(&self.root, &self.walk)? {
             if index.parent().is_some_and(|dir| !dirs.contains(dir)) {
-                okf::remove_if_generated(&index, &self.walk)?;
+                okf::remove_if_dangling(&index, &self.walk)?;
             }
         }
         self.stale.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
@@ -1219,7 +1230,7 @@ mod tests {
              * [sub](sub/)\n"
         );
         let index = file(dir.path(), "things/index.md").unwrap();
-        assert!(okf::is_store_generated(&index, &WalkOptions::default()), "escaped text keeps the store's shape");
+        assert!(okf::store_links(&index, &WalkOptions::default()).is_some(), "escaped text keeps the store's shape");
     }
 
     #[test]
@@ -1272,6 +1283,13 @@ mod tests {
         tasks.remove("t").unwrap();
         assert_eq!(file(root, "tasks/index.md").unwrap(), note, "without records a hand-written index stays");
         assert_eq!(file(root, "index.md"), None, "the root's generated index goes with its last record");
+
+        tasks.create(Some("t"), None, titled("T", None)).unwrap();
+        fsops::write_atomic(&root.join("tasks/diagrams/flow.png"), "png").unwrap();
+        let listing = "# Files\n\n* [Diagrams](diagrams/)\n* [T](t.md)\n";
+        fsops::write_atomic(&root.join("tasks/index.md"), listing).unwrap();
+        tasks.remove("t").unwrap();
+        assert_eq!(file(root, "tasks/index.md").unwrap(), listing, "a store-shaped list stays while a link resolves");
     }
 
     #[cfg(unix)]
@@ -1325,19 +1343,35 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_indexes_nested_directories_and_removes_only_its_own_stale_ones() {
+    fn rebuild_indexes_nested_directories_and_removes_only_dangling_store_shaped_ones() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let vault = VaultHandle::new(root, VaultLayout::PerEntityDir, IdStrategy::Provided);
+        let put = |rel: &str, content: &str| fsops::write_atomic(&root.join(rel), content).unwrap();
         seed(&vault, "notes", "top", "---\ntype: Note\ntitle: Top\n---\n");
-        fsops::write_atomic(&root.join("notes/deep/er/leaf.md"), "---\ntype: Note\n---\n").unwrap();
-        fsops::write_atomic(&root.join("notes/.hidden/secret.md"), "---\ntype: Note\n---\n").unwrap();
-        fsops::write_atomic(&root.join("gone/index.md"), "# Note\n\n* [Old](old.md)\n").unwrap();
+        put("notes/deep/er/leaf.md", "---\ntype: Note\n---\n");
+        put("notes/.hidden/secret.md", "---\ntype: Note\n---\n");
+        put("notes/my notes (old).md", "no frontmatter at all\n");
+        // Store-shaped, every link dangling: a stale index of the store's.
+        put("gone/index.md", "# Note\n\n* [Old](old.md)\n");
+        put("emptied/index.md", "# Note\n\n* [Old](old.md)\n\n# Directories\n\n* [old](old/)\n");
+        put("emptied/old/index.md", "# Note\n\n* [Old](old.md)\n");
+        put("emptied/old/.DS_Store", "hidden: the walk does not see it");
+        // Not the store's shape.
         let folder_note = "# Attachments\n\nDiagrams for the notes.\n";
-        fsops::write_atomic(&root.join("attachments/index.md"), folder_note).unwrap();
+        put("attachments/index.md", folder_note);
         let listing = "# Attachments\n\n* [Diagram](diagram.png)\n";
-        fsops::write_atomic(&root.join("figures/index.md"), listing).unwrap();
-        fsops::write_atomic(&root.join("notes/my notes (old).md"), "no frontmatter at all\n").unwrap();
+        put("figures/index.md", listing);
+        // The store's shape, but a link still resolves to something that is no record.
+        let folders = "# Folders\n\n* [Logos](logos/)\n";
+        put("assets/index.md", folders);
+        put("assets/logos/logo.png", "png");
+        let reading = "# Reading list\n\n* [Changes](log.md) - read first\n* [Spec](spec.md)\n";
+        put("reading/index.md", reading);
+        put("reading/log.md", "# Log\n");
+        // Beside a record the index is the store's, whatever it held.
+        put("shelf/index.md", "# Reading list\n\n* [Spec](spec.md) - read first\n");
+        put("shelf/spec.md", "---\ntype: Doc\ntitle: Spec\n---\n");
         assert_eq!(file(root, "index.md"), None, "indexes off: a seeded vault gets none on its own");
 
         vault.rebuild_indexes().unwrap();
@@ -1349,10 +1383,22 @@ mod tests {
         assert_eq!(file(root, "notes/deep/index.md").unwrap(), "# Directories\n\n* [er](er/)\n");
         assert_eq!(file(root, "notes/deep/er/index.md").unwrap(), "# Note\n\n* [leaf](leaf.md)\n");
         assert_eq!(file(root, "notes/.hidden/index.md"), None, "walk options apply: hidden directories are skipped");
-        assert_eq!(file(root, "gone/index.md"), None, "a generated index without records below it is removed");
+        assert_eq!(file(root, "gone/index.md"), None, "a store-shaped index whose links all dangle is removed");
+        assert_eq!(file(root, "emptied/old/index.md"), None);
+        assert_eq!(
+            file(root, "emptied/index.md"),
+            None,
+            "a directory holding only an index and hidden files is no link target"
+        );
         assert_eq!(file(root, "attachments/index.md").unwrap(), folder_note, "a hand-written note is not the store's");
         assert_eq!(file(root, "figures/index.md").unwrap(), listing, "nor is a listing of non-records");
-        assert!(file(root, "index.md").unwrap().ends_with("# Directories\n\n* [notes](notes/)\n"));
+        assert_eq!(file(root, "assets/index.md").unwrap(), folders, "a linked directory still holds a file");
+        assert_eq!(file(root, "reading/index.md").unwrap(), reading, "one link still resolves");
+        assert_eq!(file(root, "shelf/index.md").unwrap(), "# Doc\n\n* [Spec](spec.md)\n");
+        assert_eq!(
+            file(root, "index.md").unwrap(),
+            "---\nokf_version: \"0.2\"\n---\n\n# Directories\n\n* [notes](notes/)\n* [shelf](shelf/)\n"
+        );
     }
 
     #[test]
