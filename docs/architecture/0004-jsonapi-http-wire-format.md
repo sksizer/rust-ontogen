@@ -183,6 +183,20 @@ only.
   a required-foreign-key `has_many` exists.
 - **Breaking for direct callers.** `gen_servers` and `gen_clients` gain a
   parameter, and `VaultHandle::new` loses one.
+- **Breaking for SeaORM data whose ids break the shared id rule.** That
+  covers an id that is `index` or `log` in any case, contains `/`, `\`, `:`
+  or NUL, starts with `.`, ends with `.` or a space, or is whitespace-only.
+  - Such a row cannot be created again under that id: a create is `400`.
+  - The server must serve every link it emits, so a path `{id}` is only a
+    lookup key and is never validated. Existing rows are therefore still
+    listed, readable, updatable and deletable at their `links.self`.
+  - **Migration:** rename such rows to valid ids before relying on create,
+    and before moving the data to a markdown vault, where those ids cannot
+    exist.
+- **Breaking for SeaORM consumers with an integer field the parser files
+  under `OptionEnum` or `Other`** (`u32`, `Option<u16>` and the like). The
+  generated entity field becomes `i64` (ADR 0006 §4), which ends a silent
+  `as i32` truncation. No data migration is needed on SQLite.
 - **TS changes.** `String(e)` reads `JsonApiError: …` instead of
   `Error: …`. List methods gain a trailing optional argument.
 - **Cost.**

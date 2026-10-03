@@ -48,11 +48,12 @@ does not provide:
 - **Markdown.** `markdown_store::walk` sorts paths by their
   extension-stripped form (`crates/markdown-store/src/walk.rs:88`), and
   skips the stems [ADR 0005](0005-okf-markdown-vaults.md) reserves
-  (`index`, `log`). The store then parses every record and pages in memory with skip/take. It
-  populates relations for the page only. For a flat `PerEntityDir`
-  directory, path order equals id order. For a nested layout it does not,
-  so ADR 0001's "lexicographic by record id" is not quite what ships.
-  many_to_many linkage is the frontmatter list, in written order.
+  (`index`, `log`). The store then parses every record and pages in
+  memory with skip/take. It populates relations for the page only. For a
+  flat `PerEntityDir` directory, path order equals id order. For a nested
+  layout it does not, so ADR 0001's "lexicographic by record id" is not
+  quite what ships. many_to_many linkage is the frontmatter list, in
+  written order.
 - **Nulls.** `Option` fields are SQL `NULL` on SeaORM. On markdown they are
   an absent frontmatter key, read back as `None`.
 - **Field types** (`ontogen_core::model::FieldType`): `String`, `I32`,
@@ -63,10 +64,17 @@ does not provide:
   whose `T` is not one of its recognised primitives as `OptionEnum(T)`, so
   `Option<u32>` and `Option<SomeStruct>` are `OptionEnum` as well as
   `Option<SomeEnum>`. A bare type it does not recognise, `u32` included, is
-  `Other(T)`. The SeaORM backend already stores both forms in an integer
-  column when `T` is an integer primitive (`is_integer_primitive` in
-  `src/persistence/seaorm/gen_entity.rs`). There is
-  no date type: dates are `String`, as in tasks-tracker's `created`.
+  `Other(T)`. Bare and optional `i32`, `i64` and `u64` are recognised
+  (`u64` becomes `I64`), so they never reach `OptionEnum` or `Other`.
+- **Integer storage on SeaORM.** For an integer primitive under
+  `OptionEnum` or `Other`, the SeaORM model field is `i32` or `Option<i32>`
+  (`field_db_type` in `src/persistence/seaorm/gen_entity.rs`). The
+  conversion writes `self.x as i32`
+  (`src/persistence/seaorm/gen_conversion.rs`).
+  A `u32` of 3 000 000 000 is therefore stored as −1 294 967 296. That is a
+  silent truncation today, and it would make SeaORM sort such a field
+  differently from markdown, which keeps the Rust value.
+- **No date type.** Dates are `String`, as in tasks-tracker's `created`.
 - **Tests.** `tests/backend_parity.rs` compares generated text across
   backends. Nothing runs both backends against the same data.
 
@@ -273,9 +281,11 @@ An entity's sortable fields are its id field plus every field with role
   any of these;
 - `OptionEnum(T)` or `Other(T)`, where `T` resolves to a schema `EnumDef`
   (sorted by stored string);
-- `OptionEnum(T)` or `Other(T)`, where `T` is an integer primitive
-  (`is_integer_primitive`: `u8` to `u64`, `i8` to `i64`), sorted
-  numerically.
+- `OptionEnum(T)` or `Other(T)`, where `T` is an integer primitive that
+  reaches those variants: `u8`, `u16`, `u32`, `usize`, `u128`, `i8`, `i16`,
+  `isize` or `i128`. These are sorted numerically. A type alias of an
+  integer (`type Count = u32`) is not recognised, and stays an unsortable
+  `Other`.
 
 These are not sortable: the `#[ontology(body)]` field, every relation field
 (a `belongs_to` foreign key included), `VecString`, `VecStruct`,
@@ -292,14 +302,15 @@ These are not sortable: the `#[ontology(body)]` field, every relation field
 - **Foreign keys.** A foreign key is a relationship on the wire, so it is
   not an attribute there.
 - **Integers the parser files under `OptionEnum` or `Other`.** These are
-  sorted numerically, by checking `is_integer_primitive(T)` when the sort
-  field is generated. No `FieldType` changes. Reclassifying them would
-  change the generated `CreateXInput` types, the markdown frontmatter
-  struct, the SeaORM conversion (`model.reps as u32`) and the docs output.
-  That would break every consumer with such a field, for nothing the sort
-  needs:
-  - markdown compares the Rust value with `Ord`;
-  - SeaORM's column is already `INTEGER`.
+  sorted numerically, decided by the type name when the sort field is
+  generated. No `FieldType` changes. Reclassifying them would change the
+  generated `CreateXInput` types, the markdown frontmatter struct and the
+  docs output, and would break every consumer with such a field.
+
+  Instead, E0004 phase 1a widens the SeaORM side (§4), so that both
+  backends hold the exact Rust value:
+  - markdown compares that value with `Ord`;
+  - SeaORM stores it in an `i64` and compares that.
 
 There is no opt-in or opt-out attribute. Every listed field costs the same
 to sort as to filter (an unindexed scan on SeaORM, an in-memory compare on
@@ -385,6 +396,21 @@ calls it before `limit` and `offset`.
   `ORDER BY rowid`). `sync_junction` already inserts in list order, so the
   read order equals the order of the list written, as on markdown. The
   examples' copies of the helper gain the `ORDER BY`.
+- **Integer width.** For every integer primitive that reaches `OptionEnum`
+  or `Other` (§2), phase 1a makes the SeaORM model field `i64` or
+  `Option<i64>`, in place of `i32`.
+  - `u8`, `u16`, `u32`, `i8` and `i16` convert losslessly with `i64::from`.
+  - `usize`, `isize`, `u128` and `i128` convert with `i64::try_from`. A
+    value outside `i64` fails the write with `AppError::DbError` naming the
+    field, instead of wrapping.
+  - Reads convert back with `T::try_from`. A stored value outside `T`'s
+    range, possible only from a hand-edited row, fails the read the same
+    way.
+
+  This fixes today's silent truncation (§Context). It also makes the
+  numeric order of these fields equal on both backends for every value
+  SeaORM can store. On SQLite the column is `INTEGER` either way, so no
+  data migration is needed. The generated entity type does change.
 - **Indexes.** The generated store emits none. Sorting an unindexed column
   is a scan plus a sort. Consumers add indexes in their migrations.
 
@@ -431,10 +457,12 @@ are answered by §3 (bytewise collation) and §5 (sort by id, not path).
 The work lands in two steps, so that no E0004 phase paginates a list whose
 order differs by backend.
 
-**E0004 phase 1a** ships the §3 default order alone, with the `list_*`
-signature unchanged:
+**E0004 phase 1a** ships the §3 default order and the integer widening,
+with the `list_*` signature unchanged:
 
 - markdown lists in id order instead of walk path order;
+- the SeaORM `i64` field for integer primitives under `OptionEnum` and
+  `Other` (§4), which also ends their silent truncation;
 - many_to_many linkage in written order on both backends: the SeaORM
   junction read in insertion (`rowid`) order, markdown in frontmatter
   order;
@@ -446,8 +474,8 @@ and `count` (§1.1).
 **E0004 phase 3c** adds the `order` argument, `{Entity}SortField`,
 `parse_sort`, `sort_{plural}`, `order_{plural}_query`, the comparison
 rules for every sortable type (integer primitives under `OptionEnum` and
-`Other` included, §2), the NaN check, sort on all three transports and the TS `Transport` options
-argument (§1), and the rest of the parity fixture.
+`Other` included, §2), the NaN check, sort on all three transports and the
+TS `Transport` options argument (§1), and the rest of the parity fixture.
 
 ### 7. Amendment to ADR 0001
 
@@ -488,7 +516,8 @@ records into both and asserts identical id sequences for each of these:
 - strings that differ only in case, and non-ASCII strings (`"B"`, `"a"`,
   `"é"`, `"z"`), which pin byte order. This is the case #178 says breaks;
 - a float `-0.0` beside `0.0`;
-- an `Option<u32>` field, which pins numeric order (`9 < 10`);
+- an `Option<u32>` field, which pins numeric order (`9 < 10`), holding a
+  value above `i32::MAX` (3 000 000 000) to pin the widened column;
 - enum fields;
 - equal keys, which exercise the tie-break;
 - every page of a `limit`/`offset` walk across a run of ties;
@@ -496,12 +525,12 @@ records into both and asserts identical id sequences for each of these:
 - `sort_{plural}` applied to the SeaORM backend's unordered records, which
   must equal the order `list_*` returns.
 
-It also asserts, on both backends:
-- a NaN write is rejected on create, and on an update that sets the field,
-  and nothing is stored;
-- an update that does not set a float field succeeds even when that field
-  already holds a hand-written NaN (markdown only, since SQLite cannot hold
-  one).
+It also asserts, on both backends, that a NaN write is rejected on
+create, and on an update that sets the field, and that nothing is stored.
+
+On markdown only, it asserts that an update which does not set a float
+field succeeds even when that field already holds a hand-written NaN.
+SQLite cannot hold one.
 
 The fixture schema has an entity with every sortable type, a self-referential
 `belongs_to`/`has_many` pair and a many_to_many.
@@ -534,6 +563,16 @@ not in the test.
 - **Breaking.** A hand-written `list` that today is silently shadowed by
   the generated one becomes the module's list, and its module loses the
   generated `count`.
+- **Breaking, for SeaORM consumers with an integer field of a type the
+  parser files under `OptionEnum` or `Other`** (`u32`, `Option<u16>` and
+  the like). The generated SeaORM entity field becomes `i64` or
+  `Option<i64>`, where it was `i32`.
+  - Hand-written code that reads the model field directly changes type.
+  - The SQLite column is `INTEGER` either way, so no data migration is
+    needed. A hand-written migration that declares the column keeps
+    working.
+  - Values already stored past `i32::MAX` were truncated on write, and stay
+    wrong until rewritten.
 - **Breaking.** A NaN float that a hook or direct caller writes is an
   error where it was stored before.
 - Tauri IPC list commands and MCP list tools gain one optional `sort`

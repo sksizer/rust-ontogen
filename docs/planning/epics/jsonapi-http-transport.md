@@ -139,15 +139,20 @@ each of its sections to a phase.
   foreign key on both backends, or fails with `{Child}ParentRequired` when
   that foreign key is not `Option`.
 - The markdown id-ascending default order, many_to_many linkage order, and
-  the runtime parity fixture's default-order cases (ADR 0006 §6). SeaORM
+  the runtime parity fixture's default-order cases (ADR 0006 §6).
+- The SeaORM `i64` field for integer primitives the parser files under
+  `OptionEnum` or `Other`, which ends their silent `as i32` truncation
+  (ADR 0006 §4).
+- Markdown lookups of an id that could never be created answer
+  `{Entity}NotFound` instead of a `500` (contract §8.2). SeaORM
   already orders by id since
   [#178](https://github.com/sksizer/rust-ontogen/pull/178).
 
 **Phase 1b — CRUD over JSON:API.**
 
 - The parsed schema as an explicit input of `gen_servers` and
-  `gen_clients` (contract §5.1). CRUD ops with no entity behind them are
-  served as custom ops.
+  `gen_clients` (contract §5.1). Modules with no entity behind them keep
+  today's handlers until 1c.
 - Media type, documents, and resource objects with relationship `data`.
 - Query-parameter rules, list and pagination (`page[]`, `meta`, `self` plus
   the four pagination links).
@@ -162,7 +167,8 @@ each of its sections to a phase.
 
 - Custom ops as meta-only documents, with `meta.args` request bodies and
   `opArg[…]` (decisions 1 and 7), and the singleton CRUD check.
-- Ops served as custom ops (contract §10.4): junction ops, until 3a.
+- Ops served as custom ops (contract §10.4): CRUD ops with no entity
+  behind them, and junction ops until 3a.
 - Event frames as resource objects (decision 2).
 - Scoped pagination made identical to unscoped.
 - TS custom, junction and subscription methods.

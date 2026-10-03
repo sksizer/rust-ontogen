@@ -106,9 +106,10 @@ example in this document live once its phase lands:
 | `Task.parent_id: Option<String>` (`belongs_to Task`) and `Task.subtasks: Vec<String>` (`has_many Task`, `foreign_key = "parent_id"`), as in `crates/markdown-pilot` | 3a | §5.4, §9 |
 | A second tag, `release` | 3a | §9.2 |
 
-Examples show the wire after every phase has landed. In particular,
-relationship objects carry `links` (from phase 3a); phases 1b to 2 emit the
-same objects with `data` only (§5.4).
+Examples show the wire after every phase has landed. Before phase 3a:
+- relationship objects carry `data` only, without the `links` shown here;
+- junction-op relationships are absent altogether, since they have no
+  `data` (§5.4).
 
 The task body is abbreviated as `"## Goal\n…"` after its first appearance.
 Response headers common to every response (§3.3) are shown once per
@@ -129,9 +130,13 @@ section, not on every example.
 ### 3.2 Requests
 
 **Content-Type.** A request that carries a body MUST have
-`Content-Type: application/vnd.api+json`. These are `POST` and `PATCH` on
-a resource, and `POST`, `PATCH` and `DELETE` on a relationship endpoint. A custom `POST` may also carry no body
-at all (§10.2). The server responds:
+`Content-Type: application/vnd.api+json`. Bodies are carried by:
+- `POST` to a collection;
+- `PATCH` to a resource;
+- a custom `POST` with a body (one may also carry none, §10.2);
+- `POST`, `PATCH` and `DELETE` on a relationship endpoint.
+
+The server responds:
 
 | Request `Content-Type` | Response |
 |---|---|
@@ -853,8 +858,9 @@ With `?include=epic`, the `self` link is
 
 **Errors.**
 
-- A path `{id}` that fails the id-validity rule (§8.2) is
-  `400 invalid_path_parameter` (step 4).
+- A path `{id}` is a lookup key and is not checked against the
+  id-validity rule (§8.2). An id that does not exist, including one that
+  could never be created, is `404` from the store (step 9).
 - A query parameter other than `include` is `400 invalid_query_parameter`;
   a bad `include` value is `400 invalid_include_path` (step 5).
 - When the id does not exist (`GET /api/tasks/nope`), the store returns
@@ -947,6 +953,16 @@ Ontogen accepts any valid id:
   agree.
 - **Derived ids.** A derived slug that would be reserved dedupes like a
   collision, to `index-2`, per ADR 0005.
+- **Scope.** The rule governs ids being created: a client `data.id`, and a
+  derived or hook-assigned id, which the store checks. A path `{id}` is
+  only a lookup key and is never checked against it (§8.1). The server
+  must serve every link it emits, and a SeaORM row created before the rule
+  (an id containing `:`, or `Index`, say) is still listed. It stays
+  readable, updatable and deletable at its `links.self`. It can no longer
+  be created under that id. ADR 0004 carries the migration note.
+- **Markdown lookups.** On markdown such an id cannot exist. The store
+  answers a lookup of one with `{Entity}NotFound` (phase 1a) instead of
+  passing `markdown_store::Error::InvalidId` through as a `500`.
 - **An invalid client id is `400`, not `403`.** The spec's `403` is for a
   server that does not support client ids, and this one does.
 - **Uniqueness** within the type is the store's `409`. The id's format is
@@ -1119,7 +1135,6 @@ may change fields the request did not mention, and the spec then requires
 | Step | Condition | Status | `code` | `source` |
 |---|---|---|---|---|
 | 2, 3 | as in §8.2 | | | |
-| 4 | path `{id}` fails the id-validity rule | 400 | `invalid_path_parameter` | none |
 | 5 | as in §8.2 | | | |
 | 7 | §8.2's step-7 rows up to and including `type_mismatch` | | | |
 | 7 | `data.id` missing | 400 | `invalid_document` | `pointer: "/data"` |
@@ -1133,8 +1148,9 @@ may change fields the request did not mention, and the spec then requires
 
 A body `id` is compared with the URL id exactly. A string that differs is
 `409`, whatever it contains (`""` included), as the spec requires for an id
-that does not match the endpoint. The validity rule applies to the URL
-`{id}`, at step 4.
+that does not match the endpoint. Neither the body id nor the URL `{id}` is
+checked against the validity rule on update; it applies only to ids being
+created.
 
 A missing resource is detected by the store, after the body checks. So a
 `PATCH` to a missing id with a malformed body gets the body's `400`, not
@@ -1167,7 +1183,6 @@ HTTP/1.1 204 No Content
 Vary: Accept
 ```
 
-- A path `{id}` that fails the validity rule is `400 invalid_path_parameter`.
 - A missing resource is `404 task_not_found`. The spec's SHOULD is taken.
 - A request body is ignored.
 - Query parameters are `400`.
@@ -1372,7 +1387,6 @@ The server makes no change beyond the request, so the spec allows it.
 | 1 | a method other than `GET`, `HEAD`, `PATCH`, `POST`, `DELETE` | 405 | `method_not_allowed` | none |
 | 2 | `Accept` not satisfiable | 406 | `not_acceptable` | `header: "Accept"` |
 | 3 | `Content-Type` not acceptable (`PATCH`, `POST`, `DELETE`) | 415 | `unsupported_media_type` | `header: "Content-Type"` |
-| 4 | path `{id}` fails the id-validity rule | 400 | `invalid_path_parameter` | none |
 | 4 | `{rel}` is not a relationship of `{type}` | 404 | `relationship_not_found` | none |
 | 5 | any query parameter not accepted by §6 | 400 | `invalid_query_parameter` | `parameter` |
 | 6 | a write the relationship does not support (table above) | 403 | `relationship_update_unsupported` | none |
@@ -1695,8 +1709,6 @@ is the response:
 4. **Path parameters**, in path order:
    - a typed prefix parameter that fails to parse is
      `400 invalid_path_parameter`;
-   - a resource `{id}` that fails the id-validity rule (§8.2) is
-     `400 invalid_path_parameter`;
    - on relationship and related routes, an unknown `{rel}` is
      `404 relationship_not_found`.
 5. **Query parameters.**
@@ -1740,7 +1752,7 @@ consumer's `AppError`:
 | 400 | `invalid_query_parameter` | an unknown, repeated or malformed query parameter, including `page`, `filter`, `opArg` and `fields` (§6, §7, §10.2) |
 | 400 | `invalid_sort_field` | a bad or unsupported `sort` (§7.4) |
 | 400 | `invalid_include_path` | a bad `include` on a route that accepts it (§7.5) |
-| 400 | `invalid_path_parameter` | a prefix parameter fails to parse, or a path `{id}` fails the validity rule (§8, §11.1) |
+| 400 | `invalid_path_parameter` | a typed prefix parameter fails to parse (§11.1) |
 | 400 | `invalid_document` | the body is not JSON, or not a valid request document for the route |
 | 400 | `unknown_attribute` / `missing_attribute` / `invalid_attribute` | attribute problems (§8.2, §8.3) |
 | 400 | `unknown_relationship` | a relationship name the type lacks (§8.2) |
@@ -2035,7 +2047,8 @@ the section that states each and its reason.
 | Filter names are the `*Query` struct's field names | 7.3 | The struct is user-authored, and ontogen does not rename it |
 | `id` is the implicit last sort key | 7.4 | A total order makes pages stable (ADR 0006) |
 | Dangling linkage is skipped in `included` and related links, not an error | 7.5 | Markdown tolerates dangling wikilinks by design |
-| One id-validity rule on both backends; an invalid id is `400` | 8.2 | A malformed id is a bad request, not a store `500`, and the backends agree |
+| One id-validity rule on both backends, applied to ids being created; an invalid one is `400` | 8.2 | A malformed id is a bad request, not a store `500`, and the backends agree |
+| A path `{id}` is a lookup key, never validated | 8.1 | Every row the store lists stays servable at its `links.self`, including SeaORM rows that predate the rule |
 | Unknown attributes are `400` | 8.2 | Catches clients still sending the flat shape |
 | Body members are checked in schema order, unknown names in byte order | 8.2, 13.2 | Deterministic without an order-preserving parser |
 | Missing ids are detected by the store, after hooks, as `{Entity}IdRequired` | 8.2, 13.4 | Hooks may assign the id, and the handler need not know the `IdStrategy` |
@@ -2069,7 +2082,7 @@ Phases 1a, 1b and 1c ship together as `0.9.0`.
 
 | Phase | Sections |
 |---|---|
-| 1a | Store and runtime prerequisites. The `ontogen-jsonapi` crate (documents, link building, error document, extractors). The id-validity rule and slug function shared by both backends. `IdStrategy` on SeaORM, with one build-time source of truth and derived-id retry. `{Entity}AlreadyExists` and `{Entity}IdRequired` (§13.4). The `has_many` fix and `{Child}ParentRequired` (§5.4). The markdown id-ascending default order, many_to_many order and the parity fixture's default cases (ADR 0006 §6) |
+| 1a | Store and runtime prerequisites. The `ontogen-jsonapi` crate (documents, link building, error document, extractors). The id-validity rule and slug function shared by both backends. `IdStrategy` on SeaORM, with one build-time source of truth and derived-id retry. `{Entity}AlreadyExists` and `{Entity}IdRequired` (§13.4). The `has_many` fix and `{Child}ParentRequired` (§5.4). The markdown id-ascending default order, many_to_many order and the parity fixture's default cases (ADR 0006 §6). The SeaORM `i64` field for integer primitives under `OptionEnum`/`Other` (ADR 0006 §4). Markdown lookups of an uncreatable id answer `{Entity}NotFound` (§8.2) |
 | 1b | CRUD over JSON:API. Schema input (§5.1). §3 media type, §4 documents, §5 resource objects (relationship `data` only), §6 query rules, §7.1–§7.2 list and pagination, §8 get, create, update and delete, §13 errors with the E0003 phase 0-1 scan, §13.5 `405`. §14 for CRUD methods, `JsonApiError`. Scoped CRUD routes. Modules with no entity behind them are left unchanged until 1c |
 | 1c | Everything else on the 0.9.0 wire. §10 custom ops (`meta.args`, `opArg`, singleton check, §10.4 ops served as custom, junction ops included). §12 event frames. §11.1 scoped pagination. §14 for custom, junction and subscription methods |
 | 2 | §7.3 filter, including the hand-written-list precedence and the bare-parameter fix |
