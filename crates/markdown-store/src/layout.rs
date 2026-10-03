@@ -82,7 +82,7 @@ pub fn validate_id(id: &str) -> Result<(), Error> {
     if is_reserved_id(id) {
         return Err(Error::InvalidId {
             id: id.to_string(),
-            reason: "is reserved: OKF uses index.md and log.md for directory listings and update logs; \
+            reason: "is reserved: OKF (Open Knowledge Format) uses index.md and log.md for directory listings and update logs; \
                      choose another id"
                 .into(),
         });

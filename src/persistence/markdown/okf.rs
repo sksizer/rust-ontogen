@@ -153,7 +153,8 @@ fn warn(key: &str, purpose: &str, expected: &str, found: &str) -> Option<Finding
 /// Bare type names that can name a struct field's type but never a struct.
 /// `classify_type` keeps only the last path segment of a generic argument,
 /// so `Option<Vec<T>>` arrives as `OptionEnum("Vec")` and
-/// `Vec<chrono::DateTime<Utc>>` as `VecStruct("DateTime")`.
+/// `Vec<chrono::DateTime<Utc>>` as `VecStruct("DateTime")`. Smart pointers
+/// are absent on purpose: `Option<Box<Stamp>>` still holds an object.
 const NOT_STRUCTS: &[&str] = &[
     "Vec",
     "VecDeque",
@@ -163,9 +164,6 @@ const NOT_STRUCTS: &[&str] = &[
     "HashSet",
     "BTreeSet",
     "Option",
-    "Box",
-    "Rc",
-    "Arc",
     "Cow",
     "DateTime",
     "NaiveDate",
@@ -201,7 +199,7 @@ fn is_struct_name(name: &str, enums: &[EnumDef]) -> bool {
         && !enums.iter().any(|e| e.name == name)
 }
 
-/// The field's Rust type as the schema author wrote it, for messages.
+/// The field's Rust type as far as `FieldType` records it, for messages.
 fn rust_type(ty: &FieldType) -> String {
     match ty {
         FieldType::String => "String".into(),
@@ -351,7 +349,12 @@ mod tests {
     fn mapping_keys_accept_only_structs() {
         let enums = [string_enum("Origin", &["human", "machine"])];
         for key in ["generated", "usage_window", "verified"] {
-            for ok in [FieldType::Other("Stamp".into()), FieldType::OptionEnum("Stamp".into())] {
+            // `OptionEnum("Box")` is how `Option<Box<Stamp>>` arrives.
+            for ok in [
+                FieldType::Other("Stamp".into()),
+                FieldType::OptionEnum("Stamp".into()),
+                FieldType::OptionEnum("Box".into()),
+            ] {
                 assert_eq!(check(vec![plain(key, ok)], &enums), KeyDiagnostics::default(), "{key}");
             }
             for bad in [
