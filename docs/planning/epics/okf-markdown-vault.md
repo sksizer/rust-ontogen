@@ -18,6 +18,7 @@ frontmatter, one required field (`type`), optional `title` / `description` /
 `tags`, provenance (`generated`, `verified`, `sources`), lifecycle (`status`,
 `stale_after`), reserved `index.md` / `log.md`, and plain markdown links as
 the graph.
+**Decisions:** [ADR 0005](../../architecture/0005-okf-markdown-vaults.md)  
 **Builds on:** [ADR 0001](../../architecture/0001-markdown-as-store-backend.md),
 [E0002](./markdown-backend.md)
 
@@ -72,7 +73,7 @@ Obsidian compatibility is not traded away for it.
 In scope: `src/persistence/markdown/gen_frontmatter.rs` (emit `type`),
 `crates/markdown-store` (`layout.rs` id validation, `walk.rs` reserved
 skips, a new index writer), `MarkdownIoConfig` and the markdown IR,
-`src/schema/parse.rs` (reserved-name warning, `frontmatter_name`),
+`src/persistence/markdown/okf.rs` (the reserved-name check, called from the markdown generator so SeaORM-only consumers never see it) and `src/schema/parse.rs` (`frontmatter_name`),
 the golden fixtures under `tests/golden/markdown-backend/` and the four
 example vaults, and the site pages `guides/markdown-backend`,
 `guides/markdown-io`, `guides/schema-annotations`, `reference/configuration`.
@@ -83,7 +84,7 @@ Out of scope: OKF's Attested Computation type and its
 
 ## Phases
 
-**Phase 1 — conformance by default.** Flip the `type_name` default to the
+**Phase 1 — conformance by default (shipped in [#194](https://github.com/sksizer/rust-ontogen/pull/194)).** Flip the `type_name` default to the
 struct name and emit `type: <type_name>` on every record; reject ids `index` and `log` at `validate_id`; skip the reserved
 filenames in the walk; the reserved-field-name warning and
 `#[ontology(frontmatter_name = "…")]`. Golden fixtures and example vaults
@@ -92,8 +93,8 @@ an existing vault without `type` still reads, and gains `type` on its next
 real write.
 
 **Phase 2 — index files and provenance.** `okf.index` with the root
-`okf_version` marker; `okf.generated_by` stamping. One conformance test
-runs an OKF validator (or our own §11 checker) over every example vault.
+`okf_version` marker; `okf.generated_by` stamping. (The §11 conformance test
+over the example vaults shipped in phase 1.)
 
 **Phase 3 — docs.** The four site pages, the example READMEs, and a
 one-page "ontogen vaults are OKF bundles" note that an OKF consumer can
@@ -117,7 +118,7 @@ read.
 
 ## Decisions (2026-10-03)
 
-Settled with the maintainer; ADR 0005 records them when phase 1 opens.
+Settled with the maintainer; [ADR 0005](../../architecture/0005-okf-markdown-vaults.md) records them.
 
 1. **`type` casing.** The vault writes the entity struct name by default
    (`WorkoutSet`), overridable per entity via
@@ -150,6 +151,6 @@ Settled with the maintainer; ADR 0005 records them when phase 1 opens.
 
 Filed as each phase opens; one task per phase.
 
-- [ ] phase 1 — `type`, reserved ids, reserved-name warning, `frontmatter_name`
-- [ ] phase 2 — `index.md` writer, `okf_version`, `generated` stamping, conformance test
+- [x] phase 1 — `type`, reserved ids, reserved-name warning, `frontmatter_name`, §11 conformance test ([#194](https://github.com/sksizer/rust-ontogen/pull/194))
+- [ ] phase 2 — `index.md` writer, `okf_version`, `generated` stamping
 - [ ] phase 3 — docs

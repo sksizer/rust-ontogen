@@ -461,3 +461,10 @@ gates. Where the body text conflicts with this list, this list wins.
    `String` ids, closing the Consequences' migration worry affirmatively.
    The revisit-cadence note is moot: the implementation landed within one
    milestone of the proposal.
+
+## Amendment (2026-10-03): OKF profile
+
+[ADR 0005](0005-okf-markdown-vaults.md) amends the behaviour described here:
+every record now carries a generator-owned `type` key, `index` and `log` are
+reserved ids, and the `Flat` layout filters by `type`. Reserved frontmatter
+keys and `frontmatter_name` are also covered there.
