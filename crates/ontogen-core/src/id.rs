@@ -36,8 +36,8 @@ pub fn is_reserved_id(id: &str) -> bool {
 /// one of these, in any case and with any extension (`con.md`,
 /// `NUL.tar.gz`), so no record file can carry one as its stem.
 pub const DEVICE_NAMES: &[&str] = &[
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2",
-    "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt0",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
 /// Whether `id`, or the part of it before its first `.`, is one of
@@ -64,7 +64,7 @@ pub const RESERVED_REASON: &str =
 
 /// Why [`validate_id`] refuses a device name (see [`is_device_name`]).
 pub const DEVICE_NAME_REASON: &str =
-    "is reserved: Windows has no file named con, prn, aux, nul, com1-com9 or lpt1-lpt9, with or without an extension";
+    "is reserved: Windows has no file named con, prn, aux, nul, com0-com9 or lpt0-lpt9, with or without an extension";
 
 /// An id rejected by [`validate_id`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,13 +307,27 @@ mod tests {
 
     #[test]
     fn device_names_are_refused_whole_and_before_a_dot() {
-        for device in ["con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9", "nul.x", "com1.backup", "con.a.b"] {
+        for device in [
+            "con",
+            "prn",
+            "aux",
+            "nul",
+            "com0",
+            "com1",
+            "com9",
+            "lpt0",
+            "lpt1",
+            "lpt9",
+            "nul.x",
+            "com1.backup",
+            "con.a.b",
+        ] {
             assert_eq!(validate_id(device).unwrap_err().reason, DEVICE_NAME_REASON, "{device:?}");
         }
-        for fine in ["console", "con-2", "xcon", "a.con", "com", "com10", "lpt0", "com0", "nulls", "aux_x", "prn~"] {
+        for fine in ["console", "con-2", "xcon", "a.con", "com", "com10", "lpt10", "nulls", "aux_x", "prn~"] {
             assert!(validate_id(fine).is_ok(), "{fine:?} must be accepted");
         }
-        for any_case in ["CON", "Nul.x", "cOm1", "LPT9.TXT"] {
+        for any_case in ["CON", "Nul.x", "cOm1", "LPT9.TXT", "COM0", "Lpt0.md"] {
             assert!(is_device_name(any_case), "{any_case:?}");
             assert_eq!(validate_id(any_case).unwrap_err().reason, DEVICE_NAME_REASON, "reserved before uppercase");
         }

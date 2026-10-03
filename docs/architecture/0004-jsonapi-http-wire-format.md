@@ -197,7 +197,7 @@ only.
   non-ASCII character (`café`), a space, `/`, `\`, `:`, NUL or other
   punctuation outside `._~-`; that is longer than 200 bytes; that is
   empty or `index` or `log` in any case; that is `con`, `prn`, `aux`,
-  `nul`, `com1`-`com9` or `lpt1`-`lpt9` in any case, whole or before its
+  `nul`, `com0`-`com9` or `lpt0`-`lpt9` in any case, whole or before its
   first `.` (`nul.x`); or that starts or ends with `.`.
   - Such a row cannot be created again under that id: a create is `400`.
   - The server must serve every link it emits, so a path `{id}` is only a

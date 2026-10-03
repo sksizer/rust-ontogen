@@ -961,8 +961,8 @@ Ontogen accepts any valid id:
   - does not end with `.`;
   - is not `index` or `log`. OKF reserves those stems
     ([ADR 0005](architecture/0005-okf-markdown-vaults.md));
-  - is not a Windows device name (`con`, `prn`, `aux`, `nul`, `com1` to
-    `com9`, `lpt1` to `lpt9`), in any case, either whole or as the part
+  - is not a Windows device name (`con`, `prn`, `aux`, `nul`, `com0` to
+    `com9`, `lpt0` to `lpt9`), in any case, either whole or as the part
     before its first `.`: `con`, `nul.x` and `com1.backup` are refused,
     `console`, `con-2` and `xcon` are not. Windows opens the device for
     such a filename, so no `con.md` can exist there.

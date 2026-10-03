@@ -702,7 +702,7 @@ async fn device_names<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     let created_id = |v: R<Value>| v.map(|r| r["id"].as_str().unwrap().to_string());
     let derive = |title: &str| item("", json!({ "title": title }));
 
-    for id in ["con", "nul.x", "com1.backup", "lpt9", "CON", "Aux.md"] {
+    for id in ["con", "nul.x", "com1.backup", "lpt9", "CON", "Aux.md", "com0", "Lpt0.txt"] {
         let result = created_id(b.create_item(item(id, json!({}))).await);
         let Err(StoreError::Backend(message)) = &result else {
             panic!("[{}] create {id:?}: {result:?}", B::NAME);
@@ -716,7 +716,7 @@ async fn device_names<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
         t.record(format!("device name {id:?}"), &result).unwrap_err();
         t.expect(&format!("{id:?} was not stored"), b.get_item(id).await, Err(StoreError::NotFound("Item", id.into())));
     }
-    for id in ["console", "con-2x", "xcon", "a.con", "com10"] {
+    for id in ["console", "con-2x", "xcon", "a.con", "com10", "lpt10"] {
         t.expect(
             &format!("{id:?} is no device name"),
             created_id(b.create_item(item(id, json!({}))).await),
@@ -727,10 +727,13 @@ async fn device_names<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     t.expect("CON again derives con-3", created_id(b.create_item(derive("CON")).await), Ok("con-3".into()));
     t.expect("nul.x slugs to nul-x", created_id(b.create_item(derive("nul.x")).await), Ok("nul-x".into()));
     t.expect("LPT1 derives lpt1-2", created_id(b.create_item(derive("LPT1")).await), Ok("lpt1-2".into()));
+    t.expect("COM0 derives com0-2", created_id(b.create_item(derive("COM0")).await), Ok("com0-2".into()));
     t.expect(
         "only the valid creates were stored",
         listed_ids(b.list_items(None, None).await),
-        ok_ids(&["a.con", "com10", "con-2", "con-2x", "con-3", "console", "lpt1-2", "nul-x", "xcon"]),
+        ok_ids(&[
+            "a.con", "com0-2", "com10", "con-2", "con-2x", "con-3", "console", "lpt1-2", "lpt10", "nul-x", "xcon",
+        ]),
     );
     t
 }

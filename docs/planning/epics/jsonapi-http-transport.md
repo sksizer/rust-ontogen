@@ -280,7 +280,7 @@ follow-ups:
     reachable. `slugify` lowercases, folds Latin diacritics to ASCII, and
     truncates its base so `-N` probes stay within 200 bytes (contract §8.2).
     Refined after review: a created id is also not a Windows device name
-    (`con`, `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`, in any case,
+    (`con`, `prn`, `aux`, `nul`, `com0`-`com9`, `lpt0`-`lpt9`, in any case,
     whole or before its first `.`), since Windows cannot hold `con.md`; a
     title that slugs to one derives `con-2`, as `index` derives `index-2`.
 11. **Per-entity id strategy over a required default.**

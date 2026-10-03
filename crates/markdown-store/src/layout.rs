@@ -80,8 +80,8 @@ pub fn is_reserved_id(id: &str) -> bool {
 /// `NUL.tar.gz`), so no record file created there can carry one as its
 /// stem.
 pub const DEVICE_NAMES: &[&str] = &[
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2",
-    "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt0",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
 /// Whether `id`, or the part of it before its first `.`, is one of
@@ -110,7 +110,7 @@ pub const RESERVED_REASON: &str =
 
 /// Why [`validate_id`] refuses a device name (see [`is_device_name`]).
 pub const DEVICE_NAME_REASON: &str =
-    "is reserved: Windows has no file named con, prn, aux, nul, com1-com9 or lpt1-lpt9, with or without an extension";
+    "is reserved: Windows has no file named con, prn, aux, nul, com0-com9 or lpt0-lpt9, with or without an extension";
 
 /// The longest id [`validate_id`] accepts, in bytes. With `.md` appended
 /// it stays under the 255-byte filename limit of common filesystems.
@@ -371,14 +371,29 @@ mod tests {
     #[test]
     fn device_names_are_refused_on_create_only() {
         let layout = VaultLayout::PerEntityDir;
-        for device in ["con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9", "nul.x", "com1.backup", "Con.md"] {
+        for device in [
+            "con",
+            "prn",
+            "aux",
+            "nul",
+            "com0",
+            "com1",
+            "com9",
+            "lpt0",
+            "lpt1",
+            "lpt9",
+            "nul.x",
+            "com1.backup",
+            "Con.md",
+            "LPT0.txt",
+        ] {
             match validate_id(device) {
                 Err(Error::InvalidId { reason, .. }) => assert_eq!(reason, DEVICE_NAME_REASON, "{device:?}"),
                 other => panic!("{device:?}: {other:?}"),
             }
             assert!(layout.record_path(Path::new("v"), "notes", device).is_ok(), "{device:?} stays reachable");
         }
-        for fine in ["console", "con-2", "xcon", "a.con", "com", "com10", "lpt0", "nulls"] {
+        for fine in ["console", "con-2", "xcon", "a.con", "com", "com10", "lpt10", "nulls"] {
             assert!(validate_id(fine).is_ok(), "{fine:?} must be accepted");
         }
     }
