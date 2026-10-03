@@ -12,7 +12,7 @@
 //! follow-up on top of `VaultHandle` if a consumer earns it.
 
 pub mod gen_frontmatter;
-pub mod okf;
+pub(crate) mod okf;
 
 use crate::ir::{MarkdownEntityMeta, MarkdownIoOutput, SchemaOutput};
 use crate::{CodegenError, MarkdownIoConfig};
@@ -20,7 +20,7 @@ use crate::{CodegenError, MarkdownIoConfig};
 /// Generate the markdown I/O code: per-entity `{Entity}Frontmatter` modules.
 ///
 /// Checks every frontmatter key against the keys OKF reserves first (see
-/// [`okf::check_frontmatter_keys`]): an error fails generation before
+/// `okf::check_frontmatter_keys`): an error fails generation before
 /// anything is written, and each warning is printed as a `cargo:warning=`
 /// line.
 ///

@@ -166,11 +166,11 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 ///
 /// Takes the whole [`SchemaOutput`] because it checks every frontmatter key
 /// against the keys OKF 0.2 reserves, which needs the schema's enums: a
-/// field stored under `type` is an error, and a field under `status`,
-/// `resource`, `stale_after`, `generated`, `verified`, `usage_window` or
-/// `sources` whose type can't carry OKF's meaning prints a
-/// `cargo:warning=`. `#[ontology(frontmatter_name = "...")]` moves a field
-/// to another key.
+/// field stored under `type` is an error, and one whose type can't carry
+/// what OKF means by its key prints a `cargo:warning=`. The rules are in the
+/// markdown backend guide (site `guides/markdown-backend/`, section
+/// *Reserved frontmatter keys*); `#[ontology(frontmatter_name = "...")]`
+/// moves a field to another key.
 ///
 /// Returns [`MarkdownIoOutput`]: the vault configuration plus per-entity
 /// metadata. Pass it to [`gen_store`] via [`Backend::Markdown`] to route the

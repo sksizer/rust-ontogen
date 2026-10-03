@@ -16,10 +16,15 @@ use crate::schema::model::{EntityDef, EnumDef, FieldDef, FieldRole, FieldType, R
 /// The fix every diagnostic points at.
 const RENAME_HINT: &str = "#[ontology(frontmatter_name = \"...\")]";
 
+/// Named in full because a consumer meeting a warning may never have heard
+/// of the format.
+const OKF: &str = "OKF (Open Knowledge Format) 0.2";
+const OKF_SPEC: &str = "https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md";
+
 /// What [`check_frontmatter_keys`] found: errors fail generation, warnings
 /// are printed as `cargo:warning=` lines.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct KeyDiagnostics {
+pub(crate) struct KeyDiagnostics {
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -28,22 +33,23 @@ pub struct KeyDiagnostics {
 /// ([`FieldDef::frontmatter_key`]) against the keys OKF reserves, and the
 /// keys of one entity against each other. `enums` resolves enum-typed
 /// fields for the `status` check.
-pub fn check_frontmatter_keys(entities: &[EntityDef], enums: &[EnumDef]) -> KeyDiagnostics {
+pub(crate) fn check_frontmatter_keys(entities: &[EntityDef], enums: &[EnumDef]) -> KeyDiagnostics {
     let mut out = KeyDiagnostics::default();
     for entity in entities {
+        let stored = frontmatter_fields(entity);
         for field in &entity.fields {
-            if field.frontmatter_name.is_some()
-                && let Some(why) = not_in_frontmatter(field)
-            {
+            if field.frontmatter_name.is_some() && !stored.iter().any(|f| std::ptr::eq(*f, field)) {
                 out.errors.push(format!(
-                    "entity `{}`, field `{}`: frontmatter_name has no effect, because {why}",
-                    entity.name, field.name
+                    "entity `{}`, field `{}`: frontmatter_name has no effect, because {}",
+                    entity.name,
+                    field.name,
+                    why_not_stored(field)
                 ));
             }
         }
 
         let mut seen: HashMap<&str, &str> = HashMap::new();
-        for field in frontmatter_fields(entity) {
+        for field in stored {
             let key = field.frontmatter_key();
             if let Some(first) = seen.insert(key, &field.name) {
                 out.errors.push(format!(
@@ -71,16 +77,17 @@ enum Finding {
     Warning(String),
 }
 
-/// Why a field never reaches frontmatter, so renaming its key means nothing.
-fn not_in_frontmatter(field: &FieldDef) -> Option<&'static str> {
+/// Why a field that [`frontmatter_fields`] leaves out never reaches
+/// frontmatter, so renaming its key means nothing.
+fn why_not_stored(field: &FieldDef) -> &'static str {
     match &field.role {
-        FieldRole::Id => Some("the id is the record's filename, not a frontmatter key"),
-        FieldRole::Body => Some("the body is the markdown after the frontmatter"),
-        FieldRole::Skip => Some("the field is skipped"),
+        FieldRole::Id => "the id is the record's filename, not a frontmatter key",
+        FieldRole::Body => "the body is the markdown after the frontmatter",
+        FieldRole::Skip => "the field is skipped",
         FieldRole::Relation(info) if info.kind == RelationKind::HasMany => {
-            Some("a has_many view is derived from the children and never stored")
+            "a has_many view is derived from the children and never stored"
         }
-        _ => None,
+        _ => "the markdown backend never stores this field in frontmatter",
     }
 }
 
@@ -89,8 +96,8 @@ fn check_key(field: &FieldDef, key: &str, enums: &[EnumDef]) -> Option<Finding> 
     let found = format!("`{}`", rust_type(ty));
     match key {
         "type" => Some(Finding::Error(format!(
-            "frontmatter key `type` is reserved: the generator writes each record's OKF type there. \
-             Store the field under another key with {RENAME_HINT}"
+            "frontmatter key `type` is reserved: the generator writes each record's {OKF} type there. \
+             Store the field under another key with {RENAME_HINT} (spec: {OKF_SPEC})"
         ))),
         "status" => {
             let Some(def) = field.enum_def(enums) else {
@@ -122,13 +129,13 @@ fn check_key(field: &FieldDef, key: &str, enums: &[EnumDef]) -> Option<Finding> 
             warn(key, "the window usage counts cover (a mapping of `from` and `to`)", "a struct", &found)
         }
         // OKF allows one verification as a bare mapping or several as a list.
-        "verified" if !is_struct(ty, enums) && !matches!(ty, FieldType::VecStruct(_)) => warn(
+        "verified" if !is_struct(ty, enums) && !is_struct_list(ty, enums) => warn(
             key,
             "who confirmed the content (one or a list of mappings of `by` and `at`)",
             "a struct or a `Vec` of structs",
             &found,
         ),
-        "sources" if !matches!(ty, FieldType::VecStruct(_)) => {
+        "sources" if !is_struct_list(ty, enums) => {
             warn(key, "the materials a concept derives from (a list of mappings)", "a `Vec` of structs", &found)
         }
         _ => None,
@@ -137,24 +144,61 @@ fn check_key(field: &FieldDef, key: &str, enums: &[EnumDef]) -> Option<Finding> 
 
 fn warn(key: &str, purpose: &str, expected: &str, found: &str) -> Option<Finding> {
     Some(Finding::Warning(format!(
-        "frontmatter key `{key}` is reserved by OKF for {purpose}; expected {expected}, found {found}. \
-         The vault is not OKF-conformant for `{key}` until the field is stored under another key with {RENAME_HINT}"
+        "frontmatter key `{key}` is reserved by {OKF} for {purpose}; expected {expected}, found {found}. \
+         The vault is not OKF-conformant for `{key}` until the field is stored under another key with \
+         {RENAME_HINT} (spec: {OKF_SPEC})"
     )))
 }
 
-/// A named type that is not a schema enum: what `classify_type` leaves for
-/// structs (and `Option<Struct>`). Lowercase names are primitives such as
-/// `u32` or `char`, and generic or path types are not plain structs.
+/// Bare type names that can name a struct field's type but never a struct.
+/// `classify_type` keeps only the last path segment of a generic argument,
+/// so `Option<Vec<T>>` arrives as `OptionEnum("Vec")` and
+/// `Vec<chrono::DateTime<Utc>>` as `VecStruct("DateTime")`.
+const NOT_STRUCTS: &[&str] = &[
+    "Vec",
+    "VecDeque",
+    "HashMap",
+    "BTreeMap",
+    "IndexMap",
+    "HashSet",
+    "BTreeSet",
+    "Option",
+    "Box",
+    "Rc",
+    "Arc",
+    "Cow",
+    "DateTime",
+    "NaiveDate",
+    "NaiveDateTime",
+    "NaiveTime",
+    "Duration",
+    "Uuid",
+    "Value",
+    "Url",
+    "PathBuf",
+];
+
+/// A struct or `Option<Struct>`: what `classify_type` reports as a bare
+/// named type.
 fn is_struct(ty: &FieldType, enums: &[EnumDef]) -> bool {
-    match ty {
-        FieldType::Other(name) | FieldType::OptionEnum(name) => {
-            let mut chars = name.chars();
-            chars.next().is_some_and(|c| c.is_ascii_uppercase())
-                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && !enums.iter().any(|e| &e.name == name)
-        }
-        _ => false,
-    }
+    matches!(ty, FieldType::Other(name) | FieldType::OptionEnum(name) if is_struct_name(name, enums))
+}
+
+/// A `Vec` of structs. `classify_type` reports every non-`String` element
+/// type as `VecStruct`, primitives and enums included.
+fn is_struct_list(ty: &FieldType, enums: &[EnumDef]) -> bool {
+    matches!(ty, FieldType::VecStruct(name) if is_struct_name(name, enums))
+}
+
+/// Lowercase names are primitives such as `u32` or `char`; a name with
+/// generics or a path (`Other` keeps the whole tokenized type) is not a
+/// plain struct.
+fn is_struct_name(name: &str, enums: &[EnumDef]) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !NOT_STRUCTS.contains(&name)
+        && !enums.iter().any(|e| e.name == name)
 }
 
 /// The field's Rust type as the schema author wrote it, for messages.
@@ -225,9 +269,11 @@ mod tests {
         let warning = &found.warnings[0];
         for part in [
             "ontogen: entity `Task`, field `status`",
-            "frontmatter key `status` is reserved by OKF for a lifecycle state (draft, stable or deprecated)",
+            "frontmatter key `status` is reserved by OKF (Open Knowledge Format) 0.2 for a lifecycle state \
+             (draft, stable or deprecated)",
             "found `String`",
             "#[ontology(frontmatter_name = \"...\")]",
+            "(spec: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)",
         ] {
             assert!(warning.contains(part), "missing {part:?} in {warning}");
         }
@@ -271,7 +317,9 @@ mod tests {
             assert_eq!(found.errors.len(), 1, "{name}: {found:?}");
             assert!(found.errors[0].contains(&format!("entity `Task`, field `{name}`")), "{found:?}");
             assert!(found.errors[0].contains("frontmatter key `type` is reserved"), "{found:?}");
+            assert!(found.errors[0].contains("OKF (Open Knowledge Format) 0.2 type"), "{found:?}");
             assert!(found.errors[0].contains("frontmatter_name"), "{found:?}");
+            assert!(found.errors[0].contains(OKF_SPEC), "{found:?}");
         }
     }
 
@@ -325,6 +373,44 @@ mod tests {
         assert_eq!(check(vec![plain("generated", FieldType::VecStruct("Stamp".into()))], &enums).warnings.len(), 1);
     }
 
+    /// `classify_type` reduces a generic argument to its last path segment,
+    /// so containers and well-known value types arrive looking like structs.
+    #[test]
+    fn mapping_keys_reject_containers_and_value_types_that_look_like_structs() {
+        // `Option<Vec<Stamp>>` and `Option<chrono::DateTime<Utc>>`.
+        for (key, bad) in [("generated", "Vec"), ("usage_window", "DateTime"), ("verified", "HashMap")] {
+            let found = check(vec![plain(key, FieldType::OptionEnum(bad.into()))], &[]);
+            assert_eq!(found.warnings.len(), 1, "{key} Option<{bad}>: {found:?}");
+            assert!(found.warnings[0].contains(&format!("found `Option<{bad}>`")), "{found:?}");
+        }
+        for bare in ["Uuid", "NaiveDate", "Value"] {
+            assert_eq!(check(vec![plain("generated", FieldType::Other(bare.into()))], &[]).warnings.len(), 1, "{bare}");
+        }
+        // A struct whose name merely starts like a container still passes.
+        assert_eq!(
+            check(vec![plain("usage_window", FieldType::OptionEnum("DateTimeWindow".into()))], &[]),
+            KeyDiagnostics::default()
+        );
+    }
+
+    #[test]
+    fn list_keys_test_the_element_type() {
+        let enums = [string_enum("Kind", &["paper", "dataset"])];
+        // `Vec<i64>`, `Vec<Kind>`, `Vec<Vec<Source>>`, `Vec<DateTime<Utc>>`.
+        for key in ["sources", "verified"] {
+            for bad in ["i64", "Kind", "Vec", "DateTime"] {
+                let found = check(vec![plain(key, FieldType::VecStruct(bad.into()))], &enums);
+                assert_eq!(found.warnings.len(), 1, "{key} Vec<{bad}>: {found:?}");
+                assert!(found.warnings[0].contains(&format!("found `Vec<{bad}>`")), "{found:?}");
+            }
+            assert_eq!(
+                check(vec![plain(key, FieldType::VecStruct("Source".into()))], &enums),
+                KeyDiagnostics::default(),
+                "{key}"
+            );
+        }
+    }
+
     #[test]
     fn sources_accept_only_a_list_of_structs() {
         assert_eq!(
@@ -366,16 +452,22 @@ mod tests {
         );
         assert_eq!(found, KeyDiagnostics::default(), "a derived view or skipped field has no frontmatter key");
 
-        for (role, why) in [
-            (FieldRole::Body, "the body is the markdown after the frontmatter"),
-            (has_many, "a has_many view is derived"),
-            (FieldRole::Skip, "skipped"),
+        for (name, role, why) in [
+            ("x", FieldRole::Body, "the body is the markdown after the frontmatter"),
+            ("x", has_many, "a has_many view is derived"),
+            ("x", FieldRole::Skip, "skipped"),
+            ("wikilinks", FieldRole::Plain, "never stores this field in frontmatter"),
+            ("source_file", FieldRole::Plain, "never stores this field in frontmatter"),
         ] {
             let field =
-                FieldDef { frontmatter_name: Some("other".into()), ..FieldDef::new("x", FieldType::String, role) };
+                FieldDef { frontmatter_name: Some("other".into()), ..FieldDef::new(name, FieldType::VecString, role) };
             let found = check(vec![field], &[]);
-            assert_eq!(found.errors.len(), 1, "{found:?}");
-            assert!(found.errors[0].contains("frontmatter_name has no effect") && found.errors[0].contains(why));
+            assert_eq!(found.errors.len(), 1, "{name}: {found:?}");
+            assert!(
+                found.errors[0].contains(&format!("field `{name}`: frontmatter_name has no effect"))
+                    && found.errors[0].contains(why),
+                "{found:?}"
+            );
         }
     }
 
