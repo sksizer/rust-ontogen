@@ -94,6 +94,17 @@ fn gen_api_into(entities: &[EntityDef], out: &Path) -> ApiOutput {
 /// Generate one backend's whole stack under `root`: the store, then
 /// everything above it. Returns the store's metadata.
 fn gen_stack(entities: &[EntityDef], backend: Backend, id_strategy: &IdStrategy, root: &Path) -> StoreOutput {
+    gen_stack_with(entities, backend, id_strategy, root, true)
+}
+
+/// [`gen_stack`], with the TS clients left out when `clients` is false.
+fn gen_stack_with(
+    entities: &[EntityDef],
+    backend: Backend,
+    id_strategy: &IdStrategy,
+    root: &Path,
+    clients: bool,
+) -> StoreOutput {
     let store = gen_store_with(entities, backend, id_strategy, &root.join("store"));
     let above = root.join("above");
     let api = gen_api_into(entities, &above.join("api"));
@@ -119,6 +130,9 @@ fn gen_stack(entities: &[EntityDef], backend: Backend, id_strategy: &IdStrategy,
         extra_surfaces: vec![],
     };
     ontogen::gen_servers(Some(&api), &[], &servers).expect("gen_servers failed");
+    if !clients {
+        return store;
+    }
 
     std::fs::create_dir_all(above.join("clients")).expect("clients dir");
     let mut clients =
@@ -179,13 +193,19 @@ fn method_meta_fingerprint(output: &StoreOutput) -> Vec<String> {
 }
 
 /// The signatures of the non-private methods of every `impl` block in a
-/// generated store module. Private helpers (`set_*_parent`,
-/// `try_insert_*`) are the backend's own business.
+/// generated store module, and its public structs (the `{Entity}Update`
+/// the API layer builds). Private helpers (`set_*_parent`, `try_insert_*`)
+/// are the backend's own business.
 fn store_signatures(file: &Path) -> Vec<String> {
     let src = std::fs::read_to_string(file).expect("read store module");
     let parsed = syn::parse_file(&src).unwrap_or_else(|e| panic!("{} is not valid Rust: {e}", file.display()));
     let mut out = Vec::new();
     for item in parsed.items {
+        if let syn::Item::Struct(s) = &item
+            && matches!(s.vis, syn::Visibility::Public(_))
+        {
+            out.push(s.to_token_stream().to_string());
+        }
         if let syn::Item::Impl(block) = item {
             for impl_item in block.items {
                 if let syn::ImplItem::Fn(f) = impl_item
@@ -231,6 +251,43 @@ fn store_public_signatures_are_backend_identical() {
             assert!(sig_a.iter().any(|s| s.contains("fn count_")), "{file}: count is part of the surface");
             assert_eq!(sig_a, sig_b, "{strategy:?}: {file}: the store's callable surface differs between backends");
         }
+    }
+}
+
+/// The runtime parity fixture's schema (`crates/parity/schema`), whose two
+/// generated stores parity-check runs against each other. It has a field of
+/// every sortable type the pilot lacks — a schema enum, `f32`, `Option<u32>`
+/// and the other integer primitives the parser files under `OptionEnum` /
+/// `Other` — so the store surface and everything above it must be identical
+/// for those too.
+#[test]
+fn the_runtime_parity_schema_is_backend_identical() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/parity/schema");
+    let entities = ontogen::parse_schema(&SchemaConfig { schema_dir: dir }).expect("parse parity schema").entities;
+    for strategy in strategies() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (seaorm, markdown) = (tmp.path().join("seaorm"), tmp.path().join("markdown"));
+        // No TS clients: they are generated from the API output alone, which
+        // is compared below, and ontogen-ts resolves a schema enum such as
+        // `Kind` only from the consuming crate's own `src/`.
+        let meta_a = gen_stack_with(&entities, Backend::Seaorm(None), &strategy, &seaorm, false);
+        let meta_b = gen_stack_with(&entities, markdown_backend(&entities), &strategy, &markdown, false);
+
+        assert_eq!(method_meta_fingerprint(&meta_a), method_meta_fingerprint(&meta_b), "{strategy:?}");
+        for entity in &entities {
+            let file = format!("{}.rs", ontogen::to_snake_case(&entity.name));
+            let sig_a = store_signatures(&seaorm.join("store").join(&file));
+            let sig_b = store_signatures(&markdown.join("store").join(&file));
+            assert_eq!(sig_a, sig_b, "{strategy:?}: {file}: the store's callable surface differs between backends");
+        }
+        let item_update = &store_signatures(&seaorm.join("store/item.rs"))[0];
+        assert!(item_update.contains("pub maybe_u32 : Option < Option < u32 > >"), "{item_update}");
+        assert!(item_update.contains("pub kind : Option < crate :: schema :: Kind >"), "{item_update}");
+        assert_trees_identical(
+            &format!("parity schema, {strategy:?}, above the store"),
+            &seaorm.join("above"),
+            &markdown.join("above"),
+        );
     }
 }
 

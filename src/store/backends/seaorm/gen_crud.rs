@@ -73,7 +73,9 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     // same; a text collation such as Postgres under `en_US.UTF-8` (`alpha`
     // before `Zeta`) or MySQL's case-insensitive default would not.
     code.push_str(&format!("        query = query.order_by_asc({snake}::Column::{id_col});\n"));
-    code.push_str("        if let Some(l) = limit {\n");
+    // SQLite rejects an `OFFSET` with no `LIMIT`, so an offset alone takes
+    // the rest of the rows under the largest limit SQLite accepts.
+    code.push_str("        if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {\n");
     code.push_str("            query = query.limit(l);\n");
     code.push_str("        }\n");
     code.push_str("        if let Some(o) = offset {\n");
@@ -399,6 +401,13 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
             code.push_str(&format!("            use crate::persistence::db::entities::{target_snake};\n"));
             code.push_str(&format!("            let children = {target_snake}::Entity::find()\n"));
             code.push_str(&format!("                .filter({target_snake}::Column::{fk_col}.eq(&{snake}.id))\n"));
+            // A record is never its own child: a root that is its own parent
+            // (a required foreign key has to point somewhere) would otherwise
+            // list itself, and an update that left it out would drop it. The
+            // markdown backend skips it the same way.
+            if info.target == entity.name {
+                code.push_str(&format!("                .filter({target_snake}::Column::Id.ne(&{snake}.id))\n"));
+            }
             // Same reason the list orders: this is a multi-row SELECT, so
             // without an `ORDER BY` the engine picks the order and a
             // `has_many` field comes back shuffled between calls. The markdown
@@ -636,6 +645,18 @@ mod tests {
         // And wire them into the SeaORM query
         assert!(code.contains("query = query.limit(l);"), "missing .limit() call");
         assert!(code.contains("query = query.offset(o);"), "missing .offset() call");
+        assert!(
+            code.contains("if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {"),
+            "an offset alone still emits a LIMIT, which SQLite requires: {code}"
+        );
+    }
+
+    #[test]
+    fn a_record_is_not_its_own_has_many_child() {
+        let code = crud(&make_node_entity(), &IdStrategy::Provided);
+        let populate = method(&code, "populate_node_relations");
+        assert!(populate.contains(".filter(node::Column::ParentId.eq(&node.id))"), "{populate}");
+        assert!(populate.contains(".filter(node::Column::Id.ne(&node.id))"), "{populate}");
     }
 
     #[test]

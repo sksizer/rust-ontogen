@@ -135,6 +135,9 @@ fn integer_from_model_field(entity_name: &str, field: &FieldDef) -> String {
     let name = &field.name;
     match &field.field_type {
         FieldType::Other(t) | FieldType::OptionEnum(t) if t == "i64" => format!("{name}: model.{name},"),
+        // Every `i64` fits an `i128`, so this read cannot fail.
+        FieldType::Other(t) if t == "i128" => format!("{name}: i128::from(model.{name}),"),
+        FieldType::OptionEnum(t) if t == "i128" => format!("{name}: model.{name}.map(i128::from),"),
         FieldType::Other(t) => format!(
             r#"{name}: {t}::try_from(model.{name}).map_err(|_| AppError::DbError(format!("{entity_name}.{name}: stored value {{}} is out of range for {t}", model.{name})))?,"#
         ),
@@ -781,7 +784,7 @@ mod tests {
     fn integer_reads_convert_back_with_try_from_naming_the_field() {
         for role in [FieldRole::Plain, FieldRole::EnumField, FieldRole::Skip] {
             let code = generate_conversion_code(&make_integer_entity(role.clone()));
-            for t in LOSSLESS.iter().chain(FALLIBLE.iter()) {
+            for t in LOSSLESS.iter().chain(FALLIBLE.iter()).filter(|t| **t != "i128") {
                 assert!(
                     code.contains(&format!(
                         r#"b_{t}: {t}::try_from(model.b_{t}).map_err(|_| AppError::DbError(format!("Counter.b_{t}: stored value {{}} is out of range for {t}", model.b_{t})))?,"#
@@ -796,6 +799,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_i128_read_cannot_fail() {
+        let code = generate_conversion_code(&make_integer_entity(FieldRole::Plain));
+        assert!(code.contains("b_i128: i128::from(model.b_i128),"), "{code}");
+        assert!(code.contains("o_i128: model.o_i128.map(i128::from),"), "{code}");
+        assert!(!code.contains("i128::try_from(model"), "{code}");
     }
 
     #[test]

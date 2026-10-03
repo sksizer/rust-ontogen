@@ -62,7 +62,7 @@ impl Store {
     pub async fn list_nodes(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Node>, AppError> {
         let mut query = node::Entity::find();
         query = query.order_by_asc(node::Column::Id);
-        if let Some(l) = limit {
+        if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
         if let Some(o) = offset {
@@ -203,6 +203,7 @@ impl Store {
             use crate::persistence::db::entities::node;
             let children = node::Entity::find()
                 .filter(node::Column::ParentId.eq(&node.id))
+                .filter(node::Column::Id.ne(&node.id))
                 .order_by_asc(node::Column::Id)
                 .all(self.db())
                 .await
