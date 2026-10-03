@@ -269,6 +269,26 @@ specified in detail by the [wire contract](../../jsonapi-wire-contract.md).
    `403 {child}_parent_required`, as the spec requires for a refused
    relationship removal or replacement.
 
+Added 2026-10-03, after phase 1a review, and implemented by the phase 1a
+follow-ups:
+
+10. **Portable ASCII ids.** Every id being created (client, derived or
+    hook-assigned) matches `[a-z0-9._~-]`, is at most 200 bytes, is not
+    `index` or `log`, and neither starts nor ends with `.`, on both backends.
+    Lookup keys are never validated against it, so existing rows stay
+    reachable. `slugify` lowercases, folds Latin diacritics to ASCII, and
+    truncates its base so `-N` probes stay within 200 bytes (contract §8.2).
+11. **Per-entity id strategy over a required default.**
+    `#[ontology(entity, id = "provided" | "uuid" | "slug(field)")]` overrides
+    the store's default, which every pipeline with a store stage must set:
+    `IdStrategy` has no `Default`, and `Pipeline::build` fails without
+    `store_id_strategy` (ADR 0004).
+12. **SeaORM is SQLite-only for now.** Every SQLite-specific location carries
+    a `// sqlite-only:` comment, and backlog item B-SQLT inventories them with
+    their multi-engine replacements (ADR 0006 §4). A cross-entity `has_many`
+    is a build error until it is supported on both backends (backlog B-XEHM),
+    and `u64` fields keep their type, stored in an `i64` column.
+
 ## Dependencies
 
 - E0003 phases 0-1 (the `AppError` scan and `*NotFound → 404` mapping)
