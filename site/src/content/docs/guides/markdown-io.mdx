@@ -50,9 +50,6 @@ pub struct TaskFrontmatter {
 
 pub const TASK_FM_FIELDS: &[&str] = &["title", "epic_id", "tags"];
 
-/// The `type:` value stamped as the first key of every record.
-pub const TASK_TYPE: &str = "Task";
-
 impl TaskFrontmatter {
     pub fn from_task(value: &Task) -> Self { /* wikilink-encodes relations */ }
     pub fn into_task(self, id: String, body: String) -> Task { /* strips them */ }
