@@ -2,7 +2,7 @@
 type: epic
 schema_version: "1"
 id: E0005
-status: proposed
+status: in-progress
 title: OKF-conformant markdown vaults by default
 created: 2026-10-03
 last_reviewed: 2026-10-03
@@ -11,7 +11,7 @@ tags: [markdown-backend, store, okf, open-format]
 # Epic — OKF-conformant markdown vaults by default
 
 **Milestone:** M4 — Standard formats ([roadmap](../../roadmap.md))
-**Status:** proposed — fit assessed against OKF 0.2, design questions settled 2026-10-03; phase 1 is ready to task out
+**Status:** in progress — phase 1 shipped in https://github.com/sksizer/rust-ontogen/pull/194; phase 2 is next
 **Spec:** [Open Knowledge Format 0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 (Google Cloud, June 2026) — a directory of markdown files with YAML
 frontmatter, one required field (`type`), optional `title` / `description` /

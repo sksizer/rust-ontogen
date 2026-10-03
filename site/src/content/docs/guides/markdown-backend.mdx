@@ -149,7 +149,7 @@ API, servers, clients and SeaORM columns keep the Rust name; the generated
 `#[serde(rename = "...")]` and the `{ENTITY}_FM_FIELDS` constant carry the
 renamed key. The key must match `[A-Za-z_][A-Za-z0-9_-]*`, must not be `type`,
 must not be a YAML boolean or null word (`true`, `false`, `null`, `~`, `yes`,
-`no`, `on`, `off`, in any case), and must not collide with another field's
+`no`, `on`, `off`, `y`, `n`, in any case), and must not collide with another field's
 effective key. Setting it on a field that is never stored in frontmatter (the
 id, the body, a `skip` field, a `has_many` view, or the legacy `wikilinks` and
 `source_file` fields) is a build error.
