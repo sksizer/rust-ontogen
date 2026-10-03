@@ -8,6 +8,7 @@ use crate::store::Store;
 use crate::store::hooks::workout_set as hooks;
 
 const WORKOUT_SETS_DIR: &str = "workout_sets";
+const WORKOUT_SET_TYPE: &str = "WorkoutSet";
 
 /// Partial update for a WorkoutSet. Only `Some` values are applied.
 #[derive(Debug, Clone, Default)]
@@ -83,7 +84,7 @@ impl Store {
         offset: Option<u64>,
     ) -> Result<Vec<WorkoutSet>, AppError> {
         let mut workout_sets = Vec::new();
-        for (id, doc) in self.vault().read_all(WORKOUT_SETS_DIR).map_err(AppError::from)? {
+        for (id, doc) in self.vault().entity(WORKOUT_SETS_DIR, WORKOUT_SET_TYPE).read_all().map_err(AppError::from)? {
             let fm: WorkoutSetFrontmatter = doc.deserialize().map_err(AppError::from)?;
             workout_sets.push(fm.into_workout_set(id));
         }
@@ -93,13 +94,14 @@ impl Store {
     }
 
     pub async fn count_workout_sets(&self) -> Result<u64, AppError> {
-        Ok(self.vault().list_paths(WORKOUT_SETS_DIR).map_err(AppError::from)?.len() as u64)
+        Ok(self.vault().entity(WORKOUT_SETS_DIR, WORKOUT_SET_TYPE).count().map_err(AppError::from)? as u64)
     }
 
     pub async fn get_workout_set(&self, id: &str) -> Result<WorkoutSet, AppError> {
         let doc = self
             .vault()
-            .read_record_opt(WORKOUT_SETS_DIR, id)
+            .entity(WORKOUT_SETS_DIR, WORKOUT_SET_TYPE)
+            .read_opt(id)
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::WorkoutSetNotFound(id.to_string()))?;
         let fm: WorkoutSetFrontmatter = doc.deserialize().map_err(AppError::from)?;
@@ -114,12 +116,8 @@ impl Store {
             .map_err(AppError::from)?;
         let id = self
             .vault()
-            .create_record_derived(
-                WORKOUT_SETS_DIR,
-                Some(workout_set.id.as_str()).filter(|s| !s.is_empty()),
-                None,
-                &doc,
-            )
+            .entity(WORKOUT_SETS_DIR, WORKOUT_SET_TYPE)
+            .create(Some(workout_set.id.as_str()).filter(|s| !s.is_empty()), None, doc)
             .map_err(AppError::from)?;
 
         let created = self.get_workout_set(&id).await?;
@@ -133,7 +131,8 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         self.vault()
-            .modify_record(WORKOUT_SETS_DIR, id, |doc| {
+            .entity(WORKOUT_SETS_DIR, WORKOUT_SET_TYPE)
+            .modify(id, |doc| {
                 let fm: WorkoutSetFrontmatter = doc.deserialize()?;
                 let mut workout_set = fm.into_workout_set(id.to_string());
                 updates.apply(&mut workout_set);
@@ -151,7 +150,7 @@ impl Store {
     pub async fn delete_workout_set(&self, id: &str) -> Result<(), AppError> {
         hooks::before_delete(self, id).await?;
 
-        match self.vault().remove_record(WORKOUT_SETS_DIR, id) {
+        match self.vault().entity(WORKOUT_SETS_DIR, WORKOUT_SET_TYPE).remove(id) {
             Ok(()) => {}
             Err(markdown_store::Error::NotFound { .. }) => {
                 return Err(AppError::WorkoutSetNotFound(id.to_string()));

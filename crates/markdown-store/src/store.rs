@@ -114,6 +114,14 @@ impl VaultHandle {
         self.layout.entity_dir(&self.root, dir_segment)
     }
 
+    /// The records of one entity: its directory segment plus the OKF `type`
+    /// its records carry. Generated store code goes through this view so
+    /// every write is typed and, under [`VaultLayout::Flat`], every read is
+    /// filtered to the entity's own records.
+    pub fn entity<'a>(&'a self, dir_segment: &'a str, type_name: &'a str) -> EntityRecords<'a> {
+        EntityRecords { vault: self, dir_segment, type_name }
+    }
+
     // ── single-record ops ───────────────────────────────────────────────
 
     /// Whether a record exists.
@@ -161,8 +169,10 @@ impl VaultHandle {
     /// `provided` follows [`IdStrategy::make_id`] semantics: a non-empty
     /// caller-supplied id always wins and is *not* de-duplicated — an
     /// explicit duplicate fails with [`Error::AlreadyExists`], because
-    /// silently renaming an explicit id would be worse than failing.
-    /// `source_value` feeds [`IdStrategy::SlugFromField`].
+    /// silently renaming an explicit id would be worse than failing. For
+    /// the same reason an explicit reserved id (`index`, `log`) is
+    /// [`Error::InvalidId`], while a *derived* one is treated as taken and
+    /// becomes `index-2`. `source_value` feeds [`IdStrategy::SlugFromField`].
     pub fn create_record_derived(
         &self,
         dir_segment: &str,
@@ -171,10 +181,7 @@ impl VaultHandle {
         doc: &Document,
     ) -> Result<String, Error> {
         let _guard = self.lock();
-        let had_provided = provided.is_some_and(|p| !p.trim().is_empty());
-        let base = self.id_strategy.make_id(provided, source_value)?;
-        crate::layout::validate_id(&base)?;
-        let id = if had_provided { base } else { self.next_free_id(dir_segment, &base)? };
+        let id = self.derive_id(dir_segment, provided, source_value)?;
         let path = self.record_path(dir_segment, &id)?;
         if fsops::exists(&path) {
             return Err(Error::AlreadyExists { path });
@@ -260,13 +267,7 @@ impl VaultHandle {
         provided: Option<&str>,
         source_value: Option<&str>,
     ) -> Result<String, Error> {
-        let had_provided = provided.is_some_and(|p| !p.trim().is_empty());
-        let base = self.id_strategy.make_id(provided, source_value)?;
-        crate::layout::validate_id(&base)?;
-        if had_provided {
-            return Ok(base);
-        }
-        self.next_free_id(dir_segment, &base)
+        self.derive_id(dir_segment, provided, source_value)
     }
 
     /// Return `base` if no record with that id exists, otherwise the first
@@ -278,12 +279,30 @@ impl VaultHandle {
         self.next_free_id(dir_segment, base)
     }
 
+    /// Id derivation shared by [`make_record_id`](Self::make_record_id) and
+    /// the locked create path.
+    fn derive_id(
+        &self,
+        dir_segment: &str,
+        provided: Option<&str>,
+        source_value: Option<&str>,
+    ) -> Result<String, Error> {
+        let had_provided = provided.is_some_and(|p| !p.trim().is_empty());
+        let base = self.id_strategy.make_id(provided, source_value)?;
+        if had_provided {
+            crate::layout::validate_id(&base)?;
+            return Ok(base);
+        }
+        self.next_free_id(dir_segment, &base)
+    }
+
     /// Suffix search shared by the public previews and the locked create
     /// path. Named for how [`create_record_derived`] uses it — the *caller*
     /// is responsible for holding the lock when atomicity matters; the
-    /// probe itself is just existence checks.
+    /// probe itself is just existence checks. A reserved base counts as
+    /// taken, so a title that slugs to `index` lands on `index-2`.
     fn next_free_id(&self, dir_segment: &str, base: &str) -> Result<String, Error> {
-        if !self.record_exists(dir_segment, base)? {
+        if !crate::layout::is_reserved_id(base) && !self.record_exists(dir_segment, base)? {
             return Ok(base.to_string());
         }
         for n in 2.. {
@@ -300,6 +319,155 @@ impl VaultHandle {
         // on-disk state is still consistent (atomic rename), so continuing
         // is safe and refusing all future writes would not be.
         self.write_guard.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// One entity's records within a vault, from [`VaultHandle::entity`].
+///
+/// Writes stamp the OKF `type` (see [`Document::stamp_type`]): a create
+/// always carries it as the first key, and an update that changes something
+/// adds a missing `type` or corrects a different one. An update that
+/// changes nothing writes nothing, so untyped legacy records are only
+/// typed when they are next really edited.
+///
+/// Reads never require `type`: an untyped record belongs to whichever
+/// entity looks it up. What a record whose `type` *differs* means depends on
+/// the layout:
+///
+/// - [`VaultLayout::PerEntityDir`]: the directory decides what a record is.
+///   A differing `type` is tolerated (OKF consumers must not reject unknown
+///   types) and normalized on the next real write. Nothing is parsed to
+///   decide membership, so [`count`](Self::count) stays a directory walk.
+/// - [`VaultLayout::Flat`]: every entity shares the root, so `type` is the
+///   only discriminator. A record typed as another entity is invisible:
+///   excluded from [`read_all`](Self::read_all) and [`count`](Self::count).
+///   [`read_opt`](Self::read_opt) returns `None`; [`modify`](Self::modify)
+///   and [`remove`](Self::remove) return [`Error::NotFound`], so one entity
+///   can never rewrite or delete another's record.
+///
+/// ```
+/// use markdown_store::{Document, IdStrategy, VaultHandle, VaultLayout};
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let vault = VaultHandle::new(dir.path(), VaultLayout::Flat, IdStrategy::Provided);
+/// let (tasks, notes) = (vault.entity("tasks", "Task"), vault.entity("notes", "Note"));
+///
+/// let mut doc = Document::new();
+/// doc.set("title", "Ship it");
+/// tasks.create(Some("t-1"), None, doc)?;
+///
+/// assert!(vault.read_record("tasks", "t-1")?.render()?.starts_with("---\ntype: Task\n"));
+/// assert_eq!(tasks.count()?, 1);
+/// assert_eq!(notes.count()?, 0, "a flat vault filters by type");
+/// assert!(notes.read_opt("t-1")?.is_none());
+/// # Ok::<(), markdown_store::Error>(())
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct EntityRecords<'a> {
+    vault: &'a VaultHandle,
+    dir_segment: &'a str,
+    type_name: &'a str,
+}
+
+impl<'a> EntityRecords<'a> {
+    /// The entity's directory segment.
+    pub fn dir_segment(&self) -> &'a str {
+        self.dir_segment
+    }
+
+    /// The OKF `type` this entity's records carry.
+    pub fn type_name(&self) -> &'a str {
+        self.type_name
+    }
+
+    /// Whether a parsed record belongs to this entity under the vault's
+    /// layout: always under [`VaultLayout::PerEntityDir`]; under
+    /// [`VaultLayout::Flat`], when it has no `type` or this entity's.
+    fn admits(&self, doc: &Document) -> bool {
+        match self.vault.layout {
+            VaultLayout::PerEntityDir => true,
+            VaultLayout::Flat => match doc.get(crate::frontmatter::TYPE_KEY) {
+                None | Some(serde_norway::Value::Null) => true,
+                Some(_) => doc.type_name() == Some(self.type_name),
+            },
+        }
+    }
+
+    /// Every record of this entity, as sorted `(id, document)` pairs. Same
+    /// failure semantics as [`VaultHandle::read_all`].
+    pub fn read_all(&self) -> Result<Vec<(String, Document)>, Error> {
+        let mut all = self.vault.read_all(self.dir_segment)?;
+        if self.vault.layout == VaultLayout::Flat {
+            all.retain(|(_, doc)| self.admits(doc));
+        }
+        Ok(all)
+    }
+
+    /// How many records this entity has. Under
+    /// [`VaultLayout::PerEntityDir`] this walks the directory without
+    /// reading a file; under [`VaultLayout::Flat`] it must parse each one to
+    /// see its `type`.
+    pub fn count(&self) -> Result<usize, Error> {
+        match self.vault.layout {
+            VaultLayout::PerEntityDir => Ok(self.vault.list_paths(self.dir_segment)?.len()),
+            VaultLayout::Flat => Ok(self.read_all()?.len()),
+        }
+    }
+
+    /// Read one record; missing, or another entity's under
+    /// [`VaultLayout::Flat`], is `Ok(None)`.
+    pub fn read_opt(&self, id: &str) -> Result<Option<Document>, Error> {
+        Ok(self.vault.read_record_opt(self.dir_segment, id)?.filter(|doc| self.admits(doc)))
+    }
+
+    /// Create a record with [`VaultHandle::create_record_derived`]
+    /// semantics, typed: `type` becomes the document's first key.
+    pub fn create(
+        &self,
+        provided: Option<&str>,
+        source_value: Option<&str>,
+        mut doc: Document,
+    ) -> Result<String, Error> {
+        doc.ensure_type(self.type_name);
+        self.vault.create_record_derived(self.dir_segment, provided, source_value, &doc)
+    }
+
+    /// Read-modify-write one record under the write lock, then stamp its
+    /// `type` if the mutation changed anything. A clean document is not
+    /// written at all.
+    pub fn modify<F>(&self, id: &str, f: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut Document) -> Result<(), Error>,
+    {
+        let path = self.vault.record_path(self.dir_segment, id)?;
+        let _guard = self.vault.lock();
+        fsops::read_modify_write(&path, |doc| {
+            if !self.admits(doc) {
+                return Err(Error::NotFound { path: path.clone() });
+            }
+            f(doc)?;
+            doc.stamp_type(self.type_name);
+            Ok(())
+        })
+    }
+
+    /// Remove one record under the write lock. Missing, or another
+    /// entity's under [`VaultLayout::Flat`], is [`Error::NotFound`].
+    ///
+    /// Under [`VaultLayout::Flat`] a record whose frontmatter does not parse
+    /// cannot be removed here ([`Error::Parse`]): without its `type` there is
+    /// no telling whose it is, and deleting another entity's file is worse
+    /// than refusing. Fix the frontmatter or delete the file by hand.
+    pub fn remove(&self, id: &str) -> Result<(), Error> {
+        let path = self.vault.record_path(self.dir_segment, id)?;
+        let _guard = self.vault.lock();
+        if self.vault.layout == VaultLayout::Flat {
+            let doc = Document::parse(&fsops::read(&path)?).map_err(|e| Error::parse_at(&path, e))?;
+            if !self.admits(&doc) {
+                return Err(Error::NotFound { path });
+            }
+        }
+        fsops::remove(&path)
     }
 }
 
@@ -431,6 +599,39 @@ mod tests {
     }
 
     #[test]
+    fn derived_reserved_ids_dedupe_like_a_collision() {
+        let (_dir, vault) = vault(IdStrategy::SlugFromField("title".into()));
+        assert_eq!(vault.make_record_id("tasks", None, Some("Index")).unwrap(), "index-2");
+        assert_eq!(vault.create_record_derived("tasks", None, Some("Index"), &doc("Index")).unwrap(), "index-2");
+        assert_eq!(vault.create_record_derived("tasks", None, Some("LOG"), &doc("LOG")).unwrap(), "log-2");
+        assert_eq!(vault.create_record_derived("tasks", None, Some("index"), &doc("index")).unwrap(), "index-3");
+        assert_eq!(vault.ensure_unique_id("tasks", "log").unwrap(), "log-3");
+        assert_eq!(vault.list_ids("tasks").unwrap(), vec!["index-2", "index-3", "log-2"]);
+    }
+
+    #[test]
+    fn explicit_reserved_ids_are_invalid() {
+        let (_dir, vault) = vault(IdStrategy::SlugFromField("title".into()));
+        for id in ["index", "log", "Index"] {
+            let err = vault.create_record_derived("tasks", Some(id), Some("ignored"), &doc("x")).unwrap_err();
+            assert!(matches!(err, Error::InvalidId { .. }), "{id}: {err}");
+            assert!(matches!(vault.make_record_id("tasks", Some(id), None), Err(Error::InvalidId { .. })));
+            assert!(matches!(vault.create_record("tasks", id, &doc("x")), Err(Error::InvalidId { .. })));
+        }
+    }
+
+    #[test]
+    fn index_and_log_files_never_surface_as_records() {
+        let (_dir, vault) = vault(IdStrategy::Provided);
+        vault.create_record("tasks", "real", &doc("real")).unwrap();
+        let tasks = vault.entity_dir("tasks").unwrap();
+        fsops::write_atomic(&tasks.join("index.md"), "# Tasks\n\n* [Real](real.md)\n").unwrap();
+        fsops::write_atomic(&tasks.join("log.md"), "# Log\n\n## 2026-10-03\n* **Creation**: real\n").unwrap();
+        assert_eq!(vault.list_ids("tasks").unwrap(), vec!["real"]);
+        assert_eq!(vault.read_all("tasks").unwrap().len(), 1);
+    }
+
+    #[test]
     fn provided_ids_are_not_renamed() {
         let (_dir, vault) = vault(IdStrategy::SlugFromField("title".into()));
         vault.create_record("tasks", "fixed", &doc("x")).unwrap();
@@ -447,6 +648,163 @@ mod tests {
         for bad in ["../../etc/passwd", "..", "a/b", ".hidden"] {
             assert!(vault.create_record("tasks", bad, &doc("x")).is_err(), "id {bad:?} must be rejected");
         }
+    }
+
+    // ── EntityRecords: OKF type stamping and flat-layout filtering ──────
+
+    fn raw(vault: &VaultHandle, dir: &str, id: &str) -> String {
+        fsops::read(&vault.record_path(dir, id).unwrap()).unwrap()
+    }
+
+    fn seed(vault: &VaultHandle, dir: &str, id: &str, src: &str) {
+        fsops::write_atomic(&vault.record_path(dir, id).unwrap(), src).unwrap();
+    }
+
+    #[test]
+    fn typed_create_puts_type_first() {
+        let (_dir, vault) = vault(IdStrategy::SlugFromField("title".into()));
+        let id = vault.entity("tasks", "Task").create(None, Some("Ship it"), doc("Ship it")).unwrap();
+        assert_eq!(id, "ship-it");
+        assert_eq!(raw(&vault, "tasks", &id), "---\ntype: Task\ntitle: Ship it\n---\nbody\n");
+    }
+
+    #[test]
+    fn typed_create_of_a_parsed_document_still_carries_the_type() {
+        let (_dir, vault) = vault(IdStrategy::Provided);
+        let parsed = Document::parse("---\ntitle: copied\n---\n").unwrap();
+        vault.entity("tasks", "Task").create(Some("copy"), None, parsed).unwrap();
+        assert_eq!(raw(&vault, "tasks", "copy"), "---\ntype: Task\ntitle: copied\n---\n");
+    }
+
+    #[test]
+    fn per_entity_dir_tolerates_a_foreign_type_and_normalizes_it_on_a_real_write() {
+        let (_dir, vault) = vault(IdStrategy::Provided);
+        let tasks = vault.entity("tasks", "Task");
+        let src = "---\ntype: task\ntitle: legacy\n---\n";
+        seed(&vault, "tasks", "t", src);
+
+        assert!(tasks.read_opt("t").unwrap().is_some(), "the directory decides membership");
+        assert_eq!(tasks.read_all().unwrap().len(), 1);
+        assert_eq!(tasks.count().unwrap(), 1);
+
+        tasks.modify("t", |_| Ok(())).unwrap();
+        assert_eq!(raw(&vault, "tasks", "t"), src, "a no-op cycle neither writes nor normalizes");
+
+        tasks
+            .modify("t", |d| {
+                d.set("title", "edited");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(raw(&vault, "tasks", "t"), "---\ntype: Task\ntitle: edited\n---\n");
+    }
+
+    #[test]
+    fn untyped_records_read_fine_and_are_typed_on_their_next_real_write() {
+        let (_dir, vault) = vault(IdStrategy::Provided);
+        let tasks = vault.entity("tasks", "Task");
+        let src = "---\ntitle: legacy\nstatus: open\n---\nbody\n";
+        seed(&vault, "tasks", "t", src);
+
+        assert_eq!(tasks.read_opt("t").unwrap().unwrap().get("title").and_then(|v| v.as_str()), Some("legacy"));
+        tasks
+            .modify("t", |d| {
+                d.set("status", "open");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(raw(&vault, "tasks", "t"), src, "an unchanged record is not rewritten just to type it");
+
+        tasks
+            .modify("t", |d| {
+                d.set("status", "closed");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(raw(&vault, "tasks", "t"), "---\ntype: Task\ntitle: legacy\nstatus: closed\n---\nbody\n");
+    }
+
+    #[test]
+    fn per_entity_dir_count_walks_without_parsing() {
+        let (_dir, vault) = vault(IdStrategy::Provided);
+        let tasks = vault.entity("tasks", "Task");
+        tasks.create(Some("ok"), None, doc("fine")).unwrap();
+        seed(&vault, "tasks", "broken", "---\n: : : not yaml\n---\n");
+        assert_eq!(tasks.count().unwrap(), 2, "an unparseable file still counts: nothing was read");
+        assert!(matches!(tasks.read_all(), Err(Error::Parse { .. })));
+    }
+
+    fn flat_vault() -> (tempfile::TempDir, VaultHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = VaultHandle::new(dir.path(), VaultLayout::Flat, IdStrategy::SlugFromField("title".into()));
+        (dir, handle)
+    }
+
+    #[test]
+    fn flat_vault_lists_counts_and_gets_by_type() {
+        let (_dir, vault) = flat_vault();
+        let (tasks, notes) = (vault.entity("tasks", "Task"), vault.entity("notes", "Note"));
+        tasks.create(None, Some("Alpha"), doc("Alpha")).unwrap();
+        tasks.create(None, Some("Beta"), doc("Beta")).unwrap();
+        notes.create(None, Some("Gamma"), doc("Gamma")).unwrap();
+        seed(&vault, "", "untyped", "---\ntitle: legacy\n---\n");
+
+        let ids = |records: &EntityRecords<'_>| -> Vec<String> {
+            records.read_all().unwrap().into_iter().map(|(id, _)| id).collect()
+        };
+        assert_eq!(ids(&tasks), vec!["alpha", "beta", "untyped"]);
+        assert_eq!(ids(&notes), vec!["gamma", "untyped"]);
+        assert_eq!((tasks.count().unwrap(), notes.count().unwrap()), (3, 2));
+
+        assert!(tasks.read_opt("alpha").unwrap().is_some());
+        assert!(notes.read_opt("alpha").unwrap().is_none(), "another entity's record is not found");
+        assert!(notes.read_opt("untyped").unwrap().is_some(), "an untyped record belongs to anyone");
+        assert!(tasks.read_opt("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn flat_vault_never_rewrites_or_deletes_another_entitys_record() {
+        let (_dir, vault) = flat_vault();
+        let (tasks, notes) = (vault.entity("tasks", "Task"), vault.entity("notes", "Note"));
+        let id = notes.create(None, Some("Gamma"), doc("Gamma")).unwrap();
+        let before = raw(&vault, "", &id);
+
+        let err = tasks
+            .modify(&id, |d| {
+                d.set("title", "hijacked");
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::NotFound { .. }), "{err}");
+        assert!(matches!(tasks.remove(&id), Err(Error::NotFound { .. })));
+        assert_eq!(raw(&vault, "", &id), before, "the note is untouched");
+
+        notes.remove(&id).unwrap();
+        assert!(matches!(notes.remove(&id), Err(Error::NotFound { .. })));
+    }
+
+    #[test]
+    fn flat_vault_refuses_to_remove_a_record_it_cannot_parse() {
+        let (_dir, vault) = flat_vault();
+        let broken = "---\n: : : not yaml\n---\n";
+        seed(&vault, "", "broken", broken);
+
+        let err = vault.entity("tasks", "Task").remove("broken").unwrap_err();
+        assert!(matches!(err, Error::Parse { .. }), "{err}");
+        assert_eq!(raw(&vault, "", "broken"), broken, "a file of unknown type is left alone");
+
+        let per_dir = VaultHandle::new(vault.root(), VaultLayout::PerEntityDir, IdStrategy::Provided);
+        seed(&per_dir, "tasks", "broken", broken);
+        per_dir.entity("tasks", "Task").remove("broken").unwrap();
+        assert!(!per_dir.record_exists("tasks", "broken").unwrap(), "the directory says whose it is");
+    }
+
+    #[test]
+    fn flat_vault_ids_dedupe_across_entities() {
+        let (_dir, vault) = flat_vault();
+        let a = vault.entity("tasks", "Task").create(None, Some("Same"), doc("Same")).unwrap();
+        let b = vault.entity("notes", "Note").create(None, Some("Same"), doc("Same")).unwrap();
+        assert_eq!((a.as_str(), b.as_str()), ("same", "same-2"), "flat entities share one id space");
     }
 
     #[test]

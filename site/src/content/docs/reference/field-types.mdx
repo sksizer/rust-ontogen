@@ -165,7 +165,7 @@ The full entity definition. One per annotated struct.
 | `name` | `String` | -- | Rust struct name (e.g., `"Workout"`). |
 | `directory` | `String` | snake_case of `name` | Subdirectory for Markdown files. |
 | `table` | `String` | snake_case of `name` | SeaORM table name. |
-| `type_name` | `String` | snake_case of `name` | Frontmatter `type:` value. |
+| `type_name` | `String` | `name` | Frontmatter `type:` value. |
 | `prefix` | `String` | snake_case of `name` | ID prefix. |
 | `fields` | `Vec<FieldDef>` | -- | All fields on the struct. |
 

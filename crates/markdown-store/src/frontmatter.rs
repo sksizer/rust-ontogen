@@ -23,6 +23,9 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::error::Error;
 
+/// The frontmatter key OKF requires on every concept document.
+pub const TYPE_KEY: &str = "type";
+
 /// Split `src` into `(frontmatter_yaml, body)`.
 ///
 /// Frontmatter is recognized only when the document begins with `---\n` (or
@@ -277,6 +280,45 @@ impl Document {
             self.dirty = true;
         }
         removed
+    }
+
+    /// The OKF `type` this document declares, when it is a string.
+    pub fn type_name(&self) -> Option<&str> {
+        self.fm.get(TYPE_KEY).and_then(|v| v.as_str())
+    }
+
+    /// Stamp the OKF `type` key onto a document that is about to be written.
+    ///
+    /// Only a dirty document is stamped: a clean one renders as its source
+    /// and is never rewritten, and stamping it would turn a no-op update
+    /// into a write. On a dirty document a missing `type` is inserted as
+    /// the first key, where OKF documents conventionally carry it, and a
+    /// different value is overwritten in place.
+    pub fn stamp_type(&mut self, type_name: &str) {
+        if self.is_dirty() {
+            self.ensure_type(type_name);
+        }
+    }
+
+    /// [`stamp_type`](Self::stamp_type) without the dirty check, for records
+    /// being created: a new file always gets its type.
+    pub(crate) fn ensure_type(&mut self, type_name: &str) {
+        let key = serde_norway::Value::String(TYPE_KEY.to_string());
+        let value = serde_norway::Value::String(type_name.to_string());
+        match self.fm.get_mut(&key) {
+            Some(existing) if *existing == value => {}
+            Some(existing) => {
+                *existing = value;
+                self.dirty = true;
+            }
+            None => {
+                let mut fm = serde_norway::Mapping::with_capacity(self.fm.len() + 1);
+                fm.insert(key, value);
+                fm.extend(std::mem::take(&mut self.fm));
+                self.fm = fm;
+                self.dirty = true;
+            }
+        }
     }
 
     /// Deserialize the frontmatter mapping into a typed value. Keys the type
@@ -688,6 +730,61 @@ Body text stays byte-stable.\n";
         // Had an empty fence: keeps it.
         let doc = Document::parse("---\n---\nbody\n").unwrap();
         assert_eq!(doc.render().unwrap(), "---\n---\nbody\n");
+    }
+
+    // ── OKF type stamping ───────────────────────────────────────────────
+
+    fn keys(doc: &Document) -> Vec<String> {
+        doc.mapping().iter().map(|(k, _)| k.as_str().unwrap_or_default().to_string()).collect()
+    }
+
+    #[test]
+    fn stamp_type_on_a_new_document_is_the_first_key() {
+        let mut doc = Document::new();
+        doc.set("title", "t");
+        doc.set("status", "open");
+        doc.stamp_type("Task");
+        assert_eq!(keys(&doc), vec!["type", "title", "status"]);
+        assert!(doc.render().unwrap().starts_with("---\ntype: Task\ntitle: t\n"));
+    }
+
+    #[test]
+    fn stamp_type_leaves_a_clean_document_clean() {
+        let src = "---\ntitle: untyped\n---\nbody\n";
+        let mut doc = Document::parse(src).unwrap();
+        doc.stamp_type("Task");
+        assert!(!doc.is_dirty(), "a no-op cycle must not be turned into a write");
+        assert!(doc.get("type").is_none());
+        assert_eq!(doc.render().unwrap(), src);
+
+        let mut foreign = Document::parse("---\ntype: Note\ntitle: x\n---\n").unwrap();
+        foreign.stamp_type("Task");
+        assert_eq!(foreign.type_name(), Some("Note"), "clean documents are not normalized");
+    }
+
+    #[test]
+    fn stamp_type_inserts_first_on_a_dirty_untyped_document() {
+        let mut doc = Document::parse("---\ntitle: untyped\nstatus: open\n---\nbody\n").unwrap();
+        doc.set("status", "closed");
+        doc.stamp_type("Task");
+        assert_eq!(keys(&doc), vec!["type", "title", "status"]);
+        assert_eq!(doc.render().unwrap(), "---\ntype: Task\ntitle: untyped\nstatus: closed\n---\nbody\n");
+    }
+
+    #[test]
+    fn stamp_type_overwrites_a_different_type_in_place() {
+        let mut doc = Document::parse("---\ntitle: x\ntype: task\nstatus: open\n---\n").unwrap();
+        doc.set("status", "closed");
+        doc.stamp_type("Task");
+        assert_eq!(keys(&doc), vec!["title", "type", "status"], "an existing key keeps its position");
+        assert_eq!(doc.type_name(), Some("Task"));
+    }
+
+    #[test]
+    fn type_name_reads_only_string_types() {
+        assert_eq!(Document::parse("---\ntype: Task\n---\n").unwrap().type_name(), Some("Task"));
+        assert_eq!(Document::parse("---\ntype: 3\n---\n").unwrap().type_name(), None);
+        assert_eq!(Document::parse("---\ntitle: x\n---\n").unwrap().type_name(), None);
     }
 
     #[test]

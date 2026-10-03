@@ -8,6 +8,7 @@ use crate::store::Store;
 use crate::store::hooks::note as hooks;
 
 const NOTES_DIR: &str = "notes";
+const NOTE_TYPE: &str = "Note";
 
 /// Partial update for a Note. Only `Some` values are applied.
 #[derive(Debug, Clone, Default)]
@@ -42,7 +43,7 @@ impl From<crate::schema::CreateNoteInput> for Note {
 impl Store {
     pub async fn list_notes(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Note>, AppError> {
         let mut notes = Vec::new();
-        for (id, doc) in self.vault().read_all(NOTES_DIR).map_err(AppError::from)? {
+        for (id, doc) in self.vault().entity(NOTES_DIR, NOTE_TYPE).read_all().map_err(AppError::from)? {
             let fm: NoteFrontmatter = doc.deserialize().map_err(AppError::from)?;
             notes.push(fm.into_note(id, doc.body().to_string()));
         }
@@ -52,13 +53,14 @@ impl Store {
     }
 
     pub async fn count_notes(&self) -> Result<u64, AppError> {
-        Ok(self.vault().list_paths(NOTES_DIR).map_err(AppError::from)?.len() as u64)
+        Ok(self.vault().entity(NOTES_DIR, NOTE_TYPE).count().map_err(AppError::from)? as u64)
     }
 
     pub async fn get_note(&self, id: &str) -> Result<Note, AppError> {
         let doc = self
             .vault()
-            .read_record_opt(NOTES_DIR, id)
+            .entity(NOTES_DIR, NOTE_TYPE)
+            .read_opt(id)
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::NoteNotFound(id.to_string()))?;
         let fm: NoteFrontmatter = doc.deserialize().map_err(AppError::from)?;
@@ -73,12 +75,8 @@ impl Store {
         doc.set_body(note.body.clone());
         let id = self
             .vault()
-            .create_record_derived(
-                NOTES_DIR,
-                Some(note.id.as_str()).filter(|s| !s.is_empty()),
-                Some(note.title.as_str()),
-                &doc,
-            )
+            .entity(NOTES_DIR, NOTE_TYPE)
+            .create(Some(note.id.as_str()).filter(|s| !s.is_empty()), Some(note.title.as_str()), doc)
             .map_err(AppError::from)?;
 
         let created = self.get_note(&id).await?;
@@ -92,7 +90,8 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         self.vault()
-            .modify_record(NOTES_DIR, id, |doc| {
+            .entity(NOTES_DIR, NOTE_TYPE)
+            .modify(id, |doc| {
                 let fm: NoteFrontmatter = doc.deserialize()?;
                 let mut note = fm.into_note(id.to_string(), doc.body().to_string());
                 updates.apply(&mut note);
@@ -111,7 +110,7 @@ impl Store {
     pub async fn delete_note(&self, id: &str) -> Result<(), AppError> {
         hooks::before_delete(self, id).await?;
 
-        match self.vault().remove_record(NOTES_DIR, id) {
+        match self.vault().entity(NOTES_DIR, NOTE_TYPE).remove(id) {
             Ok(()) => {}
             Err(markdown_store::Error::NotFound { .. }) => {
                 return Err(AppError::NoteNotFound(id.to_string()));

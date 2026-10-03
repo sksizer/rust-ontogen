@@ -1,4 +1,5 @@
 ---
+type: Note
 title: The vault is the database
 links: []
 ---

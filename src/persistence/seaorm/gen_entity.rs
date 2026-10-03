@@ -462,6 +462,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -471,6 +472,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -480,6 +482,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -494,6 +497,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -508,6 +512,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -517,6 +522,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -526,6 +532,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -540,6 +547,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
             ],
@@ -630,6 +638,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -644,6 +653,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
             ],
@@ -690,6 +700,7 @@ mod tests {
                     serde_default: false,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -704,6 +715,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -718,6 +730,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -732,6 +745,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -746,6 +760,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
                 FieldDef {
@@ -755,6 +770,7 @@ mod tests {
                     serde_default: true,
                     multiline_list: false,
                     default_value: None,
+                    frontmatter_name: None,
                     doc: String::new(),
                 },
             ],

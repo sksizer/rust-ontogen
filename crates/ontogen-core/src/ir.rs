@@ -107,8 +107,8 @@ pub struct MarkdownIoOutput {
 pub struct MarkdownEntityMeta {
     /// Entity type name, e.g. `Workout`.
     pub entity_name: String,
-    /// Frontmatter `type:` discriminator, e.g. `workout` — how records of
-    /// this entity are recognized under [`MarkdownLayout::Flat`].
+    /// The OKF `type:` every record of this entity carries, e.g. `Workout`
+    /// — also how its records are told apart under [`MarkdownLayout::Flat`].
     pub type_name: String,
     /// Directory segment for [`MarkdownLayout::PerEntityDir`], e.g.
     /// `workouts`.
@@ -130,8 +130,9 @@ pub struct MarkdownEntityMeta {
 pub enum MarkdownLayout {
     /// `vault_root/<dir_segment>/<id>.md` — the default.
     PerEntityDir,
-    /// `vault_root/<id>.md`, all entities flat; relies on the frontmatter
-    /// `type:` discriminator and id prefixes for disambiguation.
+    /// `vault_root/<id>.md`, all entities flat, sharing one id space; each
+    /// entity's list, count and get see only records whose frontmatter
+    /// `type:` is its own (or absent).
     Flat,
 }
 

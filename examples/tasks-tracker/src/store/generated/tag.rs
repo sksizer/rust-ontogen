@@ -8,6 +8,7 @@ use crate::store::Store;
 use crate::store::hooks::tag as hooks;
 
 const TAGS_DIR: &str = "tags";
+const TAG_TYPE: &str = "Tag";
 
 /// Partial update for a Tag. Only `Some` values are applied.
 #[derive(Debug, Clone, Default)]
@@ -38,7 +39,7 @@ impl From<crate::schema::CreateTagInput> for Tag {
 impl Store {
     pub async fn list_tags(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Tag>, AppError> {
         let mut tags = Vec::new();
-        for (id, doc) in self.vault().read_all(TAGS_DIR).map_err(AppError::from)? {
+        for (id, doc) in self.vault().entity(TAGS_DIR, TAG_TYPE).read_all().map_err(AppError::from)? {
             let fm: TagFrontmatter = doc.deserialize().map_err(AppError::from)?;
             tags.push(fm.into_tag(id));
         }
@@ -48,13 +49,14 @@ impl Store {
     }
 
     pub async fn count_tags(&self) -> Result<u64, AppError> {
-        Ok(self.vault().list_paths(TAGS_DIR).map_err(AppError::from)?.len() as u64)
+        Ok(self.vault().entity(TAGS_DIR, TAG_TYPE).count().map_err(AppError::from)? as u64)
     }
 
     pub async fn get_tag(&self, id: &str) -> Result<Tag, AppError> {
         let doc = self
             .vault()
-            .read_record_opt(TAGS_DIR, id)
+            .entity(TAGS_DIR, TAG_TYPE)
+            .read_opt(id)
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::TagNotFound(id.to_string()))?;
         let fm: TagFrontmatter = doc.deserialize().map_err(AppError::from)?;
@@ -68,12 +70,8 @@ impl Store {
         doc.merge_serialize(&TagFrontmatter::from_tag(&tag), TAG_FM_FIELDS).map_err(AppError::from)?;
         let id = self
             .vault()
-            .create_record_derived(
-                TAGS_DIR,
-                Some(tag.id.as_str()).filter(|s| !s.is_empty()),
-                Some(tag.title.as_str()),
-                &doc,
-            )
+            .entity(TAGS_DIR, TAG_TYPE)
+            .create(Some(tag.id.as_str()).filter(|s| !s.is_empty()), Some(tag.title.as_str()), doc)
             .map_err(AppError::from)?;
 
         let created = self.get_tag(&id).await?;
@@ -87,7 +85,8 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         self.vault()
-            .modify_record(TAGS_DIR, id, |doc| {
+            .entity(TAGS_DIR, TAG_TYPE)
+            .modify(id, |doc| {
                 let fm: TagFrontmatter = doc.deserialize()?;
                 let mut tag = fm.into_tag(id.to_string());
                 updates.apply(&mut tag);
@@ -105,7 +104,7 @@ impl Store {
     pub async fn delete_tag(&self, id: &str) -> Result<(), AppError> {
         hooks::before_delete(self, id).await?;
 
-        match self.vault().remove_record(TAGS_DIR, id) {
+        match self.vault().entity(TAGS_DIR, TAG_TYPE).remove(id) {
             Ok(()) => {}
             Err(markdown_store::Error::NotFound { .. }) => {
                 return Err(AppError::TagNotFound(id.to_string()));

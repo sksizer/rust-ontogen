@@ -39,6 +39,13 @@ fn vault_goldens_parse_with_markdown_store_and_roundtrip_verbatim() {
         let doc = markdown_store::Document::parse(&src)
             .unwrap_or_else(|e| panic!("golden {} must parse: {e}", entry.display()));
         assert!(!doc.mapping().is_empty(), "golden {} has empty frontmatter", entry.display());
+        let first_key = doc.mapping().iter().next().and_then(|(k, _)| k.as_str());
+        assert_eq!(first_key, Some("type"), "golden {} must carry its OKF type as the first key", entry.display());
+        assert!(
+            doc.type_name().is_some_and(|t| !t.is_empty()),
+            "golden {} must have a non-empty string type",
+            entry.display()
+        );
         assert_eq!(doc.render().unwrap(), src, "golden {} must round-trip verbatim", entry.display());
         seen += 1;
     }

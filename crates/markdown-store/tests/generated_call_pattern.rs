@@ -41,6 +41,7 @@ struct TaskFrontmatter {
 }
 
 const TASK_FM_FIELDS: &[&str] = &["title", "status", "epic_id", "tags"];
+const TASK_TYPE: &str = "Task";
 const TASKS_DIR: &str = "tasks";
 
 impl TaskFrontmatter {
@@ -79,19 +80,18 @@ impl Store {
     }
 
     /// Shape of generated `create_task`. Frontmatter is id-independent (the
-    /// id is the filename stem), so the document is built first and
-    /// `create_record_derived` performs id derivation + slug dedup + write
-    /// atomically under the vault's write lock.
+    /// id is the filename stem), so the document is built first and the
+    /// entity view's `create` stamps the OKF type, then derives the id,
+    /// dedups the slug and writes atomically under the vault's write lock.
     fn create_task(&self, task: Task) -> Result<Task, Error> {
         // hooks::before_create(self, &mut task) — fires here, identically to SeaORM.
         let mut doc = Document::new();
         doc.merge_serialize(&TaskFrontmatter::from_task(&task), TASK_FM_FIELDS)?;
         doc.set_body(task.body.clone());
-        let id = self.vault().create_record_derived(
-            TASKS_DIR,
+        let id = self.vault().entity(TASKS_DIR, TASK_TYPE).create(
             Some(&task.id).filter(|s| !s.is_empty()).map(String::as_str),
             Some(&task.title),
-            &doc,
+            doc,
         )?;
         let created = self.get_task(&id)?;
         // self.emit_change(ChangeOp::Created, EntityKind::Task, id) — fires here.
@@ -101,7 +101,11 @@ impl Store {
 
     /// Shape of generated `get_task`.
     fn get_task(&self, id: &str) -> Result<Task, Error> {
-        let doc = self.vault().read_record(TASKS_DIR, id)?;
+        let doc = self
+            .vault()
+            .entity(TASKS_DIR, TASK_TYPE)
+            .read_opt(id)?
+            .ok_or_else(|| Error::NotFound { path: id.into() })?;
         let fm: TaskFrontmatter = doc.deserialize()?;
         Ok(fm.into_task(id.to_string(), doc.body().to_string()))
     }
@@ -109,7 +113,7 @@ impl Store {
     /// Shape of generated `list_tasks(limit, offset)`.
     fn list_tasks(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Task>, Error> {
         let mut tasks = Vec::new();
-        for (id, doc) in self.vault().read_all(TASKS_DIR)? {
+        for (id, doc) in self.vault().entity(TASKS_DIR, TASK_TYPE).read_all()? {
             let fm: TaskFrontmatter = doc.deserialize()?;
             tasks.push(fm.into_task(id, doc.body().to_string()));
         }
@@ -121,7 +125,7 @@ impl Store {
     /// Shape of generated `update_task` (read → apply → re-render → write).
     fn update_task(&self, id: &str, new_status: &str) -> Result<Task, Error> {
         // hooks::before_update(self, &current, &updates) — after the read, before apply.
-        self.vault().modify_record(TASKS_DIR, id, |doc| {
+        self.vault().entity(TASKS_DIR, TASK_TYPE).modify(id, |doc| {
             let mut fm: TaskFrontmatter = doc.deserialize()?;
             fm.status = new_status.to_string(); // updates.apply(&mut current)
             doc.merge_serialize(&fm, TASK_FM_FIELDS)
@@ -134,7 +138,7 @@ impl Store {
     /// Shape of generated `delete_task`.
     fn delete_task(&self, id: &str) -> Result<(), Error> {
         // hooks::before_delete(self, id) — fires here.
-        self.vault().remove_record(TASKS_DIR, id)?;
+        self.vault().entity(TASKS_DIR, TASK_TYPE).remove(id)?;
         // emit_change(Deleted) + hooks::after_delete — fire here.
         Ok(())
     }
@@ -142,7 +146,7 @@ impl Store {
     /// Shape of generated `set_task_parent` — the markdown replacement for
     /// SeaORM's raw-SQL FK fast path: read-mutate-rewrite the child.
     fn set_task_parent(&self, child_id: &str, parent_id: Option<&str>) -> Result<(), Error> {
-        self.vault().modify_record(TASKS_DIR, child_id, |doc| {
+        self.vault().entity(TASKS_DIR, TASK_TYPE).modify(child_id, |doc| {
             let mut fm: TaskFrontmatter = doc.deserialize()?;
             fm.epic_id = parent_id.map(wikilink::encode);
             doc.merge_serialize(&fm, TASK_FM_FIELDS)
@@ -152,7 +156,7 @@ impl Store {
     /// Shape of generated has_many reverse population: walk + filter.
     fn epic_task_ids(&self, epic_id: &str) -> Result<Vec<String>, Error> {
         let mut ids = Vec::new();
-        for (id, doc) in self.vault().read_all(TASKS_DIR)? {
+        for (id, doc) in self.vault().entity(TASKS_DIR, TASK_TYPE).read_all()? {
             let fm: TaskFrontmatter = doc.deserialize()?;
             if wikilink::strip_opt(fm.epic_id).as_deref() == Some(epic_id) {
                 ids.push(id);
@@ -193,6 +197,7 @@ fn full_crud_lifecycle_matches_generated_shape() {
     assert_eq!(created.body, "Body of Ship the emitter.\n");
 
     let raw = std::fs::read_to_string(store.vault().record_path(TASKS_DIR, &created.id).unwrap()).unwrap();
+    assert!(raw.starts_with("---\ntype: Task\ntitle: Ship the emitter\n"), "OKF type is the first key: {raw}");
     assert!(raw.contains("epic_id: '[[E0042]]'"), "FK stored as wikilink: {raw}");
     assert!(raw.contains("- '[[codegen]]'"), "m2m stored as wikilink list: {raw}");
 

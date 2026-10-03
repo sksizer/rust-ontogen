@@ -8,6 +8,7 @@ use crate::store::Store;
 use crate::store::hooks::exercise as hooks;
 
 const EXERCISES_DIR: &str = "exercises";
+const EXERCISE_TYPE: &str = "Exercise";
 
 /// Partial update for a Exercise. Only `Some` values are applied.
 #[derive(Debug, Clone, Default)]
@@ -56,7 +57,7 @@ impl From<crate::schema::CreateExerciseInput> for Exercise {
 impl Store {
     pub async fn list_exercises(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Exercise>, AppError> {
         let mut exercises = Vec::new();
-        for (id, doc) in self.vault().read_all(EXERCISES_DIR).map_err(AppError::from)? {
+        for (id, doc) in self.vault().entity(EXERCISES_DIR, EXERCISE_TYPE).read_all().map_err(AppError::from)? {
             let fm: ExerciseFrontmatter = doc.deserialize().map_err(AppError::from)?;
             exercises.push(fm.into_exercise(id));
         }
@@ -66,13 +67,14 @@ impl Store {
     }
 
     pub async fn count_exercises(&self) -> Result<u64, AppError> {
-        Ok(self.vault().list_paths(EXERCISES_DIR).map_err(AppError::from)?.len() as u64)
+        Ok(self.vault().entity(EXERCISES_DIR, EXERCISE_TYPE).count().map_err(AppError::from)? as u64)
     }
 
     pub async fn get_exercise(&self, id: &str) -> Result<Exercise, AppError> {
         let doc = self
             .vault()
-            .read_record_opt(EXERCISES_DIR, id)
+            .entity(EXERCISES_DIR, EXERCISE_TYPE)
+            .read_opt(id)
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::ExerciseNotFound(id.to_string()))?;
         let fm: ExerciseFrontmatter = doc.deserialize().map_err(AppError::from)?;
@@ -87,7 +89,8 @@ impl Store {
             .map_err(AppError::from)?;
         let id = self
             .vault()
-            .create_record_derived(EXERCISES_DIR, Some(exercise.id.as_str()).filter(|s| !s.is_empty()), None, &doc)
+            .entity(EXERCISES_DIR, EXERCISE_TYPE)
+            .create(Some(exercise.id.as_str()).filter(|s| !s.is_empty()), None, doc)
             .map_err(AppError::from)?;
 
         let created = self.get_exercise(&id).await?;
@@ -101,7 +104,8 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         self.vault()
-            .modify_record(EXERCISES_DIR, id, |doc| {
+            .entity(EXERCISES_DIR, EXERCISE_TYPE)
+            .modify(id, |doc| {
                 let fm: ExerciseFrontmatter = doc.deserialize()?;
                 let mut exercise = fm.into_exercise(id.to_string());
                 updates.apply(&mut exercise);
@@ -119,7 +123,7 @@ impl Store {
     pub async fn delete_exercise(&self, id: &str) -> Result<(), AppError> {
         hooks::before_delete(self, id).await?;
 
-        match self.vault().remove_record(EXERCISES_DIR, id) {
+        match self.vault().entity(EXERCISES_DIR, EXERCISE_TYPE).remove(id) {
             Ok(()) => {}
             Err(markdown_store::Error::NotFound { .. }) => {
                 return Err(AppError::ExerciseNotFound(id.to_string()));

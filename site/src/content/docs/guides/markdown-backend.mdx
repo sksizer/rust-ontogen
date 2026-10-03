@@ -11,7 +11,11 @@ backend's primitives. With `Backend::Markdown`, your records are plain
 markdown files with YAML frontmatter — editable in any editor, diffable in
 git, navigable in Obsidian — and the generated store reads and writes them
 through the [`markdown-store`](https://github.com/sksizer/rust-ontogen/tree/main/crates/markdown-store)
-runtime crate.
+runtime crate. Generated store code reaches records through the typed view
+`VaultHandle::entity(dir_segment, type_name)`, which returns an `EntityRecords`
+(`read_all`, `count`, `read_opt`, `create`, `modify`, `remove`, `admits`). Under
+the `Flat` layout it filters by the `type` key, so entities sharing a directory
+stay apart.
 
 The load-bearing invariant: **everything above the store is byte-identical
 between backends.** `gen_api`, `gen_servers`, and `gen_clients` output the
@@ -61,6 +65,102 @@ The vault folder for an entity comes from `#[ontology(entity, directory =
 "tasks", …)]`. Without it the segment defaults to the singular type name and
 the store walks a folder your records aren't in.
 </Aside>
+
+## An OKF vault
+
+An ontogen vault is an [OKF 0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+bundle: a directory of markdown files with YAML frontmatter, each carrying a
+`type`. Other OKF consumers can read it, and it stays plain markdown for
+everything else. This is always on; there is no switch.
+
+### Every record carries a `type`
+
+The generator owns the `type:` key and writes it as the **first** frontmatter
+key. It defaults to the struct name (`Task`), and
+`#[ontology(entity, type_name = "...")]` overrides it.
+
+```yaml
+---
+type: Task
+title: Ship the emitter
+status: closed/done
+---
+```
+
+- A record with no `type` still reads. It gains one on its next real write; a
+  no-op update writes nothing, so merely reading or re-saving unchanged data
+  never rewrites the file.
+- With `MarkdownLayout::PerEntityDir` the directory decides what a record is.
+  A record whose `type` disagrees is tolerated on read and normalized on its
+  next real write, so `count` stays a path walk.
+- With `MarkdownLayout::Flat`, entities share the vault root, so `list`,
+  `count` and `get` filter by `type`: a record whose `type` differs from the
+  entity's is excluded (and `get` returns NotFound). Records with no `type`
+  are included.
+
+### Reserved ids
+
+`index` and `log` are reserved for OKF's `index.md` and `log.md`. They are
+rejected as ids, case-insensitively (macOS and Windows filesystems treat
+`Index.md` and `index.md` as the same file). A slug derived from a field that
+comes out as `index` is deduped like any collision and becomes `index-2`. The
+vault walk skips any `index.md` and `log.md`, so `list`, `count` and `read_all`
+never return them.
+
+### Reserved frontmatter keys
+
+OKF gives some frontmatter keys fixed meanings. `gen_markdown_io` checks every
+field's effective key (see below) at build time. It takes the whole
+`SchemaOutput` rather than just the entities because the `status` check needs
+the enum definitions; the check lives in the markdown generator, so a
+SeaORM-only consumer never sees these diagnostics.
+
+- `type` is a **build error**. The generator owns it; the frontmatter struct
+  does not model it, so reads tolerate it being absent or different.
+- `status` warns unless the field is an enum whose variants are all among
+  `draft`, `stable`, `deprecated`.
+- `resource` and `stale_after` warn unless the field is `String` or
+  `Option<String>`.
+- `generated` and `usage_window` warn unless the field is a struct. A
+  well-known non-struct (`Vec`, `HashMap`, `DateTime`, `NaiveDate`, `Uuid`,
+  and so on) does not count, nor does a primitive or a schema enum.
+- `verified` warns unless the field is a struct or a `Vec` of structs (OKF
+  allows one verification or a list).
+- `sources` warns unless the field is a `Vec` of structs.
+- `title`, `description` and `tags` are never flagged.
+
+A warning is a `cargo:warning=` line naming the entity, field and key. It is
+not an error: a vault with its own `status` vocabulary (like the
+`tasks-tracker` example, which mirrors SDLC statuses) is legitimate, it just
+isn't OKF-conformant for that key. To resolve either, rename the key without
+touching the Rust field:
+
+```rust
+#[ontology(frontmatter_name = "task_status")]
+pub status: String,
+```
+
+Renaming a key on an existing vault orphans the old key: existing records must
+be renamed by hand, otherwise reads fail with a missing-field error for a
+required field.
+
+`frontmatter_name` renames only the frontmatter key. The Rust field, DTOs,
+API, servers, clients and SeaORM columns keep the Rust name; the generated
+`#[serde(rename = "...")]` and the `{ENTITY}_FM_FIELDS` constant carry the
+renamed key. The key must match `[A-Za-z_][A-Za-z0-9_-]*`, must not be `type`,
+must not be a YAML boolean or null word (`true`, `false`, `null`, `~`, `yes`,
+`no`, `on`, `off`, `y`, `n`, in any case), and must not collide with another field's
+effective key. Setting it on a field that is never stored in frontmatter (the
+id, the body, a `skip` field, a `has_many` view, or the legacy `wikilinks` and
+`source_file` fields) is a build error.
+
+### Deleting a record with broken frontmatter
+
+Under `MarkdownLayout::Flat`, `remove` of a record whose frontmatter does not
+parse fails: the store cannot tell which entity owns the file, and an
+unparseable file may belong to another entity. Fix the frontmatter by hand or
+delete the file directly. Under `PerEntityDir` the directory identifies the
+owner, so the store can delete it.
 
 ## What the consumer writes by hand
 

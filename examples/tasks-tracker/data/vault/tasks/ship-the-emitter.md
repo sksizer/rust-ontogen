@@ -1,4 +1,5 @@
 ---
+type: Task
 title: Ship the emitter
 status: closed/done
 created: '2026-06-06'

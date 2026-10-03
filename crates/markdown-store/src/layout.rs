@@ -17,9 +17,9 @@ pub enum VaultLayout {
     /// One directory per entity: `<root>/<dir_segment>/<id>.md`. The
     /// default, and the layout ADR 0001 documents.
     PerEntityDir,
-    /// All records directly under the root: `<root>/<id>.md`. With more
-    /// than one entity this relies on a frontmatter type discriminator and
-    /// id prefixes for disambiguation; listings see every entity's files.
+    /// All records directly under the root: `<root>/<id>.md`. Every entity
+    /// shares one id space and raw listings see every entity's files;
+    /// the store's `EntityRecords` view tells them apart by their OKF `type`.
     Flat,
 }
 
@@ -62,49 +62,74 @@ impl VaultLayout {
     }
 }
 
+/// Filename stems OKF reserves at every level of a bundle: `index.md` is a
+/// directory listing and `log.md` an update history, never a concept.
+pub const RESERVED_IDS: &[&str] = &["index", "log"];
+
+/// Whether `id` is one of [`RESERVED_IDS`]. Compared ASCII
+/// case-insensitively because macOS and Windows filesystems alias
+/// `Index.md` onto `index.md`.
+pub fn is_reserved_id(id: &str) -> bool {
+    RESERVED_IDS.iter().any(|r| r.eq_ignore_ascii_case(id))
+}
+
 /// Validate a record id for use as a filename stem.
 ///
-/// Rejected: empty ids; path separators (`/`, `\`); `:` (a Windows drive
-/// prefix like `C:evil` makes `Path::join` *replace* the base — a vault
-/// escape — and `:` also addresses NTFS alternate data streams); NUL;
-/// `.` and `..`; a leading `.` (hidden files are skipped by the default
-/// walk, so a dot-leading record would be written but never listed); and a
-/// trailing `.` or space (silently stripped by Windows, aliasing two ids
-/// onto one file).
+/// Rejected: everything [`validate_segment`] rejects, plus the OKF
+/// reserved stems `index` and `log` (see [`is_reserved_id`]).
 pub fn validate_id(id: &str) -> Result<(), Error> {
-    let reject =
-        |reason: &str| -> Result<(), Error> { Err(Error::InvalidId { id: id.to_string(), reason: reason.into() }) };
-    if id.is_empty() {
-        return reject("must not be empty");
-    }
-    if id == "." || id == ".." {
-        return reject("must not be a dot path");
-    }
-    if id.starts_with('.') {
-        return reject("must not start with '.' (hidden files are not listed)");
-    }
-    if id.ends_with('.') || id.ends_with(' ') {
-        return reject("must not end with '.' or a space (stripped by Windows, aliasing ids)");
-    }
-    if id.contains('/') || id.contains('\\') {
-        return reject("must not contain path separators");
-    }
-    if id.contains(':') {
-        return reject("must not contain ':' (a Windows drive prefix like C: escapes the vault root)");
-    }
-    if id.contains('\0') {
-        return reject("must not contain NUL");
+    validate_stem(id).map_err(|reason| Error::InvalidId { id: id.to_string(), reason })?;
+    if is_reserved_id(id) {
+        return Err(Error::InvalidId {
+            id: id.to_string(),
+            reason: "is reserved: OKF (Open Knowledge Format) uses index.md and log.md for directory listings and update logs; \
+                     choose another id"
+                .into(),
+        });
     }
     Ok(())
 }
 
-/// Validate an entity directory segment. Same rules as [`validate_id`],
-/// reported as [`Error::InvalidSegment`].
+/// Validate an entity directory segment, reported as
+/// [`Error::InvalidSegment`].
+///
+/// Rejected: empty segments; path separators (`/`, `\`); `:` (a Windows
+/// drive prefix like `C:evil` makes `Path::join` *replace* the base — a
+/// vault escape — and `:` also addresses NTFS alternate data streams); NUL;
+/// `.` and `..`; a leading `.` (hidden files are skipped by the default
+/// walk, so a dot-leading record would be written but never listed); and a
+/// trailing `.` or space (silently stripped by Windows, aliasing two names
+/// onto one file). Unlike ids, `index` and `log` are fine: OKF reserves
+/// them as filenames, not as directory names.
 pub fn validate_segment(segment: &str) -> Result<(), Error> {
-    validate_id(segment).map_err(|e| match e {
-        Error::InvalidId { id, reason } => Error::InvalidSegment { segment: id, reason },
-        other => other,
-    })
+    validate_stem(segment).map_err(|reason| Error::InvalidSegment { segment: segment.to_string(), reason })
+}
+
+/// The path-safety rules ids and segments share.
+fn validate_stem(s: &str) -> Result<(), String> {
+    let reject = |reason: &str| -> Result<(), String> { Err(reason.to_string()) };
+    if s.is_empty() {
+        return reject("must not be empty");
+    }
+    if s == "." || s == ".." {
+        return reject("must not be a dot path");
+    }
+    if s.starts_with('.') {
+        return reject("must not start with '.' (hidden files are not listed)");
+    }
+    if s.ends_with('.') || s.ends_with(' ') {
+        return reject("must not end with '.' or a space (stripped by Windows, aliasing ids)");
+    }
+    if s.contains('/') || s.contains('\\') {
+        return reject("must not contain path separators");
+    }
+    if s.contains(':') {
+        return reject("must not contain ':' (a Windows drive prefix like C: escapes the vault root)");
+    }
+    if s.contains('\0') {
+        return reject("must not contain NUL");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -139,6 +164,29 @@ mod tests {
         for bad in ["../up", "a/b", "", "."] {
             assert!(layout.record_path(Path::new("v"), bad, "ok").is_err(), "segment {bad:?} must be rejected");
         }
+    }
+
+    #[test]
+    fn index_and_log_are_reserved_ids_in_any_case() {
+        let layout = VaultLayout::PerEntityDir;
+        for reserved in ["index", "log", "Index", "LOG", "lOg"] {
+            assert!(
+                matches!(layout.record_path(Path::new("v"), "tasks", reserved), Err(Error::InvalidId { .. })),
+                "id {reserved:?} must be rejected"
+            );
+        }
+        let err = layout.record_path(Path::new("v"), "tasks", "index").unwrap_err();
+        assert!(err.to_string().contains("choose another id"), "the error says what to do: {err}");
+        for fine in ["index-2", "logs", "changelog", "my-index"] {
+            assert!(layout.record_path(Path::new("v"), "tasks", fine).is_ok(), "id {fine:?} must be accepted");
+        }
+    }
+
+    #[test]
+    fn reserved_ids_are_fine_as_directory_segments() {
+        let layout = VaultLayout::PerEntityDir;
+        assert_eq!(layout.record_path(Path::new("v"), "log", "entry-1").unwrap(), PathBuf::from("v/log/entry-1.md"));
+        assert_eq!(layout.entity_dir(Path::new("v"), "index").unwrap(), PathBuf::from("v/index"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 ---
+type: Note
 title: Markdown as a store
 links:
 - '[[wikilinks-are-edges]]'

@@ -8,6 +8,7 @@ use crate::store::Store;
 use crate::store::hooks::task as hooks;
 
 const TASKS_DIR: &str = "tasks";
+const TASK_TYPE: &str = "Task";
 
 /// Partial update for a Task. Only `Some` values are applied.
 #[derive(Debug, Clone, Default)]
@@ -73,7 +74,7 @@ impl From<crate::schema::CreateTaskInput> for Task {
 impl Store {
     pub async fn list_tasks(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Task>, AppError> {
         let mut tasks = Vec::new();
-        for (id, doc) in self.vault().read_all(TASKS_DIR).map_err(AppError::from)? {
+        for (id, doc) in self.vault().entity(TASKS_DIR, TASK_TYPE).read_all().map_err(AppError::from)? {
             let fm: TaskFrontmatter = doc.deserialize().map_err(AppError::from)?;
             tasks.push(fm.into_task(id, doc.body().to_string()));
         }
@@ -87,13 +88,14 @@ impl Store {
     }
 
     pub async fn count_tasks(&self) -> Result<u64, AppError> {
-        Ok(self.vault().list_paths(TASKS_DIR).map_err(AppError::from)?.len() as u64)
+        Ok(self.vault().entity(TASKS_DIR, TASK_TYPE).count().map_err(AppError::from)? as u64)
     }
 
     pub async fn get_task(&self, id: &str) -> Result<Task, AppError> {
         let doc = self
             .vault()
-            .read_record_opt(TASKS_DIR, id)
+            .entity(TASKS_DIR, TASK_TYPE)
+            .read_opt(id)
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::TaskNotFound(id.to_string()))?;
         let fm: TaskFrontmatter = doc.deserialize().map_err(AppError::from)?;
@@ -110,12 +112,8 @@ impl Store {
         doc.set_body(task.body.clone());
         let id = self
             .vault()
-            .create_record_derived(
-                TASKS_DIR,
-                Some(task.id.as_str()).filter(|s| !s.is_empty()),
-                Some(task.title.as_str()),
-                &doc,
-            )
+            .entity(TASKS_DIR, TASK_TYPE)
+            .create(Some(task.id.as_str()).filter(|s| !s.is_empty()), Some(task.title.as_str()), doc)
             .map_err(AppError::from)?;
 
         let created = self.get_task(&id).await?;
@@ -129,7 +127,8 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         self.vault()
-            .modify_record(TASKS_DIR, id, |doc| {
+            .entity(TASKS_DIR, TASK_TYPE)
+            .modify(id, |doc| {
                 let fm: TaskFrontmatter = doc.deserialize()?;
                 let mut task = fm.into_task(id.to_string(), doc.body().to_string());
                 updates.apply(&mut task);
@@ -148,7 +147,7 @@ impl Store {
     pub async fn delete_task(&self, id: &str) -> Result<(), AppError> {
         hooks::before_delete(self, id).await?;
 
-        match self.vault().remove_record(TASKS_DIR, id) {
+        match self.vault().entity(TASKS_DIR, TASK_TYPE).remove(id) {
             Ok(()) => {}
             Err(markdown_store::Error::NotFound { .. }) => {
                 return Err(AppError::TaskNotFound(id.to_string()));

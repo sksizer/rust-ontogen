@@ -286,9 +286,47 @@ mod tests {
         }
         // Markdown primitives, not SeaORM ones.
         assert!(content.contains("self.vault()"), "markdown store talks to the vault: {content}");
-        assert!(content.contains("create_record_derived"), "create derives ids: {content}");
+        assert!(
+            content.contains(".entity(TAGS_DIR, TAG_TYPE)\n            .create("),
+            "create derives ids through the typed entity view: {content}"
+        );
+        assert!(content.contains("const TAG_TYPE: &str = \"Tag\";"), "the store declares the OKF type: {content}");
         assert!(!content.contains("sea_orm"), "no SeaORM in a markdown module: {content}");
         assert!(!content.contains("self.db()"), "no db() in a markdown module: {content}");
+    }
+
+    /// The OKF type comes from the markdown IR, the same place as the
+    /// directory segment, so the two can't disagree about an entity.
+    #[test]
+    fn markdown_store_takes_the_okf_type_from_the_ir() {
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        let tag = entities.iter().find(|e| e.name == "Tag").expect("Tag entity not found");
+
+        let mut backend = markdown_backend(crate::ir::IdStrategy::Provided);
+        if let crate::ir::Backend::Markdown(md) = &mut backend {
+            md.entities.push(crate::ir::MarkdownEntityMeta {
+                entity_name: "Tag".into(),
+                type_name: "Label".into(),
+                dir_segment: "labels".into(),
+                body_field: None,
+                authoritative_m2m: Vec::new(),
+            });
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = StoreConfig {
+            output_dir: tmp.path().to_path_buf(),
+            hooks_dir: None,
+            schema_module_path: "crate::schema".to_string(),
+            backend,
+            wikilink_policy: None,
+        };
+        store::generate(std::slice::from_ref(tag), &config).expect("gen_store(markdown) failed");
+        let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
+
+        assert!(content.contains("const TAG_TYPE: &str = \"Label\";"), "{content}");
+        assert!(content.contains("const TAGS_DIR: &str = \"labels\";"), "{content}");
+        assert!(!content.contains("TAG_TYPE, TagFrontmatter"), "the frontmatter module has no type const: {content}");
     }
 
     /// SlugFromField must name a String field on every entity — validated at

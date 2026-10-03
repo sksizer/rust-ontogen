@@ -1,3 +1,4 @@
 ---
+type: Tag
 title: Codegen
 ---

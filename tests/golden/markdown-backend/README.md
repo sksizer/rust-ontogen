@@ -36,8 +36,9 @@ Contract pinned by it, beyond the literal text:
   and `id: input.id` passthrough in `From<CreateInput>`.
 - **Create-with-derived-id contract**: `CreateInput.id` stays `String`
   (DTO output is backend-identical); an **empty id means "derive"** — the
-  generated create filters empty and passes `None` to
-  `create_record_derived`, which derives + dedups + writes under one lock.
+  generated create filters empty and passes `None` to the entity view's
+  `create`, which stamps the OKF `type`, then derives + dedups + writes
+  under one lock.
   Whether Create DTOs additionally gain `#[serde(default)]` on `id` (so
   JSON clients can omit the field on both backends) is a declared shared
   decision for the wikilink-policy PR.
@@ -45,9 +46,12 @@ Contract pinned by it, beyond the literal text:
   newtype (markdown-io generated module); wikilink encode/strip lives
   there, never inline in CRUD bodies. `body` never routes through
   frontmatter — it flows `From<CreateInput>` → entity → `doc.set_body`.
-- Update is read-modify-write inside `modify_record`; a **no-op update is
-  literally no write** (the runtime skips clean documents — no tempfile,
-  no mtime/inode churn).
+- Every vault call goes through `self.vault().entity({ENTITY}_DIR,
+  {ENTITY}_TYPE)`, the runtime's typed view: writes carry the OKF `type`
+  as the first frontmatter key, and a flat vault filters reads by it.
+- Update is read-modify-write inside the view's `modify`; a **no-op update
+  is literally no write** (the runtime skips clean documents — no tempfile,
+  no mtime/inode churn — and never stamps `type` onto one).
 - **Hook value parity for relation entities** (not visible in the
   relationless Note, but contractual): on entities with `has_many`/derived
   relations, `get` and the `current` passed to `before_update` must be
@@ -66,6 +70,10 @@ rustfmt-normal form, with **no banner or non-emitter content** — the
 committed bytes are the assertion, nothing is stripped at test time.
 
 ## The vault goldens (two roles)
+
+Every vault golden is an OKF 0.2 concept document: `type` is its first
+frontmatter key (the entity's struct name), as the typed writer produces
+it. `tests/golden_tree_guard.rs` asserts that for each file.
 
 - **`vault/tasks/ship-the-emitter.md.golden`**, `vault/notes/…`,
   `vault/epics/…` — the **hand-authored parse exemplars**: quoting variety

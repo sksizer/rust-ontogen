@@ -20,7 +20,8 @@
 //!   single-file writes (same-dir tempfile + fsync + rename),
 //!   gitignore-aware sorted listing, and [`VaultHandle`]: the per-vault
 //!   façade with create/read/modify/remove/list plus an intra-process
-//!   write lock.
+//!   write lock. [`EntityRecords`] is its typed per-entity view: writes
+//!   stamp each record's OKF `type`, and a flat vault filters reads by it.
 //!
 //! # Quick start
 //!
@@ -123,7 +124,7 @@ pub use crate::{error::Error, frontmatter::Document, id::IdStrategy, layout::Vau
 pub use crate::walk::WalkOptions;
 
 #[cfg(feature = "store")]
-pub use crate::store::VaultHandle;
+pub use crate::store::{EntityRecords, VaultHandle};
 
 /// Bulk import of the common surface:
 /// `use markdown_store::prelude::*;`
@@ -138,5 +139,5 @@ pub mod prelude {
     pub use crate::walk::WalkOptions;
 
     #[cfg(feature = "store")]
-    pub use crate::store::VaultHandle;
+    pub use crate::store::{EntityRecords, VaultHandle};
 }

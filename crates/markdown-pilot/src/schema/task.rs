@@ -12,6 +12,9 @@ pub struct Task {
 
     pub title: String,
 
+    /// Stored as `task_status`: OKF reserves the `status` key for its own
+    /// draft | stable | deprecated lifecycle, which this vocabulary is not.
+    #[ontology(frontmatter_name = "task_status")]
     pub status: String,
 
     #[ontology(relation(belongs_to, target = "Task"))]
