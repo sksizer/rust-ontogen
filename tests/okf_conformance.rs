@@ -1,5 +1,6 @@
 //! OKF 0.2 §11 conformance: the checker in `support/okf.rs` against
-//! hand-built good and bad bundles, then over every example's seed vault.
+//! hand-built good and bad bundles, then over every example's seed vault;
+//! plus the drift guard for notes-kb's committed index files.
 
 mod support;
 
@@ -170,4 +171,67 @@ fn example_seed_vaults_are_okf_conformant() {
 
     let violations: Vec<String> = vaults.iter().flat_map(|v| check_bundle(v)).map(|v| v.to_string()).collect();
     assert!(violations.is_empty(), "seed vaults break OKF 0.2 §11:\n{}", violations.join("\n"));
+}
+
+/// Set to regenerate notes-kb's committed seed indexes in place.
+const BLESS_SEED_INDEXES: &str = "OKF_BLESS_SEED_INDEXES";
+
+/// notes-kb turns `okf.index` on, so its seed vault commits the index files
+/// `rebuild_indexes` produces. Rebuilding a copy must change nothing: a
+/// seed record edited without its indexes fails here.
+#[test]
+fn notes_kb_seed_indexes_match_a_rebuild() {
+    let seed = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/notes-kb/data/vault");
+    let rebuild = |root: &Path| {
+        markdown_store::VaultHandle::new(
+            root,
+            markdown_store::VaultLayout::PerEntityDir,
+            markdown_store::IdStrategy::SlugFromField("title".into()),
+        )
+        .with_okf_index(true)
+        .rebuild_indexes()
+        .expect("rebuild_indexes");
+    };
+    if std::env::var_os(BLESS_SEED_INDEXES).is_some() {
+        rebuild(&seed);
+    }
+
+    let copy = tempfile::tempdir().unwrap();
+    copy_tree(&seed, copy.path());
+    rebuild(copy.path());
+    let (committed, rebuilt) = (tree(&seed), tree(copy.path()));
+    assert!(
+        committed.keys().any(|p| p.ends_with("index.md")),
+        "notes-kb commits its index files: {:?}",
+        committed.keys()
+    );
+    assert_eq!(
+        committed, rebuilt,
+        "notes-kb's seed indexes are stale; regenerate them with \
+         `{BLESS_SEED_INDEXES}=1 cargo test --test okf_conformance` and commit the result"
+    );
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    for (rel, content) in tree(from) {
+        write(to, &rel, &content);
+    }
+}
+
+/// Every file under `root` by `/`-separated relative path.
+fn tree(root: &Path) -> std::collections::BTreeMap<String, String> {
+    fn walk(root: &Path, dir: &Path, out: &mut std::collections::BTreeMap<String, String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else {
+                let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                out.insert(rel, std::fs::read_to_string(&path).unwrap());
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(root, root, &mut out);
+    out
 }
