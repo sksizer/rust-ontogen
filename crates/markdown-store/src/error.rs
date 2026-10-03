@@ -75,13 +75,19 @@ pub enum Error {
 
     /// A record id failed validation. Ids become filename stems, so they are
     /// validated at the path-construction boundary to make path traversal
-    /// impossible (see [`crate::layout`]).
-    #[error("invalid id {id:?}: {reason}")]
+    /// impossible (see [`crate::layout`]). An id refused on create also
+    /// gets the whole create rule ([`crate::layout::ID_RULE`]) in its
+    /// message.
+    #[error("invalid id {id:?}: {reason}{}", create_rule_suffix(*.create_rule))]
     InvalidId {
         /// The rejected id.
         id: String,
-        /// Why it was rejected.
+        /// Why it was rejected: the one clause it broke.
         reason: String,
+        /// Whether `reason` is a clause of the create rule
+        /// ([`crate::layout::validate_id`]) rather than of the looser
+        /// path-safety rule lookups go through.
+        create_rule: bool,
     },
 
     /// A new record has no id: the caller supplied none and the
@@ -101,6 +107,14 @@ pub enum Error {
         /// Why it was rejected.
         reason: String,
     },
+}
+
+fn create_rule_suffix(create_rule: bool) -> String {
+    if create_rule {
+        format!("; {}: choose another id", crate::layout::ID_RULE)
+    } else {
+        String::new()
+    }
 }
 
 impl Error {

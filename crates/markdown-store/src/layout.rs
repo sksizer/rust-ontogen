@@ -75,6 +75,43 @@ pub fn is_reserved_id(id: &str) -> bool {
     RESERVED_IDS.iter().any(|r| r.eq_ignore_ascii_case(id))
 }
 
+/// The Windows device names. Windows opens the device for a file named
+/// one of these, in any case and with any extension (`con.md`,
+/// `NUL.tar.gz`), so no record file created there can carry one as its
+/// stem.
+pub const DEVICE_NAMES: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2",
+    "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Whether `id`, or the part of it before its first `.`, is one of
+/// [`DEVICE_NAMES`], compared ASCII case-insensitively. Only the create
+/// rule refuses these: a `con.md` written on Linux or macOS stays
+/// listable and reachable there.
+///
+/// ```
+/// use markdown_store::layout::is_device_name;
+/// assert!(is_device_name("con") && is_device_name("nul.x") && is_device_name("COM1.backup"));
+/// assert!(!is_device_name("console") && !is_device_name("con-2") && !is_device_name("x.con"));
+/// ```
+pub fn is_device_name(id: &str) -> bool {
+    let stem = id.split('.').next().unwrap_or(id);
+    DEVICE_NAMES.iter().any(|d| d.eq_ignore_ascii_case(stem))
+}
+
+/// The whole create rule, as an [`Error::InvalidId`] from [`validate_id`]
+/// states it after the clause the id broke.
+pub const ID_RULE: &str = "an id is 1-200 bytes of a-z, 0-9, '.', '_', '~', '-', not starting or ending with '.', \
+                           and not a reserved name";
+
+/// Why an id in [`RESERVED_IDS`] is refused.
+pub const RESERVED_REASON: &str =
+    "is reserved: OKF (Open Knowledge Format) uses index and log for directory listings and update logs";
+
+/// Why [`validate_id`] refuses a device name (see [`is_device_name`]).
+pub const DEVICE_NAME_REASON: &str =
+    "is reserved: Windows has no file named con, prn, aux, nul, com1-com9 or lpt1-lpt9, with or without an extension";
+
 /// The longest id [`validate_id`] accepts, in bytes. With `.md` appended
 /// it stays under the 255-byte filename limit of common filesystems.
 pub const MAX_ID_LEN: usize = 200;
@@ -87,10 +124,12 @@ pub const MAX_STEM_LEN: usize = 252;
 /// Validate the id of a record being created.
 ///
 /// Valid: 1 to [`MAX_ID_LEN`] bytes of lowercase ASCII letters, digits,
-/// `.`, `_`, `~` and `-`, not starting or ending with `.`, and not an OKF
-/// reserved stem (`index`, `log`; see [`is_reserved_id`]). Every such id is
-/// a portable filename stem and passes [`validate_lookup_id`]. This is the
-/// id rule of ontogen's JSON:API wire contract (§8.2); the ontogen
+/// `.`, `_`, `~` and `-`, not starting or ending with `.`, not an OKF
+/// reserved stem (`index`, `log`; see [`is_reserved_id`]) and not a device
+/// name (see [`is_device_name`]). Every such id names a file on Linux,
+/// macOS and Windows, and passes [`validate_lookup_id`]. A reserved name is
+/// reported before a case error, since lowercasing cannot fix it. This is
+/// the id rule of ontogen's JSON:API wire contract (§8.2); the ontogen
 /// workspace tests that its own copy of the rule agrees with this one.
 ///
 /// ```
@@ -98,9 +137,10 @@ pub const MAX_STEM_LEN: usize = 252;
 /// assert!(validate_id("v1.2_notes~draft").is_ok());
 /// assert!(validate_id("Draft").is_err());
 /// assert!(validate_id("café").is_err());
+/// assert!(validate_id("nul.txt").is_err());
 /// ```
 pub fn validate_id(id: &str) -> Result<(), Error> {
-    let reject = |reason: &str| Err(Error::InvalidId { id: id.to_string(), reason: reason.into() });
+    let reject = |reason: &str| Err(Error::InvalidId { id: id.to_string(), reason: reason.into(), create_rule: true });
     if id.is_empty() {
         return reject("must not be empty");
     }
@@ -109,6 +149,9 @@ pub fn validate_id(id: &str) -> Result<(), Error> {
     }
     if is_reserved_id(id) {
         return reject(RESERVED_REASON);
+    }
+    if is_device_name(id) {
+        return reject(DEVICE_NAME_REASON);
     }
     if id.starts_with('.') {
         return reject("must not start with '.'");
@@ -145,8 +188,9 @@ pub fn validate_id(id: &str) -> Result<(), Error> {
 /// assert!(validate_lookup_id("index").is_err());
 /// ```
 pub fn validate_lookup_id(id: &str) -> Result<(), Error> {
-    let reject = |reason: &str| Err(Error::InvalidId { id: id.to_string(), reason: reason.into() });
-    validate_stem(id).map_err(|reason| Error::InvalidId { id: id.to_string(), reason })?;
+    let invalid = |reason: String| Error::InvalidId { id: id.to_string(), reason, create_rule: false };
+    let reject = |reason: &str| Err(invalid(reason.into()));
+    validate_stem(id).map_err(invalid)?;
     if id.trim().is_empty() {
         return reject("must not be whitespace-only");
     }
@@ -158,9 +202,6 @@ pub fn validate_lookup_id(id: &str) -> Result<(), Error> {
     }
     Ok(())
 }
-
-const RESERVED_REASON: &str = "is reserved: OKF (Open Knowledge Format) uses index.md and log.md for directory \
-                               listings and update logs; choose another id";
 
 /// Validate an entity directory segment, reported as
 /// [`Error::InvalidSegment`].
@@ -261,7 +302,11 @@ mod tests {
             );
         }
         let err = layout.record_path(Path::new("v"), "tasks", "index").unwrap_err();
-        assert!(err.to_string().contains("choose another id"), "the error says what to do: {err}");
+        assert_eq!(
+            err.to_string(),
+            format!("invalid id \"index\": {RESERVED_REASON}"),
+            "a lookup states no create rule"
+        );
         for fine in ["index-2", "logs", "changelog", "my-index"] {
             assert!(layout.record_path(Path::new("v"), "tasks", fine).is_ok(), "id {fine:?} must be accepted");
         }
@@ -302,13 +347,39 @@ mod tests {
         };
         assert_eq!(reason(""), "must not be empty");
         assert_eq!(reason(&"a".repeat(MAX_ID_LEN + 1)), "must be at most 200 bytes");
-        assert!(reason("Index").contains("choose another id"));
+        assert_eq!(reason("Index"), RESERVED_REASON, "reserved before uppercase");
+        assert_eq!(reason("CON"), DEVICE_NAME_REASON, "reserved before uppercase");
+        assert_eq!(reason("con."), DEVICE_NAME_REASON, "reserved before the trailing dot");
         assert_eq!(reason("."), "must not start with '.'");
         assert_eq!(reason("a."), "must not end with '.'");
         assert_eq!(reason("Ab"), "must not contain uppercase letters");
         assert_eq!(reason("é"), "must be ASCII");
         for charset in [" ", "a b", "a/b", "a\\b", "c:d", "x\0y"] {
             assert_eq!(reason(charset), "may contain only a-z, 0-9, '.', '_', '~' and '-'", "{charset:?}");
+        }
+    }
+
+    #[test]
+    fn a_create_rule_failure_states_the_rule_and_the_remedy() {
+        assert_eq!(
+            validate_id("Ship").unwrap_err().to_string(),
+            "invalid id \"Ship\": must not contain uppercase letters; an id is 1-200 bytes of a-z, 0-9, '.', '_', \
+             '~', '-', not starting or ending with '.', and not a reserved name: choose another id"
+        );
+    }
+
+    #[test]
+    fn device_names_are_refused_on_create_only() {
+        let layout = VaultLayout::PerEntityDir;
+        for device in ["con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9", "nul.x", "com1.backup", "Con.md"] {
+            match validate_id(device) {
+                Err(Error::InvalidId { reason, .. }) => assert_eq!(reason, DEVICE_NAME_REASON, "{device:?}"),
+                other => panic!("{device:?}: {other:?}"),
+            }
+            assert!(layout.record_path(Path::new("v"), "notes", device).is_ok(), "{device:?} stays reachable");
+        }
+        for fine in ["console", "con-2", "xcon", "a.con", "com", "com10", "lpt0", "nulls"] {
+            assert!(validate_id(fine).is_ok(), "{fine:?} must be accepted");
         }
     }
 

@@ -62,8 +62,10 @@ Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
   **ids cannot escape the vault** (path construction validates ids and
   segments — no separators, no `..`, no hidden-file stems).
 - **New ids are portable.** A create takes only lowercase `[a-z0-9._~-]`
-  ids of at most 200 bytes, with no leading or trailing `.`
-  (`layout::validate_id`); slugs fold accented Latin letters to ASCII and
+  ids of at most 200 bytes, with no leading or trailing `.`, that are not
+  OKF's `index` or `log` nor a Windows device name such as `con` or `nul.x`
+  (`layout::validate_id`), so every new record file can exist on Linux,
+  macOS and Windows; slugs fold accented Latin letters to ASCII and
   are cut to 190 bytes. Lookups only check path safety
   (`layout::validate_lookup_id`), so a hand-named `Draft.md` stays
   reachable.

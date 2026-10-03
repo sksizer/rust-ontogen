@@ -69,6 +69,7 @@ impl IdStrategy {
                     Err(Error::InvalidId {
                         id: String::new(),
                         reason: "IdStrategy::Uuid requires the `uuid` cargo feature".into(),
+                        create_rule: false,
                     })
                 }
             }
@@ -178,22 +179,27 @@ fn is_combining_mark(c: char) -> bool {
 }
 
 /// The ids a derived base is probed under, in order: `base`, then `base-2`,
-/// `base-3`, and so on without end. A reserved base is skipped, so a title
-/// that slugifies to `index` lands on `index-2`. No candidate is longer
-/// than [`crate::layout::MAX_ID_LEN`]: where `base` and its suffix would
-/// be, `base` is cut to fit, and a `-` the cut leaves at the end is trimmed.
+/// `base-3`, and so on without end. A reserved base or device name is
+/// skipped, so a title that slugifies to `index` lands on `index-2` and
+/// one that slugifies to `con` on `con-2`. The suffixed probes are never
+/// reserved when `base` has no `.`, as no [`slugify`] output does. No
+/// candidate is longer than [`crate::layout::MAX_ID_LEN`]: where `base` and
+/// its suffix would be, `base` is cut to fit, and a `-` the cut leaves at
+/// the end is trimmed.
 ///
 /// ```
 /// use markdown_store::id::candidates;
 /// let first: Vec<String> = candidates("draft").take(3).collect();
 /// assert_eq!(first, ["draft", "draft-2", "draft-3"]);
 /// assert_eq!(candidates("index").next().as_deref(), Some("index-2"));
+/// assert_eq!(candidates("con").next().as_deref(), Some("con-2"));
 /// ```
 pub fn candidates(base: &str) -> impl Iterator<Item = String> {
+    use crate::layout::{is_device_name, is_reserved_id};
     let max = crate::layout::MAX_ID_LEN;
     let base = base.to_string();
     let head = truncate_id(&base, max);
-    let first = (!crate::layout::is_reserved_id(head)).then(|| head.to_string());
+    let first = (!is_reserved_id(head) && !is_device_name(head)).then(|| head.to_string());
     first.into_iter().chain((2u64..).map(move |n| {
         let suffix = format!("-{n}");
         format!("{}{suffix}", truncate_id(&base, max - suffix.len()))
@@ -237,6 +243,13 @@ mod tests {
         let long = "b".repeat(300);
         let probes: Vec<String> = candidates(&long).take(2).collect();
         assert_eq!(probes, ["b".repeat(200), format!("{}-2", "b".repeat(198))]);
+        for title in ["Con", "NUL", "com1.backup", "Index"] {
+            let slug = slugify(title);
+            let first = candidates(&slug).next().unwrap();
+            crate::layout::validate_id(&first).unwrap_or_else(|e| panic!("{title:?} -> {first:?}: {e}"));
+        }
+        assert_eq!(candidates(&slugify("Con")).next().as_deref(), Some("con-2"));
+        assert_eq!(candidates(&slugify("com1.backup")).next().as_deref(), Some("com1-backup"));
     }
 
     #[test]

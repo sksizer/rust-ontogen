@@ -24,8 +24,7 @@ enum StoreError {
     IdRequired(&'static str, String),
     AlreadyExists(&'static str, String),
     ParentRequired(&'static str, String),
-    // Read only by `Debug`, in failure messages.
-    Backend(#[allow(dead_code)] String),
+    Backend(String),
 }
 
 impl PartialEq for StoreError {
@@ -679,6 +678,50 @@ async fn id_length<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 #[tokio::test]
 async fn ids_are_at_most_200_bytes_and_long_slugs_are_cut_alike() {
     parity!(id_length);
+}
+
+/// Windows device names are refused as provided ids, whole or before the
+/// first `.` and in any case; a title that slugs to one probes past it.
+async fn device_names<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let created_id = |v: R<Value>| v.map(|r| r["id"].as_str().unwrap().to_string());
+    let derive = |title: &str| item("", json!({ "title": title }));
+
+    for id in ["con", "nul.x", "com1.backup", "lpt9", "CON", "Aux.md"] {
+        let result = created_id(b.create_item(item(id, json!({}))).await);
+        let Err(StoreError::Backend(message)) = &result else {
+            panic!("[{}] create {id:?}: {result:?}", B::NAME);
+        };
+        assert!(
+            message.contains(&format!("invalid id {id:?}: is reserved: Windows has no file named con"))
+                && message.ends_with("and not a reserved name: choose another id"),
+            "[{}] the message states the clause and the rule: {message}",
+            B::NAME
+        );
+        t.record(format!("device name {id:?}"), &result).unwrap_err();
+        t.expect(&format!("{id:?} was not stored"), b.get_item(id).await, Err(StoreError::NotFound("Item", id.into())));
+    }
+    for id in ["console", "con-2x", "xcon", "a.con", "com10"] {
+        t.expect(
+            &format!("{id:?} is no device name"),
+            created_id(b.create_item(item(id, json!({}))).await),
+            Ok(id.into()),
+        );
+    }
+    t.expect("Con derives con-2", created_id(b.create_item(derive("Con")).await), Ok("con-2".into()));
+    t.expect("CON again derives con-3", created_id(b.create_item(derive("CON")).await), Ok("con-3".into()));
+    t.expect("nul.x slugs to nul-x", created_id(b.create_item(derive("nul.x")).await), Ok("nul-x".into()));
+    t.expect("LPT1 derives lpt1-2", created_id(b.create_item(derive("LPT1")).await), Ok("lpt1-2".into()));
+    t.expect(
+        "only the valid creates were stored",
+        listed_ids(b.list_items(None, None).await),
+        ok_ids(&["a.con", "com10", "con-2", "con-2x", "con-3", "console", "lpt1-2", "nul-x", "xcon"]),
+    );
+    t
+}
+
+#[tokio::test]
+async fn device_names_are_refused_and_derived_past_alike() {
+    parity!(device_names);
 }
 
 // ─── Lookups ────────────────────────────────────────────────────────────────
