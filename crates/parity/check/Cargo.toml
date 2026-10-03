@@ -1,0 +1,20 @@
+[package]
+name = "parity-check"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Runtime parity test: one schema on SQLite and on a markdown vault, asserting identical results (ADR 0006 §8)"
+license = "MIT"
+repository = "https://github.com/sksizer/rust-ontogen"
+# Never published: the runtime parity test lives in tests/.
+publish = false
+
+[dev-dependencies]
+parity-markdown = { path = "../markdown" }
+parity-markdown-provided = { path = "../markdown-provided" }
+parity-seaorm = { path = "../seaorm" }
+parity-seaorm-provided = { path = "../seaorm-provided" }
+serde = "1"
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }
