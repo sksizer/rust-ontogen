@@ -61,6 +61,12 @@ Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
 - **Creation never overwrites** (`create_record` → `AlreadyExists`), and
   **ids cannot escape the vault** (path construction validates ids and
   segments — no separators, no `..`, no hidden-file stems).
+- **New ids are portable.** A create takes only lowercase `[a-z0-9._~-]`
+  ids of at most 200 bytes, with no leading or trailing `.`
+  (`layout::validate_id`); slugs fold accented Latin letters to ASCII and
+  are cut to 190 bytes. Lookups only check path safety
+  (`layout::validate_lookup_id`), so a hand-named `Draft.md` stays
+  reachable.
 - **Byte-stable while untouched.** A parsed document renders as its original
   source byte-for-byte — comments, quoting style, spacing — until a
   *semantic* change occurs; mutators are change-aware, so no-op writes are

@@ -55,7 +55,8 @@ Choices phase 1 made that refine or depart from the epic text:
   filesystems alias `Index.md` onto `index.md`. A derived slug that would be
   reserved dedupes to `index-2`. Directory segments are unaffected.
 - **`markdown-store` adopts the OKF bundle profile as fixed policy** (reserved
-  stems in the walk and in `validate_id`). This is deliberate, so that a
+  stems in the walk, in the create rule `validate_id` and in the lookup
+  check `validate_lookup_id`). This is deliberate, so that a
   future extraction of the crate (for example into rust-markdown) knows the
   coupling is intentional rather than accidental.
 - **Flat `remove` of a record with unparseable frontmatter errors** rather

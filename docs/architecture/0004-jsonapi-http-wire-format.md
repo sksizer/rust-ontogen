@@ -185,10 +185,13 @@ only.
   a required-foreign-key `has_many` exists.
 - **Breaking for direct callers.** `gen_servers` and `gen_clients` gain a
   parameter, and `VaultHandle::new` loses one.
-- **Breaking for SeaORM data whose ids break the shared id rule.** That
-  covers an id that is empty, is `index` or `log` in any case, contains
-  `/`, `\`, `:` or NUL, starts with `.`, ends with `.` or a space, or is
-  whitespace-only.
+- **Breaking for SeaORM data whose ids break the shared id rule**
+  (wire contract §8.2: lowercase `[a-z0-9._~-]`, at most 200 bytes, not
+  `index` or `log`, no leading or trailing `.`). That covers an id that
+  contains an uppercase letter (`Draft`), a non-ASCII character (`café`),
+  a space, `/`, `\`, `:`, NUL or other punctuation outside `._~-`; that
+  is longer than 200 bytes; that is empty or `index` or `log` in any case;
+  or that starts or ends with `.`.
   - Such a row cannot be created again under that id: a create is `400`.
   - The server must serve every link it emits, so a path `{id}` is only a
     lookup key and is never validated. Existing rows are therefore still
@@ -199,8 +202,10 @@ only.
     and `/tasks/` is the collection path.
   - **Migration:** rename the rows with ids `.`, `..` or `""` before
     upgrading; nothing can reach them afterwards. Rename the other such
-    rows to valid ids before relying on create, and before moving the data
-    to a markdown vault, where those ids cannot exist.
+    rows (uppercase, non-ASCII or over 200 bytes included) to valid ids
+    before relying on create under those ids, and before moving the data
+    to a markdown vault, where a vault cannot create them and some of
+    them cannot exist as files.
 - **Breaking for SeaORM consumers with an integer field the parser files
   under `OptionEnum` or `Other`** (`u32`, `Option<u16>` and the like). The
   generated entity field becomes `i64` (ADR 0006 §4), and the generated

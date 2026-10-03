@@ -267,12 +267,15 @@ impl VaultHandle {
         }
     }
 
-    /// Create a record. Fails with [`Error::AlreadyExists`] if the file is
-    /// already present — creation never overwrites. The existence check and
-    /// write happen under the vault's write lock. (The check is racy against
-    /// writers in *other processes*; single-process ownership of a vault is
-    /// the documented stance.)
+    /// Create a record. `id` must pass the create rule
+    /// ([`crate::layout::validate_id`]), or it is [`Error::InvalidId`].
+    /// Fails with [`Error::AlreadyExists`] if the file is already present —
+    /// creation never overwrites. The existence check and write happen under
+    /// the vault's write lock. (The check is racy against writers in *other
+    /// processes*; single-process ownership of a vault is the documented
+    /// stance.)
     pub fn create_record(&self, dir_segment: &str, id: &str, doc: &Document) -> Result<(), Error> {
+        crate::layout::validate_id(id)?;
         let path = self.record_path(dir_segment, id)?;
         let _guard = self.lock();
         if fsops::exists(&path) {
@@ -292,9 +295,11 @@ impl VaultHandle {
     /// caller-supplied id always wins and is *not* de-duplicated — an
     /// explicit duplicate fails with [`Error::AlreadyExists`], because
     /// silently renaming an explicit id would be worse than failing. For
-    /// the same reason an explicit reserved id (`index`, `log`) is
-    /// [`Error::InvalidId`], while a *derived* one is treated as taken and
-    /// becomes `index-2`. `source_value` feeds [`IdStrategy::SlugFromField`].
+    /// the same reason an explicit id that breaks the create rule
+    /// ([`crate::layout::validate_id`]), a reserved one (`index`, `log`)
+    /// included, is [`Error::InvalidId`], while a *derived* reserved id is
+    /// treated as taken and becomes `index-2`. `source_value` feeds
+    /// [`IdStrategy::SlugFromField`].
     pub fn create_record_derived(
         &self,
         dir_segment: &str,
@@ -598,24 +603,19 @@ impl VaultHandle {
     ) -> Result<String, Error> {
         let had_provided = provided.is_some_and(|p| !p.trim().is_empty());
         let base = strategy.make_id(provided, source_value)?;
-        if had_provided {
-            crate::layout::validate_id(&base)?;
-            return Ok(base);
-        }
-        self.next_free_id(dir_segment, &base)
+        let id = if had_provided { base } else { self.next_free_id(dir_segment, &base)? };
+        crate::layout::validate_id(&id)?;
+        Ok(id)
     }
 
     /// Suffix search shared by the public previews and the locked create
     /// path. Named for how [`create_record_derived`] uses it — the *caller*
     /// is responsible for holding the lock when atomicity matters; the
-    /// probe itself is just existence checks. A reserved base counts as
-    /// taken, so a title that slugs to `index` lands on `index-2`.
+    /// probe itself is just existence checks. The probes are
+    /// [`crate::id::candidates`]: a reserved base counts as taken, so a
+    /// title that slugs to `index` lands on `index-2`.
     fn next_free_id(&self, dir_segment: &str, base: &str) -> Result<String, Error> {
-        if !crate::layout::is_reserved_id(base) && !self.record_exists(dir_segment, base)? {
-            return Ok(base.to_string());
-        }
-        for n in 2.. {
-            let candidate = format!("{base}-{n}");
+        for candidate in crate::id::candidates(base) {
             if !self.record_exists(dir_segment, &candidate)? {
                 return Ok(candidate);
             }
@@ -853,8 +853,13 @@ mod tests {
     #[test]
     fn listing_is_in_id_byte_order_even_across_nested_directories() {
         let (_dir, vault) = vault();
-        for id in ["z", "é", "a-b", "B", "a"] {
+        for id in ["z", "a-b", "a"] {
             vault.create_record("tasks", id, &doc(id)).unwrap();
+        }
+        // Stems no create may use (written by hand, or under an older rule)
+        // still list, in the same order.
+        for id in ["é", "B"] {
+            seed(&vault, "tasks", id, &format!("---\ntitle: {id}\n---\n"));
         }
         // A walk sorts by path, which puts `e` before `nested/d`; id order
         // does not care where a record sits.
@@ -888,6 +893,63 @@ mod tests {
             assert!(matches!(vault.create_record("tasks", id, &doc("x")), Err(Error::InvalidId { .. })), "{id:?}");
             assert!(matches!(vault.read_record_opt("tasks", id), Err(Error::InvalidId { .. })), "{id:?}");
         }
+    }
+
+    #[test]
+    fn creates_take_only_ids_the_create_rule_accepts() {
+        let (_dir, vault) = vault();
+        let tasks = vault.entity("tasks", "Task");
+        let too_long = "a".repeat(crate::layout::MAX_ID_LEN + 1);
+        for id in ["Draft", "café", "a b", "a+b", too_long.as_str()] {
+            let invalid = |r: Result<_, Error>| matches!(r, Err(Error::InvalidId { .. }));
+            assert!(invalid(vault.create_record("tasks", id, &doc("x")).map(|_| ())), "{id:?}");
+            assert!(invalid(vault.create_record_derived("tasks", &slug(), Some(id), None, &doc("x")).map(|_| ())));
+            assert!(invalid(tasks.create(&IdStrategy::Provided, Some(id), None, doc("x")).map(|_| ())), "{id:?}");
+            assert!(invalid(vault.make_record_id("tasks", &slug(), Some(id), None).map(|_| ())), "{id:?}");
+        }
+        assert_eq!(vault.list_ids("tasks").unwrap(), Vec::<String>::new(), "nothing was written");
+        let longest = "a".repeat(crate::layout::MAX_ID_LEN);
+        assert_eq!(tasks.create(&IdStrategy::Provided, Some(&longest), None, doc("x")).unwrap(), longest);
+    }
+
+    #[test]
+    fn a_long_title_derives_a_cut_slug_and_probes_within_the_limit() {
+        let (_dir, vault) = vault();
+        let title = "Word ".repeat(100);
+        let first = vault.create_record_derived("tasks", &slug(), None, Some(&title), &doc("x")).unwrap();
+        let second = vault.create_record_derived("tasks", &slug(), None, Some(&title), &doc("x")).unwrap();
+        assert_eq!(first.len(), crate::id::SLUG_MAX_LEN - 1);
+        assert_eq!(second, format!("{first}-2"));
+        assert_eq!(vault.list_ids("tasks").unwrap(), vec![first, second]);
+    }
+
+    #[test]
+    fn records_the_create_rule_refuses_stay_reachable() {
+        let (_dir, vault) = vault();
+        let long = "l".repeat(crate::layout::MAX_STEM_LEN);
+        for id in ["Draft", "café", "a b", long.as_str()] {
+            seed(&vault, "tasks", id, "---\ntitle: old\n---\n");
+        }
+        let tasks = vault.entity("tasks", "Task");
+        for id in ["Draft", "café", "a b", long.as_str()] {
+            assert_eq!(vault.read_record("tasks", id).unwrap().get("title").and_then(|v| v.as_str()), Some("old"));
+            tasks
+                .modify(id, |d| {
+                    d.set("title", "new");
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(tasks.read_opt(id).unwrap().unwrap().get("title").and_then(|v| v.as_str()), Some("new"));
+        }
+        assert_eq!(vault.list_ids("tasks").unwrap().len(), 4);
+        for id in ["Draft", "café", "a b", long.as_str()] {
+            tasks.remove(id).unwrap();
+            assert!(matches!(vault.read_record("tasks", id), Err(Error::NotFound { .. })), "{id:?}");
+        }
+        assert!(matches!(
+            vault.read_record("tasks", &"l".repeat(crate::layout::MAX_STEM_LEN + 1)),
+            Err(Error::InvalidId { .. })
+        ));
     }
 
     #[test]

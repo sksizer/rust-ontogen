@@ -302,10 +302,10 @@ fn ok_ids(list: &[&str]) -> R<Vec<String>> {
 
 // ─── Default order and pagination ───────────────────────────────────────────
 
-/// Ids chosen so byte order differs from case-folded, locale and length
-/// order, and so a prefix's separator decides: `-` < `.` < digits <
-/// uppercase < `_` < lowercase < multi-byte UTF-8.
-const ORDER_IDS: &[&str] = &["z", "é", "a", "B", "a-2", "a.b", "a2", "a_b", "Zeta", "alpha", "Ω", "a b", "10", "9"];
+/// Ids chosen so byte order differs from locale (punctuation-blind) and
+/// length order, and so a prefix's separator decides: `-` < `.` < digits <
+/// `_` < lowercase < `~`.
+const ORDER_IDS: &[&str] = &["z", "a~b", "a", "_x", "a-2", "a.b", "a2", "a_b", "~", "alpha", "-z", "z.z", "10", "9"];
 
 async fn default_order_and_pages<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     for id in ORDER_IDS {
@@ -314,7 +314,7 @@ async fn default_order_and_pages<B: Backend>(b: &B, mut t: Transcript) -> Transc
     }
     let mut expected: Vec<&str> = ORDER_IDS.to_vec();
     expected.sort_unstable(); // `str: Ord` is byte order
-    assert_eq!(expected, ["10", "9", "B", "Zeta", "a", "a b", "a-2", "a.b", "a2", "a_b", "alpha", "z", "é", "Ω"]);
+    assert_eq!(expected, ["-z", "10", "9", "_x", "a", "a-2", "a.b", "a2", "a_b", "alpha", "a~b", "z", "z.z", "~"]);
 
     t.expect("list", listed_ids(b.list_items(None, None).await), ok_ids(&expected));
     t.expect("count", b.count_items().await, Ok(expected.len() as u64));
@@ -430,19 +430,19 @@ async fn linkage_order<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 
     // has_many: id ascending, whatever order the children were written in.
     t.record("create p", &b.create_item(item("p", json!({}))).await).unwrap();
-    for child in ["c3", "c1", "é", "C2"] {
+    for child in ["c3", "c1", "c~", "c-2"] {
         t.record(format!("create {child}"), &b.create_item(item(child, json!({ "parent_id": "p" }))).await).unwrap();
     }
     let children = |v: R<Value>| v.map(|p| p["children"].clone());
-    t.expect("children of p", children(b.get_item("p").await), Ok(json!(["C2", "c1", "c3", "é"])));
+    t.expect("children of p", children(b.get_item("p").await), Ok(json!(["c-2", "c1", "c3", "c~"])));
 
     // Children listed on create are pointed at the new record.
     t.expect(
         "create q listing two of p's children",
-        children(b.create_item(item("q", json!({ "children": ["é", "c1"] }))).await),
-        Ok(json!(["c1", "é"])),
+        children(b.create_item(item("q", json!({ "children": ["c~", "c1"] }))).await),
+        Ok(json!(["c1", "c~"])),
     );
-    t.expect("p keeps the rest", children(b.get_item("p").await), Ok(json!(["C2", "c3"])));
+    t.expect("p keeps the rest", children(b.get_item("p").await), Ok(json!(["c-2", "c3"])));
 
     // A record that is its own parent is not its own child.
     t.expect(
@@ -541,7 +541,26 @@ async fn create_ids<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     t.expect("the original is untouched", b.get_item("dup").await.map(|r| r["title"].clone()), Ok(json!("First")));
 
     // An invalid provided id is a server-side bug: the backend's catch-all.
-    for id in ["a/b", "index", "Log", ".hidden", "trailing.", "trailing ", "c:d"] {
+    // Uppercase, non-ASCII and over-long ids break the create rule like
+    // path syntax does.
+    let too_long = "a".repeat(201);
+    for id in [
+        "a/b",
+        "index",
+        "Log",
+        ".hidden",
+        "trailing.",
+        "trailing ",
+        "c:d",
+        "B",
+        "Zeta",
+        "é",
+        "Ω",
+        "café",
+        "a b",
+        "a+b",
+        too_long.as_str(),
+    ] {
         let result = created_id(b.create_item(item(id, json!({}))).await);
         assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] create {id:?}: {result:?}", B::NAME);
         t.record(format!("invalid id {id:?}"), &result).unwrap_err();
@@ -577,13 +596,104 @@ async fn create_fills_and_refuses_ids_the_same_way() {
     parity!(create_ids);
 }
 
+/// The 200-byte limit, and slugs cut to fit it, on provided and derived ids.
+async fn id_length<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let created_id = |v: R<Value>| v.map(|r| r["id"].as_str().unwrap().to_string());
+    let derive = |title: &str| item("", json!({ "title": title }));
+
+    let longest = "x".repeat(200);
+    t.expect("a 200-byte id", created_id(b.create_item(item(&longest, json!({}))).await), Ok(longest.clone()));
+    t.expect("get the 200-byte id", created_id(b.get_item(&longest).await), Ok(longest.clone()));
+    let too_long = format!("{longest}x");
+    let result = created_id(b.create_item(item(&too_long, json!({}))).await);
+    assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] a 201-byte id: {result:?}", B::NAME);
+    t.record("a 201-byte id", &result).unwrap_err();
+    t.expect(
+        "the 201-byte id was not stored",
+        b.get_item(&too_long).await,
+        Err(StoreError::NotFound("Item", too_long)),
+    );
+
+    // A slug is cut to 190 bytes (a dangling `-` trimmed), whatever the
+    // title's length, and probing keeps the cut base whole.
+    let words = "Word ".repeat(100);
+    let cut = "word-".repeat(38).trim_end_matches('-').to_string();
+    assert_eq!(cut.len(), 189);
+    t.expect("a long title", created_id(b.create_item(derive(&words)).await), Ok(cut.clone()));
+    t.expect("the same long title", created_id(b.create_item(derive(&words)).await), Ok(format!("{cut}-2")));
+    t.expect(
+        "a longer title with the same first 190 bytes",
+        created_id(b.create_item(derive(&format!("{words} and more"))).await),
+        Ok(format!("{cut}-3")),
+    );
+    let run = "x".repeat(300);
+    t.expect("a 300-character title", created_id(b.create_item(derive(&run)).await), Ok("x".repeat(190)));
+    t.expect("again", created_id(b.create_item(derive(&run)).await), Ok(format!("{}-2", "x".repeat(190))));
+
+    // Latin letters fold to ASCII; anything else separates.
+    t.expect(
+        "a title with diacritics",
+        created_id(b.create_item(derive("Crème Brûlée à Łódź")).await),
+        Ok("creme-brulee-a-lodz".into()),
+    );
+    t.expect("Straße", created_id(b.create_item(derive("Straße")).await), Ok("strasse".into()));
+    t.expect("a title with no Latin letters", created_id(b.create_item(derive("日本 Ω 2")).await), Ok("2".into()));
+    let folded = "é".repeat(120);
+    t.expect("a long title of two-byte letters", created_id(b.create_item(derive(&folded)).await), Ok("e".repeat(120)));
+
+    let mut expected = vec![
+        "2".to_string(),
+        cut.clone(),
+        format!("{cut}-2"),
+        format!("{cut}-3"),
+        "creme-brulee-a-lodz".into(),
+        "e".repeat(120),
+        "strasse".into(),
+        longest,
+        "x".repeat(190),
+        format!("{}-2", "x".repeat(190)),
+    ];
+    expected.sort_unstable();
+    let listed = listed_ids(b.list_items(None, None).await);
+    assert_eq!(listed, Ok(expected.clone()), "[{}] list", B::NAME);
+    t.record("list", &listed).unwrap();
+    t
+}
+
+#[tokio::test]
+async fn ids_are_at_most_200_bytes_and_long_slugs_are_cut_alike() {
+    parity!(id_length);
+}
+
 // ─── Lookups ────────────────────────────────────────────────────────────────
 
 async fn lookups<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     t.record("create kept", &b.create_item(item("kept", json!({}))).await).unwrap();
     // Ids no record can have (markdown cannot even hold them; SeaORM never
-    // created them), and a valid id that was never created.
-    for id in ["index", "LOG", "a/b", ".hidden", "..", " ", "\t", "trailing.", "c:d", "never"] {
+    // created them); ids a lookup accepts but no create could have made
+    // (uppercase, non-ASCII, over 200 bytes; none of them a case variant of
+    // `kept`, which a case-insensitive filesystem would find); and a valid
+    // id that was never created.
+    let (long, longer) = ("l".repeat(201), "l".repeat(300));
+    for id in [
+        "index",
+        "LOG",
+        "a/b",
+        ".hidden",
+        "..",
+        " ",
+        "\t",
+        "trailing.",
+        "c:d",
+        "Ghost",
+        "NEVER",
+        "é",
+        "Ω",
+        "a b",
+        long.as_str(),
+        longer.as_str(),
+        "never",
+    ] {
         let not_found = StoreError::NotFound("Item", id.to_string());
         t.expect(&format!("get {id:?}"), b.get_item(id).await, Err(not_found.clone()));
         t.expect(&format!("update {id:?}"), b.update_item(id, json!({ "title": "x" })).await, Err(not_found.clone()));

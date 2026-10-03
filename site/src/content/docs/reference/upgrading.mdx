@@ -118,12 +118,31 @@ Before relying on create, rename existing rows whose ids break the rule. Rows wi
 
 Your `load_junction_ids` must return ids in the order they were written, because a `many_to_many` list keeps its written order. On SQLite that means adding `ORDER BY rowid` to the query. See [Junction Sync](/guides/store-layer/#junction-sync).
 
+## Record ids
+
+Ids being created follow a stricter rule, the same on both backends. It applies to a client id, an id `before_create` assigns, and a derived id.
+
+- An id consists only of lowercase ASCII letters, digits, `.`, `_`, `~` and `-`. It is at most 200 bytes, does not start or end with `.`, and is not `index` or `log`. An uppercase letter, a non-ASCII character, a space, other punctuation, or a length over 200 bytes now fails the create with the backend's error (`DbError` on SeaORM, `Md` on markdown). The rule used to allow all of these except `/`, `\`, `:` and NUL.
+- `SlugFromField` folds Latin letters with diacritics to ASCII instead of treating them as separators: `Crème brûlée` slugs to `creme-brulee` (it used to be `cr-me-br-l-e`), and `Straße` to `strasse`. Other non-ASCII characters still separate. A slug longer than 190 bytes is cut to 190, so a probe `base-N` stays within 200 bytes. Ids already stored are not rewritten; a new record with the same title gets the new slug.
+- Lookups do not change. A record whose id breaks the new rule (`Draft`, `café`, a 250-byte id) is still listed, readable, updatable and deletable, on SeaORM and in a vault.
+
+Migration: rename records whose ids break the rule before you rely on creating them under those ids, and before you move SeaORM data into a markdown vault. On SQLite, this lists them:
+
+```sql
+SELECT id FROM task
+WHERE id GLOB '*[^a-z0-9._~-]*' OR length(CAST(id AS BLOB)) > 200
+   OR id GLOB '.*' OR id GLOB '*.' OR lower(id) IN ('index', 'log') OR id = '';
+```
+
+In a vault, rename the file and update every `[[wikilink]]` and foreign key that names the old id.
+
 ## Markdown-store API
 
 - `VaultHandle::new(root, layout)` takes no strategy, and the `id_strategy()` accessor is removed. Drop the third argument, or use the generated `open_vault`.
 - `create_record_derived`, `make_record_id` and `EntityRecords::create` take `&IdStrategy` as their second argument. Pass the store's strategy on each create.
 - A missing id is the new `Error::IdRequired { reason }`. It used to be `InvalidId`.
-- `validate_id` rejects whitespace-only ids.
+- `layout::validate_id` is the create rule (see [Record ids](#record-ids)). `create_record` checks it too, so it refuses an id that `record_path` accepts. `record_path`, and every read, update and delete, use the looser path-safety check `layout::validate_lookup_id`, so a record whose file stem breaks the create rule stays reachable.
+- `id::candidates(base)` yields the probe sequence `base`, `base-2`, … that derived ids use. New constants: `layout::MAX_ID_LEN` (200), `layout::MAX_STEM_LEN` (252) and `id::SLUG_MAX_LEN` (190).
 
 ## Store behaviour
 

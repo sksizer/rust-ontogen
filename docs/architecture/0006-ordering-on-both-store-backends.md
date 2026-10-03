@@ -538,7 +538,11 @@ records into both and asserts identical id sequences for each of these:
 - a multi-key order with mixed directions;
 - `Option` fields holding nulls, and empty strings beside nulls;
 - strings that differ only in case, and non-ASCII strings (`"B"`, `"a"`,
-  `"é"`, `"z"`), which pin byte order. This is the case #178 says breaks;
+  `"é"`, `"z"`), which pin byte order. This is the case #178 says breaks.
+  Ids cannot hold them (wire contract §8.2), so the default order pins
+  byte order with the punctuation ids allow (`"a-2"`, `"a.b"`, `"a2"`,
+  `"a_b"`, `"a~b"`) and sortable string fields carry the case and
+  non-ASCII values;
 - a float `-0.0` beside `0.0`;
 - an `Option<u32>` field, which pins numeric order (`9 < 10`), holding a
   value above `i32::MAX` (3 000 000 000) to pin the widened column;

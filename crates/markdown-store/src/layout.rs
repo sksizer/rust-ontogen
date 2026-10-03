@@ -24,8 +24,10 @@ pub enum VaultLayout {
 }
 
 impl VaultLayout {
-    /// Resolve the file path for one record. Validates both `dir_segment`
-    /// and `id` (see [`validate_id`] / [`validate_segment`]).
+    /// Resolve the file path for one record. Checks `dir_segment` with
+    /// [`validate_segment`] and `id` with [`validate_lookup_id`], the
+    /// path-safety rule: a record is reachable under any stem that is safe
+    /// to join, including one the create rule ([`validate_id`]) refuses.
     ///
     /// ```
     /// use markdown_store::VaultLayout;
@@ -39,7 +41,7 @@ impl VaultLayout {
     /// # Ok::<(), markdown_store::Error>(())
     /// ```
     pub fn record_path(&self, vault_root: &Path, dir_segment: &str, id: &str) -> Result<PathBuf, Error> {
-        validate_id(id)?;
+        validate_lookup_id(id)?;
         match self {
             VaultLayout::PerEntityDir => {
                 validate_segment(dir_segment)?;
@@ -73,28 +75,92 @@ pub fn is_reserved_id(id: &str) -> bool {
     RESERVED_IDS.iter().any(|r| r.eq_ignore_ascii_case(id))
 }
 
-/// Validate a record id for use as a filename stem.
+/// The longest id [`validate_id`] accepts, in bytes. With `.md` appended
+/// it stays under the 255-byte filename limit of common filesystems.
+pub const MAX_ID_LEN: usize = 200;
+
+/// The longest stem [`validate_lookup_id`] lets through, in bytes: a
+/// 255-byte filename less `.md`. A longer stem names no file that can
+/// exist, so it is refused before the filesystem fails on it.
+pub const MAX_STEM_LEN: usize = 252;
+
+/// Validate the id of a record being created.
 ///
-/// Rejected: everything [`validate_segment`] rejects, a whitespace-only id,
-/// and the OKF reserved stems `index` and `log` (see [`is_reserved_id`]).
-/// This is the id rule of ontogen's JSON:API wire contract (§8.2); the
-/// ontogen workspace tests that its own copy of the rule agrees with this
-/// one.
+/// Valid: 1 to [`MAX_ID_LEN`] bytes of lowercase ASCII letters, digits,
+/// `.`, `_`, `~` and `-`, not starting or ending with `.`, and not an OKF
+/// reserved stem (`index`, `log`; see [`is_reserved_id`]). Every such id is
+/// a portable filename stem and passes [`validate_lookup_id`]. This is the
+/// id rule of ontogen's JSON:API wire contract (§8.2); the ontogen
+/// workspace tests that its own copy of the rule agrees with this one.
+///
+/// ```
+/// use markdown_store::layout::validate_id;
+/// assert!(validate_id("v1.2_notes~draft").is_ok());
+/// assert!(validate_id("Draft").is_err());
+/// assert!(validate_id("café").is_err());
+/// ```
 pub fn validate_id(id: &str) -> Result<(), Error> {
-    validate_stem(id).map_err(|reason| Error::InvalidId { id: id.to_string(), reason })?;
-    if id.trim().is_empty() {
-        return Err(Error::InvalidId { id: id.to_string(), reason: "must not be whitespace-only".into() });
+    let reject = |reason: &str| Err(Error::InvalidId { id: id.to_string(), reason: reason.into() });
+    if id.is_empty() {
+        return reject("must not be empty");
+    }
+    if id.len() > MAX_ID_LEN {
+        return reject("must be at most 200 bytes");
     }
     if is_reserved_id(id) {
-        return Err(Error::InvalidId {
-            id: id.to_string(),
-            reason: "is reserved: OKF (Open Knowledge Format) uses index.md and log.md for directory listings and update logs; \
-                     choose another id"
-                .into(),
-        });
+        return reject(RESERVED_REASON);
+    }
+    if id.starts_with('.') {
+        return reject("must not start with '.'");
+    }
+    if id.ends_with('.') {
+        return reject("must not end with '.'");
+    }
+    if id.bytes().any(|b| b.is_ascii_uppercase()) {
+        return reject("must not contain uppercase letters");
+    }
+    if !id.is_ascii() {
+        return reject("must be ASCII");
+    }
+    if !id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'~' | b'-')) {
+        return reject("may contain only a-z, 0-9, '.', '_', '~' and '-'");
     }
     Ok(())
 }
+
+/// Validate a record id for use as a filename stem when looking a record
+/// up: the path-safety rule every read, update and delete goes through.
+///
+/// Looser than [`validate_id`], so a record whose file was written by hand
+/// or under an older rule (`Draft.md`, `café.md`) stays reachable.
+/// Rejected: everything [`validate_segment`] rejects, a whitespace-only id,
+/// a stem longer than [`MAX_STEM_LEN`], and the OKF reserved stems `index`
+/// and `log` (see [`is_reserved_id`]).
+///
+/// ```
+/// use markdown_store::layout::validate_lookup_id;
+/// assert!(validate_lookup_id("Draft").is_ok());
+/// assert!(validate_lookup_id("café").is_ok());
+/// assert!(validate_lookup_id("../escape").is_err());
+/// assert!(validate_lookup_id("index").is_err());
+/// ```
+pub fn validate_lookup_id(id: &str) -> Result<(), Error> {
+    let reject = |reason: &str| Err(Error::InvalidId { id: id.to_string(), reason: reason.into() });
+    validate_stem(id).map_err(|reason| Error::InvalidId { id: id.to_string(), reason })?;
+    if id.trim().is_empty() {
+        return reject("must not be whitespace-only");
+    }
+    if id.len() > MAX_STEM_LEN {
+        return reject("must be at most 252 bytes (a 255-byte filename less `.md`)");
+    }
+    if is_reserved_id(id) {
+        return reject(RESERVED_REASON);
+    }
+    Ok(())
+}
+
+const RESERVED_REASON: &str = "is reserved: OKF (Open Knowledge Format) uses index.md and log.md for directory \
+                               listings and update logs; choose another id";
 
 /// Validate an entity directory segment, reported as
 /// [`Error::InvalidSegment`].
@@ -206,6 +272,44 @@ mod tests {
         let layout = VaultLayout::PerEntityDir;
         assert_eq!(layout.record_path(Path::new("v"), "log", "entry-1").unwrap(), PathBuf::from("v/log/entry-1.md"));
         assert_eq!(layout.entity_dir(Path::new("v"), "index").unwrap(), PathBuf::from("v/index"));
+    }
+
+    #[test]
+    fn lookups_reach_stems_the_create_rule_refuses() {
+        let layout = VaultLayout::PerEntityDir;
+        let long = "x".repeat(MAX_STEM_LEN);
+        for stem in ["Draft", "café", "a b", "a+b", "Ω", long.as_str()] {
+            assert!(validate_id(stem).is_err(), "{stem:?} is not creatable");
+            assert_eq!(
+                layout.record_path(Path::new("v"), "notes", stem).unwrap(),
+                PathBuf::from(format!("v/notes/{stem}.md")),
+                "{stem:?} is reachable"
+            );
+        }
+        let too_long = "x".repeat(MAX_STEM_LEN + 1);
+        assert!(matches!(layout.record_path(Path::new("v"), "notes", &too_long), Err(Error::InvalidId { .. })));
+    }
+
+    #[test]
+    fn the_create_rule() {
+        let longest = "a".repeat(MAX_ID_LEN);
+        for ok in ["a", "0", "v1.2-notes", "a_b", "a~b", "index-2", longest.as_str()] {
+            assert!(validate_id(ok).is_ok(), "{ok:?} must be accepted");
+        }
+        let reason = |id: &str| match validate_id(id) {
+            Err(Error::InvalidId { reason, .. }) => reason,
+            other => panic!("{id:?}: {other:?}"),
+        };
+        assert_eq!(reason(""), "must not be empty");
+        assert_eq!(reason(&"a".repeat(MAX_ID_LEN + 1)), "must be at most 200 bytes");
+        assert!(reason("Index").contains("choose another id"));
+        assert_eq!(reason("."), "must not start with '.'");
+        assert_eq!(reason("a."), "must not end with '.'");
+        assert_eq!(reason("Ab"), "must not contain uppercase letters");
+        assert_eq!(reason("é"), "must be ASCII");
+        for charset in [" ", "a b", "a/b", "a\\b", "c:d", "x\0y"] {
+            assert_eq!(reason(charset), "may contain only a-z, 0-9, '.', '_', '~' and '-'", "{charset:?}");
+        }
     }
 
     #[test]

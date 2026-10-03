@@ -1,8 +1,9 @@
 //! Record id derivation: how a new record gets a filename stem.
 //!
 //! Ids double as filenames (`<dir>/<id>.md`), so derivation and validation
-//! live next to each other: everything produced here passes the path-safety
-//! rules in [`crate::layout`] by construction.
+//! live next to each other: a non-empty slug that is not reserved, and
+//! every probe [`candidates`] yields, passes the create rule
+//! ([`crate::layout::validate_id`]) by construction.
 
 use crate::error::Error;
 
@@ -75,31 +76,141 @@ impl IdStrategy {
     }
 }
 
-/// Slugify a string into a filename-safe id: ASCII-lowercased alphanumerics,
-/// runs of everything else collapsed to single hyphens, no leading/trailing
-/// hyphen. Non-ASCII characters are treated as separators — for vaults whose
-/// titles need richer ids, supply the id explicitly instead.
+/// The longest id [`slugify`] returns, in bytes. The 10 bytes it leaves
+/// under [`crate::layout::MAX_ID_LEN`] hold a `-N` probe suffix for every N
+/// below one billion, so every probe of a slug keeps the slug's whole text.
+pub const SLUG_MAX_LEN: usize = 190;
+
+/// Slugify a string into an id.
+///
+/// ASCII letters are lowercased; Latin letters with diacritics and Latin
+/// ligatures are folded to ASCII (see [`fold_latin`]); combining marks are
+/// dropped, so a decomposed `e` + acute folds like `é`; every run of
+/// anything else becomes one `-`; leading and trailing `-` are trimmed. A
+/// result longer than [`SLUG_MAX_LEN`] is cut there, and a `-` the cut
+/// leaves at the end is trimmed. The result is empty when the input has
+/// nothing to keep.
 ///
 /// ```
-/// assert_eq!(markdown_store::id::slugify("Ship the Parser!"), "ship-the-parser");
-/// assert_eq!(markdown_store::id::slugify("  --Weird__ input--  "), "weird-input");
-/// assert_eq!(markdown_store::id::slugify("***"), "");
+/// use markdown_store::id::slugify;
+/// assert_eq!(slugify("Ship the Parser!"), "ship-the-parser");
+/// assert_eq!(slugify("  --Weird__ input--  "), "weird-input");
+/// assert_eq!(slugify("Crème brûlée à Łódź"), "creme-brulee-a-lodz");
+/// assert_eq!(slugify("Straße"), "strasse");
+/// assert_eq!(slugify("***"), "");
 /// ```
 pub fn slugify(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut pending_hyphen = false;
+    let mut buf = [0u8; 4];
     for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            if pending_hyphen && !out.is_empty() {
-                out.push('-');
-            }
-            pending_hyphen = false;
-            out.push(c.to_ascii_lowercase());
+        let text: &str = if c.is_ascii_alphanumeric() {
+            c.to_ascii_lowercase().encode_utf8(&mut buf)
+        } else if let Some(folded) = fold_latin(c) {
+            folded
         } else {
-            pending_hyphen = true;
+            if !is_combining_mark(c) {
+                pending_hyphen = true;
+            }
+            continue;
+        };
+        if pending_hyphen && !out.is_empty() {
+            out.push('-');
         }
+        pending_hyphen = false;
+        out.push_str(text);
+    }
+    if out.len() > SLUG_MAX_LEN {
+        out.truncate(SLUG_MAX_LEN);
+        out.truncate(out.trim_end_matches('-').len());
     }
     out
+}
+
+/// The lowercase ASCII spelling of a letter from the Latin-1 Supplement or
+/// Latin Extended-A block: a letter with a diacritic, or a ligature. `None`
+/// for anything else, including those blocks' symbols (`×`, `÷`, …).
+pub fn fold_latin(c: char) -> Option<&'static str> {
+    Some(match c {
+        // Latin-1 Supplement
+        'À'..='Å' | 'à'..='å' => "a",
+        'Æ' | 'æ' => "ae",
+        'Ç' | 'ç' => "c",
+        'È'..='Ë' | 'è'..='ë' => "e",
+        'Ì'..='Ï' | 'ì'..='ï' => "i",
+        'Ð' | 'ð' => "d",
+        'Ñ' | 'ñ' => "n",
+        'Ò'..='Ö' | 'Ø' | 'ò'..='ö' | 'ø' => "o",
+        'Ù'..='Ü' | 'ù'..='ü' => "u",
+        'Ý' | 'ý' | 'ÿ' => "y",
+        'Þ' | 'þ' => "th",
+        'ß' => "ss",
+        // Latin Extended-A (U+0100..=U+017F): every code point is a letter
+        'Ā'..='ą' => "a",
+        'Ć'..='č' => "c",
+        'Ď'..='đ' => "d",
+        'Ē'..='ě' => "e",
+        'Ĝ'..='ģ' => "g",
+        'Ĥ'..='ħ' => "h",
+        'Ĩ'..='ı' => "i",
+        'Ĳ' | 'ĳ' => "ij",
+        'Ĵ' | 'ĵ' => "j",
+        'Ķ'..='ĸ' => "k",
+        'Ĺ'..='ł' => "l",
+        'Ń'..='ŋ' => "n",
+        'Ō'..='ő' => "o",
+        'Œ' | 'œ' => "oe",
+        'Ŕ'..='ř' => "r",
+        'Ś'..='š' | 'ſ' => "s",
+        'Ţ'..='ŧ' => "t",
+        'Ũ'..='ų' => "u",
+        'Ŵ' | 'ŵ' => "w",
+        'Ŷ'..='Ÿ' => "y",
+        'Ź'..='ž' => "z",
+        _ => return None,
+    })
+}
+
+/// Combining Diacritical Marks (U+0300..=U+036F): the accents of a
+/// decomposed (NFD) letter.
+fn is_combining_mark(c: char) -> bool {
+    ('\u{300}'..='\u{36f}').contains(&c)
+}
+
+/// The ids a derived base is probed under, in order: `base`, then `base-2`,
+/// `base-3`, and so on without end. A reserved base is skipped, so a title
+/// that slugifies to `index` lands on `index-2`. No candidate is longer
+/// than [`crate::layout::MAX_ID_LEN`]: where `base` and its suffix would
+/// be, `base` is cut to fit, and a `-` the cut leaves at the end is trimmed.
+///
+/// ```
+/// use markdown_store::id::candidates;
+/// let first: Vec<String> = candidates("draft").take(3).collect();
+/// assert_eq!(first, ["draft", "draft-2", "draft-3"]);
+/// assert_eq!(candidates("index").next().as_deref(), Some("index-2"));
+/// ```
+pub fn candidates(base: &str) -> impl Iterator<Item = String> {
+    let max = crate::layout::MAX_ID_LEN;
+    let base = base.to_string();
+    let head = truncate_id(&base, max);
+    let first = (!crate::layout::is_reserved_id(head)).then(|| head.to_string());
+    first.into_iter().chain((2u64..).map(move |n| {
+        let suffix = format!("-{n}");
+        format!("{}{suffix}", truncate_id(&base, max - suffix.len()))
+    }))
+}
+
+/// `s` cut to at most `max` bytes on a char boundary, less any `-` the cut
+/// leaves at the end.
+fn truncate_id(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut cut = max;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    s[..cut].trim_end_matches('-')
 }
 
 #[cfg(test)]
@@ -110,9 +221,22 @@ mod tests {
     fn slugify_basics() {
         assert_eq!(slugify("Hello World"), "hello-world");
         assert_eq!(slugify("v1.2 release notes"), "v1-2-release-notes");
-        assert_eq!(slugify("Äpfel und Birnen"), "pfel-und-birnen");
+        assert_eq!(slugify("Äpfel und Birnen"), "apfel-und-birnen");
         assert_eq!(slugify(""), "");
         assert_eq!(slugify("a"), "a");
+    }
+
+    #[test]
+    fn slugs_and_their_probes_are_creatable() {
+        let slug = slugify(&"Grüße aus Köln ".repeat(30));
+        assert_eq!(slug.len(), SLUG_MAX_LEN);
+        assert!(slug.ends_with("-koln-grusse-aus-kol"), "{slug}");
+        for candidate in candidates(&slug).take(12) {
+            crate::layout::validate_id(&candidate).unwrap();
+        }
+        let long = "b".repeat(300);
+        let probes: Vec<String> = candidates(&long).take(2).collect();
+        assert_eq!(probes, ["b".repeat(200), format!("{}-2", "b".repeat(198))]);
     }
 
     #[test]

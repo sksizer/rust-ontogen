@@ -57,7 +57,7 @@ impl Default for WalkOptions {
 /// OKF's reserved `index` and `log` files (any configured extension, any
 /// depth, any ASCII case) are skipped: they are directory listings and
 /// update logs, not records, and their ids could never be read back anyway
-/// (see [`crate::layout::validate_id`]).
+/// (see [`crate::layout::validate_lookup_id`]).
 ///
 /// A missing directory yields `Ok(vec![])` — a store whose entity directory
 /// hasn't been created yet is empty, not broken.
