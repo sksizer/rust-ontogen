@@ -58,7 +58,7 @@ The `output_dir` field controls where generated code lands. The rest describe th
 | Field | Type | Description |
 |-------|------|-------------|
 | `output_dir` | `PathBuf` | Output directory for the generated per-entity frontmatter modules. |
-| `vault_root` | `PathBuf` | Where the `.md` records live at runtime, relative to the consumer crate root (e.g., `data/vault`). |
+| `vault_root` | `PathBuf` | Where the `.md` records live at runtime, relative paths resolve against the program's working directory (e.g., `data/vault`). |
 | `layout` | `MarkdownLayout` | On-disk arrangement of record files under the vault root. |
 | `id_strategy` | `IdStrategy` | How a new record derives an id when the caller didn't supply one. A derived id that collides with a [reserved id](/guides/markdown-backend/#reserved-ids) is deduped. |
 | `list_cap` | `usize` | Hard cap on records parsed per `list()` before the runtime errors -- ADR 0001's explicit scale ceiling. |

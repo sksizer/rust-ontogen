@@ -108,35 +108,60 @@ OKF artifacts. Both are off by default; with both off, vault bytes do not
 change. Canonical user documentation stays in the markdown backend guide.
 
 - **Config placement.** `MarkdownIoConfig` (and `MarkdownIoOptions`) gain
-  `okf: OkfOptions { index, generated_by }`. `gen_markdown_io` emits a
-  `vault.rs` with `VAULT_ROOT` and `open_vault(root)`, which builds the
-  `VaultHandle` with the layout, id strategy, list cap and OKF options from the
-  config. This makes the build configuration the single source for vault
+  `okf: OkfOptions { index, generated_by }`. `gen_markdown_io` emits
+  `VAULT_ROOT` and `open_vault(root)` into the generated `mod.rs`, which builds
+  the `VaultHandle` with the layout, id strategy, list cap and OKF options from
+  the config. This makes the build configuration the single source for vault
   settings that every consumer previously repeated by hand in
-  `VaultHandle::new(...)`, where they could drift from the build. The options
-  are not carried on `MarkdownIoOutput`: `vault.rs` is emitted straight from
-  the config, `gen_store` never builds a vault, and the parity test constructs
-  `MarkdownIoOutput` literally. The runtime knobs are also builder methods
-  (`with_okf_index`, `with_generated_by`, `with_clock`) so tests can use them.
+  `VaultHandle::new(...)`, where they could drift from the build.
+  `MarkdownIoOutput` carries only what the store emitter reads; the store
+  emitter needs none of the vault settings and the vault constructor is their
+  one consumer, so `open_vault` reads the config directly. `open_vault` emits
+  `.with_okf(..)` only when an option is on. A relative `vault_root` resolves
+  against the program's working directory.
+- **Runtime seam.** The extractable `markdown-store` crate sees one struct,
+  `OkfPolicy { index, generated_by, clock }` (default: off, off,
+  `SystemTime::now`), set with `VaultHandle::with_okf` and read with `okf()`.
+  It knows nothing of the build-time `OkfOptions`.
 - **Index files (§8).** The root and every directory holding records carry an
   `index.md`: type-grouped `# <type>` sections sorted by name, then `# Untyped`,
   then `# Directories`; the root declares `okf_version: "0.2"`. The format is
-  byte-stable so regeneration can skip unchanged files.
+  byte-stable so regeneration can skip unchanged files. `# Untyped` and
+  `# Directories` are the store's own headings: a record type equal to either
+  (or either followed by ` (type)` suffixes) is headed with ` (type)` appended.
+  Every ASCII punctuation character in titles, id fallbacks, descriptions, type
+  headings and directory link text is backslash-escaped (CommonMark §2.4);
+  link URLs stay percent-encoded. A record that cannot be read or parsed is
+  listed under Untyped, titled by its id.
 - **Regeneration.** After every real write, the store regenerates the record's
   directory and each ancestor under the vault write lock, atomically and only
-  if the bytes change. A no-op update regenerates nothing. An emptied directory
-  loses its index. `rebuild_indexes()` is the repair path and how seed vaults
-  get their indexes.
-- **Crash semantics.** The record write and the index writes are separate
-  atomic renames. A crash between them leaves a stale but valid index, repaired
-  by the next real write in that directory or by `rebuild_indexes()`. An index
-  write error after the record write returns `Err` with the record written.
-  Atomic multi-file commits were rejected: the backend already offers
+  if the bytes change. A no-op update regenerates nothing. A write parses the
+  records directly in each directory on the path to the root (under Flat, every
+  record in the vault); subdirectory probes stop at the first record.
+  `rebuild_indexes()` is the repair path and how seed vaults get their indexes.
+- **Ownership.** With `index` on, the store overwrites `index.md` in every
+  directory holding records, including a hand-written one. It removes an
+  `index.md` from a record-less directory (in `rebuild_indexes()`, or when a
+  write empties the directory) only when the file has exactly the store's own
+  shape: optional root `okf_version`-only frontmatter, then `# heading`
+  sections of `* [text](link)` entries with an optional ` - description`,
+  linking record files or `dir/`. Any other `index.md`, such as a hand-written
+  Obsidian note, is left alone.
+- **Failure semantics.** The record write and the index writes are separate
+  atomic renames. The index refresh is non-fatal: `create`, `modify` and
+  `remove` return `Ok` once the record is committed. A failed refresh marks the
+  directory stale, exposed by `VaultHandle::stale_indexes()` (sorted `index.md`
+  paths, in memory, shared by clones); a later successful refresh of that
+  directory or a successful `rebuild_indexes()` clears it. `rebuild_indexes()`
+  itself returns `Err` on the first index it cannot write, being an explicit
+  request. A crash between the record rename and the index rename is not
+  recorded: the index is stale but valid until the next real write there or a
+  rebuild. Atomic multi-file commits were rejected: the backend already offers
   single-record atomicity only (ADR 0001 amendment 6).
 - **Generated stamps (§5.2).** With `generated_by` set, every real write stamps
   `generated: { by, at }` (UTC, second precision). Real means the document is
   dirty after the mutation and `type` stamping, so a no-op update stays a
-  no-op. All write paths share one hook. The clock is injectable.
+  no-op. All write paths share one hook. The clock is injectable through `OkfPolicy`.
 - **Actor validation (§7).** `generated_by` must be `<producer>/<version>` or
   `process:<id>`, checked at build time. `human:<id>` is rejected: the writer
   is a program, and OKF trust tiers read `human:` as a person, so a program
@@ -144,8 +169,6 @@ change. Canonical user documentation stays in the markdown backend guide.
 - **`generated` key.** While `generated_by` is set, a schema field whose
   effective key is `generated` is a build error (the generator owns it);
   with the option off the phase 1 warning stands.
-- **`vault` entity name.** An entity whose snake-case name is `vault` is a build
-  error, since its module would collide with the emitted `vault.rs`.
 - **Demonstrator.** `examples/notes-kb` turns both knobs on and commits its
   index files; `tests/okf_conformance.rs` guards them against drift and runs the
   conformance checker over every example vault.

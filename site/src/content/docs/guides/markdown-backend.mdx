@@ -186,27 +186,45 @@ MarkdownIoOptions {
 
 ### The generated `open_vault`
 
-`gen_markdown_io` also writes `vault.rs` into its output directory. It holds
-the vault's settings from the build configuration, so the build script is the
-one place they are set. Consumers used to repeat the layout, id strategy and
-list cap by hand in `VaultHandle::new(...)`, and could drift from the build.
+`gen_markdown_io` also emits `open_vault` and `VAULT_ROOT` into the generated
+`mod.rs` of its output directory. They hold the vault's settings from the
+build configuration, so the build script is the one place they are set.
+Consumers used to repeat the layout, id strategy and list cap by hand in
+`VaultHandle::new(...)`, and could drift from the build.
 
 ```rust
-use my_app::persistence::markdown::generated::vault::{VAULT_ROOT, open_vault};
+use my_app::persistence::markdown::generated::{VAULT_ROOT, open_vault};
 
 let vault = open_vault(VAULT_ROOT);   // tests pass a tempdir instead
 ```
 
-`VAULT_ROOT` is the configured `vault_root`, relative to the consumer crate
-root; the caller decides the runtime path. `open_vault(root)` returns a
+`VAULT_ROOT` is the configured `vault_root`. A relative path resolves against
+the working directory the program runs from, not the crate root, so a binary
+started elsewhere needs an absolute path or a matching working directory. The
+caller decides the runtime path. `open_vault(root)` returns a
 `markdown_store::VaultHandle` with the layout, id strategy, list cap and OKF
-options applied. The settings are not carried on `MarkdownIoOutput`: the file
-is emitted straight from the config, since `gen_store` never builds a vault.
-Hand-built handles, in tests for example, can use the same switches as builder
-methods: `with_okf_index`, `with_generated_by` and `with_clock`.
+options applied; it calls `.with_okf(..)` only when an OKF option is on.
 
-An entity whose snake-case name is `vault` is a build error, because its
-module would collide with `vault.rs`. Pick another type name.
+The store emitter needs none of these settings, and the vault constructor is
+their one consumer, so `open_vault` is generated straight from the config
+rather than from `MarkdownIoOutput`.
+
+A hand-built handle, in a test for example, sets the same runtime policy with
+one struct:
+
+```rust
+use markdown_store::OkfPolicy;
+
+let vault = VaultHandle::new(root, layout, id_strategy).with_list_cap(list_cap)
+    .with_okf(OkfPolicy {
+        index: true,
+        generated_by: Some("my-app/0.1.0".into()),
+        clock: std::sync::Arc::new(|| fixed_time),   // default: SystemTime::now
+    });
+```
+
+`OkfPolicy::default()` is index off, no stamp, `SystemTime::now`. `okf()` reads
+the policy back.
 
 ### Index files
 
@@ -238,13 +256,19 @@ Format rules, all byte-stable (LF, trailing newline):
 
 - One `# <type>` section per distinct string `type`, sorted by type name;
   records without one go last under `# Untyped`; `# Directories` comes after
-  the record sections. Sections are separated by one blank line.
+  the record sections. Sections are separated by one blank line. `# Untyped`
+  and `# Directories` belong to the store: a record type equal to either (or
+  either followed by ` (type)` suffixes) is headed with ` (type)` appended,
+  so no type takes those headings.
 - An entry is `* [<title>](<file name>)`, plus ` - <description>` when the
   record has a non-empty string `description`. The title is the frontmatter
-  `title`, else the id. Whitespace in descriptions collapses to single spaces,
-  link text escapes `\`, `[` and `]`, and URLs are percent-encoded. Entries
-  sort by id. A record whose frontmatter does not parse is listed as untyped,
-  titled by its id, so a hand-broken file never blocks writes.
+  `title`, else the id. Whitespace in descriptions collapses to single spaces.
+  Every ASCII punctuation character in titles, id fallbacks, descriptions,
+  type headings and directory link text is backslash-escaped (CommonMark
+  §2.4), so `c-sweep` appears as `c\-sweep`; link URLs are percent-encoded.
+  Entries sort by id. A record that cannot be read (non-UTF-8, say) or parsed
+  is listed under Untyped, titled by its id, so a hand-broken file never
+  blocks writes.
 - The keys read are the frontmatter keys `title` and `description`, not Rust
   field names.
 - Gitignore and hidden-file rules apply exactly as for listing.
@@ -253,25 +277,41 @@ Format rules, all byte-stable (LF, trailing newline):
 record, a delete, or a side write such as a parent re-link) the store
 regenerates the index of that record's directory and of each ancestor up to
 the root, under the vault write lock. An index is rewritten atomically and
-only if its bytes would change, so a write that alters nothing in an index
-leaves it untouched. A no-op update is not a real write and regenerates
-nothing. When a directory's last record goes, its `index.md` is removed and
-the parent stops linking it. A hand-written `index.md` in a directory the
-store writes to is replaced.
+only if its bytes would change. A no-op update is not a real write and
+regenerates nothing. When a directory's last record goes, the parent stops
+linking it.
+
+**Ownership.** The store overwrites `index.md` in every directory that holds
+records, including a hand-written one. It removes an `index.md` from a
+directory with no records (in `rebuild_indexes()`, or when a write empties the
+directory) only when the file has exactly the store's own shape: optional root
+frontmatter holding only `okf_version`, then `# heading` sections of
+`* [text](link)` entries, each with an optional ` - description`, linking
+record files or `dir/`. Any other `index.md`, such as a hand-written Obsidian
+note, is left alone.
+
+**Failure is non-fatal.** The index refresh runs after the record is
+committed, and `create`, `modify` and `remove` return `Ok` once it is. If the
+refresh fails, that directory is marked stale. `VaultHandle::stale_indexes()`
+returns the stale `index.md` paths, sorted; the list lives in memory and is
+shared by clones of the handle. A later successful refresh of that directory,
+or a successful `rebuild_indexes()`, clears the mark. A crash between the
+record rename and the index rename is not recorded (the list is in memory):
+the index is stale but valid until the next real write there or a rebuild.
 
 **Repair.** `VaultHandle::rebuild_indexes()` regenerates every index in the
-vault and removes stale ones. It is how a seed vault gets its first indexes
-(turning the option on does not rewrite an existing vault by itself) and the
-repair path after hand edits. It works with the option off too, as an explicit
-request; later writes maintain indexes only when the option is on.
+vault and removes the store's own stale ones (see ownership above). It is how a
+seed vault gets its first indexes (turning the option on does not rewrite an
+existing vault by itself) and the repair path after hand edits or a stale
+mark. It works with the option off too, as an explicit request, and because it
+is explicit it returns `Err` on the first index it cannot write. Later writes
+maintain indexes only when the option is on.
 
-**Crash and error semantics.** The record write and each index write are
-separate atomic renames. A crash between them leaves a stale but valid index,
-which the next real write in that directory or `rebuild_indexes()` repairs. If
-an index write fails after the record write succeeded, the call returns `Err`
-even though the record is on disk. Regenerating an index parses that
-directory's records, so a write costs O(N) in that directory, in line with the
-backend's small-N stance; the index walk is not subject to `list_cap`.
+**Cost.** A write parses the records directly in each directory on the path to
+the root, so it is O(N) per directory, in line with the backend's small-N
+stance. Under `MarkdownLayout::Flat` that is every record in the vault.
+Subdirectory probes stop at the first record. The index walk is not subject to
+`list_cap`.
 
 ### Generated stamps
 
@@ -295,8 +335,8 @@ generated:
   appended. `type` stays the first key.
 - All write paths share one hook, so the rules cannot differ between the typed
   and untyped APIs.
-- The clock defaults to `SystemTime::now` and is injectable with
-  `VaultHandle::with_clock` for deterministic tests.
+- The clock defaults to `SystemTime::now` and is injectable through
+  `OkfPolicy::clock` (set with `VaultHandle::with_okf`) for deterministic tests.
 - Records that already exist keep no stamp until their next real write.
 
 **The actor.** `generated_by` is validated at build time against OKF §7. It
@@ -351,7 +391,7 @@ Construct the vault at startup with the generated [`open_vault`](#the-generated-
 which applies the settings from your build script:
 
 ```rust
-use my_app::persistence::markdown::generated::vault::{VAULT_ROOT, open_vault};
+use my_app::persistence::markdown::generated::{VAULT_ROOT, open_vault};
 
 let state = AppState::new(open_vault(VAULT_ROOT));
 ```

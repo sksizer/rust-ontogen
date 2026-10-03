@@ -33,7 +33,7 @@ let md = ontogen::gen_markdown_io(&schema, &ontogen::MarkdownIoConfig {
 The vault fields describe the store's runtime shape and flow into the
 returned `MarkdownIoOutput`; the generated files land in `output_dir`.
 
-The same config also drives `vault.rs`, which emits `open_vault` and
+The same config also drives the generated `mod.rs`, which emits `open_vault` and
 `VAULT_ROOT` so consumers open the vault with the build's settings; see [the
 generated `open_vault`](/guides/markdown-backend/#the-generated-open_vault).
 `okf` switches on generated [`index.md` files](/guides/markdown-backend/#index-files)
