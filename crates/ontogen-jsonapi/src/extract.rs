@@ -64,8 +64,9 @@ fn announces_body(headers: &HeaderMap) -> bool {
 /// Step 4: `axum::extract::Path`, rejecting a path parameter that fails to
 /// parse with `400 invalid_path_parameter` and no `source` (§11.1).
 ///
-/// A route registered without the parameters `T` needs is a generator bug,
-/// and answers `500 internal_error`.
+/// A route whose parameters do not fit `T` (a wrong count, an unsupported
+/// type) is a generator bug, and answers `500 internal_error`: Axum's own
+/// status separates the two cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Path<T>(pub T);
 
@@ -79,7 +80,7 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         match axum::extract::Path::<T>::from_request_parts(parts, state).await {
             Ok(axum::extract::Path(value)) => Ok(Path(value)),
-            Err(PathRejection::FailedToDeserializePathParams(err)) => {
+            Err(PathRejection::FailedToDeserializePathParams(err)) if err.status().is_client_error() => {
                 Err(ErrorObject::new(ErrorCode::InvalidPathParameter, err.body_text()))
             }
             Err(err) => Err(ErrorObject::internal(err.body_text())),
@@ -153,7 +154,9 @@ impl<R: RouteQuery, S: Send + Sync> FromRequestParts<S> for Query<R> {
 /// type checked. Read the document from it with [`crate::request`].
 ///
 /// A body that cannot be read (Axum's size limit, a broken connection) is
-/// `400 invalid_document`, since no document can be read from it.
+/// `400 invalid_document`, since no document can be read from it. The size
+/// is bounded by Axum's `DefaultBodyLimit` (2 MB unless the router sets
+/// another), and JSON nesting by `serde_json`'s recursion limit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Body(pub Bytes);
 
@@ -223,6 +226,10 @@ mod tests {
         response::no_content()
     }
 
+    async fn mismatched_path(Path(_id): Path<String>) -> Response {
+        response::no_content()
+    }
+
     fn app() -> Router {
         Router::new()
             .route(
@@ -232,6 +239,7 @@ mod tests {
                 }),
             )
             .route("/api/tasks", post(create_task))
+            .route("/api/{prefix}/broken/{id}", get(mismatched_path))
             .method_not_allowed_fallback(method_not_allowed_fallback)
     }
 
@@ -303,6 +311,13 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_error(&headers, &body, "invalid_path_parameter");
         assert!(body["errors"][0].get("source").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_path_that_does_not_fit_the_route_is_an_internal_error() {
+        let (status, headers, body) = send(request("GET", "/api/x/broken/7").body(HttpBody::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_error(&headers, &body, "internal_error");
     }
 
     #[tokio::test]

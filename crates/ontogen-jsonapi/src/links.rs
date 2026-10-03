@@ -5,7 +5,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::document::{Links, PaginationLinks};
+use crate::{
+    document::{Links, PaginationLinks},
+    request::collapse_duplicates,
+};
 
 /// Percent-encodes `segment` as one RFC 3986 path segment: every byte
 /// outside `A-Z a-z 0-9 - . _ ~` is encoded (§4.2).
@@ -83,14 +86,7 @@ impl CanonicalQuery {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let mut kept: Vec<String> = Vec::new();
-        for path in paths {
-            let path = path.into();
-            if !kept.contains(&path) {
-                kept.push(path);
-            }
-        }
-        self.include = Some(kept);
+        self.include = Some(collapse_duplicates(paths.into_iter().map(Into::into).collect()));
         self
     }
 

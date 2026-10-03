@@ -95,13 +95,14 @@ impl MediaType {
         if !is_token(kind) || !is_token(subtype) {
             return None;
         }
+        // RFC 9110 §5.6.6 allows an empty slot between semicolons
+        // (`application/vnd.api+json;`); it is not a parameter.
         let params = parts
-            .map(|p| {
-                let p = p.trim();
-                match p.split_once('=') {
-                    Some((name, value)) => (name.trim().to_ascii_lowercase(), unquote(value.trim())),
-                    None => (p.to_ascii_lowercase(), String::new()),
-                }
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|p| match p.split_once('=') {
+                Some((name, value)) => (name.trim().to_ascii_lowercase(), unquote(value.trim())),
+                None => (p.to_ascii_lowercase(), String::new()),
             })
             .collect();
         Some(MediaType { essence, params })
@@ -294,6 +295,16 @@ mod tests {
         assert_eq!(content_type_status(Some("text/plain")), Some(415));
         assert_eq!(content_type_status(Some("garbage")), Some(415));
         assert_eq!(content_type_status(Some("")), Some(415));
+    }
+
+    #[test]
+    fn empty_parameter_slots_are_not_parameters() {
+        assert_eq!(content_type_status(Some("application/vnd.api+json;")), None);
+        assert_eq!(content_type_status(Some("application/vnd.api+json ; ; profile=x;")), None);
+        assert_eq!(content_type_status(Some("application/vnd.api+json;; charset=utf-8")), Some(415));
+        assert!(is_acceptable(Some("application/vnd.api+json;, */*")));
+        assert!(is_acceptable(Some("application/vnd.api+json;;q=0.5")));
+        assert!(!is_acceptable(Some("application/vnd.api+json;;q=0, */*")));
     }
 
     #[test]

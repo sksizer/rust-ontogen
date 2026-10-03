@@ -311,6 +311,12 @@ mod tests {
     }
 
     #[test]
+    fn deep_nesting_is_an_invalid_document_not_a_stack_overflow() {
+        let body = format!(r#"{{"data":{}{}}}"#, "[".repeat(100_000), "]".repeat(100_000));
+        assert_eq!(create(&body), (400, "invalid_document".to_owned(), None));
+    }
+
+    #[test]
     fn earlier_rows_win_over_later_ones() {
         // An invalid id beats a lid; a type mismatch beats both.
         assert_eq!(create(r#"{"data":{"type":"tasks","id":"index","lid":"x"}}"#), bad("/data/id"));
