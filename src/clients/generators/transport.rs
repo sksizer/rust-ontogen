@@ -15,8 +15,10 @@ use ontogen_core::ir::OpKind;
 use crate::clients::config::Config;
 use crate::clients::generators::{FallbackRecord, command_name, ts_params_in_declaration_order};
 use crate::servers::classify::{classify_op, is_read_op};
-use crate::servers::parse::{ApiModule, Param, is_page_param};
-use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
+use crate::servers::parse::{ApiModule, EventFn, Param, is_page_param, is_resume_param};
+use crate::servers::types::{
+    collect_ts_import, event_name, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref,
+};
 
 /// Returns `", projectId?: string"` when route_prefix is configured, else `""`.
 fn ts_trailing_prefix_param(config: &Config) -> String {
@@ -117,6 +119,15 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         }
     }
 
+    for m in modules {
+        for ev in &m.events {
+            collect_ts_import(&rust_type_to_ts(&ev.item_type), &mut import_types);
+            for p in &ev.params {
+                collect_ts_import(&rust_type_to_ts(&strip_ref(&p.ty)), &mut import_types);
+            }
+        }
+    }
+
     import_types.sort();
     import_types.dedup();
 
@@ -142,9 +153,14 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     }
 
     // IPC imports - must be at top level for lint compliance
-    out.push_str("import { invoke } from '@tauri-apps/api/core';\n");
     let has_events = modules.iter().any(|m| !m.events.is_empty());
     if has_events {
+        out.push_str("import { Channel, invoke } from '@tauri-apps/api/core';\n");
+    } else {
+        out.push_str("import { invoke } from '@tauri-apps/api/core';\n");
+    }
+    let has_legacy_events = modules.iter().any(|m| m.events.iter().any(EventFn::is_legacy));
+    if has_legacy_events {
         out.push_str("import { listen } from '@tauri-apps/api/event';\n");
     }
     out.push('\n');
@@ -177,16 +193,26 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         );
     }
 
+    if has_events {
+        out.push_str(SUBSCRIPTION_TYPES);
+    }
+
     // ── Transport Interface ──
     generate_transport_interface(&mut out, modules, config);
 
     // ── HTTP Helpers ──
     generate_http_helpers(&mut out, config);
+    if has_events {
+        out.push_str(SSE_SUBSCRIBE_HELPER);
+    }
 
     // ── createHttpTransport ──
     generate_http_transport(&mut out, modules, config);
 
     // ── createIpcTransport ──
+    if has_events {
+        out.push_str(IPC_SUBSCRIBE_HELPER);
+    }
     generate_ipc_transport(&mut out, modules, config);
 
     if let Some(parent) = output.parent() {
@@ -322,9 +348,16 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
         }
     }
 
-    // Events
+    // Event subscriptions
     for m in modules {
         for ev in &m.events {
+            out.push_str(&format!("  {};\n", subscribe_signature(ev, config)));
+        }
+    }
+
+    // Legacy global event listeners (parameterless sync ops only)
+    for m in modules {
+        for ev in m.events.iter().filter(|ev| ev.is_legacy()) {
             let camel = snake_to_camel(&ev.name);
             out.push_str(&format!(
                 "  on{}(callback: (payload: unknown) => void{pp_trailing}): Promise<() => void>;\n",
@@ -681,9 +714,16 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
         }
     }
 
-    // SSE event handlers
+    // Event subscriptions over SSE
     for m in modules {
         for ev in &m.events {
+            generate_http_subscribe_method(out, ev, config);
+        }
+    }
+
+    // Legacy SSE listeners (parameterless sync ops only)
+    for m in modules {
+        for ev in m.events.iter().filter(|ev| ev.is_legacy()) {
             let camel = snake_to_camel(&ev.name);
             let ev_name = ev.name.replace('_', "-");
             let route_path = if let Some(override_path) = config.sse_route_overrides.get(&ev.name) {
@@ -950,9 +990,16 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
         }
     }
 
-    // Event handlers via Tauri listen
+    // Event subscriptions over a per-subscriber Channel
     for m in modules {
         for ev in &m.events {
+            generate_ipc_subscribe_method(out, ev, config);
+        }
+    }
+
+    // Legacy global listeners via Tauri listen (parameterless sync ops only)
+    for m in modules {
+        for ev in m.events.iter().filter(|ev| ev.is_legacy()) {
             let camel = snake_to_camel(&ev.name);
             let ev_name = ev.name.replace('_', "-");
 
@@ -973,6 +1020,227 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
 
     out.push_str("  };\n");
     out.push_str("}\n");
+}
+
+/// Handler and frame types shared by every `subscribeX` method.
+const SUBSCRIPTION_TYPES: &str = "\
+// ── Event Subscriptions ──
+
+export interface SubscriptionHandlers<T> {
+  /** An event. `id` is its resume id, or null for an op that is not resumable. */
+  onEvent: (data: T, id: string | null) => void;
+  /** The subscription fell behind and `skipped` events were dropped. */
+  onLag?: (skipped: number) => void;
+  /** Fires on the first connect and on every reconnect: the hook for a catch-up read. */
+  onOpen?: () => void;
+  onError?: (err: unknown) => void;
+}
+
+type EventFrame<T> = { kind: 'event'; id: string | null; data: T } | { kind: 'lag'; skipped: number };
+
+";
+
+/// The SSE subscription loop shared by every HTTP `subscribeX` method.
+///
+/// Every error closes the `EventSource` and reconnects after a capped
+/// exponential backoff with jitter; the reconnect passes the last seen id as
+/// the `resume` query param (a new `EventSource` sends no `Last-Event-ID`).
+const SSE_SUBSCRIBE_HELPER: &str = "\
+const SSE_RETRY_BASE_MS = 500;
+const SSE_RETRY_MAX_MS = 30000;
+
+function subscribeSse<T>(
+  url: (resume: string | null) => string,
+  eventName: string,
+  initialResume: string | null,
+  handlers: SubscriptionHandlers<T>,
+): () => void {
+  let source: EventSource | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let lastId = initialResume;
+  let attempt = 0;
+  let closed = false;
+  function connect() {
+    if (closed) return;
+    const es = new EventSource(url(lastId));
+    source = es;
+    es.onopen = () => {
+      attempt = 0;
+      handlers.onOpen?.();
+    };
+    es.addEventListener(eventName, (event: MessageEvent) => {
+      const id = event.lastEventId || null;
+      if (id) lastId = id;
+      let data: T;
+      try {
+        data = JSON.parse(event.data);
+      } catch (err) {
+        handlers.onError?.(err);
+        return;
+      }
+      handlers.onEvent(data, id);
+    });
+    es.addEventListener('lag', (event: MessageEvent) => {
+      try {
+        handlers.onLag?.(JSON.parse(event.data).skipped);
+      } catch (err) {
+        handlers.onError?.(err);
+      }
+    });
+    es.onerror = (err: Event) => {
+      es.close();
+      if (source === es) source = null;
+      if (closed) return;
+      handlers.onError?.(err);
+      const delay = Math.min(SSE_RETRY_MAX_MS, SSE_RETRY_BASE_MS * 2 ** attempt);
+      attempt += 1;
+      timer = setTimeout(connect, delay / 2 + Math.random() * (delay / 2));
+    };
+  }
+  connect();
+  return () => {
+    closed = true;
+    if (timer) clearTimeout(timer);
+    source?.close();
+    source = null;
+  };
+}
+
+";
+
+/// The Channel subscription shared by every IPC `subscribeX` method.
+const IPC_SUBSCRIBE_HELPER: &str = "\
+// ── IPC Helpers ──
+
+async function subscribeIpc<T>(
+  command: string,
+  unsubscribeCommand: string,
+  args: Record<string, unknown>,
+  handlers: SubscriptionHandlers<T>,
+): Promise<() => void> {
+  const channel = new Channel<EventFrame<T>>();
+  channel.onmessage = (frame) => {
+    if (frame.kind === 'event') handlers.onEvent(frame.data, frame.id ?? null);
+    else handlers.onLag?.(frame.skipped);
+  };
+  const id = await invoke<number>(command, { ...args, channel });
+  handlers.onOpen?.();
+  return () => {
+    invoke(unsubscribeCommand, { id }).catch((err: unknown) => handlers.onError?.(err));
+  };
+}
+
+";
+
+/// `subscribeVaultNoteChanges`.
+fn subscribe_method_name(ev: &EventFn) -> String {
+    format!("subscribe{}", capitalize_first(&snake_to_camel(&ev.name)))
+}
+
+/// The `args` object type: required params required, `Option` params
+/// optional, plus the route-prefix param when one is configured.
+fn subscribe_args_type(ev: &EventFn, config: &Config) -> String {
+    let mut fields: Vec<String> = ev
+        .params
+        .iter()
+        .map(|p| {
+            let ts = rust_type_to_ts(&strip_ref(&p.ty));
+            let optional = if p.ty.starts_with("Option<") { "?" } else { "" };
+            format!("{}{optional}: {ts}", snake_to_camel(&p.name))
+        })
+        .collect();
+    let pp_only = ts_prefix_param_only(config);
+    if !pp_only.is_empty() {
+        fields.push(pp_only);
+    }
+    if fields.is_empty() { "Record<string, never>".to_string() } else { format!("{{ {} }}", fields.join("; ")) }
+}
+
+/// `subscribeX(args: {...}, handlers: SubscriptionHandlers<T>): Promise<() => void>`.
+fn subscribe_signature(ev: &EventFn, config: &Config) -> String {
+    format!(
+        "{}(args: {}, handlers: SubscriptionHandlers<{}>): Promise<() => void>",
+        subscribe_method_name(ev),
+        subscribe_args_type(ev, config),
+        rust_type_to_ts(&ev.item_type),
+    )
+}
+
+/// The HTTP `subscribeX`: builds the SSE URL from the args (path params
+/// interpolated, optional params and `resume` on the query string) and hands
+/// it to `subscribeSse`.
+fn generate_http_subscribe_method(out: &mut String, ev: &EventFn, config: &Config) {
+    let route = ev.sse_route(&config.sse_route_overrides);
+    let route = route.strip_prefix("/api").unwrap_or(&route);
+    let template = route
+        .split('/')
+        .map(|seg| match seg.strip_prefix(':') {
+            Some(name) => format!("${{encodeURIComponent(String(args.{}))}}", snake_to_camel(name)),
+            None => seg.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    let path_expr = match &config.route_prefix {
+        Some(prefix) => format!("scopedPath(args.{}, `{template}`)", snake_to_camel(&prefix.params[0].name)),
+        None => format!("`{template}`"),
+    };
+    let query: Vec<String> = ev
+        .query_params()
+        .iter()
+        .map(|p| {
+            if is_resume_param(p) {
+                format!("{}: resume", p.name)
+            } else {
+                format!("{}: args.{}", p.name, snake_to_camel(&p.name))
+            }
+        })
+        .collect();
+    let query_expr =
+        if query.is_empty() { String::new() } else { format!(" + toQueryString({{ {} }})", query.join(", ")) };
+    let resume_arg = if query.is_empty() || !ev.is_resumable() { "_resume" } else { "resume" };
+    let initial = if ev.is_resumable() { "args.resume ?? null" } else { "null" };
+    out.push_str(&format!(
+        "    async {sig} {{\n\
+         \x20     return subscribeSse(\n\
+         \x20       ({resume_arg}) => `${{BASE}}${{{path_expr}}}`{query_expr},\n\
+         \x20       '{ev_name}',\n\
+         \x20       {initial},\n\
+         \x20       handlers,\n\
+         \x20     );\n\
+         \x20   }},\n",
+        sig = subscribe_signature(ev, config),
+        ev_name = event_name(&ev.name),
+    ));
+}
+
+/// The IPC `subscribeX`: calls `{fn}_subscribe` with the args and a new
+/// `Channel`; the returned function calls `{fn}_unsubscribe`. The route
+/// prefix is not sent: IPC subscriptions are not project-scoped.
+fn generate_ipc_subscribe_method(out: &mut String, ev: &EventFn, config: &Config) {
+    let args: Vec<String> = ev
+        .params
+        .iter()
+        .map(|p| {
+            let camel = snake_to_camel(&p.name);
+            if p.ty.starts_with("Option<") {
+                format!("{camel}: args.{camel} ?? null")
+            } else {
+                format!("{camel}: args.{camel}")
+            }
+        })
+        .collect();
+    // With no params the args object is unused (the route prefix is not sent).
+    let (sig, args_obj) = if args.is_empty() {
+        (subscribe_signature(ev, config).replacen("(args:", "(_args:", 1), "{}".to_string())
+    } else {
+        (subscribe_signature(ev, config), format!("{{ {} }}", args.join(", ")))
+    };
+    out.push_str(&format!(
+        "    async {sig} {{\n\
+         \x20     return subscribeIpc('{fn_name}_subscribe', '{fn_name}_unsubscribe', {args_obj}, handlers);\n\
+         \x20   }},\n",
+        fn_name = ev.name,
+    ));
 }
 
 /// Generate a custom HTTP method (GET or POST with various param shapes).

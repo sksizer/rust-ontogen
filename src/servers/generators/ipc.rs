@@ -10,7 +10,7 @@ use ontogen_core::ir::OpKind;
 use crate::servers::classify::classify_op;
 use crate::servers::config::Config;
 use crate::servers::generators::surface_use_stmts;
-use crate::servers::parse::{ApiFn, ApiModule, is_page_param};
+use crate::servers::parse::{ApiFn, ApiModule, EventFn, is_page_param};
 use crate::servers::types::{
     capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
 };
@@ -369,17 +369,44 @@ pub async fn {cmd_name}(
         }
     }
 
-    // Generate event forwarding function if any module has events
-    let has_events = modules.iter().any(|m| !m.events.is_empty());
-    if has_events {
+    // Per-subscriber event subscriptions: a subscribe/unsubscribe pair per event fn.
+    if modules.iter().any(|m| !m.events.is_empty()) {
+        out.push_str(
+            "\
+// ── Event Subscriptions ──
+
+/// Live IPC event subscriptions, by id. A process-wide static rather than
+/// consumer state: an id only means something to the process that issued it,
+/// and the consumer has nothing to wire. A forwarding task leaves it when its
+/// receiver closes, when a `Channel::send` fails (the webview is gone; a
+/// `Channel` has no close callback), or on an explicit unsubscribe.
+static EVENT_SUBSCRIPTIONS: ontogen_core::events::Subscriptions = ontogen_core::events::Subscriptions::new();
+
+",
+        );
+        for m in modules {
+            for ev in &m.events {
+                generate_event_subscription(&mut out, m, ev, config);
+                command_names.push(format!("{}_subscribe", ev.name));
+                command_names.push(format!("{}_unsubscribe", ev.name));
+            }
+        }
+    }
+
+    // Global forwarding for the parameterless event shape, kept so consumers
+    // that call `start_event_forwarding` at setup keep working. Parameterized
+    // event ops have no global form: a subscription names what it wants.
+    let has_legacy_events = modules.iter().any(|m| m.events.iter().any(EventFn::is_legacy));
+    if has_legacy_events {
         out.push_str(&format!(
             "\
-// ── Event Forwarding ──
+// ── Event Forwarding (global) ──
 
 use tauri::Emitter;
 
-/// Start IPC forwarding tasks for all event streams.
-/// Call this during app setup to bridge EventBus → Tauri events.
+/// Emit every parameterless event stream to all windows as a Tauri event.
+/// Call this during app setup. Prefer the per-subscriber `*_subscribe`
+/// commands, which report lag to the subscriber and end with it.
 pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
 ",
             config.state_import.split("::").last().unwrap_or(&config.state_type),
@@ -387,27 +414,34 @@ pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
 
         let surfaces = config.surfaces();
         for m in modules {
-            for ev in &m.events {
+            for ev in m.events.iter().filter(|ev| ev.is_legacy()) {
                 let fn_name = &ev.name;
                 let ev_name = event_name(fn_name);
                 let svc = &m.name;
-
+                let service = &surfaces[ev.surface].service_import_path;
                 out.push_str(&format!(
                     "\
     // {fn_name}
     {{
         let handle = app_handle.clone();
-        let mut rx = {}::{svc}::{fn_name}(state);
+        let mut rx = {service}::{svc}::{fn_name}(state);
         tauri::async_runtime::spawn(async move {{
-            while let Ok(delta) = rx.recv().await {{
-                if let Err(e) = handle.emit(\"{ev_name}\", &delta) {{
-                    log::error!(\"Failed to forward {ev_name} to IPC: {{:?}}\", e);
+            loop {{
+                match rx.recv().await {{
+                    Ok(delta) => {{
+                        if let Err(e) = handle.emit(\"{ev_name}\", &delta) {{
+                            log::error!(\"Failed to forward {ev_name} to IPC: {{:?}}\", e);
+                        }}
+                    }}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {{
+                        log::warn!(\"{ev_name} forwarding lagged; {{}} events dropped\", skipped);
+                    }}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }}
             }}
         }});
     }}
 ",
-                    surfaces[ev.surface].service_import_path,
                 ));
             }
         }
@@ -430,6 +464,54 @@ pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
     crate::write_and_format(output, out).expect("Failed to write IPC generated file");
+}
+
+/// Generate the `{fn}_subscribe` / `{fn}_unsubscribe` command pair for one
+/// event fn.
+///
+/// Subscribe calls the event fn with the invoke args, spawns a task that
+/// forwards `EventFrame`s into the caller's `Channel`, and returns the
+/// subscription id. The route prefix, if any, does not apply: like the
+/// global forwarding it replaces, an IPC subscription is not project-scoped.
+fn generate_event_subscription(out: &mut String, m: &ApiModule, ev: &EventFn, config: &Config) {
+    let fn_name = &ev.name;
+    let svc = m.service_ident(ev.surface);
+    let state_type = &config.state_type;
+    let item_type = &ev.item_type;
+
+    if !ev.doc.is_empty() {
+        out.push_str(&format!("/// {}\n", ev.doc));
+    }
+    out.push_str(&format!("#[tauri::command]\npub async fn {fn_name}_subscribe(\n"));
+    for p in &ev.params {
+        out.push_str(&format!("    {}: {},\n", p.name, param_to_owned_type(&p.ty_ast)));
+    }
+    out.push_str(&format!(
+        "    channel: tauri::ipc::Channel<ontogen_core::events::EventFrame<{item_type}>>,\n\
+         \x20   state: State<'_, Arc<{state_type}>>,\n\
+         ) -> Result<u64, String> {{\n"
+    ));
+    let mut args = vec!["&state".to_string()];
+    args.extend(ev.params.iter().map(|p| forward_arg_expr(&p.name, &p.ty_ast)));
+    let await_str = if ev.is_async { ".await" } else { "" };
+    let map_err = if ev.returns_result { ".map_err(|e| e.to_string())?" } else { "" };
+    let id_fn = if ev.is_resumable() { "ontogen_core::events::seq_id" } else { "ontogen_core::events::no_id" };
+    out.push_str(&format!(
+        "    let rx = {svc}::{fn_name}({}){await_str}{map_err};\n\
+         \x20   Ok(EVENT_SUBSCRIPTIONS.spawn(ontogen_core::events::forward(rx, {id_fn}, move |frame| {{\n\
+         \x20       channel.send(frame)\n\
+         \x20   }})))\n\
+         }}\n\n",
+        args.join(", ")
+    ));
+
+    out.push_str(&format!(
+        "/// End a `{fn_name}_subscribe` subscription. Returns `false` when it already ended.\n\
+         #[tauri::command]\n\
+         pub fn {fn_name}_unsubscribe(id: u64) -> bool {{\n\
+         \x20   EVENT_SUBSCRIPTIONS.cancel(id)\n\
+         }}\n\n"
+    ));
 }
 
 fn generate_generic_ipc_handler(out: &mut String, m: &ApiModule, f: &ApiFn, config: &Config) {

@@ -43,7 +43,14 @@ pub(crate) fn surface_use_stmts(modules: &[ApiModule], config: &Config) -> Vec<S
             types.entry(&surface.types_import_path).or_default().extend(names);
         }
         for ev in &m.events {
-            services.entry(&surfaces[ev.surface].service_import_path).or_default().insert(entry(ev.surface));
+            let surface = &surfaces[ev.surface];
+            services.entry(&surface.service_import_path).or_default().insert(entry(ev.surface));
+            let mut names = Vec::new();
+            collect_type_import(&ev.item_type_ast, &mut names);
+            for p in &ev.params {
+                collect_type_import(&p.ty_ast, &mut names);
+            }
+            types.entry(&surface.types_import_path).or_default().extend(names);
         }
     }
 
