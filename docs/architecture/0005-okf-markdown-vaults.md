@@ -129,9 +129,11 @@ change. Canonical user documentation stays in the markdown backend guide.
   byte-stable so regeneration can skip unchanged files. `# Untyped` and
   `# Directories` are the store's own headings: a record type equal to either
   (or either followed by ` (type)` suffixes) is headed with ` (type)` appended.
-  Every ASCII punctuation character in titles, id fallbacks, descriptions, type
-  headings and directory link text is backslash-escaped (CommonMark §2.4);
-  link URLs stay percent-encoded. A record that cannot be read or parsed is
+  In titles, id fallbacks, descriptions, type headings and directory link text
+  only `` \ ` * _ [ ] < & # ~ $ % = ^ `` are backslash-escaped (CommonMark
+  code, emphasis, brackets, HTML, autolinks, entities and closing `#`, plus
+  Obsidian tags, `~~`, `$`, `%%`, `==`, `^`); other punctuation is written as
+  is. Link URLs stay percent-encoded. A record that cannot be read or parsed is
   listed under Untyped, titled by its id.
 - **Regeneration.** After every real write, the store regenerates the record's
   directory and each ancestor under the vault write lock, atomically and only
@@ -143,10 +145,12 @@ change. Canonical user documentation stays in the markdown backend guide.
   directory holding records, including a hand-written one. It removes an
   `index.md` from a record-less directory (in `rebuild_indexes()`, or when a
   write empties the directory) only when the file has exactly the store's own
-  shape: optional root `okf_version`-only frontmatter, then `# heading`
+  shape (optional root `okf_version`-only frontmatter, then `# heading`
   sections of `* [text](link)` entries with an optional ` - description`,
-  linking record files or `dir/`. Any other `index.md`, such as a hand-written
-  Obsidian note, is left alone.
+  linking record files or `dir/`) and every link in it is dangling (record
+  file missing, or `dir/` missing or without records). Any other `index.md`,
+  including a hand-written one whose links resolve even if store-shaped, is
+  left alone.
 - **Failure semantics.** The record write and the index writes are separate
   atomic renames. The index refresh is non-fatal: `create`, `modify` and
   `remove` return `Ok` once the record is committed. A failed refresh marks the

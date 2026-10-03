@@ -30,8 +30,9 @@ let md = ontogen::gen_markdown_io(&schema, &ontogen::MarkdownIoConfig {
 
 `gen_markdown_io` takes the whole `SchemaOutput`, and checks frontmatter keys against the keys OKF reserves; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys).
 
-The vault fields describe the store's runtime shape and flow into the
-returned `MarkdownIoOutput`; the generated files land in `output_dir`.
+The vault fields describe the store's runtime shape and go into the generated
+`open_vault`; the generated files land in `output_dir`. The returned
+`MarkdownIoOutput` carries the id strategy and per-entity metadata.
 
 The same config also drives the generated `mod.rs`, which emits `open_vault` and
 `VAULT_ROOT` so consumers open the vault with the build's settings; see [the

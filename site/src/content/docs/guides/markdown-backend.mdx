@@ -263,9 +263,12 @@ Format rules, all byte-stable (LF, trailing newline):
 - An entry is `* [<title>](<file name>)`, plus ` - <description>` when the
   record has a non-empty string `description`. The title is the frontmatter
   `title`, else the id. Whitespace in descriptions collapses to single spaces.
-  Every ASCII punctuation character in titles, id fallbacks, descriptions,
-  type headings and directory link text is backslash-escaped (CommonMark
-  §2.4), so `c-sweep` appears as `c\-sweep`; link URLs are percent-encoded.
+  In titles, id fallbacks, descriptions, type headings and directory link text
+  only `` \ ` * _ [ ] < & # ~ $ % = ^ `` are backslash-escaped (CommonMark
+  code, emphasis, brackets, HTML, autolinks, entities and closing `#`, plus
+  Obsidian tags, `~~`, `$`, `%%`, `==` and `^`), so `c_sweep` appears as
+  `c\_sweep`. Other punctuation (`-`, `.`, `:`, `'`, `?`, `(`, `)`) is written
+  as is, so raw files stay readable. Link URLs are percent-encoded.
   Entries sort by id. A record that cannot be read (non-UTF-8, say) or parsed
   is listed under Untyped, titled by its id, so a hand-broken file never
   blocks writes.
@@ -284,11 +287,13 @@ linking it.
 **Ownership.** The store overwrites `index.md` in every directory that holds
 records, including a hand-written one. It removes an `index.md` from a
 directory with no records (in `rebuild_indexes()`, or when a write empties the
-directory) only when the file has exactly the store's own shape: optional root
+directory) only when the file has exactly the store's own shape (optional root
 frontmatter holding only `okf_version`, then `# heading` sections of
 `* [text](link)` entries, each with an optional ` - description`, linking
-record files or `dir/`. Any other `index.md`, such as a hand-written Obsidian
-note, is left alone.
+record files or `dir/`) and every link in it is dangling: the record file is
+missing, or `dir/` is missing or holds no records. A store-shaped file whose
+links are all dangling is the store's and goes. Any other `index.md`, and any
+hand-written one whose links still resolve even if store-shaped, is left alone.
 
 **Failure is non-fatal.** The index refresh runs after the record is
 committed, and `create`, `modify` and `remove` return `Ok` once it is. If the
@@ -306,6 +311,11 @@ existing vault by itself) and the repair path after hand edits or a stale
 mark. It works with the option off too, as an explicit request, and because it
 is explicit it returns `Err` on the first index it cannot write. Later writes
 maintain indexes only when the option is on.
+
+Because the stale-index list is in memory and nothing generated reads it, call
+`vault.rebuild_indexes()` once at startup when `okf.index` is on: it repairs
+anything a crash or a hand edit left stale. The `notes-kb` example does this in
+its `main.rs`.
 
 **Cost.** A write parses the records directly in each directory on the path to
 the root, so it is O(N) per directory, in line with the backend's small-N

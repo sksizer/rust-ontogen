@@ -101,7 +101,7 @@ This generator is the sibling of `gen_seaorm`: both consume `SchemaOutput` indep
 | `schema` | `&SchemaOutput` | Output of `parse_schema`. Entities plus enum definitions; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys). |
 | `config` | `&MarkdownIoConfig` | Output directory plus the runtime vault shape (root, layout, id strategy, list cap). |
 
-**Returns:** `MarkdownIoOutput` -- the vault layout, id strategy, and per-entity directory mapping. Pass it into `Backend::Markdown` to wire the generated store at the markdown vault runtime; the markdown emitter genuinely needs this metadata, so unlike `SeaOrmOutput` it isn't optional.
+**Returns:** `MarkdownIoOutput` -- the id strategy and per-entity directory mapping (the vault settings go into the generated `open_vault`). Pass it into `Backend::Markdown` to wire the generated store at the markdown vault runtime; the markdown emitter genuinely needs this metadata, so unlike `SeaOrmOutput` it isn't optional.
 
 ```rust
 let md = gen_markdown_io(&schema, &MarkdownIoConfig {

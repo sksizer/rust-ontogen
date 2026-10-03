@@ -331,7 +331,7 @@ parse_schema  ──────────────────────
 
 `parse_schema` always comes first because every other generator needs `SchemaOutput.entities`. After that, `gen_seaorm`, `gen_markdown_io`, and `gen_dtos` are independent -- they only need the entity list.
 
-`gen_store` is where the two persistence generators rejoin: its `StoreConfig.backend` decides which one it emits CRUD against. `Backend::Seaorm` takes the `SeaOrmOutput` as optional enrichment (pass `None` and it derives table and column names by convention); `Backend::Markdown` requires the `MarkdownIoOutput`, because the markdown emitter genuinely needs the vault layout and per-entity directory mapping.
+`gen_store` is where the two persistence generators rejoin: its `StoreConfig.backend` decides which one it emits CRUD against. `Backend::Seaorm` takes the `SeaOrmOutput` as optional enrichment (pass `None` and it derives table and column names by convention); `Backend::Markdown` requires the `MarkdownIoOutput`, because the markdown emitter genuinely needs the id strategy and per-entity directory mapping (the vault layout, list cap and OKF options go into the generated `open_vault`).
 
 `gen_api`, `gen_servers`, and `gen_clients` form a chain where `gen_api`'s output feeds both `gen_servers` (Rust transports) and `gen_clients` (TypeScript clients + admin registry); the latter two are siblings and run in stable order for deterministic rerun-if-changed traces. All three emit byte-identical output regardless of which store backend you picked.
 
