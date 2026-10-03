@@ -30,6 +30,7 @@ impl Store {
     pub async fn open_in_memory() -> Result<Self, AppError> {
         // One connection: each SQLite `:memory:` connection is its own
         // database, so a pool of several would see different data.
+        // sqlite-only: the parity harness runs the SeaORM store on in-memory SQLite.
         let mut options = sea_orm::ConnectOptions::new("sqlite::memory:");
         options.max_connections(1).min_connections(1).sqlx_logging(false);
         let db = Database::connect(options).await.map_err(db_error)?;

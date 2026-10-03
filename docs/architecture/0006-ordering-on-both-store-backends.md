@@ -397,6 +397,12 @@ calls it before `limit` and `offset`.
   A consumer who declares `NOCASE` on a column, or runs another engine, is
   outside the parity guarantee. The generated store does not try to detect
   that.
+- **SQLite only (2026-10-03, maintainer decision D12).** The SeaORM backend
+  supports SQLite only, for now; other engines are not a supported target.
+  Every SQLite-specific location in the generator, the generated store and
+  the in-tree consumer helpers carries a `sqlite-only` comment that says why,
+  and `docs/planning/backlog/B-SQLT-seaorm-multi-engine-support.md`
+  inventories them with their multi-engine replacements.
 - **NaN.** The NaN check (§3) is generated into `create_*` and `update_*`,
   over the fields the write sets, and returns `AppError::DbError` before
   the statement runs.

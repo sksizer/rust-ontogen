@@ -218,9 +218,11 @@ impl From<crate::schema::CreateItemInput> for Item {
 impl Store {
     pub async fn list_items(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Item>, AppError> {
         let mut query = item::Entity::find();
+        // sqlite-only: ids sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_asc(item::Column::Id);
         let limit = limit.map(|l| l.min(i64::MAX as u64));
         let offset = offset.map(|o| o.min(i64::MAX as u64));
+        // sqlite-only: SQLite rejects OFFSET without LIMIT, so an offset alone takes i64::MAX rows.
         if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
@@ -378,6 +380,7 @@ impl Store {
     ) -> Result<(), crate::schema::AppError> {
         item.children = {
             use crate::persistence::db::entities::item;
+            // sqlite-only: child ids sort in byte order under SQLite's default BINARY collation.
             let children = item::Entity::find()
                 .filter(item::Column::ParentId.eq(&item.id))
                 .filter(item::Column::Id.ne(&item.id))
@@ -409,6 +412,7 @@ impl Store {
 
     async fn set_item_parent(&self, child_id: &str, parent_id: Option<&str>) -> Result<(), AppError> {
         use sea_orm::{ConnectionTrait, Value};
+        // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.
         let stmt = sea_orm::Statement::from_sql_and_values(
             sea_orm::DatabaseBackend::Sqlite,
             "UPDATE items SET parent_id = ? WHERE id = ?",

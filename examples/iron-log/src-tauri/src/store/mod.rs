@@ -61,6 +61,9 @@ impl Store {
 
         let db = self.db();
 
+        // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders; list
+        // order survives only because SQLite's rowid follows insertion order.
+
         // Delete existing junction rows
         let delete_sql = format!("DELETE FROM {table} WHERE {source_col} = ?");
         db.execute(Statement::from_sql_and_values(
@@ -98,6 +101,8 @@ impl Store {
     ) -> Result<Vec<String>, crate::schema::AppError> {
         use sea_orm::{ConnectionTrait, Statement};
 
+        // sqlite-only: `rowid` is SQLite's implicit insertion-order column, and the
+        // statement is built for DatabaseBackend::Sqlite with `?` placeholders.
         let sql = format!("SELECT {target_col} FROM {table} WHERE {source_col} = ? ORDER BY rowid");
         let rows = self
             .db()

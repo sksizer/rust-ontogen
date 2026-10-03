@@ -382,6 +382,7 @@ The `sync_junction` and `load_junction_ids` methods are provided by your `Store`
 The order of a `many_to_many` list is the order it was written, on both backends. The markdown backend keeps it in frontmatter. On SeaORM that order lives in your two helpers, so they have to honor it: `sync_junction` inserts the rows in the order of `target_ids`, and `load_junction_ids` selects them back with `ORDER BY rowid`:
 
 ```rust
+// sqlite-only: `rowid` is SQLite's implicit insertion-order column.
 let sql = format!(
     "SELECT {target_col} FROM {table} WHERE {source_col} = ? ORDER BY rowid"
 );

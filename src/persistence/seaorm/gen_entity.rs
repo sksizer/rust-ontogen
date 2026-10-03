@@ -293,6 +293,8 @@ fn field_db_type(field: &FieldDef) -> &'static str {
         FieldType::Bool => "bool",
         FieldType::OptionBool => "Option<bool>",
         FieldType::VecString | FieldType::VecStruct(_) => "String", // JSON
+        // sqlite-only: an existing i32 column reads as i64 in place only on SQLite
+        // (one INTEGER storage class); a wrapped u32 needs the upgrade guide's SQLite UPDATE.
         FieldType::OptionEnum(t) if is_integer_primitive(t) => "Option<i64>",
         FieldType::OptionEnum(_) => "Option<String>",
         FieldType::Other(t) if is_integer_primitive(t) => "i64",

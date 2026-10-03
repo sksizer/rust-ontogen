@@ -76,14 +76,16 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     // ids byte-wise (ADR 0006 §3). SQLite's default BINARY collation does the
     // same; a text collation such as Postgres under `en_US.UTF-8` (`alpha`
     // before `Zeta`) or MySQL's case-insensitive default would not.
+    code.push_str("        // sqlite-only: ids sort in byte order under SQLite's default BINARY collation.\n");
     code.push_str(&format!("        query = query.order_by_asc({snake}::Column::{id_col});\n"));
     // The engine takes `LIMIT` and `OFFSET` as i64, and sea-query panics
     // binding a larger u64. Clamped, an oversized offset is past the end (an
     // empty page) and an oversized limit is every row, as on markdown.
     code.push_str("        let limit = limit.map(|l| l.min(i64::MAX as u64));\n");
     code.push_str("        let offset = offset.map(|o| o.min(i64::MAX as u64));\n");
-    // SQLite rejects an `OFFSET` with no `LIMIT`, so an offset alone takes
-    // the rest of the rows under the largest limit SQLite accepts.
+    code.push_str(
+        "        // sqlite-only: SQLite rejects OFFSET without LIMIT, so an offset alone takes i64::MAX rows.\n",
+    );
     code.push_str("        if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {\n");
     code.push_str("            query = query.limit(l);\n");
     code.push_str("        }\n");
@@ -410,6 +412,9 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
 
             code.push_str(&format!("        {snake}.{fname} = {{\n", fname = field.name,));
             code.push_str(&format!("            use crate::persistence::db::entities::{target_snake};\n"));
+            code.push_str(
+                "            // sqlite-only: child ids sort in byte order under SQLite's default BINARY collation.\n",
+            );
             code.push_str(&format!("            let children = {target_snake}::Entity::find()\n"));
             code.push_str(&format!("                .filter({target_snake}::Column::{fk_col}.eq(&{snake}.id))\n"));
             // A record is never its own child: a root that is its own parent
@@ -492,6 +497,7 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, f
     code.push_str(&format!("        parent_id: {},\n", has_many::parent_param_type(fk_required)));
     code.push_str("    ) -> Result<(), AppError> {\n");
     code.push_str("        use sea_orm::{ConnectionTrait, Value};\n");
+    code.push_str("        // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.\n");
     code.push_str("        let stmt = sea_orm::Statement::from_sql_and_values(\n");
     code.push_str("            sea_orm::DatabaseBackend::Sqlite,\n");
     code.push_str(&format!("            \"UPDATE {table} SET {fk} = ? WHERE id = ?\",\n"));

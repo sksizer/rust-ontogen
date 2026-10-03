@@ -38,9 +38,11 @@ impl From<crate::schema::CreateFixedInput> for Fixed {
 impl Store {
     pub async fn list_fixeds(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Fixed>, AppError> {
         let mut query = fixed::Entity::find();
+        // sqlite-only: ids sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_asc(fixed::Column::Id);
         let limit = limit.map(|l| l.min(i64::MAX as u64));
         let offset = offset.map(|o| o.min(i64::MAX as u64));
+        // sqlite-only: SQLite rejects OFFSET without LIMIT, so an offset alone takes i64::MAX rows.
         if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
