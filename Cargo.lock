@@ -973,6 +973,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ontogen-jsonapi"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "ontogen-macros"
 version = "0.1.1"
 dependencies = [

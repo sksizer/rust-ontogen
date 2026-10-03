@@ -19,6 +19,9 @@ name = "ontogen-core"
 name = "ontogen-macros"
 
 [[package]]
+name = "ontogen-jsonapi"
+
+[[package]]
 name = "ontogen"
 
 # markdown-store is born unpublished: release-plz processes every workspace
