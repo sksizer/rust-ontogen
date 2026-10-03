@@ -25,6 +25,7 @@ pub mod clients;
 pub mod docs;
 pub mod persistence;
 pub mod pipeline;
+pub(crate) mod resource;
 pub mod schema;
 pub mod servers;
 pub mod store;
@@ -319,7 +320,14 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 }
 
 /// Generate server transport handlers (Axum HTTP routes, Tauri IPC commands,
-/// MCP tools) from API metadata.
+/// MCP tools) from the parsed schema and API metadata.
+///
+/// `entities` is [`parse_schema`]'s output, or `&[]` when there is no schema.
+/// An API module whose name is an entity's module name (the entity name in
+/// snake_case, as [`gen_api`] names it) is served as that entity's JSON:API
+/// resource over HTTP. Every entity must therefore be servable as one: a
+/// `String` id field, legal and distinct member names, and relation targets
+/// that are entities of `entities`.
 ///
 /// Currently, this function always scans `config.api_dir` and every
 /// [`ServersConfig::extra_surfaces`] entry with `syn`, regardless of `api`
@@ -360,6 +368,7 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 /// })?;
 ///
 /// gen_servers(
+///     &schema.entities,
 ///     Some(&api),
 ///     &[PathBuf::from("src/api/v1")],
 ///     &ServersConfig {
@@ -377,16 +386,18 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 ///         store_import: Some("crate::Store".into()),
 ///         pagination: None,
 ///         extra_surfaces: vec![],
+///         error_source_dir: Some(PathBuf::from("src/schema")),
 ///     },
 /// )?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
 pub fn gen_servers(
+    entities: &[EntityDef],
     api: Option<&ApiOutput>,
     scan_dirs: &[PathBuf],
     config: &ServersConfig,
 ) -> Result<ServersOutput, CodegenError> {
-    servers::generate(api, scan_dirs, config)
+    servers::generate(entities, api, scan_dirs, config)
 }
 
 /// Generate TypeScript clients (bindings, HTTP / IPC transports) and the
@@ -394,8 +405,14 @@ pub fn gen_servers(
 ///
 /// Sibling of [`gen_servers`]: that function emits Rust transport handlers,
 /// this one emits the TypeScript surface the front-end consumes plus the
-/// admin-registry metadata file. Both consume the same parsed API surface;
-/// neither produces input for the other.
+/// admin-registry metadata file. Both consume the same schema and parsed API
+/// surface; neither produces input for the other.
+///
+/// `entities` is [`parse_schema`]'s output, or `&[]` when there is no schema.
+/// It supplies the schema-known TypeScript bindings, the admin registry's
+/// field metadata, and the JSON:API resource shapes the HTTP transport reads
+/// and writes, under the same rules as [`gen_servers`]. Passing `&[]` leaves
+/// `admin-registry.ts` with `fields: []` for every entity.
 ///
 /// As with [`gen_servers`], the `api` and `scan_dirs` parameters are reserved
 /// for future enrichment - this function currently always scans
@@ -412,10 +429,13 @@ pub fn gen_servers(
 /// # Example
 ///
 /// ```no_run
-/// use ontogen::{gen_clients, ClientsConfig};
+/// use ontogen::{gen_clients, parse_schema, ClientsConfig, SchemaConfig};
 /// use ontogen::clients::ClientGenerator;
 ///
+/// let schema = parse_schema(&SchemaConfig { schema_dir: "src/schema".into() })?;
+///
 /// gen_clients(
+///     &schema.entities,
 ///     None,
 ///     &[],
 ///     &ClientsConfig {
@@ -430,8 +450,13 @@ pub fn gen_servers(
 /// )?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
-pub fn gen_clients(api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError> {
-    clients::generate(api, scan_dirs, config)
+pub fn gen_clients(
+    entities: &[EntityDef],
+    api: Option<&ApiOutput>,
+    scan_dirs: &[PathBuf],
+    config: &ClientsConfig,
+) -> Result<(), CodegenError> {
+    clients::generate(entities, api, scan_dirs, config)
 }
 
 /// Generate the data-model reference and JSON Schema from the parsed schema.
@@ -658,6 +683,14 @@ pub struct ServersConfig {
     /// describe. Their modules merge into the same router, IPC handler and
     /// MCP registry; see [`ApiSurface`]. Empty for a single-surface crate.
     pub extra_surfaces: Vec<ApiSurface>,
+    /// Directory whose top-level `*.rs` files are scanned for the consumer's
+    /// `enum AppError`. Each variant becomes an HTTP error with a status from
+    /// its name's suffix (`NotFound` 404, `IdRequired` 400, `AlreadyExists`
+    /// 409, `ParentRequired` 403, anything else 500) and the variant name in
+    /// snake_case as its `code`. `None`, or a directory with no `AppError`,
+    /// maps every `AppError` to `500`. [`Pipeline`] fills it with its schema
+    /// directory when left `None`.
+    pub error_source_dir: Option<PathBuf>,
 }
 
 /// Configuration for [`gen_clients`].
@@ -725,18 +758,6 @@ pub struct ClientsConfig {
     pub store_import: Option<String>,
     /// Optional pagination configuration for list operations.
     pub pagination: Option<servers::PaginationConfig>,
-    /// Parsed schema entities, used by the admin-registry generator to
-    /// derive per-field UI metadata (label, type, required, etc.).
-    ///
-    /// Pass `schema.entities.clone()` from the [`SchemaOutput`] returned by
-    /// [`parse_schema`]. Leaving this empty silently strips the field
-    /// metadata from `admin-registry.ts` output, so the admin layer renders
-    /// blank tables. The HTTP and HTTP+IPC transport generators do not
-    /// consume this field - only the admin-registry generator does.
-    ///
-    /// [`Pipeline`] users do not need to set this; the builder forwards
-    /// `schema.entities` automatically.
-    pub schema_entities: Vec<EntityDef>,
     /// The schema's string enums, which give the admin registry a field's
     /// `enumValues`. [`Pipeline`] users do not need to set this; the builder
     /// forwards `schema.enums` automatically.
@@ -791,7 +812,7 @@ impl ClientsConfig {
     /// prefix, no store, no pagination, no schema metadata.
     ///
     /// Reach for it as the base of a struct literal (see the type's own docs)
-    /// rather than spelling out all twenty fields — that is what keeps a new
+    /// rather than spelling out every field — that is what keeps a new
     /// field from breaking every consuming `build.rs`.
     #[must_use]
     pub fn new(
@@ -816,7 +837,6 @@ impl ClientsConfig {
             store_type: None,
             store_import: None,
             pagination: None,
-            schema_entities: Vec::new(),
             schema_enums: Vec::new(),
             label_overrides: std::collections::HashMap::new(),
             pool_extra_roots: Vec::new(),

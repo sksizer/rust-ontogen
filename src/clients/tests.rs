@@ -321,7 +321,8 @@ fn admin_test_config() -> ClientsConfig {
         route_prefix: None,
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
-        schema_entities: Vec::new(),
+        entities: Vec::new(),
+        resources: Default::default(),
         pagination: Some(PaginationConfig { default_limit: 50, max_limit: 200 }),
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
@@ -383,7 +384,8 @@ fn two_surface_client_config(surfaces: Vec<ApiSurface>) -> Config {
         route_prefix: None,
         store_type: primary.store_type,
         store_import: Some("crate::store::Store".to_string()),
-        schema_entities: Vec::new(),
+        entities: Vec::new(),
+        resources: Default::default(),
         schema_enums: Vec::new(),
         label_overrides: HashMap::new(),
         pagination: primary.pagination,
@@ -431,13 +433,7 @@ fn test_two_surfaces_admin_registry_reports_pagination_per_module() {
     config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
 
     let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    crate::clients::generators::admin::generate(
-        &admin_out,
-        &modules,
-        &config,
-        &config.schema_entities,
-        &config.schema_enums,
-    );
+    crate::clients::generators::admin::generate(&admin_out, &modules, &config, &config.entities, &config.schema_enums);
 
     let registry = std::fs::read_to_string(&admin_out).unwrap();
     let entry = |key: &str| {
@@ -517,13 +513,7 @@ pub async fn delete(store: &Store, id: &str) -> Result<(), anyhow::Error> { todo
     config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
 
     let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    crate::clients::generators::admin::generate(
-        &admin_out,
-        &modules,
-        &config,
-        &config.schema_entities,
-        &config.schema_enums,
-    );
+    crate::clients::generators::admin::generate(&admin_out, &modules, &config, &config.entities, &config.schema_enums);
 
     let registry = std::fs::read_to_string(&admin_out).unwrap();
     let note = &registry[registry.find("key: 'note'").unwrap()..registry.find("key: 'tag'").unwrap()];
@@ -551,7 +541,7 @@ fn test_two_surfaces_same_entity_name_is_error() {
     surfaces[1].schema_dir = Some(fitness_schema);
 
     let mut config = two_surface_client_config(surfaces);
-    config.schema_entities = crate::parse_schema(&crate::SchemaConfig { schema_dir: primary_schema }).unwrap().entities;
+    config.entities = crate::parse_schema(&crate::SchemaConfig { schema_dir: primary_schema }).unwrap().entities;
     config.generators = vec![ClientGenerator::AdminRegistry { output: tmp.path().join("admin-registry.ts") }];
 
     let err = crate::clients::generate_clients(&config).expect_err("an entity name shared by two surfaces must fail");
@@ -603,7 +593,7 @@ fn the_registry_carries_enum_values_label_overrides_and_the_id_type() {
         paginated_modules: Vec::new(),
         schema_dir: None,
     }]);
-    config.schema_entities = crate::schema::parse::parse_schema_source(schema, path).unwrap();
+    config.entities = crate::schema::parse::parse_schema_source(schema, path).unwrap();
     config.schema_enums = crate::schema::parse::parse_schema_enums_source(schema, path).unwrap();
     config.label_overrides = HashMap::from([
         ("avg_hr_bpm".to_string(), "Average HR (bpm)".to_string()),
@@ -613,13 +603,7 @@ fn the_registry_carries_enum_values_label_overrides_and_the_id_type() {
     config.generators = vec![ClientGenerator::AdminRegistry { output: admin_out.clone() }];
 
     let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    crate::clients::generators::admin::generate(
-        &admin_out,
-        &modules,
-        &config,
-        &config.schema_entities,
-        &config.schema_enums,
-    );
+    crate::clients::generators::admin::generate(&admin_out, &modules, &config, &config.entities, &config.schema_enums);
 
     let registry = std::fs::read_to_string(&admin_out).unwrap();
     let reading = &registry[registry.find("key: 'reading'").unwrap()..registry.find("key: 'source'").unwrap()];
@@ -666,7 +650,7 @@ fn a_config_built_from_only_its_required_inputs_is_inert() {
     assert!(config.route_prefix.is_none());
     assert!(config.store_type.is_none() && config.store_import.is_none());
     assert!(config.pagination.is_none());
-    assert!(config.schema_entities.is_empty() && config.schema_enums.is_empty());
+    assert!(config.schema_enums.is_empty());
     assert!(config.label_overrides.is_empty());
     assert!(config.pool_extra_roots.is_empty() && config.pool_exclude_paths.is_empty());
     assert!(config.extra_surfaces.is_empty(), "one surface, the primary");

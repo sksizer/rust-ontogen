@@ -950,6 +950,7 @@ dependencies = [
  "insta",
  "markdown-store",
  "ontogen-core",
+ "ontogen-jsonapi",
  "ontogen-macros",
  "ontogen-ts",
  "quote",

@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use ontogen_core::utils::TsFormatter;
 
+use crate::resource::ResourceModel;
 use crate::servers::types::NamingConfig;
 use crate::servers::{ApiSurface, PaginationConfig, RoutePrefix};
 
@@ -23,7 +24,7 @@ use crate::servers::{ApiSurface, PaginationConfig, RoutePrefix};
 /// and threaded into each generator. Mirrors the shape of
 /// [`crate::servers::config::Config`] for the fields client generators share
 /// with the server-side dispatch (state types, naming, route prefix), plus
-/// the client-only fields (`ts_skip_commands`, `schema_entities`,
+/// the client-only fields (`ts_skip_commands`, `entities`,
 /// `pool_extra_roots`).
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // mirrors ClientsConfig's public shape; not every field is currently consumed by the client generators
@@ -69,9 +70,14 @@ pub(crate) struct Config {
     /// Import path for the store type.
     pub store_import: Option<String>,
 
-    /// Schema entity definitions, used by the admin registry generator to emit
-    /// per-field metadata (type, role, relation targets, display hints).
-    pub schema_entities: Vec<ontogen_core::model::EntityDef>,
+    /// The schema entities passed to [`crate::gen_clients`]: the
+    /// schema-known TS bindings, and the admin registry's per-field metadata
+    /// (type, role, relation targets, display hints).
+    pub entities: Vec<ontogen_core::model::EntityDef>,
+
+    /// `entities` as JSON:API resources, built with the same rules the
+    /// servers stage uses so the TS transport and the Axum handlers agree.
+    pub resources: ResourceModel,
 
     pub schema_enums: Vec<ontogen_core::model::EnumDef>,
 

@@ -196,3 +196,76 @@ fn builder_slug_strategy_is_validated_on_the_seaorm_backend_too() {
     assert!(format!("{err}").contains("must be a plain String"), "got: {err}");
     assert!(!tmp.path().join("store").exists(), "nothing is written");
 }
+
+/// A servers stage over `schema_dir`, scanning an empty API directory.
+fn servers_only(
+    schema_dir: &Path,
+    api_dir: &Path,
+    error_source_dir: Option<PathBuf>,
+) -> Result<(), ontogen::CodegenError> {
+    std::fs::create_dir_all(api_dir).expect("api dir");
+    Pipeline::new(schema_dir)
+        .servers(ontogen::ServersConfig {
+            api_dir: api_dir.to_path_buf(),
+            state_type: "AppState".into(),
+            service_import_path: "crate::api".into(),
+            types_import_path: "crate::schema".into(),
+            state_import: "crate::AppState".into(),
+            naming: Default::default(),
+            generators: vec![],
+            rustfmt_edition: "2024".into(),
+            sse_route_overrides: Default::default(),
+            route_prefix: None,
+            store_type: None,
+            store_import: None,
+            pagination: None,
+            extra_surfaces: vec![],
+            error_source_dir,
+        })
+        .build()
+}
+
+#[test]
+fn builder_scans_the_schema_dir_for_app_error_unless_told_otherwise() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema = tmp.path().join("schema");
+    std::fs::create_dir_all(&schema).unwrap();
+    std::fs::write(
+        schema.join("mod.rs"),
+        "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Note {\n    #[ontology(id)]\n    pub id: String,\n}\n\n\
+         pub enum AppError {\n    NoteNotFound(String),\n    InvalidDocument(String),\n}\n",
+    )
+    .unwrap();
+    let api = tmp.path().join("api");
+
+    // The clash is only reachable through the scan, so the error proves the
+    // pipeline pointed it at the schema directory.
+    let err = servers_only(&schema, &api, None).expect_err("a variant reusing an ontogen code must fail");
+    assert!(format!("{err}").contains("AppError::InvalidDocument"), "got: {err}");
+
+    let elsewhere = tmp.path().join("errors");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    servers_only(&schema, &api, Some(elsewhere)).expect("an explicit error_source_dir is kept");
+}
+
+#[test]
+fn builder_servers_and_clients_refuse_an_entity_that_cannot_be_a_resource() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema = tmp.path().join("schema");
+    std::fs::create_dir_all(&schema).unwrap();
+    std::fs::write(
+        schema.join("note.rs"),
+        "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Note {\n    #[ontology(id)]\n    pub id: i64,\n}\n",
+    )
+    .unwrap();
+    let api = tmp.path().join("api");
+
+    let err = servers_only(&schema, &api, None).expect_err("an i64 id cannot be a resource id");
+    assert!(matches!(err, ontogen::CodegenError::Server(ref e) if e.contains("Note.id")), "got: {err}");
+
+    let err = Pipeline::new(&schema)
+        .clients(ontogen::ClientsConfig::new(&api, "AppState", "crate::api", "crate::schema", "crate::AppState"))
+        .build()
+        .expect_err("an i64 id cannot be a resource id");
+    assert!(matches!(err, ontogen::CodegenError::Client(ref e) if e.contains("Note.id")), "got: {err}");
+}

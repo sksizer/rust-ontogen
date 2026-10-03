@@ -39,6 +39,9 @@ fn test_config(api_dir: PathBuf) -> Config {
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
         extra_surfaces: Vec::new(),
+        error_source_dir: None,
+        resources: Default::default(),
+        error_map: None,
     }
 }
 
@@ -60,7 +63,8 @@ fn client_test_config(api_dir: PathBuf) -> ClientsInternalConfig {
         route_prefix: None,
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
-        schema_entities: Vec::new(),
+        entities: Vec::new(),
+        resources: Default::default(),
         schema_enums: Vec::new(),
         label_overrides: HashMap::new(),
         pagination: None,
@@ -2758,13 +2762,7 @@ fn test_admin_registry_generator() {
         make_custom_module(), // non-CRUD should be excluded
     ];
 
-    crate::clients::generators::admin::generate(
-        &output,
-        &modules,
-        &config,
-        &config.schema_entities,
-        &config.schema_enums,
-    );
+    crate::clients::generators::admin::generate(&output, &modules, &config, &config.entities, &config.schema_enums);
     let content = std::fs::read_to_string(&output).unwrap();
 
     // Type import (definitions moved to @ontogen/admin-types)
@@ -3332,6 +3330,9 @@ fn test_e2e_generate_transport_with_real_api() {
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
         extra_surfaces: Vec::new(),
+        error_source_dir: None,
+        resources: Default::default(),
+        error_map: None,
     };
 
     let modules = crate::servers::generate_transport(&server_config).expect("generate_transport failed");
@@ -3356,7 +3357,8 @@ fn test_e2e_generate_transport_with_real_api() {
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
-        schema_entities: Vec::new(),
+        entities: Vec::new(),
+        resources: Default::default(),
         schema_enums: Vec::new(),
         label_overrides: HashMap::new(),
         pool_extra_roots: Vec::new(),
@@ -3368,7 +3370,7 @@ fn test_e2e_generate_transport_with_real_api() {
         &admin_out,
         &modules,
         &client_config,
-        &client_config.schema_entities,
+        &client_config.entities,
         &client_config.schema_enums,
     );
 

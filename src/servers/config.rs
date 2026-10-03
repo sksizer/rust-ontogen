@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::resource::ResourceModel;
+use crate::servers::error_map::ErrorMap;
 use crate::servers::types::NamingConfig;
 
 /// Top-level configuration for the server transport codegen pipeline.
@@ -76,6 +78,19 @@ pub struct Config {
     /// API surfaces scanned in addition to the primary one described by the
     /// fields above. See [`ApiSurface`].
     pub extra_surfaces: Vec<ApiSurface>,
+
+    /// Directory scanned for the consumer's `enum AppError`; see
+    /// [`ServersConfig::error_source_dir`](crate::ServersConfig::error_source_dir).
+    pub error_source_dir: Option<PathBuf>,
+
+    /// The schema's entities as JSON:API resources. A module is served as a
+    /// resource exactly when this has a resource for its name.
+    #[allow(dead_code)] // read by the JSON:API HTTP emitter
+    pub(crate) resources: ResourceModel,
+
+    /// The `AppError` found under `error_source_dir`, if any.
+    #[allow(dead_code)] // read by the JSON:API HTTP emitter
+    pub(crate) error_map: Option<ErrorMap>,
 }
 
 impl Config {
@@ -212,6 +227,9 @@ impl Default for Config {
             store_import: None,
             pagination: None,
             extra_surfaces: Vec::new(),
+            error_source_dir: None,
+            resources: ResourceModel::default(),
+            error_map: None,
         }
     }
 }

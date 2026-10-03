@@ -27,6 +27,8 @@ fn main() {
         store_import: Some("crate::store::Store".into()),
         pagination: None,
         extra_surfaces: vec![],
+        // The pipeline scans its schema directory for `AppError`.
+        error_source_dir: None,
     };
 
     Pipeline::new("src/schema")

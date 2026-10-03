@@ -6,6 +6,7 @@
 // `lib.rs`), not via the longer `ontogen::servers::config::Foo` path.
 pub(crate) mod classify;
 pub(crate) mod config;
+pub(crate) mod error_map;
 pub(crate) mod generators;
 pub(crate) mod parse;
 #[cfg(test)]
@@ -28,6 +29,8 @@ use ontogen_core::ir::OpKind;
 
 use crate::CodegenError;
 use crate::ir::{ApiOutput, HttpRouteMeta, IpcCommandMeta, McpToolMeta, ParamMeta, ServersOutput};
+use crate::model::EntityDef;
+use crate::resource::ResourceModel;
 
 /// Generate server transports (Axum / Tauri IPC / MCP).
 ///
@@ -38,10 +41,17 @@ use crate::ir::{ApiOutput, HttpRouteMeta, IpcCommandMeta, McpToolMeta, ParamMeta
 /// [`crate::gen_clients`] entry point; this function no longer touches
 /// the TS surface.
 pub fn generate(
+    entities: &[EntityDef],
     _api: Option<&ApiOutput>,
     _scan_dirs: &[PathBuf],
     config: &crate::ServersConfig,
 ) -> Result<ServersOutput, CodegenError> {
+    let resources = ResourceModel::build(entities, &config.naming).map_err(CodegenError::Server)?;
+    let error_map = match &config.error_source_dir {
+        Some(dir) => error_map::scan(dir).map_err(CodegenError::Server)?,
+        None => None,
+    };
+
     // Convert unified ServersConfig → internal Config
     let legacy_config = config::Config {
         api_dir: config.api_dir.clone(),
@@ -58,6 +68,9 @@ pub fn generate(
         store_import: config.store_import.clone(),
         pagination: config.pagination.clone(),
         extra_surfaces: config.extra_surfaces.clone(),
+        error_source_dir: config.error_source_dir.clone(),
+        resources,
+        error_map,
     };
 
     // Run the transport generation pipeline
