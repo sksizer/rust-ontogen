@@ -74,6 +74,8 @@ impl Store {
     pub async fn list_workouts(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Workout>, AppError> {
         let mut query = workout::Entity::find();
         query = query.order_by_asc(workout::Column::Id);
+        let limit = limit.map(|l| l.min(i64::MAX as u64));
+        let offset = offset.map(|o| o.min(i64::MAX as u64));
         if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
