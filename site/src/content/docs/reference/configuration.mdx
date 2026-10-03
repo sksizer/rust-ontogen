@@ -64,7 +64,7 @@ The `output_dir` field controls where generated code lands. The rest describe th
 | `list_cap` | `usize` | Hard cap on records parsed per `list()` before the runtime errors -- ADR 0001's explicit scale ceiling. |
 | `okf` | `OkfOptions` | Opt-in OKF artifacts; see below. `OkfOptions::default()` turns both off. |
 
-`OkfOptions` has two fields. `index: bool` keeps a generated [`index.md`](/guides/markdown-backend/#index-files) in the vault root and every directory holding records. `generated_by: Option<String>` stamps [`generated: { by, at }`](/guides/markdown-backend/#generated-stamps) on every real write and must be an OKF actor naming a program (`<producer>/<version>` or `process:<id>`, never `human:<id>`). The same config also emits `vault.rs` with `open_vault` and `VAULT_ROOT`; see [the generated `open_vault`](/guides/markdown-backend/#the-generated-open_vault).
+`OkfOptions` turns on the generated `index.md` files and the `generated` provenance stamp; the [markdown backend guide](/guides/markdown-backend/#an-okf-vault) is canonical for both, and the build configuration also produces a generated `open_vault` ([details](/guides/markdown-backend/#the-generated-open_vault)).
 
 ```rust
 MarkdownIoConfig {

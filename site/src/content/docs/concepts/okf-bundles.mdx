@@ -18,9 +18,10 @@ this page only maps the spec onto what ontogen does.
 |---|---|---|
 | Every record has a `type` | The generator writes `type` as the first frontmatter key, defaulting to the struct name. Always on. | [Every record carries a `type`](/guides/markdown-backend/#every-record-carries-a-type) |
 | `index.md` and `log.md` are reserved files | Both names are rejected as record ids and skipped by the vault walk. Always on. | [Reserved ids](/guides/markdown-backend/#reserved-ids) |
-| Reserved frontmatter keys (`status`, `resource`, `generated`, ...) | Checked at build time: `type` is an error, the rest warn. Always on. | [Reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys) |
+| Reserved frontmatter keys (`status`, `resource`, `generated`, ...) | Checked at build time: `type` is an error; `generated` is also an error while `okf.generated_by` is set, otherwise the rest warn. Always on. | [Reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys) |
 | Generated `index.md` (§8) | Opt-in with `okf.index`: one per directory holding records, kept current on every real write, `okf_version` in the root. | [Index files](/guides/markdown-backend/#index-files) |
 | Provenance, the `generated` key (§5.2) and actors (§7) | Opt-in with `okf.generated_by`: every real write stamps `by` and `at`; the actor must name a program. | [Generated stamps](/guides/markdown-backend/#generated-stamps) |
+| Cross-links | Relations are stored as frontmatter `[[id]]` wikilinks. An OKF graph reader builds its graph from body markdown links, so it does not see them. A `MarkdownPath` opt-in that renders bundle-relative `/<dir>/<id>.md` links is deferred. | [Relations are wikilinks](/guides/markdown-backend/#semantics-worth-knowing) |
 | Where the settings live | The build script sets both knobs; the generated `open_vault` applies them. | [The generated `open_vault`](/guides/markdown-backend/#the-generated-open_vault) |
 
 The [`notes-kb` example](/examples/notes-kb/) turns both knobs on and commits
