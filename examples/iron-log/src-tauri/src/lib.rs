@@ -6,19 +6,22 @@ pub mod store;
 use std::sync::Arc;
 
 use sea_orm::DatabaseConnection;
+use tokio::sync::broadcast;
 
-use crate::schema::AppError;
+use crate::schema::{Activity, AppError};
 use crate::store::Store;
 
 /// Application state shared across all handlers.
 pub struct AppState {
     store: Store,
+    activity: broadcast::Sender<Activity>,
 }
 
 impl AppState {
     pub fn new(db: Arc<DatabaseConnection>) -> Self {
         Self {
             store: Store::new(db),
+            activity: broadcast::channel(256).0,
         }
     }
 

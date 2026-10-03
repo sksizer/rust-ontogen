@@ -1,8 +1,15 @@
 # Per-project SDLC plugin configuration.
 # Shape reference: ~/.claude/plugins/sdlc/conventions/sdlc-yaml.md
-# Populate `quality_checks:` via /sdlc:find-quality-checks, or by hand.
+# Authoritative schema: SdlcConfigSchema in solutions/ontological/lib/config/load.ts
+# Populate `verbs:` via /sdlc:find-verbs, or by hand.
 
-quality_checks:
-  - just full-check
+verbs:
+  # Pre-PR gate. Matches CI exactly: .github/workflows/ci.yml runs `just full-check`,
+  # which chains format-check -> lint -> test (Rust workspace + the admin-layer vitest suite).
+  check:
+    - just full-check
+  # Explicitly nothing. Absent would fall back to `setup`, whose built-in default
+  # picks up the wrong recipe in this workspace (the iron-log example's `just setup`).
+  setup-hooks: []
 
 lease_authority: origin

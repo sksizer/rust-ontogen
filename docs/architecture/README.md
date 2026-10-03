@@ -1,7 +1,13 @@
 # Architecture decision records (ADRs)
 
-Numbered, accepted decisions that shape ontogen's structure. None written
-yet; this directory accumulates as decisions earn their keep.
+Numbered decisions that shape ontogen's structure. This directory
+accumulates as decisions earn their keep.
+
+| ADR | Decision | Status |
+|---|---|---|
+| [0001](0001-markdown-as-store-backend.md) | Markdown as a first-class store backend | accepted (2026-06-06) |
+| 0002 | Extended JSON Schema front end — reserved by [T-66TG](../planning/tasks/T-66TG-adr-0002-extended-json-schema-front-end.md), not yet written | — |
+| [0003](0003-api-design-over-backwards-compatibility.md) | API design over backwards compatibility, until 1.0 | proposed (2026-09-25) |
 
 ## When to file an ADR
 

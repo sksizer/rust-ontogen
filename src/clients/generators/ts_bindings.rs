@@ -17,7 +17,8 @@ use crate::servers::parse::ApiModule;
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts};
 
 /// Collect every TS type name referenced by the generated client surface
-/// (return types + parameter types of every emitted command). Mirrors the
+/// (return types + parameter types of every emitted command, and the item
+/// and parameter types of every event subscription). Mirrors the
 /// inline collection currently done in `ts_client::generate` and
 /// `transport::generate`.
 pub fn referenced_ts_types(modules: &[ApiModule], config: &Config) -> Vec<String> {
@@ -30,7 +31,8 @@ pub fn referenced_ts_types(modules: &[ApiModule], config: &Config) -> Vec<String
     import_types
 }
 
-/// The TS type names referenced by a single module's command signatures.
+/// The TS type names referenced by a single module's command and event
+/// subscription signatures.
 ///
 /// Split out from [`referenced_ts_types`] so the long-tail resolver can map
 /// each referenced name back to the module that referenced it — needed to
@@ -38,8 +40,11 @@ pub fn referenced_ts_types(modules: &[ApiModule], config: &Config) -> Vec<String
 /// rather than guessing by terminal segment.
 pub fn module_referenced_ts_types(m: &ApiModule, config: &Config) -> Vec<String> {
     let mut import_types: Vec<String> = Vec::new();
-    if m.functions.is_empty() {
-        return import_types;
+    for ev in &m.events {
+        collect_ts_import(&rust_type_to_ts(&ev.item_type), &mut import_types);
+        for p in &ev.params {
+            collect_ts_import(&rust_type_to_ts(&p.ty), &mut import_types);
+        }
     }
     for f in &m.functions {
         let cmd_name = command_name(&m.name, f, config);

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-09-28
+
+### Added
+
+- event ops take parameters, carry a sequence, and report lag ([#184](https://github.com/sksizer/rust-ontogen/pull/184))
+- generated TS subscriptions resume and report lag ([#185](https://github.com/sksizer/rust-ontogen/pull/185))
+
+
+
 ## [0.7.1] - 2026-09-23
 
 ### Added

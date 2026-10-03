@@ -1,3 +1,4 @@
+mod activity;
 mod exercise;
 mod stats;
 mod tag;
@@ -6,6 +7,7 @@ mod workout_set;
 
 pub mod dto;
 
+pub use activity::Activity;
 pub use exercise::Exercise;
 pub use stats::WorkoutStats;
 pub use tag::Tag;
