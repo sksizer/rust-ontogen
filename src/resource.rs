@@ -12,7 +12,6 @@ use crate::servers::NamingConfig;
 
 /// Every entity of the schema as a JSON:API resource, in schema order.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)] // read by the JSON:API HTTP and TS emitters
 pub(crate) struct ResourceModel {
     resources: Vec<Resource>,
 }
@@ -137,7 +136,6 @@ impl Resource {
     }
 }
 
-#[allow(dead_code)] // read by the JSON:API HTTP and TS emitters
 impl Relationship {
     pub fn is_to_many(&self) -> bool {
         self.arity == Arity::ToMany

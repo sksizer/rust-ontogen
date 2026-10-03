@@ -671,3 +671,332 @@ fn a_partial_literal_over_new_keeps_its_overrides() {
     assert_eq!(config.store_type.as_deref(), Some("Store"));
     assert!(config.store_import.is_none(), "an unmentioned field stays at the base's default");
 }
+
+// ─── JSON:API HTTP clients (wire contract §14) ──────────────────────────────
+
+/// Every relationship shape §5.4 names: an optional and a required
+/// `belongs_to`, `has_many` under both, `many_to_many`, and resources with no
+/// relationships, one of them with an id field not called `id`.
+const JSONAPI_SCHEMA: &str = r#"
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,
+    pub title: String,
+    pub estimate: Option<u32>,
+    #[ontology(relation(belongs_to, target = "Task"))]
+    pub parent_id: Option<String>,
+    #[ontology(relation(has_many, target = "Task", foreign_key = "parent_id"))]
+    pub subtasks: Vec<String>,
+    #[ontology(relation(many_to_many, target = "Tag"))]
+    pub tags: Vec<String>,
+    #[ontology(body)]
+    pub body: String,
+}
+
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct WorkoutSet {
+    #[ontology(id)]
+    pub id: String,
+    pub reps: u32,
+    #[ontology(relation(belongs_to, target = "Tag"))]
+    pub tag_id: String,
+}
+
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Tag {
+    #[ontology(id)]
+    pub slug: String,
+    pub title: String,
+}
+"#;
+
+/// What [`jsonapi_clients`] generated.
+struct JsonApiClients {
+    transport: String,
+    http: String,
+    bindings: String,
+}
+
+/// The `HttpTauriIpcSplit` and `HttpTs` output for [`JSONAPI_SCHEMA`], through
+/// the public `gen_api` → `gen_clients` path. With `paginated`, every list
+/// pages. `adjust` edits the clients config before generation.
+fn jsonapi_clients(paginated: bool, adjust: impl FnOnce(&mut crate::ClientsConfig)) -> JsonApiClients {
+    let tmp = tempfile::tempdir().unwrap();
+    let entities =
+        crate::schema::parse::parse_schema_source(JSONAPI_SCHEMA, std::path::Path::new("schema.rs")).unwrap();
+    let api_dir = tmp.path().join("api");
+    let api = crate::gen_api(
+        &entities,
+        &crate::ApiConfig {
+            output_dir: api_dir.clone(),
+            exclude: Vec::new(),
+            scan_dirs: Vec::new(),
+            state_type: "AppState".into(),
+            store_type: Some("Store".into()),
+            schema_module_path: "crate::schema".into(),
+            paginated: if paginated {
+                entities.iter().map(|e| crate::to_snake_case(&e.name)).collect()
+            } else {
+                vec![]
+            },
+        },
+    )
+    .unwrap();
+    let ts = tmp.path().join("ts");
+    fs::create_dir_all(&ts).unwrap();
+    // Named for the admin-layer fixture, which sits beside other bindings.
+    let bindings_path = ts.join("jsonapi-bindings.ts");
+    let mut config = crate::ClientsConfig {
+        generators: vec![
+            ClientGenerator::HttpTauriIpcSplit {
+                output: ts.join("transport.ts"),
+                bindings_path: bindings_path.clone(),
+            },
+            ClientGenerator::HttpTs { output: ts.join("http.ts"), bindings_path: bindings_path.clone() },
+        ],
+        store_type: Some("Store".into()),
+        store_import: Some("crate::store::Store".into()),
+        pagination: paginated.then_some(PaginationConfig { default_limit: 20, max_limit: 100 }),
+        ..crate::ClientsConfig::new(api_dir, "AppState", "crate::api", "crate::schema", "crate::AppState")
+    };
+    adjust(&mut config);
+    crate::gen_clients(&entities, Some(&api), &[], &config).unwrap();
+    let read = |path: &std::path::Path| fs::read_to_string(path).unwrap();
+    JsonApiClients {
+        transport: read(&ts.join("transport.ts")),
+        http: read(&ts.join("http.ts")),
+        bindings: read(&bindings_path),
+    }
+}
+
+/// The text of `function name(` through its closing `}` line.
+fn ts_function<'a>(ts: &'a str, name: &str) -> &'a str {
+    let start = ts.find(&format!("function {name}(")).unwrap_or_else(|| panic!("no `{name}` in:\n{ts}"));
+    let end = ts[start..].find("\n}\n").map_or(ts.len(), |i| start + i + 3);
+    &ts[start..end]
+}
+
+/// The text of the generated method `name` through its closing brace.
+fn ts_method<'a>(ts: &'a str, name: &str) -> &'a str {
+    let start = ts.find(&format!("async {name}(")).unwrap_or_else(|| panic!("no method `{name}` in:\n{ts}"));
+    let end = ts[start..].find("},\n").map_or(ts.len(), |i| start + i + 3);
+    &ts[start..end]
+}
+
+#[test]
+fn each_resource_gets_a_flatten_pair_from_its_relationship_table() {
+    let clients = jsonapi_clients(false, |_| {});
+    for ts in [&clients.transport, &clients.http] {
+        // Optional belongs_to, has_many and many_to_many on one type.
+        assert!(
+            ts.contains(
+                "const TASK_RESOURCE: JsonApiResourceDef = {\n  type: 'tasks',\n  idField: 'id',\n  relationships: {\n    \
+                 parent: { field: 'parent_id', type: 'tasks', many: false },\n    subtasks: { field: 'subtasks', type: \
+                 'tasks', many: true },\n    tags: { field: 'tags', type: 'tags', many: true },\n  },\n};"
+            ),
+            "{ts}"
+        );
+        assert_eq!(
+            ts_function(ts, "flattenTask"),
+            "function flattenTask(r: JsonApiResource): Task {\n  return {\n    id: r.id,\n    ...r.attributes,\n    \
+             parent_id: toOneId(r.relationships?.['parent']),\n    subtasks: toManyIds(r.relationships?.['subtasks']),\n    \
+             tags: toManyIds(r.relationships?.['tags']),\n  } as Task;\n}\n"
+        );
+        assert!(ts.contains(
+            "function unflattenTask(input: object, id?: string): JsonApiWriteDocument {\n  return \
+             unflattenResource(TASK_RESOURCE, input, id);\n}"
+        ));
+
+        // A required belongs_to reads the same way; the type is the kebab plural.
+        assert!(ts.contains("  type: 'workout-sets',\n  idField: 'id',\n  relationships: {\n    tag: { field: 'tag_id', type: 'tags', many: false },\n  },"));
+        assert!(ts_function(ts, "flattenWorkoutSet").contains("    tag_id: toOneId(r.relationships?.['tag']),\n"));
+
+        // No relationships, and an id field not called `id`.
+        assert!(ts.contains(
+            "const TAG_RESOURCE: JsonApiResourceDef = {\n  type: 'tags',\n  idField: 'slug',\n  relationships: {},\n};"
+        ));
+        assert_eq!(
+            ts_function(ts, "flattenTag"),
+            "function flattenTag(r: JsonApiResource): Tag {\n  return {\n    slug: r.id,\n    ...r.attributes,\n  } as Tag;\n}\n"
+        );
+    }
+    assert_eq!(clients.transport.matches("function unflattenResource(").count(), 1);
+}
+
+#[test]
+fn unflatten_follows_the_id_and_null_rules() {
+    let ts = jsonapi_clients(false, |_| {}).transport;
+    let unflatten = ts_function(&ts, "unflattenResource");
+    for rule in [
+        // undefined is omitted; the id never reaches attributes
+        "if (value === undefined) continue;",
+        "if (key === def.idField) {",
+        // an update's id argument wins; a create id only when non-empty
+        "if (id === undefined && typeof value === 'string' && value !== '') resourceId = value;",
+        // to-one null is kept as `data: null`
+        "relationships[rel.name] = { data: value === null ? null : { type: rel.type, id: String(value) } };",
+        // to-many becomes identifiers
+        "relationships[rel.name] = { data: value.map((v) => ({ type: rel.type, id: String(v) })) };",
+        "...(resourceId !== undefined ? { id: resourceId } : {}),",
+    ] {
+        assert!(unflatten.contains(rule), "missing `{rule}` in:\n{unflatten}");
+    }
+}
+
+#[test]
+fn resource_crud_methods_speak_json_api() {
+    let clients = jsonapi_clients(false, |_| {});
+    let ts = &clients.transport;
+    assert_eq!(
+        ts_method(ts, "taskList"),
+        "async taskList(): Promise<Task[]> {\n      const { data } = await \
+         httpGet<JsonApiCollectionDocument>('/tasks');\n      return data.map(flattenTask);\n    },\n"
+    );
+    assert!(ts_method(ts, "taskGetById").contains(
+        "const { data } = await httpGet<JsonApiResourceDocument>(`/tasks/${encodeURIComponent(id)}`);\n      return \
+         flattenTask(data);"
+    ));
+    assert!(ts_method(ts, "taskCreate").contains(
+        "const { data } = await httpPost<JsonApiResourceDocument>('/tasks', unflattenTask(input));\n      return \
+         flattenTask(data);"
+    ));
+    assert!(ts_method(ts, "taskUpdate").contains(
+        "const { data } = await httpPatch<JsonApiResourceDocument>(\n        `/tasks/${encodeURIComponent(id)}`,\n        \
+         unflattenTask(input, id),\n      );\n      return flattenTask(data);"
+    ));
+    assert!(ts_method(ts, "taskDelete").contains("await httpDelete(`/tasks/${encodeURIComponent(id)}`);"));
+    assert!(ts_method(ts, "workoutSetList").contains("httpGet<JsonApiCollectionDocument>('/workout-sets')"));
+
+    let http = &clients.http;
+    assert!(ts_method(http, "workoutSetList").contains("httpGet<JsonApiCollectionDocument>('/workout-sets')"));
+    assert!(ts_method(http, "workoutSetDelete").contains("await httpDelete(`/workout-sets/"), "{http}");
+    assert!(ts_method(http, "taskUpdate").contains("httpPatch<JsonApiResourceDocument>"));
+
+    for ts in [ts, http] {
+        assert!(ts.contains("async function httpPatch<T>("));
+        assert!(!ts.contains("httpPut"), "no module without an entity, so no PUT:\n{ts}");
+    }
+    // The IPC transport stays flat.
+    let ipc = &ts[ts.find("export function createIpcTransport").unwrap()..];
+    assert!(ipc.contains("return invoke('task_create', { input });"), "{ipc}");
+    assert!(!ipc.contains("flatten"), "{ipc}");
+}
+
+#[test]
+fn a_paginated_resource_list_pages_with_the_page_family_and_rebuilds_paginated_result() {
+    let clients = jsonapi_clients(true, |_| {});
+    assert_eq!(
+        ts_method(&clients.transport, "taskList"),
+        "async taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {\n      const { data, meta } \
+         = await httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ page: { offset, limit } })}`);\n      return { \
+         items: data.map(flattenTask), total: meta.total, limit: meta.limit, offset: meta.offset };\n    },\n"
+    );
+    // The family form brackets percent-encoded member names.
+    let qs = ts_function(&clients.transport, "toQueryString");
+    assert!(qs.contains("push(`${encodeURIComponent(key)}%5B${encodeURIComponent(member)}%5D`, v);"), "{qs}");
+    // `HttpTs` lists take no page arguments: the server's default page.
+    assert!(ts_method(&clients.http, "taskList").contains("return data.map(flattenTask);"));
+}
+
+#[test]
+fn a_scoped_resource_route_keeps_its_prefix() {
+    let ts = jsonapi_clients(true, |config| {
+        config.route_prefix = Some(crate::servers::RoutePrefix {
+            segments: "projects/:project_id".to_string(),
+            state_accessor: "store_for".to_string(),
+            params: vec![crate::servers::PrefixParam {
+                name: "project_id".to_string(),
+                rust_type: "String".to_string(),
+                ts_type: "string".to_string(),
+            }],
+        });
+    })
+    .transport;
+    assert!(ts_method(&ts, "taskList").contains(
+        "httpGet<JsonApiPageDocument>(scopedPath(projectId, `/tasks${toQueryString({ page: { offset, limit } })}`))"
+    ));
+    assert!(
+        ts_method(&ts, "taskCreate")
+            .contains("httpPost<JsonApiResourceDocument>(scopedPath(projectId, '/tasks'), unflattenTask(input))")
+    );
+}
+
+#[test]
+fn every_http_call_throws_json_api_error() {
+    let clients = jsonapi_clients(false, |_| {});
+    for ts in [&clients.transport, &clients.http] {
+        assert!(ts.contains("export class JsonApiError extends Error {\n  override readonly name = 'JsonApiError';"));
+        assert!(ts.contains("constructor(status: number, errors: JsonApiErrorObject[], message: string) {"));
+        let error = ts_function(ts, "toJsonApiError");
+        assert!(error.contains("Array.isArray((body as { errors?: unknown }).errors)"), "{error}");
+        assert!(error.contains(": [];"), "a body that is not an error document gives no errors:\n{error}");
+        assert!(error.contains("first?.detail ?? first?.title ?? res.statusText"), "{error}");
+
+        let request = ts_function(ts, "httpRequest");
+        assert!(request.contains("{ Accept: JSON_API_MEDIA_TYPE }"), "{request}");
+        assert!(request.contains("if (body != null) headers['Content-Type'] = JSON_API_MEDIA_TYPE;"), "{request}");
+        assert!(request.contains("if (!res.ok) throw await toJsonApiError(res);"), "{request}");
+        assert_eq!(ts.matches("fetch(").count(), 1, "every request goes through httpRequest:\n{ts}");
+        assert!(!ts.contains("new Error("), "{ts}");
+    }
+}
+
+#[test]
+fn a_module_with_no_entity_keeps_its_flat_crud_and_put() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "widget.rs", &crate::servers::tests::paged_crud_module_source("widget", "Store"));
+    let config = two_surface_client_config(vec![ApiSurface {
+        api_dir,
+        service_import_path: "crate::api".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        store_accessor: None,
+        store_type: Some("Store".to_string()),
+        pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 }),
+        paginated_modules: Vec::new(),
+        schema_dir: None,
+    }]);
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let bindings = tmp.path().join("bindings.ts");
+    fs::write(&bindings, "export type Widget = { id: string };\n").unwrap();
+    let transport_out = tmp.path().join("transport.ts");
+    let http_out = tmp.path().join("http.ts");
+    crate::clients::generators::transport::generate(&transport_out, &bindings, &modules, &config);
+    crate::clients::generators::ts_client::generate(&http_out, &bindings, &modules, &config);
+    let ts = fs::read_to_string(&transport_out).unwrap();
+    let http = fs::read_to_string(&http_out).unwrap();
+
+    assert!(ts_method(&ts, "widgetList").contains("return httpGet(`/widgets${toQueryString({ limit, offset })}`);"));
+    assert!(
+        ts_method(&ts, "widgetUpdate").contains("return httpPut<Widget>(`/widgets/${encodeURIComponent(id)}`, input);")
+    );
+    assert!(ts_method(&http, "widgetUpdate").contains("return httpPut<Widget>("));
+    for ts in [&ts, &http] {
+        assert!(ts.contains("async function httpPut<T>("), "{ts}");
+        assert!(!ts.contains("flatten"), "no resource, no flattener:\n{ts}");
+        assert!(ts.contains("export class JsonApiError"), "errors are JSON:API documents on every route:\n{ts}");
+    }
+}
+
+/// The generated transport `packages/nuxt_admin_layer/tests/jsonapi-transport.test.ts`
+/// drives against a stubbed `fetch`. It must match the generator: rerun with
+/// `UPDATE_TS_FIXTURES=1` after an intended change and commit the result.
+#[test]
+fn ts_jsonapi_transport_fixture_is_current() {
+    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packages/nuxt_admin_layer/tests/fixtures");
+    let clients = jsonapi_clients(true, |_| {});
+    for (name, fresh) in
+        [("jsonapi-transport.generated.ts", &clients.transport), ("jsonapi-bindings.ts", &clients.bindings)]
+    {
+        let committed_path = fixture_dir.join(name);
+        if std::env::var_os("UPDATE_TS_FIXTURES").is_some() {
+            fs::write(&committed_path, fresh).unwrap();
+        }
+        let committed = fs::read_to_string(&committed_path).unwrap_or_default();
+        assert_eq!(&committed, fresh, "stale fixture {name}: rerun with UPDATE_TS_FIXTURES=1");
+    }
+}

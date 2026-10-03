@@ -4,6 +4,7 @@
 //! Rust transport generators (Axum, Tauri IPC, MCP).
 
 pub mod admin;
+pub(crate) mod jsonapi;
 pub mod transport;
 pub mod ts_bindings;
 pub mod ts_client;

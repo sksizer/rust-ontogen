@@ -8,6 +8,7 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::clients::config::Config;
+use crate::clients::generators::jsonapi::{self, crud_resource};
 use crate::clients::generators::{FallbackRecord, command_name, ts_params_in_declaration_order};
 use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::parse::{ApiFn, ApiModule, Param};
@@ -58,6 +59,12 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         }
     }
 
+    // Each flattener returns its entity type, whichever CRUD methods are emitted.
+    let resources = jsonapi::crud_resources(modules, config);
+    for r in &resources {
+        collect_ts_import(&r.entity.name, &mut import_types);
+    }
+
     import_types.sort();
     import_types.dedup();
 
@@ -87,50 +94,14 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         ));
     }
 
-    out.push_str("const BASE = '/api';\n\n");
-
-    out.push_str(
-        "async function httpGet<T>(path: string): Promise<T> {\n\
-         \x20 const res = await fetch(`${BASE}${path}`);\n\
-         \x20 if (!res.ok) {\n\
-         \x20   const body = await res.json().catch(() => ({ error: res.statusText }));\n\
-         \x20   throw new Error(body.error ?? res.statusText);\n\
-         \x20 }\n\
-         \x20 return res.json();\n\
-         }\n\n\
-         async function httpPost<T>(path: string, body?: unknown): Promise<T> {\n\
-         \x20 const res = await fetch(`${BASE}${path}`, {\n\
-         \x20   method: 'POST',\n\
-         \x20   headers: { 'Content-Type': 'application/json' },\n\
-         \x20   body: body != null ? JSON.stringify(body) : undefined,\n\
-         \x20 });\n\
-         \x20 if (!res.ok) {\n\
-         \x20   const errBody = await res.json().catch(() => ({ error: res.statusText }));\n\
-         \x20   throw new Error(errBody.error ?? res.statusText);\n\
-         \x20 }\n\
-         \x20 if (res.status === 204) return null as T;\n\
-         \x20 return res.json();\n\
-         }\n\n\
-         async function httpPut<T>(path: string, body: unknown): Promise<T> {\n\
-         \x20 const res = await fetch(`${BASE}${path}`, {\n\
-         \x20   method: 'PUT',\n\
-         \x20   headers: { 'Content-Type': 'application/json' },\n\
-         \x20   body: JSON.stringify(body),\n\
-         \x20 });\n\
-         \x20 if (!res.ok) {\n\
-         \x20   const errBody = await res.json().catch(() => ({ error: res.statusText }));\n\
-         \x20   throw new Error(errBody.error ?? res.statusText);\n\
-         \x20 }\n\
-         \x20 return res.json();\n\
-         }\n\n\
-         async function httpDelete(path: string): Promise<void> {\n\
-         \x20 const res = await fetch(`${BASE}${path}`, { method: 'DELETE' });\n\
-         \x20 if (!res.ok) {\n\
-         \x20   const errBody = await res.json().catch(() => ({ error: res.statusText }));\n\
-         \x20   throw new Error(errBody.error ?? res.statusText);\n\
-         \x20 }\n\
-         }\n\n",
-    );
+    out.push_str(jsonapi::JSON_API_TYPES);
+    out.push_str(&jsonapi::http_helpers(jsonapi::needs_put(modules, config)));
+    if !resources.is_empty() {
+        out.push_str(jsonapi::RESOURCE_HELPERS);
+        for r in &resources {
+            out.push_str(&jsonapi::resource_codec(r));
+        }
+    }
 
     out.push_str("export const httpCommands = {\n");
 
@@ -151,41 +122,86 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
             let ts_ret = rust_type_to_ts(&f.return_type);
             let camel = snake_to_camel(&cmd_name);
 
+            let resource = crud_resource(m, config);
             match op {
+                // This client's list takes no page arguments, so a paginated
+                // resource returns the server's default page.
                 OpKind::List => {
+                    let body = match resource {
+                        Some(r) => format!(
+                            "const {{ data }} = await httpGet<JsonApiCollectionDocument>('/{}');\n\
+                             \x20   return data.map({});",
+                            r.resource_type,
+                            jsonapi::flatten_fn(r)
+                        ),
+                        None => format!("return httpGet('/{plural}');"),
+                    };
                     out.push_str(&format!(
                         "  async {camel}(): Promise<{ts_ret}> {{\n\
-                         \x20   return httpGet('/{plural}');\n\
+                         \x20   {body}\n\
                          \x20 }},\n\n",
                     ));
                 }
                 OpKind::GetById => {
+                    let body = match resource {
+                        Some(r) => format!(
+                            "const {{ data }} = await httpGet<JsonApiResourceDocument>(`/{}/${{encodeURIComponent(id)}}`);\n\
+                             \x20   return {}(data);",
+                            r.resource_type,
+                            jsonapi::flatten_fn(r)
+                        ),
+                        None => format!("return httpGet(`/{plural}/${{encodeURIComponent(id)}}`);"),
+                    };
                     out.push_str(&format!(
                         "  async {camel}(id: string): Promise<{ts_ret}> {{\n\
-                         \x20   return httpGet(`/{plural}/${{encodeURIComponent(id)}}`);\n\
+                         \x20   {body}\n\
                          \x20 }},\n\n",
                     ));
                 }
                 OpKind::Create => {
                     let input_type = rust_type_to_ts(&extract_input_type(&f.params[0].ty));
+                    let body = match resource {
+                        Some(r) => format!(
+                            "const {{ data }} = await httpPost<JsonApiResourceDocument>('/{}', {}(input));\n\
+                             \x20   return {}(data);",
+                            r.resource_type,
+                            jsonapi::unflatten_fn(r),
+                            jsonapi::flatten_fn(r)
+                        ),
+                        None => format!("return httpPost<{ts_ret}>('/{plural}', input);"),
+                    };
                     out.push_str(&format!(
                         "  async {camel}(input: {input_type}): Promise<{ts_ret}> {{\n\
-                         \x20   return httpPost<{ts_ret}>('/{plural}', input);\n\
+                         \x20   {body}\n\
                          \x20 }},\n\n",
                     ));
                 }
                 OpKind::Update => {
                     let input_type = rust_type_to_ts(&extract_input_type(&f.params[1].ty));
+                    let body = match resource {
+                        Some(r) => format!(
+                            "const {{ data }} = await httpPatch<JsonApiResourceDocument>(\n\
+                             \x20     `/{}/${{encodeURIComponent(id)}}`,\n\
+                             \x20     {}(input, id),\n\
+                             \x20   );\n\
+                             \x20   return {}(data);",
+                            r.resource_type,
+                            jsonapi::unflatten_fn(r),
+                            jsonapi::flatten_fn(r)
+                        ),
+                        None => format!("return httpPut<{ts_ret}>(`/{plural}/${{encodeURIComponent(id)}}`, input);"),
+                    };
                     out.push_str(&format!(
                         "  async {camel}(id: string, input: {input_type}): Promise<{ts_ret}> {{\n\
-                         \x20   return httpPut<{ts_ret}>(`/{plural}/${{encodeURIComponent(id)}}`, input);\n\
+                         \x20   {body}\n\
                          \x20 }},\n\n",
                     ));
                 }
                 OpKind::Delete => {
+                    let path = resource.map_or(plural.as_str(), |r| r.resource_type.as_str());
                     out.push_str(&format!(
                         "  async {camel}(id: string): Promise<null> {{\n\
-                         \x20   await httpDelete(`/{plural}/${{encodeURIComponent(id)}}`);\n\
+                         \x20   await httpDelete(`/{path}/${{encodeURIComponent(id)}}`);\n\
                          \x20   return null;\n\
                          \x20 }},\n\n",
                     ));
