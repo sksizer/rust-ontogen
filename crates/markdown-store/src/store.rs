@@ -51,9 +51,12 @@ type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 ///   record's directory and each ancestor up to the root are regenerated
 ///   under the write lock, each written atomically and only when its bytes
 ///   would change; an index whose directory no longer holds a record is
-///   removed. Regenerating parses the directory's own records and walks the
-///   paths below it, so a write costs O(N) in its directory, in line with
-///   the backend's small-N stance.
+///   removed. Regenerating one index parses the records directly in its
+///   directory and walks each subdirectory only until its first record. A
+///   write regenerates its directory and every ancestor, so it parses the
+///   records that sit directly in each directory on that path; under
+///   [`VaultLayout::Flat`] that is every record in the vault. That fits the
+///   backend's small-N stance.
 /// - [`with_generated_by`](Self::with_generated_by) stamps
 ///   `generated: { by: <actor>, at: <UTC instant> }` (OKF §5.2) on every
 ///   real write.

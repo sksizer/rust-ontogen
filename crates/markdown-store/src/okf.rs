@@ -7,7 +7,7 @@
 //! writing an index whose bytes would not change.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -101,35 +101,42 @@ pub(crate) fn sync_index(dir: &Path, is_root: bool, walk: &WalkOptions) -> Resul
 /// The `index.md` for `dir`, or `None` when no record lives at or below it.
 ///
 /// Lists the directory's own records, grouped by `type`, then the
-/// subdirectories that hold records at any depth. Records are parsed for
-/// their `type`, `title` and `description`; one that cannot be read (not
-/// UTF-8, say) or whose frontmatter does not parse is still listed, untyped
-/// and titled by its id, so a hand-broken file never blocks a write
-/// elsewhere in the directory.
+/// subdirectories that hold records at any depth. Only the directory's own
+/// records are read; a subdirectory is walked just until its first record,
+/// so the root of a deep vault does not cost a walk of every file in it.
+///
+/// Records are parsed for their `type`, `title` and `description`; one that
+/// cannot be read (not UTF-8, say) or whose frontmatter does not parse is
+/// still listed, untyped and titled by its id, so a hand-broken file never
+/// blocks a write elsewhere in the directory.
 pub(crate) fn render_index(dir: &Path, is_root: bool, walk: &WalkOptions) -> Result<Option<String>, Error> {
-    let paths = walk::list_record_paths(dir, walk)?;
-    if paths.is_empty() {
-        return Ok(None);
+    let (records, children) = walk::list_children(dir, walk)?;
+    // A subdirectory's records sit one level deeper than `dir`'s, so the
+    // walk's depth limit, which counts from `dir`, has one level less left.
+    let below = walk.max_depth.map(|d| d.saturating_sub(1));
+    let mut subdirs: Vec<&str> = Vec::new();
+    for child in &children {
+        if let Some(name) = child.file_name().and_then(|n| n.to_str()) {
+            if walk::contains_record(child, walk, below)? {
+                subdirs.push(name);
+            }
+        }
     }
 
     let mut typed: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut untyped: Vec<String> = Vec::new();
-    let mut subdirs: BTreeSet<String> = BTreeSet::new();
-    for path in &paths {
-        let Ok(rel) = path.strip_prefix(dir) else { continue };
-        let mut components = rel.components();
-        let Some(first) = components.next().and_then(|c| c.as_os_str().to_str()) else { continue };
-        if components.next().is_some() {
-            subdirs.insert(first.to_string());
+    for path in &records {
+        let (Some(file), Some(id)) =
+            (path.file_name().and_then(|s| s.to_str()), path.file_stem().and_then(|s| s.to_str()))
+        else {
             continue;
-        }
-        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        };
         let doc = fsops::read(path).ok().and_then(|src| Document::parse(&src).ok());
         let field = |key: &str| doc.as_ref().and_then(|d| d.get(key)).and_then(|v| v.as_str()).map(collapse_whitespace);
         let mut entry = format!(
             "* [{}]({})",
             escape_link_text(&field("title").filter(|t| !t.is_empty()).unwrap_or_else(|| id.to_string())),
-            encode_url(first)
+            encode_url(file)
         );
         if let Some(description) = field("description").filter(|d| !d.is_empty()) {
             entry.push_str(" - ");
@@ -151,6 +158,9 @@ pub(crate) fn render_index(dir: &Path, is_root: bool, walk: &WalkOptions) -> Res
         sections.push(section(DIRECTORIES_HEADING, &entries));
     }
 
+    if sections.is_empty() {
+        return Ok(None);
+    }
     let mut out = String::new();
     if is_root {
         out.push_str(ROOT_FRONTMATTER);
