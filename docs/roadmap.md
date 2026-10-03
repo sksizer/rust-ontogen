@@ -18,7 +18,7 @@ Status legend: `planned` · `in progress` · `shipped`
 
 ---
 
-## M1 — Code-generation core · *in progress*
+## M1 — Code-generation core · *shipped*
 
 Schema parsing, persistence (SeaORM), store with CRUD + lifecycle hooks,
 API forwarding, server transports (HTTP / Tauri IPC / MCP), TypeScript
@@ -27,14 +27,15 @@ stack" foundation that everything else builds on.
 
 | Epic                                                            | Status      |
 |-----------------------------------------------------------------|-------------|
-| [TypeScript bindings pipeline](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/epics/ts-pipeline.md)   | in progress |
+| [TypeScript bindings pipeline](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/epics/ts-pipeline.md)   | shipped     |
 
 **Exit criteria:** a Tauri + frontend consumer can define entities in
 `src/schema/`, write custom API endpoints in `src/api/v1/`, and get a
 generated stack (persistence + store + API + HTTP/IPC/MCP transports +
 TS client with full type bindings) that compiles clean with zero fallback
 warnings, on `cargo build` alone. iron-log demonstrates this end-to-end;
-Pumice validates it on a second consumer.
+Pumice validates it on a second consumer. **Met** — the TS pipeline epic
+closed 2026-05-20 with Pumice validation in #67.
 
 ---
 
@@ -47,7 +48,7 @@ consumers (Pumice, iron-log, future adopters) hit them.
 
 | Epic                                                            | Status  |
 |-----------------------------------------------------------------|---------|
-| [Markdown as a store backend](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0001-markdown-as-store-backend.md) | shipped |
+| [Markdown as a store backend](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/epics/markdown-backend.md) ([ADR 0001](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0001-markdown-as-store-backend.md)) | shipped |
 
 **Exit criteria:** a consumer can swap in an alternative persistence layer
 without touching the rest of the pipeline; the server/client split is
@@ -75,11 +76,41 @@ errors at the wire boundary.
 
 | Epic                                                                            | Status   |
 |---------------------------------------------------------------------------------|----------|
-| [Consumer-controlled HTTP error responses](planning/epics/http-error-mapping.md) | proposed |
+| [Consumer-controlled HTTP error responses](planning/epics/http-error-mapping.md) | proposed (envelope superseded by M4 JSON:API; mapping mechanism stands) |
 
 **Exit criteria:** a consumer can register hooks at any CRUD entry point
 without subclassing or wrapping the store; the wire error shape is
 consumer-controlled rather than ontogen-imposed.
+
+Shipped under this tier without an epic (0.7.0–0.8.0, 2026-09): API
+surfaces with their own store accessor (#156), per-module pagination and
+pushdown into the store (#159, #166, #172), schema enums and labels in the
+admin registry (#160), the docs stage emitting the data-model reference and
+JSON Schema (#161), the admin layer's pickers and packaging (#157, #158),
+and resumable, parameterized event ops on server and client (#184, #185).
+
+---
+
+## M4 — Standard formats · *planned*
+
+Replace the two home-grown formats ontogen exposes to the outside world
+with the open specifications that already cover them. On the wire, the
+generated HTTP transport becomes a JSON:API 1.1 server and the TS transport
+its client; on disk, the markdown backend writes an OKF 0.2 bundle by
+default. Both are licensed by [ADR 0003](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0003-api-design-over-backwards-compatibility.md):
+the break is taken once, without compatibility modes.
+
+| Epic                                                                                       | Status   |
+|--------------------------------------------------------------------------------------------|----------|
+| [JSON:API as the generated HTTP wire format](planning/epics/jsonapi-http-transport.md)     | proposed |
+| [OKF-conformant markdown vaults by default](planning/epics/okf-markdown-vault.md)          | proposed |
+
+**Exit criteria:** a third-party JSON:API client performs CRUD and a
+relationship fetch against an example server with no custom code; every
+example vault passes an OKF conformance check in CI; IPC, MCP and the admin
+layer are unchanged by either. The JSON:API `errors[]` document replaces the
+`{"error"}` body that the M3 error-mapping epic assumed, so that epic's
+envelope section is superseded while its status-mapping mechanism stands.
 
 ---
 
@@ -106,6 +137,9 @@ through consistent practice and through individual task docs.
   · *accepted* — establishes the backend seam, the id-as-filename
   constraint, and the "everything above the store is byte-identical"
   invariant that M2 exits on.
+- [ADR 0003 — API design over backwards compatibility, until 1.0](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0003-api-design-over-backwards-compatibility.md)
+  · *proposed* — pre-1.0, a cleaner surface takes the break: no shims,
+  no compatibility flags. The licence M4 runs on.
 
 ## Planning artefacts
 

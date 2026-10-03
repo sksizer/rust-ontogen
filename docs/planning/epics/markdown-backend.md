@@ -2,16 +2,17 @@
 type: epic
 schema_version: "1"
 id: E0002
-status: in-review
+status: closed/done
 title: Markdown as a first-class store backend (ADR 0001)
 created: 2026-06-06
-last_reviewed: 2026-06-06
+last_reviewed: 2026-10-03
 tags: [markdown-backend, store, adr-0001]
+completion_note: "All 15 stacked PRs (#95–#110, plus #112 backport) merged 2026-07-12. M2 exit criteria met: StoreConfig.backend selects the backend; tests/backend_parity.rs enforces byte-identical output above the store; iron-log-md, tasks-tracker and notes-kb ship as examples; ADR 0001 accepted with amendments in #110. Follow-ups listed in the epic body; the OKF epic (E0005) builds on this."
 ---
 # Epic — Markdown as a first-class store backend
 
 **Milestone:** SDLC integration program, item 0 (dev D-DX1Q / T-YO00)
-**Status:** in-review — all 15 PRs open as a stack, awaiting human review/merge
+**Status:** closed/done — the whole stack (#95–#110) merged 2026-07-12
 **Design sources:** [ADR 0001](../../architecture/0001-markdown-as-store-backend.md) ·
 [campaign design record](../../markdown-backend-campaign.md) ·
 [id-string design note](../../id-string-constraint.md)

@@ -1,9 +1,9 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-09-07'
-last_reviewed: '2026-09-20'
+last_reviewed: '2026-10-03'
 impact: medium
 complexity: medium
 tags:
@@ -12,7 +12,8 @@ tags:
 - dx
 related:
 - 2026-09-07-schema-enums-labels-and-id-type.md
-relevance_note: Part (a) shipped via #157; the rest is in review as #158. Spec ported from the dev monorepo, where it was authored as T-43C1.
+completion_note: |
+  Shipped via #157 (registry path option, merged 2026-09-19) and #158 (relation pickers, enum-select guard, detail-link hook, admin-layer 0.2.0, merged 2026-09-23); released in 0.7.1. Follow-up fixes in #163 and #179 (open, admin-registry indentation).
 ---
 # Admin layer: registry path option, relation pickers, enum selects, detail-link hook, packable tgz
 

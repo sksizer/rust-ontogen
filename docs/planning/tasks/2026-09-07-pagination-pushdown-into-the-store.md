@@ -1,9 +1,9 @@
 ---
 type: task
 schema_version: '3'
-status: in-progress
+status: closed/done
 created: '2026-09-07'
-last_reviewed: '2026-09-20'
+last_reviewed: '2026-10-03'
 impact: medium
 complexity: medium
 tags:
@@ -13,7 +13,8 @@ tags:
 related:
 - 2026-09-07-pagination-declared-per-module.md
 - 2026-09-07-api-surfaces-with-own-store-accessor.md
-relevance_note: In review as #159, with #166 extending it to state-scoped modules and the MCP generator. Spec ported from the dev monorepo, where it was authored as T-P0CH.
+completion_note: |
+  Shipped via #159 (merged 2026-09-21) and #166 (merged 2026-09-22), released in 0.7.0; #172 (2026-09-23, 0.7.1) extended it to filtered lists with a filter-aware count and #173 made the markdown count walk the directory. Follow-up: #178 (open) orders a paginated SQL list before taking its page.
 ---
 # Generated list handlers push limit and offset into the store
 
