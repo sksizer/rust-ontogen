@@ -135,6 +135,8 @@ fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityD
         }
     };
 
+    reject_serde_shape_attrs(&input.attrs).map_err(|e| format!("entity `{name}` in {}: {e}", path.display()))?;
+
     let mut field_defs = Vec::new();
     for field in fields {
         field_defs.push(parse_field(field).map_err(|e| format!("entity `{name}` in {}: {e}", path.display()))?);
@@ -242,6 +244,7 @@ fn parse_struct_ontology_attrs(struct_name: &str, attrs: &[Attribute]) -> Option
 fn parse_field(field: &Field) -> Result<FieldDef, String> {
     let name = field.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
 
+    reject_serde_shape_attrs(&field.attrs).map_err(|e| format!("field `{name}`: {e}"))?;
     let field_type = classify_type(&field.ty);
     let ontology_attrs = parse_field_ontology_attrs(&name, &field.attrs).map_err(|e| format!("field `{name}`: {e}"))?;
     let serde_default = has_serde_default(&field.attrs);
@@ -420,6 +423,39 @@ fn parse_relation_meta(list: &syn::MetaList) -> Result<Option<RelationInfo>, Str
     };
 
     Ok(Some(RelationInfo { kind, target, junction, foreign_key }))
+}
+
+/// Serde attributes that make an entity's serialized shape differ from its
+/// Rust field names. Every layer that names fields on the wire (JSON:API
+/// attributes, the TS bindings, the markdown frontmatter) assumes the two
+/// agree, so an entity may not carry them (wire contract §5.3). `default`
+/// and `deserialize_with` change only deserialization and stay allowed.
+const SERDE_SHAPE_ATTRS: [&str; 9] = [
+    "rename",
+    "rename_all",
+    "alias",
+    "flatten",
+    "skip",
+    "skip_serializing",
+    "skip_serializing_if",
+    "serialize_with",
+    "with",
+];
+
+fn reject_serde_shape_attrs(attrs: &[Attribute]) -> Result<(), String> {
+    for attr in attrs.iter().filter(|a| a.path().is_ident("serde")) {
+        let Ok(nested) = attr.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+        else {
+            continue;
+        };
+        if let Some(key) = nested.iter().find_map(|m| SERDE_SHAPE_ATTRS.into_iter().find(|k| m.path().is_ident(k))) {
+            return Err(format!(
+                "`#[serde({key})]` changes the serialized shape, which entities may not do: their wire member names \
+                 are their Rust field names"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Check if a field has `#[serde(default)]`.
@@ -1297,5 +1333,57 @@ mod tests {
                 f.field_type
             );
         }
+    }
+
+    #[test]
+    fn serde_attrs_that_change_the_shape_are_rejected_on_entities() {
+        for key in SERDE_SHAPE_ATTRS {
+            let attr = match key {
+                "flatten" | "skip" | "skip_serializing" => key.to_string(),
+                _ => format!("{key} = \"x\""),
+            };
+            for (struct_attr, field_attr) in
+                [(format!("#[serde({attr})]"), String::new()), (String::new(), format!("#[serde({attr})]"))]
+            {
+                let src = format!(
+                    "#[derive(OntologyEntity, Serialize)]\n#[ontology(entity)]\n{struct_attr}\npub struct Note {{\n\
+                     #[ontology(id)]\npub id: String,\n{field_attr}\npub title: String,\n}}"
+                );
+                let err = parse_schema_source(&src, Path::new("note.rs")).unwrap_err();
+                assert!(err.contains(&format!("`#[serde({key})]`")) && err.contains("entity `Note`"), "{key}: {err}");
+            }
+        }
+        let err = parse_schema_source(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Note { #[ontology(id)] pub id: String, \
+             #[serde(default, rename(serialize = \"t\"))] pub title: String }",
+            Path::new("note.rs"),
+        )
+        .unwrap_err();
+        assert!(err.contains("field `title`") && err.contains("`#[serde(rename)]`"), "{err}");
+    }
+
+    #[test]
+    fn serde_default_and_deserialize_with_are_allowed_on_entities() {
+        let src = r#"
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            #[serde(deny_unknown_fields)]
+            pub struct Note {
+                #[ontology(id)]
+                pub id: String,
+                #[serde(default, deserialize_with = "lenient")]
+                pub title: String,
+            }
+
+            #[derive(Serialize)]
+            #[serde(rename_all = "camelCase")]
+            pub struct NotAnEntity {
+                #[serde(rename = "x")]
+                pub field: String,
+            }
+        "#;
+        let entities = parse_schema_source(src, Path::new("note.rs")).expect("allowed attrs parse");
+        assert_eq!(entities.len(), 1);
+        assert!(entities[0].fields[1].serde_default);
     }
 }
