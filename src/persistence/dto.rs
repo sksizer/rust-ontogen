@@ -241,13 +241,21 @@ fn field_to_create_type(field: &FieldDef) -> String {
     }
 }
 
-/// Qualify a type with `crate::schema::` unless it's a primitive.
-fn qualify_type(t: &str) -> String {
-    match t {
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32"
-        | "f64" | "bool" | "char" | "String" => t.to_string(),
-        _ => format!("crate::schema::{t}"),
-    }
+/// Qualify a type with `crate::schema::` unless it's a primitive. Shared by
+/// every emitter that spells an `OptionEnum` / `Other` field type, so they
+/// agree that `Option<u32>` stays as written and a schema enum is qualified.
+pub(crate) fn qualify_type(t: &str) -> String {
+    if is_primitive(t) || t == "String" { t.to_string() } else { format!("crate::schema::{t}") }
+}
+
+/// A Rust primitive, and so `Copy`, that a field can name through
+/// `OptionEnum` / `Other`.
+pub(crate) fn is_primitive(t: &str) -> bool {
+    const PRIMITIVES: &[&str] = &[
+        "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64", "bool",
+        "char",
+    ];
+    PRIMITIVES.contains(&t)
 }
 
 /// Generate the `#[serde(default)]` or `#[serde(default = "fn_name")]` attribute for a Create field.
