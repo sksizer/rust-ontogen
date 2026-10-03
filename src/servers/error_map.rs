@@ -111,6 +111,23 @@ pub(crate) fn scan(dir: &Path) -> Result<Option<ErrorMap>, String> {
     Ok(Some(ErrorMap { source, variants }))
 }
 
+/// The build warning for a scan that found no `enum AppError` while API
+/// functions return one: without the enum every such error is a `500`, which
+/// is easy to miss when `dir` is simply the wrong directory. `None` when
+/// nothing is affected.
+pub(crate) fn missing_enum_warning(dir: &Path, affected_fns: &[String]) -> Option<String> {
+    if affected_fns.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "cargo:warning=ontogen: no `enum AppError` found in {}, but {} API function(s) return `AppError` ({}); those \
+         errors will be 500 internal_error",
+        dir.display(),
+        affected_fns.len(),
+        affected_fns.join(", ")
+    ))
+}
+
 fn variant_of(variant: &syn::Variant) -> ErrorVariant {
     let name = variant.ident.to_string();
     let shape = match &variant.fields {
@@ -152,6 +169,15 @@ mod tests {
 
     fn summary(map: &ErrorMap) -> Vec<(&str, &str, u16, VariantShape)> {
         map.variants.iter().map(|v| (v.name.as_str(), v.code.as_str(), v.status, v.shape)).collect()
+    }
+
+    #[test]
+    fn missing_enum_warning_names_the_directory_and_the_functions() {
+        assert_eq!(missing_enum_warning(Path::new("src/schema"), &[]), None);
+        let warning = missing_enum_warning(Path::new("src/schema"), &["task::get_by_id".to_string()]).unwrap();
+        assert!(warning.starts_with("cargo:warning="), "{warning}");
+        assert!(warning.contains("src/schema") && warning.contains("task::get_by_id"), "{warning}");
+        assert!(warning.contains("500 internal_error"), "{warning}");
     }
 
     #[test]

@@ -460,7 +460,7 @@ Surfaced during the analysis; none block this epic:
 To be split into `tasks/` files when the epic is accepted; the intended
 PR-sized cuts are the phases above:
 
-- [x] Phase 0 — consolidate error-map emission (refactor, zero snapshot drift) — done in E0004 phase 1b ([#200](https://github.com/sksizer/rust-ontogen/pull/200))
+- [x] Phase 0 — consolidate error-map emission (refactor, zero snapshot drift) — done in E0004 phase 1b ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); its "missing junction param → 400" lands with E0004 phase 3a (contract §9.2: a junction add without its child id is a relationship body with no `data`)
 - [x] Phase 1 — error-enum scan + 404/400 defaults + pilot wire tests + example regen — done in E0004 phase 1b ([#200](https://github.com/sksizer/rust-ontogen/pull/200))
 - [ ] Phase 2 — `HttpError` derive + `#[http(status)]` + docs pass
 - [ ] Phase 3 — `error_handler` full-override hook (+ optional scaffold)
