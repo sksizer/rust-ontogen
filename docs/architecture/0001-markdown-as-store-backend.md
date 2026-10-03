@@ -222,6 +222,7 @@ doesn't need to know which backend it talks to:
    change the generated `list_*` signature and violate item 5's
    byte-identical invariant, which wins. An ordering parameter, if ever
    needed, is a future ADR that changes both backends together.)*
+   *(Superseded by ADR 0006 — see amendment 9.)*
 
 4. **Hook lifecycle (`before_create`, `after_create`, etc.) fires
    identically on both backends.** The hook surface stays exactly as
@@ -468,3 +469,13 @@ gates. Where the body text conflicts with this list, this list wins.
 every record now carries a generator-owned `type` key, `index` and `log` are
 reserved ids, and the `Flat` layout filters by `type`. Reserved frontmatter
 keys and `frontmatter_name` are also covered there.
+
+## Amendment (2026-10-03): ordering
+
+9. **Ordering is specified by ADR 0006.** Contract item 3 and amendment 4
+   are superseded by
+   [ADR 0006](0006-ordering-on-both-store-backends.md), which adds an
+   `order` argument to `list_*` on both backends together and fixes the
+   default order to id ascending on both. Item 5 is kept: the new
+   signature is emitted identically for both backends. Where item 3's text
+   conflicts with ADR 0006, ADR 0006 wins.

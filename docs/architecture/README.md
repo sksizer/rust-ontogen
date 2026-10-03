@@ -8,7 +8,9 @@ accumulates as decisions earn their keep.
 | [0001](0001-markdown-as-store-backend.md) | Markdown as a first-class store backend | accepted (2026-06-06) |
 | 0002 | Extended JSON Schema front end — reserved by [T-66TG](../planning/tasks/T-66TG-adr-0002-extended-json-schema-front-end.md), not yet written | — |
 | [0003](0003-api-design-over-backwards-compatibility.md) | API design over backwards compatibility, until 1.0 | proposed (2026-09-25) |
+| [0004](0004-jsonapi-http-wire-format.md) | JSON:API 1.1 as the generated HTTP wire format | proposed (2026-10-03) |
 | [0005](0005-okf-markdown-vaults.md) | OKF-conformant markdown vaults | accepted (2026-10-03) |
+| [0006](0006-ordering-on-both-store-backends.md) | Ordering (`OrderBy`) on both store backends | proposed (2026-10-03) |
 
 ## When to file an ADR
 
