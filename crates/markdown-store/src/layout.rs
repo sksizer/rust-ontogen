@@ -204,6 +204,20 @@ pub fn validate_lookup_id(id: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// The device names Windows also reserves with a superscript digit. No
+/// created id can contain one (the create rule is ASCII), so only the
+/// lookup guard and [`validate_segment`] need them.
+const SUPERSCRIPT_DEVICE_NAMES: &[&str] = &["com¹", "com²", "com³", "lpt¹", "lpt²", "lpt³"];
+
+/// Whether Windows treats `name`, or the part of it before its first `.`,
+/// as a device: one of [`DEVICE_NAMES`] (see [`is_device_name`]) or a
+/// `COM`/`LPT` with a superscript digit 1-3, compared ASCII
+/// case-insensitively.
+pub(crate) fn is_windows_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+    is_device_name(stem) || SUPERSCRIPT_DEVICE_NAMES.iter().any(|d| d.eq_ignore_ascii_case(stem))
+}
+
 /// Validate an entity directory segment, reported as
 /// [`Error::InvalidSegment`].
 ///
@@ -213,7 +227,8 @@ pub fn validate_lookup_id(id: &str) -> Result<(), Error> {
 /// `.` and `..`; a leading `.` (hidden files are skipped by the default
 /// walk, so a dot-leading record would be written but never listed); and a
 /// trailing `.` or space (silently stripped by Windows, aliasing two names
-/// onto one file); and a device name (see [`is_device_name`]), which
+/// onto one file); and a Windows device name (see [`is_device_name`],
+/// plus `COM` and `LPT` with a superscript digit 1-3), which
 /// Windows cannot create as a directory, refused on every platform so a
 /// vault laid out on Linux also checks out on Windows. Unlike ids, `index`
 /// and `log` are fine: OKF reserves them as filenames, not as directory
@@ -221,7 +236,7 @@ pub fn validate_lookup_id(id: &str) -> Result<(), Error> {
 pub fn validate_segment(segment: &str) -> Result<(), Error> {
     let invalid = |reason: String| Error::InvalidSegment { segment: segment.to_string(), reason };
     validate_stem(segment).map_err(invalid)?;
-    if is_device_name(segment) {
+    if is_windows_device_name(segment) {
         return Err(invalid(DEVICE_NAME_REASON.into()));
     }
     Ok(())
@@ -408,9 +423,21 @@ mod tests {
     }
 
     #[test]
+    fn superscript_device_names_are_windows_devices_but_not_created_ids() {
+        for device in ["com¹", "COM²", "com³.x", "lpt¹", "Lpt²", "LPT³.md"] {
+            assert!(is_windows_device_name(device), "{device:?}");
+            assert!(!is_device_name(device), "{device:?}: the ASCII list is the one the create rule shares");
+            assert!(validate_id(device).is_err(), "{device:?}: non-ASCII, so never created");
+        }
+        for fine in ["com⁴", "com¹x", "x.com¹", "lpt⁰"] {
+            assert!(!is_windows_device_name(fine), "{fine:?}");
+        }
+    }
+
+    #[test]
     fn device_names_are_refused_as_directory_segments() {
         let layout = VaultLayout::PerEntityDir;
-        for device in ["con", "NUL", "com0", "Lpt9", "aux.d"] {
+        for device in ["con", "NUL", "com0", "Lpt9", "aux.d", "com¹", "LPT³"] {
             let err = layout.entity_dir(Path::new("v"), device).unwrap_err();
             assert_eq!(err.to_string(), format!("invalid path segment {device:?}: {DEVICE_NAME_REASON}"));
             assert!(

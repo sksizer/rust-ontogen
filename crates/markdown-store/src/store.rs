@@ -723,9 +723,10 @@ impl VaultHandle {
 }
 
 /// Whether a lookup of `id` must not open its file: `windows` is set and
-/// the id, or its part before the first `.`, is a device name.
+/// the id, or its part before the first `.`, is a Windows device name,
+/// superscript `COM¹`-`LPT³` forms included.
 fn lookup_is_device(id: &str, windows: bool) -> bool {
-    windows && crate::layout::is_device_name(id)
+    windows && crate::layout::is_windows_device_name(id)
 }
 
 /// One entity's records within a vault, from [`VaultHandle::entity`].
@@ -1056,11 +1057,11 @@ mod tests {
 
     #[test]
     fn only_a_windows_lookup_of_a_device_name_skips_the_file() {
-        for device in ["con", "NUL", "nul.x", "Com0", "lpt9.md", "aux.a.b"] {
+        for device in ["con", "NUL", "nul.x", "Com0", "lpt9.md", "aux.a.b", "com¹", "COM²", "lpt³.x", "Lpt¹"] {
             assert!(lookup_is_device(device, true), "{device:?}");
             assert!(!lookup_is_device(device, false), "{device:?}");
         }
-        for fine in ["console", "con-2", "a.con", "com10", "Draft"] {
+        for fine in ["console", "con-2", "a.con", "com10", "Draft", "com⁴", "lpt¹x", "x.com¹"] {
             assert!(!lookup_is_device(fine, true), "{fine:?}");
         }
     }

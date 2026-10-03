@@ -117,9 +117,11 @@ A new id also cannot be a Windows device name (`con`, `prn`, `aux`, `nul`,
 part before its first `.`. Windows has no file of that name, so `con.md` could
 not exist there. A slug that comes out as `con` becomes `con-2`. The rule
 applies to creates only: on Linux and macOS an existing `con.md` stays listed
-and reachable. On Windows, a lookup of such an id is NotFound without opening any file, because
+and reachable. On Windows, a lookup of such an id, or of a superscript form
+(`com¹`-`com³`, `lpt¹`-`lpt³`), is NotFound without opening any file, because
 opening `con.md` there opens the console device. See
-[Creating records](/guides/store-layer/#creating-records) for the whole id rule.
+[Creating records](/guides/store-layer/#creating-records) for the whole id
+rule.
 
 An entity directory cannot be a device name either. With
 `MarkdownLayout::PerEntityDir`, `gen_markdown_io` fails when an entity's
