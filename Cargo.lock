@@ -876,6 +876,8 @@ dependencies = [
  "axum",
  "markdown-store",
  "ontogen",
+ "ontogen-core",
+ "ontogen-jsonapi",
  "ontogen-macros",
  "schemars",
  "serde",

@@ -85,11 +85,9 @@ pub struct Config {
 
     /// The schema's entities as JSON:API resources. A module is served as a
     /// resource exactly when this has a resource for its name.
-    #[allow(dead_code)] // read by the JSON:API HTTP emitter
     pub(crate) resources: ResourceModel,
 
     /// The `AppError` found under `error_source_dir`, if any.
-    #[allow(dead_code)] // read by the JSON:API HTTP emitter
     pub(crate) error_map: Option<ErrorMap>,
 }
 

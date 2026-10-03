@@ -12,14 +12,12 @@ use crate::servers::NamingConfig;
 
 /// Every entity of the schema as a JSON:API resource, in schema order.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)] // read by the JSON:API HTTP and TS emitters
 pub(crate) struct ResourceModel {
     resources: Vec<Resource>,
 }
 
 /// One entity served as a resource.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // read by the JSON:API HTTP and TS emitters
 pub(crate) struct Resource {
     pub entity: EntityDef,
     /// The API module serving the entity: the entity name in snake_case, as
@@ -39,7 +37,7 @@ pub(crate) struct Resource {
 
 /// A field served under `attributes`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // read by the JSON:API HTTP and TS emitters
+#[allow(dead_code)] // read by the JSON:API TS emitter
 pub(crate) struct Attribute {
     /// The member name: the field name without any `r#` prefix, as serde
     /// writes it.
@@ -57,7 +55,7 @@ pub(crate) struct Attribute {
 
 /// A relation field served under `relationships`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // read by the JSON:API HTTP and TS emitters
+#[allow(dead_code)] // read by the JSON:API TS emitter
 pub(crate) struct Relationship {
     /// The member name and `/relationships/{rel}` segment: a `belongs_to`
     /// field loses an `_id` suffix (`epic_id` → `epic`), every other relation
@@ -87,7 +85,7 @@ pub(crate) enum Arity {
     ToMany,
 }
 
-#[allow(dead_code)] // read by the JSON:API HTTP and TS emitters
+#[allow(dead_code)] // read by the JSON:API TS emitter
 impl ResourceModel {
     /// Build the model, checking the rules of contract §5.2–§5.4 that the
     /// schema parser cannot check alone.
@@ -126,7 +124,7 @@ impl ResourceModel {
     }
 }
 
-#[allow(dead_code)] // read by the JSON:API HTTP and TS emitters
+#[allow(dead_code)] // read by the JSON:API TS emitter
 impl Resource {
     pub fn attribute(&self, name: &str) -> Option<&Attribute> {
         self.attributes.iter().find(|a| a.name == name)
@@ -137,7 +135,6 @@ impl Resource {
     }
 }
 
-#[allow(dead_code)] // read by the JSON:API HTTP and TS emitters
 impl Relationship {
     pub fn is_to_many(&self) -> bool {
         self.arity == Arity::ToMany

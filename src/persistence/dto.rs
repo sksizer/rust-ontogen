@@ -220,7 +220,7 @@ where
 }
 
 /// Map a field to its Rust type for the Create DTO.
-fn field_to_create_type(field: &FieldDef) -> String {
+pub(crate) fn field_to_create_type(field: &FieldDef) -> String {
     match &field.field_type {
         FieldType::String => "String".to_string(),
         FieldType::OptionString => "Option<String>".to_string(),
@@ -268,31 +268,44 @@ fn generate_serde_default_attr(field: &FieldDef) -> String {
         // that require caller-supplied ids keep passing them.
         FieldRole::Id => "    #[serde(default)]\n".to_string(),
         _ => {
-            let needs_default = field.serde_default
-                || matches!(
-                    field.field_type,
-                    FieldType::OptionString
-                        | FieldType::OptionI32
-                        | FieldType::OptionI64
-                        | FieldType::OptionF32
-                        | FieldType::OptionF64
-                        | FieldType::OptionBool
-                        | FieldType::OptionEnum(_)
-                        | FieldType::VecString
-                        | FieldType::VecStruct(_)
-                );
-
             if field.default_value.is_some() {
                 // Generate serde(default = "fn_name") pointing to an inline function
                 let fn_name = format!("default_{}", field.name);
                 format!("    #[serde(default = \"{fn_name}\")]\n",)
-            } else if needs_default {
+            } else if create_field_needs_default(field) {
                 "    #[serde(default)]\n".to_string()
             } else {
                 String::new()
             }
         }
     }
+}
+
+fn create_field_needs_default(field: &FieldDef) -> bool {
+    field.serde_default
+        || matches!(
+            field.field_type,
+            FieldType::OptionString
+                | FieldType::OptionI32
+                | FieldType::OptionI64
+                | FieldType::OptionF32
+                | FieldType::OptionF64
+                | FieldType::OptionBool
+                | FieldType::OptionEnum(_)
+                | FieldType::VecString
+                | FieldType::VecStruct(_)
+        )
+}
+
+/// Whether deserializing `Create{Entity}Input` fails when `field` is absent:
+/// it has no serde default and its type is not an `Option`, which serde
+/// defaults to `None` without one. The JSON:API create handler reports such
+/// a field as missing before it builds the input.
+pub(crate) fn create_field_required(field: &FieldDef) -> bool {
+    !matches!(field.role, FieldRole::Id)
+        && field.default_value.is_none()
+        && !create_field_needs_default(field)
+        && !field_to_create_type(field).starts_with("Option<")
 }
 
 /// Generate default value helper functions that serde(default = "fn_name") references.

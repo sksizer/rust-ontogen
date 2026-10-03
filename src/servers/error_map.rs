@@ -13,7 +13,6 @@ use ontogen_jsonapi::ErrorCode;
 
 /// The consumer's `AppError` enum, one entry per variant in declaration order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // read by the JSON:API HTTP emitter
 pub(crate) struct ErrorMap {
     /// The file the enum was found in.
     pub source: PathBuf,
@@ -22,7 +21,6 @@ pub(crate) struct ErrorMap {
 
 /// One `AppError` variant and the error object it becomes on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // read by the JSON:API HTTP emitter
 pub(crate) struct ErrorVariant {
     /// The Rust variant name (`TaskNotFound`).
     pub name: String,
@@ -41,7 +39,6 @@ pub(crate) enum VariantShape {
     Struct,
 }
 
-#[allow(dead_code)] // read by the JSON:API HTTP emitter
 impl ErrorVariant {
     /// A pattern matching this variant whatever its fields, e.g.
     /// `AppError::TaskNotFound(..)` for `enum_path` `AppError`.

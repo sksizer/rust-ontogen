@@ -428,6 +428,12 @@ pub(crate) fn imported_names(source: &str) -> Vec<String> {
     names
 }
 
+/// `source` without whitespace or trailing commas, so an assertion on
+/// generated code does not depend on where rustfmt breaks a line.
+pub(crate) fn compact(source: &str) -> String {
+    source.split_whitespace().collect::<String>().replace(",]", "]").replace(",)", ")")
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // types.rs - Pure function tests
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2223,7 +2229,10 @@ fn test_http_generator_parameterized_event() {
     crate::servers::generators::http::generate(&output, &[make_param_event_module()], &config);
     let content = std::fs::read_to_string(&output).unwrap();
 
-    assert!(content.contains(".route(\"/api/events/vault-note-changes/{vault_id}\", get(vault_note_changes_sse))"));
+    assert!(compact(&content).contains(&compact(
+        ".route(\"/api/events/vault-note-changes/{vault_id}\", \
+         get(vault_note_changes_sse).fallback(allow([Method::GET])))"
+    )));
     assert!(content.contains("Path(vault_id): Path<String>"), "required param rides the path");
     assert!(content.contains("struct VaultNotesVaultNoteChangesEventQuery"), "optional params ride the query");
     assert!(content.contains("headers.get(\"last-event-id\")"), "Last-Event-ID feeds resume");
@@ -2900,6 +2909,16 @@ fn test_http_generator_junction_module() {
     // Handler functions should use singular entity prefix.
     assert!(content.contains("async fn destination_skill_add_skill("));
     assert!(content.contains("async fn destination_skill_list_skills("));
+
+    // A body without the child id is the client's mistake: a 400 error
+    // document, not a 500.
+    assert!(
+        compact(&content).contains(&compact(
+            ".ok_or_else(|| ErrorObject::new(ErrorCode::InvalidDocument, \"`skill_id` is required\"))?;"
+        )),
+        "a missing child id is a 400:\n{content}"
+    );
+    assert!(!content.contains("ErrorResponse"), "no `{{error}}` bodies remain:\n{content}");
 
     // Regression guards - no old-style custom URLs.
     assert!(
@@ -3936,8 +3955,8 @@ pub async fn get_count(store: &Store) -> Result<i64, anyhow::Error> { todo!() }
     // ideal but separate from OF-016. The OF-016 contract is "route is
     // POST + body extraction" and "no Path<String> stuffing of the struct".
     for (route_post, body_extraction) in &[
-        ("post(export_get_filtered_sessions)", "Json(body): Json<ExportGetFilteredSessionsBody>"),
-        ("post(export_get_summary)", "Json(body): Json<ExportGetSummaryBody>"),
+        ("post(export_get_filtered_sessions)", "body: Result<Json<ExportGetFilteredSessionsBody>, JsonRejection>"),
+        ("post(export_get_summary)", "body: Result<Json<ExportGetSummaryBody>, JsonRejection>"),
     ] {
         assert!(
             content.contains(route_post),
@@ -3990,7 +4009,7 @@ pub async fn get_count(store: &Store) -> Result<i64, anyhow::Error> { todo!() }
         "OF-016: `get_recent(since: Option<String>)` should stay GET, got:\n{content}"
     );
     assert!(
-        content.contains("Query(q): Query<ExportGetRecentQuery>"),
+        content.contains("q: Result<axum::extract::Query<ExportGetRecentQuery>, QueryRejection>"),
         "OF-016: `get_recent` should keep Query extraction, got:\n{content}"
     );
 
@@ -4663,11 +4682,11 @@ fn test_two_surfaces_emit_each_accessor() {
 
     let http = std::fs::read_to_string(&http_out).unwrap();
     assert!(
-        http.contains("let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;"),
+        http.contains("let store = state.fitness_store().await.map_err(internal_error)?;"),
         "second-surface handlers open the store through the surface accessor:\n{http}"
     );
     assert!(
-        http.contains("let store = state.store().await.map_err(|e| err(e.to_string()))?;"),
+        http.contains("let store = state.store().await.map_err(internal_error)?;"),
         "primary-surface handlers keep the default accessor:\n{http}"
     );
     assert!(http.contains("athlete::list(&store)"), "primary store module calls through its own name:\n{http}");
@@ -4704,13 +4723,14 @@ fn test_two_surfaces_merge_same_named_module() {
 
     let http = std::fs::read_to_string(&http_out).unwrap();
     for route in [
-        ".route(\"/api/workouts\", get(workout_list).post(workout_create))",
-        ".route(\"/api/workouts/{id}\", get(workout_get_by_id).put(workout_update).delete(workout_delete))",
-        ".route(\"/api/workouts/start\", post(workout_start))",
-        ".route(\"/api/workouts/summary/{id}\", get(workout_get_summary))",
-        ".route(\"/api/exercises\", get(exercise_list).post(exercise_create))",
+        ".route(\"/api/workouts\", get(workout_list).post(workout_create).fallback(allow([Method::GET, Method::POST])))",
+        ".route(\"/api/workouts/{id}\", get(workout_get_by_id).put(workout_update).delete(workout_delete)\
+         .fallback(allow([Method::GET, Method::PUT, Method::DELETE])))",
+        ".route(\"/api/workouts/start\", post(workout_start).fallback(allow([Method::POST])))",
+        ".route(\"/api/workouts/summary/{id}\", get(workout_get_summary).fallback(allow([Method::GET])))",
+        ".route(\"/api/exercises\", get(exercise_list).post(exercise_create).fallback(allow([Method::GET, Method::POST])))",
     ] {
-        assert!(http.contains(route), "expected route {route} in:\n{http}");
+        assert!(compact(&http).contains(&compact(route)), "expected route {route} in:\n{http}");
     }
     assert!(http.contains("workout as workout_1"), "second surface's workout is aliased:\n{http}");
     assert!(http.contains("workout_1::list(&store)"), "CRUD handlers call through the alias:\n{http}");
@@ -4826,7 +4846,7 @@ fn test_mixed_module_routes_are_per_fn_and_order_independent() {
         let http = std::fs::read_to_string(&output).unwrap();
 
         assert!(
-            http.contains(".route(\"/api/workouts/start\", post(workout_start))"),
+            http.contains(".route(\"/api/workouts/start\", post(workout_start).fallback(allow([Method::POST])))"),
             "state-scoped fn keeps its unscoped route:\n{http}"
         );
         assert!(http.contains("workout::start(&state, input)"), "state-scoped fn takes &state:\n{http}");
@@ -4835,7 +4855,8 @@ fn test_mixed_module_routes_are_per_fn_and_order_independent() {
             "store-scoped CRUD gets no unscoped routes:\n{http}"
         );
         assert!(
-            http.contains(".route(\"/api/projects/{project_id}/workouts\", get(list_workouts_scoped)"),
+            compact(&http)
+                .contains(&compact(".route(\"/api/projects/{project_id}/workouts\", get(list_workouts_scoped)")),
             "store-scoped CRUD gets scoped routes:\n{http}"
         );
         assert!(!http.contains("start_scoped"), "state-scoped fn gets no scoped route:\n{http}");
@@ -5277,4 +5298,295 @@ fn test_ts_transport_event_subscriptions() {
     assert!(content.contains("'vault-note-changes',\n        args.resume ?? null,"));
     assert!(content.contains("subscribeIpc('vault_note_changes_subscribe', 'vault_note_changes_unsubscribe'"));
     assert!(!content.contains("import { listen }"), "no legacy op, no global listener");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JSON:API resources (wire contract §5–§8, §13)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const RESOURCE_SCHEMA: &str = r#"
+    #[derive(OntologyEntity)]
+    #[ontology(entity)]
+    pub struct Epic {
+        #[ontology(id)]
+        pub id: String,
+        pub title: String,
+    }
+
+    #[derive(OntologyEntity)]
+    #[ontology(entity)]
+    pub struct Tag {
+        #[ontology(id)]
+        pub id: String,
+        pub title: String,
+    }
+
+    #[derive(OntologyEntity)]
+    #[ontology(entity)]
+    pub struct Task {
+        #[ontology(id)]
+        pub id: String,
+        pub title: String,
+        pub notes: Option<String>,
+        #[serde(default)]
+        pub done: bool,
+        #[ontology(relation(belongs_to, target = "Epic"))]
+        pub epic_id: Option<String>,
+        #[ontology(relation(many_to_many, target = "Tag"))]
+        pub tags: Vec<String>,
+        #[ontology(body)]
+        pub body: String,
+    }
+"#;
+
+const RESOURCE_APP_ERROR: &str = "
+pub enum AppError {
+    TaskNotFound(String),
+    TaskIdRequired(String),
+    TaskAlreadyExists(String),
+    EpicNotFound(String),
+    TagNotFound(String),
+    DbError(String),
+}
+";
+
+/// The paged CRUD module `gen_api` emits for `entity`, returning `AppError`.
+fn app_error_crud_source(entity: &str) -> String {
+    paged_crud_module_source(entity, "Store").replace("anyhow::Error", "AppError")
+}
+
+/// A config serving `task`, `epic` and `tag` as resources, plus `report`,
+/// a module with CRUD-named fns and no entity behind it. Every module
+/// paginates. With `app_error`, the schema directory declares `AppError`.
+pub(crate) fn resource_fixture(root: &std::path::Path, app_error: bool) -> Config {
+    let api_dir = root.join("api");
+    for entity in ["task", "epic", "tag", "report"] {
+        write_synthetic_api(&api_dir, &format!("{entity}.rs"), &app_error_crud_source(entity));
+    }
+    let schema_dir = root.join("schema");
+    write_synthetic_api(&schema_dir, "mod.rs", if app_error { RESOURCE_APP_ERROR } else { "" });
+
+    let entities =
+        crate::schema::parse::parse_schema_source(RESOURCE_SCHEMA, std::path::Path::new("schema.rs")).unwrap();
+    let mut config = test_config(api_dir);
+    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming).unwrap();
+    config.error_map = crate::servers::error_map::scan(&schema_dir).unwrap();
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+    config
+}
+
+/// Run `generate_transport` with only the HTTP generator and read its output.
+fn generate_http(root: &std::path::Path, mut config: Config) -> String {
+    let output = root.join("http.rs");
+    config.generators = vec![ServerGenerator::HttpAxum { output: output.clone() }];
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+    std::fs::read_to_string(output).unwrap()
+}
+
+#[test]
+fn a_resource_module_is_served_as_jsonapi() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), resource_fixture(tmp.path(), true));
+    let flat = compact(&http);
+
+    for route in [
+        ".route(\"/api/tasks\", get(task_list).post(task_create).fallback(allow([Method::GET, Method::POST])))",
+        ".route(\"/api/tasks/{id}\", get(task_get_by_id).patch(task_update).delete(task_delete)\
+         .fallback(allow([Method::GET, Method::PATCH, Method::DELETE])))",
+    ] {
+        assert!(flat.contains(&compact(route)), "expected {route} in:\n{http}");
+    }
+    assert!(!flat.contains("put(task_update)"), "PATCH replaces PUT (§8.3):\n{http}");
+
+    // Extractors in §13.2 order.
+    let create = &http[http.find("async fn task_create(").unwrap()..];
+    let create = &create[..create.find("\n}\n").unwrap()];
+    let order = ["_: AcceptGuard", "_: ContentTypeGuard", "_: Query<NoParams>", "body: Body"];
+    let at: Vec<usize> = order.iter().map(|x| create.find(x).unwrap_or_else(|| panic!("{x} in {create}"))).collect();
+    assert!(at.windows(2).all(|w| w[0] < w[1]), "extractors in check order:\n{create}");
+    assert!(http.contains("Path(id): Path<LookupKey>,\n    _: Query<NoParams>,\n    body: Body,"));
+
+    // Documents and links come from the runtime crate.
+    assert!(
+        flat.contains(&compact(
+            "let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);"
+        ))
+    );
+    assert!(flat.contains(&compact("with_meta(PageMeta { total, limit, offset })")));
+    assert!(flat.contains(&compact("let (offset, limit) = page(&query, 20, 100)?;")));
+    assert!(flat.contains(&compact("task::list(&store, Some(u64::from(limit)), Some(u64::from(offset)))")));
+    assert!(flat.contains(&compact("Ok(response::created(&location, &Document::new(resource, links)))")));
+    assert!(flat.contains(&compact("Ok(response::no_content())")));
+    assert!(flat.contains(&compact("ontogen_core::id::validate_id(id).map_err(|e| e.reason)")));
+
+    // Attributes split from relationships (§5.3, §5.4), `data` only.
+    assert!(http.contains("attributes.serialize_field(\"title\", &self.0.title)?;"));
+    assert!(!http.contains("serialize_field(\"epic_id\""), "a relation field is not an attribute:\n{http}");
+    assert!(flat.contains(&compact(
+        ".with_relationship(\"epic\", Relationship::from_data(Linkage::ToOne(entity.epic_id.as_ref()\
+         .map(|id| ResourceIdentifier::new(\"epics\", id.as_str())))))"
+    )));
+    assert!(!http.contains("Relationship::new("), "no relationship links before phase 3a:\n{http}");
+
+    // Requiredness follows `CreateTaskInput`: `title` and `body` have no
+    // default, `notes` is an `Option` and `done` carries `#[serde(default)]`.
+    for (attribute, ty, required) in
+        [("title", "String", "create"), ("notes", "Option<String>", "false"), ("done", "bool", "false")]
+    {
+        let line = format!("request::attribute::<{ty}>(attributes, \"{attribute}\", {required})?");
+        assert!(flat.contains(&compact(&line)), "expected {line} in:\n{http}");
+    }
+    assert!(flat.contains(&compact(
+        "request::check_attribute_names(attributes, \"tasks\", &[\"title\", \"notes\", \"done\", \"body\"], \
+         &[(\"epic_id\", \"epic\"), (\"tags\", \"tags\")])?;"
+    )));
+
+    // Step 8: each linked id is looked up with its target's `get_by_id`.
+    assert!(flat.contains(&compact(
+        "if let Some(linked) = &linked.epic { match epic::get_by_id(&store, &linked.id).await { Ok(_) => {} \
+         Err(crate::schema::AppError::EpicNotFound(..)) => return Err(linked.not_found(\"epics\")), \
+         Err(e) => return Err(app_error(e)), } }"
+    )));
+    assert!(flat.contains(&compact("for linked in &linked.tags {")));
+
+    // A duplicate client id points at it (§8.2).
+    assert!(flat.contains(&compact("e @ crate::schema::AppError::TaskAlreadyExists(..) if data.id.is_some() =>")));
+    assert!(flat.contains(&compact("app_error(e).with_pointer(\"/data/id\")")));
+    assert!(!http.contains("ErrorResponse") && !http.contains("fn err("), "no `{{error}}` bodies:\n{http}");
+}
+
+#[test]
+fn the_app_error_scan_becomes_one_mapping_fn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), resource_fixture(tmp.path(), true));
+    let flat = compact(&http);
+
+    assert!(http.contains("fn app_error(e: crate::schema::AppError) -> ErrorObject {"));
+    for arm in [
+        "crate::schema::AppError::TaskNotFound(..) => (StatusCode::NOT_FOUND, \"task_not_found\"),",
+        "crate::schema::AppError::TaskIdRequired(..) => (StatusCode::BAD_REQUEST, \"task_id_required\"),",
+        "crate::schema::AppError::TaskAlreadyExists(..) => (StatusCode::CONFLICT, \"task_already_exists\"),",
+        "crate::schema::AppError::DbError(..) => (StatusCode::INTERNAL_SERVER_ERROR, \"db_error\"),",
+    ] {
+        assert!(flat.contains(&compact(arm)), "expected {arm} in:\n{http}");
+    }
+    assert!(http.contains("ErrorObject::app(status, code, e.to_string())"), "detail is the Display text");
+    // AppError-typed calls map through it; store construction does not.
+    assert!(flat.contains(&compact("task::get_by_id(&store, task_lookup_key(&id)?).await.map_err(app_error)?;")));
+    assert!(http.contains("let store = state.store().await.map_err(internal_error)?;"));
+    // An `{id}` that does not decode is the entity's own 404.
+    assert!(flat.contains(&compact(
+        "id.as_str().ok_or_else(|| app_error(crate::schema::AppError::TaskNotFound(id.to_string())))"
+    )));
+}
+
+#[test]
+fn without_an_app_error_every_app_error_site_is_a_500() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = resource_fixture(tmp.path(), false);
+    assert!(config.error_map.is_none());
+    let http = generate_http(tmp.path(), config);
+
+    assert!(http.contains("fn app_error(e: impl std::fmt::Display) -> ErrorObject {\n    ErrorObject::internal("));
+    assert!(!http.contains("AppError::"), "no variant is matched:\n{http}");
+    assert!(!http.contains(".not_found(\"epics\")"), "a missing link cannot be told from a failure:\n{http}");
+}
+
+#[test]
+fn a_module_with_no_entity_keeps_its_handlers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), resource_fixture(tmp.path(), true));
+    let flat = compact(&http);
+
+    assert!(
+        flat.contains(&compact(
+            ".route(\"/api/reports/{id}\", get(report_get_by_id).put(report_update).delete(report_delete)\
+             .fallback(allow([Method::GET, Method::PUT, Method::DELETE])))"
+        )),
+        "an entity-less module keeps PUT until phase 1c:\n{http}"
+    );
+    assert!(http.contains("Result<Json<PaginatedResult<Report>>, ErrorObject>"), "and its success shape:\n{http}");
+    assert!(http.contains("input: Result<Json<UpdateReportInput>, JsonRejection>"), "its body stays flat JSON");
+    assert!(
+        flat.contains(&compact("report::update(&store, &id, input).await.map(Json).map_err(app_error)")),
+        "its errors are error documents:\n{http}"
+    );
+    assert!(!http.contains("report_as_resource"), "no resource helpers for it:\n{http}");
+}
+
+#[test]
+fn scoped_resource_routes_carry_the_prefix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = resource_fixture(tmp.path(), true);
+    config.route_prefix = test_config_with_prefix(PathBuf::new()).route_prefix;
+    let http = generate_http(tmp.path(), config);
+    let flat = compact(&http);
+
+    assert!(flat.contains(&compact(
+        ".route(\"/api/projects/{project_id}/tasks/{id}\", get(get_task_by_id_scoped)\
+         .patch(update_task_handler_scoped).delete(delete_task_handler_scoped)\
+         .fallback(allow([Method::GET, Method::PATCH, Method::DELETE])))"
+    )));
+    assert!(http.contains("Path((project_id, id)): Path<(uuid::Uuid, LookupKey)>,"));
+    assert!(http.contains("Path(project_id): Path<uuid::Uuid>,"));
+    assert!(flat.contains(&compact(
+        "let collection = &format!(\"/api/projects/{}/tasks\", encode_path_segment(&project_id.to_string()));"
+    )));
+    assert!(http.contains("let store = state.store_for(&project_id).map_err(internal_error)?;"));
+    // The scoped list pages through the store like the unscoped one.
+    assert!(flat.contains(&compact("let total = task::count(&store).await.map_err(app_error)?;")));
+    assert!(!flat.contains(&compact(".route(\"/api/tasks\"")), "store-scoped CRUD has no unscoped route:\n{http}");
+}
+
+#[test]
+fn server_metadata_routes_a_resource_update_as_patch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = resource_fixture(tmp.path(), true);
+    let modules = crate::servers::generate_transport(&config).unwrap();
+    let meta = crate::servers::extract_server_metadata(&modules, &config);
+    let route = |handler: &str| {
+        let r = meta.http_routes.iter().find(|r| r.handler_name == handler).unwrap();
+        (r.method.clone(), r.path.clone())
+    };
+    assert_eq!(route("task_update"), ("PATCH".to_string(), "/api/tasks/{id}".to_string()));
+    assert_eq!(route("report_update"), ("PUT".to_string(), "/api/reports/{id}".to_string()));
+}
+
+#[test]
+fn a_resource_op_that_does_not_return_its_entity_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = resource_fixture(tmp.path(), true);
+    write_synthetic_api(
+        &config.api_dir,
+        "epic.rs",
+        &app_error_crud_source("epic").replace(
+            "-> Result<Epic, AppError> { todo!() }\npub async fn create",
+            "-> Result<EpicSummary, AppError> { todo!() }\npub async fn create",
+        ),
+    );
+    config.generators = vec![ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
+    let err = crate::servers::generate_transport(&config).unwrap_err();
+    assert!(err.contains("`epic::get_by_id` is served as the JSON:API resource `epics`"), "{err}");
+    assert!(err.contains("must return `Epic`"), "{err}");
+}
+
+#[test]
+fn a_filtered_list_in_a_resource_module_keeps_its_handler() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = resource_fixture(tmp.path(), true);
+    config.pagination = None;
+    write_synthetic_api(
+        &config.api_dir,
+        "tag.rs",
+        &app_error_crud_source("tag")
+            .replace("store: &Store, limit: Option<u64>, offset: Option<u64>", "store: &Store, query: ListTagsQuery")
+            .replace("pub async fn count(store: &Store) -> Result<u64, AppError> { todo!() }\n", ""),
+    );
+    let http = generate_http(tmp.path(), config);
+    assert!(
+        http.contains("query: Result<axum::extract::Query<ListTagsQuery>, QueryRejection>"),
+        "the filter family is phase 2, so the list keeps its query struct:\n{http}"
+    );
+    assert!(http.contains("Result<Json<Vec<Tag>>, ErrorObject>"));
+    assert!(compact(&http).contains(&compact("get(tag_get_by_id).patch(tag_update)")), "the rest is served:\n{http}");
 }

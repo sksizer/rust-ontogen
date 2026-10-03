@@ -489,6 +489,19 @@ fn servers_two_surfaces_http() {
 }
 
 #[test]
+fn servers_jsonapi_resources_http() {
+    // `task` links `epic` (to-one) and `tag` (to-many), and is served as a
+    // paginated JSON:API resource with an `AppError` map; `report` has
+    // CRUD-named fns and no entity, so it keeps its own handlers.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut config = crate::servers::tests::resource_fixture(tmp.path(), true);
+    let output = tmp.path().join("generated.rs");
+    config.generators = vec![crate::servers::ServerGenerator::HttpAxum { output: output.clone() }];
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+    insta::assert_snapshot!(read_file(&output));
+}
+
+#[test]
 fn servers_two_surfaces_ipc() {
     let code = generate_two_surface_file(|output| crate::servers::ServerGenerator::TauriIpc { output }, None);
     insta::assert_snapshot!(code);

@@ -6,9 +6,14 @@ use crate::schema::{CreateSectionInput, UpdateSectionInput};
 use crate::store::Store;
 use crate::store::section::SectionUpdate;
 
-/// List all sections
-pub async fn list(store: &Store) -> Result<Vec<Section>, AppError> {
-    store.list_sections(None, None).await
+/// One page of sections
+pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Section>, AppError> {
+    store.list_sections(limit, offset).await
+}
+
+/// How many sections there are — the total behind a page of `list`
+pub async fn count(store: &Store) -> Result<u64, AppError> {
+    store.count_sections().await
 }
 
 /// Get a single section by ID

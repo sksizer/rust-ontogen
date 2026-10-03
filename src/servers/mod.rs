@@ -106,7 +106,7 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
             let params: Vec<ParamMeta> =
                 f.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
 
-            if let Some((method, path)) = http_route_for(&op, &http_base, &url_plural, &m.name, f, config) {
+            if let Some((method, path)) = http_route_for(&op, &http_base, &url_plural, m, f, config) {
                 http_routes.push(HttpRouteMeta {
                     method,
                     path,
@@ -174,7 +174,7 @@ fn http_route_for(
     op: &OpKind,
     base: &str,
     plural: &str,
-    module: &str,
+    m: &parse::ApiModule,
     f: &parse::ApiFn,
     config: &config::Config,
 ) -> Option<(String, String)> {
@@ -182,6 +182,9 @@ fn http_route_for(
         OpKind::List => ("GET", format!("{base}/{plural}")),
         OpKind::Create => ("POST", format!("{base}/{plural}")),
         OpKind::GetById => ("GET", format!("{base}/{plural}/{{id}}")),
+        OpKind::Update if generators::http::served_resource(m, f, config).is_some() => {
+            ("PATCH", format!("{base}/{plural}/{{id}}"))
+        }
         OpKind::Update => ("PUT", format!("{base}/{plural}/{{id}}")),
         OpKind::Delete => ("DELETE", format!("{base}/{plural}/{{id}}")),
         OpKind::JunctionList { child_segment } => ("GET", format!("{base}/{plural}/{{parent_id}}/{child_segment}")),
@@ -191,7 +194,7 @@ fn http_route_for(
         }
         OpKind::CustomGet | OpKind::CustomPost => {
             let is_get = classify::is_read_op(op);
-            let action = config.naming.derive_action(module, &f.name);
+            let action = config.naming.derive_action(&m.name, &f.name);
             let mut path = format!("{base}/{plural}");
             if !action.is_empty() {
                 path.push('/');
@@ -250,6 +253,9 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
     parse::check_paginated_lists(&mut modules, config)?;
     if modules.is_empty() {
         return Ok(modules);
+    }
+    if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::HttpAxum { .. })) {
+        generators::http::check_resource_ops(&modules, config)?;
     }
 
     for generator in &config.generators {
