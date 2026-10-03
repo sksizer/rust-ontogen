@@ -103,7 +103,7 @@ fn builder_markdown_pipeline_generates_store_and_api() {
     assert!(md_out.join("exercise.rs").exists(), "missing frontmatter module");
     let vault = std::fs::read_to_string(md_out.join("vault.rs")).expect("vault.rs");
     assert!(vault.contains("pub fn open_vault("), "{vault}");
-    assert!(vault.contains(".with_okf_index(false)") && !vault.contains("with_generated_by"), "{vault}");
+    assert!(vault.contains(".with_list_cap(10000)\n}"), "both OKF options off: the default policy\n{vault}");
     assert!(store_out.join("mod.rs").exists(), "missing store mod.rs");
     let store_code = std::fs::read_to_string(store_out.join("exercise.rs")).unwrap();
     assert!(store_code.contains("self.vault()"), "markdown store talks to the vault:\n{store_code}");
@@ -123,8 +123,8 @@ fn builder_threads_okf_options_into_open_vault() {
         .expect("markdown pipeline failed");
 
     let vault = std::fs::read_to_string(md_out.join("vault.rs")).expect("vault.rs");
-    assert!(vault.contains(".with_okf_index(true)"), "{vault}");
-    assert!(vault.contains(".with_generated_by(\"process:builder-test\")"), "{vault}");
+    assert!(vault.contains("index: true,"), "{vault}");
+    assert!(vault.contains("generated_by: Some(\"process:builder-test\".into()),"), "{vault}");
     let mod_rs = std::fs::read_to_string(md_out.join("mod.rs")).expect("mod.rs");
     assert!(mod_rs.contains("pub mod vault;"), "{mod_rs}");
 }

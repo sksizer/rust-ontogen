@@ -39,9 +39,21 @@ pub fn generate_vault_module(config: &MarkdownIoConfig) -> String {
         "    markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::{layout}, {id_strategy})\n"
     ));
     code.push_str(&format!("        .with_list_cap({})\n", config.list_cap));
-    code.push_str(&format!("        .with_okf_index({})\n", config.okf.index));
+    // Only what differs from the runtime's default policy is spelled out, so
+    // a vault with both options off reads as the plain handle it is.
+    let mut policy = Vec::new();
+    if config.okf.index {
+        policy.push("index: true".to_string());
+    }
     if let Some(actor) = &config.okf.generated_by {
-        code.push_str(&format!("        .with_generated_by({actor:?})\n"));
+        policy.push(format!("generated_by: Some({actor:?}.into())"));
+    }
+    if !policy.is_empty() {
+        code.push_str("        .with_okf(markdown_store::OkfPolicy {\n");
+        for field in policy {
+            code.push_str(&format!("            {field},\n"));
+        }
+        code.push_str("            ..Default::default()\n        })\n");
     }
     code.push_str("}\n");
     code
@@ -74,9 +86,8 @@ mod tests {
             ),
             "{code}"
         );
-        assert!(code.contains(".with_list_cap(10000)"), "{code}");
-        assert!(code.contains(".with_okf_index(false)"), "{code}");
-        assert!(!code.contains("with_generated_by"), "no stamping unless configured: {code}");
+        assert!(code.contains(".with_list_cap(10000)\n}"), "{code}");
+        assert!(!code.contains("with_okf"), "the default policy is not spelled out: {code}");
         syn::parse_file(&code).expect("valid Rust");
     }
 
@@ -84,8 +95,18 @@ mod tests {
     fn okf_options_thread_into_open_vault() {
         let code =
             generate_vault_module(&config(OkfOptions { index: true, generated_by: Some("notes-kb/0.1.0".into()) }));
-        assert!(code.contains(".with_okf_index(true)\n        .with_generated_by(\"notes-kb/0.1.0\")\n}"), "{code}");
+        assert!(
+            code.contains(
+                ".with_okf(markdown_store::OkfPolicy {\n            index: true,\n            \
+                 generated_by: Some(\"notes-kb/0.1.0\".into()),\n            ..Default::default()\n        })\n}"
+            ),
+            "{code}"
+        );
         syn::parse_file(&code).expect("valid Rust");
+
+        let code = generate_vault_module(&config(OkfOptions { index: true, generated_by: None }));
+        assert!(code.contains("OkfPolicy {\n            index: true,\n            ..Default::default()"), "{code}");
+        assert!(!code.contains("generated_by"), "no stamping unless configured: {code}");
     }
 
     #[test]

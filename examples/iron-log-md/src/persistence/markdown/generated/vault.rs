@@ -14,5 +14,4 @@ pub fn open_vault(root: impl Into<std::path::PathBuf>) -> markdown_store::VaultH
         markdown_store::IdStrategy::Provided,
     )
     .with_list_cap(10000)
-    .with_okf_index(false)
 }

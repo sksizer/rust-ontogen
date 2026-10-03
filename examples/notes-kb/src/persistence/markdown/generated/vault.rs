@@ -14,6 +14,9 @@ pub fn open_vault(root: impl Into<std::path::PathBuf>) -> markdown_store::VaultH
         markdown_store::IdStrategy::SlugFromField("title".into()),
     )
     .with_list_cap(10000)
-    .with_okf_index(true)
-    .with_generated_by("notes-kb/0.1.0")
+    .with_okf(markdown_store::OkfPolicy {
+        index: true,
+        generated_by: Some("notes-kb/0.1.0".into()),
+        ..Default::default()
+    })
 }

@@ -30,50 +30,104 @@ use crate::{
 /// makes exceeding it a loud error instead of a slow surprise.
 pub const DEFAULT_LIST_CAP: usize = 10_000;
 
-/// The time source for `generated.at` stamps.
-type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
+/// The OKF 0.2 artifacts a [`VaultHandle`] writes beside its records, set
+/// with [`VaultHandle::with_okf`]. The default writes neither; the vault is
+/// an OKF 0.2 bundle either way.
+///
+/// ```
+/// use std::{sync::Arc, time::{Duration, SystemTime}};
+/// use markdown_store::{Document, IdStrategy, OkfPolicy, VaultHandle, VaultLayout};
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let fixed = SystemTime::UNIX_EPOCH + Duration::from_secs(1_791_036_309);
+/// let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::Provided).with_okf(OkfPolicy {
+///     index: true,
+///     generated_by: Some("my-app/1.0.0".into()),
+///     clock: Arc::new(move || fixed),
+/// });
+/// vault.entity("notes", "Note").create(Some("n-1"), None, Document::new())?;
+/// let read = |p: &str| std::fs::read_to_string(dir.path().join(p)).unwrap();
+/// assert_eq!(read("notes/n-1.md"), "---\ntype: Note\ngenerated:\n  by: my-app/1.0.0\n  at: 2026-10-03T14:05:09Z\n---\n");
+/// assert_eq!(read("notes/index.md"), "# Note\n\n* [n\\-1](n-1.md)\n");
+/// # Ok::<(), markdown_store::Error>(())
+/// ```
+#[derive(Clone)]
+pub struct OkfPolicy {
+    /// Keep an `index.md` (OKF §8) in the vault root and in every directory
+    /// that holds records at any depth.
+    ///
+    /// Each lists that directory's records under one `# <type>` heading per
+    /// OKF `type` (sorted; records without a string `type` last, under
+    /// `# Untyped`) as `* [<title>](<file>) - <description>`, then its
+    /// subdirectories that hold records under `# Directories`. A type that
+    /// would read as one of those two headings is headed `<type> (type)`.
+    /// Titles, descriptions and types have every ASCII punctuation character
+    /// backslash-escaped, so a record's text never turns into markup. The
+    /// root index carries `okf_version: "0.2"` as its only frontmatter.
+    ///
+    /// After every real write (a create, an update that changed something,
+    /// a delete) the record's directory and each ancestor up to the root are
+    /// regenerated under the write lock, each written atomically and only
+    /// when its bytes would change. The store owns the `index.md` of every
+    /// directory that holds records and overwrites whatever is there, a
+    /// hand-written one included. When a directory loses its last record its
+    /// index is removed, but only if the store generated it; an `index.md`
+    /// of any other shape is left alone (the exact rule is under
+    /// [`VaultHandle::rebuild_indexes`]). Turning the option on does not
+    /// touch the vault by itself: `rebuild_indexes` writes the indexes of
+    /// records that already exist.
+    ///
+    /// Regenerating one index parses the records directly in its directory
+    /// and walks each subdirectory only until its first record. A write
+    /// regenerates its directory and every ancestor, so it parses the
+    /// records that sit directly in each directory on that path; under
+    /// [`VaultLayout::Flat`] that is every record in the vault. That fits
+    /// the backend's small-N stance.
+    pub index: bool,
+    /// Stamp `generated: { by: <actor>, at: <now> }` (OKF §5.2) on every
+    /// real write: every create, and every update that changes the record.
+    /// The stamp replaces an existing `generated` value in place, or is
+    /// appended after the other keys; an update that changes nothing leaves
+    /// the file and its stamp alone.
+    ///
+    /// The actor is written verbatim. It should be an OKF §7 actor naming a
+    /// program, `<producer>/<version>` or `process:<id>`, never
+    /// `human:<id>`, which trust tiers reserve for people; ontogen's
+    /// generator validates the value it emits into `open_vault`.
+    pub generated_by: Option<String>,
+    /// The time source for `generated.at`, [`SystemTime::now`] by default.
+    /// Stamps are UTC with second precision. A test fixes it to make stamps
+    /// deterministic.
+    pub clock: Arc<dyn Fn() -> SystemTime + Send + Sync>,
+}
+
+impl Default for OkfPolicy {
+    fn default() -> Self {
+        Self { index: false, generated_by: None, clock: Arc::new(SystemTime::now) }
+    }
+}
+
+impl std::fmt::Debug for OkfPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OkfPolicy")
+            .field("index", &self.index)
+            .field("generated_by", &self.generated_by)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Handle to one markdown vault: root path, layout, id strategy, walk
-/// options, list cap, the OKF options, and the shared write lock.
+/// options, list cap, the [`OkfPolicy`], and the shared write lock.
 ///
-/// # OKF options
+/// # Index files and failures
 ///
-/// Both are off by default; a vault is an OKF 0.2 bundle either way.
-///
-/// - [`with_okf_index`](Self::with_okf_index) keeps an `index.md` (OKF §8)
-///   in the vault root and in every directory that holds records at any
-///   depth. Each lists that directory's records under one `# <type>`
-///   heading per OKF `type` (sorted; records without a string `type` last,
-///   under `# Untyped`) as `* [<title>](<file>) - <description>`, then its
-///   subdirectories that hold records under `# Directories`. A type that
-///   would read as one of those two headings is headed `<type> (type)`.
-///   Titles, descriptions and types have every ASCII punctuation character
-///   backslash-escaped, so a record's text never turns into markup. The
-///   root index carries `okf_version: "0.2"` as its only frontmatter. After every real
-///   write (a create, an update that changed something, a delete) the
-///   record's directory and each ancestor up to the root are regenerated
-///   under the write lock, each written atomically and only when its bytes
-///   would change. The store owns the `index.md` of every directory that
-///   holds records: whatever is there is overwritten. When a directory
-///   loses its last record its index is removed, but only if the store
-///   generated it; an `index.md` of any other shape is left alone (the
-///   exact rule is under [`rebuild_indexes`](Self::rebuild_indexes)). Regenerating one index parses the records directly in its
-///   directory and walks each subdirectory only until its first record. A
-///   write regenerates its directory and every ancestor, so it parses the
-///   records that sit directly in each directory on that path; under
-///   [`VaultLayout::Flat`] that is every record in the vault. That fits the
-///   backend's small-N stance.
-/// - [`with_generated_by`](Self::with_generated_by) stamps
-///   `generated: { by: <actor>, at: <UTC instant> }` (OKF §5.2) on every
-///   real write.
-///
-/// The record and its indexes are separate atomic renames, not one
-/// transaction. Once the record is written the write has succeeded: a
-/// failure to refresh an index afterwards does not fail it, because
-/// reporting an error for a committed record invites a retry that would
-/// create the record twice. The index is left stale but still valid and
-/// listed by [`stale_indexes`](Self::stale_indexes) until the next real
-/// write in that directory, or
+/// With [`OkfPolicy::index`] on, the record and its indexes are separate
+/// atomic renames, not one transaction. Once the record is written the
+/// write has succeeded: a failure to refresh an index afterwards does not
+/// fail it, because reporting an error for a committed record invites a
+/// retry that would create the record twice. The index is left stale but
+/// still valid and listed by [`stale_indexes`](Self::stale_indexes) until
+/// the next real write in that directory, or
 /// [`rebuild_indexes`](Self::rebuild_indexes), brings it current. A crash
 /// between the two renames leaves the same stale-but-valid index, which is
 /// not listed (the list lives in memory).
@@ -94,34 +148,18 @@ type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 /// assert_eq!(vault.list_ids("notes")?, vec!["n-1".to_string()]);
 /// # Ok::<(), markdown_store::Error>(())
 /// ```
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct VaultHandle {
     root: PathBuf,
     layout: VaultLayout,
     id_strategy: IdStrategy,
     walk: WalkOptions,
     list_cap: usize,
-    okf_index: bool,
-    generated_by: Option<String>,
-    clock: Clock,
+    okf: OkfPolicy,
     write_guard: Arc<Mutex<()>>,
     /// Directories whose index refresh failed after a committed write and
     /// has not succeeded since. Shared by clones, like the write lock.
     stale: Arc<Mutex<BTreeSet<PathBuf>>>,
-}
-
-impl std::fmt::Debug for VaultHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VaultHandle")
-            .field("root", &self.root)
-            .field("layout", &self.layout)
-            .field("id_strategy", &self.id_strategy)
-            .field("walk", &self.walk)
-            .field("list_cap", &self.list_cap)
-            .field("okf_index", &self.okf_index)
-            .field("generated_by", &self.generated_by)
-            .finish_non_exhaustive()
-    }
 }
 
 impl VaultHandle {
@@ -134,9 +172,7 @@ impl VaultHandle {
             id_strategy,
             walk: WalkOptions::default(),
             list_cap: DEFAULT_LIST_CAP,
-            okf_index: false,
-            generated_by: None,
-            clock: Arc::new(SystemTime::now),
+            okf: OkfPolicy::default(),
             write_guard: Arc::new(Mutex::new(())),
             stale: Arc::default(),
         }
@@ -155,55 +191,12 @@ impl VaultHandle {
         self
     }
 
-    /// Keep an OKF `index.md` in the root and in every directory holding
-    /// records, regenerated on each real write (see
-    /// [OKF options](Self#okf-options)). Turning it on does not touch the
-    /// vault by itself: [`rebuild_indexes`](Self::rebuild_indexes) writes
-    /// the indexes of records that already exist. The store owns the
-    /// `index.md` of every directory holding records and overwrites a
-    /// hand-written one there; an `index.md` in a directory without records
-    /// is removed only if the store generated it.
-    pub fn with_okf_index(mut self, on: bool) -> Self {
-        self.okf_index = on;
-        self
-    }
-
-    /// Stamp `generated: { by: <actor>, at: <now> }` on every real write
-    /// (see [OKF options](Self#okf-options)): every create, and every
-    /// update that changes the record. The stamp replaces an existing
-    /// `generated` value in place, or is appended after the other keys; an
-    /// update that changes nothing leaves the file and its stamp alone.
-    ///
-    /// `actor` is written verbatim. It should be an OKF §7 actor naming a
-    /// program, `<producer>/<version>` or `process:<id>`, never `human:<id>`,
-    /// which trust tiers reserve for people; ontogen's generator validates
-    /// the value it emits into `open_vault`.
-    pub fn with_generated_by(mut self, actor: impl Into<String>) -> Self {
-        self.generated_by = Some(actor.into());
-        self
-    }
-
-    /// Replace the time source for `generated.at`, which defaults to
-    /// [`SystemTime::now`]. Stamps are UTC with second precision.
-    ///
-    /// ```
-    /// use std::time::{Duration, SystemTime};
-    /// use markdown_store::{Document, IdStrategy, VaultHandle, VaultLayout};
-    ///
-    /// let dir = tempfile::tempdir().unwrap();
-    /// let fixed = SystemTime::UNIX_EPOCH + Duration::from_secs(1_791_036_309);
-    /// let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::Provided)
-    ///     .with_generated_by("my-app/1.0.0")
-    ///     .with_clock(move || fixed);
-    /// vault.entity("notes", "Note").create(Some("n-1"), None, Document::new())?;
-    /// assert_eq!(
-    ///     std::fs::read_to_string(dir.path().join("notes/n-1.md")).unwrap(),
-    ///     "---\ntype: Note\ngenerated:\n  by: my-app/1.0.0\n  at: 2026-10-03T14:05:09Z\n---\n",
-    /// );
-    /// # Ok::<(), markdown_store::Error>(())
-    /// ```
-    pub fn with_clock(mut self, clock: impl Fn() -> SystemTime + Send + Sync + 'static) -> Self {
-        self.clock = Arc::new(clock);
+    /// Write the OKF artifacts `policy` asks for on every real write: index
+    /// files, `generated` stamps, or both (see [`OkfPolicy`]). With
+    /// [`OkfPolicy::index`] on, the store owns the `index.md` of every
+    /// directory holding records and overwrites a hand-written one there.
+    pub fn with_okf(mut self, policy: OkfPolicy) -> Self {
+        self.okf = policy;
         self
     }
 
@@ -227,14 +220,9 @@ impl VaultHandle {
         self.list_cap
     }
 
-    /// Whether writes keep OKF `index.md` files current.
-    pub fn okf_index(&self) -> bool {
-        self.okf_index
-    }
-
-    /// The actor stamped as `generated.by` on real writes, if any.
-    pub fn generated_by(&self) -> Option<&str> {
-        self.generated_by.as_deref()
+    /// The OKF artifacts writes produce.
+    pub fn okf(&self) -> &OkfPolicy {
+        &self.okf
     }
 
     // ── paths ───────────────────────────────────────────────────────────
@@ -353,10 +341,10 @@ impl VaultHandle {
 
     /// Write a new record: always a real write, so always stamped.
     fn write_new(&self, path: &Path, doc: &Document) -> Result<(), Error> {
-        let rendered = match &self.generated_by {
+        let rendered = match &self.okf.generated_by {
             Some(by) => {
                 let mut doc = doc.clone();
-                doc.set(okf::GENERATED_KEY, okf::generated_stamp(by, (self.clock)()));
+                doc.set(okf::GENERATED_KEY, okf::generated_stamp(by, (self.okf.clock)()));
                 doc.render()?
             }
             None => doc.render()?,
@@ -377,8 +365,8 @@ impl VaultHandle {
         fsops::read_modify_write(path, |doc| {
             f(doc)?;
             if doc.is_dirty() {
-                if let Some(by) = &self.generated_by {
-                    doc.set(okf::GENERATED_KEY, okf::generated_stamp(by, (self.clock)()));
+                if let Some(by) = &self.okf.generated_by {
+                    doc.set(okf::GENERATED_KEY, okf::generated_stamp(by, (self.okf.clock)()));
                 }
                 written = true;
             }
@@ -402,7 +390,7 @@ impl VaultHandle {
     /// [`stale_indexes`](Self::stale_indexes)) and the remaining ancestors
     /// are still tried.
     fn refresh_indexes(&self, record: &Path) {
-        if !self.okf_index {
+        if !self.okf.index {
             return;
         }
         let mut dir = record.parent();
@@ -450,7 +438,7 @@ impl VaultHandle {
     ///
     /// This is the repair path after a crash or an edit made outside the
     /// handle, and how a seed vault's indexes are produced. It runs
-    /// whether or not [`with_okf_index`](Self::with_okf_index) is on: it is
+    /// whether or not [`OkfPolicy::index`] is on: it is
     /// an explicit request, though without the option later writes will
     /// not keep the indexes current. Reads every record in the vault.
     /// Unlike a record write it fails on the first index it cannot write;
@@ -1137,7 +1125,8 @@ mod tests {
 
     fn indexed(layout: VaultLayout) -> (tempfile::TempDir, VaultHandle) {
         let dir = tempfile::tempdir().unwrap();
-        let handle = VaultHandle::new(dir.path(), layout, IdStrategy::Provided).with_okf_index(true);
+        let handle = VaultHandle::new(dir.path(), layout, IdStrategy::Provided)
+            .with_okf(OkfPolicy { index: true, ..OkfPolicy::default() });
         (dir, handle)
     }
 
@@ -1391,7 +1380,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let vault = VaultHandle::new(root, VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()))
-            .with_okf_index(true);
+            .with_okf(OkfPolicy { index: true, ..OkfPolicy::default() });
         let tasks = vault.entity("tasks", "Task");
         // A directory where the index file belongs makes every write of it fail.
         let blocker = root.join("tasks/index.md");
@@ -1454,10 +1443,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let now = Arc::new(std::sync::atomic::AtomicU64::new(1_791_036_309));
         let clock = Arc::clone(&now);
-        let handle = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::Provided)
-            .with_generated_by("app/1.0")
-            .with_clock(move || {
-                SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(clock.load(std::sync::atomic::Ordering::SeqCst))
+        let handle =
+            VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::Provided).with_okf(OkfPolicy {
+                generated_by: Some("app/1.0".into()),
+                clock: Arc::new(move || {
+                    SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_secs(clock.load(std::sync::atomic::Ordering::SeqCst))
+                }),
+                ..OkfPolicy::default()
             });
         (dir, handle, now)
     }

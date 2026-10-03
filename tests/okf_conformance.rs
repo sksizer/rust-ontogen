@@ -135,8 +135,11 @@ fn a_vault_written_with_both_okf_options_is_conformant() {
         markdown_store::VaultLayout::PerEntityDir,
         markdown_store::IdStrategy::SlugFromField("title".into()),
     )
-    .with_okf_index(true)
-    .with_generated_by("ontogen-tests/1.0");
+    .with_okf(markdown_store::OkfPolicy {
+        index: true,
+        generated_by: Some("ontogen-tests/1.0".into()),
+        ..Default::default()
+    });
 
     let record = |title: &str, description: Option<&str>| {
         let mut doc = markdown_store::Document::new();
@@ -185,13 +188,18 @@ const BLESS_SEED_INDEXES: &str = "OKF_BLESS_SEED_INDEXES";
 #[test]
 fn notes_kb_seed_indexes_match_a_rebuild() {
     let seed = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/notes-kb/data/vault");
+    // Mirrors the handle notes-kb's generated `open_vault` builds from
+    // examples/notes-kb/build.rs. The example lives outside this workspace,
+    // so its function cannot be called here; the coupling is loose anyway:
+    // `rebuild_indexes` reads only the root and the walk options (default in
+    // both), not the layout or id strategy, and runs whatever the index
+    // option says.
     let rebuild = |root: &Path| {
         markdown_store::VaultHandle::new(
             root,
             markdown_store::VaultLayout::PerEntityDir,
             markdown_store::IdStrategy::SlugFromField("title".into()),
         )
-        .with_okf_index(true)
         .rebuild_indexes()
         .expect("rebuild_indexes");
     };
