@@ -139,14 +139,19 @@ each of its sections to a phase.
   foreign key on both backends, or fails with `{Child}ParentRequired` when
   that foreign key is not `Option`.
 - The markdown id-ascending default order, many_to_many linkage order, and
-  the runtime parity fixture's default-order cases (ADR 0006 §6).
-- The SeaORM `i64` field for integer primitives the parser files under
-  `OptionEnum` or `Other`, which ends their silent `as i32` truncation
-  (ADR 0006 §4).
-- Markdown lookups of an id that could never be created answer
-  `{Entity}NotFound` instead of a `500` (contract §8.2). SeaORM
+  the runtime parity fixture's default-order cases (ADR 0006 §6). SeaORM
   already orders by id since
   [#178](https://github.com/sksizer/rust-ontogen/pull/178).
+- The SeaORM `i64` field for integer primitives the parser files under
+  `OptionEnum` or `Other`, with `usize`, `isize`, `u128` and `i128` added
+  to `is_integer_primitive`, and `from_model`/`to_active_model` returning
+  `Result` (ADR 0006 §4). Today's `u32` wrap is lossless but sorts and
+  filters wrongly; after the change a wrapped row fails to read. The
+  release notes must carry the pre-upgrade SQLite migration
+  `UPDATE t SET x = x + 4294967296 WHERE x < 0;` per `u32` column (`u8`,
+  `u16` and signed types need none).
+- Markdown lookups of an id that could never be created answer
+  `{Entity}NotFound` instead of a `500` (contract §8.2).
 
 **Phase 1b — CRUD over JSON:API.**
 

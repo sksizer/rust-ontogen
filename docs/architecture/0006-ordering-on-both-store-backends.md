@@ -68,12 +68,19 @@ does not provide:
   (`u64` becomes `I64`), so they never reach `OptionEnum` or `Other`.
 - **Integer storage on SeaORM.** For an integer primitive under
   `OptionEnum` or `Other`, the SeaORM model field is `i32` or `Option<i32>`
-  (`field_db_type` in `src/persistence/seaorm/gen_entity.rs`). The
-  conversion writes `self.x as i32`
-  (`src/persistence/seaorm/gen_conversion.rs`).
-  A `u32` of 3 000 000 000 is therefore stored as −1 294 967 296. That is a
-  silent truncation today, and it would make SeaORM sort such a field
-  differently from markdown, which keeps the Rust value.
+  (`field_db_type` in `src/persistence/seaorm/gen_entity.rs`).
+  - The conversion writes `self.x as i32` and reads `model.x as T`
+    (`src/persistence/seaorm/gen_conversion.rs`). A `u32` of
+    3 000 000 000 is stored as −1 294 967 296 and wraps back to
+    3 000 000 000 on read. The round trip is lossless, but SQL sees the
+    negative value, so SeaORM sorts and filters such a field differently
+    from markdown, which keeps the Rust value. `u8`, `u16`, `i8` and `i16`
+    fit in `i32` and never wrap.
+  - `is_integer_primitive` (`gen_entity.rs`) covers only `u8`, `u16`,
+    `u32`, `u64`, `i8`, `i16`, `i32` and `i64`. A `usize`, `isize`, `u128`
+    or `i128` field under `OptionEnum` or `Other` gets a `String` model
+    field, while the conversion still emits `as i32`. Such a field does not
+    compile on SeaORM today, so no SeaORM data holds one.
 - **No date type.** Dates are `String`, as in tasks-tracker's `created`.
 - **Tests.** `tests/backend_parity.rs` compares generated text across
   backends. Nothing runs both backends against the same data.
@@ -399,18 +406,35 @@ calls it before `limit` and `offset`.
 - **Integer width.** For every integer primitive that reaches `OptionEnum`
   or `Other` (§2), phase 1a makes the SeaORM model field `i64` or
   `Option<i64>`, in place of `i32`.
+  - `is_integer_primitive` gains `usize`, `isize`, `u128` and `i128`, so
+    those fields get an `i64` column for the first time (§Context).
   - `u8`, `u16`, `u32`, `i8` and `i16` convert losslessly with `i64::from`.
   - `usize`, `isize`, `u128` and `i128` convert with `i64::try_from`. A
     value outside `i64` fails the write with `AppError::DbError` naming the
     field, instead of wrapping.
   - Reads convert back with `T::try_from`. A stored value outside `T`'s
-    range, possible only from a hand-edited row, fails the read the same
-    way.
+    range fails the read the same way. That includes a `u32` row that
+    today's wrap stored negative, so the upgrade needs the migration below.
+  - Because a conversion can fail, the generated public
+    `{Entity}::from_model` and `to_active_model` return
+    `Result<_, AppError>` instead of the bare value. The generated store
+    propagates the error; hand-written callers add `?`.
 
-  This fixes today's silent truncation (§Context). It also makes the
-  numeric order of these fields equal on both backends for every value
-  SeaORM can store. On SQLite the column is `INTEGER` either way, so no
-  data migration is needed. The generated entity type does change.
+  This makes the numeric order of these fields equal on both backends for
+  every value SeaORM can store, and SQL filters see the real value. On
+  SQLite the column is `INTEGER` either way, but existing rows need one
+  data migration before the upgrade:
+
+  | Rust type | Pre-upgrade SQLite migration |
+  |---|---|
+  | `u32`, `Option<u32>` | `UPDATE t SET x = x + 4294967296 WHERE x < 0;` |
+  | `u8`, `u16` (and `Option`) | none: values fit in `i32` and never wrapped |
+  | `i8`, `i16` (and `Option`) | none: signed values were stored as is |
+  | `usize`, `isize`, `u128`, `i128` | none: no SeaORM column exists today |
+
+  Without it, every `get` or `list` that reaches a wrapped `u32` row fails
+  with `AppError::DbError`, and the row cannot be updated through the API.
+  Phase 1a's release notes carry the migration.
 - **Indexes.** The generated store emits none. Sorting an unindexed column
   is a scan plus a sort. Consumers add indexes in their migrations.
 
@@ -462,7 +486,7 @@ with the `list_*` signature unchanged:
 
 - markdown lists in id order instead of walk path order;
 - the SeaORM `i64` field for integer primitives under `OptionEnum` and
-  `Other` (§4), which also ends their silent truncation;
+  `Other` (§4), with its pre-upgrade `u32` data migration;
 - many_to_many linkage in written order on both backends: the SeaORM
   junction read in insertion (`rowid`) order, markdown in frontmatter
   order;
@@ -568,11 +592,15 @@ not in the test.
   the like). The generated SeaORM entity field becomes `i64` or
   `Option<i64>`, where it was `i32`.
   - Hand-written code that reads the model field directly changes type.
-  - The SQLite column is `INTEGER` either way, so no data migration is
-    needed. A hand-written migration that declares the column keeps
-    working.
-  - Values already stored past `i32::MAX` were truncated on write, and stay
-    wrong until rewritten.
+  - The generated public `{Entity}::from_model` and `to_active_model`
+    return `Result<_, AppError>`. Hand-written callers add `?`.
+  - The SQLite column is `INTEGER` either way, so a hand-written migration
+    that declares the column keeps working.
+  - **Migration:** a `u32` value above `i32::MAX` is stored negative today
+    (a lossless wrap). Before upgrading, run
+    `UPDATE t SET x = x + 4294967296 WHERE x < 0;` for each `u32` or
+    `Option<u32>` column, or every read of such a row fails. `u8`, `u16`
+    and signed types need nothing (§4). Phase 1a's release notes carry it.
 - **Breaking.** A NaN float that a hook or direct caller writes is an
   error where it was stored before.
 - Tauri IPC list commands and MCP list tools gain one optional `sort`

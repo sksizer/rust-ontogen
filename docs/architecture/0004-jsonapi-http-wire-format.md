@@ -184,19 +184,31 @@ only.
 - **Breaking for direct callers.** `gen_servers` and `gen_clients` gain a
   parameter, and `VaultHandle::new` loses one.
 - **Breaking for SeaORM data whose ids break the shared id rule.** That
-  covers an id that is `index` or `log` in any case, contains `/`, `\`, `:`
-  or NUL, starts with `.`, ends with `.` or a space, or is whitespace-only.
+  covers an id that is empty, is `index` or `log` in any case, contains
+  `/`, `\`, `:` or NUL, starts with `.`, ends with `.` or a space, or is
+  whitespace-only.
   - Such a row cannot be created again under that id: a create is `400`.
   - The server must serve every link it emits, so a path `{id}` is only a
     lookup key and is never validated. Existing rows are therefore still
     listed, readable, updatable and deletable at their `links.self`.
-  - **Migration:** rename such rows to valid ids before relying on create,
-    and before moving the data to a markdown vault, where those ids cannot
-    exist.
+  - **Exception:** ids `.`, `..` and `""` are listed but unreachable.
+    Clients resolve the dot segments of `/tasks/.` and `/tasks/..` away
+    (RFC 3986 §5.2.4, and WHATWG URL parsing, which also decodes `%2E`),
+    and `/tasks/` is the collection path.
+  - **Migration:** rename the rows with ids `.`, `..` or `""` before
+    upgrading; nothing can reach them afterwards. Rename the other such
+    rows to valid ids before relying on create, and before moving the data
+    to a markdown vault, where those ids cannot exist.
 - **Breaking for SeaORM consumers with an integer field the parser files
   under `OptionEnum` or `Other`** (`u32`, `Option<u16>` and the like). The
-  generated entity field becomes `i64` (ADR 0006 §4), which ends a silent
-  `as i32` truncation. No data migration is needed on SQLite.
+  generated entity field becomes `i64` (ADR 0006 §4), and the generated
+  `from_model` and `to_active_model` return `Result<_, AppError>`.
+  - Today a `u32` above `i32::MAX` wraps to a negative value on write and
+    back on read: lossless, but SQL sorts and filters it wrongly.
+  - **Migration:** before upgrading, run
+    `UPDATE t SET x = x + 4294967296 WHERE x < 0;` for each `u32` or
+    `Option<u32>` column, or reads of those rows fail. `u8`, `u16` and
+    signed types need nothing. The 0.9.0 release notes carry it.
 - **TS changes.** `String(e)` reads `JsonApiError: …` instead of
   `Error: …`. List methods gain a trailing optional argument.
 - **Cost.**

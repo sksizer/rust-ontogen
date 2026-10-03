@@ -959,7 +959,11 @@ Ontogen accepts any valid id:
   must serve every link it emits, and a SeaORM row created before the rule
   (an id containing `:`, or `Index`, say) is still listed. It stays
   readable, updatable and deletable at its `links.self`. It can no longer
-  be created under that id. ADR 0004 carries the migration note.
+  be created under that id. The exception is ids `.`, `..` and `""`: they
+  are listed but unreachable, because clients resolve the dot segments of
+  `/tasks/.` and `/tasks/..` away (RFC 3986 §5.2.4; WHATWG URL parsing
+  also decodes `%2E`), and `/tasks/` is the collection path. Such rows
+  must be renamed before upgrading. ADR 0004 carries the migration note.
 - **Markdown lookups.** On markdown such an id cannot exist. The store
   answers a lookup of one with `{Entity}NotFound` (phase 1a) instead of
   passing `markdown_store::Error::InvalidId` through as a `500`.
