@@ -35,8 +35,12 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, id_strategy: &I
 
     // has_many reverse helpers (e.g., set_node_parent) — read-mutate-rewrite
     // replaces SeaORM's raw-SQL fast path.
-    for hm in has_many_writes(entity) {
+    let writes = has_many_writes(entity);
+    for hm in &writes {
         generate_set_parent_helper(code, entity, hm.fk, hm.fk_required);
+    }
+    if !writes.is_empty() {
+        generate_exists_helper(code, entity);
     }
 
     code.push_str("}\n");
@@ -177,6 +181,7 @@ fn generate_create(code: &mut String, entity: &EntityDef, id_strategy: &IdStrate
     if !writes.is_empty() {
         code.push('\n');
     }
+    has_many::emit_missing_children_check(code, entity, &writes, |f| format!("&{f}"));
 
     code.push_str("        let mut doc = markdown_store::Document::new();\n");
     code.push_str(&format!(
@@ -247,6 +252,7 @@ fn generate_update(code: &mut String, entity: &EntityDef) {
         code.push('\n');
     }
     let writes = has_many_writes(entity);
+    has_many::emit_missing_children_check(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
     has_many::emit_dropped_children(code, &writes);
 
     code.push_str("        self.vault()\n");
@@ -396,6 +402,24 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, f
     code.push_str("    }\n\n");
 }
 
+/// `{snake}_exists`: whether a record with this id exists, for the
+/// missing-child check of a `has_many` write. An id the vault cannot hold
+/// names no record, as in `get_*`.
+fn generate_exists_helper(code: &mut String, entity: &EntityDef) {
+    let records = records(&to_snake_case(&entity.name));
+
+    code.push_str(&format!(
+        "    async fn {}(&self, id: &str) -> Result<bool, AppError> {{\n",
+        has_many::exists_helper(entity)
+    ));
+    code.push_str(&format!("        match self.vault().{records}.read_opt(id) {{\n"));
+    code.push_str("            Ok(doc) => Ok(doc.is_some()),\n");
+    code.push_str("            Err(markdown_store::Error::InvalidId { .. }) => Ok(false),\n");
+    code.push_str("            Err(e) => Err(AppError::from(e)),\n");
+    code.push_str("        }\n");
+    code.push_str("    }\n\n");
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn not_found_variant(entity_name: &str) -> String {
@@ -422,5 +446,92 @@ fn slug_source_expr(snake: &str, id_strategy: &IdStrategy) -> String {
     match id_strategy {
         IdStrategy::SlugFromField(field) => format!("Some({snake}.{field}.as_str())"),
         IdStrategy::Provided | IdStrategy::Uuid => "None".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::model::{FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+
+    fn node(fk_type: FieldType) -> EntityDef {
+        EntityDef {
+            name: "Node".to_string(),
+            directory: "nodes".to_string(),
+            table: "nodes".to_string(),
+            type_name: "node".to_string(),
+            prefix: "node".to_string(),
+            fields: vec![
+                FieldDef::new("id", FieldType::String, FieldRole::Id),
+                FieldDef::new("name", FieldType::String, FieldRole::Plain),
+                FieldDef::new(
+                    "parent_id",
+                    fk_type,
+                    FieldRole::Relation(RelationInfo {
+                        kind: RelationKind::BelongsTo,
+                        target: "Node".to_string(),
+                        junction: None,
+                        foreign_key: None,
+                    }),
+                ),
+                FieldDef::new(
+                    "contains",
+                    FieldType::VecString,
+                    FieldRole::Relation(RelationInfo {
+                        kind: RelationKind::HasMany,
+                        target: "Node".to_string(),
+                        junction: None,
+                        foreign_key: Some("parent_id".to_string()),
+                    }),
+                ),
+                FieldDef::new("body", FieldType::String, FieldRole::Body),
+            ],
+            doc: String::new(),
+        }
+    }
+
+    fn crud(entity: &EntityDef) -> String {
+        let mut code = String::new();
+        generate_crud_impl(&mut code, entity, &IdStrategy::SlugFromField("name".into()));
+        code
+    }
+
+    fn method<'a>(code: &'a str, name: &str) -> &'a str {
+        let start = code.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("no fn {name}"));
+        let rest = &code[start..];
+        &rest[..rest.find("\n    }\n").map(|e| e + 6).unwrap_or(rest.len())]
+    }
+
+    #[test]
+    fn a_missing_child_is_refused_before_anything_is_written() {
+        for fk_type in [FieldType::OptionString, FieldType::String] {
+            let code = crud(&node(fk_type));
+
+            let create = method(&code, "create_node");
+            let check = create.find("if !self.node_exists(child_id).await? {").expect("create checks");
+            assert!(create.contains("for child_id in &contains {"), "{create}");
+            assert!(check > create.find("hooks::before_create").unwrap(), "after the hook: {create}");
+            assert!(check < create.find(".create(\n").unwrap(), "before the record write: {create}");
+
+            let update = method(&code, "update_node");
+            let check = update.find("if !self.node_exists(child_id).await? {").expect("update checks");
+            assert!(update.contains("for child_id in updates.contains.iter().flatten() {"), "{update}");
+            assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
+            assert!(check < update.find("let contains_dropped").unwrap(), "before the drop check: {update}");
+            assert!(check < update.find(".modify(id,").unwrap(), "before the record write: {update}");
+            assert!(update.contains("return Err(AppError::NodeNotFound(child_id.clone()));"), "{update}");
+
+            let helper = method(&code, "node_exists");
+            assert!(helper.contains(".entity(NODES_DIR, NODE_TYPE).read_opt(id)"), "{helper}");
+            assert!(helper.contains("Err(markdown_store::Error::InvalidId { .. }) => Ok(false),"), "{helper}");
+        }
+    }
+
+    #[test]
+    fn generated_code_is_valid_rust() {
+        for fk_type in [FieldType::OptionString, FieldType::String] {
+            let code = crud(&node(fk_type));
+            syn::parse_file(&code).unwrap_or_else(|e| panic!("invalid Rust: {e}\n--- code ---\n{code}"));
+        }
     }
 }

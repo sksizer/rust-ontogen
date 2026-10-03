@@ -292,6 +292,10 @@ fn section(id: &str, parent: &str) -> Value {
     json!({ "id": id, "title": format!("Section {id}"), "parent_id": parent, "children": [] })
 }
 
+fn section_with(id: &str, parent: &str, children: &[&str]) -> Value {
+    json!({ "id": id, "title": format!("Section {id}"), "parent_id": parent, "children": children })
+}
+
 fn ok_ids(list: &[&str]) -> R<Vec<String>> {
     Ok(list.iter().map(|s| s.to_string()).collect())
 }
@@ -340,6 +344,38 @@ async fn default_order_and_pages<B: Backend>(b: &B, mut t: Transcript) -> Transc
 #[tokio::test]
 async fn lists_are_in_id_byte_order_on_every_page() {
     parity!(default_order_and_pages);
+}
+
+/// A limit or offset past what the engine binds (i64) behaves as on
+/// markdown: an offset past the end is an empty page, a limit is every row.
+async fn oversized_pages<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    for id in ["a", "b", "c"] {
+        t.record(format!("create {id}"), &b.create_item(item(id, json!({}))).await).unwrap();
+    }
+    let huge = i64::MAX as u64 + 1;
+    let cases: [(Option<u64>, Option<u64>, &[&str]); 8] = [
+        (Some(u64::MAX), None, &["a", "b", "c"]),
+        (None, Some(u64::MAX), &[]),
+        (Some(u64::MAX), Some(u64::MAX), &[]),
+        (Some(u64::MAX), Some(1), &["b", "c"]),
+        (Some(1), Some(u64::MAX), &[]),
+        (Some(huge), Some(0), &["a", "b", "c"]),
+        (None, Some(huge), &[]),
+        (Some(i64::MAX as u64), Some(i64::MAX as u64), &[]),
+    ];
+    for (limit, offset, expected) in cases {
+        t.expect(
+            &format!("limit={limit:?} offset={offset:?}"),
+            listed_ids(b.list_items(limit, offset).await),
+            ok_ids(expected),
+        );
+    }
+    t
+}
+
+#[tokio::test]
+async fn an_oversized_limit_or_offset_pages_like_any_other() {
+    parity!(oversized_pages);
 }
 
 // ─── Field values ───────────────────────────────────────────────────────────
@@ -640,4 +676,79 @@ async fn required_parent<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 #[tokio::test]
 async fn dropping_a_required_child_writes_nothing() {
     parity!(required_parent);
+}
+
+/// A listed child that does not exist fails the write before anything is
+/// written, on create and on update (JSON:API wire contract §5.4).
+async fn missing_children<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    t.record("create p", &b.create_item(item("p", json!({}))).await).unwrap();
+    for kid in ["k1", "k2"] {
+        t.record(format!("create {kid}"), &b.create_item(item(kid, json!({ "parent_id": "p" }))).await).unwrap();
+    }
+    t.record("create loose", &b.create_item(item("loose", json!({}))).await).unwrap();
+    let before = b.list_items(None, None).await;
+    let not_found = |id: &str| Err(StoreError::NotFound("Item", id.into()));
+
+    // Create: the first missing child in list order, and no record.
+    t.expect(
+        "create listing missing children",
+        b.create_item(item("q", json!({ "children": ["loose", "ghost", "k1", "ghost-2"] }))).await,
+        not_found("ghost"),
+    );
+    t.expect("the failed create wrote no record", b.get_item("q").await, not_found("q"));
+    t.expect(
+        "an id no record can have is missing too",
+        b.create_item(item("q", json!({ "children": ["a/b"] }))).await,
+        not_found("a/b"),
+    );
+    t.expect(
+        "the missing child is reported before an id is derived",
+        b.create_item(item("", json!({ "title": "!!!", "children": ["ghost"] }))).await,
+        not_found("ghost"),
+    );
+    t.expect("nothing was written", b.list_items(None, None).await, before.clone());
+
+    // Update: the record and every child unchanged.
+    t.expect(
+        "update listing a missing child",
+        b.update_item("p", json!({ "title": "Renamed", "children": ["k1", "loose", "ghost"] })).await,
+        not_found("ghost"),
+    );
+    t.expect("nothing was updated", b.list_items(None, None).await, before);
+
+    // A child listed twice is not a missing one.
+    let children = |v: R<Value>| v.map(|r| r["children"].clone());
+    t.expect(
+        "create listing a child twice",
+        children(b.create_item(item("r", json!({ "children": ["loose", "loose"] }))).await),
+        Ok(json!(["loose"])),
+    );
+    t.expect(
+        "update listing a child twice",
+        children(b.update_item("p", json!({ "children": ["k2", "k1", "k2"] })).await),
+        Ok(json!(["k1", "k2"])),
+    );
+
+    // On a required foreign key the missing child is reported before a drop.
+    for (id, parent) in [("book", "book"), ("ch1", "book"), ("ch2", "book")] {
+        t.record(format!("create {id}"), &b.create_section(section(id, parent)).await).unwrap();
+    }
+    let sections = b.list_sections().await;
+    t.expect(
+        "create a section listing a missing child",
+        b.create_section(section_with("other", "other", &["ch1", "ghost"])).await,
+        Err(StoreError::NotFound("Section", "ghost".into())),
+    );
+    t.expect(
+        "an update that drops ch2 and lists a missing child",
+        b.update_section("book", json!({ "title": "Renamed", "children": ["ch1", "ghost"] })).await,
+        Err(StoreError::NotFound("Section", "ghost".into())),
+    );
+    t.expect("no section changed", b.list_sections().await, sections);
+    t
+}
+
+#[tokio::test]
+async fn a_missing_child_is_not_found_and_writes_nothing() {
+    parity!(missing_children);
 }

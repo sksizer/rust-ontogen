@@ -44,8 +44,12 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, id_strategy: &I
     generate_try_insert_helper(code, entity);
 
     // has_many reverse helpers (e.g., set_node_parent)
-    for hm in has_many_writes(entity) {
+    let writes = has_many_writes(entity);
+    for hm in &writes {
         generate_set_parent_helper(code, entity, hm.fk, hm.fk_required);
+    }
+    if !writes.is_empty() {
+        generate_exists_helper(code, entity);
     }
 
     code.push_str("}\n");
@@ -73,6 +77,11 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     // same; a text collation such as Postgres under `en_US.UTF-8` (`alpha`
     // before `Zeta`) or MySQL's case-insensitive default would not.
     code.push_str(&format!("        query = query.order_by_asc({snake}::Column::{id_col});\n"));
+    // The engine takes `LIMIT` and `OFFSET` as i64, and sea-query panics
+    // binding a larger u64. Clamped, an oversized offset is past the end (an
+    // empty page) and an oversized limit is every row, as on markdown.
+    code.push_str("        let limit = limit.map(|l| l.min(i64::MAX as u64));\n");
+    code.push_str("        let offset = offset.map(|o| o.min(i64::MAX as u64));\n");
     // SQLite rejects an `OFFSET` with no `LIMIT`, so an offset alone takes
     // the rest of the rows under the largest limit SQLite accepts.
     code.push_str("        if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {\n");
@@ -161,6 +170,7 @@ fn generate_create(code: &mut String, entity: &EntityDef, has_relations: bool, i
     if has_relations {
         code.push('\n');
     }
+    has_many::emit_missing_children_check(code, entity, &has_many_writes(entity), |f| format!("&{f}"));
 
     generate_insert_with_id(code, entity, id_strategy);
 
@@ -304,6 +314,7 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
         code.push('\n');
     }
     let writes = has_many_writes(entity);
+    has_many::emit_missing_children_check(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
     has_many::emit_dropped_children(code, &writes);
 
     // Apply updates
@@ -503,6 +514,23 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, f
     code.push_str("    }\n\n");
 }
 
+/// `{snake}_exists`: whether a record with this id exists, for the
+/// missing-child check of a `has_many` write.
+fn generate_exists_helper(code: &mut String, entity: &EntityDef) {
+    let snake = to_snake_case(&entity.name);
+
+    code.push_str(&format!(
+        "    async fn {}(&self, id: &str) -> Result<bool, AppError> {{\n",
+        has_many::exists_helper(entity)
+    ));
+    code.push_str(&format!("        Ok({snake}::Entity::find_by_id(id)\n"));
+    code.push_str("            .one(self.db())\n");
+    code.push_str("            .await\n");
+    code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?\n");
+    code.push_str("            .is_some())\n");
+    code.push_str("    }\n\n");
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// The SeaORM `Column` variant for an entity's primary key, e.g. `Id`.
@@ -652,6 +680,16 @@ mod tests {
     }
 
     #[test]
+    fn list_clamps_limit_and_offset_to_i64_before_binding() {
+        let code = crud(&make_role_entity(), &IdStrategy::Provided);
+        let list = method(&code, "list_roles");
+        let clamp_limit = list.find("let limit = limit.map(|l| l.min(i64::MAX as u64));").expect("limit clamped");
+        let clamp_offset = list.find("let offset = offset.map(|o| o.min(i64::MAX as u64));").expect("offset clamped");
+        let bind = list.find("query = query.limit(l);").expect("limit bound");
+        assert!(clamp_limit < bind && clamp_offset < bind, "clamped before binding: {list}");
+    }
+
+    #[test]
     fn a_record_is_not_its_own_has_many_child() {
         let code = crud(&make_node_entity(), &IdStrategy::Provided);
         let populate = method(&code, "populate_node_relations");
@@ -775,6 +813,34 @@ mod tests {
         assert!(helper.contains("parent_id: &str,"), "{helper}");
         assert!(helper.contains("Value::from(parent_id.to_string()),"), "{helper}");
         assert!(method(&code, "create_node").contains("self.set_node_parent(child_id, &id).await?;"));
+    }
+
+    #[test]
+    fn a_missing_child_is_refused_before_anything_is_written() {
+        for entity in [make_node_entity(), make_node_with_required_parent()] {
+            let code = crud(&entity, &IdStrategy::SlugFromField("name".into()));
+
+            let create = method(&code, "create_node");
+            let check = create.find("if !self.node_exists(child_id).await? {").expect("create checks");
+            assert!(create.contains("for child_id in &contains {"), "{create}");
+            assert!(check > create.find("hooks::before_create").unwrap(), "after the hook: {create}");
+            assert!(
+                check < create.find("let id = if node.id.trim().is_empty()").unwrap(),
+                "before the insert: {create}"
+            );
+
+            let update = method(&code, "update_node");
+            let check = update.find("if !self.node_exists(child_id).await? {").expect("update checks");
+            assert!(update.contains("for child_id in updates.contains.iter().flatten() {"), "{update}");
+            assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
+            assert!(check < update.find("let contains_dropped").unwrap(), "before the drop check: {update}");
+            assert!(check < update.find(".update(self.db())").unwrap(), "before the record write: {update}");
+            assert!(update.contains("return Err(AppError::NodeNotFound(child_id.clone()));"), "{update}");
+
+            let helper = method(&code, "node_exists");
+            assert!(helper.contains("node::Entity::find_by_id(id)"), "{helper}");
+        }
+        assert!(!crud(&make_role_entity(), &IdStrategy::Provided).contains("_exists("), "no has_many, no check");
     }
 
     /// Syntax check: verify the generated `impl Store` block parses as valid

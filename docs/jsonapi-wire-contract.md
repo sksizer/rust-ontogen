@@ -384,12 +384,18 @@ relationship (§9.1), which is changed only through its own endpoint.
   - when the child's foreign key field is not `Option`, a child cannot be
     dropped. The write fails with `403 {child}_parent_required` (§13.4)
     before anything is written. The spec requires `403` when a server
-    refuses a relationship removal or a full replacement.
+    refuses a relationship removal or a full replacement;
+  - a listed child that does not exist fails a create or update with
+    `{Child}NotFound` before anything is written: the first missing id, in
+    list order. Over HTTP the step-8 check (§8.2, §8.3) catches it first,
+    as `404 related_resource_not_found`. The store's check covers IPC and
+    MCP. When a list both names a missing child and drops a required one,
+    the missing child is reported.
 
 On the markdown backend a `has_many` write rewrites one file per affected
 child. Multi-record writes are best-effort there (ADR 0001 contract
 item 2). Only an I/O failure part-way can leave some children changed,
-because the `409` check runs first.
+because both checks run before the first write.
 
 **Duplicate identifiers** in a to-many `data` array are collapsed to their
 first occurrence before anything else uses the array. This holds for
@@ -2017,7 +2023,8 @@ Three changes reach them, none of which changes a payload's shape:
 2. **`has_many` writes clear dropped children** (decision 9). Today an
    update that drops a child leaves the child's foreign key set, on every
    transport. The store fix in phase 1a corrects IPC and MCP as well as
-   HTTP.
+   HTTP. A listed child that does not exist is `{Child}NotFound`, and
+   nothing is written (§5.4).
 3. **New typed store errors.** `{Entity}AlreadyExists`, `{Entity}IdRequired`
    and `{Child}ParentRequired` replace backend messages. On these
    transports they are still strings.

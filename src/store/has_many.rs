@@ -5,7 +5,9 @@
 //! update that sets the list points every listed child at the record and
 //! clears the foreign key of every child it drops. When the foreign key is
 //! not `Option` a child cannot be left without a parent, so the update fails
-//! with `{Child}ParentRequired` before anything is written.
+//! with `{Child}ParentRequired` before anything is written. A listed child
+//! that does not exist fails a create or update with `{Child}NotFound`, also
+//! before anything is written.
 //!
 //! Like the rest of the store emission, this assumes the self-referential
 //! shape: the children are records of the declaring entity, whose
@@ -55,6 +57,41 @@ pub(crate) fn parent_param_type(fk_required: bool) -> &'static str {
 /// parent to `id_expr` (an `&str` expression).
 pub(crate) fn set_parent_arg(fk_required: bool, id_expr: &str) -> String {
     if fk_required { id_expr.to_string() } else { format!("Some({id_expr})") }
+}
+
+/// The name of the `{snake}_exists(&self, id: &str) -> Result<bool, AppError>`
+/// helper each backend emits for an entity with `has_many` writes. An id the
+/// backend could never hold is `false`, not an error.
+pub(crate) fn exists_helper(entity: &EntityDef) -> String {
+    format!("{}_exists", to_snake_case(&entity.name))
+}
+
+/// Emit, inside `create_*` or `update_*` and before anything is written, the
+/// check that every listed child exists: the first missing one, in list
+/// order, is `{Child}NotFound`. A child listed twice is checked twice, which
+/// is harmless. `listed` names an iterator of `&String` over the new list
+/// for a field: `&subtasks` on create, `updates.subtasks.iter().flatten()`
+/// on update, where an unset list checks nothing.
+///
+/// On update this runs before [`emit_dropped_children`], so a list that both
+/// names a missing child and drops a required one is `{Child}NotFound`.
+pub(crate) fn emit_missing_children_check(
+    code: &mut String,
+    entity: &EntityDef,
+    writes: &[HasManyWrite<'_>],
+    listed: impl Fn(&str) -> String,
+) {
+    let exists = exists_helper(entity);
+    for hm in writes {
+        code.push_str(&format!("        for child_id in {} {{\n", listed(hm.field)));
+        code.push_str(&format!("            if !self.{exists}(child_id).await? {{\n"));
+        code.push_str(&format!("                return Err(AppError::{}NotFound(child_id.clone()));\n", hm.child));
+        code.push_str("            }\n");
+        code.push_str("        }\n");
+    }
+    if !writes.is_empty() {
+        code.push('\n');
+    }
 }
 
 /// Emit, inside `update_*` and before anything is written, the children
@@ -185,11 +222,36 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_listed_child_is_the_child_not_found() {
+        let entity = node(FieldType::OptionString);
+        let writes = has_many_writes(&entity);
+        assert_eq!(exists_helper(&entity), "node_exists");
+
+        let mut code = String::new();
+        emit_missing_children_check(&mut code, &entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
+        assert!(code.contains("for child_id in updates.children.iter().flatten() {"), "{code}");
+        assert!(code.contains("if !self.node_exists(child_id).await? {"), "{code}");
+        assert!(code.contains("return Err(AppError::NodeNotFound(child_id.clone()));"), "{code}");
+    }
+
+    #[test]
+    fn the_snippets_parse_inside_a_create_body() {
+        let entity = node(FieldType::String);
+        let writes = has_many_writes(&entity);
+        let mut code = String::from("async fn create(&self, node: Node) -> Result<(), AppError> {\n");
+        code.push_str("        let children = node.children.clone();\n");
+        emit_missing_children_check(&mut code, &entity, &writes, |f| format!("&{f}"));
+        code.push_str("        Ok(())\n}\n");
+        syn::parse_file(&code).unwrap_or_else(|e| panic!("invalid Rust: {e}\n{code}"));
+    }
+
+    #[test]
     fn the_snippets_parse_inside_an_update_body() {
         for fk_type in [FieldType::OptionString, FieldType::String] {
             let entity = node(fk_type);
             let writes = has_many_writes(&entity);
             let mut code = String::from("async fn update(&self, id: &str) -> Result<(), AppError> {\n");
+            emit_missing_children_check(&mut code, &entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
             emit_dropped_children(&mut code, &writes);
             code.push_str("        let children_changed = true;\n");
             emit_update_children(&mut code, &entity, &writes, |f| format!("&current.{f}"));

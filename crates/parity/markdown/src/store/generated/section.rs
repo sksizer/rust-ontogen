@@ -92,6 +92,12 @@ impl Store {
 
         let children = section.children.clone();
 
+        for child_id in &children {
+            if !self.section_exists(child_id).await? {
+                return Err(AppError::SectionNotFound(child_id.clone()));
+            }
+        }
+
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&SectionFrontmatter::from_section(&section), SECTION_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(SECTIONS_DIR, SECTION_TYPE).create(
@@ -121,6 +127,12 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         let children_changed = updates.children.is_some();
+
+        for child_id in updates.children.iter().flatten() {
+            if !self.section_exists(child_id).await? {
+                return Err(AppError::SectionNotFound(child_id.clone()));
+            }
+        }
 
         let children_dropped: Vec<String> = match &updates.children {
             Some(new_ids) => current.children.iter().filter(|c| !new_ids.contains(c)).cloned().collect(),
@@ -196,5 +208,13 @@ impl Store {
                 doc.merge_serialize(&fm, SECTION_FM_FIELDS)
             })
             .map_err(AppError::from)
+    }
+
+    async fn section_exists(&self, id: &str) -> Result<bool, AppError> {
+        match self.vault().entity(SECTIONS_DIR, SECTION_TYPE).read_opt(id) {
+            Ok(doc) => Ok(doc.is_some()),
+            Err(markdown_store::Error::InvalidId { .. }) => Ok(false),
+            Err(e) => Err(AppError::from(e)),
+        }
     }
 }

@@ -110,6 +110,12 @@ impl Store {
 
         let subtasks = task.subtasks.clone();
 
+        for child_id in &subtasks {
+            if !self.task_exists(child_id).await? {
+                return Err(AppError::TaskNotFound(child_id.clone()));
+            }
+        }
+
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&TaskFrontmatter::from_task(&task), TASK_FM_FIELDS).map_err(AppError::from)?;
         doc.set_body(task.body.clone());
@@ -140,6 +146,12 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         let subtasks_changed = updates.subtasks.is_some();
+
+        for child_id in updates.subtasks.iter().flatten() {
+            if !self.task_exists(child_id).await? {
+                return Err(AppError::TaskNotFound(child_id.clone()));
+            }
+        }
 
         let subtasks_dropped: Vec<String> = match &updates.subtasks {
             Some(new_ids) => current.subtasks.iter().filter(|c| !new_ids.contains(c)).cloned().collect(),
@@ -216,5 +228,13 @@ impl Store {
                 doc.merge_serialize(&fm, TASK_FM_FIELDS)
             })
             .map_err(AppError::from)
+    }
+
+    async fn task_exists(&self, id: &str) -> Result<bool, AppError> {
+        match self.vault().entity(TASKS_DIR, TASK_TYPE).read_opt(id) {
+            Ok(doc) => Ok(doc.is_some()),
+            Err(markdown_store::Error::InvalidId { .. }) => Ok(false),
+            Err(e) => Err(AppError::from(e)),
+        }
     }
 }

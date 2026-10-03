@@ -48,6 +48,8 @@ impl Store {
     pub async fn list_sections(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Section>, AppError> {
         let mut query = section::Entity::find();
         query = query.order_by_asc(section::Column::Id);
+        let limit = limit.map(|l| l.min(i64::MAX as u64));
+        let offset = offset.map(|o| o.min(i64::MAX as u64));
         if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
@@ -83,6 +85,12 @@ impl Store {
         hooks::before_create(self, &mut section).await?;
 
         let children = section.children.clone();
+
+        for child_id in &children {
+            if !self.section_exists(child_id).await? {
+                return Err(AppError::SectionNotFound(child_id.clone()));
+            }
+        }
 
         let id = if section.id.trim().is_empty() {
             let base = ontogen_core::id::slugify(&section.title);
@@ -136,6 +144,12 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         let children_changed = updates.children.is_some();
+
+        for child_id in updates.children.iter().flatten() {
+            if !self.section_exists(child_id).await? {
+                return Err(AppError::SectionNotFound(child_id.clone()));
+            }
+        }
 
         let children_dropped: Vec<String> = match &updates.children {
             Some(new_ids) => current.children.iter().filter(|c| !new_ids.contains(c)).cloned().collect(),
@@ -224,5 +238,13 @@ impl Store {
         );
         self.db().execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
         Ok(())
+    }
+
+    async fn section_exists(&self, id: &str) -> Result<bool, AppError> {
+        Ok(section::Entity::find_by_id(id)
+            .one(self.db())
+            .await
+            .map_err(|e| AppError::DbError(e.to_string()))?
+            .is_some())
     }
 }

@@ -242,6 +242,12 @@ impl Store {
 
         let children = item.children.clone();
 
+        for child_id in &children {
+            if !self.item_exists(child_id).await? {
+                return Err(AppError::ItemNotFound(child_id.clone()));
+            }
+        }
+
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&ItemFrontmatter::from_item(&item), ITEM_FM_FIELDS).map_err(AppError::from)?;
         doc.set_body(item.body.clone());
@@ -272,6 +278,12 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         let children_changed = updates.children.is_some();
+
+        for child_id in updates.children.iter().flatten() {
+            if !self.item_exists(child_id).await? {
+                return Err(AppError::ItemNotFound(child_id.clone()));
+            }
+        }
 
         let children_dropped: Vec<String> = match &updates.children {
             Some(new_ids) => current.children.iter().filter(|c| !new_ids.contains(c)).cloned().collect(),
@@ -348,5 +360,13 @@ impl Store {
                 doc.merge_serialize(&fm, ITEM_FM_FIELDS)
             })
             .map_err(AppError::from)
+    }
+
+    async fn item_exists(&self, id: &str) -> Result<bool, AppError> {
+        match self.vault().entity(ITEMS_DIR, ITEM_TYPE).read_opt(id) {
+            Ok(doc) => Ok(doc.is_some()),
+            Err(markdown_store::Error::InvalidId { .. }) => Ok(false),
+            Err(e) => Err(AppError::from(e)),
+        }
     }
 }
