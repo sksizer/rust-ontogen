@@ -340,9 +340,9 @@ impl VaultHandle {
 ///   decide membership, so [`count`](Self::count) stays a directory walk.
 /// - [`VaultLayout::Flat`]: every entity shares the root, so `type` is the
 ///   only discriminator. A record typed as another entity is invisible:
-///   excluded from [`read_all`](Self::read_all) and [`count`](Self::count),
-///   and [`Error::NotFound`] for [`read_opt`](Self::read_opt) (as `None`),
-///   [`modify`](Self::modify) and [`remove`](Self::remove) — so one entity
+///   excluded from [`read_all`](Self::read_all) and [`count`](Self::count).
+///   [`read_opt`](Self::read_opt) returns `None`; [`modify`](Self::modify)
+///   and [`remove`](Self::remove) return [`Error::NotFound`], so one entity
 ///   can never rewrite or delete another's record.
 ///
 /// ```
@@ -383,7 +383,7 @@ impl<'a> EntityRecords<'a> {
     /// Whether a parsed record belongs to this entity under the vault's
     /// layout: always under [`VaultLayout::PerEntityDir`]; under
     /// [`VaultLayout::Flat`], when it has no `type` or this entity's.
-    pub fn admits(&self, doc: &Document) -> bool {
+    fn admits(&self, doc: &Document) -> bool {
         match self.vault.layout {
             VaultLayout::PerEntityDir => true,
             VaultLayout::Flat => match doc.get(crate::frontmatter::TYPE_KEY) {
@@ -453,6 +453,11 @@ impl<'a> EntityRecords<'a> {
 
     /// Remove one record under the write lock. Missing, or another
     /// entity's under [`VaultLayout::Flat`], is [`Error::NotFound`].
+    ///
+    /// Under [`VaultLayout::Flat`] a record whose frontmatter does not parse
+    /// cannot be removed here ([`Error::Parse`]): without its `type` there is
+    /// no telling whose it is, and deleting another entity's file is worse
+    /// than refusing. Fix the frontmatter or delete the file by hand.
     pub fn remove(&self, id: &str) -> Result<(), Error> {
         let path = self.vault.record_path(self.dir_segment, id)?;
         let _guard = self.vault.lock();
@@ -776,6 +781,22 @@ mod tests {
 
         notes.remove(&id).unwrap();
         assert!(matches!(notes.remove(&id), Err(Error::NotFound { .. })));
+    }
+
+    #[test]
+    fn flat_vault_refuses_to_remove_a_record_it_cannot_parse() {
+        let (_dir, vault) = flat_vault();
+        let broken = "---\n: : : not yaml\n---\n";
+        seed(&vault, "", "broken", broken);
+
+        let err = vault.entity("tasks", "Task").remove("broken").unwrap_err();
+        assert!(matches!(err, Error::Parse { .. }), "{err}");
+        assert_eq!(raw(&vault, "", "broken"), broken, "a file of unknown type is left alone");
+
+        let per_dir = VaultHandle::new(vault.root(), VaultLayout::PerEntityDir, IdStrategy::Provided);
+        seed(&per_dir, "tasks", "broken", broken);
+        per_dir.entity("tasks", "Task").remove("broken").unwrap();
+        assert!(!per_dir.record_exists("tasks", "broken").unwrap(), "the directory says whose it is");
     }
 
     #[test]

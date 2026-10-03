@@ -82,7 +82,9 @@ pub fn validate_id(id: &str) -> Result<(), Error> {
     if is_reserved_id(id) {
         return Err(Error::InvalidId {
             id: id.to_string(),
-            reason: "is reserved: OKF uses index.md and log.md for directory listings and update logs".into(),
+            reason: "is reserved: OKF uses index.md and log.md for directory listings and update logs; \
+                     choose another id"
+                .into(),
         });
     }
     Ok(())
@@ -173,6 +175,8 @@ mod tests {
                 "id {reserved:?} must be rejected"
             );
         }
+        let err = layout.record_path(Path::new("v"), "tasks", "index").unwrap_err();
+        assert!(err.to_string().contains("choose another id"), "the error says what to do: {err}");
         for fine in ["index-2", "logs", "changelog", "my-index"] {
             assert!(layout.record_path(Path::new("v"), "tasks", fine).is_ok(), "id {fine:?} must be accepted");
         }
