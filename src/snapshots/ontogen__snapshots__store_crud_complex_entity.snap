@@ -59,7 +59,7 @@ impl Store {
         }
         let models = query.all(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-        let mut entities: Vec<Article> = models.iter().map(Article::from_model).collect();
+        let mut entities: Vec<Article> = models.iter().map(Article::from_model).collect::<Result<_, _>>()?;
         for entity in &mut entities {
             self.populate_article_relations(entity).await?;
         }
@@ -77,7 +77,7 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::ArticleNotFound(id.to_string()))?;
 
-        let mut entity = Article::from_model(&model);
+        let mut entity = Article::from_model(&model)?;
         self.populate_article_relations(&mut entity).await?;
         Ok(entity)
     }
@@ -113,7 +113,7 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::ArticleNotFound(id.to_string()))?;
 
-        let mut current = Article::from_model(&existing_model);
+        let mut current = Article::from_model(&existing_model)?;
         self.populate_article_relations(&mut current).await?;
 
         hooks::before_update(self, &current, &updates).await?;
@@ -122,7 +122,7 @@ impl Store {
 
         updates.apply(&mut current);
 
-        let active = current.to_active_model();
+        let active = current.to_active_model()?;
         active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         if tags_changed {
@@ -163,7 +163,7 @@ impl Store {
     }
 
     async fn try_insert_article(&self, article: &Article) -> Result<bool, AppError> {
-        let active = article.to_active_model();
+        let active = article.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {

@@ -86,14 +86,14 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
 
     if has_relations {
         code.push_str(&format!(
-            "        let mut entities: Vec<{name}> = models.iter().map({name}::from_model).collect();\n"
+            "        let mut entities: Vec<{name}> = models.iter().map({name}::from_model).collect::<Result<_, _>>()?;\n"
         ));
         code.push_str("        for entity in &mut entities {\n");
         code.push_str(&format!("            self.populate_{snake}_relations(entity).await?;\n"));
         code.push_str("        }\n");
         code.push_str("        Ok(entities)\n");
     } else {
-        code.push_str(&format!("        Ok(models.iter().map({name}::from_model).collect())\n"));
+        code.push_str(&format!("        models.iter().map({name}::from_model).collect()\n"));
     }
 
     code.push_str("    }\n\n");
@@ -124,11 +124,11 @@ fn generate_get(code: &mut String, entity: &EntityDef, has_relations: bool) {
     code.push_str(&format!("            .ok_or_else(|| AppError::{not_found}(id.to_string()))?;\n\n"));
 
     if has_relations {
-        code.push_str(&format!("        let mut entity = {name}::from_model(&model);\n"));
+        code.push_str(&format!("        let mut entity = {name}::from_model(&model)?;\n"));
         code.push_str(&format!("        self.populate_{snake}_relations(&mut entity).await?;\n"));
         code.push_str("        Ok(entity)\n");
     } else {
-        code.push_str(&format!("        Ok({name}::from_model(&model))\n"));
+        code.push_str(&format!("        {name}::from_model(&model)\n"));
     }
 
     code.push_str("    }\n\n");
@@ -279,7 +279,7 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
     code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?\n");
     code.push_str(&format!("            .ok_or_else(|| AppError::{not_found}(id.to_string()))?;\n\n"));
 
-    code.push_str(&format!("        let mut current = {name}::from_model(&existing_model);\n"));
+    code.push_str(&format!("        let mut current = {name}::from_model(&existing_model)?;\n"));
 
     if has_relations {
         code.push_str(&format!("        self.populate_{snake}_relations(&mut current).await?;\n\n"));
@@ -308,7 +308,7 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
     code.push_str("        updates.apply(&mut current);\n\n");
 
     // Re-persist
-    code.push_str("        let active = current.to_active_model();\n");
+    code.push_str("        let active = current.to_active_model()?;\n");
     code.push_str("        active\n");
     code.push_str("            .update(self.db())\n");
     code.push_str("            .await\n");
@@ -441,7 +441,7 @@ fn generate_try_insert_helper(code: &mut String, entity: &EntityDef) {
     let snake = to_snake_case(name);
 
     code.push_str(&format!("    async fn try_insert_{snake}(&self, {snake}: &{name}) -> Result<bool, AppError> {{\n"));
-    code.push_str(&format!("        let active = {snake}.to_active_model();\n"));
+    code.push_str(&format!("        let active = {snake}.to_active_model()?;\n"));
     code.push_str("        match active.insert(self.db()).await {\n");
     code.push_str("            Ok(_) => Ok(true),\n");
     code.push_str(
@@ -721,7 +721,7 @@ mod tests {
     fn try_insert_tells_a_taken_id_from_other_unique_violations() {
         let code = crud(&make_role_entity(), &IdStrategy::Provided);
         let helper = method(&code, "try_insert_role");
-        assert!(helper.contains("let active = role.to_active_model();"), "{helper}");
+        assert!(helper.contains("let active = role.to_active_model()?;"), "{helper}");
         assert!(helper.contains("Some(sea_orm::SqlErr::UniqueConstraintViolation(_))"), "{helper}");
         assert!(helper.contains("role::Entity::find_by_id(role.id.as_str())"), "{helper}");
         assert!(helper.contains("Err(AppError::DbError(e.to_string()))"), "{helper}");

@@ -108,6 +108,28 @@ fn article_mtm_tags_entity() -> EntityDef {
     }
 }
 
+/// Entity with integer primitives the parser files under `Other` /
+/// `OptionEnum`: `Counter { id, hits: u32, peak: Option<u32>, bytes: usize,
+/// quota: Option<usize>, body }`.
+fn counter_integers_entity() -> EntityDef {
+    EntityDef {
+        name: "Counter".to_string(),
+        directory: "counters".to_string(),
+        table: "counters".to_string(),
+        type_name: "Counter".to_string(),
+        prefix: "counter".to_string(),
+        fields: vec![
+            FieldDef::new("id", FieldType::String, FieldRole::Id),
+            FieldDef::new("hits", FieldType::Other("u32".to_string()), FieldRole::Plain),
+            FieldDef::new("peak", FieldType::OptionEnum("u32".to_string()), FieldRole::Plain),
+            FieldDef::new("bytes", FieldType::Other("usize".to_string()), FieldRole::Plain),
+            FieldDef::new("quota", FieldType::OptionEnum("usize".to_string()), FieldRole::Plain),
+            FieldDef::new("body", FieldType::String, FieldRole::Body),
+        ],
+        doc: String::new(),
+    }
+}
+
 /// Build a `{name -> snake_case}` module map containing every entity name
 /// referenced by a fixture - used by `generate_entity_code`.
 fn modules_map(names: &[&str]) -> HashMap<String, String> {
@@ -144,6 +166,17 @@ fn generate_store_file_with(entity: &EntityDef, id_strategy: crate::ir::IdStrate
         id_strategy,
     };
     crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store failed");
+
+    let snake = to_snake_case(&entity.name);
+    read_file(&tmp.path().join(format!("{snake}.rs")))
+}
+
+/// Call `persistence::seaorm::gen_conversion::generate` into a tempdir and
+/// return the generated (rustfmt'd) conversion file for `entity`.
+fn generate_conversion_file(entity: &EntityDef) -> String {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    crate::persistence::seaorm::gen_conversion::generate(std::slice::from_ref(entity), tmp.path(), &[])
+        .expect("gen_conversion failed");
 
     let snake = to_snake_case(&entity.name);
     read_file(&tmp.path().join(format!("{snake}.rs")))
@@ -188,6 +221,16 @@ fn seaorm_entity_with_many_to_many_and_junction() {
     let combined =
         format!("// === Article entity ===\n{entity_code}\n// === Junction: {junction_name} ===\n{junction_code}");
     insta::assert_snapshot!(combined);
+}
+
+#[test]
+fn seaorm_entity_and_conversion_with_integer_primitives() {
+    let entity = counter_integers_entity();
+    let entity_code = generate_entity_code(&entity, &modules_map(&["Counter"]));
+    let conversion_code = generate_conversion_file(&entity);
+    insta::assert_snapshot!(format!(
+        "// === Counter entity ===\n{entity_code}\n// === Counter conversion ===\n{conversion_code}"
+    ));
 }
 
 #[test]
