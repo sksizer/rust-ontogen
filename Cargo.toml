@@ -8,6 +8,11 @@ members = [
     "crates/ontogen-ts",
     "crates/markdown-store",
     "crates/markdown-pilot",
+    "crates/parity/markdown",
+    "crates/parity/seaorm",
+    "crates/parity/markdown-provided",
+    "crates/parity/seaorm-provided",
+    "crates/parity/check",
 ]
 resolver = "3"
 

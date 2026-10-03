@@ -87,7 +87,8 @@ impl Store {
         Ok(())
     }
 
-    /// Load target IDs from a junction table for a given source entity.
+    /// Load target IDs from a junction table for a given source entity, in
+    /// the order `sync_junction` wrote them (insertion order is `rowid`).
     pub async fn load_junction_ids(
         &self,
         table: &str,
@@ -97,7 +98,7 @@ impl Store {
     ) -> Result<Vec<String>, crate::schema::AppError> {
         use sea_orm::{ConnectionTrait, Statement};
 
-        let sql = format!("SELECT {target_col} FROM {table} WHERE {source_col} = ?");
+        let sql = format!("SELECT {target_col} FROM {table} WHERE {source_col} = ? ORDER BY rowid");
         let rows = self
             .db()
             .query_all(Statement::from_sql_and_values(

@@ -1,0 +1,24 @@
+[package]
+name = "parity-seaorm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Runtime parity fixture: the shared parity schema generated against the SeaORM backend"
+license = "MIT"
+repository = "https://github.com/sksizer/rust-ontogen"
+# Never published: half of the runtime parity fixture (ADR 0006 §8). The
+# assertions live in parity-check.
+publish = false
+
+[dependencies]
+ontogen-core = { path = "../../ontogen-core" }
+ontogen-macros = { path = "../../ontogen-macros" }
+sea-orm = { version = "1", default-features = false, features = ["macros", "sqlx-sqlite", "runtime-tokio-rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+specta = { version = "=2.0.0-rc.23", features = ["derive"] }
+tokio = { version = "1", features = ["sync"] }
+
+[build-dependencies]
+ontogen = { path = "../../.." }

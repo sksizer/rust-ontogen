@@ -109,6 +109,8 @@ That's roughly 80 lines for a full Tauri + Nuxt pipeline -- HTTP, IPC, TypeScrip
 The builder's defaults: `schema_module_path` defaults to `ontogen::DEFAULT_SCHEMA_MODULE_PATH` (`"crate::schema"`) and propagates to both the store and API stages; when you opt into `store(...)`, the API stage's `store_type` defaults to `Some("Store")`. Override either with `.schema_module_path(...)` or `.api_store_type(Some(_))`.
 
 `Pipeline` also fills in `ClientsConfig.schema_entities` from the schema stage and `pool_exclude_paths` from the `seaorm()` stage, which is why both are left empty above. And it **infers the store backend** when exactly one persistence stage is configured -- if you enable both `seaorm(...)` and `markdown_io(...)`, disambiguate with `.store_backend(StoreBackendChoice::Seaorm)`.
+
+The id strategy for records created without an id is a store setting: `.store_id_strategy(IdStrategy::SlugFromField("title".into()))` applies to either backend and defaults to `IdStrategy::Provided`. See [Creating records](/guides/store-layer/#creating-records).
 </Aside>
 
 ### Formatting the generated TypeScript
@@ -197,6 +199,7 @@ fn main() {
                 schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
                 backend: ontogen::Backend::Seaorm(Some(seaorm)),
                 wikilink_policy: None,
+                id_strategy: ontogen::IdStrategy::Provided,
             },
         ),
         "gen_store",
@@ -331,7 +334,7 @@ parse_schema  ──────────────────────
 
 `parse_schema` always comes first because every other generator needs `SchemaOutput.entities`. After that, `gen_seaorm`, `gen_markdown_io`, and `gen_dtos` are independent -- they only need the entity list.
 
-`gen_store` is where the two persistence generators rejoin: its `StoreConfig.backend` decides which one it emits CRUD against. `Backend::Seaorm` takes the `SeaOrmOutput` as optional enrichment (pass `None` and it derives table and column names by convention); `Backend::Markdown` requires the `MarkdownIoOutput`, because the markdown emitter genuinely needs the id strategy and per-entity directory mapping (the vault layout, list cap and OKF options go into the generated `open_vault`).
+`gen_store` is where the two persistence generators rejoin: its `StoreConfig.backend` decides which one it emits CRUD against. `Backend::Seaorm` takes the `SeaOrmOutput` as optional enrichment (pass `None` and it derives table and column names by convention); `Backend::Markdown` requires the `MarkdownIoOutput`, because the markdown emitter genuinely needs the per-entity directory mapping (the vault layout, list cap and OKF options go into the generated `open_vault`).
 
 `gen_api`, `gen_servers`, and `gen_clients` form a chain where `gen_api`'s output feeds both `gen_servers` (Rust transports) and `gen_clients` (TypeScript clients + admin registry); the latter two are siblings and run in stable order for deterministic rerun-if-changed traces. All three emit byte-identical output regardless of which store backend you picked.
 
@@ -384,6 +387,7 @@ You don't need to run everything. Pick the generators you need.
             schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
             backend: ontogen::Backend::Seaorm(Some(seaorm)),
             wikilink_policy: None,
+            id_strategy: ontogen::IdStrategy::Provided,
         }),
         "gen_store",
     );
@@ -420,7 +424,6 @@ You don't need to run everything. Pick the generators you need.
             output_dir: "src/persistence/markdown/generated".into(),
             vault_root: "data/vault".into(),
             layout: MarkdownLayout::PerEntityDir,
-            id_strategy: IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
             okf: OkfOptions::default(),
         }),
@@ -435,6 +438,7 @@ You don't need to run everything. Pick the generators you need.
             schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
             backend: ontogen::Backend::Markdown(md),
             wikilink_policy: None,
+            id_strategy: IdStrategy::SlugFromField("title".into()),
         }),
         "gen_store",
     );
@@ -450,11 +454,11 @@ You don't need to run everything. Pick the generators you need.
             MarkdownIoOptions {
                 vault_root: "data/vault".into(),
                 layout: MarkdownLayout::PerEntityDir,
-                id_strategy: IdStrategy::SlugFromField("title".into()),
                 list_cap: 10_000,
                 okf: OkfOptions::default(),
             },
         )
+        .store_id_strategy(IdStrategy::SlugFromField("title".into()))
         .store(
             "src/store/generated",
             Some::<std::path::PathBuf>("src/store/hooks".into()),

@@ -35,14 +35,14 @@ fn main() {
             MarkdownIoOptions {
                 vault_root: "data/vault".into(),
                 layout: MarkdownLayout::PerEntityDir,
-                // Every entity has a title: created tasks/epics/tags slug
-                // their ids from it (POST without an id and watch the
-                // filename appear).
-                id_strategy: IdStrategy::SlugFromField("title".into()),
                 list_cap: 10_000,
                 okf: OkfOptions::default(),
             },
         )
+        // Every entity has a title: created tasks/epics/tags slug
+        // their ids from it (POST without an id and watch the
+        // filename appear).
+        .store_id_strategy(IdStrategy::SlugFromField("title".into()))
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
         .api("src/api/v1/generated", "AppState")

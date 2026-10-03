@@ -75,10 +75,16 @@ pub fn is_reserved_id(id: &str) -> bool {
 
 /// Validate a record id for use as a filename stem.
 ///
-/// Rejected: everything [`validate_segment`] rejects, plus the OKF
-/// reserved stems `index` and `log` (see [`is_reserved_id`]).
+/// Rejected: everything [`validate_segment`] rejects, a whitespace-only id,
+/// and the OKF reserved stems `index` and `log` (see [`is_reserved_id`]).
+/// This is the id rule of ontogen's JSON:API wire contract (§8.2); the
+/// ontogen workspace tests that its own copy of the rule agrees with this
+/// one.
 pub fn validate_id(id: &str) -> Result<(), Error> {
     validate_stem(id).map_err(|reason| Error::InvalidId { id: id.to_string(), reason })?;
+    if id.trim().is_empty() {
+        return Err(Error::InvalidId { id: id.to_string(), reason: "must not be whitespace-only".into() });
+    }
     if is_reserved_id(id) {
         return Err(Error::InvalidId {
             id: id.to_string(),
@@ -156,9 +162,22 @@ mod tests {
     #[test]
     fn traversal_attempts_rejected() {
         let layout = VaultLayout::PerEntityDir;
-        for bad in
-            ["../escape", "..", "a/b", "a\\b", "", ".", ".hidden", "x\0y", "C:evil", "a:stream", "dotted.", "spaced "]
-        {
+        for bad in [
+            "../escape",
+            "..",
+            "a/b",
+            "a\\b",
+            "",
+            ".",
+            ".hidden",
+            "x\0y",
+            "C:evil",
+            "a:stream",
+            "dotted.",
+            "spaced ",
+            "\t",
+            "\n\t",
+        ] {
             assert!(layout.record_path(Path::new("v"), "tasks", bad).is_err(), "id {bad:?} must be rejected");
         }
         for bad in ["../up", "a/b", "", "."] {

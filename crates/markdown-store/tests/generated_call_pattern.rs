@@ -89,7 +89,8 @@ impl Store {
         doc.merge_serialize(&TaskFrontmatter::from_task(&task), TASK_FM_FIELDS)?;
         doc.set_body(task.body.clone());
         let id = self.vault().entity(TASKS_DIR, TASK_TYPE).create(
-            Some(&task.id).filter(|s| !s.is_empty()).map(String::as_str),
+            &IdStrategy::SlugFromField("title".into()),
+            Some(task.id.as_str()).filter(|s| !s.trim().is_empty()),
             Some(&task.title),
             doc,
         )?;
@@ -170,7 +171,7 @@ impl Store {
 
 fn store() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()));
+    let vault = VaultHandle::new(dir.path(), VaultLayout::PerEntityDir);
     (dir, Store { vault })
 }
 

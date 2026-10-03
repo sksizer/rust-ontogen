@@ -190,7 +190,7 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 /// # Example
 ///
 /// ```ignore
-/// use ontogen::{gen_markdown_io, parse_schema, IdStrategy, MarkdownIoConfig, MarkdownLayout, OkfOptions, SchemaConfig};
+/// use ontogen::{gen_markdown_io, parse_schema, MarkdownIoConfig, MarkdownLayout, OkfOptions, SchemaConfig};
 /// use std::path::PathBuf;
 ///
 /// let schema = parse_schema(&SchemaConfig {
@@ -201,7 +201,6 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 ///     output_dir: PathBuf::from("src/persistence/markdown/generated"),
 ///     vault_root: PathBuf::from("data/vault"),
 ///     layout: MarkdownLayout::PerEntityDir,
-///     id_strategy: IdStrategy::SlugFromField("title".into()),
 ///     list_cap: 10_000,
 ///     okf: OkfOptions::default(),
 /// })?;
@@ -257,7 +256,7 @@ pub fn gen_dtos(entities: &[EntityDef], config: &DtoConfig) -> Result<(), Codege
 /// # Example
 ///
 /// ```ignore
-/// use ontogen::{gen_seaorm, gen_store, parse_schema, Backend, SchemaConfig, SeaOrmConfig, StoreConfig};
+/// use ontogen::{gen_seaorm, gen_store, parse_schema, Backend, IdStrategy, SchemaConfig, SeaOrmConfig, StoreConfig};
 /// use std::path::PathBuf;
 ///
 /// let schema = parse_schema(&SchemaConfig {
@@ -276,6 +275,7 @@ pub fn gen_dtos(entities: &[EntityDef], config: &DtoConfig) -> Result<(), Codege
 ///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
 ///     backend: Backend::Seaorm(Some(seaorm)),
 ///     wikilink_policy: None,
+///     id_strategy: IdStrategy::SlugFromField("title".into()),
 /// })?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
@@ -522,8 +522,6 @@ pub struct MarkdownIoConfig {
     pub vault_root: PathBuf,
     /// On-disk arrangement of record files under the vault root.
     pub layout: MarkdownLayout,
-    /// How new records derive an id when the caller didn't supply one.
-    pub id_strategy: IdStrategy,
     /// Hard cap on records parsed per `list()` before the runtime errors —
     /// the ADR's explicit scale ceiling.
     pub list_cap: usize,
@@ -575,6 +573,15 @@ pub struct StoreConfig {
     /// consumer that opts in must depend on the `markdown-store` runtime
     /// crate.
     pub wikilink_policy: Option<WikilinkPolicy>,
+    /// How `create_*` fills the id of a record created without one, on
+    /// either backend. The generated store checks it at generation time
+    /// (`SlugFromField` must name a `String` field on every entity) and
+    /// carries it into every create; nothing else configures it.
+    ///
+    /// A SeaORM store's generated code calls `ontogen_core::id` at runtime,
+    /// so the consumer depends on `ontogen-core` (with its `uuid` feature
+    /// for [`IdStrategy::Uuid`]).
+    pub id_strategy: IdStrategy,
 }
 
 /// Configuration for [`gen_api`].

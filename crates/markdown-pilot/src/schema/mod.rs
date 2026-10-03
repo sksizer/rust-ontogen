@@ -1,27 +1,42 @@
 mod note;
+mod section;
 mod tag;
 mod task;
 
 pub mod dto;
 
 pub use note::Note;
+pub use section::Section;
 pub use tag::Tag;
 pub use task::Task;
 
 // Re-export DTOs at the schema level (generated code imports from crate::schema::)
 pub use dto::note::{CreateNoteInput, UpdateNoteInput};
+pub use dto::section::{CreateSectionInput, UpdateSectionInput};
 pub use dto::tag::{CreateTagInput, UpdateTagInput};
 pub use dto::task::{CreateTaskInput, UpdateTaskInput};
 
 // ── Error type ──────────────────────────────────────────────────────────────
-// The markdown consumer contract: per-entity NotFound variants plus a single
-// Md variant carrying everything from the runtime crate.
+// The markdown consumer contract: the typed variants the generated store
+// constructs (per entity NotFound, IdRequired and AlreadyExists, plus
+// ParentRequired for a child whose has_many foreign key is required), and a
+// single Md variant carrying everything else from the runtime crate.
 
 #[derive(Debug)]
 pub enum AppError {
     NoteNotFound(String),
+    NoteIdRequired(String),
+    NoteAlreadyExists(String),
+    SectionNotFound(String),
+    SectionIdRequired(String),
+    SectionAlreadyExists(String),
+    SectionParentRequired(String),
     TaskNotFound(String),
+    TaskIdRequired(String),
+    TaskAlreadyExists(String),
     TagNotFound(String),
+    TagIdRequired(String),
+    TagAlreadyExists(String),
     Md(String),
 }
 
@@ -29,8 +44,18 @@ impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AppError::NoteNotFound(id) => write!(f, "Note not found: {id}"),
+            AppError::SectionNotFound(id) => write!(f, "Section not found: {id}"),
             AppError::TaskNotFound(id) => write!(f, "Task not found: {id}"),
             AppError::TagNotFound(id) => write!(f, "Tag not found: {id}"),
+            AppError::NoteIdRequired(reason)
+            | AppError::SectionIdRequired(reason)
+            | AppError::TaskIdRequired(reason)
+            | AppError::TagIdRequired(reason) => write!(f, "id required: {reason}"),
+            AppError::NoteAlreadyExists(id)
+            | AppError::SectionAlreadyExists(id)
+            | AppError::TaskAlreadyExists(id)
+            | AppError::TagAlreadyExists(id) => write!(f, "already exists: {id}"),
+            AppError::SectionParentRequired(id) => write!(f, "section {id} needs a parent and cannot be dropped"),
             AppError::Md(msg) => write!(f, "markdown store error: {msg}"),
         }
     }
@@ -57,6 +82,7 @@ pub enum ChangeOp {
 #[derive(Debug, Clone)]
 pub enum EntityKind {
     Note,
+    Section,
     Task,
     Tag,
 }

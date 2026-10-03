@@ -6,53 +6,15 @@ pub(crate) mod gen_crud;
 
 use super::{StoreBackend, WikilinkPolicy};
 use crate::ir::{IdStrategy, MarkdownIoOutput};
-use crate::schema::model::{EntityDef, FieldType};
+use crate::schema::model::EntityDef;
 use crate::store::helpers::to_snake_case;
 
 pub(crate) struct MarkdownBackend {
     pub(crate) md: MarkdownIoOutput,
-}
-
-impl MarkdownBackend {
-    /// The slug-source field for `create_record_derived`, from the configured
-    /// id strategy. Existence/type validation happened in [`Self::validate`].
-    fn slug_source(&self) -> Option<&str> {
-        match &self.md.id_strategy {
-            IdStrategy::SlugFromField(field) => Some(field.as_str()),
-            IdStrategy::Provided | IdStrategy::Uuid => None,
-        }
-    }
+    pub(crate) id_strategy: IdStrategy,
 }
 
 impl StoreBackend for MarkdownBackend {
-    fn validate(&self, entities: &[EntityDef]) -> Result<(), String> {
-        // SlugFromField must name a non-optional String field on EVERY
-        // entity — generated create code reads `{entity}.{field}.as_str()`.
-        // Failing at generation time beats a per-create runtime surprise.
-        if let IdStrategy::SlugFromField(field) = &self.md.id_strategy {
-            for entity in entities {
-                match entity.fields.iter().find(|f| &f.name == field) {
-                    Some(f) if f.field_type == FieldType::String => {}
-                    Some(f) => {
-                        return Err(format!(
-                            "IdStrategy::SlugFromField({field:?}): field `{field}` on entity `{}` \
-                             must be a plain String, found {:?}",
-                            entity.name, f.field_type
-                        ));
-                    }
-                    None => {
-                        return Err(format!(
-                            "IdStrategy::SlugFromField({field:?}): entity `{}` has no field `{field}` \
-                             to derive ids from",
-                            entity.name
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn emit_preamble(&self, code: &mut String, entity: &EntityDef) {
         let name = &entity.name;
         let snake = to_snake_case(name);
@@ -73,7 +35,7 @@ impl StoreBackend for MarkdownBackend {
     }
 
     fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef) {
-        gen_crud::generate_crud_impl(code, entity, self.slug_source());
+        gen_crud::generate_crud_impl(code, entity, &self.id_strategy);
     }
 
     fn wikilink_policy(&self) -> WikilinkPolicy {

@@ -131,16 +131,9 @@ fn malformed_index_files_report_every_violation() {
 #[test]
 fn a_vault_written_with_both_okf_options_is_conformant() {
     let dir = tempfile::tempdir().unwrap();
-    let vault = markdown_store::VaultHandle::new(
-        dir.path(),
-        markdown_store::VaultLayout::PerEntityDir,
-        markdown_store::IdStrategy::SlugFromField("title".into()),
-    )
-    .with_okf(markdown_store::OkfPolicy {
-        index: true,
-        generated_by: Some("ontogen-tests/1.0".into()),
-        ..Default::default()
-    });
+    let vault = markdown_store::VaultHandle::new(dir.path(), markdown_store::VaultLayout::PerEntityDir).with_okf(
+        markdown_store::OkfPolicy { index: true, generated_by: Some("ontogen-tests/1.0".into()), ..Default::default() },
+    );
 
     let record = |title: &str, description: Option<&str>| {
         let mut doc = markdown_store::Document::new();
@@ -150,12 +143,13 @@ fn a_vault_written_with_both_okf_options_is_conformant() {
         }
         doc
     };
+    let by_title = markdown_store::IdStrategy::SlugFromField("title".into());
     let tasks = vault.entity("tasks", "Task");
-    tasks.create(None, Some("Ship [it] (soon)"), record("Ship [it] (soon)", Some("multi\nline"))).unwrap();
-    tasks.create(None, Some("Plan"), record("Plan", None)).unwrap();
+    tasks.create(&by_title, None, Some("Ship [it] (soon)"), record("Ship [it] (soon)", Some("multi\nline"))).unwrap();
+    tasks.create(&by_title, None, Some("Plan"), record("Plan", None)).unwrap();
     let odd = vault.entity("notes", "Directories");
-    odd.create(None, Some("Hidden"), record("<!-- hidden *x*", Some("`y` | z & w ](not.md)"))).unwrap();
-    vault.entity("notes", "Note").create(None, Some("Idea"), record("Idea", Some("why"))).unwrap();
+    odd.create(&by_title, None, Some("Hidden"), record("<!-- hidden *x*", Some("`y` | z & w ](not.md)"))).unwrap();
+    vault.entity("notes", "Note").create(&by_title, None, Some("Idea"), record("Idea", Some("why"))).unwrap();
     std::fs::write(dir.path().join("notes/hand written (draft).md"), "---\ntype: Note\n---\n").unwrap();
     vault.rebuild_indexes().unwrap();
     tasks.remove("plan").unwrap();
@@ -193,16 +187,11 @@ fn notes_kb_seed_indexes_match_a_rebuild() {
     // examples/notes-kb/build.rs. The example lives outside this workspace,
     // so its function cannot be called here; the coupling is loose anyway:
     // `rebuild_indexes` reads only the root and the walk options (default in
-    // both), not the layout or id strategy, and runs whatever the index
-    // option says.
+    // both), not the layout, and runs whatever the index option says.
     let rebuild = |root: &Path| {
-        markdown_store::VaultHandle::new(
-            root,
-            markdown_store::VaultLayout::PerEntityDir,
-            markdown_store::IdStrategy::SlugFromField("title".into()),
-        )
-        .rebuild_indexes()
-        .expect("rebuild_indexes");
+        markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::PerEntityDir)
+            .rebuild_indexes()
+            .expect("rebuild_indexes");
     };
     if std::env::var_os(BLESS_SEED_INDEXES).is_some() {
         rebuild(&seed);

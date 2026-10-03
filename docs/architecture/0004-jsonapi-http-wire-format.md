@@ -83,7 +83,9 @@ dialect.
    writable: full replacement by `PATCH`, and add or remove on the
    relationship endpoint. A child whose foreign key is not `Option` cannot
    be dropped; the write is `403 {child}_parent_required`, the status the
-   spec requires for a refused relationship removal or replacement.
+   spec requires for a refused relationship removal or replacement. A
+   listed child that does not exist fails the write before anything is
+   written, on both backends.
 
 ### Choices that were contested
 

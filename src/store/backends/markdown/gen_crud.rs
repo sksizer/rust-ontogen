@@ -9,13 +9,15 @@
 //! `tests/golden/markdown-backend/store/note.rs.golden`, enforced by the
 //! conformance test once the harness lands.
 
+use crate::ir::IdStrategy;
 use crate::schema::model::EntityDef;
+use crate::store::has_many::{self, has_many_writes};
 use crate::store::helpers::{pluralize, to_snake_case};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /// Generate the complete `impl Store { ... }` block for the markdown backend.
-pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, slug_source: Option<&str>) {
+pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
     let has_relations = entity.junction_relations().next().is_some() || entity.has_many_relations().next().is_some();
 
     code.push_str("impl Store {\n");
@@ -23,7 +25,7 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, slug_source: Op
     generate_list(code, entity, has_relations);
     generate_count(code, entity);
     generate_get(code, entity, has_relations);
-    generate_create(code, entity, slug_source);
+    generate_create(code, entity, id_strategy);
     generate_update(code, entity);
     generate_delete(code, entity);
 
@@ -33,10 +35,12 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, slug_source: Op
 
     // has_many reverse helpers (e.g., set_node_parent) — read-mutate-rewrite
     // replaces SeaORM's raw-SQL fast path.
-    for (_field, info) in entity.has_many_relations() {
-        if let Some(ref fk) = info.foreign_key {
-            generate_set_parent_helper(code, entity, fk);
-        }
+    let writes = has_many_writes(entity);
+    for hm in &writes {
+        generate_set_parent_helper(code, entity, hm.fk, hm.fk_required);
+    }
+    if !writes.is_empty() {
+        generate_exists_helper(code, entity);
     }
 
     code.push_str("}\n");
@@ -133,12 +137,15 @@ fn generate_get(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let not_found = not_found_variant(name);
 
     code.push_str(&format!("    pub async fn get_{snake}(&self, id: &str) -> Result<{name}, AppError> {{\n"));
-    code.push_str("        let doc = self\n");
-    code.push_str("            .vault()\n");
-    code.push_str(&format!("            .{records}\n"));
-    code.push_str("            .read_opt(id)\n");
-    code.push_str("            .map_err(AppError::from)?\n");
-    code.push_str(&format!("            .ok_or_else(|| AppError::{not_found}(id.to_string()))?;\n"));
+    // An id the vault cannot hold (`Error::InvalidId`) names no record: a
+    // lookup of one is NotFound, like any other id with no file behind it.
+    code.push_str(&format!("        let doc = match self.vault().{records}.read_opt(id) {{\n"));
+    code.push_str("            Ok(Some(doc)) => doc,\n");
+    code.push_str("            Ok(None) | Err(markdown_store::Error::InvalidId { .. }) => {\n");
+    code.push_str(&format!("                return Err(AppError::{not_found}(id.to_string()));\n"));
+    code.push_str("            }\n");
+    code.push_str("            Err(e) => return Err(AppError::from(e)),\n");
+    code.push_str("        };\n");
     code.push_str(&format!("        let fm: {fm} = doc.deserialize().map_err(AppError::from)?;\n"));
 
     if has_relations {
@@ -151,7 +158,7 @@ fn generate_get(code: &mut String, entity: &EntityDef, has_relations: bool) {
     code.push_str("    }\n\n");
 }
 
-fn generate_create(code: &mut String, entity: &EntityDef, slug_source: Option<&str>) {
+fn generate_create(code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let fm = fm_type(name);
@@ -167,13 +174,14 @@ fn generate_create(code: &mut String, entity: &EntityDef, slug_source: Option<&s
     // has_many children are derived views: capture before persisting so the
     // reverse FKs can be set after the record exists (same sequencing as the
     // SeaORM emission; m2m needs no step — the wikilink list IS the storage).
-    let has_manys: Vec<_> = entity.has_many_relations().collect();
-    for (field, _info) in &has_manys {
-        code.push_str(&format!("        let {fname} = {snake}.{fname}.clone();\n", fname = field.name));
+    let writes = has_many_writes(entity);
+    for hm in &writes {
+        code.push_str(&format!("        let {fname} = {snake}.{fname}.clone();\n", fname = hm.field));
     }
-    if !has_manys.is_empty() {
+    if !writes.is_empty() {
         code.push('\n');
     }
+    has_many::emit_missing_children_check(code, entity, &writes, |f| format!("&{f}"));
 
     code.push_str("        let mut doc = markdown_store::Document::new();\n");
     code.push_str(&format!(
@@ -183,22 +191,31 @@ fn generate_create(code: &mut String, entity: &EntityDef, slug_source: Option<&s
         code.push_str(&format!("        doc.set_body({snake}.{}.clone());\n", body.name));
     }
 
-    code.push_str("        let id = self\n");
-    code.push_str("            .vault()\n");
-    code.push_str(&format!("            .{records}\n"));
-    code.push_str("            .create(\n");
-    code.push_str(&format!("                Some({snake}.id.as_str()).filter(|s| !s.is_empty()),\n"));
-    code.push_str(&format!("                {},\n", slug_source_expr(&snake, slug_source)));
-    code.push_str("                doc,\n");
-    code.push_str("            )\n");
-    code.push_str("            .map_err(AppError::from)?;\n\n");
+    // The runtime derives a missing id by the strategy, probing `-2`, `-3`
+    // under the vault's write lock, so only a provided id can already exist.
+    code.push_str(&format!("        let id = match self.vault().{records}.create(\n"));
+    code.push_str(&format!("            &{},\n", runtime_strategy(id_strategy)));
+    code.push_str(&format!("            Some({snake}.id.as_str()).filter(|s| !s.trim().is_empty()),\n"));
+    code.push_str(&format!("            {},\n", slug_source_expr(&snake, id_strategy)));
+    code.push_str("            doc,\n");
+    code.push_str("        ) {\n");
+    code.push_str("            Ok(id) => id,\n");
+    code.push_str(&format!(
+        "            Err(markdown_store::Error::IdRequired {{ reason }}) => return Err(AppError::{name}IdRequired(reason)),\n"
+    ));
+    code.push_str(&format!(
+        "            Err(markdown_store::Error::AlreadyExists {{ .. }}) => return Err(AppError::{name}AlreadyExists({snake}.id)),\n"
+    ));
+    code.push_str("            Err(e) => return Err(AppError::from(e)),\n");
+    code.push_str("        };\n\n");
 
-    for (field, info) in &has_manys {
-        if info.foreign_key.is_some() {
-            code.push_str(&format!("        for child_id in &{fname} {{\n", fname = field.name));
-            code.push_str(&format!("            self.set_{snake}_parent(child_id, Some(&id)).await?;\n"));
-            code.push_str("        }\n\n");
-        }
+    for hm in &writes {
+        code.push_str(&format!("        for child_id in &{fname} {{\n", fname = hm.field));
+        code.push_str(&format!(
+            "            self.set_{snake}_parent(child_id, {}).await?;\n",
+            has_many::set_parent_arg(hm.fk_required, "&id")
+        ));
+        code.push_str("        }\n\n");
     }
 
     code.push_str(&format!("        let created = self.get_{snake}(&id).await?;\n"));
@@ -234,6 +251,9 @@ fn generate_update(code: &mut String, entity: &EntityDef) {
     if !has_manys.is_empty() {
         code.push('\n');
     }
+    let writes = has_many_writes(entity);
+    has_many::emit_missing_children_check(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
+    has_many::emit_dropped_children(code, &writes);
 
     code.push_str("        self.vault()\n");
     code.push_str(&format!("            .{records}\n"));
@@ -253,18 +273,8 @@ fn generate_update(code: &mut String, entity: &EntityDef) {
     code.push_str("            .map_err(AppError::from)?;\n\n");
 
     // Conditional has_many reverse sync (read-mutate-rewrite per child).
-    for (field, info) in &has_manys {
-        if info.foreign_key.is_some() {
-            code.push_str(&format!("        if {fname}_changed {{\n", fname = field.name));
-            code.push_str(&format!("            if let Some({fname}) = &updates.{fname} {{\n", fname = field.name));
-            code.push_str(&format!("                for child_id in {fname} {{\n", fname = field.name));
-            code.push_str(&format!("                    self.set_{snake}_parent(child_id, Some(id)).await?;\n"));
-            code.push_str("                }\n");
-            code.push_str("            }\n");
-            code.push_str("        }\n");
-        }
-    }
-    if has_manys.iter().any(|(_, info)| info.foreign_key.is_some()) {
+    has_many::emit_update_children(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
+    if !writes.is_empty() {
         code.push('\n');
     }
 
@@ -289,7 +299,9 @@ fn generate_delete(code: &mut String, entity: &EntityDef) {
 
     code.push_str(&format!("        match self.vault().{records}.remove(id) {{\n"));
     code.push_str("            Ok(()) => {}\n");
-    code.push_str("            Err(markdown_store::Error::NotFound { .. }) => {\n");
+    code.push_str(
+        "            Err(markdown_store::Error::NotFound { .. } | markdown_store::Error::InvalidId { .. }) => {\n",
+    );
     code.push_str(&format!("                return Err(AppError::{not_found}(id.to_string()));\n"));
     code.push_str("            }\n");
     code.push_str("            Err(e) => return Err(AppError::from(e)),\n");
@@ -327,9 +339,11 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
 
     // has_many: derived view — walk the entity directory and collect the ids
     // of records whose FK points back here. O(N) over the folder, by design.
-    for (field, info) in &has_manys {
-        let Some(ref fk) = info.foreign_key else { continue };
-        code.push_str(&format!("        let mut {fname} = Vec::new();\n", fname = field.name));
+    // The walk is in id order, so the list is id-ascending (ADR 0006 §3),
+    // as SeaORM's `ORDER BY id` makes it there.
+    for hm in has_many_writes(entity) {
+        let fk = hm.fk;
+        code.push_str(&format!("        let mut {fname} = Vec::new();\n", fname = hm.field));
         code.push_str(&format!(
             "        for (child_id, doc) in self.vault().{records}.read_all().map_err(AppError::from)? {{\n"
         ));
@@ -337,13 +351,17 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
         code.push_str("                continue;\n");
         code.push_str("            }\n");
         code.push_str(&format!("            let child: {fm} = doc.deserialize().map_err(AppError::from)?;\n"));
-        code.push_str(&format!(
-            "            if markdown_store::wikilink::strip_opt(child.{fk}).as_deref() == Some({snake}.id.as_str()) {{\n"
-        ));
-        code.push_str(&format!("                {fname}.push(child_id);\n", fname = field.name));
+        if hm.fk_required {
+            code.push_str(&format!("            if markdown_store::wikilink::strip(&child.{fk}) == {snake}.id {{\n"));
+        } else {
+            code.push_str(&format!(
+                "            if markdown_store::wikilink::strip_opt(child.{fk}).as_deref() == Some({snake}.id.as_str()) {{\n"
+            ));
+        }
+        code.push_str(&format!("                {fname}.push(child_id);\n", fname = hm.field));
         code.push_str("            }\n");
         code.push_str("        }\n");
-        code.push_str(&format!("        {snake}.{fname} = {fname};\n", fname = field.name));
+        code.push_str(&format!("        {snake}.{fname} = {fname};\n", fname = hm.field));
     }
 
     code.push_str("        Ok(())\n");
@@ -355,8 +373,9 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
 /// `set_{snake}_parent`: read-mutate-rewrite the child's FK field — the
 /// markdown replacement for SeaORM's raw-SQL fast path. (Like the SeaORM
 /// emission, this assumes the self-referential has_many shape: children are
-/// records of the same entity.)
-fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str) {
+/// records of the same entity.) A required FK takes a parent, an optional
+/// one `None` to clear it.
+fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, fk_required: bool) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let fm = fm_type(name);
@@ -366,16 +385,38 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str) {
     code.push_str(&format!("    async fn set_{snake}_parent(\n"));
     code.push_str("        &self,\n");
     code.push_str("        child_id: &str,\n");
-    code.push_str("        parent_id: Option<&str>,\n");
+    code.push_str(&format!("        parent_id: {},\n", has_many::parent_param_type(fk_required)));
     code.push_str("    ) -> Result<(), AppError> {\n");
     code.push_str("        self.vault()\n");
     code.push_str(&format!("            .{records}\n"));
     code.push_str("            .modify(child_id, |doc| {\n");
     code.push_str(&format!("                let mut fm: {fm} = doc.deserialize()?;\n"));
-    code.push_str(&format!("                fm.{fk} = parent_id.map(markdown_store::wikilink::encode);\n"));
+    if fk_required {
+        code.push_str(&format!("                fm.{fk} = markdown_store::wikilink::encode(parent_id);\n"));
+    } else {
+        code.push_str(&format!("                fm.{fk} = parent_id.map(markdown_store::wikilink::encode);\n"));
+    }
     code.push_str(&format!("                doc.merge_serialize(&fm, {fields})\n"));
     code.push_str("            })\n");
     code.push_str("            .map_err(AppError::from)\n");
+    code.push_str("    }\n\n");
+}
+
+/// `{snake}_exists`: whether a record with this id exists, for the
+/// missing-child check of a `has_many` write. An id the vault cannot hold
+/// names no record, as in `get_*`.
+fn generate_exists_helper(code: &mut String, entity: &EntityDef) {
+    let records = records(&to_snake_case(&entity.name));
+
+    code.push_str(&format!(
+        "    async fn {}(&self, id: &str) -> Result<bool, AppError> {{\n",
+        has_many::exists_helper(entity)
+    ));
+    code.push_str(&format!("        match self.vault().{records}.read_opt(id) {{\n"));
+    code.push_str("            Ok(doc) => Ok(doc.is_some()),\n");
+    code.push_str("            Err(markdown_store::Error::InvalidId { .. }) => Ok(false),\n");
+    code.push_str("            Err(e) => Err(AppError::from(e)),\n");
+    code.push_str("        }\n");
     code.push_str("    }\n\n");
 }
 
@@ -389,11 +430,108 @@ fn entity_kind_variant(entity_name: &str) -> String {
     entity_name.to_string()
 }
 
-/// The slug-source argument for `create_record_derived`, derived from the
-/// configured id strategy. `None` when the strategy doesn't slug.
-fn slug_source_expr(snake: &str, slug_source: Option<&str>) -> String {
-    match slug_source {
-        Some(field) => format!("Some({snake}.{field}.as_str())"),
-        None => "None".to_string(),
+/// The runtime `IdStrategy` value the generated create passes, spelled out
+/// from the build-time one.
+fn runtime_strategy(id_strategy: &IdStrategy) -> String {
+    match id_strategy {
+        IdStrategy::Provided => "markdown_store::IdStrategy::Provided".to_string(),
+        IdStrategy::SlugFromField(field) => format!("markdown_store::IdStrategy::SlugFromField({field:?}.into())"),
+        IdStrategy::Uuid => "markdown_store::IdStrategy::Uuid".to_string(),
+    }
+}
+
+/// The slug-source argument of the runtime create: the slug field's value,
+/// or `None` when the strategy doesn't slug.
+fn slug_source_expr(snake: &str, id_strategy: &IdStrategy) -> String {
+    match id_strategy {
+        IdStrategy::SlugFromField(field) => format!("Some({snake}.{field}.as_str())"),
+        IdStrategy::Provided | IdStrategy::Uuid => "None".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::model::{FieldDef, FieldRole, FieldType, RelationInfo, RelationKind};
+
+    fn node(fk_type: FieldType) -> EntityDef {
+        EntityDef {
+            name: "Node".to_string(),
+            directory: "nodes".to_string(),
+            table: "nodes".to_string(),
+            type_name: "node".to_string(),
+            prefix: "node".to_string(),
+            fields: vec![
+                FieldDef::new("id", FieldType::String, FieldRole::Id),
+                FieldDef::new("name", FieldType::String, FieldRole::Plain),
+                FieldDef::new(
+                    "parent_id",
+                    fk_type,
+                    FieldRole::Relation(RelationInfo {
+                        kind: RelationKind::BelongsTo,
+                        target: "Node".to_string(),
+                        junction: None,
+                        foreign_key: None,
+                    }),
+                ),
+                FieldDef::new(
+                    "contains",
+                    FieldType::VecString,
+                    FieldRole::Relation(RelationInfo {
+                        kind: RelationKind::HasMany,
+                        target: "Node".to_string(),
+                        junction: None,
+                        foreign_key: Some("parent_id".to_string()),
+                    }),
+                ),
+                FieldDef::new("body", FieldType::String, FieldRole::Body),
+            ],
+            doc: String::new(),
+        }
+    }
+
+    fn crud(entity: &EntityDef) -> String {
+        let mut code = String::new();
+        generate_crud_impl(&mut code, entity, &IdStrategy::SlugFromField("name".into()));
+        code
+    }
+
+    fn method<'a>(code: &'a str, name: &str) -> &'a str {
+        let start = code.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("no fn {name}"));
+        let rest = &code[start..];
+        &rest[..rest.find("\n    }\n").map(|e| e + 6).unwrap_or(rest.len())]
+    }
+
+    #[test]
+    fn a_missing_child_is_refused_before_anything_is_written() {
+        for fk_type in [FieldType::OptionString, FieldType::String] {
+            let code = crud(&node(fk_type));
+
+            let create = method(&code, "create_node");
+            let check = create.find("if !self.node_exists(child_id).await? {").expect("create checks");
+            assert!(create.contains("for child_id in &contains {"), "{create}");
+            assert!(check > create.find("hooks::before_create").unwrap(), "after the hook: {create}");
+            assert!(check < create.find(".create(\n").unwrap(), "before the record write: {create}");
+
+            let update = method(&code, "update_node");
+            let check = update.find("if !self.node_exists(child_id).await? {").expect("update checks");
+            assert!(update.contains("for child_id in updates.contains.iter().flatten() {"), "{update}");
+            assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
+            assert!(check < update.find("let contains_dropped").unwrap(), "before the drop check: {update}");
+            assert!(check < update.find(".modify(id,").unwrap(), "before the record write: {update}");
+            assert!(update.contains("return Err(AppError::NodeNotFound(child_id.clone()));"), "{update}");
+
+            let helper = method(&code, "node_exists");
+            assert!(helper.contains(".entity(NODES_DIR, NODE_TYPE).read_opt(id)"), "{helper}");
+            assert!(helper.contains("Err(markdown_store::Error::InvalidId { .. }) => Ok(false),"), "{helper}");
+        }
+    }
+
+    #[test]
+    fn generated_code_is_valid_rust() {
+        for fk_type in [FieldType::OptionString, FieldType::String] {
+            let code = crud(&node(fk_type));
+            syn::parse_file(&code).unwrap_or_else(|e| panic!("invalid Rust: {e}\n--- code ---\n{code}"));
+        }
     }
 }

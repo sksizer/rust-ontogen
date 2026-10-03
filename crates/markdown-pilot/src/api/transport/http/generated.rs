@@ -16,9 +16,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-use crate::api::{note, tag, task};
+use crate::api::{note, section, tag, task};
 use crate::schema::{
-    CreateNoteInput, CreateTagInput, CreateTaskInput, Note, Tag, Task, UpdateNoteInput, UpdateTagInput, UpdateTaskInput,
+    CreateNoteInput, CreateSectionInput, CreateTagInput, CreateTaskInput, Note, Section, Tag, Task, UpdateNoteInput,
+    UpdateSectionInput, UpdateTagInput, UpdateTaskInput,
 };
 use crate::store::Store;
 
@@ -65,6 +66,46 @@ async fn note_update(
 async fn note_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
     let store = state.store().await.map_err(|e| err(e.to_string()))?;
     note::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+}
+
+// ── Section Handlers ──
+
+async fn section_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Section>>, ApiError> {
+    let store = state.store().await.map_err(|e| err(e.to_string()))?;
+    section::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+}
+
+async fn section_get_by_id(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Section>, ApiError> {
+    let store = state.store().await.map_err(|e| err(e.to_string()))?;
+    section::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+}
+
+async fn section_create(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<CreateSectionInput>,
+) -> Result<(StatusCode, Json<Section>), ApiError> {
+    let store = state.store().await.map_err(|e| err(e.to_string()))?;
+    section::create(&store, input)
+        .await
+        .map(|entity| (StatusCode::CREATED, Json(entity)))
+        .map_err(|e| err(e.to_string()))
+}
+
+async fn section_update(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(input): Json<UpdateSectionInput>,
+) -> Result<Json<Section>, ApiError> {
+    let store = state.store().await.map_err(|e| err(e.to_string()))?;
+    section::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+}
+
+async fn section_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
+    let store = state.store().await.map_err(|e| err(e.to_string()))?;
+    section::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
 }
 
 // ── Tag Handlers ──
@@ -140,6 +181,8 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/notes", get(note_list).post(note_create))
         .route("/api/notes/{id}", get(note_get_by_id).put(note_update).delete(note_delete))
+        .route("/api/sections", get(section_list).post(section_create))
+        .route("/api/sections/{id}", get(section_get_by_id).put(section_update).delete(section_delete))
         .route("/api/tags", get(tag_list).post(tag_create))
         .route("/api/tags/{id}", get(tag_get_by_id).put(tag_update).delete(tag_delete))
         .route("/api/tasks", get(task_list).post(task_create))

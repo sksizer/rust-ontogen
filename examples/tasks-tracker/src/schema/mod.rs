@@ -17,8 +17,14 @@ pub use dto::task::{CreateTaskInput, UpdateTaskInput};
 #[derive(Debug)]
 pub enum AppError {
     TaskNotFound(String),
+    TaskIdRequired(String),
+    TaskAlreadyExists(String),
     EpicNotFound(String),
+    EpicIdRequired(String),
+    EpicAlreadyExists(String),
     TagNotFound(String),
+    TagIdRequired(String),
+    TagAlreadyExists(String),
     Md(String),
 }
 
@@ -28,6 +34,12 @@ impl std::fmt::Display for AppError {
             AppError::TaskNotFound(id) => write!(f, "Task not found: {id}"),
             AppError::EpicNotFound(id) => write!(f, "Epic not found: {id}"),
             AppError::TagNotFound(id) => write!(f, "Tag not found: {id}"),
+            AppError::TaskIdRequired(reason)
+            | AppError::EpicIdRequired(reason)
+            | AppError::TagIdRequired(reason) => write!(f, "id required: {reason}"),
+            AppError::TaskAlreadyExists(id)
+            | AppError::EpicAlreadyExists(id)
+            | AppError::TagAlreadyExists(id) => write!(f, "already exists: {id}"),
             AppError::Md(msg) => write!(f, "markdown store error: {msg}"),
         }
     }

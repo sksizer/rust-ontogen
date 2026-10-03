@@ -123,12 +123,15 @@ node.contains = {
     use crate::persistence::db::entities::node;
     let children = node::Entity::find()
         .filter(node::Column::ParentId.eq(&node.id))
+        .order_by_asc(node::Column::Id)
         .all(self.db())
         .await
         .map_err(|e| crate::schema::AppError::DbError(e.to_string()))?;
     children.into_iter().map(|m| m.id).collect()
 };
 ```
+
+The list is ordered by child id (byte order) on both backends.
 
 On create and update, the store sets the FK on child entities:
 
@@ -140,6 +143,8 @@ for child_id in &contains {
 ```
 
 The `set_node_parent` helper executes a raw SQL `UPDATE` to set the FK column on the target table.
+
+For what an update does to children the list drops, the `ParentRequired` error, and the supported shape, see [has_many writes](/guides/store-layer/#has_many-writes).
 
 ## many_to_many
 
@@ -223,6 +228,8 @@ if fulfills_changed {
 }
 ```
 
+The list keeps the order it was written in, on both backends. On SeaORM that holds because your `sync_junction` inserts rows in list order and your `load_junction_ids` reads them back with `ORDER BY rowid` (see [Junction Sync](/guides/store-layer/#junction-sync)).
+
 ### Junction Table Naming
 
 By default, the junction table name is `{source_snake}_{field_name}`:
@@ -297,7 +304,7 @@ pub enum Relation {
 | **from_model()** | Cloned from model | `Vec::new()` | `Vec::new()` |
 | **to_active_model()** | `Set(value)` | Excluded | Excluded |
 | **Store: create** | Direct insert | Set FK on children | `sync_junction()` |
-| **Store: update** | Direct update | Conditional FK update | Conditional `sync_junction()` |
+| **Store: update** | Direct update | Conditional FK update; dropped children cleared | Conditional `sync_junction()` |
 | **Store: list/get** | Direct read | `populate_relations()` | `populate_relations()` |
 | **Update struct** | `Option<Option<String>>` or `Option<String>` | `Option<Vec<String>>` | `Option<Vec<String>>` |
 

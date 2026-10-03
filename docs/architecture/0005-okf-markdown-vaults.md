@@ -110,8 +110,9 @@ change. Canonical user documentation stays in the markdown backend guide.
 - **Config placement.** `MarkdownIoConfig` (and `MarkdownIoOptions`) gain
   `okf: OkfOptions { index, generated_by }`. `gen_markdown_io` emits
   `VAULT_ROOT` and `open_vault(root)` into the generated `mod.rs`, which builds
-  the `VaultHandle` with the layout, id strategy, list cap and OKF options from
-  the config. This makes the build configuration the single source for vault
+  the `VaultHandle` with the layout, list cap and OKF options from
+  the config (the id strategy is the store's, passed to each create from
+  `StoreConfig.id_strategy`). This makes the build configuration the single source for vault
   settings that every consumer previously repeated by hand in
   `VaultHandle::new(...)`, where they could drift from the build.
   `MarkdownIoOutput` carries only what the store emitter reads; the store

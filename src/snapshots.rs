@@ -108,6 +108,28 @@ fn article_mtm_tags_entity() -> EntityDef {
     }
 }
 
+/// Entity with integer primitives the parser files under `Other` /
+/// `OptionEnum`: `Counter { id, hits: u32, peak: Option<u32>, bytes: usize,
+/// quota: Option<usize>, body }`.
+fn counter_integers_entity() -> EntityDef {
+    EntityDef {
+        name: "Counter".to_string(),
+        directory: "counters".to_string(),
+        table: "counters".to_string(),
+        type_name: "Counter".to_string(),
+        prefix: "counter".to_string(),
+        fields: vec![
+            FieldDef::new("id", FieldType::String, FieldRole::Id),
+            FieldDef::new("hits", FieldType::Other("u32".to_string()), FieldRole::Plain),
+            FieldDef::new("peak", FieldType::OptionEnum("u32".to_string()), FieldRole::Plain),
+            FieldDef::new("bytes", FieldType::Other("usize".to_string()), FieldRole::Plain),
+            FieldDef::new("quota", FieldType::OptionEnum("usize".to_string()), FieldRole::Plain),
+            FieldDef::new("body", FieldType::String, FieldRole::Body),
+        ],
+        doc: String::new(),
+    }
+}
+
 /// Build a `{name -> snake_case}` module map containing every entity name
 /// referenced by a fixture - used by `generate_entity_code`.
 fn modules_map(names: &[&str]) -> HashMap<String, String> {
@@ -129,6 +151,11 @@ fn generate_dto_file(entity: &EntityDef) -> String {
 
 /// Call `store::generate` into a tempdir and return the generated file for `entity`.
 fn generate_store_file(entity: &EntityDef) -> String {
+    generate_store_file_with(entity, crate::ir::IdStrategy::Provided)
+}
+
+/// [`generate_store_file`] under a given id strategy.
+fn generate_store_file_with(entity: &EntityDef, id_strategy: crate::ir::IdStrategy) -> String {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = StoreConfig {
         output_dir: tmp.path().to_path_buf(),
@@ -136,8 +163,20 @@ fn generate_store_file(entity: &EntityDef) -> String {
         schema_module_path: "crate::schema".to_string(),
         backend: crate::ir::Backend::Seaorm(None),
         wikilink_policy: None,
+        id_strategy,
     };
     crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store failed");
+
+    let snake = to_snake_case(&entity.name);
+    read_file(&tmp.path().join(format!("{snake}.rs")))
+}
+
+/// Call `persistence::seaorm::gen_conversion::generate` into a tempdir and
+/// return the generated (rustfmt'd) conversion file for `entity`.
+fn generate_conversion_file(entity: &EntityDef) -> String {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    crate::persistence::seaorm::gen_conversion::generate(std::slice::from_ref(entity), tmp.path(), &[])
+        .expect("gen_conversion failed");
 
     let snake = to_snake_case(&entity.name);
     read_file(&tmp.path().join(format!("{snake}.rs")))
@@ -185,6 +224,16 @@ fn seaorm_entity_with_many_to_many_and_junction() {
 }
 
 #[test]
+fn seaorm_entity_and_conversion_with_integer_primitives() {
+    let entity = counter_integers_entity();
+    let entity_code = generate_entity_code(&entity, &modules_map(&["Counter"]));
+    let conversion_code = generate_conversion_file(&entity);
+    insta::assert_snapshot!(format!(
+        "// === Counter entity ===\n{entity_code}\n// === Counter conversion ===\n{conversion_code}"
+    ));
+}
+
+#[test]
 fn dto_simple_entity() {
     let code = generate_dto_file(&simple_role_entity());
     insta::assert_snapshot!(code);
@@ -204,9 +253,8 @@ fn a_sql_list_orders_before_it_takes_a_page() {
     // may answer the same query differently each time, so page 2 can repeat a
     // row page 1 already returned and skip another entirely.
     //
-    // This pins determinism within the SQL backend only. It deliberately does
-    // not claim parity with a markdown page: collation decides text order in
-    // SQL, and the vault sorts by record path rather than id.
+    // This pins the SQL half of the default id order (ADR 0006 §3); the
+    // markdown runtime lists in id byte order, the other half.
     let code = generate_store_file(&article_mtm_tags_entity());
     assert!(code.contains("QueryOrder"), "the ordering trait is in scope:\n{code}");
 
@@ -292,9 +340,30 @@ fn node_has_many_entity() -> EntityDef {
     }
 }
 
+/// The node fixture with its `parent_id` foreign key made required, so a
+/// child cannot be dropped from `contains`.
+fn node_required_parent_entity() -> EntityDef {
+    let mut entity = node_has_many_entity();
+    entity.fields.iter_mut().find(|f| f.name == "parent_id").expect("parent_id").field_type = FieldType::String;
+    entity
+}
+
+#[test]
+fn store_crud_has_many_entity() {
+    // The SeaORM create under a slug strategy (derive, probe, retry a lost
+    // race) and the has_many update that clears dropped children.
+    let code = generate_store_file_with(&node_has_many_entity(), crate::ir::IdStrategy::SlugFromField("label".into()));
+    insta::assert_snapshot!(code);
+}
+
 /// Generate a MARKDOWN-backed store file for `entity` and read it back.
 fn generate_markdown_store_file(entity: &EntityDef) -> String {
-    use crate::ir::{Backend, IdStrategy, MarkdownEntityMeta, MarkdownIoOutput};
+    generate_markdown_store_file_with(entity, crate::ir::IdStrategy::Provided)
+}
+
+/// [`generate_markdown_store_file`] under a given id strategy.
+fn generate_markdown_store_file_with(entity: &EntityDef, id_strategy: crate::ir::IdStrategy) -> String {
+    use crate::ir::{Backend, MarkdownEntityMeta, MarkdownIoOutput};
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = StoreConfig {
@@ -302,7 +371,6 @@ fn generate_markdown_store_file(entity: &EntityDef) -> String {
         hooks_dir: None,
         schema_module_path: "crate::schema".to_string(),
         backend: Backend::Markdown(MarkdownIoOutput {
-            id_strategy: IdStrategy::Provided,
             module_path: "crate::persistence::markdown::generated".into(),
             entities: vec![MarkdownEntityMeta {
                 entity_name: entity.name.clone(),
@@ -313,6 +381,7 @@ fn generate_markdown_store_file(entity: &EntityDef) -> String {
             }],
         }),
         wikilink_policy: None,
+        id_strategy,
     };
     crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store(markdown) failed");
 
@@ -334,6 +403,17 @@ fn markdown_store_has_many_entity() {
     // read-mutate-rewrite set_parent helper (SeaORM's raw-SQL fast path
     // replacement).
     let code = generate_markdown_store_file(&node_has_many_entity());
+    insta::assert_snapshot!(code);
+}
+
+#[test]
+fn markdown_store_has_many_required_parent() {
+    // A required foreign key: the update refuses to drop a child before
+    // writing anything, and set_parent takes a parent, never `None`.
+    let code = generate_markdown_store_file_with(
+        &node_required_parent_entity(),
+        crate::ir::IdStrategy::SlugFromField("label".into()),
+    );
     insta::assert_snapshot!(code);
 }
 
@@ -371,7 +451,6 @@ fn markdown_open_vault_with_okf_options() {
         output_dir: "unused".into(),
         vault_root: "data/vault".into(),
         layout: crate::ir::MarkdownLayout::PerEntityDir,
-        id_strategy: crate::ir::IdStrategy::SlugFromField("title".into()),
         list_cap: 10_000,
         okf: crate::ir::OkfOptions { index: true, generated_by: Some("notes-kb/0.1.0".into()) },
     });

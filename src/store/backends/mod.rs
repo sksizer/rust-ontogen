@@ -23,8 +23,7 @@ use crate::schema::model::EntityDef;
 /// One persistence backend's contribution to a generated store module.
 pub(crate) trait StoreBackend {
     /// Validate the schema against backend constraints before anything is
-    /// written (e.g. the markdown slug strategy requires its source field on
-    /// every entity). Default: no constraints.
+    /// written. Default: no constraints.
     fn validate(&self, entities: &[EntityDef]) -> Result<(), String> {
         let _ = entities;
         Ok(())
@@ -60,10 +59,16 @@ pub(crate) trait StoreBackend {
 /// `StoreConfig::wikilink_policy`); re-exported here for the backend impls.
 pub(crate) use crate::ir::WikilinkPolicy;
 
-/// Resolve the emitter for a configured [`crate::ir::Backend`].
-pub(crate) fn for_backend(backend: &crate::ir::Backend) -> Result<Box<dyn StoreBackend>, crate::CodegenError> {
+/// Resolve the emitter for a configured [`crate::ir::Backend`]. The id
+/// strategy is validated by the caller; both backends emit it into
+/// `create_*`.
+pub(crate) fn for_backend(
+    backend: &crate::ir::Backend,
+    id_strategy: &crate::ir::IdStrategy,
+) -> Result<Box<dyn StoreBackend>, crate::CodegenError> {
+    let id_strategy = id_strategy.clone();
     match backend {
-        crate::ir::Backend::Seaorm(_) => Ok(Box::new(seaorm::SeaormBackend)),
-        crate::ir::Backend::Markdown(md) => Ok(Box::new(markdown::MarkdownBackend { md: md.clone() })),
+        crate::ir::Backend::Seaorm(_) => Ok(Box::new(seaorm::SeaormBackend { id_strategy })),
+        crate::ir::Backend::Markdown(md) => Ok(Box::new(markdown::MarkdownBackend { md: md.clone(), id_strategy })),
     }
 }

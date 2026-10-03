@@ -53,14 +53,13 @@ The `entity_output` and `conversion_output` directories are cleaned on each buil
 
 Used by [`gen_markdown_io()`](/reference/public-api/#gen_markdown_io), which takes the whole `SchemaOutput` and checks frontmatter keys against the keys OKF reserves; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys).
 
-The `output_dir` field controls where generated code lands. The rest describe the **runtime** shape of the vault (ADR 0001) and go into the generated `open_vault`. The returned `MarkdownIoOutput` carries the id strategy and per-entity metadata, which [`gen_store`](/reference/public-api/#gen_store) consumes via `Backend::Markdown`.
+The `output_dir` field controls where generated code lands. The rest describe the **runtime** shape of the vault (ADR 0001) and go into the generated `open_vault`. The returned `MarkdownIoOutput` carries the per-entity metadata, which [`gen_store`](/reference/public-api/#gen_store) consumes via `Backend::Markdown`.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `output_dir` | `PathBuf` | Output directory for the generated per-entity frontmatter modules. |
 | `vault_root` | `PathBuf` | Where the `.md` records live at runtime. Relative paths resolve against the program's working directory (e.g., `data/vault`). |
 | `layout` | `MarkdownLayout` | On-disk arrangement of record files under the vault root. |
-| `id_strategy` | `IdStrategy` | How a new record derives an id when the caller didn't supply one. A derived id that collides with a [reserved id](/guides/markdown-backend/#reserved-ids) is deduped. |
 | `list_cap` | `usize` | Hard cap on records parsed per `list()` before the runtime errors -- ADR 0001's explicit scale ceiling. |
 | `okf` | `OkfOptions` | Opt-in OKF artifacts; see below. `OkfOptions::default()` turns both off. |
 
@@ -71,7 +70,6 @@ MarkdownIoConfig {
     output_dir: "src/persistence/markdown/generated".into(),
     vault_root: "data/vault".into(),
     layout: ontogen::MarkdownLayout::PerEntityDir,
-    id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
     list_cap: 10_000,
     okf: ontogen::OkfOptions::default(),
 }
@@ -87,16 +85,6 @@ pub enum MarkdownLayout {
 ```
 
 `Flat` relies on the frontmatter `type:` discriminator and id prefixes to tell entities apart. `PerEntityDir` takes its directory segment from `#[ontology(entity, directory = "...")]`.
-
-### `IdStrategy`
-
-```rust
-pub enum IdStrategy {
-    Provided,                  // the caller must supply the id
-    SlugFromField(String),     // slugify the named field, de-duplicating with -2, -3, ...
-    Uuid,                      // fresh UUID v4 (needs the runtime crate's `uuid` feature)
-}
-```
 
 ---
 
@@ -129,6 +117,7 @@ Used by [`gen_store()`](/reference/public-api/#gen_store).
 | `schema_module_path` | `String` | Rust import path for the schema module in generated code. Use [`ontogen::DEFAULT_SCHEMA_MODULE_PATH`](/reference/public-api/#default_schema_module_path) (`"crate::schema"`) for the canonical default. |
 | `backend` | `Backend` | Which persistence backend the generated CRUD bodies are wired to. See [`Backend`](#backend) below and the [markdown backend guide](/guides/markdown-backend/). |
 | `wikilink_policy` | `Option<WikilinkPolicy>` | Whether the DTO `From` impls strip wikilink-shaped relation ids (`[[id]]` to `id`). `None` uses the backend's default. See [`WikilinkPolicy`](#wikilinkpolicy) below. |
+| `id_strategy` | `IdStrategy` | How `create_*` fills the id of a record created without one, on either backend. See [`IdStrategy`](#idstrategy). `Pipeline` sets it with `store_id_strategy(..)` and defaults to `IdStrategy::Provided`. |
 
 ```rust
 StoreConfig {
@@ -137,10 +126,23 @@ StoreConfig {
     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
     backend: ontogen::Backend::Seaorm(Some(seaorm)),
     wikilink_policy: None,
+    id_strategy: ontogen::IdStrategy::Provided,
 }
 ```
 
 When `hooks_dir` is `None`, the generated CRUD code still compiles -- but it expects your consuming crate to provide hook modules at the expected import paths. This is useful when you want full control over hook file organization.
+
+### `IdStrategy`
+
+```rust
+pub enum IdStrategy {
+    Provided,                  // the caller must supply the id (the default)
+    SlugFromField(String),     // slugify the named field, probing -2, -3, ...
+    Uuid,                      // fresh UUID v4
+}
+```
+
+One setting for both backends. `SlugFromField(f)` requires `f` to be a plain `String` field on every entity; the generator fails otherwise. `Uuid` needs the `uuid` feature of `markdown-store` in a markdown consumer. [Creating records](/guides/store-layer/#creating-records) describes how a create uses the strategy, and the SeaORM dependency on `ontogen-core`.
 
 ### `Backend`
 
@@ -153,7 +155,7 @@ pub enum Backend {
 
 The persistence backend is a **generation-time** choice (ADR 0001), not a runtime one. `gen_store` emits one CRUD module per entity wired to that backend's primitives, and everything above the store -- `gen_api`, `gen_servers`, `gen_clients` -- is byte-identical between the two.
 
-`Seaorm`'s payload is optional enrichment: pass the `SeaOrmOutput` you got from `gen_seaorm` for exact table and column references, or `None` to fall back to naming conventions. `Markdown` **always** carries metadata -- the emitter genuinely needs the id strategy and per-entity directory mapping (the vault layout goes into the generated `open_vault` instead), so you must pass the `MarkdownIoOutput` that `gen_markdown_io` returned.
+`Seaorm`'s payload is optional enrichment: pass the `SeaOrmOutput` you got from `gen_seaorm` for exact table and column references, or `None` to fall back to naming conventions. `Markdown` **always** carries metadata -- the emitter genuinely needs the per-entity directory mapping (the vault layout goes into the generated `open_vault` instead), so you must pass the `MarkdownIoOutput` that `gen_markdown_io` returned.
 
 <Aside type="note">
 `Backend` is a closed enum by design. ADR 0001 (alternative C) rejected an out-of-tree backend trait; new backends land here by upstream PR.

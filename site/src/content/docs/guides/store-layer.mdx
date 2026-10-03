@@ -18,6 +18,7 @@ let store_output = ontogen::gen_store(
         schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
         backend: ontogen::Backend::Seaorm(Some(seaorm_output)),
         wikilink_policy: None,
+        id_strategy: ontogen::IdStrategy::Provided,
     },
 )?;
 ```
@@ -160,15 +161,24 @@ The core of the generated module is an `impl Store` block with five methods:
 <Tabs>
   <TabItem label="list">
     ```rust
-    pub async fn list_workouts(&self) -> Result<Vec<Workout>, AppError> {
-        let models = workout::Entity::find()
-            .all(self.db())
+    pub async fn list_workouts(&self, limit: Option<u64>, offset: Option<u64>)
+        -> Result<Vec<Workout>, AppError>
+    {
+        let mut query = workout::Entity::find();
+        query = query.order_by_asc(workout::Column::Id);
+        if let Some(l) = limit {
+            query = query.limit(l);
+        }
+        if let Some(o) = offset {
+            query = query.offset(o);
+        }
+        let models = query.all(self.db())
             .await
             .map_err(|e| AppError::DbError(e.to_string()))?;
 
         let mut entities: Vec<Workout> = models.iter()
             .map(Workout::from_model)
-            .collect();
+            .collect::<Result<_, _>>()?;
         for entity in &mut entities {
             self.populate_workout_relations(entity).await?;
         }
@@ -176,7 +186,7 @@ The core of the generated module is an `impl Store` block with five methods:
     }
     ```
 
-    For entities without relations, the population loop is omitted and the method returns directly from the `map`.
+    A list is ordered by id, byte order, on both backends, so a `limit`/`offset` walk visits every record once. For entities without relations, the population loop is omitted.
   </TabItem>
   <TabItem label="get">
     ```rust
@@ -187,13 +197,13 @@ The core of the generated module is an `impl Store` block with five methods:
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::WorkoutNotFound(id.to_string()))?;
 
-        let mut entity = Workout::from_model(&model);
+        let mut entity = Workout::from_model(&model)?;
         self.populate_workout_relations(&mut entity).await?;
         Ok(entity)
     }
     ```
 
-    The `NotFound` error variant is derived from the entity name: `{Entity}NotFound`.
+    The `NotFound` error variant is derived from the entity name: `{Entity}NotFound`. On the markdown backend an id the vault can never hold (for example one containing `/`) is also `{Entity}NotFound`.
   </TabItem>
   <TabItem label="create">
     ```rust
@@ -202,12 +212,21 @@ The core of the generated module is an `impl Store` block with five methods:
     {
         hooks::before_create(self, &mut workout).await?;
 
-        let id = workout.id.clone();
         let tags = workout.tags.clone();  // extract before converting
-        let active = workout.to_active_model();
 
-        active.insert(self.db()).await
-            .map_err(|e| AppError::DbError(e.to_string()))?;
+        // Id resolution (see "Creating records"); with IdStrategy::Provided:
+        let id = if workout.id.trim().is_empty() {
+            return Err(AppError::WorkoutIdRequired(
+                "this store requires the caller to supply an id".to_string(),
+            ));
+        } else {
+            ontogen_core::id::validate_id(&workout.id)
+                .map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_workout(&workout).await? {
+                return Err(AppError::WorkoutAlreadyExists(workout.id));
+            }
+            workout.id.clone()
+        };
 
         // Sync junction table
         self.sync_junction(
@@ -223,7 +242,7 @@ The core of the generated module is an `impl Store` block with five methods:
     }
     ```
 
-    The create flow: hook -> extract relation fields -> insert -> sync junctions -> re-fetch -> emit event -> hook -> return.
+    The create flow: hook -> extract relation fields -> resolve the id and insert -> sync junctions -> re-fetch -> emit event -> hook -> return.
   </TabItem>
   <TabItem label="update">
     ```rust
@@ -235,7 +254,7 @@ The core of the generated module is an `impl Store` block with five methods:
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::WorkoutNotFound(id.to_string()))?;
 
-        let mut current = Workout::from_model(&existing_model);
+        let mut current = Workout::from_model(&existing_model)?;
         self.populate_workout_relations(&mut current).await?;
 
         hooks::before_update(self, &current, &updates).await?;
@@ -244,7 +263,7 @@ The core of the generated module is an `impl Store` block with five methods:
 
         updates.apply(&mut current);
 
-        let active = current.to_active_model();
+        let active = current.to_active_model()?;
         active.update(self.db()).await
             .map_err(|e| AppError::DbError(e.to_string()))?;
 
@@ -316,6 +335,7 @@ node.contains = {
     use crate::persistence::db::entities::node;
     let children = node::Entity::find()
         .filter(node::Column::ParentId.eq(&node.id))
+        .order_by_asc(node::Column::Id)
         .all(self.db())
         .await
         .map_err(|e| AppError::DbError(e.to_string()))?;
@@ -332,6 +352,8 @@ node.fulfills = self
     .await?;
 ```
 
+A `has_many` list is ordered by child id (byte order) on both backends. A `many_to_many` list is in the order it was written (see [Junction Sync](#junction-sync)).
+
 Both `list_*` and `get_*` methods call `populate_relations` after converting from the database model. This means every entity returned by the store has its relation fields fully populated.
 
 <Aside type="caution">
@@ -343,7 +365,7 @@ For entities with many relations, `list_*` can be expensive -- it runs N+1 queri
 When creating or updating an entity, `many_to_many` fields are synced via `sync_junction`. This method:
 
 1. Deletes all existing junction rows for the entity
-2. Inserts new junction rows for each ID in the field
+2. Inserts new junction rows for each ID in the field, in list order
 
 ```rust
 // In create
@@ -355,7 +377,50 @@ if tags_changed {
 }
 ```
 
-The `sync_junction` method is provided by your `Store` implementation. Ontogen generates the calls with the correct table and column names.
+The `sync_junction` and `load_junction_ids` methods are provided by your `Store` implementation. Ontogen generates the calls with the correct table and column names.
+
+The order of a `many_to_many` list is the order it was written, on both backends. The markdown backend keeps it in frontmatter. On SeaORM that order lives in your two helpers, so they have to honor it: `sync_junction` inserts the rows in the order of `target_ids`, and `load_junction_ids` selects them back with `ORDER BY rowid`:
+
+```rust
+let sql = format!(
+    "SELECT {target_col} FROM {table} WHERE {source_col} = ? ORDER BY rowid"
+);
+```
+
+Without the `ORDER BY`, SQLite is free to return the rows in any order and a list would not round-trip. The junction table must keep its implicit `rowid` (do not declare it `WITHOUT ROWID`).
+
+## Creating records
+
+`create_*` runs `before_create`, then checks that every child a `has_many` list names exists (a missing one is `{Child}NotFound`, see [has_many writes](#has_many-writes)), then settles the id:
+
+- An id that is empty or whitespace-only counts as absent. Any other id, whether it came from the client or from `before_create`, is used as given under every strategy.
+- A given id must satisfy the id rule: not empty, not whitespace-only, none of `/`, `\`, `:` or NUL, no leading `.`, no trailing `.` or space, and not `index` or `log` in any letter case (those two are reserved for the vault's own files). An invalid id fails with the backend's error (`DbError` on SeaORM, `Md` on markdown).
+- A given id that is already taken fails with `AppError::{Entity}AlreadyExists(id)`.
+- An absent id is derived from the store's `id_strategy`: `Provided` fails with `AppError::{Entity}IdRequired(reason)`; `SlugFromField(f)` slugifies the entity's `f` field (an empty slug is `{Entity}IdRequired`); `Uuid` generates a v4 UUID. A derived id that is taken, or reserved, is probed as `base-2`, `base-3`, and so on. On SeaORM, an insert of a derived id that loses a race to another writer moves on to the next suffix.
+
+The strategy is set once for the whole store with `Pipeline::store_id_strategy` or `StoreConfig::id_strategy` (see [Configuration](/reference/configuration/#idstrategy)). It applies to both backends. The SeaORM store calls `ontogen_core::id` at runtime, so a SeaORM consumer depends on `ontogen-core`, with the `uuid` feature for `IdStrategy::Uuid`. (A markdown consumer needs the `uuid` feature of `markdown-store` instead.)
+
+Your `AppError` declares `{Entity}IdRequired(String)` and `{Entity}AlreadyExists(String)` for every entity:
+
+```rust
+pub enum AppError {
+    WorkoutNotFound(String),
+    WorkoutIdRequired(String),      // carries the reason
+    WorkoutAlreadyExists(String),   // carries the id
+    // ...
+}
+```
+
+## has_many writes
+
+A `has_many` list lives on the children, as their foreign keys. An update that sets the list points every listed child at the record and clears the foreign key of every child the list drops. The generated update computes the dropped children first, from the stored list:
+
+- If the child's foreign-key field is an `Option<String>`, the dropped children are set to `NULL` after the record is written.
+- If it is a plain `String`, a child cannot be left without a parent, so the update fails with `AppError::{Child}ParentRequired(child_id)` before anything is written. `{Child}` is the `has_many` target entity. Declare the variant in your `AppError` for such an entity; it is constructed only for a non-`Option` foreign key.
+
+A listed child that does not exist fails the create or update with `AppError::{Child}NotFound(child_id)`, the first missing id in list order, before anything is written. It is checked before `{Child}ParentRequired`.
+
+The generated `has_many` writes cover a record whose children are records of the same entity (the self-referential shape, such as a tree of nodes).
 
 ## Simple vs Complex Entities
 

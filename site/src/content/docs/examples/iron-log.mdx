@@ -190,7 +190,7 @@ Each contains the five CRUD methods (`list_*`, `get_*`, `create_*`, `update_*`, 
 
 The `workout.rs` store file is the most interesting because of the many-to-many relation. Its `create_workout` method:
 1. Calls `hooks::before_create`.
-2. Inserts the workout row.
+2. Checks the id (iron-log's id strategy is the default, `IdStrategy::Provided`, so a missing id is `AppError::WorkoutIdRequired` and a taken one `AppError::WorkoutAlreadyExists`) and inserts the workout row.
 3. Calls `sync_junction("workout_tags", ...)` to populate the junction table.
 4. Reloads the workout (to get populated relations).
 5. Emits a change event.
@@ -351,10 +351,12 @@ pub struct Store {
 It exposes:
 - `db()` -- returns the database connection for SeaORM queries.
 - `emit_change()` -- broadcasts change events (created/updated/deleted) that the UI can subscribe to.
-- `sync_junction()` -- replaces junction table rows for many-to-many updates.
-- `load_junction_ids()` -- loads related IDs from a junction table.
+- `sync_junction()` -- replaces junction table rows for many-to-many updates, inserting them in list order.
+- `load_junction_ids()` -- loads related IDs from a junction table with `ORDER BY rowid`, so a list comes back in the order it was written.
 
 The generated CRUD methods are implemented as `impl Store` blocks, so they have access to all of this.
+
+The `AppError` in `src/schema/mod.rs` declares `{Entity}NotFound`, `{Entity}IdRequired` and `{Entity}AlreadyExists` for each of the four entities, plus `DbError`. It depends on `ontogen-core` (see [Creating records](/guides/store-layer/#creating-records)).
 
 ## Project layout
 

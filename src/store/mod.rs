@@ -17,14 +17,15 @@
 mod backends;
 mod gen_hooks;
 mod gen_update;
+mod has_many;
 pub(crate) mod helpers;
 #[cfg(test)]
 mod tests;
 
 use std::fs;
 
-use crate::ir::{CrudOp, ParamMeta, ScaffoldMeta, Source, StoreMethodKind, StoreMethodMeta, StoreOutput};
-use crate::schema::model::EntityDef;
+use crate::ir::{CrudOp, IdStrategy, ParamMeta, ScaffoldMeta, Source, StoreMethodKind, StoreMethodMeta, StoreOutput};
+use crate::schema::model::{EntityDef, FieldType};
 use crate::{CodegenError, StoreConfig};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -36,9 +37,10 @@ use crate::{CodegenError, StoreConfig};
 /// generators (gen_api, gen_servers). The persistence backend is selected by
 /// `config.backend` (ADR 0001).
 pub fn generate(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOutput, CodegenError> {
-    // Resolve and validate the backend up front so misconfiguration fails
-    // loudly before any files are written.
-    let backend = backends::for_backend(&config.backend)?;
+    // Resolve and validate up front so misconfiguration fails loudly before
+    // any files are written.
+    validate_id_strategy(entities, &config.id_strategy).map_err(CodegenError::Store)?;
+    let backend = backends::for_backend(&config.backend, &config.id_strategy)?;
     backend.validate(entities).map_err(CodegenError::Store)?;
 
     let output_dir = &config.output_dir;
@@ -104,6 +106,33 @@ pub fn generate(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOut
     }
 
     Ok(StoreOutput { methods: all_methods, scaffolded_hooks, change_channels: Vec::new() })
+}
+
+/// `SlugFromField` must name a non-optional `String` field on every entity:
+/// the generated create reads `{entity}.{field}` on either backend.
+fn validate_id_strategy(entities: &[EntityDef], strategy: &IdStrategy) -> Result<(), String> {
+    let IdStrategy::SlugFromField(field) = strategy else {
+        return Ok(());
+    };
+    for entity in entities {
+        match entity.fields.iter().find(|f| &f.name == field) {
+            Some(f) if f.field_type == FieldType::String => {}
+            Some(f) => {
+                return Err(format!(
+                    "IdStrategy::SlugFromField({field:?}): field `{field}` on entity `{}` must be a plain String, \
+                     found {:?}",
+                    entity.name, f.field_type
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "IdStrategy::SlugFromField({field:?}): entity `{}` has no field `{field}` to derive ids from",
+                    entity.name
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ─── Per-entity generation ───────────────────────────────────────────────────

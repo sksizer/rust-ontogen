@@ -57,7 +57,9 @@ impl Store {
     pub async fn list_exercises(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Exercise>, AppError> {
         let mut query = exercise::Entity::find();
         query = query.order_by_asc(exercise::Column::Id);
-        if let Some(l) = limit {
+        let limit = limit.map(|l| l.min(i64::MAX as u64));
+        let offset = offset.map(|o| o.min(i64::MAX as u64));
+        if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
         if let Some(o) = offset {
@@ -65,7 +67,7 @@ impl Store {
         }
         let models = query.all(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-        Ok(models.iter().map(Exercise::from_model).collect())
+        models.iter().map(Exercise::from_model).collect()
     }
 
     pub async fn count_exercises(&self) -> Result<u64, AppError> {
@@ -79,16 +81,21 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::ExerciseNotFound(id.to_string()))?;
 
-        Ok(Exercise::from_model(&model))
+        Exercise::from_model(&model)
     }
 
     pub async fn create_exercise(&self, mut exercise: Exercise) -> Result<Exercise, AppError> {
         hooks::before_create(self, &mut exercise).await?;
 
-        let id = exercise.id.clone();
-        let active = exercise.to_active_model();
-
-        active.insert(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        let id = if exercise.id.trim().is_empty() {
+            return Err(AppError::ExerciseIdRequired("this store requires the caller to supply an id".to_string()));
+        } else {
+            ontogen_core::id::validate_id(&exercise.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_exercise(&exercise).await? {
+                return Err(AppError::ExerciseAlreadyExists(exercise.id));
+            }
+            exercise.id.clone()
+        };
 
         let created = self.get_exercise(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Exercise, id);
@@ -104,12 +111,12 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::ExerciseNotFound(id.to_string()))?;
 
-        let mut current = Exercise::from_model(&existing_model);
+        let mut current = Exercise::from_model(&existing_model)?;
         hooks::before_update(self, &current, &updates).await?;
 
         updates.apply(&mut current);
 
-        let active = current.to_active_model();
+        let active = current.to_active_model()?;
         active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_exercise(id).await?;
@@ -135,5 +142,21 @@ impl Store {
 
         hooks::after_delete(self, id).await?;
         Ok(())
+    }
+
+    async fn try_insert_exercise(&self, exercise: &Exercise) -> Result<bool, AppError> {
+        let active = exercise.to_active_model()?;
+        match active.insert(self.db()).await {
+            Ok(_) => Ok(true),
+            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                let taken = exercise::Entity::find_by_id(exercise.id.as_str())
+                    .one(self.db())
+                    .await
+                    .map_err(|e| AppError::DbError(e.to_string()))?
+                    .is_some();
+                if taken { Ok(false) } else { Err(AppError::DbError(e.to_string())) }
+            }
+            Err(e) => Err(AppError::DbError(e.to_string())),
+        }
     }
 }

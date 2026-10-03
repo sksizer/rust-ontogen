@@ -36,6 +36,7 @@
 //!   and `ApiConfig` defaults).
 //! - `api(state_type)` is required - there's no universal default for the
 //!   AppState type, so the builder asks for it explicitly.
+//! - `store_id_strategy` defaults to `IdStrategy::Provided`.
 //! - `store_type` (used by `api` and `servers`) defaults to `Some("Store")` once
 //!   the store stage is enabled, otherwise `None`.
 //! - All optional stages (docs, seaorm, markdown_io, dtos, store, api, servers)
@@ -86,8 +87,6 @@ pub struct MarkdownIoOptions {
     pub vault_root: PathBuf,
     /// On-disk arrangement of record files under the vault root.
     pub layout: MarkdownLayout,
-    /// How new records derive an id when the caller didn't supply one.
-    pub id_strategy: IdStrategy,
     /// Hard cap on records parsed per `list()` before the runtime errors.
     pub list_cap: usize,
     /// The opt-in OKF index files and `generated` stamps.
@@ -155,6 +154,7 @@ pub struct Pipeline {
     dtos: Option<DtoStage>,
     store: Option<StoreStage>,
     store_backend: Option<StoreBackendChoice>,
+    store_id_strategy: IdStrategy,
     api: Option<ApiStage>,
     servers: Option<ServersStage>,
     clients: Option<ClientsStage>,
@@ -175,6 +175,7 @@ impl Pipeline {
             dtos: None,
             store: None,
             store_backend: None,
+            store_id_strategy: IdStrategy::Provided,
             api: None,
             servers: None,
             clients: None,
@@ -280,6 +281,15 @@ impl Pipeline {
         P: Into<PathBuf>,
     {
         self.store = Some(StoreStage { output_dir: output_dir.into(), hooks_dir: hooks_dir.map(Into::into) });
+        self
+    }
+
+    /// Set how the generated store fills the id of a record created without
+    /// one ([`StoreConfig::id_strategy`]), on either backend. Defaults to
+    /// [`IdStrategy::Provided`]: the caller supplies every id.
+    #[must_use]
+    pub fn store_id_strategy(mut self, strategy: IdStrategy) -> Self {
+        self.store_id_strategy = strategy;
         self
     }
 
@@ -493,7 +503,6 @@ impl Pipeline {
                     output_dir: stage.output_dir,
                     vault_root: stage.options.vault_root,
                     layout: stage.options.layout,
-                    id_strategy: stage.options.id_strategy,
                     list_cap: stage.options.list_cap,
                     okf: stage.options.okf,
                 },
@@ -544,6 +553,7 @@ impl Pipeline {
                     schema_module_path: self.schema_module_path.clone(),
                     backend,
                     wikilink_policy: None,
+                    id_strategy: self.store_id_strategy,
                 },
             )?;
         }

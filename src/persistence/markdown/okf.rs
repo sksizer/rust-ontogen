@@ -549,7 +549,6 @@ mod tests {
             output_dir: out.clone(),
             vault_root: "data/vault".into(),
             layout: crate::ir::MarkdownLayout::PerEntityDir,
-            id_strategy: crate::ir::IdStrategy::Provided,
             list_cap: 10_000,
             okf: OkfOptions::default(),
         };
@@ -568,7 +567,6 @@ mod tests {
                 output_dir: out.clone(),
                 vault_root: "data/vault".into(),
                 layout: crate::ir::MarkdownLayout::PerEntityDir,
-                id_strategy: crate::ir::IdStrategy::Provided,
                 list_cap: 10_000,
                 okf: OkfOptions { index: true, generated_by: Some(generated_by.into()) },
             };
@@ -596,7 +594,6 @@ mod tests {
             output_dir: out.clone(),
             vault_root: "data/vault".into(),
             layout: crate::ir::MarkdownLayout::PerEntityDir,
-            id_strategy: crate::ir::IdStrategy::Provided,
             list_cap: 10_000,
             okf: OkfOptions::default(),
         };

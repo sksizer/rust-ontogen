@@ -43,7 +43,6 @@ fn main() {
             MarkdownIoOptions {
                 vault_root: "data/vault".into(),
                 layout: MarkdownLayout::PerEntityDir,
-                id_strategy: IdStrategy::SlugFromField("title".into()),
                 list_cap: 10_000,
                 // An OKF-navigable vault: an index.md in every directory,
                 // and each record names the notes-kb release that last
@@ -54,6 +53,7 @@ fn main() {
                 },
             },
         )
+        .store_id_strategy(IdStrategy::SlugFromField("title".into()))
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
         .api("src/api/v1/generated", "AppState")
