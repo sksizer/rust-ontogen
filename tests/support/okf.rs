@@ -161,9 +161,10 @@ fn is_heading(line: &str) -> bool {
 }
 
 /// Split `* [title](url)rest` into the link destination and `rest`. The
-/// title may hold backslash escapes (ontogen's index writer escapes every
-/// ASCII punctuation character), so only an unescaped `]` ends it; the
-/// destination is either `<...>` or free of spaces and parentheses.
+/// title may hold backslash escapes of any ASCII punctuation (ontogen's
+/// index writer escapes the markup characters), so only an unescaped `]`
+/// ends it; the destination is either `<...>` or free of spaces and
+/// parentheses.
 fn parse_entry(line: &str) -> Option<(String, &str)> {
     let after = line.strip_prefix("* [")?;
     let mut escaped = false;

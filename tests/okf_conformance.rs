@@ -30,7 +30,8 @@ fn a_conformant_bundle_has_no_violations() {
         "index.md",
         "---\nokf_version: '0.2'\n---\n# Tasks\n\n* [Ship](tasks/ship.md) - ship it\n\n\
          ## Elsewhere\n* [Notes](notes/)\n* [Minimal](</notes/minimal.md>)\n* [A \\[draft\\]](tasks/my%20draft.md) - d\n\
-         * [\\<\\!\\-\\- C\\# \\*x\\*](tasks/ship.md) - \\`y\\` \\| z \\& w\n",
+         * [\\<\\!\\-\\- C\\# \\*x\\*](tasks/ship.md) - \\`y\\` \\| z \\& w\n\
+         * [what's next? (draft) \\<!-- C\\#](tasks/ship.md) - a:b, \\`y\\` | z.\n",
     );
     write(root, "log.md", "# Update log\n\n## 2026-10-03\n* **Creation**: ship\n\n## 2026-09-30\n* **Update**: x\n");
     write(root, "tasks/index.md", "# Tasks\n\n* [Ship](ship.md)\n");

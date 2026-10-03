@@ -48,7 +48,7 @@ pub const DEFAULT_LIST_CAP: usize = 10_000;
 /// vault.entity("notes", "Note").create(Some("n-1"), None, Document::new())?;
 /// let read = |p: &str| std::fs::read_to_string(dir.path().join(p)).unwrap();
 /// assert_eq!(read("notes/n-1.md"), "---\ntype: Note\ngenerated:\n  by: my-app/1.0.0\n  at: 2026-10-03T14:05:09Z\n---\n");
-/// assert_eq!(read("notes/index.md"), "# Note\n\n* [n\\-1](n-1.md)\n");
+/// assert_eq!(read("notes/index.md"), "# Note\n\n* [n-1](n-1.md)\n");
 /// # Ok::<(), markdown_store::Error>(())
 /// ```
 #[derive(Clone)]
@@ -61,8 +61,10 @@ pub struct OkfPolicy {
     /// `# Untyped`) as `* [<title>](<file>) - <description>`, then its
     /// subdirectories that hold records under `# Directories`. A type that
     /// would read as one of those two headings is headed `<type> (type)`.
-    /// Titles, descriptions and types have every ASCII punctuation character
-    /// backslash-escaped, so a record's text never turns into markup. The
+    /// Titles, descriptions and types are written as they are, except that
+    /// `` \ ` * _ [ ] < & # ~ $ % = ^ `` are backslash-escaped, so a
+    /// record's text never turns into markup (CommonMark or Obsidian's)
+    /// while an agent reading the file raw sees it nearly verbatim. The
     /// root index carries `okf_version: "0.2"` as its only frontmatter.
     ///
     /// After every real write (a create, an update that changed something,
@@ -457,7 +459,7 @@ impl VaultHandle {
     /// vault.rebuild_indexes()?;
     /// let read = |p: &str| std::fs::read_to_string(dir.path().join(p)).unwrap();
     /// assert_eq!(read("index.md"), "---\nokf_version: \"0.2\"\n---\n\n# Directories\n\n* [notes](notes/)\n");
-    /// assert_eq!(read("notes/index.md"), "# Note\n\n* [First note](first.md) - Where it starts\\.\n");
+    /// assert_eq!(read("notes/index.md"), "# Note\n\n* [First note](first.md) - Where it starts.\n");
     /// # Ok::<(), markdown_store::Error>(())
     /// ```
     pub fn rebuild_indexes(&self) -> Result<(), Error> {
@@ -1168,11 +1170,11 @@ mod tests {
         assert_eq!(
             file(root, "tasks/index.md").unwrap(),
             "# Chore\n\n\
-             * [c\\-sweep](c-sweep.md)\n\
+             * [c-sweep](c-sweep.md)\n\
              \n\
              # Task\n\n\
              * [Plan](a-plan.md)\n\
-             * [Ship \\[v2\\]](b-ship.md) - Cut the release\\.\n\
+             * [Ship \\[v2\\]](b-ship.md) - Cut the release.\n\
              \n\
              # Untyped\n\n\
              * [Loose](d-loose.md) - no type\n",
@@ -1202,12 +1204,12 @@ mod tests {
         assert_eq!(
             file(dir.path(), "things/index.md").unwrap(),
             "# C\\# \\*notes\\*\n\n\
-             * [\\<\\!\\-\\- hidden](c.md) - \\<b\\>bold\\<\\/b\\> \\& \\`code\\` \\| \\_x\\_ \\$y\\$ \\%\\%z\\%\\% \\=\\=w\\=\\= \\#tag\n\
+             * [\\<!-- hidden](c.md) - \\<b>bold\\</b> \\& \\`code\\` | \\_x\\_ \\$y\\$ \\%\\%z\\%\\% \\=\\=w\\=\\= \\#tag\n\
              \n\
-             # Directories \\(type\\)\n\n\
+             # Directories (type)\n\n\
              * [A](a.md)\n\
              \n\
-             # Untyped \\(type\\)\n\n\
+             # Untyped (type)\n\n\
              * [B](b.md)\n\
              \n\
              # Untyped\n\n\
@@ -1341,7 +1343,7 @@ mod tests {
         vault.rebuild_indexes().unwrap();
         assert_eq!(
             file(root, "notes/index.md").unwrap(),
-            "# Note\n\n* [Top](top.md)\n\n# Untyped\n\n* [my notes \\(old\\)](my%20notes%20%28old%29.md)\n\n\
+            "# Note\n\n* [Top](top.md)\n\n# Untyped\n\n* [my notes (old)](my%20notes%20%28old%29.md)\n\n\
              # Directories\n\n* [deep](deep/)\n"
         );
         assert_eq!(file(root, "notes/deep/index.md").unwrap(), "# Directories\n\n* [er](er/)\n");

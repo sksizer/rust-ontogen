@@ -279,17 +279,20 @@ fn type_heading(type_name: &str) -> String {
     }
 }
 
-/// Backslash-escape every ASCII punctuation character, which CommonMark
-/// (§2.4) allows for any of them. Titles, descriptions and types are
-/// arbitrary text, and escaping all of them is simpler to get right than
-/// choosing the ones that matter: emphasis, code spans, brackets, raw HTML
-/// (`<!--` would swallow the rest of the file), entities, a heading's
-/// closing `#`s, and the extensions consumers such as Obsidian add (`$`
-/// math, `%%` comments, `==` highlights) all render as literal text.
+/// Backslash-escape the characters that could turn index text into markup:
+/// `` \ ` * _ [ ] < & # ~ $ % = ^ ``. Titles, descriptions and types are
+/// arbitrary text, and agents read an index raw, so everything else stays
+/// as written. Every piece of text sits mid-line (after `* [`, ` - ` or
+/// `# `), so nothing that matters only at the start of a line (`-`, `+`,
+/// `>`, `1.`) needs escaping. The set covers CommonMark's code spans,
+/// emphasis, link brackets, raw HTML and autolinks (`<!--` would swallow
+/// the rest of the file), entities, a heading's closing `#`s and the
+/// backslash itself, plus what Obsidian adds: `#tag`s, `~~` strikethrough,
+/// `$` math, `%%` comments, `==` highlights and `^` block references.
 fn escape_markdown(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if c.is_ascii_punctuation() {
+        if matches!(c, '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '&' | '#' | '~' | '$' | '%' | '=' | '^') {
             out.push('\\');
         }
         out.push(c);
@@ -333,10 +336,18 @@ mod tests {
     }
 
     #[test]
-    fn text_escapes_all_ascii_punctuation_and_urls_encode_what_commonmark_would_misread() {
+    fn text_escapes_only_markup_and_urls_encode_what_commonmark_would_misread() {
         assert_eq!(escape_markdown(r"a [b] \c"), r"a \[b\] \\c");
-        assert_eq!(escape_markdown("<!-- *x* _y_ `z` | # ! & ~ $"), r"\<\!\-\- \*x\* \_y\_ \`z\` \| \# \! \& \~ \$");
-        assert_eq!(escape_markdown("café ünïcode"), "café ünïcode", "only ASCII punctuation");
+        assert_eq!(
+            escape_markdown("<!-- *x* _y_ `z` # & ~~s~~ $m$ %%c%% ==h== ^ref"),
+            r"\<!-- \*x\* \_y\_ \`z\` \# \& \~\~s\~\~ \$m\$ \%\%c\%\% \=\=h\=\= \^ref"
+        );
+        assert_eq!(
+            escape_markdown("c-sweep: what's next? (draft). 1+1! | @a/b, \"q\"; {x} >"),
+            "c-sweep: what's next? (draft). 1+1! | @a/b, \"q\"; {x} >",
+            "punctuation that is no markup mid-line is written as is"
+        );
+        assert_eq!(escape_markdown("café ünïcode"), "café ünïcode");
         assert_eq!(encode_url("plain-id_1.2~x.md"), "plain-id_1.2~x.md");
         assert_eq!(encode_url("my note (draft).md"), "my%20note%20%28draft%29.md");
         assert_eq!(encode_url("a:b%.md"), "a%3Ab%25.md");
