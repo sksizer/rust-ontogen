@@ -2,7 +2,8 @@
 type: epic
 schema_version: "1"
 id: E0005
-status: in-progress
+status: closed/done
+completion_note: "Phase 1 shipped in https://github.com/sksizer/rust-ontogen/pull/194; phases 2 and 3 (index files, provenance stamps, open_vault, docs) in https://github.com/sksizer/rust-ontogen/pull/196."
 title: OKF-conformant markdown vaults by default
 created: 2026-10-03
 last_reviewed: 2026-10-03
@@ -11,7 +12,7 @@ tags: [markdown-backend, store, okf, open-format]
 # Epic — OKF-conformant markdown vaults by default
 
 **Milestone:** M4 — Standard formats ([roadmap](../../roadmap.md))
-**Status:** in progress — phase 1 shipped in https://github.com/sksizer/rust-ontogen/pull/194; phase 2 is next
+**Status:** done — phase 1 shipped in https://github.com/sksizer/rust-ontogen/pull/194; phases 2 and 3 in https://github.com/sksizer/rust-ontogen/pull/196
 **Spec:** [Open Knowledge Format 0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 (Google Cloud, June 2026) — a directory of markdown files with YAML
 frontmatter, one required field (`type`), optional `title` / `description` /
@@ -92,11 +93,11 @@ gain one line each. Breaking for byte-stable goldens, not for consumers:
 an existing vault without `type` still reads, and gains `type` on its next
 real write.
 
-**Phase 2 — index files and provenance.** `okf.index` with the root
+**Phase 2 — index files and provenance (shipped in [#196](https://github.com/sksizer/rust-ontogen/pull/196)).** `okf.index` with the root
 `okf_version` marker; `okf.generated_by` stamping. (The §11 conformance test
 over the example vaults shipped in phase 1.)
 
-**Phase 3 — docs.** The four site pages, the example READMEs, and a
+**Phase 3 — docs (shipped in [#196](https://github.com/sksizer/rust-ontogen/pull/196)).** The four site pages, the example READMEs, and a
 one-page "ontogen vaults are OKF bundles" note that an OKF consumer can
 read.
 
@@ -152,5 +153,5 @@ Settled with the maintainer; [ADR 0005](../../architecture/0005-okf-markdown-vau
 Filed as each phase opens; one task per phase.
 
 - [x] phase 1 — `type`, reserved ids, reserved-name warning, `frontmatter_name`, §11 conformance test ([#194](https://github.com/sksizer/rust-ontogen/pull/194))
-- [ ] phase 2 — `index.md` writer, `okf_version`, `generated` stamping
-- [ ] phase 3 — docs
+- [x] phase 2 — `index.md` writer, `okf_version`, `generated` stamping, generated `open_vault` ([#196](https://github.com/sksizer/rust-ontogen/pull/196))
+- [x] phase 3 — docs ([#196](https://github.com/sksizer/rust-ontogen/pull/196))
