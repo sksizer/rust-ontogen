@@ -61,6 +61,29 @@ impl Default for WalkOptions {
 /// A missing directory yields `Ok(vec![])` — a store whose entity directory
 /// hasn't been created yet is empty, not broken.
 pub fn list_record_paths(dir: &Path, opts: &WalkOptions) -> Result<Vec<PathBuf>, Error> {
+    let mut paths = walk_files(dir, opts, |path| {
+        let matches_ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| opts.extensions.iter().any(|want| want.eq_ignore_ascii_case(ext)));
+        let reserved = path.file_stem().and_then(|s| s.to_str()).is_some_and(crate::layout::is_reserved_id);
+        matches_ext && !reserved
+    })?;
+    paths.sort_by(|a, b| a.with_extension("").cmp(&b.with_extension("")).then_with(|| a.cmp(b)));
+    Ok(paths)
+}
+
+/// Every `index.md` the store may have written under `dir`, sorted, walked
+/// with the same options as records so a rebuild sees the vault the way a
+/// listing does.
+#[cfg(feature = "store")]
+pub(crate) fn list_index_paths(dir: &Path, opts: &WalkOptions) -> Result<Vec<PathBuf>, Error> {
+    let mut paths = walk_files(dir, opts, |path| path.file_name().is_some_and(|n| n == crate::okf::INDEX_FILE))?;
+    paths.sort();
+    Ok(paths)
+}
+
+fn walk_files(dir: &Path, opts: &WalkOptions, keep: impl Fn(&Path) -> bool) -> Result<Vec<PathBuf>, Error> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -76,16 +99,10 @@ pub fn list_record_paths(dir: &Path, opts: &WalkOptions) -> Result<Vec<PathBuf>,
             continue;
         }
         let path = entry.into_path();
-        let matches_ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|ext| opts.extensions.iter().any(|want| want.eq_ignore_ascii_case(ext)));
-        let reserved = path.file_stem().and_then(|s| s.to_str()).is_some_and(crate::layout::is_reserved_id);
-        if matches_ext && !reserved {
+        if keep(&path) {
             paths.push(path);
         }
     }
-    paths.sort_by(|a, b| a.with_extension("").cmp(&b.with_extension("")).then_with(|| a.cmp(b)));
     Ok(paths)
 }
 

@@ -22,6 +22,9 @@
 //!   façade with create/read/modify/remove/list plus an intra-process
 //!   write lock. [`EntityRecords`] is its typed per-entity view: writes
 //!   stamp each record's OKF `type`, and a flat vault filters reads by it.
+//!   Two opt-in OKF options make the handle keep an `index.md` in every
+//!   directory holding records and stamp `generated` provenance on every
+//!   real write.
 //!
 //! # Quick start
 //!
@@ -115,6 +118,8 @@ pub mod fsops;
 #[cfg(feature = "walk")]
 pub mod walk;
 
+#[cfg(feature = "store")]
+mod okf;
 #[cfg(feature = "store")]
 pub mod store;
 
