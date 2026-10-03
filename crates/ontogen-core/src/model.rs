@@ -87,9 +87,9 @@ pub enum FieldType {
     I32,
     /// `Option<i32>`
     OptionI32,
-    /// `i64` (also used for `u64` - SQLite has no unsigned integers)
+    /// `i64`
     I64,
-    /// `Option<i64>` (also used for `Option<u64>`)
+    /// `Option<i64>`
     OptionI64,
     /// `f32`
     F32,

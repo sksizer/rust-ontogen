@@ -24,6 +24,7 @@ pub struct Model {
     pub n_u8: i64,
     pub n_u16: i64,
     pub n_u32: i64,
+    pub n_u64: i64,
     pub n_usize: i64,
     pub n_u128: i64,
     pub n_i8: i64,
@@ -31,6 +32,7 @@ pub struct Model {
     pub n_isize: i64,
     pub n_i128: i64,
     pub maybe_u32: Option<i64>,
+    pub maybe_u64: Option<i64>,
     pub parent_id: Option<String>,
     pub body: String,
 }

@@ -100,6 +100,10 @@ UPDATE workout_set SET reps = reps + 4294967296 WHERE reps < 0;
 
 `usize`, `isize`, `u128` and `i128` had no working SeaORM column before, so there is no data to migrate.
 
+### `u64` fields keep their type
+
+A `u64` or `Option<u64>` schema field used to be filed as `i64`, so the generated DTOs, the `{Entity}Update` struct and the markdown frontmatter struct declared it `i64`, and a SeaORM store did not compile. They now declare `u64` and `Option<u64>`, like the schema. Code that builds a `Create{Entity}Input` or `Update{Entity}Input` with an `i64` value for such a field changes to `u64`. The SeaORM column stays `i64`; a value above `i64::MAX` fails the write with `AppError::DbError`, and the markdown store refuses it the same way (see [The `Other` Fallback](/guides/field-types-and-roles/#the-other-fallback)). No SeaORM data can hold such a field, since the store did not compile. In a markdown vault, a negative value written through the old `i64` type now fails the read; fix those records by hand.
+
 ### Conversions return `Result`
 
 `{Entity}::from_model` and `to_active_model` return `Result<_, AppError>`. Hand-written callers add `?`.

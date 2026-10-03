@@ -447,7 +447,7 @@ fn classify_type(ty: &Type) -> FieldType {
             match segments.last().map(String::as_str) {
                 Some("String") if segments.len() == 1 => FieldType::String,
                 Some("i32") if segments.len() == 1 => FieldType::I32,
-                Some("i64" | "u64") if segments.len() == 1 => FieldType::I64,
+                Some("i64") if segments.len() == 1 => FieldType::I64,
                 Some("f32") if segments.len() == 1 => FieldType::F32,
                 Some("f64") if segments.len() == 1 => FieldType::F64,
                 Some("bool") if segments.len() == 1 => FieldType::Bool,
@@ -456,7 +456,7 @@ fn classify_type(ty: &Type) -> FieldType {
                     match inner.as_deref() {
                         Some("String") => FieldType::OptionString,
                         Some("i32") => FieldType::OptionI32,
-                        Some("i64" | "u64") => FieldType::OptionI64,
+                        Some("i64") => FieldType::OptionI64,
                         Some("f32") => FieldType::OptionF32,
                         Some("f64") => FieldType::OptionF64,
                         Some("bool") => FieldType::OptionBool,

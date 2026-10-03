@@ -305,7 +305,12 @@ mod tests {
         entity.fields.push(FieldDef::new("phase", FieldType::OptionEnum("TaskKind".into()), FieldRole::EnumField));
         entity.fields.push(FieldDef::new("points", FieldType::Other("u32".into()), FieldRole::Plain));
         entity.fields.push(FieldDef::new("budget", FieldType::OptionEnum("u32".into()), FieldRole::Plain));
+        entity.fields.push(FieldDef::new("seq", FieldType::Other("u64".into()), FieldRole::Plain));
+        entity.fields.push(FieldDef::new("cap", FieldType::OptionEnum("u64".into()), FieldRole::Plain));
         let code = generate_frontmatter_module(&entity);
+        assert!(code.contains("pub seq: u64,"), "{code}");
+        assert!(code.contains("pub cap: Option<u64>,"), "{code}");
+        assert!(code.contains("seq: value.seq,"), "{code}");
         assert!(code.contains("pub kind: crate::schema::TaskKind,"), "{code}");
         assert!(code.contains("pub phase: Option<crate::schema::TaskKind>,"), "{code}");
         assert!(code.contains("pub points: u32,"), "{code}");

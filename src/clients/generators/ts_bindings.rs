@@ -302,8 +302,7 @@ fn field_to_ts(ft: &FieldType) -> String {
         FieldType::Other(name) => {
             // Everything the typed variants above don't cover. They handle
             // String / bool / i32 / i64 / f32 / f64 and their `Option<...>`
-            // forms (the macro folds u64 into i64, since SQLite has no
-            // unsigned integers); the rest of the primitive widths, plus any
+            // forms; the rest of the primitive widths, plus any
             // user type or container spelling, lands here. Rendering it with
             // the shared type model rather than a local primitive table is
             // what stops this arm from shipping bare Rust idents like

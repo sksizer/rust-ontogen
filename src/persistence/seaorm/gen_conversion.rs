@@ -759,7 +759,7 @@ mod tests {
 
     /// ADR 0006 §2's integer primitives that reach `OptionEnum` / `Other`.
     const LOSSLESS: [&str; 5] = ["u8", "u16", "u32", "i8", "i16"];
-    const FALLIBLE: [&str; 4] = ["usize", "u128", "isize", "i128"];
+    const FALLIBLE: [&str; 5] = ["u64", "usize", "u128", "isize", "i128"];
 
     /// `Counter` with a bare (`b_{t}`) and an optional (`o_{t}`) field for
     /// every integer primitive, all in `role`.

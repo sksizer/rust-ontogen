@@ -454,7 +454,7 @@ mod tests {
     }
 
     /// ADR 0006 §2's integer primitives that reach `OptionEnum` / `Other`.
-    const WIDENED_INTEGERS: [&str; 9] = ["u8", "u16", "u32", "usize", "u128", "i8", "i16", "isize", "i128"];
+    const WIDENED_INTEGERS: [&str; 10] = ["u8", "u16", "u32", "u64", "usize", "u128", "i8", "i16", "isize", "i128"];
 
     #[test]
     fn integer_primitives_get_i64_columns() {

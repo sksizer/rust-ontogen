@@ -175,6 +175,8 @@ mod tests {
     fn undedicated_primitives_keep_their_wire_type() {
         assert_eq!(wire_type(&field("reps", FieldType::Other("u32".into()))), "integer");
         assert_eq!(wire_type(&field("n", FieldType::Other("usize".into()))), "integer");
+        assert_eq!(wire_type(&field("seq", FieldType::Other("u64".into()))), "integer");
+        assert_eq!(wire_type(&field("seq", FieldType::OptionEnum("u64".into()))), "integer");
         assert_eq!(wire_type(&field("sets", FieldType::OptionEnum("u16".into()))), "integer");
         assert_eq!(wire_type(&field("kind", FieldType::OptionEnum("IntervalKind".into()))), "string");
         assert_eq!(wire_type(&field("at", FieldType::Other("chrono :: DateTime < Utc >".into()))), "string");

@@ -277,8 +277,8 @@ fn item(id: &str, overrides: Value) -> Value {
         "int32": 0, "int64": 0, "float32": 0.0, "float64": 0.0, "flag": false, "kind": "alpha",
         "maybe_text": null, "maybe_int32": null, "maybe_int64": null, "maybe_float32": null,
         "maybe_float64": null, "maybe_flag": null, "maybe_kind": null,
-        "n_u8": 0, "n_u16": 0, "n_u32": 0, "n_usize": 0, "n_u128": 0,
-        "n_i8": 0, "n_i16": 0, "n_isize": 0, "n_i128": 0, "maybe_u32": null,
+        "n_u8": 0, "n_u16": 0, "n_u32": 0, "n_u64": 0, "n_usize": 0, "n_u128": 0,
+        "n_i8": 0, "n_i16": 0, "n_isize": 0, "n_i128": 0, "maybe_u32": null, "maybe_u64": null,
         "parent_id": null, "children": [], "tags": [], "body": "",
     });
     for (k, v) in overrides.as_object().expect("an object") {
@@ -388,9 +388,9 @@ async fn field_values_round_trip<B: Backend>(b: &B, mut t: Transcript) -> Transc
             "flag": true, "kind": "gamma",
             "maybe_text": "", "maybe_int32": i32::MAX, "maybe_int64": i64::MIN, "maybe_float32": -0.25,
             "maybe_float64": 1e-300, "maybe_flag": false, "maybe_kind": "beta",
-            "n_u8": u8::MAX, "n_u16": u16::MAX, "n_u32": 3_000_000_000u32, "n_usize": i64::MAX,
+            "n_u8": u8::MAX, "n_u16": u16::MAX, "n_u32": 3_000_000_000u32, "n_u64": i64::MAX, "n_usize": i64::MAX,
             "n_u128": i64::MAX, "n_i8": i8::MIN, "n_i16": i16::MIN, "n_isize": i64::MIN, "n_i128": i64::MIN,
-            "maybe_u32": 3_000_000_000u32, "body": "# Body\n\nwith *markdown*\n",
+            "maybe_u32": 3_000_000_000u32, "maybe_u64": i64::MAX, "body": "# Body\n\nwith *markdown*\n",
         }),
     );
     let max = item("max", json!({ "n_u32": u32::MAX, "maybe_u32": u32::MAX }));
@@ -419,6 +419,38 @@ async fn field_values_round_trip<B: Backend>(b: &B, mut t: Transcript) -> Transc
 #[tokio::test]
 async fn every_field_type_round_trips_exactly() {
     parity!(field_values_round_trip);
+}
+
+/// A value outside `i64` is refused on both backends with the catch-all,
+/// before anything is written: SeaORM cannot store it (ADR 0006 §4), so the
+/// markdown store refuses it too, although a vault could hold it.
+async fn integers_outside_i64<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let huge = i64::MAX as u64 + 1;
+    let cases =
+        [("n_u64", huge), ("n_u64", u64::MAX), ("maybe_u64", u64::MAX), ("n_usize", huge), ("n_u128", u64::MAX)];
+    for (i, (field, value)) in cases.iter().enumerate() {
+        let label = format!("create {field} = {value}");
+        let result = b.create_item(item(&format!("big{i}"), json!({ *field: value }))).await;
+        assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] {label}: {result:?}", B::NAME);
+        t.record(label, &result).unwrap_err();
+    }
+    t.expect("nothing was stored", b.count_items().await, Ok(0));
+
+    let base = item("base", json!({ "maybe_u64": 7 }));
+    t.expect("create base", b.create_item(base.clone()).await, Ok(base.clone()));
+    for (field, value) in cases {
+        let label = format!("update {field} = {value}");
+        let result = b.update_item("base", json!({ field: value })).await;
+        assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] {label}: {result:?}", B::NAME);
+        t.record(label, &result).unwrap_err();
+    }
+    t.expect("base is unchanged", b.get_item("base").await, Ok(base));
+    t
+}
+
+#[tokio::test]
+async fn an_integer_outside_i64_fails_the_write() {
+    parity!(integers_outside_i64);
 }
 
 // ─── Linkage order ──────────────────────────────────────────────────────────

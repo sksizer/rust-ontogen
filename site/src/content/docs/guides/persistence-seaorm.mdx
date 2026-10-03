@@ -143,14 +143,14 @@ pub id: i32,
 | `OptionString` | `Option<String>` | |
 | `I32` | `i32` | |
 | `OptionI32` | `Option<i32>` | |
-| `I64` | `i64` | Also used for `u64` |
+| `I64` | `i64` | |
 | `OptionI64` | `Option<i64>` | |
 | `Bool` | `bool` | |
 | `OptionBool` | `Option<bool>` | |
 | `VecString` | `String` | JSON-encoded |
 | `VecStruct(T)` | `String` | JSON-encoded |
-| `OptionEnum(T)` | `Option<String>` | Stored as string; `Option<i64>` if T is an integer primitive |
-| `Other(T)` | `String` | `i64` if T is an integer primitive |
+| `OptionEnum(T)` | `Option<String>` | Stored as string; `Option<i64>` if T is an integer primitive such as `u32` or `u64` |
+| `Other(T)` | `String` | `i64` if T is an integer primitive such as `u32` or `u64` |
 
 <Aside>
 `Vec<String>` plain fields (like `tags` without a relation annotation) map to a `String` column containing JSON. This is different from `Vec<String>` relation fields, which have no column at all. The generator adds a doc comment `/// JSON-encoded Vec<String>` to make this clear in the output.
