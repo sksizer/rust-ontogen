@@ -64,6 +64,8 @@ This is the complete list of what a consumer writes differently:
 | `AppError` | `DbError(String)` | `Md(String)` + `From<markdown_store::Error>` |
 | Storage | one SQLite file | `data/vault/<entity>/<id>.md`, editable anywhere |
 
+Both `AppError`s also declare `{Entity}IdRequired` and `{Entity}AlreadyExists` for every entity.
+
 And in `build.rs`, `.seaorm(...)` becomes `.markdown_io(...)`:
 
 ```rust
@@ -73,13 +75,13 @@ Pipeline::new("src/schema")
         MarkdownIoOptions {
             vault_root: "data/vault".into(),
             layout: MarkdownLayout::PerEntityDir,
-            // Workout.name is Option<String>, so SlugFromField is out;
-            // Provided keeps the example honest about where ids come from.
-            id_strategy: IdStrategy::Provided,
             list_cap: 10_000,
             okf: OkfOptions::default(),
         },
     )
+    // Workout.name is Option<String>, so SlugFromField is out;
+    // Provided keeps the example honest about where ids come from.
+    .store_id_strategy(IdStrategy::Provided)
     .dtos("src/schema/dto")
     .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
     .api("src/api/v1/generated", "AppState")
@@ -95,7 +97,7 @@ With exactly one persistence stage configured, the store backend is inferred -- 
 The entities are otherwise identical to iron-log's:
 
 - **Explicit `directory = "…"`** on each entity. The markdown backend uses it to pick the vault folder; SeaORM never read it. Without it the segment defaults to the singular type name and the store walks a folder your records aren't in.
-- **`IdStrategy::Provided`** rather than `SlugFromField`. `Workout.name` is `Option<String>`, so there's no guaranteed field to slug from. Callers supply ids; an empty one is a runtime error.
+- **`IdStrategy::Provided`** rather than `SlugFromField`. `Workout.name` is `Option<String>`, so there's no guaranteed field to slug from. Callers supply ids; a create with an empty one fails with `AppError::{Entity}IdRequired`.
 
 ## Declared omission
 

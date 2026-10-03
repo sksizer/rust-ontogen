@@ -56,7 +56,7 @@ Generates SeaORM persistence code from your entity definitions:
 - **Entity modules** -- table models with typed columns and `#[sea_orm(...)]` attributes.
 - **Relation enums** -- `BelongsTo`, `HasMany`, and `Related` implementations for cross-entity navigation.
 - **Junction tables** -- full SeaORM entities for many-to-many relationships.
-- **Conversion functions** -- `from_model()` and `to_active_model()` methods on your schema types.
+- **Conversion functions** -- `from_model()` and `to_active_model()` methods on your schema types, both returning `Result<_, AppError>`.
 
 **Parameters:**
 
@@ -99,7 +99,7 @@ This generator is the sibling of `gen_seaorm`: both consume `SchemaOutput` indep
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `schema` | `&SchemaOutput` | Output of `parse_schema`. Entities plus enum definitions; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys). |
-| `config` | `&MarkdownIoConfig` | Output directory plus the runtime vault shape (root, layout, id strategy, list cap). |
+| `config` | `&MarkdownIoConfig` | Output directory plus the runtime vault shape (root, layout, list cap, OKF options). |
 
 **Returns:** `MarkdownIoOutput` -- the per-entity directory mapping (the vault settings go into the generated `open_vault`). Pass it into `Backend::Markdown` to wire the generated store at the markdown vault runtime; the markdown emitter genuinely needs this metadata, so unlike `SeaOrmOutput` it isn't optional.
 
@@ -108,7 +108,6 @@ let md = gen_markdown_io(&schema, &MarkdownIoConfig {
     output_dir: "src/persistence/markdown/generated".into(),
     vault_root: "data/vault".into(),
     layout: ontogen::MarkdownLayout::PerEntityDir,
-    id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
     list_cap: 10_000,
     okf: ontogen::OkfOptions::default(),
 })?;
@@ -372,6 +371,7 @@ impl Pipeline {
     pub fn seaorm_skip_conversions(self, skip: Vec<String>) -> Self;
     pub fn markdown_io(self, output_dir: impl Into<PathBuf>, options: MarkdownIoOptions) -> Self;
     pub fn store_backend(self, choice: StoreBackendChoice) -> Self;
+    pub fn store_id_strategy(self, strategy: IdStrategy) -> Self;
     pub fn dtos(self, output_dir: impl Into<PathBuf>) -> Self;
     pub fn store<P: Into<PathBuf>>(self, output_dir: impl Into<PathBuf>, hooks_dir: Option<P>) -> Self;
     pub fn api(self, output_dir: impl Into<PathBuf>, state_type: impl Into<String>) -> Self;
@@ -394,6 +394,7 @@ Sensible defaults are applied automatically:
 - When the `store` stage is enabled and the API stage hasn't overridden it, `store_type` defaults to `Some("Store")`.
 - When the `clients` stage is enabled, the builder forwards `schema.entities` into `ClientsConfig.schema_entities` so the admin-registry generator gets the field metadata it needs (without it, admin-registry.ts ships with empty `fields: []` per entity).
 - `ClientsConfig.pool_exclude_paths` is populated from the `seaorm()` stage's `entity_output`, so the per-entity `Relation` enums SeaORM emits can't make the long-tail resolver ambiguous.
+- `store_id_strategy` sets `StoreConfig::id_strategy` for either backend and defaults to `IdStrategy::Provided`.
 - The store backend is **inferred** when exactly one persistence stage is configured. Enable both `seaorm(...)` and `markdown_io(...)` and you must disambiguate with `.store_backend(StoreBackendChoice::Seaorm)` or `.store_backend(StoreBackendChoice::Markdown)`.
 
 ```rust
@@ -416,11 +417,11 @@ ontogen::Pipeline::new("src/schema")
         MarkdownIoOptions {
             vault_root: "data/vault".into(),
             layout: MarkdownLayout::PerEntityDir,
-            id_strategy: IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
             okf: OkfOptions::default(),
         },
     )
+    .store_id_strategy(IdStrategy::SlugFromField("title".into()))
     .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
     .api("src/api/v1/generated", "AppState")
     .build()

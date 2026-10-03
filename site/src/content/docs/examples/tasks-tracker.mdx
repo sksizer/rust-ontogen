@@ -28,7 +28,7 @@ curl -s -X POST localhost:3002/api/tasks \
 cat data/vault/tasks/review-the-stack.md
 ```
 
-The filename came from the title. `IdStrategy::SlugFromField("title")` slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
+The filename came from the title. The store's `IdStrategy::SlugFromField("title")` (set with `.store_id_strategy(..)` in `build.rs`) slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
 
 ## Over MCP
 

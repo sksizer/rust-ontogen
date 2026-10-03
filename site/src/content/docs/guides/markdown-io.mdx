@@ -22,11 +22,12 @@ let md = ontogen::gen_markdown_io(&schema, &ontogen::MarkdownIoConfig {
     output_dir: "src/persistence/markdown/generated".into(),
     vault_root: "data/vault".into(),                        // where the .md files live
     layout: ontogen::MarkdownLayout::PerEntityDir,          // data/vault/<entity>/<id>.md
-    id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
     list_cap: 10_000,                                       // loud error past this many records
     okf: ontogen::OkfOptions::default(),                    // index files, generated stamps: off
 })?;
 ```
+
+The id strategy for records created without an id is not a persistence setting; it is the store's (`StoreConfig::id_strategy`, or `Pipeline::store_id_strategy`), shared with the SeaORM backend. See [Creating records](/guides/store-layer/#creating-records).
 
 `gen_markdown_io` takes the whole `SchemaOutput`, and checks frontmatter keys against the keys OKF reserves; see [reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys).
 
