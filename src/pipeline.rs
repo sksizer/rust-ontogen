@@ -80,8 +80,9 @@ struct MarkdownIoStage {
 /// [`MarkdownIoConfig`] — `output_dir` is passed positionally).
 #[derive(Debug, Clone)]
 pub struct MarkdownIoOptions {
-    /// Where the `.md` records live at runtime, relative to the consumer
-    /// crate root (e.g. `data/vault`).
+    /// Where the `.md` records live at runtime (e.g. `data/vault`), emitted
+    /// as the generated `VAULT_ROOT`. A relative path resolves against the
+    /// working directory the program runs from, not the crate root.
     pub vault_root: PathBuf,
     /// On-disk arrangement of record files under the vault root.
     pub layout: MarkdownLayout,
