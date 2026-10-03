@@ -16,9 +16,9 @@ Version 0.9 is still in progress. This page lists the breaking changes that have
 Before:
 
 ```rust
-.markdown_io(MarkdownIoOptions {
+.markdown_io("src/persistence/markdown/generated", MarkdownIoOptions {
     id_strategy: IdStrategy::SlugFromField("title".into()),
-    ..Default::default()
+    /* .. */
 })
 ```
 
@@ -88,16 +88,17 @@ UPDATE workout_set SET reps = reps + 4294967296 WHERE reps < 0;
 - This is SQLite SQL.
 - It is safe on rows already in range: only negative values change.
 - Run it once per column. Running it a second time changes nothing.
-- On Postgres, first widen the column, then run the `UPDATE`:
+- On SQLite, that `UPDATE` per `u32` column is the whole migration. `u8`, `u16` and the signed types need nothing.
+- On Postgres, the driver reads an `i64` only from a `bigint` column. Widen **every** column that changed, `u8`, `u16`, `u32`, `i8` and `i16` (and their `Option` forms), then run the `UPDATE` for the `u32` columns only:
 
   ```sql
   ALTER TABLE workout_set ALTER COLUMN reps TYPE bigint;
   UPDATE workout_set SET reps = reps + 4294967296 WHERE reps < 0;
   ```
 
-- On MySQL, use `ALTER TABLE workout_set MODIFY reps BIGINT;` (keep any `NULL` or `DEFAULT` clauses the column has) and then the same `UPDATE`.
+- On MySQL, the narrower integer columns read as `i64` unchanged. Widen the `u32` columns with `ALTER TABLE workout_set MODIFY reps BIGINT;` (keep any `NULL` or `DEFAULT` clauses the column has), then run the same `UPDATE`.
 
-`u8`, `u16` and the signed types need nothing. `usize`, `isize`, `u128` and `i128` had no working SeaORM column before, so there is no data to migrate.
+`usize`, `isize`, `u128` and `i128` had no working SeaORM column before, so there is no data to migrate.
 
 ### Conversions return `Result`
 
@@ -127,5 +128,5 @@ Your `load_junction_ids` must return ids in the order they were written, because
 ## Store behaviour
 
 - **Markdown list order is id byte order.** `VaultHandle::read_all`, `list_ids` and `EntityRecords::read_all` guarantee it. It differs from the old path order only for nested layouts.
-- **`has_many` updates clear dropped children.** An update that sets the list clears the foreign key of every child it drops, or fails with `{Child}ParentRequired` when the key is not an `Option`. Child ids are id-ascending, and a record is never its own child. See [has_many writes](/guides/store-layer/#has_many-writes).
+- **`has_many` updates clear dropped children.** An update that sets the list clears the foreign key of every child it drops, or fails with `{Child}ParentRequired` when the key is not an `Option`. A listed child that does not exist fails the create or update with `{Child}NotFound`, with nothing written; SeaORM used to ignore it. Child ids are id-ascending, and a record is never its own child. See [has_many writes](/guides/store-layer/#has_many-writes).
 - **Lookups of an id the vault can never hold** (`index`, `a/b`, `.hidden`, whitespace) answer `{Entity}NotFound` from the generated markdown `get_*`, `update_*` and `delete_*`, instead of an internal error.

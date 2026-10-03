@@ -142,7 +142,7 @@ pub enum IdStrategy {
 }
 ```
 
-One setting for both backends. `SlugFromField(f)` requires `f` to be a plain `String` field on every entity; the generator fails otherwise. `Uuid` needs the `uuid` feature of `markdown-store` in a markdown consumer. For the SeaORM dependency on `ontogen-core`, see [Creating records](/guides/store-layer/#creating-records). [Creating records](/guides/store-layer/#creating-records) describes how a create uses the strategy.
+One setting for both backends. `SlugFromField(f)` requires `f` to be a plain `String` field on every entity; the generator fails otherwise. `Uuid` needs the `uuid` feature of `markdown-store` in a markdown consumer. [Creating records](/guides/store-layer/#creating-records) describes how a create uses the strategy, and the SeaORM dependency on `ontogen-core`.
 
 ### `Backend`
 

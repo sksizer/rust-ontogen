@@ -394,8 +394,8 @@ relationship (§9.1), which is changed only through its own endpoint.
 
 On the markdown backend a `has_many` write rewrites one file per affected
 child. Multi-record writes are best-effort there (ADR 0001 contract
-item 2). Only an I/O failure part-way can leave some children changed,
-because both checks run before the first write.
+item 2). Only an I/O failure or a concurrent delete part-way can leave
+some children changed, because both checks run before the first write.
 
 **Duplicate identifiers** in a to-many `data` array are collapsed to their
 first occurrence before anything else uses the array. This holds for
