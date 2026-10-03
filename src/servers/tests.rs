@@ -5590,3 +5590,58 @@ fn a_filtered_list_in_a_resource_module_keeps_its_handler() {
     assert!(http.contains("Result<Json<Vec<Tag>>, ErrorObject>"));
     assert!(compact(&http).contains(&compact("get(tag_get_by_id).patch(tag_update)")), "the rest is served:\n{http}");
 }
+
+#[test]
+fn only_the_primary_surfaces_app_error_maps_through_app_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let surfaces = two_surface_fixture(tmp.path());
+    let ops = |surface: &str, store: &str, errors: &[(&str, &str)]| {
+        let file = tmp.path().join(surface).join("workout.rs");
+        let mut source = std::fs::read_to_string(&file).unwrap();
+        for (name, error) in errors {
+            source.push_str(&format!(
+                "pub async fn {name}({store}, id: &str) -> Result<Workout, {error}> {{ todo!() }}\n"
+            ));
+        }
+        std::fs::write(file, source).unwrap();
+    };
+    ops("primary", "state: &AppState", &[("finish", "AppError"), ("resume", "schema::AppError")]);
+    ops(
+        "fitness",
+        "store: &FitnessStore",
+        &[
+            ("archive", "AppError"),
+            ("rename", "schema::AppError"),
+            ("retire", "fitness::schema::AppError"),
+            ("restore", "crate::schema::AppError"),
+        ],
+    );
+    write_synthetic_api(&tmp.path().join("schema"), "mod.rs", "pub enum AppError { WorkoutNotFound(String) }\n");
+    let mut config = two_surface_config(surfaces);
+    config.error_map = crate::servers::error_map::scan(&tmp.path().join("schema")).unwrap();
+    let http = generate_http(tmp.path(), config);
+
+    assert!(http.contains("fn app_error(e: crate::schema::AppError) -> ErrorObject {"), "{http}");
+    let mapping = |handler: &str| {
+        let body = &http[http.find(&format!("async fn {handler}(")).unwrap_or_else(|| panic!("{handler}:\n{http}"))..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        if body.contains(".map_err(app_error)") {
+            "app_error"
+        } else if body.contains(".map_err(internal_error)") {
+            "internal_error"
+        } else {
+            panic!("no error mapping in {body}")
+        }
+    };
+    for (handler, expected) in [
+        ("workout_finish", "app_error"),
+        ("workout_resume", "app_error"),
+        // A bare or relative `AppError` in the fitness surface is its own.
+        ("workout_archive", "internal_error"),
+        ("workout_rename", "internal_error"),
+        ("workout_retire", "internal_error"),
+        ("workout_restore", "app_error"),
+    ] {
+        assert_eq!(mapping(handler), expected, "{handler}");
+    }
+}

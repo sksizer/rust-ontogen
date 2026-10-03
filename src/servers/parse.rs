@@ -76,8 +76,8 @@ pub struct ApiFn {
     /// instead of substring-matching the rendered string.
     pub return_type_ast: syn::Type,
     /// The `E` from `Result<T, E>`, as a normalized string. `None` when the
-    /// return type is not a two-argument `Result`. Only its last path segment
-    /// is ever compared (see [`ApiFn::returns_app_error`]), so no AST is kept.
+    /// return type is not a two-argument `Result`. It is only ever compared
+    /// as a path, so no AST is kept.
     pub error_type: Option<String>,
     /// Whether the first parameter is a store type (vs app state type).
     ///
@@ -340,13 +340,6 @@ impl ApiFn {
     /// is what holds the two parameter lists to each other.
     pub fn is_count(&self) -> bool {
         self.name == "count" && !self.is_stateless
-    }
-
-    /// True when the error type is the consumer's `AppError`, judged by its
-    /// last path segment: `AppError`, `schema::AppError` and
-    /// `crate::schema::AppError` all match. A type alias of `AppError` does not.
-    pub fn returns_app_error(&self) -> bool {
-        self.error_type.as_deref().is_some_and(|e| e.rsplit("::").next() == Some("AppError"))
     }
 
     /// This function's parameters other than the page, as `name: type` — the
@@ -1321,17 +1314,6 @@ mod tests {
         assert_eq!(result_types("fn f() -> anyhow::Result<Task>"), ("Task".to_string(), None));
         assert_eq!(result_types("fn f() -> u64"), ("()".to_string(), None));
         assert_eq!(result_types("fn f()"), ("()".to_string(), None));
-    }
-
-    #[test]
-    fn app_error_is_matched_by_last_path_segment() {
-        let with = |e: Option<&str>| ApiFn { error_type: e.map(str::to_string), ..Default::default() };
-        assert!(with(Some("AppError")).returns_app_error());
-        assert!(with(Some("schema::AppError")).returns_app_error());
-        assert!(with(Some("crate::schema::AppError")).returns_app_error());
-        assert!(!with(Some("String")).returns_app_error());
-        assert!(!with(Some("MyAppError")).returns_app_error());
-        assert!(!with(None).returns_app_error());
     }
 
     #[test]

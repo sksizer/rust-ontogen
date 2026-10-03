@@ -179,8 +179,26 @@ fn scoped_access(prefix: &RoutePrefix) -> Access {
 
 /// `.map_err(…)` for a call returning `f`'s error: `app_error` for the
 /// consumer's `AppError`, `internal_error` for anything else (§13.4).
-fn err_map(f: &ApiFn) -> &'static str {
-    if f.returns_app_error() { ".map_err(app_error)" } else { ".map_err(internal_error)" }
+fn err_map(f: &ApiFn, config: &Config) -> &'static str {
+    if returns_app_error(f, config) { ".map_err(app_error)" } else { ".map_err(internal_error)" }
+}
+
+/// True when `f` fails with the `AppError` that `app_error` takes: the one
+/// in the primary surface's types module.
+///
+/// The error type is read as `f`'s module names it. A bare `AppError`, or a
+/// path that ends `f`'s own surface's types path (`schema::AppError`), is
+/// that surface's `AppError`; any other path is taken as written. So the
+/// `AppError` of another surface's types module maps through
+/// `internal_error`: `app_error` cannot take it.
+fn returns_app_error(f: &ApiFn, config: &Config) -> bool {
+    let Some(error) = f.error_type.as_deref() else { return false };
+    let own = match f.surface {
+        0 => app_error_path(config),
+        i => format!("{}::AppError", config.extra_surfaces[i - 1].types_import_path),
+    };
+    let resolved = if own == error || own.ends_with(&format!("::{error}")) { own.as_str() } else { error };
+    resolved == app_error_path(config)
 }
 
 fn await_str(is_async: bool) -> &'static str {
@@ -790,7 +808,7 @@ fn write_steps(op: &ResourceOp<'_>, scoped: bool) -> (String, String) {
             .error_map
             .as_ref()
             .and_then(|map| map.variants.iter().find(|v| v.name == not_found))
-            .filter(|_| tf.returns_app_error())
+            .filter(|_| returns_app_error(tf, op.config))
             .map(|v| {
                 format!(
                     "            Err({}) => return Err(linked.not_found(\"{}\")),\n",
@@ -799,7 +817,7 @@ fn write_steps(op: &ResourceOp<'_>, scoped: bool) -> (String, String) {
                 )
             })
             .unwrap_or_default();
-        let fallback = if tf.returns_app_error() { "app_error" } else { "internal_error" };
+        let fallback = if returns_app_error(tf, op.config) { "app_error" } else { "internal_error" };
         let each = if rel.is_to_many() { "for linked in" } else { "if let Some(linked) =" };
         checks.push_str(&format!(
             "    {each} &linked.{} {{\n        match {svc}::get_by_id({arg}, &linked.id){} {{\n            \
@@ -830,7 +848,7 @@ fn resource_handler(
     let url_plural = config.naming.url_for_module(m);
     let state_type = &config.state_type;
     let aw = await_str(f.is_async);
-    let map_err = err_map(f);
+    let map_err = err_map(f, config);
     let Access { open, arg } = access;
     let key = &names.key;
     let as_resource = &names.resource;
@@ -922,7 +940,7 @@ fn resource_handler(
                 .error_map
                 .as_ref()
                 .and_then(|map| map.variants.iter().find(|v| v.name == already_exists))
-                .filter(|_| f.returns_app_error());
+                .filter(|_| returns_app_error(f, config));
             // Only a client id is in the request for the pointer to name
             // (§8.2).
             let create_err = match variant {
@@ -984,7 +1002,7 @@ fn legacy_crud_handler(
     let ret_type = &f.return_type;
     let state_type = &config.state_type;
     let await_str = if f.is_async { "\n        .await" } else { "" };
-    let err_map = err_map(f);
+    let err_map = err_map(f, config);
     let Access { open: store_let, arg: first_arg } = unscoped_access(f);
 
     match classify_op(f) {
@@ -1162,7 +1180,7 @@ fn junction_handler(
     let ret_type = &f.return_type;
     let state_type = &config.state_type;
     let await_str = if f.is_async { "\n        .await" } else { "" };
-    let err_map = err_map(f);
+    let err_map = err_map(f, config);
     let Access { open: store_let, arg: first_arg } = unscoped_access(f);
     let pagination = config.pagination_for(&m.name, f.surface);
 
@@ -1493,7 +1511,7 @@ impl<'a> CustomParams<'a> {
     }
 
     /// The call, its result mapping and the end of the handler.
-    fn emit_call(&self, out: &mut String, svc: &str, f: &ApiFn, first_arg: Option<&str>) {
+    fn emit_call(&self, out: &mut String, svc: &str, f: &ApiFn, first_arg: Option<&str>, config: &Config) {
         let mut args: Vec<String> = first_arg.map(str::to_string).into_iter().collect();
         args.extend(self.path.iter().map(|p| forward_arg_expr(&p.name, &p.ty_ast)));
         args.extend(self.query.iter().map(|qp| forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast)));
@@ -1508,7 +1526,7 @@ impl<'a> CustomParams<'a> {
         } else {
             out.push_str("        .map(Json)\n");
         }
-        out.push_str(&format!("        {}\n}}\n\n", err_map(f)));
+        out.push_str(&format!("        {}\n}}\n\n", err_map(f, config)));
     }
 
     fn return_type(f: &ApiFn) -> String {
@@ -1584,7 +1602,7 @@ fn generate_generic_http_handler(
         Some("&state")
     };
 
-    params.emit_call(out, &svc, f, first_arg);
+    params.emit_call(out, &svc, f, first_arg, config);
     routes.add(&route_path, method, &handler_name);
 }
 
@@ -1625,7 +1643,7 @@ fn generate_scoped_handlers(
             let ret_type = &f.return_type;
             let pagination = config.pagination_for(module, f.surface);
             let await_str = if f.is_async { "\n        .await" } else { "" };
-            let err_map = err_map(f);
+            let err_map = err_map(f, config);
             let handler_name = match op {
                 OpKind::List => format!("list_{plural}_scoped"),
                 OpKind::GetById => format!("get_{url_sing}_by_id_scoped"),
@@ -1882,6 +1900,6 @@ fn generate_generic_http_handler_scoped(
         Some("&state")
     };
 
-    params.emit_call(out, &svc, f, first_arg);
+    params.emit_call(out, &svc, f, first_arg, config);
     routes.add(&route_path, method, &handler_name);
 }

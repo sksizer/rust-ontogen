@@ -37,10 +37,13 @@ use crate::store::Store;
 use fitness::api::{exercise, workout as workout_1};
 use fitness::schema::{CreateExerciseInput, CreateWorkoutInput, Exercise, UpdateExerciseInput, UpdateWorkoutInput};
 
-/// No `AppError` was found in the schema directory, so no error carries a
-/// status of its own: every one is a `500` (§13.4).
-fn app_error(e: impl std::fmt::Display) -> ErrorObject {
-    ErrorObject::internal(e.to_string())
+/// An `AppError` as an error object: the status its variant's name gives,
+/// and the name in snake_case as the code (§13.4).
+fn app_error(e: crate::schema::AppError) -> ErrorObject {
+    let (status, code) = match &e {
+        crate::schema::AppError::WorkoutNotFound(..) => (StatusCode::NOT_FOUND, "workout_not_found"),
+    };
+    ErrorObject::app(status, code, e.to_string())
 }
 
 /// A failure no `AppError` describes: opening the store, a scope accessor,
@@ -108,6 +111,19 @@ async fn workout_get_summary(
     workout::get_summary(&state, &id).await.map(Json).map_err(internal_error)
 }
 
+#[derive(Deserialize)]
+struct WorkoutFinishBody {
+    id: String,
+}
+
+async fn workout_finish(
+    State(state): State<Arc<AppState>>,
+    body: Result<Json<WorkoutFinishBody>, JsonRejection>,
+) -> Result<Json<Workout>, ErrorObject> {
+    let Json(body) = body.map_err(json_rejection)?;
+    workout::finish(&state, &body.id).await.map(Json).map_err(app_error)
+}
+
 async fn workout_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<fitness::schema::Workout>>, ErrorObject> {
     let store = state.fitness_store().await.map_err(internal_error)?;
     workout_1::list(&store).await.map(Json).map_err(internal_error)
@@ -143,6 +159,20 @@ async fn workout_update(
 async fn workout_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ErrorObject> {
     let store = state.fitness_store().await.map_err(internal_error)?;
     workout_1::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(internal_error)
+}
+
+#[derive(Deserialize)]
+struct WorkoutArchiveBody {
+    id: String,
+}
+
+async fn workout_archive(
+    State(state): State<Arc<AppState>>,
+    body: Result<Json<WorkoutArchiveBody>, JsonRejection>,
+) -> Result<Json<fitness::schema::Workout>, ErrorObject> {
+    let Json(body) = body.map_err(json_rejection)?;
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    workout_1::archive(&store, &body.id).await.map(Json).map_err(internal_error)
 }
 
 // ── Exercise Handlers ──
@@ -202,6 +232,7 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
         .route("/api/athletes", get(athlete_list).fallback(allow([Method::GET])))
         .route("/api/workouts/start", post(workout_start).fallback(allow([Method::POST])))
         .route("/api/workouts/summary/{id}", get(workout_get_summary).fallback(allow([Method::GET])))
+        .route("/api/workouts/finish", post(workout_finish).fallback(allow([Method::POST])))
         .route("/api/workouts", get(workout_list).post(workout_create).fallback(allow([Method::GET, Method::POST])))
         .route(
             "/api/workouts/{id}",
@@ -211,6 +242,7 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
+        .route("/api/workouts/archive", post(workout_archive).fallback(allow([Method::POST])))
         .route("/api/exercises", get(exercise_list).post(exercise_create).fallback(allow([Method::GET, Method::POST])))
         .route(
             "/api/exercises/{id}",
