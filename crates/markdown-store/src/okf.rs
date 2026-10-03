@@ -35,6 +35,10 @@ const UNTYPED_HEADING: &str = "Untyped";
 /// Subdirectories are listed under this heading, after every record section.
 const DIRECTORIES_HEADING: &str = "Directories";
 
+/// Appended to a type's heading when the type would otherwise read as one
+/// of the store's own section headings (see [`type_heading`]).
+const TYPE_SUFFIX: &str = " (type)";
+
 /// The `generated: { by, at }` mapping for a write by `by` at `at`.
 pub(crate) fn generated_stamp(by: &str, at: SystemTime) -> serde_norway::Value {
     let mut stamp = serde_norway::Mapping::with_capacity(2);
@@ -208,12 +212,12 @@ pub(crate) fn render_index(dir: &Path, is_root: bool, walk: &WalkOptions) -> Res
         let field = |key: &str| doc.as_ref().and_then(|d| d.get(key)).and_then(|v| v.as_str()).map(collapse_whitespace);
         let mut entry = format!(
             "* [{}]({})",
-            escape_link_text(&field("title").filter(|t| !t.is_empty()).unwrap_or_else(|| id.to_string())),
+            escape_markdown(&field("title").filter(|t| !t.is_empty()).unwrap_or_else(|| id.to_string())),
             encode_url(file)
         );
         if let Some(description) = field("description").filter(|d| !d.is_empty()) {
             entry.push_str(" - ");
-            entry.push_str(&description);
+            entry.push_str(&escape_markdown(&description));
         }
         match field(TYPE_KEY).filter(|t| !t.is_empty()) {
             Some(type_name) => typed.entry(type_name).or_default().push(entry),
@@ -221,13 +225,14 @@ pub(crate) fn render_index(dir: &Path, is_root: bool, walk: &WalkOptions) -> Res
         }
     }
 
-    let mut sections: Vec<String> = typed.iter().map(|(heading, entries)| section(heading, entries)).collect();
+    let mut sections: Vec<String> =
+        typed.iter().map(|(type_name, entries)| section(&escape_markdown(&type_heading(type_name)), entries)).collect();
     if !untyped.is_empty() {
         sections.push(section(UNTYPED_HEADING, &untyped));
     }
     if !subdirs.is_empty() {
         let entries: Vec<String> =
-            subdirs.iter().map(|name| format!("* [{}]({}/)", escape_link_text(name), encode_url(name))).collect();
+            subdirs.iter().map(|name| format!("* [{}]({}/)", escape_markdown(name), encode_url(name))).collect();
         sections.push(section(DIRECTORIES_HEADING, &entries));
     }
 
@@ -257,11 +262,34 @@ fn collapse_whitespace(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Backslash-escape what would end or nest the link text early.
-fn escape_link_text(s: &str) -> String {
+/// The heading of a type's section: the type itself, unless it would read
+/// as one of the store's own sections (`Untyped`, `Directories`). Such a
+/// type gets ` (type)` appended, and so does a type that already reads as
+/// one of those plus any number of ` (type)` suffixes, so no two sections
+/// of an index ever share a heading.
+fn type_heading(type_name: &str) -> String {
+    let mut stem = type_name;
+    while let Some(shorter) = stem.strip_suffix(TYPE_SUFFIX) {
+        stem = shorter;
+    }
+    if stem == UNTYPED_HEADING || stem == DIRECTORIES_HEADING {
+        format!("{type_name}{TYPE_SUFFIX}")
+    } else {
+        type_name.to_string()
+    }
+}
+
+/// Backslash-escape every ASCII punctuation character, which CommonMark
+/// (§2.4) allows for any of them. Titles, descriptions and types are
+/// arbitrary text, and escaping all of them is simpler to get right than
+/// choosing the ones that matter: emphasis, code spans, brackets, raw HTML
+/// (`<!--` would swallow the rest of the file), entities, a heading's
+/// closing `#`s, and the extensions consumers such as Obsidian add (`$`
+/// math, `%%` comments, `==` highlights) all render as literal text.
+fn escape_markdown(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if matches!(c, '\\' | '[' | ']') {
+        if c.is_ascii_punctuation() {
             out.push('\\');
         }
         out.push(c);
@@ -305,8 +333,10 @@ mod tests {
     }
 
     #[test]
-    fn link_text_escapes_brackets_and_urls_encode_what_commonmark_would_misread() {
-        assert_eq!(escape_link_text(r"a [b] \c"), r"a \[b\] \\c");
+    fn text_escapes_all_ascii_punctuation_and_urls_encode_what_commonmark_would_misread() {
+        assert_eq!(escape_markdown(r"a [b] \c"), r"a \[b\] \\c");
+        assert_eq!(escape_markdown("<!-- *x* _y_ `z` | # ! & ~ $"), r"\<\!\-\- \*x\* \_y\_ \`z\` \| \# \! \& \~ \$");
+        assert_eq!(escape_markdown("café ünïcode"), "café ünïcode", "only ASCII punctuation");
         assert_eq!(encode_url("plain-id_1.2~x.md"), "plain-id_1.2~x.md");
         assert_eq!(encode_url("my note (draft).md"), "my%20note%20%28draft%29.md");
         assert_eq!(encode_url("a:b%.md"), "a%3Ab%25.md");
@@ -344,6 +374,16 @@ mod tests {
         ] {
             assert!(!is_store_generated(theirs, &walk), "{theirs:?}");
         }
+    }
+
+    #[test]
+    fn a_type_never_takes_a_heading_of_the_stores_own() {
+        assert_eq!(type_heading("Note"), "Note");
+        assert_eq!(type_heading("Untyped"), "Untyped (type)");
+        assert_eq!(type_heading("Directories"), "Directories (type)");
+        assert_eq!(type_heading("Untyped (type)"), "Untyped (type) (type)", "the suffixed form stays distinct too");
+        assert_eq!(type_heading("untyped"), "untyped", "headings compare case-sensitively");
+        assert_eq!(type_heading("Note (type)"), "Note (type)");
     }
 
     #[test]

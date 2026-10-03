@@ -45,8 +45,11 @@ type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 ///   depth. Each lists that directory's records under one `# <type>`
 ///   heading per OKF `type` (sorted; records without a string `type` last,
 ///   under `# Untyped`) as `* [<title>](<file>) - <description>`, then its
-///   subdirectories that hold records under `# Directories`. The root index
-///   carries `okf_version: "0.2"` as its only frontmatter. After every real
+///   subdirectories that hold records under `# Directories`. A type that
+///   would read as one of those two headings is headed `<type> (type)`.
+///   Titles, descriptions and types have every ASCII punctuation character
+///   backslash-escaped, so a record's text never turns into markup. The
+///   root index carries `okf_version: "0.2"` as its only frontmatter. After every real
 ///   write (a create, an update that changed something, a delete) the
 ///   record's directory and each ancestor up to the root are regenerated
 ///   under the write lock, each written atomically and only when its bytes
@@ -466,7 +469,7 @@ impl VaultHandle {
     /// vault.rebuild_indexes()?;
     /// let read = |p: &str| std::fs::read_to_string(dir.path().join(p)).unwrap();
     /// assert_eq!(read("index.md"), "---\nokf_version: \"0.2\"\n---\n\n# Directories\n\n* [notes](notes/)\n");
-    /// assert_eq!(read("notes/index.md"), "# Note\n\n* [First note](first.md) - Where it starts.\n");
+    /// assert_eq!(read("notes/index.md"), "# Note\n\n* [First note](first.md) - Where it starts\\.\n");
     /// # Ok::<(), markdown_store::Error>(())
     /// ```
     pub fn rebuild_indexes(&self) -> Result<(), Error> {
@@ -1176,15 +1179,15 @@ mod tests {
         assert_eq!(
             file(root, "tasks/index.md").unwrap(),
             "# Chore\n\n\
-             * [c-sweep](c-sweep.md)\n\
+             * [c\\-sweep](c-sweep.md)\n\
              \n\
              # Task\n\n\
              * [Plan](a-plan.md)\n\
-             * [Ship \\[v2\\]](b-ship.md) - Cut the release.\n\
+             * [Ship \\[v2\\]](b-ship.md) - Cut the release\\.\n\
              \n\
              # Untyped\n\n\
              * [Loose](d-loose.md) - no type\n",
-            "sections sorted by type, untyped last; entries by id; titles fall back to the id"
+            "sections sorted by type, untyped last; entries by id; titles fall back to the id; text is escaped"
         );
         assert_eq!(file(root, "notes/index.md").unwrap(), "# Note\n\n* [A note](n.md)\n");
         assert_eq!(
@@ -1192,6 +1195,40 @@ mod tests {
             ["a-plan", "b-ship", "c-sweep", "d-loose"],
             "index.md is no record"
         );
+    }
+
+    #[test]
+    fn index_text_is_inert_markdown_and_types_never_take_the_stores_own_headings() {
+        let (dir, vault) = indexed(VaultLayout::PerEntityDir);
+        let mk = |type_name: &str, id: &str, title: &str, description: Option<&str>| {
+            vault.entity("things", type_name).create(Some(id), None, titled(title, description)).unwrap();
+        };
+        mk("Directories", "a", "A", None);
+        mk("Untyped", "b", "B", None);
+        mk("C# *notes*", "c", "<!-- hidden", Some("<b>bold</b> & `code` | _x_ $y$ %%z%% ==w== #tag"));
+        vault.create_record("things", "d", &titled("D", None)).unwrap();
+        fsops::write_atomic(&dir.path().join("things/sub/e.md"), "---\ntype: Note\n---\n").unwrap();
+        vault.rebuild_indexes().unwrap();
+
+        assert_eq!(
+            file(dir.path(), "things/index.md").unwrap(),
+            "# C\\# \\*notes\\*\n\n\
+             * [\\<\\!\\-\\- hidden](c.md) - \\<b\\>bold\\<\\/b\\> \\& \\`code\\` \\| \\_x\\_ \\$y\\$ \\%\\%z\\%\\% \\=\\=w\\=\\= \\#tag\n\
+             \n\
+             # Directories \\(type\\)\n\n\
+             * [A](a.md)\n\
+             \n\
+             # Untyped \\(type\\)\n\n\
+             * [B](b.md)\n\
+             \n\
+             # Untyped\n\n\
+             * [D](d.md)\n\
+             \n\
+             # Directories\n\n\
+             * [sub](sub/)\n"
+        );
+        let index = file(dir.path(), "things/index.md").unwrap();
+        assert!(okf::is_store_generated(&index, &WalkOptions::default()), "escaped text keeps the store's shape");
     }
 
     #[test]
@@ -1315,7 +1352,7 @@ mod tests {
         vault.rebuild_indexes().unwrap();
         assert_eq!(
             file(root, "notes/index.md").unwrap(),
-            "# Note\n\n* [Top](top.md)\n\n# Untyped\n\n* [my notes (old)](my%20notes%20%28old%29.md)\n\n\
+            "# Note\n\n* [Top](top.md)\n\n# Untyped\n\n* [my notes \\(old\\)](my%20notes%20%28old%29.md)\n\n\
              # Directories\n\n* [deep](deep/)\n"
         );
         assert_eq!(file(root, "notes/deep/index.md").unwrap(), "# Directories\n\n* [er](er/)\n");

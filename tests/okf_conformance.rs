@@ -29,7 +29,8 @@ fn a_conformant_bundle_has_no_violations() {
         root,
         "index.md",
         "---\nokf_version: '0.2'\n---\n# Tasks\n\n* [Ship](tasks/ship.md) - ship it\n\n\
-         ## Elsewhere\n* [Notes](notes/)\n* [Minimal](</notes/minimal.md>)\n* [A \\[draft\\]](tasks/my%20draft.md) - d\n",
+         ## Elsewhere\n* [Notes](notes/)\n* [Minimal](</notes/minimal.md>)\n* [A \\[draft\\]](tasks/my%20draft.md) - d\n\
+         * [\\<\\!\\-\\- C\\# \\*x\\*](tasks/ship.md) - \\`y\\` \\| z \\& w\n",
     );
     write(root, "log.md", "# Update log\n\n## 2026-10-03\n* **Creation**: ship\n\n## 2026-09-30\n* **Update**: x\n");
     write(root, "tasks/index.md", "# Tasks\n\n* [Ship](ship.md)\n");
@@ -148,6 +149,8 @@ fn a_vault_written_with_both_okf_options_is_conformant() {
     let tasks = vault.entity("tasks", "Task");
     tasks.create(None, Some("Ship [it] (soon)"), record("Ship [it] (soon)", Some("multi\nline"))).unwrap();
     tasks.create(None, Some("Plan"), record("Plan", None)).unwrap();
+    let odd = vault.entity("notes", "Directories");
+    odd.create(None, Some("Hidden"), record("<!-- hidden *x*", Some("`y` | z & w ](not.md)"))).unwrap();
     vault.entity("notes", "Note").create(None, Some("Idea"), record("Idea", Some("why"))).unwrap();
     std::fs::write(dir.path().join("notes/hand written (draft).md"), "---\ntype: Note\n---\n").unwrap();
     vault.rebuild_indexes().unwrap();
