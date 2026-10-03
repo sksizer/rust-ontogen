@@ -75,6 +75,10 @@ pub struct ApiFn {
     /// `collect_type_import`) recurse structurally into generic args
     /// instead of substring-matching the rendered string.
     pub return_type_ast: syn::Type,
+    /// The `E` from `Result<T, E>`, as a normalized string. `None` when the
+    /// return type is not a two-argument `Result`. Only its last path segment
+    /// is ever compared (see [`ApiFn::returns_app_error`]), so no AST is kept.
+    pub error_type: Option<String>,
     /// Whether the first parameter is a store type (vs app state type).
     ///
     /// When true, generated handlers construct a Store from the AppState
@@ -151,9 +155,10 @@ impl Default for ApiFn {
             params: Vec::new(),
             return_type: "()".to_string(),
             // `syn::Type` does not impl `Default`; the unit type is the
-            // most neutral stand-in and matches what `extract_result_ok_type`
+            // most neutral stand-in and matches what `extract_result_types`
             // produces for fns with no `Result<_, _>` return.
             return_type_ast: syn::parse_quote!(()),
+            error_type: None,
             first_param_is_store: false,
             is_stateless: false,
             force_method: None,
@@ -335,6 +340,13 @@ impl ApiFn {
     /// is what holds the two parameter lists to each other.
     pub fn is_count(&self) -> bool {
         self.name == "count" && !self.is_stateless
+    }
+
+    /// True when the error type is the consumer's `AppError`, judged by its
+    /// last path segment: `AppError`, `schema::AppError` and
+    /// `crate::schema::AppError` all match. A type alias of `AppError` does not.
+    pub fn returns_app_error(&self) -> bool {
+        self.error_type.as_deref().is_some_and(|e| e.rsplit("::").next() == Some("AppError"))
     }
 
     /// This function's parameters other than the page, as `name: type` — the
@@ -736,7 +748,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
 
             let params = parse_params(func, skip_first);
 
-            let (return_type, return_type_ast) = extract_result_ok_type(&func.sig.output);
+            let (return_type, return_type_ast, error_type) = extract_result_types(&func.sig.output);
 
             // A paginated list's companion. `count` takes the state or the
             // store (the first param is already known to be one of those;
@@ -756,6 +768,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                 params,
                 return_type,
                 return_type_ast,
+                error_type,
                 first_param_is_store: is_store,
                 is_stateless,
                 force_method,
@@ -875,23 +888,31 @@ fn first_type_arg(seg: &syn::PathSegment) -> Option<&Type> {
     }
 }
 
-/// Extract `T` from `Result<T, E>` as both a normalized string and AST.
+/// Extract `T` from `Result<T, E>` as both a normalized string and AST, and
+/// `E` as a normalized string.
 ///
 /// When the return type is not a `Result<...>`, returns `("()", syn::Type::Tuple(_))`
-/// for the unit type.
-fn extract_result_ok_type(ret: &ReturnType) -> (String, Type) {
+/// for the unit type. `E` is `None` unless the `Result` names both arguments:
+/// a one-argument alias such as `anyhow::Result<T>` hides its error type.
+fn extract_result_types(ret: &ReturnType) -> (String, Type, Option<String>) {
     if let ReturnType::Type(_, ty) = ret
         && let Type::Path(tp) = ty.as_ref()
     {
         let seg = tp.path.segments.last().unwrap();
         if seg.ident == "Result"
             && let PathArguments::AngleBracketed(args) = &seg.arguments
-            && let Some(GenericArgument::Type(t)) = args.args.first()
         {
-            return (norm_type(t), t.clone());
+            let mut types = args.args.iter().filter_map(|a| match a {
+                GenericArgument::Type(t) => Some(t),
+                _ => None,
+            });
+            if let Some(t) = types.next() {
+                let error_type = types.next().map(norm_type);
+                return (norm_type(t), t.clone(), error_type);
+            }
         }
     }
-    ("()".to_string(), syn::parse_quote!(()))
+    ("()".to_string(), syn::parse_quote!(()), None)
 }
 
 /// Scan a directory for API source files and parse them all.
@@ -1271,4 +1292,63 @@ pub fn check_paginated_lists(modules: &mut [ApiModule], config: &crate::servers:
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result_types(sig: &str) -> (String, Option<String>) {
+        let func: syn::ItemFn = syn::parse_str(&format!("{sig} {{ todo!() }}")).unwrap();
+        let (ok, _, err) = extract_result_types(&func.sig.output);
+        (ok, err)
+    }
+
+    #[test]
+    fn error_type_is_the_second_result_argument() {
+        assert_eq!(
+            result_types("fn f() -> Result<Vec<Task>, AppError>"),
+            ("Vec<Task>".to_string(), Some("AppError".to_string()))
+        );
+        assert_eq!(
+            result_types("fn f() -> std::result::Result<(), crate::schema::AppError>"),
+            ("()".to_string(), Some("crate::schema::AppError".to_string()))
+        );
+    }
+
+    #[test]
+    fn error_type_is_none_without_a_two_argument_result() {
+        assert_eq!(result_types("fn f() -> anyhow::Result<Task>"), ("Task".to_string(), None));
+        assert_eq!(result_types("fn f() -> u64"), ("()".to_string(), None));
+        assert_eq!(result_types("fn f()"), ("()".to_string(), None));
+    }
+
+    #[test]
+    fn app_error_is_matched_by_last_path_segment() {
+        let with = |e: Option<&str>| ApiFn { error_type: e.map(str::to_string), ..Default::default() };
+        assert!(with(Some("AppError")).returns_app_error());
+        assert!(with(Some("schema::AppError")).returns_app_error());
+        assert!(with(Some("crate::schema::AppError")).returns_app_error());
+        assert!(!with(Some("String")).returns_app_error());
+        assert!(!with(Some("MyAppError")).returns_app_error());
+        assert!(!with(None).returns_app_error());
+    }
+
+    #[test]
+    fn parsed_functions_carry_their_error_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("task.rs");
+        fs::write(
+            &path,
+            "pub async fn get_by_id(store: &Store, id: String) -> Result<Task, crate::schema::AppError> { todo!() }\n\
+             pub fn summary(state: &AppState) -> Result<String, String> { todo!() }\n\
+             pub fn ping(state: &AppState) -> anyhow::Result<()> { todo!() }\n",
+        )
+        .unwrap();
+        let module = parse_api_module(&path, "AppState", Some("Store")).module.expect("module parses");
+        let error_of = |name: &str| module.functions.iter().find(|f| f.name == name).and_then(|f| f.error_type.clone());
+        assert_eq!(error_of("get_by_id").as_deref(), Some("crate::schema::AppError"));
+        assert_eq!(error_of("summary").as_deref(), Some("String"));
+        assert_eq!(error_of("ping"), None);
+    }
 }
