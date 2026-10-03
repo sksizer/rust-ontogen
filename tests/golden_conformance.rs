@@ -11,6 +11,8 @@
 //! that the emitter PR must satisfy; the conformance PR extends it with the
 //! generated-then-reviewed full entity set and the typed-write vault check.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 
 fn repo() -> PathBuf {
@@ -180,4 +182,7 @@ fn typed_write_reproduces_the_seeded_vault_golden() {
     let written = read(&vault_dir.path().join("tasks/seeded-by-the-typed-writer.md"));
     let golden = read(&repo().join("tests/golden/markdown-backend/vault/tasks/seeded-by-writer.md.golden"));
     assert_eq!(written, golden, "typed-write output must match the seeded vault golden byte for byte");
+
+    let violations = support::okf::check_bundle(vault_dir.path());
+    assert!(violations.is_empty(), "a typed write must produce an OKF 0.2 bundle: {violations:?}");
 }
