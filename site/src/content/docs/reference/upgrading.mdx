@@ -106,6 +106,10 @@ UPDATE workout_set SET reps = reps + 4294967296 WHERE reps < 0;
 
 `usize`, `isize`, `u128` and `i128` had no working SeaORM column before, so there is no data to migrate.
 
+### `u64` fields keep their type
+
+A `u64` or `Option<u64>` schema field used to be filed as `i64`, so the generated DTOs, the `{Entity}Update` struct and the markdown frontmatter struct declared it `i64`, and a SeaORM store did not compile. They now declare `u64` and `Option<u64>`, like the schema. Code that builds a `Create{Entity}Input` or `Update{Entity}Input` with an `i64` value for such a field changes to `u64`. The SeaORM column stays `i64`; a value above `i64::MAX` fails the write with `AppError::DbError`, and the markdown store refuses it the same way (see [The `Other` Fallback](/guides/field-types-and-roles/#the-other-fallback)). No SeaORM data can hold such a field, since the store did not compile. In a markdown vault, a negative value written through the old `i64` type now fails the read; fix those records by hand.
+
 ### Conversions return `Result`
 
 `{Entity}::from_model` and `to_active_model` return `Result<_, AppError>`. Hand-written callers add `?`.
@@ -154,4 +158,5 @@ In a vault, rename the file and update every `[[wikilink]]` and foreign key that
 
 - **Markdown list order is id byte order.** `VaultHandle::read_all`, `list_ids` and `EntityRecords::read_all` guarantee it. It differs from the old path order only for nested layouts.
 - **`has_many` updates clear dropped children.** An update that sets the list clears the foreign key of every child it drops, or fails with `{Child}ParentRequired` when the key is not an `Option`. A listed child that does not exist fails the create or update with `{Child}NotFound`, with nothing written; SeaORM used to ignore it. Child ids are id-ascending, and a record is never its own child. See [has_many writes](/guides/store-layer/#has_many-writes).
+- **A cross-entity `has_many` fails the build.** A `has_many` whose `target` is not the declaring entity used to generate a store that wrote the wrong records. It is now a `CodegenError`. Declare the `belongs_to` on the child and list the children in a hand-written API function. See [has_many writes](/guides/store-layer/#has_many-writes).
 - **Lookups of an id the vault can never hold** (`index`, `a/b`, `.hidden`, whitespace) answer `{Entity}NotFound` from the generated markdown `get_*`, `update_*` and `delete_*`, instead of an internal error.

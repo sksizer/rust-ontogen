@@ -170,6 +170,7 @@ fn generate_fields_for_entity(module_name: &str, entity: &EntityDef, enums: &[En
                 field.field_type,
                 FieldType::String | FieldType::I32 | FieldType::I64 | FieldType::F32 | FieldType::F64 | FieldType::Bool
             )
+            || matches!(&field.field_type, FieldType::Other(t) if is_number_primitive(t))
             || (enum_def.is_some() && matches!(field.field_type, FieldType::Other(_)));
         // A required `created_at` has to be sent on create (the store stamps
         // a blank one), so only an optional one is left to the store.
@@ -242,6 +243,7 @@ fn classify_admin_field(field: &FieldDef, is_enum: bool) -> (&'static str, Optio
         }
         (_, FieldType::String) => ("string", None),
         (_, FieldType::OptionString) => ("string", None),
+        (_, FieldType::OptionEnum(t) | FieldType::Other(t)) if is_number_primitive(t) => ("number", None),
         (_, FieldType::OptionEnum(_)) => ("enum", None),
         (_, FieldType::VecString) => ("string-array", None),
         (_, FieldType::VecStruct(_)) => ("string-array", None),
@@ -253,6 +255,12 @@ fn classify_admin_field(field: &FieldDef, is_enum: bool) -> (&'static str, Optio
         (_, FieldType::Other(_)) if is_enum => ("enum", None),
         (_, FieldType::Other(_)) => ("string", None),
     }
+}
+
+/// A number primitive the parser files under `Other` / `OptionEnum`
+/// (`u32`, `u64`, `usize`, ...).
+fn is_number_primitive(t: &str) -> bool {
+    rust_type_to_ts(t) == "number"
 }
 
 /// Escape a value for a single-quoted TypeScript string literal.
@@ -280,4 +288,21 @@ fn field_label(name: &str) -> String {
 /// Whether a field name is "prominent" enough to show in the table view by default.
 fn is_prominent_field(name: &str) -> bool {
     matches!(name, "name" | "title" | "status" | "state" | "kind" | "date" | "priority" | "path")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_primitives_without_a_variant_are_numbers() {
+        for t in ["u8", "u32", "u64", "usize", "u128", "i128"] {
+            let bare = FieldDef::new("n", FieldType::Other(t.into()), FieldRole::Plain);
+            let optional = FieldDef::new("n", FieldType::OptionEnum(t.into()), FieldRole::Plain);
+            assert_eq!(classify_admin_field(&bare, false), ("number", None), "{t}");
+            assert_eq!(classify_admin_field(&optional, false), ("number", None), "Option<{t}>");
+        }
+        let kind = FieldDef::new("kind", FieldType::OptionEnum("Kind".into()), FieldRole::Plain);
+        assert_eq!(classify_admin_field(&kind, true), ("enum", None));
+    }
 }

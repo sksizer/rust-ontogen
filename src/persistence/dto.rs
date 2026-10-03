@@ -753,6 +753,35 @@ mod tests {
     }
 
     #[test]
+    fn u64_fields_keep_their_type_end_to_end() {
+        let source = r#"
+            use ontogen_macros::OntologyEntity;
+
+            #[derive(OntologyEntity)]
+            #[ontology(entity)]
+            pub struct Counter {
+                #[ontology(id)]
+                pub id: String,
+                pub hits: u64,
+                pub cap: Option<u64>,
+            }
+        "#;
+
+        let entities = crate::schema::parse::parse_schema_source(source, std::path::Path::new("test.rs"))
+            .expect("parse should succeed");
+        let c = &entities[0];
+        assert_eq!(c.fields.iter().find(|f| f.name == "hits").unwrap().field_type, FieldType::Other("u64".into()));
+        assert_eq!(c.fields.iter().find(|f| f.name == "cap").unwrap().field_type, FieldType::OptionEnum("u64".into()));
+
+        let code = generate_dto_code(c);
+        assert!(code.contains("pub hits: u64,"), "{code}");
+        assert!(code.contains("pub cap: Option<u64>,"), "{code}");
+        assert!(code.contains("pub hits: Option<u64>,"), "update DTO: {code}");
+        assert!(code.contains("pub cap: Option<Option<u64>>,"), "update DTO: {code}");
+        assert!(!code.contains("i64") && !code.contains("crate::schema::u64"), "{code}");
+    }
+
+    #[test]
     fn no_wikilinks_or_source_file() {
         let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
 

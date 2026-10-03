@@ -27,10 +27,10 @@ A simplified representation of the Rust type. Ontogen only needs to know the sha
 | `OptionF64` | `Option<f64>` | `Option<f64>` | `REAL` | `number \| null` |
 | `Bool` | `bool` | `bool` | `BOOLEAN NOT NULL` | `boolean` |
 | `OptionBool` | `Option<bool>` | `Option<bool>` | `BOOLEAN` | `boolean \| null` |
-| `OptionEnum(name)` | `Option<EnumType>` | `Option<String>` (`Option<i64>` for an integer primitive such as `Option<u32>`) | `TEXT` (`INTEGER`) | `string \| null` |
+| `OptionEnum(name)` | `Option<EnumType>` | `Option<String>` (`Option<i64>` for an integer primitive such as `Option<u32>`) | `TEXT` (`INTEGER`) | `string \| null` (`number \| null`) |
 | `VecString` | `Vec<String>` | `String` (JSON) | `TEXT NOT NULL` | `string[]` |
 | `VecStruct(name)` | `Vec<StructType>` | `String` (JSON) | `TEXT NOT NULL` | `StructType[]` |
-| `Other(name)` | anything else | `String` (`i64` for an integer primitive such as `u32`) | `TEXT NOT NULL` (`INTEGER NOT NULL`) | `string` |
+| `Other(name)` | anything else | `String` (`i64` for an integer primitive such as `u32`) | `TEXT NOT NULL` (`INTEGER NOT NULL`) | `string` (`number`) |
 
 ### How types are detected
 
@@ -44,11 +44,7 @@ A simplified representation of the Rust type. Ontogen only needs to know the sha
 - `i32`, `i64`, `f32`, `f64`, `bool` and their `Option` wrappers -- exact matches.
 - Everything else -- `Other("TypeName")`, treated as a string-serialized value.
 
-<Aside type="note">
-`i64` is also used for `u64` fields. SQLite has no unsigned integer type, so Ontogen treats both as `i64` in the SeaORM layer. If you need unsigned semantics, enforce that in your application logic or hooks.
-</Aside>
-
-Other integer primitives (`u8`, `u16`, `u32`, `usize`, `u128`, `i8`, `i16`, `isize`, `i128`) are stored as `i64` columns. Widening is lossless for `u8`, `u16`, `u32`, `i8` and `i16`; for the rest, and when reading back, a value that does not fit fails with `AppError::DbError` naming the field rather than wrapping. See [the `Other` fallback](/guides/field-types-and-roles/#the-other-fallback).
+Other integer primitives (`u8`, `u16`, `u32`, `u64`, `usize`, `u128`, `i8`, `i16`, `isize`, `i128`) are `Other` or `OptionEnum` and keep their Rust type in DTOs, frontmatter and TypeScript (`number`). On SeaORM they are stored as `i64` columns. Widening is lossless for `u8`, `u16`, `u32`, `i8` and `i16`; for the rest, and when reading back, a value that does not fit fails with `AppError::DbError` naming the field rather than wrapping. The markdown store refuses the same out-of-range writes, so a `u64` holds at most `i64::MAX` on either backend. See [the `Other` fallback](/guides/field-types-and-roles/#the-other-fallback).
 
 ### `Vec` fields in the database
 
@@ -128,11 +124,11 @@ The `workout_id` column exists on this entity's table. SeaORM generates a `Belon
 ### `HasMany` example
 
 ```rust
-#[ontology(relation(has_many, target = "WorkoutSet", foreign_key = "workout_id"))]
-pub sets: Vec<String>,
+#[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
+pub contains: Vec<String>,
 ```
 
-No column on this entity's table. The `WorkoutSet` entity has a `workout_id` column. At read time, `populate_*_relations()` queries `workout_sets` where `workout_id` matches.
+No column for `contains` on this entity's table. The children are `Node` records whose `parent_id` column holds this record's id; at read time, `populate_*_relations()` queries `nodes` where `parent_id` matches. The target must be the declaring entity (see [has_many writes](/guides/store-layer/#has_many-writes)).
 
 ### `ManyToMany` example
 

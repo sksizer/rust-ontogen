@@ -382,6 +382,7 @@ The `sync_junction` and `load_junction_ids` methods are provided by your `Store`
 The order of a `many_to_many` list is the order it was written, on both backends. The markdown backend keeps it in frontmatter. On SeaORM that order lives in your two helpers, so they have to honor it: `sync_junction` inserts the rows in the order of `target_ids`, and `load_junction_ids` selects them back with `ORDER BY rowid`:
 
 ```rust
+// sqlite-only: `rowid` is SQLite's implicit insertion-order column.
 let sql = format!(
     "SELECT {target_col} FROM {table} WHERE {source_col} = ? ORDER BY rowid"
 );
@@ -432,7 +433,7 @@ A `has_many` list lives on the children, as their foreign keys. An update that s
 
 A listed child that does not exist fails the create or update with `AppError::{Child}NotFound(child_id)`, the first missing id in list order, before anything is written. It is checked before `{Child}ParentRequired`.
 
-The generated `has_many` writes cover a record whose children are records of the same entity (the self-referential shape, such as a tree of nodes).
+Only the self-referential shape is supported: the `has_many` target must be the declaring entity, as in a tree of nodes. A `has_many` whose target is another entity fails the build with a `CodegenError`. To list another entity's records that point at this one, declare the `belongs_to` on that entity and query its records by the foreign key in a hand-written API function (see [Custom API endpoints](/cookbook/custom-api-endpoints/)).
 
 ## Simple vs Complex Entities
 

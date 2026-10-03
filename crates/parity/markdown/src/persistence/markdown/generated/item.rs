@@ -33,6 +33,7 @@ pub struct ItemFrontmatter {
     pub n_u8: u8,
     pub n_u16: u16,
     pub n_u32: u32,
+    pub n_u64: u64,
     pub n_usize: usize,
     pub n_u128: u128,
     pub n_i8: i8,
@@ -41,6 +42,8 @@ pub struct ItemFrontmatter {
     pub n_i128: i128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maybe_u32: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maybe_u64: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -67,6 +70,7 @@ pub const ITEM_FM_FIELDS: &[&str] = &[
     "n_u8",
     "n_u16",
     "n_u32",
+    "n_u64",
     "n_usize",
     "n_u128",
     "n_i8",
@@ -74,6 +78,7 @@ pub const ITEM_FM_FIELDS: &[&str] = &[
     "n_isize",
     "n_i128",
     "maybe_u32",
+    "maybe_u64",
     "parent_id",
     "tags",
 ];
@@ -98,6 +103,7 @@ impl ItemFrontmatter {
             n_u8: value.n_u8,
             n_u16: value.n_u16,
             n_u32: value.n_u32,
+            n_u64: value.n_u64,
             n_usize: value.n_usize,
             n_u128: value.n_u128,
             n_i8: value.n_i8,
@@ -105,6 +111,7 @@ impl ItemFrontmatter {
             n_isize: value.n_isize,
             n_i128: value.n_i128,
             maybe_u32: value.maybe_u32,
+            maybe_u64: value.maybe_u64,
             parent_id: value.parent_id.as_deref().map(markdown_store::wikilink::encode),
             tags: value.tags.iter().map(|v| markdown_store::wikilink::encode(v)).collect(),
         }
@@ -131,6 +138,7 @@ impl ItemFrontmatter {
             n_u8: self.n_u8,
             n_u16: self.n_u16,
             n_u32: self.n_u32,
+            n_u64: self.n_u64,
             n_usize: self.n_usize,
             n_u128: self.n_u128,
             n_i8: self.n_i8,
@@ -138,6 +146,7 @@ impl ItemFrontmatter {
             n_isize: self.n_isize,
             n_i128: self.n_i128,
             maybe_u32: self.maybe_u32,
+            maybe_u64: self.maybe_u64,
             parent_id: markdown_store::wikilink::strip_opt(self.parent_id),
             tags: markdown_store::wikilink::strip_vec(self.tags),
             // derived has_many view — reconstructed by populate_item_relations

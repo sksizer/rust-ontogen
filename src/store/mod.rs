@@ -40,6 +40,7 @@ pub fn generate(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOut
     // Resolve and validate up front so misconfiguration fails loudly before
     // any files are written.
     validate_id_strategies(entities, &config.id_strategy).map_err(CodegenError::Store)?;
+    has_many::validate_targets(entities).map_err(CodegenError::Store)?;
     let backend = backends::for_backend(&config.backend)?;
     backend.validate(entities).map_err(CodegenError::Store)?;
 
