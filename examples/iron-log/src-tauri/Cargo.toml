@@ -24,4 +24,8 @@ axum = "0.8"
 specta = { version = "=2.0.0-rc.23", features = ["derive", "function"] }
 schemars = "0.8"
 ontogen-macros = { path = "../../../crates/ontogen-macros" }
+# Runtime support for the generated event ops (SSE and IPC subscriptions).
+ontogen-core = { path = "../../../crates/ontogen-core", features = ["events"] }
+futures = "0.3"
+log = "0.4"
 thiserror = "2"

@@ -115,12 +115,15 @@ fn convert_scanned_fn(func: &parse::ApiFn, scan_dir: &Path, module_name: &str) -
 }
 
 /// Convert a scanned event function into an IR `ApiFnMeta` with `OpKind::EventStream`.
+///
+/// `params` are the subscription arguments; `return_type` is the item type `T`
+/// of the returned `Receiver<T>`.
 fn convert_scanned_event(event: &parse::EventFn, scan_dir: &Path, module_name: &str) -> ApiFnMeta {
     ApiFnMeta {
         name: event.name.clone(),
-        doc: String::new(),
-        params: vec![],
-        return_type: "EventStream".to_string(),
+        doc: event.doc.clone(),
+        params: event.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect(),
+        return_type: event.item_type.clone(),
         source: Source::Scanned {
             module_path: format!("crate::api::v1::{module_name}"),
             file_path: scan_dir.join(format!("{module_name}.rs")),

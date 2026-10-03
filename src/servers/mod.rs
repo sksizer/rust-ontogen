@@ -111,38 +111,43 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
             mcp_tools.push(McpToolMeta { tool_name: handler_name, description: f.doc.clone(), params });
         }
 
-        // SSE event streams - HTTP-only. When route_prefix is set, both
-        // unscoped and prefix-scoped variants are emitted (http.rs:463-500
-        // and the scoped handler block).
+        // Event ops: an SSE route (plus a prefix-scoped one when route_prefix
+        // is set) and an IPC subscribe/unsubscribe pair. MCP skips them.
         for ev in &m.events {
-            let ev_name = crate::servers::types::event_name(&ev.name);
-            let unscoped = config
-                .sse_route_overrides
-                .get(&ev.name)
-                .map(|p| generators::http::axum_path(p))
-                .unwrap_or_else(|| format!("/api/events/{}", ev_name));
             http_routes.push(HttpRouteMeta {
                 method: "GET".to_string(),
-                path: unscoped.clone(),
+                path: generators::http::axum_path(&ev.sse_route(&config.sse_route_overrides)),
                 handler_name: format!("{}_sse", ev.name),
                 module_name: m.name.clone(),
             });
 
             if let Some(prefix) = &config.route_prefix {
-                let scoped_path = match config.sse_route_overrides.get(&ev.name) {
-                    Some(override_path) => match override_path.strip_prefix("/api/") {
-                        Some(rest) => format!("/api/{}/{}", prefix.segments, rest),
-                        None => format!("/api/{}{}", prefix.segments, override_path),
-                    },
-                    None => format!("/api/{}/events/{}", prefix.segments, ev_name),
-                };
                 http_routes.push(HttpRouteMeta {
                     method: "GET".to_string(),
-                    path: generators::http::axum_path(&scoped_path),
+                    path: generators::http::axum_path(
+                        &ev.sse_route_scoped(&config.sse_route_overrides, &prefix.segments),
+                    ),
                     handler_name: format!("{}_sse_scoped", ev.name),
                     module_name: m.name.clone(),
                 });
             }
+
+            let mut subscribe_params: Vec<ParamMeta> =
+                ev.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
+            subscribe_params.push(ParamMeta {
+                name: "channel".to_string(),
+                param_type: format!("tauri::ipc::Channel<ontogen_core::events::EventFrame<{}>>", ev.item_type),
+            });
+            ipc_commands.push(IpcCommandMeta {
+                command_name: format!("{}_subscribe", ev.name),
+                params: subscribe_params,
+                return_type: "u64".to_string(),
+            });
+            ipc_commands.push(IpcCommandMeta {
+                command_name: format!("{}_unsubscribe", ev.name),
+                params: vec![ParamMeta { name: "id".to_string(), param_type: "u64".to_string() }],
+                return_type: "bool".to_string(),
+            });
         }
     }
 

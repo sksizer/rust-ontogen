@@ -100,6 +100,12 @@ export type UpdateWorkoutSetInput = {
 };
 
 // Long-tail types (emitted via ontogen-ts AST walker).
+export type Activity = {
+  seq: number
+  kind: string
+  id: string
+}
+
 export type WorkoutStats = {
   total_count: number;
   total_duration_minutes: number;
