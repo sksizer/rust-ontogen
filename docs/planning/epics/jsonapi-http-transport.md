@@ -255,7 +255,8 @@ specified in detail by the [wire contract](../../jsonapi-wire-contract.md).
    which also fixes IPC and MCP. On the wire `has_many` takes full
    replacement by `PATCH`, and add or remove on its relationship endpoint.
    A child whose foreign key is not `Option` cannot be dropped:
-   `409 {child}_parent_required`.
+   `403 {child}_parent_required`, as the spec requires for a refused
+   relationship removal or replacement.
 
 ## Dependencies
 

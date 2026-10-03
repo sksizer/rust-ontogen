@@ -82,7 +82,8 @@ dialect.
    also fixes the bug on IPC and MCP. On the wire `has_many` is fully
    writable: full replacement by `PATCH`, and add or remove on the
    relationship endpoint. A child whose foreign key is not `Option` cannot
-   be dropped; the write is `409 {child}_parent_required`.
+   be dropped; the write is `403 {child}_parent_required`, the status the
+   spec requires for a refused relationship removal or replacement.
 
 ### Choices that were contested
 
@@ -94,8 +95,10 @@ argument of `gen_servers` and `gen_clients`, as it already is for
 A module with CRUD-named ops but no entity behind it is served as custom
 ops, not rejected. That is the scan-dirs-only consumer, or a standalone
 caller passing `&[]`. Rejecting it would break a use case the servers stage
-supports today, and without a schema there is no resource to build. This
-lands in phase 1b, the first phase that builds resource objects.
+supports today, and without a schema there is no resource to build. The
+schema input lands in phase 1b, the first phase that builds resource
+objects. Serving entity-less modules as custom ops lands in phase 1c, with
+the rest of the custom-op wire. Both ship in 0.9.0.
 
 **Typed store errors, mapped by name suffix.** The E0003 scan maps
 `*NotFound` to `404` and gains three more suffixes:
@@ -105,7 +108,9 @@ lands in phase 1b, the first phase that builds resource objects.
 - **`{Entity}IdRequired(reason)` → `400`.** The store detects it after
   `before_create` hooks run, so a hook can assign the id. The HTTP handler
   does no pre-check and does not learn the `IdStrategy`.
-- **`{Child}ParentRequired(child_id)` → `409`.** Decision 9's orphan case.
+- **`{Child}ParentRequired(child_id)` → `403`.** Decision 9's orphan case.
+  The spec requires `403` when a server refuses to remove a member or to
+  replace a to-many relationship.
 
 The store generator constructs each variant it uses, so consumer
 `AppError`s must declare them, as they already declare `{Entity}NotFound`.
@@ -140,8 +145,7 @@ not support, and for any name that follows none of its naming rules.
 Ontogen defines one implementation-specific family, `opArg`, on custom ops
 only.
 
-**Fixed latent defects.** Writing the contract surfaced these, and the
-named phases fix them:
+**Latent defects the design fixes**, each in the named phase:
 
 - A bare list parameter is extracted as `Query<String>`, which cannot
   deserialize from a query map, so every such request fails
@@ -223,9 +227,9 @@ whole surface.
 
 ### E. `has_many` read-only on the wire
 
-This was the first draft's answer to the store never clearing dropped
-children. It left the bug in place on IPC and MCP. It also made the TS
-transport silently drop `has_many` edits. Rejected for decision 9.
+Refuse `has_many` writes over HTTP, because the store never clears dropped
+children. That leaves the bug in place on IPC and MCP. It also forces the
+TS transport to silently drop `has_many` edits. Rejected for decision 9.
 
 ### F. Check missing ids in the HTTP handler
 
@@ -233,11 +237,12 @@ This needs the `IdStrategy` threaded to the servers stage. It runs before
 `before_create` hooks, so it rejects an id a hook would have assigned. And
 it leaves IPC and MCP untyped. Rejected for `{Entity}IdRequired`.
 
-### G. Multi-identifier relationship writes, with partial failure recorded as a deviation
+### G. Multi-identifier relationship writes, with partial failure accepted
 
-This was the first draft's answer for junction ops. It is a standing
-violation of "a request MUST completely succeed or fail", for a capability
-the generated client never uses. Rejected for one identifier per request.
+A junction op called once per identifier can fail part-way. That is a
+standing violation of "a request MUST completely succeed or fail", for a
+capability the generated client never uses. Rejected for one identifier
+per request.
 
 ## Notes
 
@@ -248,7 +253,7 @@ the generated client never uses. Rejected for one identifier per request.
     [design](../http-error-mapping-design.md);
   - [JSON:API 1.1](https://jsonapi.org/format/1.1/).
 - Sorting depends on [ADR 0006](0006-ordering-on-both-store-backends.md).
-  Number 0005 is reserved for the OKF vault decision of
-  [E0005](../planning/epics/okf-markdown-vault.md).
+  Resource ids follow the reserved-id rule of
+  [ADR 0005](0005-okf-markdown-vaults.md) on both backends.
 - This ADR supersedes E0003's "the `{"error": string}` body stays
   unchanged" wire contract. E0003's mapping mechanism stands.

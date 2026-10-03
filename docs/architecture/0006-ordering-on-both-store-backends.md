@@ -6,9 +6,7 @@
 
 This ADR revisits [ADR 0001](0001-markdown-as-store-backend.md) contract
 item 3 and amendment 4, which left `OrderBy` out of the store until "a
-future ADR that changes both backends together". It is that ADR. Number
-0005 is reserved for the OKF vault decision of epic
-[E0005](../planning/epics/okf-markdown-vault.md).
+future ADR that changes both backends together". It is that ADR.
 
 It builds on PR [#178](https://github.com/sksizer/rust-ontogen/pull/178)
 (merged), which orders SeaORM lists and has_many loads by id.
@@ -48,8 +46,9 @@ does not provide:
   `ORDER BY` (`examples/iron-log/src-tauri/src/store/mod.rs:100`), so its
   order is whatever SQLite returns.
 - **Markdown.** `markdown_store::walk` sorts paths by their
-  extension-stripped form (`crates/markdown-store/src/walk.rs:82`). The
-  store then parses every record and pages in memory with skip/take. It
+  extension-stripped form (`crates/markdown-store/src/walk.rs:88`), and
+  skips the stems [ADR 0005](0005-okf-markdown-vaults.md) reserves
+  (`index`, `log`). The store then parses every record and pages in memory with skip/take. It
   populates relations for the page only. For a flat `PerEntityDir`
   directory, path order equals id order. For a nested layout it does not,
   so ADR 0001's "lexicographic by record id" is not quite what ships.
@@ -58,11 +57,15 @@ does not provide:
   an absent frontmatter key, read back as `None`.
 - **Field types** (`ontogen_core::model::FieldType`): `String`, `I32`,
   `I64`, `F32`, `F64`, `Bool`, their `Option` forms, `OptionEnum`,
-  `VecString`, `VecStruct`, and `Other(_)`. The schema parser
-  (`src/schema/parse.rs:423`) classifies every `Option<T>` whose `T` is not
-  one of the six primitives as `OptionEnum(T)`, so `Option<u32>` and
-  `Option<SomeStruct>` are `OptionEnum` as well as `Option<SomeEnum>`. A
-  bare type it does not recognise, `u32` included, is `Other(T)`. There is
+  `VecString`, `VecStruct`, and `Other(_)`. The `Option` arm of
+  `classify_type` in `src/schema/parse.rs` (`Some(other) =>
+  FieldType::OptionEnum(other.to_string())`) classifies every `Option<T>`
+  whose `T` is not one of its recognised primitives as `OptionEnum(T)`, so
+  `Option<u32>` and `Option<SomeStruct>` are `OptionEnum` as well as
+  `Option<SomeEnum>`. A bare type it does not recognise, `u32` included, is
+  `Other(T)`. The SeaORM backend already stores both forms in an integer
+  column when `T` is an integer primitive (`is_integer_primitive` in
+  `src/persistence/seaorm/gen_entity.rs`). There is
   no date type: dates are `String`, as in tasks-tracker's `created`.
 - **Tests.** `tests/backend_parity.rs` compares generated text across
   backends. Nothing runs both backends against the same data.
@@ -268,11 +271,15 @@ An entity's sortable fields are its id field plus every field with role
 
 - `String`, `I32`, `I64`, `F32`, `F64` or `Bool`, or the `Option` form of
   any of these;
-- `OptionEnum(T)` or `Other(T)`, where `T` resolves to a schema `EnumDef`.
+- `OptionEnum(T)` or `Other(T)`, where `T` resolves to a schema `EnumDef`
+  (sorted by stored string);
+- `OptionEnum(T)` or `Other(T)`, where `T` is an integer primitive
+  (`is_integer_primitive`: `u8` to `u64`, `i8` to `i64`), sorted
+  numerically.
 
 These are not sortable: the `#[ontology(body)]` field, every relation field
 (a `belongs_to` foreign key included), `VecString`, `VecStruct`,
-`OptionEnum(T)` and `Other(T)` for any `T` that is not a schema enum, and
+`OptionEnum(T)` and `Other(T)` for any other `T` (a struct, say), and
 `Skip` fields.
 
 - **The id field.** The entity's `#[ontology(id)]` field always has sort
@@ -284,13 +291,15 @@ These are not sortable: the `#[ontology(body)]` field, every relation field
   never meaningful and would compare kilobytes per pair.
 - **Foreign keys.** A foreign key is a relationship on the wire, so it is
   not an attribute there.
-- **Integers misclassified as enums.** Because the schema parser
-  (`src/schema/parse.rs:423`) classifies `Option<u32>` as `OptionEnum`,
-  the enum rule would sort it by string, where `"10" < "9"`. E0004 phase
-  3c fixes the classification: `Option<T>` and bare `T` for an integer
-  type the parser does not yet recognise (`u32`, `i16` and the like) map
-  to the integer field types and sort numerically. `Option<SomeStruct>`
-  and `Other(SomeStruct)` stay unsortable.
+- **Integers the parser files under `OptionEnum` or `Other`.** These are
+  sorted numerically, by checking `is_integer_primitive(T)` when the sort
+  field is generated. No `FieldType` changes. Reclassifying them would
+  change the generated `CreateXInput` types, the markdown frontmatter
+  struct, the SeaORM conversion (`model.reps as u32`) and the docs output.
+  That would break every consumer with such a field, for nothing the sort
+  needs:
+  - markdown compares the Rust value with `Ord`;
+  - SeaORM's column is already `INTEGER`.
 
 There is no opt-in or opt-out attribute. Every listed field costs the same
 to sort as to filter (an unindexed scan on SeaORM, an in-memory compare on
@@ -321,15 +330,23 @@ compares as follows:
 - **Default.** An empty `order` means `id` ascending, on both backends, for
   every list, paged or not. The has_many child-id list of a record is in id
   ascending order. many_to_many linkage is in the order it was written.
-- **NaN.** Both stores reject a NaN float on create and update, after the
-  `before_*` hook and before touching storage. Every transport's input is
-  JSON, which cannot encode NaN, so a NaN can only come from server-side
-  Rust: a hook or a direct store caller. That is a server bug, so it
-  surfaces as the backend's existing error variant (`DbError` on SeaORM,
-  `Md` on markdown), which maps to 500, not as a new typed 400 variant.
-  Without the check, a non-`Option` float NaN reads back from SQLite as
-  `NULL` and fails to decode, so no ordering rule could make the two
-  backends agree.
+- **NaN.** Both stores reject a NaN that a write sets, after the
+  `before_*` hook and before touching storage. On create every float field
+  is checked; on update only the float fields the update sets.
+  - Every transport's input is JSON, which cannot encode NaN. So a NaN that
+    a write sets can only come from server-side Rust: a hook or a direct
+    store caller.
+  - That is a server bug, so it surfaces as the backend's existing error
+    variant (`DbError` on SeaORM, `Md` on markdown), which maps to 500.
+    There is no new typed 400 variant.
+  - Without the check, a non-`Option` float NaN reads back from SQLite as
+    `NULL` and fails to decode, so no ordering rule could make the two
+    backends agree.
+  - A markdown record can still hold a NaN written into the file by hand
+    (YAML `.nan`). Checking the whole merged record would then fail every
+    later update of that record with a 500, including updates that never
+    touch the field. So only the fields a write sets are checked, and the
+    hand-written NaN stays outside the parity guarantee (§5).
 
 Why nulls first: it is SQLite's native order, so the generated SQL and the
 markdown comparator both state the simplest rule. Nulls-last would serve
@@ -359,8 +376,9 @@ calls it before `limit` and `offset`.
   A consumer who declares `NOCASE` on a column, or runs another engine, is
   outside the parity guarantee. The generated store does not try to detect
   that.
-- **NaN.** The NaN check (§3) is generated into `create_*` and `update_*`
-  and returns `AppError::DbError` before the statement runs.
+- **NaN.** The NaN check (§3) is generated into `create_*` and `update_*`,
+  over the fields the write sets, and returns `AppError::DbError` before
+  the statement runs.
 - **has_many.** Child ids load `ORDER BY id`, as they do since #178.
 - **many_to_many.** Linkage keeps its stored order. The consumer-owned
   `load_junction_ids` helper must return ids in insertion order (SQLite:
@@ -392,8 +410,9 @@ only.
 - **Cost.** The sort adds O(N log N) to the O(N) parse every list already
   pays. N is bounded by `list_cap` (default 10 000).
 - **`count`.** It still walks without parsing.
-- **NaN.** The NaN check (§3) runs in `create_*` and `update_*` before the
-  file is written and returns `AppError::Md`.
+- **NaN.** The NaN check (§3) runs in `create_*` and `update_*`, over the
+  fields the write sets, before the file is written, and returns
+  `AppError::Md`.
 - **Default order.** The walk's path order does not define list order. The
   default is id order. That equals path order for a flat directory, and
   for a nested layout it makes ADR 0001's "lexicographic by record id"
@@ -426,8 +445,8 @@ and `count` (§1.1).
 
 **E0004 phase 3c** adds the `order` argument, `{Entity}SortField`,
 `parse_sort`, `sort_{plural}`, `order_{plural}_query`, the comparison
-rules for every sortable type, the NaN check, the integer classification
-fix (§2), sort on all three transports and the TS `Transport` options
+rules for every sortable type (integer primitives under `OptionEnum` and
+`Other` included, §2), the NaN check, sort on all three transports and the TS `Transport` options
 argument (§1), and the rest of the parity fixture.
 
 ### 7. Amendment to ADR 0001
@@ -477,8 +496,12 @@ records into both and asserts identical id sequences for each of these:
 - `sort_{plural}` applied to the SeaORM backend's unordered records, which
   must equal the order `list_*` returns.
 
-It also asserts that a NaN write is rejected on both backends, on create
-and on update, and that nothing is stored.
+It also asserts, on both backends:
+- a NaN write is rejected on create, and on an update that sets the field,
+  and nothing is stored;
+- an update that does not set a float field succeeds even when that field
+  already holds a hand-written NaN (markdown only, since SQLite cannot hold
+  one).
 
 The fixture schema has an entity with every sortable type, a self-referential
 `belongs_to`/`has_many` pair and a many_to_many.
@@ -491,8 +514,9 @@ not in the test.
 **Positive:**
 
 - Sort is available on HTTP, Tauri IPC and MCP alike, through one parser,
-  and its results do not depend on the backend. The byte-identical layers above the store could not hide a
-  difference.
+  and its results do not depend on the backend. The layers above the store
+  are byte-identical across backends, so they could not have hidden a
+  difference in order.
 - Pages are stable on both backends and equal across them, extending what
   #178 gives SeaORM alone.
 - A hand-written filtered list orders by the same rules as the generated
