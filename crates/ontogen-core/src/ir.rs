@@ -81,9 +81,10 @@ pub struct ConversionMeta {
 /// (ADR 0001). Carries what the store emitter needs: the id strategy (the
 /// emitted create passes its slug source field to the runtime) and the
 /// per-entity metadata that resolves directories, frontmatter type
-/// discriminators and the frontmatter module path. The layout, vault root, list cap and OKF
-/// options are not here: they reach the runtime only through the generated
-/// `open_vault`, and the store code never builds a vault.
+/// discriminators and the frontmatter module path. The layout, vault root,
+/// list cap and OKF options are not here: they reach the runtime only
+/// through the generated `open_vault`, and the store code never builds a
+/// vault.
 #[derive(Debug, Clone)]
 pub struct MarkdownIoOutput {
     /// How new records derive an id when the caller didn't supply one.
