@@ -16,10 +16,6 @@ pub struct NoteFrontmatter {
 /// `merge_serialize` removes cleared options and preserves hand-added keys.
 pub const NOTE_FM_FIELDS: &[&str] = &["title"];
 
-/// The OKF `type` every Note record carries, stamped by the store on
-/// write. Not a field above: reads tolerate it missing or different.
-pub const NOTE_TYPE: &str = "Note";
-
 impl NoteFrontmatter {
     pub fn from_note(value: &Note) -> Self {
         Self { title: value.title.clone() }

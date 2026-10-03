@@ -10,12 +10,13 @@
 //!   `markdown_store::Document::merge_serialize` so cleared options are
 //!   removed and hand-added keys survive. Keys are the fields' effective
 //!   frontmatter keys (`#[ontology(frontmatter_name)]` renames them).
-//! - `{ENTITY}_TYPE` — the OKF `type` every record carries. The store's
-//!   entity view stamps it on write; the frontmatter struct does not model
-//!   it, so reads tolerate a record without one or with another value.
 //! - `from_{entity}` / `into_{entity}` — the only place wikilink syntax is
 //!   handled: relation ids are encoded (`id` → `[[id]]`) on the way out and
 //!   stripped on the way back. Generated CRUD code never touches brackets.
+//!
+//! The struct does not model the OKF `type` key: the store owns it (stamped
+//! on write from [`crate::ir::MarkdownEntityMeta::type_name`]), so reads
+//! tolerate a record without one or with another value.
 //!
 //! The generated code depends on the `markdown-store` runtime crate (and
 //! serde); it replaces the former emit-everything model — hand-rolled YAML
@@ -97,13 +98,6 @@ pub fn generate_frontmatter_module(entity: &EntityDef) -> String {
         code.push_str(&format!("    {:?},\n", field.frontmatter_key()));
     }
     code.push_str("];\n\n");
-
-    // ── OKF type ──
-    code.push_str(&format!(
-        "/// The OKF `type` every {name} record carries, stamped by the store on\n\
-         /// write. Not a field above: reads tolerate it missing or different.\n"
-    ));
-    code.push_str(&format!("pub const {shout}_TYPE: &str = {:?};\n\n", entity.type_name));
 
     // ── conversions ──
     code.push_str(&format!("impl {name}Frontmatter {{\n"));
@@ -324,9 +318,9 @@ mod tests {
     }
 
     #[test]
-    fn type_const_carries_the_entity_type_and_is_not_an_owned_key() {
+    fn type_is_left_to_the_store() {
         let code = generate_frontmatter_module(&task_entity());
-        assert!(code.contains("pub const TASK_TYPE: &str = \"Task\";"), "{code}");
+        assert!(!code.contains("_TYPE"), "the store declares the OKF type from the IR: {code}");
         assert!(!code.contains("\"type\","), "type is the store's key, not a frontmatter field: {code}");
         assert!(!code.contains("pub r#type"), "{code}");
     }

@@ -22,10 +22,6 @@ pub struct TaskFrontmatter {
 /// `merge_serialize` removes cleared options and preserves hand-added keys.
 pub const TASK_FM_FIELDS: &[&str] = &["title", "task_status", "parent_id", "tags"];
 
-/// The OKF `type` every Task record carries, stamped by the store on
-/// write. Not a field above: reads tolerate it missing or different.
-pub const TASK_TYPE: &str = "Task";
-
 impl TaskFrontmatter {
     pub fn from_task(value: &Task) -> Self {
         Self {

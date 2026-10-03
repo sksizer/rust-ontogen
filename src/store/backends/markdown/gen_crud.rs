@@ -56,7 +56,7 @@ pub(super) fn dir_const(snake: &str) -> String {
     format!("{}_DIR", pluralize(snake).to_uppercase())
 }
 
-fn type_const(snake: &str) -> String {
+pub(super) fn type_const(snake: &str) -> String {
     format!("{}_TYPE", snake.to_uppercase())
 }
 

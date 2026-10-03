@@ -25,10 +25,6 @@ pub const ARTICLE_FM_FIELDS: &[&str] = &[
     "tags",
 ];
 
-/// The OKF `type` every Article record carries, stamped by the store on
-/// write. Not a field above: reads tolerate it missing or different.
-pub const ARTICLE_TYPE: &str = "Article";
-
 impl ArticleFrontmatter {
     pub fn from_article(value: &Article) -> Self {
         Self {
