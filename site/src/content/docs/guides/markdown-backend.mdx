@@ -110,14 +110,20 @@ never return them.
 ### Reserved frontmatter keys
 
 OKF gives some frontmatter keys fixed meanings. `gen_markdown_io` checks every
-field's effective key (see below) at build time:
+field's effective key (see below) at build time. It takes the whole
+`SchemaOutput` rather than just the entities because the `status` check needs
+the enum definitions; the check lives in the markdown generator, so a
+SeaORM-only consumer never sees these diagnostics.
 
-- `type` is a **build error**. The generator owns it.
+- `type` is a **build error**. The generator owns it; the frontmatter struct
+  does not model it, so reads tolerate it being absent or different.
 - `status` warns unless the field is an enum whose variants are all among
   `draft`, `stable`, `deprecated`.
 - `resource` and `stale_after` warn unless the field is `String` or
   `Option<String>`.
-- `generated` and `usage_window` warn unless the field is a struct.
+- `generated` and `usage_window` warn unless the field is a struct. A
+  well-known non-struct (`Vec`, `HashMap`, `DateTime`, `NaiveDate`, `Uuid`,
+  and so on) does not count, nor does a primitive or a schema enum.
 - `verified` warns unless the field is a struct or a `Vec` of structs (OKF
   allows one verification or a list).
 - `sources` warns unless the field is a `Vec` of structs.
@@ -134,12 +140,27 @@ touching the Rust field:
 pub status: String,
 ```
 
+Renaming a key on an existing vault orphans the old key: existing records must
+be renamed by hand, otherwise reads fail with a missing-field error for a
+required field.
+
 `frontmatter_name` renames only the frontmatter key. The Rust field, DTOs,
-API, servers, clients and SeaORM columns keep the Rust name. The key must
-match `[A-Za-z_][A-Za-z0-9_-]*`, must not be `type`, and must not collide with
-another field's effective key. Setting it on a field that is never stored in
-frontmatter (the id, the body, a `skip` field or a `has_many` view) is a build
-error.
+API, servers, clients and SeaORM columns keep the Rust name; the generated
+`#[serde(rename = "...")]` and the `{ENTITY}_FM_FIELDS` constant carry the
+renamed key. The key must match `[A-Za-z_][A-Za-z0-9_-]*`, must not be `type`,
+must not be a YAML boolean or null word (`true`, `false`, `null`, `~`, `yes`,
+`no`, `on`, `off`, in any case), and must not collide with another field's
+effective key. Setting it on a field that is never stored in frontmatter (the
+id, the body, a `skip` field, a `has_many` view, or the legacy `wikilinks` and
+`source_file` fields) is a build error.
+
+### Deleting a record with broken frontmatter
+
+Under `MarkdownLayout::Flat`, `remove` of a record whose frontmatter does not
+parse fails: the store cannot tell which entity owns the file, and an
+unparseable file may belong to another entity. Fix the frontmatter by hand or
+delete the file directly. Under `PerEntityDir` the directory identifies the
+owner, so the store can delete it.
 
 ## What the consumer writes by hand
 
