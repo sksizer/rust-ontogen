@@ -898,8 +898,15 @@ fn a_paginated_resource_list_pages_with_the_page_family_and_rebuilds_paginated_r
     // The family form brackets percent-encoded member names.
     let qs = ts_function(&clients.transport, "toQueryString");
     assert!(qs.contains("push(`${encodeURIComponent(key)}%5B${encodeURIComponent(member)}%5D`, v);"), "{qs}");
-    // `HttpTs` lists take no page arguments: the server's default page.
-    assert!(ts_method(&clients.http, "taskList").contains("return data.map(flattenTask);"));
+    // `HttpTs` pages the same way.
+    assert_eq!(
+        ts_method(&clients.http, "taskList"),
+        "async taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {\n    const { data, meta } = \
+         await httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ page: { offset, limit } })}`);\n    return { items: \
+         data.map(flattenTask), total: meta.total, limit: meta.limit, offset: meta.offset };\n  },\n"
+    );
+    assert!(clients.http.contains("export interface PaginatedResult<T> {"), "{}", clients.http);
+    assert!(ts_function(&clients.http, "toQueryString").contains("%5B"));
 }
 
 #[test]
@@ -999,4 +1006,115 @@ fn ts_jsonapi_transport_fixture_is_current() {
         let committed = fs::read_to_string(&committed_path).unwrap_or_default();
         assert_eq!(&committed, fresh, "stale fixture {name}: rerun with UPDATE_TS_FIXTURES=1");
     }
+}
+
+/// `tag::list(store, title: &str)`, with the page when `paginated`, in the
+/// resource fixture: the server's handlers, and the `HttpTauriIpcSplit` and
+/// `HttpTs` output for the same modules.
+fn filtered_tag_list(paginated: bool) -> (String, JsonApiClients) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut server = crate::servers::tests::resource_fixture(tmp.path(), true);
+    let page = if paginated { ", limit: Option<u64>, offset: Option<u64>" } else { "" };
+    let mut tag = crate::servers::tests::app_error_crud_source("tag")
+        .replace("store: &Store, limit: Option<u64>, offset: Option<u64>", &format!("store: &Store, title: &str{page}"))
+        .replace("count(store: &Store)", "count(store: &Store, title: &str)");
+    if !paginated {
+        server.pagination = None;
+        tag = tag.lines().filter(|l| !l.contains("fn count(")).map(|l| format!("{l}\n")).collect();
+    }
+    write_synthetic_api(&server.api_dir, "tag.rs", &tag);
+    let http = crate::servers::tests::generate_http(tmp.path(), server.clone());
+
+    let mut config = two_surface_client_config(vec![ApiSurface {
+        api_dir: server.api_dir.clone(),
+        service_import_path: "crate::api".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        store_accessor: None,
+        store_type: Some("Store".to_string()),
+        pagination: server.pagination.clone(),
+        paginated_modules: Vec::new(),
+        schema_dir: None,
+    }]);
+    config.resources = server.resources.clone();
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let bindings = tmp.path().join("bindings.ts");
+    fs::write(&bindings, "export type Tag = { id: string; title: string };\n").unwrap();
+    let (transport_out, http_out) = (tmp.path().join("transport.ts"), tmp.path().join("http.ts"));
+    crate::clients::generators::transport::generate(&transport_out, &bindings, &modules, &config);
+    crate::clients::generators::ts_client::generate(&http_out, &bindings, &modules, &config);
+    let read = |path: &std::path::Path| fs::read_to_string(path).unwrap();
+    let clients = JsonApiClients { transport: read(&transport_out), http: read(&http_out), bindings: String::new() };
+    (http, clients)
+}
+
+/// The server's handler for the other `tag` CRUD ops, and the client calls
+/// that reach them: all served as the `tags` resource.
+fn assert_tag_crud_is_a_resource(http: &str, clients: &JsonApiClients) {
+    let flat = crate::servers::tests::compact(http);
+    assert!(
+        flat.contains(&crate::servers::tests::compact(
+            ".route(\"/api/tags/{id}\", get(tag_get_by_id).patch(tag_update).delete(tag_delete)"
+        )),
+        "{http}"
+    );
+    assert!(http.contains("fn tag_as_resource<'a>("), "{http}");
+    for ts in [&clients.transport, &clients.http] {
+        assert!(ts_method(ts, "tagGetById").contains("httpGet<JsonApiResourceDocument>(`/tags/"), "{ts}");
+        assert!(ts_method(ts, "tagUpdate").contains("httpPatch<JsonApiResourceDocument>("), "{ts}");
+        assert!(ts.contains("function flattenTag("), "{ts}");
+    }
+}
+
+#[test]
+fn a_filtered_resource_list_keeps_its_flat_shape_on_server_and_clients() {
+    let (http, clients) = filtered_tag_list(false);
+
+    let list = &http[http.find("async fn tag_list(").unwrap()..];
+    let list = &list[..list.find("\n}\n").unwrap()];
+    assert!(list.contains("title: Result<axum::extract::Query<String>, QueryRejection>,"), "{list}");
+    assert!(list.contains("-> Result<Json<Vec<Tag>>, ErrorObject>"), "a bare array, no document:\n{list}");
+    assert!(crate::servers::tests::compact(list).contains("tag::list(&store,&title)"), "{list}");
+
+    assert_eq!(
+        ts_method(&clients.transport, "tagList"),
+        "async tagList(title: string): Promise<Tag[]> {\n      return \
+         httpGet(`/tags?title=${encodeURIComponent(title)}`);\n    },\n"
+    );
+    assert_eq!(
+        ts_method(&clients.http, "tagList"),
+        "async tagList(title: string): Promise<Tag[]> {\n    return \
+         httpGet(`/tags?title=${encodeURIComponent(title)}`);\n  },\n"
+    );
+    assert_tag_crud_is_a_resource(&http, &clients);
+}
+
+#[test]
+fn a_filtered_paginated_resource_list_keeps_its_flat_page_on_server_and_clients() {
+    let (http, clients) = filtered_tag_list(true);
+
+    let list = &http[http.find("async fn tag_list(").unwrap()..];
+    let list = &list[..list.find("\n}\n").unwrap()];
+    assert!(list.contains("pagination: Result<axum::extract::Query<PaginationParams>, QueryRejection>,"), "{list}");
+    assert!(list.contains("-> Result<Json<PaginatedResult<Tag>>, ErrorObject>"), "{list}");
+    assert!(list.contains("Ok(Json(PaginatedResult { items, total, limit, offset }))"), "{list}");
+    assert!(http.contains("pub struct PaginatedResult<T: Serialize> {"), "{http}");
+
+    let call = "httpGet(`/tags?title=${encodeURIComponent(title)}&${toQueryString({ limit, offset }).slice(1)}`);";
+    assert_eq!(
+        ts_method(&clients.transport, "tagList"),
+        format!(
+            "async tagList(title: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {{\n      \
+             return {call}\n    }},\n"
+        )
+    );
+    assert_eq!(
+        ts_method(&clients.http, "tagList"),
+        format!(
+            "async tagList(title: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {{\n    \
+             return {call}\n  }},\n"
+        )
+    );
+    // The paginated `tasks` list beside it is served as a resource.
+    assert!(ts_method(&clients.transport, "taskList").contains("httpGet<JsonApiPageDocument>"));
+    assert_tag_crud_is_a_resource(&http, &clients);
 }

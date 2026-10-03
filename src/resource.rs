@@ -5,10 +5,13 @@
 //! The servers and clients stages each build it from the same schema, so the
 //! Axum handlers and the TypeScript transport agree on every member name.
 
+use ontogen_core::ir::OpKind;
 use ontogen_core::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationKind};
 use ontogen_core::naming::to_snake_case;
 
 use crate::servers::NamingConfig;
+use crate::servers::classify::classify_op;
+use crate::servers::parse::{ApiFn, is_page_param};
 
 /// Every entity of the schema as a JSON:API resource, in schema order.
 #[derive(Debug, Clone, Default)]
@@ -37,25 +40,15 @@ pub(crate) struct Resource {
 
 /// A field served under `attributes`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // read by the JSON:API TS emitter
 pub(crate) struct Attribute {
-    /// The member name: the field name without any `r#` prefix, as serde
-    /// writes it.
+    /// The member name: the field name as serde writes it ([`member_name`]).
     pub name: String,
     /// The Rust field name as declared (`r#type` keeps its prefix).
     pub field: String,
-    pub field_type: FieldType,
-    /// The field is an `Option` and serializes as `null` when `None`.
-    pub nullable: bool,
-    /// The field carries `#[serde(default)]`.
-    pub serde_default: bool,
-    /// The `#[ontology(body)]` field.
-    pub is_body: bool,
 }
 
 /// A relation field served under `relationships`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // read by the JSON:API TS emitter
 pub(crate) struct Relationship {
     /// The member name and `/relationships/{rel}` segment: a `belongs_to`
     /// field loses an `_id` suffix (`epic_id` → `epic`), every other relation
@@ -63,10 +56,7 @@ pub(crate) struct Relationship {
     pub name: String,
     /// The Rust field holding the linkage.
     pub field: String,
-    pub kind: RelationKind,
     pub arity: Arity,
-    /// The `has_many` foreign key on the target entity.
-    pub foreign_key: Option<String>,
     /// The target entity's Rust name (`Epic`).
     pub target_entity: String,
     /// The target entity's API module (`epic`).
@@ -85,7 +75,6 @@ pub(crate) enum Arity {
     ToMany,
 }
 
-#[allow(dead_code)] // read by the JSON:API TS emitter
 impl ResourceModel {
     /// Build the model, checking the rules of contract §5.2–§5.4 that the
     /// schema parser cannot check alone.
@@ -100,38 +89,27 @@ impl ResourceModel {
         Ok(Self { resources })
     }
 
-    pub fn resources(&self) -> &[Resource] {
-        &self.resources
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.resources.is_empty()
-    }
-
     /// The resource served by API module `module`. A module is a resource
     /// module exactly when this is `Some`.
     pub fn by_module(&self, module: &str) -> Option<&Resource> {
         self.resources.iter().find(|r| r.module == module)
     }
 
-    /// The resource for the entity named `entity` (`WorkoutSet`).
-    pub fn by_entity(&self, entity: &str) -> Option<&Resource> {
-        self.resources.iter().find(|r| r.entity.name == entity)
-    }
-
-    pub fn is_resource_module(&self, module: &str) -> bool {
-        self.by_module(module).is_some()
-    }
-}
-
-#[allow(dead_code)] // read by the JSON:API TS emitter
-impl Resource {
-    pub fn attribute(&self, name: &str) -> Option<&Attribute> {
-        self.attributes.iter().find(|a| a.name == name)
-    }
-
-    pub fn relationship(&self, name: &str) -> Option<&Relationship> {
-        self.relationships.iter().find(|r| r.name == name)
+    /// The resource op `f` of API module `module` is served as over HTTP, or
+    /// `None` when the op keeps a route of its own.
+    ///
+    /// Every CRUD op of a resource module is served as its resource (§5.1),
+    /// except a `list` that takes a filter: no filter is read from the wire
+    /// (§7.3), so that list keeps its flat route and its flat success shape.
+    /// The server and both TypeScript HTTP clients decide with this one
+    /// predicate, so a route and the call that reaches it always agree.
+    pub fn serving(&self, module: &str, f: &ApiFn) -> Option<&Resource> {
+        let resource = self.by_module(module)?;
+        match classify_op(f) {
+            OpKind::GetById | OpKind::Create | OpKind::Update | OpKind::Delete => Some(resource),
+            OpKind::List => f.params.iter().all(|p| f.takes_page() && is_page_param(p)).then_some(resource),
+            _ => None,
+        }
     }
 }
 
@@ -181,22 +159,15 @@ fn resource_of(entity: &EntityDef, entities: &[EntityDef], naming: &NamingConfig
                 relationships.push(Relationship {
                     name: relationship_name(field, &info.kind),
                     field: field.name.clone(),
-                    kind: info.kind.clone(),
                     arity,
-                    foreign_key: info.foreign_key.clone(),
                     target_entity: target.name.clone(),
                     target_type: naming.url_plural(&target_module),
                     target_module,
                 });
             }
-            FieldRole::Body | FieldRole::EnumField | FieldRole::Plain => attributes.push(Attribute {
-                name: member_name(&field.name).to_string(),
-                field: field.name.clone(),
-                field_type: field.field_type.clone(),
-                nullable: is_option(&field.field_type),
-                serde_default: field.serde_default,
-                is_body: field.role == FieldRole::Body,
-            }),
+            FieldRole::Body | FieldRole::EnumField | FieldRole::Plain => {
+                attributes.push(Attribute { name: member_name(&field.name).to_string(), field: field.name.clone() });
+            }
         }
     }
 
@@ -246,8 +217,9 @@ fn relationship_name(field: &FieldDef, kind: &RelationKind) -> String {
     }
 }
 
-/// Serde writes a raw identifier without its `r#`.
-fn member_name(field: &str) -> &str {
+/// The member name serde writes for the Rust field `field`: a raw
+/// identifier without its `r#` (`r#type` is written `type`).
+pub(crate) fn member_name(field: &str) -> &str {
     field.strip_prefix("r#").unwrap_or(field)
 }
 
@@ -291,6 +263,19 @@ mod tests {
 
     use super::*;
     use crate::schema::parse::{parse_schema_dir, parse_schema_source};
+    use crate::servers::parse::Param;
+
+    impl ResourceModel {
+        fn by_entity(&self, entity: &str) -> Option<&Resource> {
+            self.resources.iter().find(|r| r.entity.name == entity)
+        }
+    }
+
+    impl Resource {
+        fn relationship(&self, name: &str) -> Option<&Relationship> {
+            self.relationships.iter().find(|r| r.name == name)
+        }
+    }
 
     fn model(source: &str) -> Result<ResourceModel, String> {
         let entities = parse_schema_source(source, Path::new("test.rs")).expect("schema parses");
@@ -342,7 +327,7 @@ mod tests {
         let item = model.by_module("work_item").unwrap();
         assert_eq!(item.entity.name, "WorkItem");
         assert_eq!(item.resource_type, "work-items");
-        assert!(model.is_resource_module("work_item") && !model.is_resource_module("stats"));
+        assert!(model.by_module("stats").is_none());
         assert!(model.by_entity("Stats").is_none());
     }
 
@@ -350,35 +335,21 @@ mod tests {
     fn attributes_are_every_field_but_id_relations_and_skips_in_order() {
         let model = model(TASKS).unwrap();
         let item = model.by_entity("WorkItem").unwrap();
-        let attrs: Vec<(&str, &str, bool, bool, bool)> = item
-            .attributes
-            .iter()
-            .map(|a| (a.name.as_str(), a.field.as_str(), a.nullable, a.serde_default, a.is_body))
-            .collect();
-        assert_eq!(
-            attrs,
-            vec![
-                ("title", "title", false, false, false),
-                ("estimate", "estimate", true, true, false),
-                ("body", "body", false, false, true),
-                ("kind", "r#kind", true, false, false),
-            ]
-        );
-        assert_eq!(item.attribute("estimate").unwrap().field_type, FieldType::OptionI32);
+        let attrs: Vec<(&str, &str)> = item.attributes.iter().map(|a| (a.name.as_str(), a.field.as_str())).collect();
+        assert_eq!(attrs, vec![("title", "title"), ("estimate", "estimate"), ("body", "body"), ("kind", "r#kind")]);
     }
 
     #[test]
     fn relationships_are_named_typed_and_ordered() {
         let model = model(TASKS).unwrap();
         let item = model.by_entity("WorkItem").unwrap();
-        let rels: Vec<(&str, &str, RelationKind, Arity, &str, &str, &str)> = item
+        let rels: Vec<(&str, &str, Arity, &str, &str, &str)> = item
             .relationships
             .iter()
             .map(|r| {
                 (
                     r.name.as_str(),
                     r.field.as_str(),
-                    r.kind.clone(),
                     r.arity,
                     r.target_entity.as_str(),
                     r.target_module.as_str(),
@@ -389,21 +360,12 @@ mod tests {
         assert_eq!(
             rels,
             vec![
-                ("epic", "epic_id", RelationKind::BelongsTo, Arity::ToOne { nullable: true }, "Epic", "epic", "epics"),
-                (
-                    "parent",
-                    "parent_id",
-                    RelationKind::BelongsTo,
-                    Arity::ToOne { nullable: false },
-                    "WorkItem",
-                    "work_item",
-                    "work-items"
-                ),
-                ("sub_items", "sub_items", RelationKind::HasMany, Arity::ToMany, "WorkItem", "work_item", "work-items"),
-                ("related_epics", "related_epics", RelationKind::ManyToMany, Arity::ToMany, "Epic", "epic", "epics"),
+                ("epic", "epic_id", Arity::ToOne { nullable: true }, "Epic", "epic", "epics"),
+                ("parent", "parent_id", Arity::ToOne { nullable: false }, "WorkItem", "work_item", "work-items"),
+                ("sub_items", "sub_items", Arity::ToMany, "WorkItem", "work_item", "work-items"),
+                ("related_epics", "related_epics", Arity::ToMany, "Epic", "epic", "epics"),
             ]
         );
-        assert_eq!(item.relationship("sub_items").unwrap().foreign_key.as_deref(), Some("parent_id"));
         assert!(item.relationship("sub_items").unwrap().is_to_many());
         assert!(!item.relationship("epic").unwrap().is_to_many());
     }
@@ -519,6 +481,45 @@ mod tests {
     fn a_relation_target_must_be_an_entity() {
         let err = entity_error("#[ontology(relation(many_to_many, target = \"Label\"))]\npub labels: Vec<String>,");
         assert!(err.contains("Note.labels") && err.contains("`Label`"), "{err}");
+    }
+
+    fn op(name: &str, params: &[(&str, &str)]) -> ApiFn {
+        ApiFn {
+            name: name.to_string(),
+            params: params
+                .iter()
+                .map(|(name, ty)| Param {
+                    name: (*name).to_string(),
+                    ty: (*ty).to_string(),
+                    ty_ast: syn::parse_str(ty).unwrap(),
+                })
+                .collect(),
+            return_type: "Vec<Epic>".to_string(),
+            ..ApiFn::default()
+        }
+    }
+
+    #[test]
+    fn every_crud_op_of_a_resource_module_is_served_but_a_filtered_list() {
+        let model = model(TASKS).unwrap();
+        let page = [("limit", "Option<u64>"), ("offset", "Option<u64>")];
+        let id = [("id", "&str")];
+        for f in [
+            op("list", &[]),
+            op("list", &page),
+            op("get_by_id", &id),
+            op("create", &[("input", "CreateEpicInput")]),
+            op("update", &[("id", "&str"), ("input", "UpdateEpicInput")]),
+            op("delete", &id),
+        ] {
+            assert_eq!(model.serving("epic", &f).map(|r| r.resource_type.as_str()), Some("epics"), "{}", f.name);
+        }
+        let filtered = [("title", "&str")];
+        let filtered_page = [("title", "&str"), ("limit", "Option<u64>"), ("offset", "Option<u64>")];
+        for f in [op("list", &filtered), op("list", &filtered_page), op("archive", &id)] {
+            assert!(model.serving("epic", &f).is_none(), "{} {:?}", f.name, f.params.len());
+        }
+        assert!(model.serving("stats", &op("list", &[])).is_none(), "no entity, no resource");
     }
 
     #[test]

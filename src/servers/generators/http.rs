@@ -14,7 +14,7 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::persistence::dto::{create_field_required, field_to_create_type};
-use crate::resource::{Arity, Resource};
+use crate::resource::{Arity, Resource, member_name};
 use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::config::{Config, RoutePrefix};
 use crate::servers::error_map::VariantShape;
@@ -39,18 +39,11 @@ pub(in crate::servers) fn axum_path(path: &str) -> String {
         .join("/")
 }
 
-/// The resource a CRUD op is served as, when it is served as one.
+/// The resource `f` is served as ([`ResourceModel::serving`]).
 ///
-/// Every CRUD op of a resource module is (§5.1), except a `list` that takes
-/// a filter: the filter family is not on the wire yet (§7.3), so such a
-/// list keeps its own handler.
+/// [`ResourceModel::serving`]: crate::resource::ResourceModel::serving
 pub(in crate::servers) fn served_resource<'a>(m: &ApiModule, f: &ApiFn, config: &'a Config) -> Option<&'a Resource> {
-    let resource = config.resources.by_module(&m.name)?;
-    match classify_op(f) {
-        OpKind::GetById | OpKind::Create | OpKind::Update | OpKind::Delete => Some(resource),
-        OpKind::List => f.params.iter().all(|p| f.takes_page() && is_page_param(p)).then_some(resource),
-        _ => None,
-    }
+    config.resources.serving(&m.name, f)
 }
 
 /// Check that every op [`served_resource`] picks can be served as its
@@ -687,7 +680,7 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, config: &Config) {
     };
     let declared: Vec<String> = resource.attributes.iter().map(|a| format!("\"{}\"", a.name)).collect();
     let rel_fields: Vec<String> =
-        resource.relationships.iter().map(|r| format!("(\"{}\", \"{}\")", member(&r.field), r.name)).collect();
+        resource.relationships.iter().map(|r| format!("(\"{}\", \"{}\")", member_name(&r.field), r.name)).collect();
     out.push_str(&format!(
         "/// Step 7 of a `{type_name}` create or update document (§8.2, §8.3): the fields\n/// it sets, named as \
          the input's fields.\nfn {}(data: &ResourceData, create: bool) -> Result<{returns}, ErrorObject> {{\n    let \
@@ -698,7 +691,7 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, config: &Config) {
         names.fields,
         declared.join(", "),
         rel_fields.join(", "),
-        member(id_field),
+        member_name(id_field),
     ));
     for a in &resource.attributes {
         let field = resource.entity.fields.iter().find(|fd| fd.name == a.field).expect("an attribute is a field");
@@ -727,7 +720,7 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, config: &Config) {
     for rel in &resource.relationships {
         let name = &rel.name;
         let target = &rel.target_type;
-        let field = member(&rel.field);
+        let field = member_name(&rel.field);
         let pointer = format!("/data/relationships/{name}");
         match rel.arity {
             Arity::ToOne { nullable } => {
@@ -758,11 +751,6 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, config: &Config) {
         }
     }
     out.push_str("    Ok((fields, linked))\n}\n\n");
-}
-
-/// The member name serde writes for a field: without any `r#`.
-fn member(field: &str) -> &str {
-    field.strip_prefix("r#").unwrap_or(field)
 }
 
 /// One CRUD op served as its resource.

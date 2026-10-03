@@ -5351,7 +5351,7 @@ pub enum AppError {
 ";
 
 /// The paged CRUD module `gen_api` emits for `entity`, returning `AppError`.
-fn app_error_crud_source(entity: &str) -> String {
+pub(crate) fn app_error_crud_source(entity: &str) -> String {
     paged_crud_module_source(entity, "Store").replace("anyhow::Error", "AppError")
 }
 
@@ -5376,7 +5376,7 @@ pub(crate) fn resource_fixture(root: &std::path::Path, app_error: bool) -> Confi
 }
 
 /// Run `generate_transport` with only the HTTP generator and read its output.
-fn generate_http(root: &std::path::Path, mut config: Config) -> String {
+pub(crate) fn generate_http(root: &std::path::Path, mut config: Config) -> String {
     let output = root.join("http.rs");
     config.generators = vec![ServerGenerator::HttpAxum { output: output.clone() }];
     crate::servers::generate_transport(&config).expect("generate_transport failed");

@@ -8,7 +8,7 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::clients::config::Config;
-use crate::clients::generators::jsonapi::{self, crud_resource};
+use crate::clients::generators::jsonapi::{self, served_resource};
 use crate::clients::generators::{FallbackRecord, command_name, ts_params_in_declaration_order};
 use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::parse::{ApiFn, ApiModule, Param};
@@ -60,7 +60,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     }
 
     // Each flattener returns its entity type, whichever CRUD methods are emitted.
-    let resources = jsonapi::crud_resources(modules, config);
+    let resources = jsonapi::served_resources(modules, config);
     for r in &resources {
         collect_ts_import(&r.entity.name, &mut import_types);
     }
@@ -94,6 +94,9 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         ));
     }
 
+    if config.any_pagination() {
+        out.push_str(jsonapi::PAGINATED_RESULT);
+    }
     out.push_str(jsonapi::JSON_API_TYPES);
     out.push_str(&jsonapi::http_helpers(jsonapi::needs_put(modules, config)));
     if !resources.is_empty() {
@@ -122,24 +125,19 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
             let ts_ret = rust_type_to_ts(&f.return_type);
             let camel = snake_to_camel(&cmd_name);
 
-            let resource = crud_resource(m, config);
+            let resource = served_resource(m, f, config);
             match op {
-                // This client's list takes no page arguments, so a paginated
-                // resource returns the server's default page.
                 OpKind::List => {
-                    let body = match resource {
-                        Some(r) => format!(
-                            "const {{ data }} = await httpGet<JsonApiCollectionDocument>('/{}');\n\
-                             \x20   return data.map({});",
-                            r.resource_type,
-                            jsonapi::flatten_fn(r)
-                        ),
-                        None => format!("return httpGet('/{plural}');"),
-                    };
+                    let quote = |p: &str, template: bool| if template { format!("`{p}`") } else { format!("'{p}'") };
+                    let path_plural = resource.map_or(plural.as_str(), |r| r.resource_type.as_str());
+                    let list = jsonapi::list_method(m, f, config, path_plural, &quote);
                     out.push_str(&format!(
-                        "  async {camel}(): Promise<{ts_ret}> {{\n\
-                         \x20   {body}\n\
+                        "  async {camel}({}): Promise<{}> {{\n\
+                         \x20   {}\n\
                          \x20 }},\n\n",
+                        list.params.join(", "),
+                        list.return_type,
+                        list.body.join("\n    "),
                     ));
                 }
                 OpKind::GetById => {
