@@ -192,7 +192,7 @@ fn err_map(f: &ApiFn, config: &Config) -> &'static str {
 /// that surface's `AppError`; any other path is taken as written. So the
 /// `AppError` of another surface's types module maps through
 /// `internal_error`: `app_error` cannot take it.
-fn returns_app_error(f: &ApiFn, config: &Config) -> bool {
+pub(crate) fn returns_app_error(f: &ApiFn, config: &Config) -> bool {
     let Some(error) = f.error_type.as_deref() else { return false };
     let own = match f.surface {
         0 => app_error_path(config),

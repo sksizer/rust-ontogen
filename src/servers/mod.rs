@@ -76,7 +76,7 @@ pub fn generate(
         let affected: Vec<String> = modules
             .iter()
             .flat_map(|m| {
-                m.functions.iter().filter(|f| f.returns_app_error()).map(move |f| format!("{}::{}", m.name, f.name))
+                m.functions.iter().filter(|f| generators::http::returns_app_error(f, &legacy_config)).map(move |f| format!("{}::{}", m.name, f.name))
             })
             .collect();
         if let Some(warning) = error_map::missing_enum_warning(dir, &affected) {
