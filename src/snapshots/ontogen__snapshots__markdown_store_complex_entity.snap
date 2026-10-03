@@ -74,12 +74,13 @@ impl Store {
     }
 
     pub async fn get_article(&self, id: &str) -> Result<Article, AppError> {
-        let doc = self
-            .vault()
-            .entity(ARTICLES_DIR, ARTICLE_TYPE)
-            .read_opt(id)
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::ArticleNotFound(id.to_string()))?;
+        let doc = match self.vault().entity(ARTICLES_DIR, ARTICLE_TYPE).read_opt(id) {
+            Ok(Some(doc)) => doc,
+            Ok(None) | Err(markdown_store::Error::InvalidId { .. }) => {
+                return Err(AppError::ArticleNotFound(id.to_string()));
+            }
+            Err(e) => return Err(AppError::from(e)),
+        };
         let fm: ArticleFrontmatter = doc.deserialize().map_err(AppError::from)?;
         let mut article = fm.into_article(id.to_string(), doc.body().to_string());
         self.populate_article_relations(&mut article).await?;
@@ -92,11 +93,17 @@ impl Store {
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&ArticleFrontmatter::from_article(&article), ARTICLE_FM_FIELDS).map_err(AppError::from)?;
         doc.set_body(article.body.clone());
-        let id = self
-            .vault()
-            .entity(ARTICLES_DIR, ARTICLE_TYPE)
-            .create(Some(article.id.as_str()).filter(|s| !s.is_empty()), None, doc)
-            .map_err(AppError::from)?;
+        let id = match self.vault().entity(ARTICLES_DIR, ARTICLE_TYPE).create(
+            &markdown_store::IdStrategy::Provided,
+            Some(article.id.as_str()).filter(|s| !s.trim().is_empty()),
+            None,
+            doc,
+        ) {
+            Ok(id) => id,
+            Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::ArticleIdRequired(reason)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::ArticleAlreadyExists(article.id)),
+            Err(e) => return Err(AppError::from(e)),
+        };
 
         let created = self.get_article(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Article, id);
@@ -131,7 +138,7 @@ impl Store {
 
         match self.vault().entity(ARTICLES_DIR, ARTICLE_TYPE).remove(id) {
             Ok(()) => {}
-            Err(markdown_store::Error::NotFound { .. }) => {
+            Err(markdown_store::Error::NotFound { .. } | markdown_store::Error::InvalidId { .. }) => {
                 return Err(AppError::ArticleNotFound(id.to_string()));
             }
             Err(e) => return Err(AppError::from(e)),

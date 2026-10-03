@@ -280,7 +280,7 @@ pub enum Relation {
 }
 ```
 
-The conversion layer generates `from_model` that initializes the `fulfills` vec as empty (populated later by the store), and `to_active_model` that skips relationship fields since they live in junction tables, not columns.
+The conversion layer generates `from_model` that initializes the `fulfills` vec as empty (populated later by the store), and `to_active_model` (both return `Result<_, AppError>`) that skips relationship fields since they live in junction tables, not columns.
 
 <Aside type="note">
   If you need to control the junction table name, use `junction = "my_table_name"` in the relation annotation:
@@ -292,7 +292,7 @@ The conversion layer generates `from_model` that initializes the `fulfills` vec 
 
 ### Store methods (Stage 3)
 
-The generated `create_task` method handles junction table sync automatically:
+The generated `create_task` method handles junction table sync automatically. This is a simplified sketch; the generated method also fills a missing id and reports duplicates (see [Creating records](/guides/store-layer/#creating-records)):
 
 ```rust
 pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
@@ -300,7 +300,7 @@ pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
 
     let id = task.id.clone();
     let fulfills = task.fulfills.clone();
-    let active = task.to_active_model();
+    let active = task.to_active_model()?;
 
     active.insert(self.db()).await
         .map_err(|e| AppError::DbError(e.to_string()))?;
@@ -325,7 +325,7 @@ pub async fn update_task(&self, id: &str, updates: TaskUpdate) -> Result<Task, A
     let fulfills_changed = updates.fulfills.is_some();
     updates.apply(&mut current);
 
-    let active = current.to_active_model();
+    let active = current.to_active_model()?;
     active.update(self.db()).await
         .map_err(|e| AppError::DbError(e.to_string()))?;
 

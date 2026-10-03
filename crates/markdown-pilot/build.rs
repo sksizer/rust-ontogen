@@ -9,6 +9,7 @@ use ontogen::servers::{NamingConfig, ServerGenerator};
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/schema/note.rs");
+    println!("cargo:rerun-if-changed=src/schema/section.rs");
     println!("cargo:rerun-if-changed=src/schema/task.rs");
     println!("cargo:rerun-if-changed=src/schema/tag.rs");
 
@@ -38,7 +39,6 @@ fn main() {
             ontogen::MarkdownIoOptions {
                 vault_root: "data/vault".into(),
                 layout: ontogen::MarkdownLayout::PerEntityDir,
-                id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
                 list_cap: 10_000,
                 // Knobs off: the pilot pins the default vault.
                 okf: ontogen::OkfOptions::default(),
@@ -46,6 +46,7 @@ fn main() {
         )
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
+        .store_id_strategy(ontogen::IdStrategy::SlugFromField("title".into()))
         .api("src/api/generated", "AppState")
         .servers(servers_config)
         .build()

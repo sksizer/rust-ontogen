@@ -68,7 +68,7 @@ Each `FieldType` variant maps through every layer of the pipeline. Here's what h
 | `I64` | `i64` | `model.timestamp` | `Set(self.timestamp)` |
 | `Bool` | `bool` | `model.active` | `Set(self.active)` |
 
-Copy types (`i32`, `i64`, `bool`) don't need `.clone()`. Strings do. The generator knows the difference.
+Copy types (`i32`, `i64`, `bool`) don't need `.clone()`. Strings do. The generator knows the difference. The expressions above are the field initializers; both conversion functions return `Result<_, AppError>` so integer narrowing can fail (see [The `Other` Fallback](#the-other-fallback)).
 
 ### Nullable Types
 
@@ -129,14 +129,16 @@ When the parser encounters a type it doesn't specifically recognize, it captures
 pub priority: TaskPriority,  // FieldType::Other("TaskPriority")
 ```
 
-If it's a known primitive (`u8`, `u16`, `u32`, etc.), the column type is `i32` with a cast:
+If it's a known integer primitive (`u8`, `u16`, `u32`, `usize`, `u128`, `i8`, `i16`, `isize`, `i128`), the column type is `i64`. Writes widen with `i64::from` (`u8`, `u16`, `u32`, `i8`, `i16`) or `i64::try_from` (`usize`, `isize`, `u128`, `i128`); reads convert back with `T::try_from`. A value that does not fit fails with `AppError::DbError` naming the field instead of wrapping, which is why the conversions return `Result`:
 
 ```rust
 // from_model
-#[allow(clippy::cast_sign_loss)] priority: model.priority as u32,
+priority: u32::try_from(model.priority).map_err(|_| {
+    AppError::DbError(format!("Task.priority: stored value {} is out of range for u32", model.priority))
+})?,
 
 // to_active_model
-#[allow(clippy::cast_possible_wrap)] priority: Set(self.priority as i32),
+priority: Set(i64::from(self.priority)),
 ```
 
 For non-primitive `Other` types, it's stored as `String` in the database and cloned:

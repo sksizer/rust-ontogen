@@ -26,6 +26,7 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
             wikilink_policy: None,
+            id_strategy: crate::ir::IdStrategy::Provided,
         };
 
         let result = store::generate(&entities, &config);
@@ -84,6 +85,7 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
             wikilink_policy: None,
+            id_strategy: crate::ir::IdStrategy::Provided,
         };
 
         store::generate(std::slice::from_ref(tag), &config).expect("gen_store failed");
@@ -132,6 +134,7 @@ mod tests {
             schema_module_path: "my_crate::domain".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
             wikilink_policy: None,
+            id_strategy: crate::ir::IdStrategy::Provided,
         };
 
         store::generate(std::slice::from_ref(tag), &config).expect("gen_store failed");
@@ -167,6 +170,7 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
             wikilink_policy: None,
+            id_strategy: crate::ir::IdStrategy::Provided,
         };
 
         store::generate(std::slice::from_ref(workout), &config).expect("gen_store failed");
@@ -197,6 +201,7 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
             wikilink_policy: None,
+            id_strategy: crate::ir::IdStrategy::Provided,
         };
 
         let output = store::generate(std::slice::from_ref(role), &config).expect("gen_store failed");
@@ -231,10 +236,9 @@ mod tests {
         assert_eq!(delete.params[0].name, "id");
     }
 
-    fn markdown_backend(id_strategy: crate::ir::IdStrategy) -> crate::ir::Backend {
+    fn markdown_backend() -> crate::ir::Backend {
         use crate::ir::{Backend, MarkdownIoOutput};
         Backend::Markdown(MarkdownIoOutput {
-            id_strategy,
             module_path: "crate::persistence::markdown::generated".into(),
             entities: Vec::new(),
         })
@@ -254,8 +258,9 @@ mod tests {
             output_dir: tmp.path().to_path_buf(),
             hooks_dir: None,
             schema_module_path: "crate::schema".to_string(),
-            backend: markdown_backend(crate::ir::IdStrategy::SlugFromField("name".into())),
+            backend: markdown_backend(),
             wikilink_policy: None,
+            id_strategy: crate::ir::IdStrategy::SlugFromField("name".into()),
         };
 
         store::generate(std::slice::from_ref(tag), &config).expect("gen_store(markdown) failed");
@@ -284,9 +289,17 @@ mod tests {
         // Markdown primitives, not SeaORM ones.
         assert!(content.contains("self.vault()"), "markdown store talks to the vault: {content}");
         assert!(
-            content.contains(".entity(TAGS_DIR, TAG_TYPE)\n            .create("),
-            "create derives ids through the typed entity view: {content}"
+            content.contains(".entity(TAGS_DIR, TAG_TYPE).create(\n            &markdown_store::IdStrategy::SlugFromField(\"name\".into()),"),
+            "create derives ids through the typed entity view, by the configured strategy: {content}"
         );
+        for needle in [
+            "Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::TagIdRequired(reason)),",
+            "Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TagAlreadyExists(tag.id)),",
+            "Ok(None) | Err(markdown_store::Error::InvalidId { .. }) => {",
+            "Err(markdown_store::Error::NotFound { .. } | markdown_store::Error::InvalidId { .. }) => {",
+        ] {
+            assert!(content.contains(needle), "missing {needle}:\n{content}");
+        }
         assert!(content.contains("const TAG_TYPE: &str = \"Tag\";"), "the store declares the OKF type: {content}");
         assert!(!content.contains("sea_orm"), "no SeaORM in a markdown module: {content}");
         assert!(!content.contains("self.db()"), "no db() in a markdown module: {content}");
@@ -300,7 +313,7 @@ mod tests {
         let entities = parse_schema_dir(&schema_dir).expect("parse failed");
         let tag = entities.iter().find(|e| e.name == "Tag").expect("Tag entity not found");
 
-        let mut backend = markdown_backend(crate::ir::IdStrategy::Provided);
+        let mut backend = markdown_backend();
         if let crate::ir::Backend::Markdown(md) = &mut backend {
             md.entities.push(crate::ir::MarkdownEntityMeta {
                 entity_name: "Tag".into(),
@@ -317,6 +330,7 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
             backend,
             wikilink_policy: None,
+            id_strategy: crate::ir::IdStrategy::Provided,
         };
         store::generate(std::slice::from_ref(tag), &config).expect("gen_store(markdown) failed");
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
@@ -327,27 +341,37 @@ mod tests {
     }
 
     /// SlugFromField must name a String field on every entity — validated at
-    /// generation time, before any file is written.
+    /// generation time, before any file is written, on both backends.
     #[test]
-    fn markdown_slug_strategy_validates_source_field() {
+    fn slug_strategy_validates_source_field_on_both_backends() {
         let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
         let entities = parse_schema_dir(&schema_dir).expect("parse failed");
-        let tag = entities.iter().find(|e| e.name == "Tag").expect("Tag entity not found");
+        let entity = |name: &str| entities.iter().find(|e| e.name == name).expect("fixture entity").clone();
+        let cases = [
+            (entity("Tag"), "no_such_field", "has no field `no_such_field`"),
+            (entity("Workout"), "name", "must be a plain String"),
+        ];
 
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let out_dir = tmp.path().join("generated");
-        let config = StoreConfig {
-            output_dir: out_dir.clone(),
-            hooks_dir: None,
-            schema_module_path: "crate::schema".to_string(),
-            backend: markdown_backend(crate::ir::IdStrategy::SlugFromField("no_such_field".into())),
-            wikilink_policy: None,
-        };
+        for backend in [crate::ir::Backend::Seaorm(None), markdown_backend()] {
+            for (target, field, needle) in &cases {
+                let tmp = tempfile::tempdir().expect("tempdir");
+                let out_dir = tmp.path().join("generated");
+                let config = StoreConfig {
+                    output_dir: out_dir.clone(),
+                    hooks_dir: None,
+                    schema_module_path: "crate::schema".to_string(),
+                    backend: backend.clone(),
+                    wikilink_policy: None,
+                    id_strategy: crate::ir::IdStrategy::SlugFromField((*field).into()),
+                };
 
-        let err = store::generate(std::slice::from_ref(tag), &config).expect_err("missing slug field must fail");
-        let msg = format!("{err}");
-        assert!(msg.contains("no_such_field"), "error names the field: {msg}");
-        assert!(!out_dir.exists(), "validation failures must not write files");
+                let err =
+                    store::generate(std::slice::from_ref(target), &config).expect_err("a bad slug field must fail");
+                let msg = format!("{err}");
+                assert!(msg.contains(*needle), "{backend:?}: the error says what is wrong: {msg}");
+                assert!(!out_dir.exists(), "validation failures must not write files");
+            }
+        }
     }
 
     /// `wikilink_policy: Some(Strip)` overrides the SQL backend's default
@@ -369,6 +393,7 @@ mod tests {
             schema_module_path: "crate::schema".to_string(),
             backend: crate::ir::Backend::Seaorm(None),
             wikilink_policy: Some(crate::ir::WikilinkPolicy::Strip),
+            id_strategy: crate::ir::IdStrategy::Provided,
         };
 
         store::generate(std::slice::from_ref(workout), &config).expect("gen_store failed");

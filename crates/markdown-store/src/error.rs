@@ -84,6 +84,15 @@ pub enum Error {
         reason: String,
     },
 
+    /// A new record has no id: the caller supplied none and the
+    /// [`IdStrategy`](crate::IdStrategy) could not derive one (the strategy
+    /// is `Provided`, or the slug source slugified to nothing).
+    #[error("id required: {reason}")]
+    IdRequired {
+        /// Why no id could be derived.
+        reason: String,
+    },
+
     /// An entity directory segment failed validation (same rules as ids).
     #[error("invalid path segment {segment:?}: {reason}")]
     InvalidSegment {

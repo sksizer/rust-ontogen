@@ -22,7 +22,7 @@ pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
     hooks::before_create(self, &mut task).await?;
 
     let id = task.id.clone();
-    let active = task.to_active_model();
+    let active = task.to_active_model()?;
     active.insert(self.db()).await
         .map_err(|e| AppError::DbError(e.to_string()))?;
 
@@ -201,6 +201,7 @@ let store_output = ontogen::gen_store(
         schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
         backend: ontogen::Backend::Seaorm(Some(seaorm)),
         wikilink_policy: None,
+        id_strategy: ontogen::IdStrategy::Provided,
     },
 )?;
 ```

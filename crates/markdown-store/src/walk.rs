@@ -1,10 +1,11 @@
 //! Record-file enumeration with a stable order.
 //!
 //! Listing is the read side of `list()`: enumerate the record files under an
-//! entity directory, **sorted lexicographically by path**, so the backend's
-//! documented "stable order" (ADR 0001 contract item 3) is a property of
-//! this module rather than of filesystem iteration order, which guarantees
-//! nothing.
+//! entity directory, **sorted lexicographically by path**, so the order is a
+//! property of this module rather than of filesystem iteration order, which
+//! guarantees nothing. The store's listings re-sort by id (see
+//! `VaultHandle::list_ids`), which differs from path order once records sit
+//! in nested directories.
 //!
 //! Walking is gitignore-aware by default and mirrors `markdown-vault`'s
 //! `WalkOptions` semantics (same `ignore`-crate underpinnings) so the two

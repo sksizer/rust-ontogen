@@ -23,6 +23,7 @@
 //! writers, a `serde_yaml_ng` parser dispatcher, and `fs_ops` helpers wired
 //! to module paths nothing generated — with thin shims over the runtime.
 
+use crate::persistence::dto::{is_primitive, qualify_type};
 use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationKind};
 use crate::store::helpers::to_snake_case;
 
@@ -139,7 +140,7 @@ fn rust_type(field: &FieldDef) -> String {
     match &field.field_type {
         FieldType::String => "String".into(),
         FieldType::OptionString => "Option<String>".into(),
-        FieldType::OptionEnum(name) => format!("Option<crate::schema::{name}>"),
+        FieldType::OptionEnum(name) => format!("Option<{}>", qualify_type(name)),
         FieldType::VecString => "Vec<String>".into(),
         FieldType::VecStruct(name) => format!("Vec<crate::schema::{name}>"),
         FieldType::I32 => "i32".into(),
@@ -152,7 +153,7 @@ fn rust_type(field: &FieldDef) -> String {
         FieldType::OptionF64 => "Option<f64>".into(),
         FieldType::Bool => "bool".into(),
         FieldType::OptionBool => "Option<bool>".into(),
-        FieldType::Other(name) => name.clone(),
+        FieldType::Other(name) => qualify_type(name),
     }
 }
 
@@ -201,6 +202,7 @@ fn encode_expr(field: &FieldDef) -> String {
             | FieldType::OptionF32
             | FieldType::OptionF64
             | FieldType::OptionBool => format!("value.{name}"),
+            FieldType::Other(t) | FieldType::OptionEnum(t) if is_primitive(t) => format!("value.{name}"),
             _ => format!("value.{name}.clone()"),
         }
     }
@@ -294,6 +296,23 @@ mod tests {
         assert!(!code.contains("_TYPE"), "the store declares the OKF type from the IR: {code}");
         assert!(!code.contains("\"type\","), "type is the store's key, not a frontmatter field: {code}");
         assert!(!code.contains("pub r#type"), "{code}");
+    }
+
+    #[test]
+    fn schema_types_are_qualified_and_primitives_are_not() {
+        let mut entity = task_entity();
+        entity.fields.push(FieldDef::new("kind", FieldType::Other("TaskKind".into()), FieldRole::EnumField));
+        entity.fields.push(FieldDef::new("phase", FieldType::OptionEnum("TaskKind".into()), FieldRole::EnumField));
+        entity.fields.push(FieldDef::new("points", FieldType::Other("u32".into()), FieldRole::Plain));
+        entity.fields.push(FieldDef::new("budget", FieldType::OptionEnum("u32".into()), FieldRole::Plain));
+        let code = generate_frontmatter_module(&entity);
+        assert!(code.contains("pub kind: crate::schema::TaskKind,"), "{code}");
+        assert!(code.contains("pub phase: Option<crate::schema::TaskKind>,"), "{code}");
+        assert!(code.contains("pub points: u32,"), "{code}");
+        assert!(code.contains("pub budget: Option<u32>,"), "{code}");
+        assert!(code.contains("points: value.points,"), "a primitive is copied, not cloned: {code}");
+        assert!(code.contains("budget: value.budget,"), "{code}");
+        assert!(code.contains("kind: value.kind.clone(),"), "{code}");
     }
 
     #[test]

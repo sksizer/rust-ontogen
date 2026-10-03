@@ -38,3 +38,30 @@ publish = false
 name = "markdown-pilot"
 release = false
 publish = false
+
+# The runtime parity fixture (ADR 0006 §8): generated stores and the test
+# that runs them against each other. Never released, never published.
+[[package]]
+name = "parity-markdown"
+release = false
+publish = false
+
+[[package]]
+name = "parity-seaorm"
+release = false
+publish = false
+
+[[package]]
+name = "parity-markdown-provided"
+release = false
+publish = false
+
+[[package]]
+name = "parity-seaorm-provided"
+release = false
+publish = false
+
+[[package]]
+name = "parity-check"
+release = false
+publish = false

@@ -74,7 +74,7 @@ impl Store {
     pub async fn list_workouts(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Workout>, AppError> {
         let mut query = workout::Entity::find();
         query = query.order_by_asc(workout::Column::Id);
-        if let Some(l) = limit {
+        if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
         if let Some(o) = offset {
@@ -82,7 +82,7 @@ impl Store {
         }
         let models = query.all(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-        let mut entities: Vec<Workout> = models.iter().map(Workout::from_model).collect();
+        let mut entities: Vec<Workout> = models.iter().map(Workout::from_model).collect::<Result<_, _>>()?;
         for entity in &mut entities {
             self.populate_workout_relations(entity).await?;
         }
@@ -100,7 +100,7 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::WorkoutNotFound(id.to_string()))?;
 
-        let mut entity = Workout::from_model(&model);
+        let mut entity = Workout::from_model(&model)?;
         self.populate_workout_relations(&mut entity).await?;
         Ok(entity)
     }
@@ -108,11 +108,17 @@ impl Store {
     pub async fn create_workout(&self, mut workout: Workout) -> Result<Workout, AppError> {
         hooks::before_create(self, &mut workout).await?;
 
-        let id = workout.id.clone();
         let tags = workout.tags.clone();
-        let active = workout.to_active_model();
 
-        active.insert(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        let id = if workout.id.trim().is_empty() {
+            return Err(AppError::WorkoutIdRequired("this store requires the caller to supply an id".to_string()));
+        } else {
+            ontogen_core::id::validate_id(&workout.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_workout(&workout).await? {
+                return Err(AppError::WorkoutAlreadyExists(workout.id));
+            }
+            workout.id.clone()
+        };
 
         self.sync_junction("workout_tags", "workout_id", "tag_id", &id, &tags).await?;
 
@@ -130,7 +136,7 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::WorkoutNotFound(id.to_string()))?;
 
-        let mut current = Workout::from_model(&existing_model);
+        let mut current = Workout::from_model(&existing_model)?;
         self.populate_workout_relations(&mut current).await?;
 
         hooks::before_update(self, &current, &updates).await?;
@@ -139,7 +145,7 @@ impl Store {
 
         updates.apply(&mut current);
 
-        let active = current.to_active_model();
+        let active = current.to_active_model()?;
         active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         if tags_changed {
@@ -177,5 +183,21 @@ impl Store {
     ) -> Result<(), crate::schema::AppError> {
         workout.tags = self.load_junction_ids("workout_tags", "workout_id", "tag_id", &workout.id).await?;
         Ok(())
+    }
+
+    async fn try_insert_workout(&self, workout: &Workout) -> Result<bool, AppError> {
+        let active = workout.to_active_model()?;
+        match active.insert(self.db()).await {
+            Ok(_) => Ok(true),
+            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                let taken = workout::Entity::find_by_id(workout.id.as_str())
+                    .one(self.db())
+                    .await
+                    .map_err(|e| AppError::DbError(e.to_string()))?
+                    .is_some();
+                if taken { Ok(false) } else { Err(AppError::DbError(e.to_string())) }
+            }
+            Err(e) => Err(AppError::DbError(e.to_string())),
+        }
     }
 }

@@ -46,11 +46,11 @@ Pipeline::new("src/schema")
         MarkdownIoOptions {
             vault_root: "data/vault".into(),
             layout: MarkdownLayout::PerEntityDir,
-            id_strategy: IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
             okf: OkfOptions::default(),   // index and provenance stamps: off
         },
     )
+    .store_id_strategy(IdStrategy::SlugFromField("title".into()))
     .dtos("src/schema/dto")
     .store("src/store/generated", Some("src/store/hooks"))
     .api("src/api/v1/generated", "AppState")
@@ -171,7 +171,7 @@ off by default, and with both off no vault byte changes.
 use ontogen::{MarkdownIoOptions, OkfOptions};
 
 MarkdownIoOptions {
-    // vault_root, layout, id_strategy, list_cap ...
+    // vault_root, layout, list_cap ...
     okf: OkfOptions {
         index: true,
         generated_by: Some(format!("my-app/{}", env!("CARGO_PKG_VERSION"))),
@@ -189,7 +189,7 @@ MarkdownIoOptions {
 `gen_markdown_io` also emits `open_vault` and `VAULT_ROOT` into the generated
 `mod.rs` of its output directory. They hold the vault's settings from the
 build configuration, so the build script is the one place they are set.
-Consumers used to repeat the layout, id strategy and list cap by hand in
+Consumers used to repeat the layout and list cap by hand in
 `VaultHandle::new(...)`, and could drift from the build.
 
 ```rust
@@ -202,8 +202,8 @@ let vault = open_vault(VAULT_ROOT);   // tests pass a tempdir instead
 the working directory the program runs from, not the crate root, so a binary
 started elsewhere needs an absolute path or a matching working directory. The
 caller decides the runtime path. `open_vault(root)` returns a
-`markdown_store::VaultHandle` with the layout, id strategy, list cap and OKF
-options applied; it calls `.with_okf(..)` only when an OKF option is on.
+`markdown_store::VaultHandle` with the layout, list cap and OKF options
+applied; it calls `.with_okf(..)` only when an OKF option is on.
 
 The store emitter needs none of these settings, and the vault constructor is
 their one consumer, so `open_vault` is generated straight from the config
@@ -215,7 +215,7 @@ one struct:
 ```rust
 use markdown_store::OkfPolicy;
 
-let vault = VaultHandle::new(root, layout, id_strategy).with_list_cap(list_cap)
+let vault = VaultHandle::new(root, layout).with_list_cap(list_cap)
     .with_okf(OkfPolicy {
         index: true,
         generated_by: Some("my-app/0.1.0".into()),
@@ -391,8 +391,10 @@ impl Store {
 
 ```rust
 pub enum AppError {
-    TaskNotFound(String),   // per-entity NotFound: same as SeaORM
-    Md(String),             // replaces DbError
+    TaskNotFound(String),       // per-entity NotFound: same as SeaORM
+    TaskIdRequired(String),     // per-entity, same as SeaORM
+    TaskAlreadyExists(String),  // per-entity, same as SeaORM
+    Md(String),                 // replaces DbError
 }
 impl From<markdown_store::Error> for AppError { /* Md(e.to_string()) */ }
 ```
@@ -417,12 +419,20 @@ let state = AppState::new(open_vault(VAULT_ROOT));
   [policy](#wikilinks-on-a-sql-backed-store), not a hardcoded behaviour —
   the markdown backend just defaults to it.)
 - **Creates can derive ids.** POST without an id (Create DTOs carry
-  `#[serde(default)]` on `id`) and `SlugFromField` slugifies the configured
-  field, de-duplicating with `-2`, `-3`, … — atomically with the write.
+  `#[serde(default)]` on `id`) and the store's id strategy fills it:
+  `SlugFromField` slugifies the configured field, de-duplicating with `-2`,
+  `-3`, … — atomically with the write. The strategy is a store setting
+  (`Pipeline::store_id_strategy`, default `Provided`) shared with the SeaORM
+  backend; [Creating records](/guides/store-layer/#creating-records) has the
+  full rules, including `IdRequired` and `AlreadyExists`.
+- **An id that cannot exist is NotFound.** `get`, `update` and `delete` of an
+  id the vault cannot hold (one containing `/`, a reserved name, and so on)
+  answer `{Entity}NotFound`, as they do for an id that is merely absent.
 - **Hand edits survive.** The runtime's `Document` round-trip preserves
   unknown keys, key order, and the body; untouched files re-render
   byte-for-byte, and a no-op update doesn't even touch the file.
-- **Stable order, loud ceiling.** `list` returns lexicographic-by-id and
+- **Stable order, loud ceiling.** `list` returns records in id byte order
+  (`B` before `a`, whatever the layout or filesystem) and
   errors past `list_cap` — the deliberate "wrong backend for this N" signal.
 - **Single-record atomicity only** (same-dir tempfile + fsync + rename).
   Need batch transactions? That's the other backend.

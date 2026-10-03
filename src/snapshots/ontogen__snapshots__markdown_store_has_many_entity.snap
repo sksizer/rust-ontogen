@@ -84,12 +84,13 @@ impl Store {
     }
 
     pub async fn get_node(&self, id: &str) -> Result<Node, AppError> {
-        let doc = self
-            .vault()
-            .entity(NODES_DIR, NODE_TYPE)
-            .read_opt(id)
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::NodeNotFound(id.to_string()))?;
+        let doc = match self.vault().entity(NODES_DIR, NODE_TYPE).read_opt(id) {
+            Ok(Some(doc)) => doc,
+            Ok(None) | Err(markdown_store::Error::InvalidId { .. }) => {
+                return Err(AppError::NodeNotFound(id.to_string()));
+            }
+            Err(e) => return Err(AppError::from(e)),
+        };
         let fm: NodeFrontmatter = doc.deserialize().map_err(AppError::from)?;
         let mut node = fm.into_node(id.to_string(), doc.body().to_string());
         self.populate_node_relations(&mut node).await?;
@@ -104,11 +105,17 @@ impl Store {
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&NodeFrontmatter::from_node(&node), NODE_FM_FIELDS).map_err(AppError::from)?;
         doc.set_body(node.body.clone());
-        let id = self
-            .vault()
-            .entity(NODES_DIR, NODE_TYPE)
-            .create(Some(node.id.as_str()).filter(|s| !s.is_empty()), None, doc)
-            .map_err(AppError::from)?;
+        let id = match self.vault().entity(NODES_DIR, NODE_TYPE).create(
+            &markdown_store::IdStrategy::Provided,
+            Some(node.id.as_str()).filter(|s| !s.trim().is_empty()),
+            None,
+            doc,
+        ) {
+            Ok(id) => id,
+            Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::NodeIdRequired(reason)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::NodeAlreadyExists(node.id)),
+            Err(e) => return Err(AppError::from(e)),
+        };
 
         for child_id in &contains {
             self.set_node_parent(child_id, Some(&id)).await?;
@@ -126,6 +133,11 @@ impl Store {
 
         let contains_changed = updates.contains.is_some();
 
+        let contains_dropped: Vec<String> = match &updates.contains {
+            Some(new_ids) => current.contains.iter().filter(|c| !new_ids.contains(c)).cloned().collect(),
+            None => Vec::new(),
+        };
+
         self.vault()
             .entity(NODES_DIR, NODE_TYPE)
             .modify(id, |doc| {
@@ -139,10 +151,11 @@ impl Store {
             .map_err(AppError::from)?;
 
         if contains_changed {
-            if let Some(contains) = &updates.contains {
-                for child_id in contains {
-                    self.set_node_parent(child_id, Some(id)).await?;
-                }
+            for child_id in updates.contains.iter().flatten() {
+                self.set_node_parent(child_id, Some(id)).await?;
+            }
+            for child_id in &contains_dropped {
+                self.set_node_parent(child_id, None).await?;
             }
         }
 
@@ -157,7 +170,7 @@ impl Store {
 
         match self.vault().entity(NODES_DIR, NODE_TYPE).remove(id) {
             Ok(()) => {}
-            Err(markdown_store::Error::NotFound { .. }) => {
+            Err(markdown_store::Error::NotFound { .. } | markdown_store::Error::InvalidId { .. }) => {
                 return Err(AppError::NodeNotFound(id.to_string()));
             }
             Err(e) => return Err(AppError::from(e)),

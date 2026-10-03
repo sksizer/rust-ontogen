@@ -39,7 +39,7 @@ impl Store {
     pub async fn list_tags(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Tag>, AppError> {
         let mut query = tag::Entity::find();
         query = query.order_by_asc(tag::Column::Id);
-        if let Some(l) = limit {
+        if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
         if let Some(o) = offset {
@@ -47,7 +47,7 @@ impl Store {
         }
         let models = query.all(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-        Ok(models.iter().map(Tag::from_model).collect())
+        models.iter().map(Tag::from_model).collect()
     }
 
     pub async fn count_tags(&self) -> Result<u64, AppError> {
@@ -61,16 +61,21 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::TagNotFound(id.to_string()))?;
 
-        Ok(Tag::from_model(&model))
+        Tag::from_model(&model)
     }
 
     pub async fn create_tag(&self, mut tag: Tag) -> Result<Tag, AppError> {
         hooks::before_create(self, &mut tag).await?;
 
-        let id = tag.id.clone();
-        let active = tag.to_active_model();
-
-        active.insert(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        let id = if tag.id.trim().is_empty() {
+            return Err(AppError::TagIdRequired("this store requires the caller to supply an id".to_string()));
+        } else {
+            ontogen_core::id::validate_id(&tag.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_tag(&tag).await? {
+                return Err(AppError::TagAlreadyExists(tag.id));
+            }
+            tag.id.clone()
+        };
 
         let created = self.get_tag(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Tag, id);
@@ -86,12 +91,12 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::TagNotFound(id.to_string()))?;
 
-        let mut current = Tag::from_model(&existing_model);
+        let mut current = Tag::from_model(&existing_model)?;
         hooks::before_update(self, &current, &updates).await?;
 
         updates.apply(&mut current);
 
-        let active = current.to_active_model();
+        let active = current.to_active_model()?;
         active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_tag(id).await?;
@@ -117,5 +122,21 @@ impl Store {
 
         hooks::after_delete(self, id).await?;
         Ok(())
+    }
+
+    async fn try_insert_tag(&self, tag: &Tag) -> Result<bool, AppError> {
+        let active = tag.to_active_model()?;
+        match active.insert(self.db()).await {
+            Ok(_) => Ok(true),
+            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                let taken = tag::Entity::find_by_id(tag.id.as_str())
+                    .one(self.db())
+                    .await
+                    .map_err(|e| AppError::DbError(e.to_string()))?
+                    .is_some();
+                if taken { Ok(false) } else { Err(AppError::DbError(e.to_string())) }
+            }
+            Err(e) => Err(AppError::DbError(e.to_string())),
+        }
     }
 }

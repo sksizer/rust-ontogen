@@ -53,12 +53,13 @@ impl Store {
     }
 
     pub async fn get_tag(&self, id: &str) -> Result<Tag, AppError> {
-        let doc = self
-            .vault()
-            .entity(TAGS_DIR, TAG_TYPE)
-            .read_opt(id)
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::TagNotFound(id.to_string()))?;
+        let doc = match self.vault().entity(TAGS_DIR, TAG_TYPE).read_opt(id) {
+            Ok(Some(doc)) => doc,
+            Ok(None) | Err(markdown_store::Error::InvalidId { .. }) => {
+                return Err(AppError::TagNotFound(id.to_string()));
+            }
+            Err(e) => return Err(AppError::from(e)),
+        };
         let fm: TagFrontmatter = doc.deserialize().map_err(AppError::from)?;
         Ok(fm.into_tag(id.to_string()))
     }
@@ -68,11 +69,17 @@ impl Store {
 
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&TagFrontmatter::from_tag(&tag), TAG_FM_FIELDS).map_err(AppError::from)?;
-        let id = self
-            .vault()
-            .entity(TAGS_DIR, TAG_TYPE)
-            .create(Some(tag.id.as_str()).filter(|s| !s.is_empty()), Some(tag.title.as_str()), doc)
-            .map_err(AppError::from)?;
+        let id = match self.vault().entity(TAGS_DIR, TAG_TYPE).create(
+            &markdown_store::IdStrategy::SlugFromField("title".into()),
+            Some(tag.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(tag.title.as_str()),
+            doc,
+        ) {
+            Ok(id) => id,
+            Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::TagIdRequired(reason)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TagAlreadyExists(tag.id)),
+            Err(e) => return Err(AppError::from(e)),
+        };
 
         let created = self.get_tag(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Tag, id);
@@ -106,7 +113,7 @@ impl Store {
 
         match self.vault().entity(TAGS_DIR, TAG_TYPE).remove(id) {
             Ok(()) => {}
-            Err(markdown_store::Error::NotFound { .. }) => {
+            Err(markdown_store::Error::NotFound { .. } | markdown_store::Error::InvalidId { .. }) => {
                 return Err(AppError::TagNotFound(id.to_string()));
             }
             Err(e) => return Err(AppError::from(e)),

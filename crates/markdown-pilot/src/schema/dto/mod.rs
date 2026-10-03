@@ -2,6 +2,8 @@
 
 pub mod note;
 pub use note::*;
+pub mod section;
+pub use section::*;
 pub mod tag;
 pub use tag::*;
 pub mod task;

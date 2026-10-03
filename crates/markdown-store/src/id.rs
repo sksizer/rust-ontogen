@@ -12,7 +12,8 @@ use crate::error::Error;
 /// strategy only fills the gap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdStrategy {
-    /// The caller must supply the id; an empty one is an error.
+    /// The caller must supply the id; without one, a create is
+    /// [`Error::IdRequired`].
     Provided,
     /// Slugify the value of the named field (e.g. `"title"`). The field
     /// *name* is carried so code generators know which field's value to
@@ -27,9 +28,10 @@ pub enum IdStrategy {
 impl IdStrategy {
     /// Derive the id for a new record.
     ///
-    /// `provided` is the caller-supplied id (wins when non-empty);
-    /// `source_value` is the value of the slug-source field for
-    /// [`IdStrategy::SlugFromField`] (ignored otherwise).
+    /// `provided` is the caller-supplied id (wins unless empty or
+    /// whitespace-only); `source_value` is the value of the slug-source
+    /// field for [`IdStrategy::SlugFromField`] (ignored otherwise). With no
+    /// id to return, it is [`Error::IdRequired`].
     ///
     /// ```
     /// use markdown_store::IdStrategy;
@@ -45,18 +47,14 @@ impl IdStrategy {
             }
         }
         match self {
-            IdStrategy::Provided => Err(Error::InvalidId {
-                id: String::new(),
-                reason: "this store requires the caller to supply an id".into(),
-            }),
+            IdStrategy::Provided => {
+                Err(Error::IdRequired { reason: "this store requires the caller to supply an id".into() })
+            }
             IdStrategy::SlugFromField(field) => {
                 let source = source_value.unwrap_or("");
                 let slug = slugify(source);
                 if slug.is_empty() {
-                    return Err(Error::InvalidId {
-                        id: source.to_string(),
-                        reason: format!("field {field:?} produced an empty slug"),
-                    });
+                    return Err(Error::IdRequired { reason: format!("field {field:?} produced an empty slug") });
                 }
                 Ok(slug)
             }
@@ -131,10 +129,26 @@ mod tests {
     }
 
     #[test]
-    fn slug_strategy_errors_on_empty_slug() {
+    fn slug_strategy_requires_an_id_when_the_slug_is_empty() {
         let s = IdStrategy::SlugFromField("title".into());
-        assert!(matches!(s.make_id(None, Some("???")), Err(Error::InvalidId { .. })));
-        assert!(matches!(s.make_id(None, None), Err(Error::InvalidId { .. })));
+        for source in [Some("???"), None] {
+            match s.make_id(None, source) {
+                Err(Error::IdRequired { reason }) => assert_eq!(reason, "field \"title\" produced an empty slug"),
+                other => panic!("expected IdRequired, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn provided_strategy_requires_an_id() {
+        for provided in [None, Some(""), Some(" \t")] {
+            match IdStrategy::Provided.make_id(provided, Some("Title")) {
+                Err(Error::IdRequired { reason }) => {
+                    assert_eq!(reason, "this store requires the caller to supply an id")
+                }
+                other => panic!("expected IdRequired for {provided:?}, got {other:?}"),
+            }
+        }
     }
 
     #[cfg(feature = "uuid")]

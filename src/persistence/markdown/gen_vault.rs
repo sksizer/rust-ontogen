@@ -1,24 +1,20 @@
 //! Generate `VAULT_ROOT` and `open_vault`, the one constructor for the
 //! consumer's `markdown_store::VaultHandle`, built from the same
 //! configuration the rest of the markdown output comes from. Consumers call
-//! it instead of repeating the layout, id strategy, list cap and OKF options
-//! by hand. Both items go into the output directory's `mod.rs`, beside the
-//! per-entity module declarations, so no entity's module name can collide
-//! with them.
+//! it instead of repeating the layout, list cap and OKF options by hand. The
+//! id strategy is not vault configuration: the generated store passes it to
+//! each create (`StoreConfig::id_strategy`). Both items go into the output
+//! directory's `mod.rs`, beside the per-entity module declarations, so no
+//! entity's module name can collide with them.
 
 use crate::MarkdownIoConfig;
-use crate::ir::{IdStrategy, MarkdownLayout};
+use crate::ir::MarkdownLayout;
 
 /// Generate the `VAULT_ROOT` and `open_vault` items for `config`.
 pub fn generate_open_vault(config: &MarkdownIoConfig) -> String {
     let layout = match config.layout {
         MarkdownLayout::PerEntityDir => "PerEntityDir",
         MarkdownLayout::Flat => "Flat",
-    };
-    let id_strategy = match &config.id_strategy {
-        IdStrategy::Provided => "markdown_store::IdStrategy::Provided".to_string(),
-        IdStrategy::SlugFromField(field) => format!("markdown_store::IdStrategy::SlugFromField({field:?}.into())"),
-        IdStrategy::Uuid => "markdown_store::IdStrategy::Uuid".to_string(),
     };
 
     let mut code = String::with_capacity(1024);
@@ -29,14 +25,12 @@ pub fn generate_open_vault(config: &MarkdownIoConfig) -> String {
     );
     code.push_str(&format!("pub const VAULT_ROOT: &str = {:?};\n\n", config.vault_root.to_string_lossy()));
     code.push_str(
-        "/// Open the vault at `root` with the layout, id strategy, list cap and OKF\n\
-         /// options configured at build time. Pass [`VAULT_ROOT`] to use the configured\n\
+        "/// Open the vault at `root` with the layout, list cap and OKF options\n\
+         /// configured at build time. Pass [`VAULT_ROOT`] to use the configured\n\
          /// location, or any other directory (a test's tempdir, say).\n",
     );
     code.push_str("pub fn open_vault(root: impl Into<std::path::PathBuf>) -> markdown_store::VaultHandle {\n");
-    code.push_str(&format!(
-        "    markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::{layout}, {id_strategy})\n"
-    ));
+    code.push_str(&format!("    markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::{layout})\n"));
     code.push_str(&format!("        .with_list_cap({})\n", config.list_cap));
     // Only what differs from the runtime's default policy is spelled out, so
     // a vault with both options off reads as the plain handle it is.
@@ -68,7 +62,6 @@ mod tests {
             output_dir: "unused".into(),
             vault_root: "data/vault".into(),
             layout: MarkdownLayout::PerEntityDir,
-            id_strategy: IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
             okf,
         }
@@ -79,10 +72,7 @@ mod tests {
         let code = generate_open_vault(&config(OkfOptions::default()));
         assert!(code.contains("pub const VAULT_ROOT: &str = \"data/vault\";"), "{code}");
         assert!(
-            code.contains(
-                "markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::PerEntityDir, \
-                 markdown_store::IdStrategy::SlugFromField(\"title\".into()))"
-            ),
+            code.contains("markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::PerEntityDir)\n"),
             "{code}"
         );
         assert!(code.contains(".with_list_cap(10000)\n}"), "{code}");
@@ -109,14 +99,11 @@ mod tests {
     }
 
     #[test]
-    fn every_layout_and_id_strategy_maps_to_its_runtime_variant() {
+    fn every_layout_maps_to_its_runtime_variant() {
         let mut flat = config(OkfOptions::default());
         flat.layout = MarkdownLayout::Flat;
-        flat.id_strategy = IdStrategy::Uuid;
         let code = generate_open_vault(&flat);
-        assert!(code.contains("markdown_store::VaultLayout::Flat, markdown_store::IdStrategy::Uuid)"), "{code}");
-
-        flat.id_strategy = IdStrategy::Provided;
-        assert!(generate_open_vault(&flat).contains("markdown_store::IdStrategy::Provided)"));
+        assert!(code.contains("markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::Flat)\n"), "{code}");
+        assert!(!code.contains("IdStrategy"), "the id strategy is the store's, not the vault's: {code}");
     }
 }

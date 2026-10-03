@@ -13,9 +13,18 @@ use std::path::Path;
 
 use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationKind};
 
-/// Check if a type name is an integer primitive that maps to a DB integer column.
-fn is_integer_primitive(t: &str) -> bool {
-    matches!(t, "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64")
+/// An integer primitive that maps to an `i64` model field. The parser files
+/// most of these under `OptionEnum` / `Other`; storing them as `i64` keeps the
+/// real value in SQL, so a `u32` above `i32::MAX` sorts and filters as it does
+/// on markdown (ADR 0006 §4).
+pub(crate) fn is_integer_primitive(t: &str) -> bool {
+    widens_to_i64_losslessly(t) || matches!(t, "u64" | "usize" | "isize" | "u128" | "i128")
+}
+
+/// An integer primitive with an `i64::from` impl. The other integer
+/// primitives convert with `i64::try_from`, which can fail.
+pub(crate) fn widens_to_i64_losslessly(t: &str) -> bool {
+    matches!(t, "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "i64")
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -284,11 +293,9 @@ fn field_db_type(field: &FieldDef) -> &'static str {
         FieldType::Bool => "bool",
         FieldType::OptionBool => "Option<bool>",
         FieldType::VecString | FieldType::VecStruct(_) => "String", // JSON
-        // Primitive numeric option types map to DB integer columns
-        FieldType::OptionEnum(t) if is_integer_primitive(t) => "Option<i32>",
+        FieldType::OptionEnum(t) if is_integer_primitive(t) => "Option<i64>",
         FieldType::OptionEnum(_) => "Option<String>",
-        // Primitive numeric types map to DB integer columns
-        FieldType::Other(t) if is_integer_primitive(t) => "i32",
+        FieldType::Other(t) if is_integer_primitive(t) => "i64",
         FieldType::Other(_) => "String", // enum or unknown
     }
 }
@@ -444,6 +451,47 @@ mod tests {
         assert_eq!(field_db_type(&mk(FieldType::OptionF32, FieldRole::Plain)), "Option<f32>");
         assert_eq!(field_db_type(&mk(FieldType::F64, FieldRole::Plain)), "f64");
         assert_eq!(field_db_type(&mk(FieldType::OptionF64, FieldRole::Plain)), "Option<f64>");
+    }
+
+    /// ADR 0006 §2's integer primitives that reach `OptionEnum` / `Other`.
+    const WIDENED_INTEGERS: [&str; 9] = ["u8", "u16", "u32", "usize", "u128", "i8", "i16", "isize", "i128"];
+
+    #[test]
+    fn integer_primitives_get_i64_columns() {
+        for role in [FieldRole::Plain, FieldRole::EnumField, FieldRole::Skip] {
+            for t in WIDENED_INTEGERS {
+                let bare = FieldDef::new("x", FieldType::Other(t.into()), role.clone());
+                let optional = FieldDef::new("x", FieldType::OptionEnum(t.into()), role.clone());
+                assert_eq!(field_db_type(&bare), "i64", "{t} ({role:?})");
+                assert_eq!(field_db_type(&optional), "Option<i64>", "Option<{t}> ({role:?})");
+                assert_eq!(column_meta_for(&bare).unwrap().column_type, "i64");
+                assert_eq!(column_meta_for(&optional).unwrap().column_type, "Option<i64>");
+            }
+        }
+    }
+
+    #[test]
+    fn only_types_with_an_i64_from_impl_widen_losslessly() {
+        for t in ["u8", "u16", "u32", "i8", "i16"] {
+            assert!(widens_to_i64_losslessly(t), "{t}");
+        }
+        for t in ["usize", "u128", "isize", "i128", "u64"] {
+            assert!(is_integer_primitive(t), "{t}");
+            assert!(!widens_to_i64_losslessly(t), "{t}");
+        }
+        assert!(!is_integer_primitive("f32"));
+        assert!(!is_integer_primitive("Count"));
+    }
+
+    #[test]
+    fn integer_model_fields_are_emitted_as_i64() {
+        let mut entity = make_node_entity();
+        entity.fields.push(FieldDef::new("rank", FieldType::Other("u32".into()), FieldRole::Plain));
+        entity.fields.push(FieldDef::new("size", FieldType::OptionEnum("usize".into()), FieldRole::Plain));
+        let code = generate_entity_code(&entity, &modules(&["Node", "Requirement"]));
+        assert!(code.contains("pub rank: i64,"), "{code}");
+        assert!(code.contains("pub size: Option<i64>,"), "{code}");
+        assert!(!code.contains("i32"), "{code}");
     }
 
     fn make_node_entity() -> EntityDef {

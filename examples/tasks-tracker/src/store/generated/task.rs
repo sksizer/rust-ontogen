@@ -92,12 +92,13 @@ impl Store {
     }
 
     pub async fn get_task(&self, id: &str) -> Result<Task, AppError> {
-        let doc = self
-            .vault()
-            .entity(TASKS_DIR, TASK_TYPE)
-            .read_opt(id)
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::TaskNotFound(id.to_string()))?;
+        let doc = match self.vault().entity(TASKS_DIR, TASK_TYPE).read_opt(id) {
+            Ok(Some(doc)) => doc,
+            Ok(None) | Err(markdown_store::Error::InvalidId { .. }) => {
+                return Err(AppError::TaskNotFound(id.to_string()));
+            }
+            Err(e) => return Err(AppError::from(e)),
+        };
         let fm: TaskFrontmatter = doc.deserialize().map_err(AppError::from)?;
         let mut task = fm.into_task(id.to_string(), doc.body().to_string());
         self.populate_task_relations(&mut task).await?;
@@ -110,11 +111,17 @@ impl Store {
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&TaskFrontmatter::from_task(&task), TASK_FM_FIELDS).map_err(AppError::from)?;
         doc.set_body(task.body.clone());
-        let id = self
-            .vault()
-            .entity(TASKS_DIR, TASK_TYPE)
-            .create(Some(task.id.as_str()).filter(|s| !s.is_empty()), Some(task.title.as_str()), doc)
-            .map_err(AppError::from)?;
+        let id = match self.vault().entity(TASKS_DIR, TASK_TYPE).create(
+            &markdown_store::IdStrategy::SlugFromField("title".into()),
+            Some(task.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(task.title.as_str()),
+            doc,
+        ) {
+            Ok(id) => id,
+            Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::TaskIdRequired(reason)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TaskAlreadyExists(task.id)),
+            Err(e) => return Err(AppError::from(e)),
+        };
 
         let created = self.get_task(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Task, id);
@@ -149,7 +156,7 @@ impl Store {
 
         match self.vault().entity(TASKS_DIR, TASK_TYPE).remove(id) {
             Ok(()) => {}
-            Err(markdown_store::Error::NotFound { .. }) => {
+            Err(markdown_store::Error::NotFound { .. } | markdown_store::Error::InvalidId { .. }) => {
                 return Err(AppError::TaskNotFound(id.to_string()));
             }
             Err(e) => return Err(AppError::from(e)),

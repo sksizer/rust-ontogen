@@ -54,13 +54,13 @@ fn main() {
             MarkdownIoOptions {
                 vault_root: "data/vault".into(),
                 layout: MarkdownLayout::PerEntityDir,
-                // Workout.name is Option<String>, so SlugFromField is out;
-                // Provided keeps the example honest about where ids come from.
-                id_strategy: IdStrategy::Provided,
                 list_cap: 10_000,
                 okf: OkfOptions::default(),
             },
         )
+        // Workout.name is Option<String>, so SlugFromField is out;
+        // Provided keeps the example honest about where ids come from.
+        .store_id_strategy(IdStrategy::Provided)
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
         .api("src/api/v1/generated", "AppState")

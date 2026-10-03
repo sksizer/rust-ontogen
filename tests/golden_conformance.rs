@@ -38,7 +38,6 @@ fn markdown_store_emission_matches_note_golden() {
             output_dir: tmp.path().join("markdown"),
             vault_root: "data/vault".into(),
             layout: ontogen::MarkdownLayout::PerEntityDir,
-            id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
             okf: ontogen::OkfOptions::default(),
         },
@@ -53,6 +52,7 @@ fn markdown_store_emission_matches_note_golden() {
             schema_module_path: "crate::schema".into(),
             backend: ontogen::Backend::Markdown(md),
             wikilink_policy: None,
+            id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
         },
     )
     .expect("gen_store(markdown) failed");
@@ -90,7 +90,7 @@ fn pilot_committed_generated_trees_match_a_fresh_generation() {
     let schema = ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: pilot.join("src/schema") })
         .expect("parse pilot schema");
     let entities = &schema.entities;
-    assert_eq!(entities.len(), 3, "pilot schema: Note, Tag, Task");
+    assert_eq!(entities.len(), 4, "pilot schema: Note, Section, Tag, Task");
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let md = ontogen::gen_markdown_io(
@@ -99,7 +99,6 @@ fn pilot_committed_generated_trees_match_a_fresh_generation() {
             output_dir: tmp.path().join("persistence"),
             vault_root: "data/vault".into(),
             layout: ontogen::MarkdownLayout::PerEntityDir,
-            id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
             list_cap: 10_000,
             okf: ontogen::OkfOptions::default(),
         },
@@ -113,6 +112,7 @@ fn pilot_committed_generated_trees_match_a_fresh_generation() {
             schema_module_path: "crate::schema".into(),
             backend: ontogen::Backend::Markdown(md),
             wikilink_policy: None,
+            id_strategy: ontogen::IdStrategy::SlugFromField("title".into()),
         },
     )
     .expect("gen_store");
@@ -173,12 +173,16 @@ fn typed_write_reproduces_the_seeded_vault_golden() {
     );
 
     let vault_dir = tempfile::tempdir().expect("tempdir");
-    let vault = markdown_store::VaultHandle::new(
-        vault_dir.path(),
-        markdown_store::VaultLayout::PerEntityDir,
-        markdown_store::IdStrategy::SlugFromField("title".into()),
-    );
-    let id = vault.entity("tasks", "Task").create(None, Some("Seeded by the typed writer"), doc).expect("typed create");
+    let vault = markdown_store::VaultHandle::new(vault_dir.path(), markdown_store::VaultLayout::PerEntityDir);
+    let id = vault
+        .entity("tasks", "Task")
+        .create(
+            &markdown_store::IdStrategy::SlugFromField("title".into()),
+            None,
+            Some("Seeded by the typed writer"),
+            doc,
+        )
+        .expect("typed create");
     assert_eq!(id, "seeded-by-the-typed-writer");
 
     let written = read(&vault_dir.path().join("tasks/seeded-by-the-typed-writer.md"));

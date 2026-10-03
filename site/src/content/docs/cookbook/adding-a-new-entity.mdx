@@ -83,7 +83,7 @@ We'll add an `Exercise` entity to a fitness tracking app -- something with a cou
    ```
    src/persistence/db/conversions/generated/exercise.rs
    ```
-   Contains `Exercise::from_model()` and `Exercise::to_active_model()`.
+   Contains `Exercise::from_model()` and `Exercise::to_active_model()`, both returning `Result<_, AppError>`.
 
    **DTOs** (if `gen_dtos` or `gen_store` is configured):
    ```
@@ -114,7 +114,7 @@ We'll add an `Exercise` entity to a fitness tracking app -- something with a cou
 
 5. ### Add the error variant
 
-   Generated store code uses an `AppError` enum with entity-specific `NotFound` variants. You need to add one for the new entity. In your `AppError` definition (typically in `src/schema/mod.rs`):
+   Generated store code uses an `AppError` enum with entity-specific `NotFound`, `IdRequired` and `AlreadyExists` variants. You need to add all three for the new entity. In your `AppError` definition (typically in `src/schema/mod.rs`):
 
    ```rust
    #[derive(Debug, thiserror::Error)]
@@ -122,10 +122,14 @@ We'll add an `Exercise` entity to a fitness tracking app -- something with a cou
        // ... existing variants ...
        #[error("Exercise not found: {0}")]
        ExerciseNotFound(String),
+       #[error("Exercise id required: {0}")]
+       ExerciseIdRequired(String),
+       #[error("Exercise already exists: {0}")]
+       ExerciseAlreadyExists(String),
    }
    ```
 
-   The generated store code references `AppError::ExerciseNotFound`, so this must match.
+   The generated store code references `AppError::ExerciseNotFound`, `AppError::ExerciseIdRequired` and `AppError::ExerciseAlreadyExists`, so these must match. If the entity is the child of a `has_many` whose foreign key is a plain `String`, also add `ExerciseParentRequired(String)`.
 
 6. ### Add hook logic (optional)
 
@@ -227,7 +231,7 @@ When you add a new entity, make sure you've done all of these:
 - [ ] Created `src/schema/entity_name.rs` with `#[derive(OntologyEntity)]`
 - [ ] Added `mod entity_name;` and `pub use` in `src/schema/mod.rs`
 - [ ] Added DTO re-exports in `src/schema/mod.rs` (if using DTOs)
-- [ ] Added `AppError::EntityNameNotFound` variant
+- [ ] Added `AppError::EntityNameNotFound`, `EntityNameIdRequired` and `EntityNameAlreadyExists` variants
 - [ ] Added `EntityKind::EntityName` variant (if using change events)
 - [ ] Created the database table (migration or raw SQL)
 - [ ] Built successfully with `cargo build`

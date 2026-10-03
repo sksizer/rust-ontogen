@@ -27,10 +27,10 @@ A simplified representation of the Rust type. Ontogen only needs to know the sha
 | `OptionF64` | `Option<f64>` | `Option<f64>` | `REAL` | `number \| null` |
 | `Bool` | `bool` | `bool` | `BOOLEAN NOT NULL` | `boolean` |
 | `OptionBool` | `Option<bool>` | `Option<bool>` | `BOOLEAN` | `boolean \| null` |
-| `OptionEnum(name)` | `Option<EnumType>` | `Option<String>` | `TEXT` | `string \| null` |
+| `OptionEnum(name)` | `Option<EnumType>` | `Option<String>` (`Option<i64>` for an integer primitive such as `Option<u32>`) | `TEXT` (`INTEGER`) | `string \| null` |
 | `VecString` | `Vec<String>` | `String` (JSON) | `TEXT NOT NULL` | `string[]` |
 | `VecStruct(name)` | `Vec<StructType>` | `String` (JSON) | `TEXT NOT NULL` | `StructType[]` |
-| `Other(name)` | anything else | `String` | `TEXT NOT NULL` | `string` |
+| `Other(name)` | anything else | `String` (`i64` for an integer primitive such as `u32`) | `TEXT NOT NULL` (`INTEGER NOT NULL`) | `string` |
 
 ### How types are detected
 
@@ -47,6 +47,8 @@ A simplified representation of the Rust type. Ontogen only needs to know the sha
 <Aside type="note">
 `i64` is also used for `u64` fields. SQLite has no unsigned integer type, so Ontogen treats both as `i64` in the SeaORM layer. If you need unsigned semantics, enforce that in your application logic or hooks.
 </Aside>
+
+Other integer primitives (`u8`, `u16`, `u32`, `usize`, `u128`, `i8`, `i16`, `isize`, `i128`) are stored as `i64` columns. Widening is lossless for `u8`, `u16`, `u32`, `i8` and `i16`; for the rest, and when reading back, a value that does not fit fails with `AppError::DbError` naming the field rather than wrapping. See [the `Other` fallback](/guides/field-types-and-roles/#the-other-fallback).
 
 ### `Vec` fields in the database
 

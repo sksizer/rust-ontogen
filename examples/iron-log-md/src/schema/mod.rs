@@ -17,16 +17,25 @@ pub use dto::workout::{CreateWorkoutInput, UpdateWorkoutInput};
 pub use dto::workout_set::{CreateWorkoutSetInput, UpdateWorkoutSetInput};
 
 // ── Error type ──────────────────────────────────────────────────────────────
-// The markdown consumer contract: per-entity NotFound variants plus one Md
-// variant carrying everything from the runtime crate. (Compare iron-log's
-// AppError: DbError is gone; Md replaces it.)
+// The markdown consumer contract: per-entity NotFound, IdRequired and
+// AlreadyExists variants plus one Md variant carrying everything from the
+// runtime crate. (Compare iron-log's AppError: DbError is gone; Md replaces
+// it.)
 
 #[derive(Debug)]
 pub enum AppError {
     ExerciseNotFound(String),
+    ExerciseIdRequired(String),
+    ExerciseAlreadyExists(String),
     WorkoutNotFound(String),
+    WorkoutIdRequired(String),
+    WorkoutAlreadyExists(String),
     WorkoutSetNotFound(String),
+    WorkoutSetIdRequired(String),
+    WorkoutSetAlreadyExists(String),
     TagNotFound(String),
+    TagIdRequired(String),
+    TagAlreadyExists(String),
     Md(String),
 }
 
@@ -37,6 +46,14 @@ impl std::fmt::Display for AppError {
             AppError::WorkoutNotFound(id) => write!(f, "Workout not found: {id}"),
             AppError::WorkoutSetNotFound(id) => write!(f, "WorkoutSet not found: {id}"),
             AppError::TagNotFound(id) => write!(f, "Tag not found: {id}"),
+            AppError::ExerciseIdRequired(reason)
+            | AppError::WorkoutIdRequired(reason)
+            | AppError::WorkoutSetIdRequired(reason)
+            | AppError::TagIdRequired(reason) => write!(f, "id required: {reason}"),
+            AppError::ExerciseAlreadyExists(id)
+            | AppError::WorkoutAlreadyExists(id)
+            | AppError::WorkoutSetAlreadyExists(id)
+            | AppError::TagAlreadyExists(id) => write!(f, "already exists: {id}"),
             AppError::Md(msg) => write!(f, "markdown store error: {msg}"),
         }
     }

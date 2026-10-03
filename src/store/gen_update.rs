@@ -8,6 +8,7 @@
 
 use super::backends::WikilinkPolicy;
 use super::helpers::to_snake_case;
+use crate::persistence::dto::qualify_type;
 use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationKind};
 
 // ─── Update struct ───────────────────────────────────────────────────────────
@@ -162,15 +163,6 @@ fn field_to_update_type(field: &FieldDef) -> String {
         FieldType::Bool => "Option<bool>".to_string(),
         FieldType::OptionBool => "Option<Option<bool>>".to_string(),
         FieldType::Other(ty) => format!("Option<{}>", qualify_type(ty)),
-    }
-}
-
-/// Qualify a type with `crate::schema::` unless it's a primitive.
-fn qualify_type(t: &str) -> String {
-    match t {
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32"
-        | "f64" | "bool" | "char" | "String" => t.to_string(),
-        _ => format!("crate::schema::{t}"),
     }
 }
 

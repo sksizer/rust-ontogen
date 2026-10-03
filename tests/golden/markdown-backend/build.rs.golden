@@ -25,14 +25,15 @@ fn main() {
                 vault_root: "data/vault".into(),
                 // data/vault/<entity-dir>/<id>.md
                 layout: MarkdownLayout::PerEntityDir,
-                // New records without a caller-supplied id slugify this field.
-                id_strategy: IdStrategy::SlugFromField("title".into()),
                 // Loud error past this many records per list() (ADR scale ceiling).
                 list_cap: 10_000,
             },
         )
         .dtos("src/schema/dto")
         .store("src/store/generated", Some("src/store/hooks"))
+        // New records without a caller-supplied id slugify this field. The
+        // store's choice, on either backend; the runtime vault holds none.
+        .store_id_strategy(IdStrategy::SlugFromField("title".into()))
         .api("src/api/v1/generated", "AppState")
         .build()
         .unwrap_or_else(|e| {
@@ -52,7 +53,6 @@ fn main() {
 //             output_dir: "src/persistence/markdown/generated".into(),
 //             vault_root: "data/vault".into(),
 //             layout: MarkdownLayout::PerEntityDir,
-//             id_strategy: IdStrategy::SlugFromField("title".into()),
 //             list_cap: 10_000,
 //         },
 //     )?; // ← now returns MarkdownIoOutput (was `()`)
@@ -64,6 +64,8 @@ fn main() {
 //             hooks_dir: Some("src/store/hooks".into()),
 //             schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
 //             backend: Backend::Markdown(md), // ← the generation-time choice (owned, no lifetime)
+//             wikilink_policy: None,
+//             id_strategy: IdStrategy::SlugFromField("title".into()), // ← both backends
 //         },
 //     )?;
 //
@@ -91,5 +93,10 @@ fn main() {
 //     impl From<markdown_store::Error> for AppError {
 //         fn from(e: markdown_store::Error) -> Self { AppError::Md(e.to_string()) }
 //     }
-// {Entity}NotFound variants are reused as on SeaORM. DbError is never
-// referenced by markdown-generated code.
+// The typed variants are the same as on SeaORM: {Entity}NotFound,
+// {Entity}IdRequired and {Entity}AlreadyExists per entity, and
+// {Child}ParentRequired for a has_many child whose foreign key is not
+// Option. DbError is never referenced by markdown-generated code.
+//
+// The vault handle carries no id strategy:
+//     VaultHandle::new("data/vault", VaultLayout::PerEntityDir)
