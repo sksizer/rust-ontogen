@@ -65,6 +65,10 @@ impl Store {
         Ok(exercises.into_iter().skip(offset).take(limit).collect())
     }
 
+    pub async fn count_exercises(&self) -> Result<u64, AppError> {
+        Ok(self.vault().list_paths(EXERCISES_DIR).map_err(AppError::from)?.len() as u64)
+    }
+
     pub async fn get_exercise(&self, id: &str) -> Result<Exercise, AppError> {
         let doc = self
             .vault()
