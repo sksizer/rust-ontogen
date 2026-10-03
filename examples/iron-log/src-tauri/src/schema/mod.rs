@@ -27,12 +27,28 @@ pub use dto::workout_set::{CreateWorkoutSetInput, UpdateWorkoutSetInput};
 pub enum AppError {
     #[error("Exercise not found: {0}")]
     ExerciseNotFound(String),
+    #[error("Exercise id required: {0}")]
+    ExerciseIdRequired(String),
+    #[error("Exercise already exists: {0}")]
+    ExerciseAlreadyExists(String),
     #[error("Workout not found: {0}")]
     WorkoutNotFound(String),
+    #[error("Workout id required: {0}")]
+    WorkoutIdRequired(String),
+    #[error("Workout already exists: {0}")]
+    WorkoutAlreadyExists(String),
     #[error("WorkoutSet not found: {0}")]
     WorkoutSetNotFound(String),
+    #[error("WorkoutSet id required: {0}")]
+    WorkoutSetIdRequired(String),
+    #[error("WorkoutSet already exists: {0}")]
+    WorkoutSetAlreadyExists(String),
     #[error("Tag not found: {0}")]
     TagNotFound(String),
+    #[error("Tag id required: {0}")]
+    TagIdRequired(String),
+    #[error("Tag already exists: {0}")]
+    TagAlreadyExists(String),
     #[error("Database error: {0}")]
     DbError(String),
 }

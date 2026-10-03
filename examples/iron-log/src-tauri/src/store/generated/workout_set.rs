@@ -92,7 +92,7 @@ impl Store {
         }
         let models = query.all(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-        Ok(models.iter().map(WorkoutSet::from_model).collect())
+        models.iter().map(WorkoutSet::from_model).collect()
     }
 
     pub async fn count_workout_sets(&self) -> Result<u64, AppError> {
@@ -106,16 +106,21 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::WorkoutSetNotFound(id.to_string()))?;
 
-        Ok(WorkoutSet::from_model(&model))
+        WorkoutSet::from_model(&model)
     }
 
     pub async fn create_workout_set(&self, mut workout_set: WorkoutSet) -> Result<WorkoutSet, AppError> {
         hooks::before_create(self, &mut workout_set).await?;
 
-        let id = workout_set.id.clone();
-        let active = workout_set.to_active_model();
-
-        active.insert(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        let id = if workout_set.id.trim().is_empty() {
+            return Err(AppError::WorkoutSetIdRequired("this store requires the caller to supply an id".to_string()));
+        } else {
+            ontogen_core::id::validate_id(&workout_set.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_workout_set(&workout_set).await? {
+                return Err(AppError::WorkoutSetAlreadyExists(workout_set.id));
+            }
+            workout_set.id.clone()
+        };
 
         let created = self.get_workout_set(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::WorkoutSet, id);
@@ -131,12 +136,12 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::WorkoutSetNotFound(id.to_string()))?;
 
-        let mut current = WorkoutSet::from_model(&existing_model);
+        let mut current = WorkoutSet::from_model(&existing_model)?;
         hooks::before_update(self, &current, &updates).await?;
 
         updates.apply(&mut current);
 
-        let active = current.to_active_model();
+        let active = current.to_active_model()?;
         active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_workout_set(id).await?;
@@ -162,5 +167,21 @@ impl Store {
 
         hooks::after_delete(self, id).await?;
         Ok(())
+    }
+
+    async fn try_insert_workout_set(&self, workout_set: &WorkoutSet) -> Result<bool, AppError> {
+        let active = workout_set.to_active_model()?;
+        match active.insert(self.db()).await {
+            Ok(_) => Ok(true),
+            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                let taken = workout_set::Entity::find_by_id(workout_set.id.as_str())
+                    .one(self.db())
+                    .await
+                    .map_err(|e| AppError::DbError(e.to_string()))?
+                    .is_some();
+                if taken { Ok(false) } else { Err(AppError::DbError(e.to_string())) }
+            }
+            Err(e) => Err(AppError::DbError(e.to_string())),
+        }
     }
 }

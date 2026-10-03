@@ -61,12 +61,13 @@ impl Store {
     }
 
     pub async fn get_epic(&self, id: &str) -> Result<Epic, AppError> {
-        let doc = self
-            .vault()
-            .entity(EPICS_DIR, EPIC_TYPE)
-            .read_opt(id)
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::EpicNotFound(id.to_string()))?;
+        let doc = match self.vault().entity(EPICS_DIR, EPIC_TYPE).read_opt(id) {
+            Ok(Some(doc)) => doc,
+            Ok(None) | Err(markdown_store::Error::InvalidId { .. }) => {
+                return Err(AppError::EpicNotFound(id.to_string()));
+            }
+            Err(e) => return Err(AppError::from(e)),
+        };
         let fm: EpicFrontmatter = doc.deserialize().map_err(AppError::from)?;
         Ok(fm.into_epic(id.to_string(), doc.body().to_string()))
     }
@@ -77,11 +78,17 @@ impl Store {
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&EpicFrontmatter::from_epic(&epic), EPIC_FM_FIELDS).map_err(AppError::from)?;
         doc.set_body(epic.body.clone());
-        let id = self
-            .vault()
-            .entity(EPICS_DIR, EPIC_TYPE)
-            .create(Some(epic.id.as_str()).filter(|s| !s.is_empty()), Some(epic.title.as_str()), doc)
-            .map_err(AppError::from)?;
+        let id = match self.vault().entity(EPICS_DIR, EPIC_TYPE).create(
+            &markdown_store::IdStrategy::SlugFromField("title".into()),
+            Some(epic.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(epic.title.as_str()),
+            doc,
+        ) {
+            Ok(id) => id,
+            Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::EpicIdRequired(reason)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::EpicAlreadyExists(epic.id)),
+            Err(e) => return Err(AppError::from(e)),
+        };
 
         let created = self.get_epic(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Epic, id);
@@ -116,7 +123,7 @@ impl Store {
 
         match self.vault().entity(EPICS_DIR, EPIC_TYPE).remove(id) {
             Ok(()) => {}
-            Err(markdown_store::Error::NotFound { .. }) => {
+            Err(markdown_store::Error::NotFound { .. } | markdown_store::Error::InvalidId { .. }) => {
                 return Err(AppError::EpicNotFound(id.to_string()));
             }
             Err(e) => return Err(AppError::from(e)),

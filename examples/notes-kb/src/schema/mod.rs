@@ -11,6 +11,8 @@ pub use dto::note::{CreateNoteInput, UpdateNoteInput};
 #[derive(Debug)]
 pub enum AppError {
     NoteNotFound(String),
+    NoteIdRequired(String),
+    NoteAlreadyExists(String),
     Md(String),
 }
 
@@ -18,6 +20,8 @@ impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AppError::NoteNotFound(id) => write!(f, "Note not found: {id}"),
+            AppError::NoteIdRequired(reason) => write!(f, "id required: {reason}"),
+            AppError::NoteAlreadyExists(id) => write!(f, "already exists: {id}"),
             AppError::Md(msg) => write!(f, "markdown store error: {msg}"),
         }
     }

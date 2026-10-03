@@ -70,12 +70,13 @@ impl Store {
     }
 
     pub async fn get_note(&self, id: &str) -> Result<Note, AppError> {
-        let doc = self
-            .vault()
-            .entity(NOTES_DIR, NOTE_TYPE)
-            .read_opt(id)
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::NoteNotFound(id.to_string()))?;
+        let doc = match self.vault().entity(NOTES_DIR, NOTE_TYPE).read_opt(id) {
+            Ok(Some(doc)) => doc,
+            Ok(None) | Err(markdown_store::Error::InvalidId { .. }) => {
+                return Err(AppError::NoteNotFound(id.to_string()));
+            }
+            Err(e) => return Err(AppError::from(e)),
+        };
         let fm: NoteFrontmatter = doc.deserialize().map_err(AppError::from)?;
         let mut note = fm.into_note(id.to_string(), doc.body().to_string());
         self.populate_note_relations(&mut note).await?;
@@ -88,11 +89,17 @@ impl Store {
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&NoteFrontmatter::from_note(&note), NOTE_FM_FIELDS).map_err(AppError::from)?;
         doc.set_body(note.body.clone());
-        let id = self
-            .vault()
-            .entity(NOTES_DIR, NOTE_TYPE)
-            .create(Some(note.id.as_str()).filter(|s| !s.is_empty()), Some(note.title.as_str()), doc)
-            .map_err(AppError::from)?;
+        let id = match self.vault().entity(NOTES_DIR, NOTE_TYPE).create(
+            &markdown_store::IdStrategy::SlugFromField("title".into()),
+            Some(note.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(note.title.as_str()),
+            doc,
+        ) {
+            Ok(id) => id,
+            Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::NoteIdRequired(reason)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::NoteAlreadyExists(note.id)),
+            Err(e) => return Err(AppError::from(e)),
+        };
 
         let created = self.get_note(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Note, id);
@@ -127,7 +134,7 @@ impl Store {
 
         match self.vault().entity(NOTES_DIR, NOTE_TYPE).remove(id) {
             Ok(()) => {}
-            Err(markdown_store::Error::NotFound { .. }) => {
+            Err(markdown_store::Error::NotFound { .. } | markdown_store::Error::InvalidId { .. }) => {
                 return Err(AppError::NoteNotFound(id.to_string()));
             }
             Err(e) => return Err(AppError::from(e)),

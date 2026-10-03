@@ -92,12 +92,13 @@ impl Store {
     }
 
     pub async fn get_workout(&self, id: &str) -> Result<Workout, AppError> {
-        let doc = self
-            .vault()
-            .entity(WORKOUTS_DIR, WORKOUT_TYPE)
-            .read_opt(id)
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::WorkoutNotFound(id.to_string()))?;
+        let doc = match self.vault().entity(WORKOUTS_DIR, WORKOUT_TYPE).read_opt(id) {
+            Ok(Some(doc)) => doc,
+            Ok(None) | Err(markdown_store::Error::InvalidId { .. }) => {
+                return Err(AppError::WorkoutNotFound(id.to_string()));
+            }
+            Err(e) => return Err(AppError::from(e)),
+        };
         let fm: WorkoutFrontmatter = doc.deserialize().map_err(AppError::from)?;
         let mut workout = fm.into_workout(id.to_string());
         self.populate_workout_relations(&mut workout).await?;
@@ -109,11 +110,17 @@ impl Store {
 
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&WorkoutFrontmatter::from_workout(&workout), WORKOUT_FM_FIELDS).map_err(AppError::from)?;
-        let id = self
-            .vault()
-            .entity(WORKOUTS_DIR, WORKOUT_TYPE)
-            .create(Some(workout.id.as_str()).filter(|s| !s.is_empty()), None, doc)
-            .map_err(AppError::from)?;
+        let id = match self.vault().entity(WORKOUTS_DIR, WORKOUT_TYPE).create(
+            &markdown_store::IdStrategy::Provided,
+            Some(workout.id.as_str()).filter(|s| !s.trim().is_empty()),
+            None,
+            doc,
+        ) {
+            Ok(id) => id,
+            Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::WorkoutIdRequired(reason)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::WorkoutAlreadyExists(workout.id)),
+            Err(e) => return Err(AppError::from(e)),
+        };
 
         let created = self.get_workout(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Workout, id);
@@ -147,7 +154,7 @@ impl Store {
 
         match self.vault().entity(WORKOUTS_DIR, WORKOUT_TYPE).remove(id) {
             Ok(()) => {}
-            Err(markdown_store::Error::NotFound { .. }) => {
+            Err(markdown_store::Error::NotFound { .. } | markdown_store::Error::InvalidId { .. }) => {
                 return Err(AppError::WorkoutNotFound(id.to_string()));
             }
             Err(e) => return Err(AppError::from(e)),
