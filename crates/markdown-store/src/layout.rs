@@ -85,9 +85,10 @@ pub const DEVICE_NAMES: &[&str] = &[
 ];
 
 /// Whether `id`, or the part of it before its first `.`, is one of
-/// [`DEVICE_NAMES`], compared ASCII case-insensitively. Only the create
-/// rule refuses these: a `con.md` written on Linux or macOS stays
-/// listable and reachable there.
+/// [`DEVICE_NAMES`], compared ASCII case-insensitively. The create rule
+/// refuses these; a `con.md` written on Linux or macOS stays listable and
+/// reachable there. On Windows a lookup of one is
+/// [`Error::NotFound`] unopened (see [`crate::VaultHandle`]).
 ///
 /// ```
 /// use markdown_store::layout::is_device_name;

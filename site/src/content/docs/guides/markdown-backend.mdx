@@ -116,7 +116,9 @@ A new id also cannot be a Windows device name (`con`, `prn`, `aux`, `nul`,
 `com0`-`com9`, `lpt0`-`lpt9`), in any case, either as the whole id or as the
 part before its first `.`. Windows has no file of that name, so `con.md` could
 not exist there. A slug that comes out as `con` becomes `con-2`. The rule
-applies to creates only: an existing `con.md` stays listed and reachable. See
+applies to creates only: on Linux and macOS an existing `con.md` stays listed
+and reachable. On Windows, a lookup of such an id is NotFound without opening any file, because
+opening `con.md` there opens the console device. See
 [Creating records](/guides/store-layer/#creating-records) for the whole id rule.
 
 ### Reserved frontmatter keys

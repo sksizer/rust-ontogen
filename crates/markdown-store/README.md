@@ -68,7 +68,8 @@ Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
   macOS and Windows; slugs fold accented Latin letters to ASCII and
   are cut to 190 bytes. Lookups only check path safety
   (`layout::validate_lookup_id`), so a hand-named `Draft.md` stays
-  reachable.
+  reachable. On Windows a lookup of a device name (`con`, `nul.x`) is
+  `NotFound` without opening anything, since `con.md` opens the console.
 - **Lookups match the stored name exactly.** A record is found only under
   its file stem byte for byte, also on filesystems that resolve another
   letter case or Unicode normalization form to the same file (macOS,

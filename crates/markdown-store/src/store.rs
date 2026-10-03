@@ -162,6 +162,15 @@ impl std::fmt::Debug for OkfPolicy {
 /// costs what the open costs. Where they do, a lookup that opens a file
 /// also lists that file's directory until it finds the exact name.
 ///
+/// # Device names on Windows
+///
+/// On Windows, a lookup whose id is a device name, whole or before its
+/// first `.` ([`crate::layout::is_device_name`]: `con`, `nul.x`, `COM1`), is
+/// [`Error::NotFound`] without opening anything: Windows opens the device
+/// for `con.md`, and no record can be stored under such a name there.
+/// Elsewhere such a record (written by hand, or before the create rule
+/// refused the name) stays reachable.
+///
 /// ```
 /// use markdown_store::{Document, VaultHandle, VaultLayout};
 ///
@@ -186,6 +195,10 @@ pub struct VaultHandle {
     list_cap: usize,
     okf: OkfPolicy,
     write_guard: Arc<Mutex<()>>,
+    /// Whether a lookup of a device name is NotFound unopened (see
+    /// [device names](Self#device-names-on-windows)): `cfg!(windows)`,
+    /// settable in tests so every platform exercises it.
+    devices_unopenable: bool,
     /// Whether lookups must confirm the stored name; probed once, shared by
     /// clones.
     names: Arc<NameCheck>,
@@ -205,6 +218,7 @@ impl VaultHandle {
             list_cap: DEFAULT_LIST_CAP,
             okf: OkfPolicy::default(),
             write_guard: Arc::new(Mutex::new(())),
+            devices_unopenable: cfg!(windows),
             names: Arc::default(),
             stale: Arc::default(),
         }
@@ -264,6 +278,17 @@ impl VaultHandle {
         self.layout.entity_dir(&self.root, dir_segment)
     }
 
+    /// The path a lookup of `id` reads, rewrites or removes, or
+    /// [`Error::NotFound`] when the id names a device on this platform
+    /// (see [device names](Self#device-names-on-windows)).
+    fn lookup_path(&self, dir_segment: &str, id: &str) -> Result<PathBuf, Error> {
+        let path = self.record_path(dir_segment, id)?;
+        if lookup_is_device(id, self.devices_unopenable) {
+            return Err(Error::NotFound { path });
+        }
+        Ok(path)
+    }
+
     /// The records of one entity: its directory segment plus the OKF `type`
     /// its records carry. Generated store code goes through this view so
     /// every write is typed and, under [`VaultLayout::Flat`], every read is
@@ -277,7 +302,11 @@ impl VaultHandle {
     /// Whether a record is stored under exactly `id` (see
     /// [lookups](Self#lookups-match-the-stored-name-exactly)).
     pub fn record_exists(&self, dir_segment: &str, id: &str) -> Result<bool, Error> {
-        let path = self.record_path(dir_segment, id)?;
+        let path = match self.lookup_path(dir_segment, id) {
+            Ok(path) => path,
+            Err(Error::NotFound { .. }) => return Ok(false),
+            Err(e) => return Err(e),
+        };
         Ok(fsops::exists(&path) && self.names.exact(&path)?)
     }
 
@@ -285,7 +314,7 @@ impl VaultHandle {
     /// [`Error::NotFound`] (see
     /// [lookups](Self#lookups-match-the-stored-name-exactly)).
     pub fn read_record(&self, dir_segment: &str, id: &str) -> Result<Document, Error> {
-        let path = self.record_path(dir_segment, id)?;
+        let path = self.lookup_path(dir_segment, id)?;
         let raw = fsops::read(&path)?;
         self.require_exact(&path)?;
         Document::parse(&raw).map_err(|e| Error::parse_at(&path, e))
@@ -363,7 +392,7 @@ impl VaultHandle {
     where
         F: FnOnce(&mut Document) -> Result<(), Error>,
     {
-        let path = self.record_path(dir_segment, id)?;
+        let path = self.lookup_path(dir_segment, id)?;
         let _guard = self.lock();
         self.require_exact(&path)?;
         self.rewrite(&path, f)
@@ -373,7 +402,7 @@ impl VaultHandle {
     /// stored under exactly `id`, is [`Error::NotFound`] and nothing is
     /// removed.
     pub fn remove_record(&self, dir_segment: &str, id: &str) -> Result<(), Error> {
-        let path = self.record_path(dir_segment, id)?;
+        let path = self.lookup_path(dir_segment, id)?;
         let _guard = self.lock();
         self.require_exact(&path)?;
         self.delete(&path)
@@ -692,6 +721,12 @@ impl VaultHandle {
     }
 }
 
+/// Whether a lookup of `id` must not open its file: `windows` is set and
+/// the id, or its part before the first `.`, is a device name.
+fn lookup_is_device(id: &str, windows: bool) -> bool {
+    windows && crate::layout::is_device_name(id)
+}
+
 /// One entity's records within a vault, from [`VaultHandle::entity`].
 ///
 /// Writes stamp the OKF `type` (see [`Document::stamp_type`]): a create
@@ -812,7 +847,7 @@ impl<'a> EntityRecords<'a> {
     where
         F: FnOnce(&mut Document) -> Result<(), Error>,
     {
-        let path = self.vault.record_path(self.dir_segment, id)?;
+        let path = self.vault.lookup_path(self.dir_segment, id)?;
         let _guard = self.vault.lock();
         self.vault.require_exact(&path)?;
         self.vault.rewrite(&path, |doc| {
@@ -834,7 +869,7 @@ impl<'a> EntityRecords<'a> {
     /// no telling whose it is, and deleting another entity's file is worse
     /// than refusing. Fix the frontmatter or delete the file by hand.
     pub fn remove(&self, id: &str) -> Result<(), Error> {
-        let path = self.vault.record_path(self.dir_segment, id)?;
+        let path = self.vault.lookup_path(self.dir_segment, id)?;
         let _guard = self.vault.lock();
         self.vault.require_exact(&path)?;
         if self.vault.layout == VaultLayout::Flat {
@@ -1016,6 +1051,48 @@ mod tests {
             vault.read_record("tasks", &"l".repeat(crate::layout::MAX_STEM_LEN + 1)),
             Err(Error::InvalidId { .. })
         ));
+    }
+
+    #[test]
+    fn only_a_windows_lookup_of_a_device_name_skips_the_file() {
+        for device in ["con", "NUL", "nul.x", "Com0", "lpt9.md", "aux.a.b"] {
+            assert!(lookup_is_device(device, true), "{device:?}");
+            assert!(!lookup_is_device(device, false), "{device:?}");
+        }
+        for fine in ["console", "con-2", "a.con", "com10", "Draft"] {
+            assert!(!lookup_is_device(fine, true), "{fine:?}");
+        }
+    }
+
+    #[test]
+    fn a_device_name_lookup_on_windows_is_not_found_and_touches_nothing() {
+        let (_dir, mut vault) = vault();
+        let devices = ["con", "nul.x", "COM1"];
+        // Windows cannot hold these files; elsewhere they stand in for the
+        // device the guard must not open.
+        if !cfg!(windows) {
+            for id in devices {
+                seed(&vault, "tasks", id, "---\ntitle: kept\n---\n");
+                assert!(vault.record_exists("tasks", id).unwrap(), "{id:?} is reachable off Windows");
+            }
+        }
+        vault.devices_unopenable = true;
+        let tasks = vault.entity("tasks", "Task");
+        for id in devices {
+            assert!(!vault.record_exists("tasks", id).unwrap(), "{id:?}");
+            assert_not_found(vault.read_record("tasks", id), id);
+            assert!(vault.read_record_opt("tasks", id).unwrap().is_none(), "{id:?}");
+            assert!(tasks.read_opt(id).unwrap().is_none(), "{id:?}");
+            assert_not_found(vault.modify_record("tasks", id, |_| panic!("{id:?} was opened")), id);
+            assert_not_found(tasks.modify(id, |_| panic!("{id:?} was opened")), id);
+            assert_not_found(vault.remove_record("tasks", id), id);
+            assert_not_found(tasks.remove(id), id);
+            if !cfg!(windows) {
+                assert_eq!(raw(&vault, "tasks", id), "---\ntitle: kept\n---\n", "{id:?} is untouched");
+            }
+        }
+        tasks.create(&IdStrategy::Provided, Some("console"), None, doc("x")).unwrap();
+        assert!(tasks.read_opt("console").unwrap().is_some(), "a near miss is looked up as usual");
     }
 
     /// Whether the test machine's filesystem would open `variant` in the
