@@ -6,7 +6,7 @@
 //! ids, a field renamed off a reserved key).
 
 use markdown_pilot::Store;
-use markdown_pilot::persistence::markdown::generated::vault::open_vault;
+use markdown_pilot::persistence::markdown::generated::open_vault;
 use markdown_pilot::schema::{Note, Task};
 
 fn store() -> (tempfile::TempDir, Store) {

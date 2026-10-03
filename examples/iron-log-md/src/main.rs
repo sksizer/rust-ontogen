@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use iron_log_md::AppState;
-use iron_log_md::persistence::markdown::generated::vault::{VAULT_ROOT, open_vault};
+use iron_log_md::persistence::markdown::generated::{VAULT_ROOT, open_vault};
 
 #[tokio::main]
 async fn main() {

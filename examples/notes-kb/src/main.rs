@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use notes_kb::AppState;
-use notes_kb::persistence::markdown::generated::vault::{VAULT_ROOT, open_vault};
+use notes_kb::persistence::markdown::generated::{VAULT_ROOT, open_vault};
 
 #[tokio::main]
 async fn main() {

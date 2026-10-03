@@ -586,21 +586,25 @@ mod tests {
     }
 
     #[test]
-    fn an_entity_named_vault_cannot_shadow_open_vault() {
+    fn an_entity_named_vault_generates_beside_open_vault() {
         let mut vault = entity(vec![]);
         vault.name = "Vault".into();
         let schema = crate::ir::SchemaOutput { entities: vec![vault], enums: vec![] };
         let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("generated");
         let config = crate::MarkdownIoConfig {
-            output_dir: tmp.path().join("generated"),
+            output_dir: out.clone(),
             vault_root: "data/vault".into(),
             layout: crate::ir::MarkdownLayout::PerEntityDir,
             id_strategy: crate::ir::IdStrategy::Provided,
             list_cap: 10_000,
             okf: OkfOptions::default(),
         };
-        let err = crate::gen_markdown_io(&schema, &config).unwrap_err();
-        assert!(err.to_string().contains("entity `Vault` would generate the frontmatter module `vault.rs`"), "{err}");
+        crate::gen_markdown_io(&schema, &config).expect("`Vault` is an ordinary entity name");
+        let module = std::fs::read_to_string(out.join("vault.rs")).unwrap();
+        assert!(module.contains("pub struct VaultFrontmatter"), "{module}");
+        let mod_rs = std::fs::read_to_string(out.join("mod.rs")).unwrap();
+        assert!(mod_rs.contains("pub mod vault;") && mod_rs.contains("pub fn open_vault("), "{mod_rs}");
     }
 
     #[test]

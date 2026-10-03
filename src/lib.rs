@@ -161,8 +161,9 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 }
 
 /// Generate the markdown frontmatter boundary: one typed
-/// `{Entity}Frontmatter` module per entity, with its owned-key list, plus
-/// `vault.rs`. Its `open_vault(root)` builds the runtime
+/// `{Entity}Frontmatter` module per entity, with its owned-key list, and a
+/// `mod.rs` declaring them that also holds `VAULT_ROOT` and
+/// `open_vault(root)`. `open_vault` builds the runtime
 /// `markdown_store::VaultHandle` with this configuration's layout, id
 /// strategy, list cap and [`OkfOptions`], and `VAULT_ROOT` is `vault_root`;
 /// consumers construct their vault through it rather than by hand.
@@ -184,8 +185,7 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 /// Returns [`CodegenError::Persistence`] for a reserved or colliding
 /// frontmatter key (`generated` is reserved while
 /// [`OkfOptions::generated_by`] is set), an `okf.generated_by` that is not
-/// an OKF actor for a program, an entity whose module would be `vault.rs`,
-/// or on I/O or formatting failure.
+/// an OKF actor for a program, or on I/O or formatting failure.
 ///
 /// # Example
 ///

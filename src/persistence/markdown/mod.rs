@@ -11,8 +11,8 @@
 //! generic consumer and was retired with it — bulk scanning returns as a
 //! follow-up on top of `VaultHandle` if a consumer earns it.
 //!
-//! Beside them, `vault.rs` carries `open_vault`, which builds that
-//! `VaultHandle` from the build-time configuration.
+//! Their `mod.rs` also carries `open_vault`, which builds that
+//! `VaultHandle` from the build-time configuration, and `VAULT_ROOT`.
 
 pub mod gen_frontmatter;
 pub mod gen_vault;
@@ -25,8 +25,8 @@ use crate::store::helpers::to_snake_case;
 use crate::{CodegenError, MarkdownIoConfig};
 
 /// Generate the markdown I/O code: per-entity `{Entity}Frontmatter` modules
-/// plus `vault.rs`, whose `open_vault` builds the runtime `VaultHandle` from
-/// `config`.
+/// and a `mod.rs` that declares them and holds `VAULT_ROOT` and
+/// `open_vault`, which builds the runtime `VaultHandle` from `config`.
 ///
 /// Checks run first and fail generation before anything is written: the
 /// `okf.generated_by` actor (see `okf::check_generated_by`) and every
@@ -46,14 +46,6 @@ pub fn generate(schema: &SchemaOutput, config: &MarkdownIoConfig) -> Result<Mark
         && let Err(e) = okf::check_generated_by(actor)
     {
         errors.push(e);
-    }
-    if let Some(entity) = entities.iter().find(|e| to_snake_case(&e.name) == gen_vault::VAULT_MODULE) {
-        errors.push(format!(
-            "entity `{}` would generate the frontmatter module `{}.rs`, which the markdown generator emits \
-             `open_vault` into; rename the entity",
-            entity.name,
-            gen_vault::VAULT_MODULE
-        ));
     }
     let diagnostics = okf::check_frontmatter_keys(entities, &schema.enums, &config.okf);
     errors.extend(diagnostics.errors);
@@ -90,7 +82,7 @@ pub fn generate(schema: &SchemaOutput, config: &MarkdownIoConfig) -> Result<Mark
 }
 
 /// Write every module into `config.output_dir`, remove stale ones, and
-/// list them all in its `mod.rs`.
+/// list them all in its `mod.rs`, followed by `VAULT_ROOT` and `open_vault`.
 fn write_output(entities: &[crate::EntityDef], config: &MarkdownIoConfig) -> Result<(), String> {
     let output_dir = &config.output_dir;
     std::fs::create_dir_all(output_dir).map_err(|e| format!("create {}: {e}", output_dir.display()))?;
@@ -99,7 +91,6 @@ fn write_output(entities: &[crate::EntityDef], config: &MarkdownIoConfig) -> Res
         .iter()
         .map(|entity| (to_snake_case(&entity.name), gen_frontmatter::generate_frontmatter_module(entity)))
         .collect();
-    modules.push((gen_vault::VAULT_MODULE.to_string(), gen_vault::generate_vault_module(config)));
     modules.sort_by(|a, b| a.0.cmp(&b.0));
 
     let expected: HashSet<String> =
@@ -112,5 +103,7 @@ fn write_output(entities: &[crate::EntityDef], config: &MarkdownIoConfig) -> Res
             .map_err(|e| format!("write {name}.rs: {e}"))?;
         mod_rs.push_str(&format!("pub mod {name};\n"));
     }
+    mod_rs.push('\n');
+    mod_rs.push_str(&gen_vault::generate_open_vault(config));
     crate::write_and_format(&output_dir.join("mod.rs"), &mod_rs).map_err(|e| format!("write mod.rs: {e}"))
 }

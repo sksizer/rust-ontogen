@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use markdown_pilot::api::transport::http::generated::entity_routes;
-use markdown_pilot::persistence::markdown::generated::vault::open_vault;
+use markdown_pilot::persistence::markdown::generated::open_vault;
 use markdown_pilot::schema::Note;
 use markdown_pilot::{AppState, Store};
 use tower::util::ServiceExt;

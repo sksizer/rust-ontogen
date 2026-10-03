@@ -2,6 +2,22 @@
 
 pub mod exercise;
 pub mod tag;
-pub mod vault;
 pub mod workout;
 pub mod workout_set;
+
+/// Where the vault's records live, as configured at build time. A relative
+/// path resolves against the working directory the program runs from, not
+/// the crate root.
+pub const VAULT_ROOT: &str = "data/vault";
+
+/// Open the vault at `root` with the layout, id strategy, list cap and OKF
+/// options configured at build time. Pass [`VAULT_ROOT`] to use the configured
+/// location, or any other directory (a test's tempdir, say).
+pub fn open_vault(root: impl Into<std::path::PathBuf>) -> markdown_store::VaultHandle {
+    markdown_store::VaultHandle::new(
+        root,
+        markdown_store::VaultLayout::PerEntityDir,
+        markdown_store::IdStrategy::Provided,
+    )
+    .with_list_cap(10000)
+}

@@ -366,11 +366,11 @@ fn markdown_frontmatter_complex_entity() {
 }
 
 #[test]
-fn markdown_vault_module_with_okf_options() {
+fn markdown_open_vault_with_okf_options() {
     // The generated vault constructor with both OKF options on; the
     // knobs-off shape is pinned byte for byte by the pilot's committed
-    // `vault.rs` (tests/golden_conformance.rs).
-    let code = crate::persistence::markdown::gen_vault::generate_vault_module(&crate::MarkdownIoConfig {
+    // generated `mod.rs` (tests/golden_conformance.rs).
+    let code = crate::persistence::markdown::gen_vault::generate_open_vault(&crate::MarkdownIoConfig {
         output_dir: "unused".into(),
         vault_root: "data/vault".into(),
         layout: crate::ir::MarkdownLayout::PerEntityDir,

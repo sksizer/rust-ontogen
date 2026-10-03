@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use tasks_tracker::AppState;
-use tasks_tracker::persistence::markdown::generated::vault::{VAULT_ROOT, open_vault};
+use tasks_tracker::persistence::markdown::generated::{VAULT_ROOT, open_vault};
 
 #[tokio::main]
 async fn main() {
