@@ -8,9 +8,7 @@ use crate::ir::IdStrategy;
 use crate::schema::model::EntityDef;
 use crate::store::helpers::to_snake_case;
 
-pub(crate) struct SeaormBackend {
-    pub(crate) id_strategy: IdStrategy,
-}
+pub(crate) struct SeaormBackend;
 
 impl StoreBackend for SeaormBackend {
     fn emit_preamble(&self, code: &mut String, entity: &EntityDef) {
@@ -30,8 +28,8 @@ impl StoreBackend for SeaormBackend {
         code.push_str(&format!("use crate::persistence::db::entities::{snake};\n"));
     }
 
-    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef) {
-        gen_crud::generate_crud_impl(code, entity, &self.id_strategy);
+    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
+        gen_crud::generate_crud_impl(code, entity, id_strategy);
     }
 
     fn wikilink_policy(&self) -> super::WikilinkPolicy {

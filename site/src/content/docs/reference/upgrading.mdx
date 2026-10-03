@@ -11,7 +11,7 @@ Version 0.9 is still in progress. This page lists the breaking changes that have
 
 ### The id strategy moved to the store
 
-`StoreConfig` has a new `id_strategy: IdStrategy` field, and `IdStrategy` now implements `Default` (`Provided`). The markdown I/O types `MarkdownIoConfig`, `MarkdownIoOptions` and `MarkdownIoOutput` no longer carry `id_strategy`. The store config is the one place the strategy is set, for both backends.
+`StoreConfig` has a new, required `id_strategy: IdStrategy` field, and `IdStrategy` has no `Default`. The markdown I/O types `MarkdownIoConfig`, `MarkdownIoOptions` and `MarkdownIoOutput` no longer carry `id_strategy`. The store config is the one place the store-wide strategy is set, for both backends.
 
 Before:
 
@@ -39,12 +39,18 @@ StoreConfig {
 ```
 
 <Aside type="caution">
-Without the setter, or without the field in a `StoreConfig`, the strategy is `Provided`. A markdown app that relied on `SlugFromField` then fails every create without an id with `IdRequired`.
+The setter is required on every `Pipeline` with a `store(...)` stage, SeaORM ones included. Without it `build()` fails with `the store stage needs a default id strategy: call Pipeline::store_id_strategy(...)`. To keep the 0.8 SeaORM behaviour, where the caller supplies every id, call `.store_id_strategy(IdStrategy::Provided)`.
 </Aside>
+
+### Per-entity id strategy
+
+An entity can override the store-wide strategy in the schema with `#[ontology(entity, id = "provided" | "uuid" | "slug(<field>)")]`. Nothing changes for schemas that do not use it. See [Annotations](/reference/annotations/#id-strategy).
+
+`EntityDef` has a new `id_strategy: Option<IdStrategy>` field holding the override. Code that builds `EntityDef` values by hand adds `id_strategy: None`.
 
 ### `SlugFromField` needs a `String` field on every entity
 
-The field named in `SlugFromField` must be a plain `String` on every entity, on SeaORM as well as markdown. Otherwise the generator fails. Pick such a field, or use `Provided` or `Uuid`.
+The field named in `SlugFromField` must be a plain `String` on every entity the strategy applies to, on SeaORM as well as markdown. Otherwise the generator fails. Pick such a field, use `Provided` or `Uuid`, or give the entities without one their own `#[ontology(entity, id = "...")]`.
 
 ### Depend on `ontogen-core`
 

@@ -90,6 +90,7 @@ fn main() {
         )
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
+        .store_id_strategy(ontogen::IdStrategy::Provided)
         .api("src/api/v1/generated", "AppState")
         .servers(servers_config)
         .clients(clients_config)
@@ -110,7 +111,7 @@ The builder's defaults: `schema_module_path` defaults to `ontogen::DEFAULT_SCHEM
 
 `Pipeline` also fills in `ClientsConfig.schema_entities` from the schema stage and `pool_exclude_paths` from the `seaorm()` stage, which is why both are left empty above. And it **infers the store backend** when exactly one persistence stage is configured -- if you enable both `seaorm(...)` and `markdown_io(...)`, disambiguate with `.store_backend(StoreBackendChoice::Seaorm)`.
 
-The id strategy for records created without an id is a store setting: `.store_id_strategy(IdStrategy::SlugFromField("title".into()))` applies to either backend and defaults to `IdStrategy::Provided`. See [Creating records](/guides/store-layer/#creating-records).
+The id strategy for records created without an id is a store setting, and it is required: with a `store(...)` stage, `build()` fails until `.store_id_strategy(...)` is called. `IdStrategy::Provided` makes the caller supply every id; `IdStrategy::SlugFromField("title".into())` and `IdStrategy::Uuid` derive one. It applies to either backend and is the default for every entity; an entity overrides it with `#[ontology(entity, id = "uuid")]` (or `"provided"`, `"slug(<field>)"`). See [Creating records](/guides/store-layer/#creating-records).
 </Aside>
 
 ### Formatting the generated TypeScript
@@ -404,6 +405,7 @@ You don't need to run everything. Pick the generators you need.
             "src/store/generated",
             Some::<std::path::PathBuf>("src/store/hooks".into()),
         )
+        .store_id_strategy(ontogen::IdStrategy::Provided)
         .build()
         .expect("ontogen pipeline failed");
     ```

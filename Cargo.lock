@@ -1040,9 +1040,7 @@ name = "parity-check"
 version = "0.1.0"
 dependencies = [
  "parity-markdown",
- "parity-markdown-provided",
  "parity-seaorm",
- "parity-seaorm-provided",
  "serde",
  "serde_json",
  "tempfile",
@@ -1051,19 +1049,6 @@ dependencies = [
 
 [[package]]
 name = "parity-markdown"
-version = "0.1.0"
-dependencies = [
- "markdown-store",
- "ontogen",
- "ontogen-macros",
- "schemars",
- "serde",
- "specta",
- "tokio",
-]
-
-[[package]]
-name = "parity-markdown-provided"
 version = "0.1.0"
 dependencies = [
  "markdown-store",
@@ -1086,20 +1071,6 @@ dependencies = [
  "sea-orm",
  "serde",
  "serde_json",
- "specta",
- "tokio",
-]
-
-[[package]]
-name = "parity-seaorm-provided"
-version = "0.1.0"
-dependencies = [
- "ontogen",
- "ontogen-core",
- "ontogen-macros",
- "schemars",
- "sea-orm",
- "serde",
  "specta",
  "tokio",
 ]

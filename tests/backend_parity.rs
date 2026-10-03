@@ -4,9 +4,10 @@
 //! backends. Two consumers in one workspace can share the entire transport
 //! stack while their stores diverge.
 //!
-//! Enforced three ways, under every `IdStrategy` (the strategy reaches the
-//! store of either backend through `StoreConfig`, and must change nothing
-//! above it):
+//! Enforced three ways, under every `IdStrategy` and with per-entity
+//! overrides (the default reaches the store of either backend through
+//! `StoreConfig`, an override through the entity, and neither may change
+//! anything above it):
 //! - `StoreOutput` method metadata is compared field-by-field (the fast
 //!   unit-level guard — `collect_method_meta` must never branch on backend);
 //! - the public signatures of each generated store module, `count_*`
@@ -280,6 +281,10 @@ fn the_runtime_parity_schema_is_backend_identical() {
             let sig_b = store_signatures(&markdown.join("store").join(&file));
             assert_eq!(sig_a, sig_b, "{strategy:?}: {file}: the store's callable surface differs between backends");
         }
+        let fixed = entities.iter().find(|e| e.name == "Fixed").expect("Fixed");
+        assert_eq!(fixed.id_strategy, Some(IdStrategy::Provided), "Fixed overrides the default in the schema");
+        let fixed_store = std::fs::read_to_string(seaorm.join("store/fixed.rs")).expect("fixed.rs");
+        assert!(fixed_store.contains("this store requires the caller to supply an id"), "{strategy:?}: {fixed_store}");
         let item_update = &store_signatures(&seaorm.join("store/item.rs"))[0];
         assert!(item_update.contains("pub maybe_u32 : Option < Option < u32 > >"), "{item_update}");
         assert!(item_update.contains("pub kind : Option < crate :: schema :: Kind >"), "{item_update}");
@@ -322,6 +327,50 @@ fn downstream_output_is_byte_identical_across_backends() {
         assert_ne!(store_a, store_b, "store layers must differ between backends");
         assert!(store_b["note.rs"].contains("self.vault()"), "markdown store talks to the vault");
         assert!(store_a["note.rs"].contains("self.db()"), "seaorm store talks to the db");
+    }
+}
+
+/// Entities that set their own id strategy (`#[ontology(entity, id = ...)]`)
+/// change their stores and nothing above them, whatever the default.
+#[test]
+fn per_entity_id_overrides_are_byte_identical_above_the_store() {
+    let mut entities = fixture_entities();
+    let overrides = [
+        ("Note", IdStrategy::Uuid),
+        ("Task", IdStrategy::Provided),
+        ("Tag", IdStrategy::SlugFromField("title".into())),
+    ];
+    for (name, strategy) in &overrides {
+        let entity = entities.iter_mut().find(|e| &e.name == name).unwrap_or_else(|| panic!("pilot has {name}"));
+        entity.id_strategy = Some(strategy.clone());
+    }
+    for default in strategies() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (seaorm, markdown) = (tmp.path().join("seaorm"), tmp.path().join("markdown"));
+        let meta_a = gen_stack(&entities, Backend::Seaorm(None), &default, &seaorm);
+        let meta_b = gen_stack(&entities, markdown_backend(&entities), &default, &markdown);
+
+        assert_eq!(method_meta_fingerprint(&meta_a), method_meta_fingerprint(&meta_b), "{default:?}");
+        for entity in &entities {
+            let file = format!("{}.rs", ontogen::to_snake_case(&entity.name));
+            let sig_a = store_signatures(&seaorm.join("store").join(&file));
+            let sig_b = store_signatures(&markdown.join("store").join(&file));
+            assert_eq!(sig_a, sig_b, "{default:?}: {file}: the store's callable surface differs between backends");
+        }
+        assert_trees_identical(
+            &format!("per-entity overrides, default {default:?}, above the store"),
+            &seaorm.join("above"),
+            &markdown.join("above"),
+        );
+
+        // The overrides reached both stores, so the comparison above covered them.
+        let (store_a, store_b) = (tree(&seaorm.join("store")), tree(&markdown.join("store")));
+        assert!(store_a["note.rs"].contains("ontogen_core::id::new_uuid()"), "{default:?}: Note is uuid");
+        assert!(store_b["note.rs"].contains("&markdown_store::IdStrategy::Uuid,"), "{default:?}: Note is uuid");
+        assert!(store_a["task.rs"].contains("TaskIdRequired(\"this store requires"), "{default:?}: Task is provided");
+        assert!(store_b["task.rs"].contains("&markdown_store::IdStrategy::Provided,"), "{default:?}: Task is provided");
+        assert!(store_a["tag.rs"].contains("ontogen_core::id::slugify(&tag.title)"), "{default:?}: Tag slugs");
+        assert!(store_b["tag.rs"].contains("SlugFromField(\"title\".into())"), "{default:?}: Tag slugs");
     }
 }
 

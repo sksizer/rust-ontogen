@@ -18,6 +18,7 @@
 pub(crate) mod markdown;
 pub(crate) mod seaorm;
 
+use crate::ir::IdStrategy;
 use crate::schema::model::EntityDef;
 
 /// One persistence backend's contribution to a generated store module.
@@ -42,10 +43,12 @@ pub(crate) trait StoreBackend {
 
     /// Emit the complete `impl Store { ... }` block: CRUD methods, relation
     /// population, and any backend-specific helpers (e.g. `set_*_parent`).
+    /// `id_strategy` is the entity's effective strategy, already validated;
+    /// `create_*` derives missing ids by it.
     /// Method names, signatures, hook call sites, and `emit_change` points
     /// must match across backends — that contract is enforced by the
     /// backend-parity test, not by this trait.
-    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef);
+    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy);
 
     /// How the shared DTO `From` impls treat wikilink-shaped relation ids.
     /// Wikilinks are a markdown-vault concern: that backend strips `[[id]]`
@@ -59,16 +62,10 @@ pub(crate) trait StoreBackend {
 /// `StoreConfig::wikilink_policy`); re-exported here for the backend impls.
 pub(crate) use crate::ir::WikilinkPolicy;
 
-/// Resolve the emitter for a configured [`crate::ir::Backend`]. The id
-/// strategy is validated by the caller; both backends emit it into
-/// `create_*`.
-pub(crate) fn for_backend(
-    backend: &crate::ir::Backend,
-    id_strategy: &crate::ir::IdStrategy,
-) -> Result<Box<dyn StoreBackend>, crate::CodegenError> {
-    let id_strategy = id_strategy.clone();
+/// Resolve the emitter for a configured [`crate::ir::Backend`].
+pub(crate) fn for_backend(backend: &crate::ir::Backend) -> Result<Box<dyn StoreBackend>, crate::CodegenError> {
     match backend {
-        crate::ir::Backend::Seaorm(_) => Ok(Box::new(seaorm::SeaormBackend { id_strategy })),
-        crate::ir::Backend::Markdown(md) => Ok(Box::new(markdown::MarkdownBackend { md: md.clone(), id_strategy })),
+        crate::ir::Backend::Seaorm(_) => Ok(Box::new(seaorm::SeaormBackend)),
+        crate::ir::Backend::Markdown(md) => Ok(Box::new(markdown::MarkdownBackend { md: md.clone() })),
     }
 }

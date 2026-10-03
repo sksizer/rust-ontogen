@@ -162,6 +162,7 @@ fn main() {
             "src/persistence/db/conversions/generated",
         )
         .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
+        .store_id_strategy(ontogen::IdStrategy::Provided)
         .api("src/api/v1/generated", "AppState")
         // .servers(servers_config) - add when you want HTTP/IPC/MCP/clients
         .build()

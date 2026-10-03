@@ -3,6 +3,8 @@
 //! These types represent the metadata extracted from `#[ontology(...)]` annotations
 //! on schema structs. They drive all code generation.
 
+use crate::ir::IdStrategy;
+
 /// A parsed entity definition, extracted from a schema struct annotated with
 /// `#[ontology(entity, ...)]`.
 #[derive(Debug, Clone)]
@@ -30,6 +32,11 @@ pub struct EntityDef {
     /// ID prefix for global uniqueness (e.g., `"node"`, `"req"`).
     /// Defaults to snake_case of `name` if not specified.
     pub prefix: String,
+
+    /// How the generated store fills the id of a record created without one,
+    /// from `#[ontology(entity, id = "...")]`. `None` uses the store-wide
+    /// default, `StoreConfig::id_strategy`.
+    pub id_strategy: Option<IdStrategy>,
 
     /// All fields on the struct.
     pub fields: Vec<FieldDef>,

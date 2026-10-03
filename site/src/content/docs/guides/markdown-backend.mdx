@@ -422,8 +422,8 @@ let state = AppState::new(open_vault(VAULT_ROOT));
   `#[serde(default)]` on `id`) and the store's id strategy fills it:
   `SlugFromField` slugifies the configured field, de-duplicating with `-2`,
   `-3`, … — atomically with the write. The strategy is a store setting
-  (`Pipeline::store_id_strategy`, default `Provided`) shared with the SeaORM
-  backend; [Creating records](/guides/store-layer/#creating-records) has the
+  (`Pipeline::store_id_strategy`, required, with per-entity overrides in the
+  schema) shared with the SeaORM backend; [Creating records](/guides/store-layer/#creating-records) has the
   full rules, including `IdRequired` and `AlreadyExists`.
 - **An id that cannot exist is NotFound.** `get`, `update` and `delete` of an
   id the vault cannot hold (one containing `/`, a reserved name, one over
