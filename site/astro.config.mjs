@@ -82,6 +82,7 @@ export default defineConfig({
 						{ label: 'Annotations', slug: 'reference/annotations' },
 						{ label: 'Intermediate Representations', slug: 'reference/intermediate-representations' },
 						{ label: 'Field Types', slug: 'reference/field-types' },
+						{ label: 'Upgrading to 0.9', slug: 'reference/upgrading' },
 						{ label: 'Related Art', slug: 'reference/related-art' },
 					],
 				},

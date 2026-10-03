@@ -356,7 +356,7 @@ It exposes:
 
 The generated CRUD methods are implemented as `impl Store` blocks, so they have access to all of this.
 
-The `AppError` in `src/schema/mod.rs` declares `{Entity}NotFound`, `{Entity}IdRequired` and `{Entity}AlreadyExists` for each of the four entities, plus `DbError`. The crate depends on `ontogen-core` because the generated store calls its id helpers.
+The `AppError` in `src/schema/mod.rs` declares `{Entity}NotFound`, `{Entity}IdRequired` and `{Entity}AlreadyExists` for each of the four entities, plus `DbError`. It depends on `ontogen-core` (see [Creating records](/guides/store-layer/#creating-records)).
 
 ## Project layout
 

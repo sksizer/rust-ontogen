@@ -144,7 +144,7 @@ for child_id in &contains {
 
 The `set_node_parent` helper executes a raw SQL `UPDATE` to set the FK column on the target table.
 
-An update that sets the list also clears the FK of every child the list drops (`set_node_parent(child_id, None)`). When the FK field is a plain `String` rather than `Option<String>`, a child cannot be orphaned: dropping one fails with `AppError::{Child}ParentRequired(child_id)` before anything is written, and the helper takes `parent_id: &str`. Declare `{Child}ParentRequired(String)` in your `AppError` for such an entity. These writes cover the self-referential shape, where the children are records of the declaring entity.
+For what an update does to children the list drops, the `ParentRequired` error, and the supported shape, see [has_many writes](/guides/store-layer/#has_many-writes).
 
 ## many_to_many
 
