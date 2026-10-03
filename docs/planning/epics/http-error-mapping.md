@@ -13,7 +13,7 @@ tags: [servers, http, errors, dx]
 **Milestone:** M3 — Observability & extensibility ("First-class error-type
 specification … the wire error shape is consumer-controlled rather than
 ontogen-imposed", [roadmap](../../roadmap.md))
-**Status:** proposed — design pass complete, no implementation started.
+**Status:** proposed — design pass complete; phases 0–1 done inside E0004 phase 1b ([#200](https://github.com/sksizer/rust-ontogen/pull/200)), with the `errors[]` document in place of the `{"error"}` body.
 **Superseded in part by** [E0004 — JSON:API as the generated HTTP wire format](./jsonapi-http-transport.md):
 the `{"error": string}` body this epic keeps as a wire contract becomes the
 JSON:API `errors[]` document there; the `AppError` scan, status mapping and
@@ -460,8 +460,8 @@ Surfaced during the analysis; none block this epic:
 To be split into `tasks/` files when the epic is accepted; the intended
 PR-sized cuts are the phases above:
 
-- [ ] Phase 0 — consolidate error-map emission (refactor, zero snapshot drift)
-- [ ] Phase 1 — error-enum scan + 404/400 defaults + pilot wire tests + example regen
+- [x] Phase 0 — consolidate error-map emission (refactor, zero snapshot drift) — done in E0004 phase 1b ([#200](https://github.com/sksizer/rust-ontogen/pull/200))
+- [x] Phase 1 — error-enum scan + 404/400 defaults + pilot wire tests + example regen — done in E0004 phase 1b ([#200](https://github.com/sksizer/rust-ontogen/pull/200))
 - [ ] Phase 2 — `HttpError` derive + `#[http(status)]` + docs pass
 - [ ] Phase 3 — `error_handler` full-override hook (+ optional scaffold)
 - [ ] Phase 4 — follow-up tickets filed (typed codes / TS client, IPC & MCP parity, store-contract formalization)
