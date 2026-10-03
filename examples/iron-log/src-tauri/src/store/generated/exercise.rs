@@ -56,9 +56,11 @@ impl From<crate::schema::CreateExerciseInput> for Exercise {
 impl Store {
     pub async fn list_exercises(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Exercise>, AppError> {
         let mut query = exercise::Entity::find();
+        // sqlite-only: ids sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_asc(exercise::Column::Id);
         let limit = limit.map(|l| l.min(i64::MAX as u64));
         let offset = offset.map(|o| o.min(i64::MAX as u64));
+        // sqlite-only: SQLite rejects OFFSET without LIMIT, so an offset alone takes i64::MAX rows.
         if let Some(l) = limit.or(offset.map(|_| i64::MAX as u64)) {
             query = query.limit(l);
         }
