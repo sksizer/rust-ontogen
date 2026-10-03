@@ -17,6 +17,10 @@ pub struct EpicFrontmatter {
 /// `merge_serialize` removes cleared options and preserves hand-added keys.
 pub const EPIC_FM_FIELDS: &[&str] = &["title", "status"];
 
+/// The OKF `type` every Epic record carries, stamped by the store on
+/// write. Not a field above: reads tolerate it missing or different.
+pub const EPIC_TYPE: &str = "Epic";
+
 impl EpicFrontmatter {
     pub fn from_epic(value: &Epic) -> Self {
         Self { title: value.title.clone(), status: value.status.clone() }

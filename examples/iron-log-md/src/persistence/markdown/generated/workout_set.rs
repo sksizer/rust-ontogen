@@ -25,6 +25,10 @@ pub struct WorkoutSetFrontmatter {
 pub const WORKOUT_SET_FM_FIELDS: &[&str] =
     &["workout_id", "exercise_id", "set_number", "weight_grams", "reps", "rpe", "notes"];
 
+/// The OKF `type` every WorkoutSet record carries, stamped by the store on
+/// write. Not a field above: reads tolerate it missing or different.
+pub const WORKOUT_SET_TYPE: &str = "WorkoutSet";
+
 impl WorkoutSetFrontmatter {
     pub fn from_workout_set(value: &WorkoutSet) -> Self {
         Self {
