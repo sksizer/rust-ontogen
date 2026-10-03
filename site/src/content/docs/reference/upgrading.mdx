@@ -5,7 +5,7 @@ description: Every breaking change in 0.9 and how to migrate, grouped by area.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Version 0.9 is still in progress. This page lists the breaking changes that have landed so far, which are the store and runtime changes. Later phases change the HTTP wire, and their sections will be added here. Work through the sections that apply to your project.
+Version 0.9 is still in progress. This page lists the breaking changes that have landed so far: the store and runtime changes, and the first part of the HTTP wire change, where CRUD routes and every error move to JSON:API. Later phases change the rest of the HTTP wire (custom ops, junction ops, event frames, filtering, sorting, relationship endpoints), and their sections will be added here. Work through the sections that apply to your project.
 
 ## Build configuration
 
@@ -46,6 +46,60 @@ Without the setter, or without the field in a `StoreConfig`, the strategy is `Pr
 
 The field named in `SlugFromField` must be a plain `String` on every entity, on SeaORM as well as markdown. Otherwise the generator fails. Pick such a field, or use `Provided` or `Uuid`.
 
+### `gen_servers` and `gen_clients` take the schema
+
+Both stages take the parsed schema entities as their first argument, as `gen_api` does. `ClientsConfig::schema_entities` is removed.
+
+Before:
+
+```rust
+ontogen::gen_servers(Some(&api), &scan_dirs, &servers_config)?;
+ontogen::gen_clients(Some(&api), &scan_dirs, &ClientsConfig {
+    schema_entities: schema.entities.clone(),
+    ..clients_config
+})?;
+```
+
+After:
+
+```rust
+ontogen::gen_servers(&schema.entities, Some(&api), &scan_dirs, &servers_config)?;
+ontogen::gen_clients(&schema.entities, Some(&api), &scan_dirs, &clients_config)?;
+```
+
+`Pipeline` users change nothing. A direct caller with no schema passes `&[]`; every module is then served with the pre-JSON:API shapes, and the admin registry has no field metadata.
+
+### `ServersConfig` has `error_source_dir`
+
+`ServersConfig` has a new field, `error_source_dir: Option<PathBuf>`: the directory scanned for your `enum AppError`. Add it to every `ServersConfig` literal.
+
+```rust
+ServersConfig {
+    // ...
+    error_source_dir: Some("src/schema".into()),
+}
+```
+
+`Pipeline` sets it to its schema directory when it is `None`, so Pipeline users can leave it `None`. With `None` and no `Pipeline`, no scan happens and every error from an `AppError`-typed function is `500 internal_error`.
+
+### Entity structs may not carry shape-changing serde attributes
+
+The HTTP wire builds a resource's `attributes` from the entity's serde shape, so a struct or field with an attribute that changes that shape is now a schema error. The refused attributes are `rename`, `rename_all`, `alias`, `flatten`, `skip`, `skip_serializing`, `skip_serializing_if`, `serialize_with` and `with`. `#[serde(default)]` and `deserialize_with` change only deserialization and stay allowed. Remove the attribute, or rename the Rust field.
+
+Also refused at build time: an id field that is not a `String`, an attribute or relationship name that is not a legal JSON:API member name (for example one that starts or ends with `_`) or is `type` or `id`, a relationship that shares its name with an attribute or another relationship (or is named `relationships`), and a relation whose target is not in the schema.
+
+### Depend on `ontogen-jsonapi`
+
+The generated HTTP file uses the `ontogen-jsonapi` crate. Add it to the crate that contains the generated server, as you add `markdown-store`:
+
+```toml
+ontogen-jsonapi = "…"
+```
+
+### Mount the router at the root
+
+Links and `Location` headers are built from the route templates ontogen generated (`/api/...`), not from the request URI. Mount the generated router at the root of your Axum app. If you nest it under another prefix, the links it emits lack that prefix.
+
 ### Depend on `ontogen-core`
 
 Generated SeaORM stores call `ontogen_core::id` at runtime. See [Creating records](/guides/store-layer/#creating-records) for the dependency to add.
@@ -72,6 +126,202 @@ Add `{Entity}IdRequired(String)` and `{Entity}AlreadyExists(String)` for every e
 - `{Entity}AlreadyExists(id)`: a create supplied an id that is already taken.
 
 Add `{Child}ParentRequired(String)` for a `has_many` child whose foreign key is a plain `String` rather than an `Option`. It carries the id of the child that would be left without a parent. See [has_many writes](/guides/store-layer/#has_many-writes).
+
+### Statuses and codes on HTTP
+
+The HTTP generator scans `ServersConfig::error_source_dir` for `enum AppError` and gives each variant a status from the suffix of its name. The `code` of the error is the variant name in snake_case.
+
+| Variant | Status | Example `code` |
+|---------|--------|--------------------------------|
+| `*NotFound` | 404 | `task_not_found` |
+| `*IdRequired` | 400 | `task_id_required` |
+| `*AlreadyExists` | 409 | `task_already_exists` |
+| `*ParentRequired` | 403 | `task_parent_required` |
+| any other variant | 500 | `db_error` for `DbError` |
+
+Before this change every `AppError` was a `500` with `{"error": "<Display text>"}`, whatever the variant. Clients that branched on `500` for a missing record now see `404`, and so on.
+
+A variant whose snake_case name equals one of ontogen's own error codes fails the build, so a code always means one thing. The codes are listed in [Server Transports](/guides/server-transports/#errors); for example a variant named `InvalidDocument` or `NotAcceptable` clashes. Rename it. A second `enum AppError` declaration in the scanned directory also fails the build.
+
+## HTTP wire
+
+Every CRUD route of a module backed by a schema entity now speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/). The examples use the tasks-tracker example.
+
+<Aside type="caution">
+Custom ops, junction ops, event streams and modules with no entity behind them keep their current routes and success bodies for now. They change in a later phase of 0.9, and this page will list that change then. Their errors already use the new error document, described below.
+</Aside>
+
+### Media type
+
+Responses carry `Content-Type: application/vnd.api+json` and `Vary: Accept`. A request with a body must send `Content-Type: application/vnd.api+json`: `application/json` is now `415` (`code: unsupported_media_type`, `source.header: "Content-Type"`). A request whose `Accept` rules out `application/vnd.api+json` is `406` (`not_acceptable`). A missing `Accept` and `*/*` are fine. Clients must set both headers.
+
+### Documents and resources
+
+A bare entity becomes a resource inside a document. The id is lifted out of the attributes, and relation fields move into `relationships`.
+
+Before, `GET /api/tasks/ship-the-emitter`:
+
+```json
+{
+  "id": "ship-the-emitter",
+  "title": "Ship the emitter",
+  "status": "closed/done",
+  "created": "2026-06-06",
+  "epic_id": "markdown-backend",
+  "tags": ["codegen"],
+  "body": "## Goal\n…"
+}
+```
+
+After:
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "links": { "self": "/api/tasks/ship-the-emitter" },
+  "data": {
+    "type": "tasks",
+    "id": "ship-the-emitter",
+    "attributes": {
+      "title": "Ship the emitter",
+      "status": "closed/done",
+      "created": "2026-06-06",
+      "body": "## Goal\n…"
+    },
+    "relationships": {
+      "epic": { "data": { "type": "epics", "id": "markdown-backend" } },
+      "tags": { "data": [ { "type": "tags", "id": "codegen" } ] }
+    },
+    "links": { "self": "/api/tasks/ship-the-emitter" }
+  }
+}
+```
+
+- `type` is the module's kebab-case plural, the same string as the URL segment.
+- A `belongs_to` field named `epic_id` becomes the relationship `epic`; other relation fields keep their name. A to-one is an identifier or `null`; a to-many is an array of identifiers.
+- Relationship objects carry `data` only. Relationship `links` and the relationship endpoints arrive in a later phase of 0.9.
+- A list is `{"jsonapi": …, "links": {"self": …}, "data": [ … ]}`, with `[]` when empty, ordered by id.
+
+### Create
+
+Before, `POST /api/tasks` took a flat body and answered `200` with the entity. Now:
+
+```http
+POST /api/tasks
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "tasks",
+    "attributes": { "title": "Review the stack", "status": "open/ready", "created": "2026-06-06", "body": "…" },
+    "relationships": {
+      "epic": { "data": { "type": "epics", "id": "markdown-backend" } },
+      "tags": { "data": [ { "type": "tags", "id": "codegen" } ] }
+    }
+  }
+}
+```
+
+The response is `201 Created` with `Location: /api/tasks/review-the-stack` and the resource in a document. `data.id` is optional and honoured under every `IdStrategy`. An attribute the type does not have, including a relation field written as an attribute (`epic_id`), is `400 unknown_attribute`: the old flat body is refused, not ignored.
+
+### Update is `PATCH`
+
+`PUT /api/tasks/{id}` is gone and answers `405` with `Allow: GET, HEAD, PATCH, DELETE`. Use `PATCH`, with `data.type` and a `data.id` equal to the URL id (a mismatch is `409 id_mismatch`):
+
+```http
+PATCH /api/tasks/ship-the-emitter
+Content-Type: application/vnd.api+json
+
+{ "data": { "type": "tasks", "id": "ship-the-emitter",
+            "attributes": { "status": "open/ready" },
+            "relationships": { "epic": { "data": null } } } }
+```
+
+Members that are absent are unchanged. `null` clears an `Option` attribute or an optional to-one (`403 relationship_required` for a required one, `400 invalid_attribute` for a required attribute). A to-many `data` array replaces the whole list. The response is `200` with the full resource.
+
+### Delete
+
+`DELETE` answers `204` with no body. A missing resource is still `404`.
+
+### Pagination
+
+`limit` and `offset` are replaced by `page[offset]` and `page[limit]`, and the `PaginatedResult` body becomes `meta` plus links.
+
+Before, `GET /api/tasks?limit=10&offset=20`:
+
+```json
+{ "items": [ … ], "total": 45, "limit": 10, "offset": 20 }
+```
+
+After, `GET /api/tasks?page[offset]=20&page[limit]=10`:
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "links": {
+    "self":  "/api/tasks?page%5Boffset%5D=20&page%5Blimit%5D=10",
+    "first": "/api/tasks?page%5Boffset%5D=0&page%5Blimit%5D=10",
+    "prev":  "/api/tasks?page%5Boffset%5D=10&page%5Blimit%5D=10",
+    "next":  "/api/tasks?page%5Boffset%5D=30&page%5Blimit%5D=10",
+    "last":  "/api/tasks?page%5Boffset%5D=40&page%5Blimit%5D=10"
+  },
+  "meta": { "total": 45, "limit": 10, "offset": 20 },
+  "data": [ … ]
+}
+```
+
+`meta` holds exactly the old fields (`limit` and `offset` are the effective values). `prev` is `null` on the first page and `next` on the last. `page[limit]=0`, a non-integer, and any other `page[…]` member (`page[number]`, `page[size]`) are `400`.
+
+### Unknown query parameters are refused
+
+A query parameter a route does not accept is `400 invalid_query_parameter`, with `source.parameter` naming it. That includes `limit` and `offset` (use `page[…]`), `page[…]` on a list that is not paginated, and `fields[…]`. A request that sends stray parameters and used to work now fails.
+
+### Related resources must exist
+
+A create or update that links a resource that does not exist, for example an `epic` or a `tags` id, is `404 related_resource_not_found` before anything is written. Before, a markdown vault accepted it and wrote a dangling wikilink.
+
+### Errors
+
+Every error from a generated HTTP route, CRUD or not, is a JSON:API error document with one error object. Before:
+
+```json
+{ "error": "Task not found: nope" }
+```
+
+After, with `Content-Type: application/vnd.api+json`:
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "errors": [ {
+    "status": "404",
+    "code": "task_not_found",
+    "title": "Not Found",
+    "detail": "Task not found: nope"
+  } ]
+}
+```
+
+`detail` is the old `error` text. `status`, `code`, `title` and `source` are stable; do not parse `detail`. `source` is present for request problems and holds a `pointer` into the body, a `parameter`, or a `header`. Besides the `AppError` codes above, the server raises its own codes for malformed requests (`invalid_document`, `unknown_attribute`, `missing_attribute`, `invalid_attribute`, `unknown_relationship`, `missing_relationship`, `type_mismatch`, `id_mismatch`, `related_resource_not_found`, `method_not_allowed`, `content_too_large` and others); the full table is in [Server Transports](/guides/server-transports/#errors). Axum's own plain-text extractor rejections are replaced by these documents.
+
+## TypeScript clients
+
+The generated `Transport` interface is unchanged: the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally.
+
+One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone; updates use `httpPatch`. Regenerate the TypeScript; the IPC transport and MCP payloads are unchanged.
+
+## Calling the HTTP API directly
+
+If you call the generated HTTP routes from something other than the generated TypeScript client:
+
+- Send `Accept: application/vnd.api+json`, and `Content-Type: application/vnd.api+json` on requests with a body.
+- Wrap request bodies in `{"data": {"type": …, "attributes": …, "relationships": …}}` and read responses from `data`.
+- Use `PATCH` instead of `PUT` to update.
+- Create answers `201` with a `Location` header.
+- Replace `limit` and `offset` with `page[limit]` and `page[offset]`, and read `meta.total`, `meta.limit` and `meta.offset` instead of the `PaginatedResult` fields.
+- Read errors from `errors[0]` (`status`, `code`, `detail`) instead of `error`.
+- Drop any query parameter the route does not accept.
+- Custom ops, junction ops and event streams: no change for now.
 
 ## SeaORM data and code
 
