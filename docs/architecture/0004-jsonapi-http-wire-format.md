@@ -6,9 +6,9 @@
 
 Records the decisions of epic
 [E0004](../planning/epics/jsonapi-http-transport.md), settled with the
-maintainer on 2026-10-03. Also records the major choices of the
-[wire contract](../jsonapi-wire-contract.md) written in its phase 0. The
-contract is the normative detail. This ADR is the why.
+maintainer on 2026-10-03, and the contract choices that were contested in
+review. The [wire contract](../jsonapi-wire-contract.md) is the normative
+detail; its §16 lists every other choice with its reason.
 
 ## Context
 
@@ -22,24 +22,24 @@ The generated Axum server speaks a dialect that exists only in ontogen:
 - foreign keys inside the entity;
 - one `{"error": string}` body that is always `500`.
 
-Every consumer that is not the generated TS transport has to learn that
-dialect from generated code. Examples are a mobile client, an integration
-partner, a generic admin tool, or an agent.
+Every consumer other than the generated TS transport has to learn that
+dialect from generated code. JSON:API 1.1 is a versioned, widely
+implemented specification for exactly this shape of API: resource CRUD
+with relationships, pagination, filtering and a structured error document.
 
-JSON:API 1.1 is a versioned, widely implemented specification for exactly
-this shape of API: resource CRUD with relationships, pagination, filtering
-and a structured error document.
-
-Three constraints shape how it can be adopted:
+Four constraints shape how it can be adopted:
 
 - **Flat entities elsewhere.** Tauri IPC, MCP and the TS `Transport`
-  interface the admin layer programs against all share the flat entity. No
-  media type or URL exists on those paths for JSON:API to describe.
+  interface the admin layer programs against all share the flat entity.
 - **Byte-identical layers.** ADR 0001 item 5 requires `gen_api`,
   `gen_servers` and `gen_clients` output to be byte-identical across store
   backends.
 - **Breaks are allowed.** ADR 0003 allows a clean break before 1.0, with no
   compatibility mode.
+- **The servers and clients stages never see the parsed schema.**
+  `gen_servers` ignores its `ApiOutput` and rescans `api_dir`. Only
+  `ClientsConfig` carries a partial `schema_entities` copy. Yet nearly every
+  JSON:API rule depends on the schema.
 
 Epic E0003 had planned a status mapping for the old `{"error": string}`
 body, keeping that body as a wire contract. Its envelope is now replaced;
@@ -47,112 +47,113 @@ its mapping survives.
 
 ## Decision
 
-**The generated HTTP server is a JSON:API 1.1 server and the generated TS
+**The generated HTTP server is a JSON:API 1.1 server, and the generated TS
 HTTP transport is its client.** JSON:API is applied and removed at the HTTP
-boundary. The Rust store and API layers, IPC, MCP and the TS `Transport`
-interface stay flat. There is no switch back to the old dialect.
+boundary. The Rust store and API layers, IPC and MCP stay flat, and the TS
+`Transport` interface stays flat. There is no switch back to the old
+dialect.
 
 ### The epic's decisions
 
-1. **Custom ops** respond with a meta-only document, `{ "meta": { "result": T } }`.
-   A `()` return is `204`. The TS method signature still comes from the
-   Rust fn, and the transport reads `.meta.result`.
-2. **Event frames** carry a resource object (`type`, `id`, `attributes`,
-   `relationships`). Subscribers still receive flat entities through the
-   transport's flattener.
+1. **Custom ops** respond with a meta-only document,
+   `{ "meta": { "result": T } }`. A `()` return is `204`.
+2. **Event frames** carry a resource object. Subscribers still receive flat
+   entities through the transport's flattener.
 3. **Resource `type`** is `url_plural`, kebab-case (`workout-sets`), the
    same string as the URL segment.
-4. **Ids on create.** `IdStrategy` (`Provided` / `SlugFromField` / `Uuid`)
-   is extended to the SeaORM backend.
-   - A client id in `data.id` is honoured. When it is absent, the strategy
-     fills it.
-   - `Provided` with no id is `400`, and a duplicate is `409`.
-   - This closes the hole where SeaORM inserted whatever id the client sent,
-     including `""`.
-5. **The conversion** lives in a runtime crate, `ontogen-jsonapi`
-   (documents, links, errors, media-type handling, extractors), which
-   generated code calls. It mirrors `markdown-store`.
-6. **Scope.** In scope: `include` (to-one and to-many, one level deep) and
-   `sort`, with an ordering ADR covering both store backends
-   ([ADR 0006](0006-ordering-on-both-store-backends.md)). E0003 phases 0-1
-   (the `AppError` scan, `*NotFound → 404`, missing junction parameter →
-   `400`) fold into E0004 phase 1. E0003 phases 2-3 stay in E0003.
+4. **Ids on create.** `IdStrategy` is extended to SeaORM. A client id is
+   honoured; when it is absent, the strategy fills it. A missing id is
+   `400` and a duplicate is `409`.
+5. **The conversion** lives in a runtime crate, `ontogen-jsonapi`, which
+   generated code calls.
+6. **Scope.** `include` (one level) and `sort` are in, with an ordering ADR
+   covering both backends ([ADR 0006](0006-ordering-on-both-store-backends.md)).
+   E0003 phases 0-1 fold into E0004. E0003 phases 2-3 stay in E0003.
+7. **Custom-op requests are fully conformant.** `POST` bodies are
+   `{"meta":{"args":{…}}}`, and optional `GET` arguments are `opArg[…]`
+   query parameters.
+8. **Sort is on the shared TS `Transport`**, as a trailing optional
+   `options` argument (`list(…, { sort })`), which breaks no positional
+   caller. IPC and MCP list handlers honour it too. `include` stays
+   HTTP-only, because the flat return shape has nowhere to put included
+   resources.
+9. **`has_many` is writable.** Phase 1a fixes the store so that an update
+   dropping a child clears the child's foreign key, on both backends. That
+   also fixes the bug on IPC and MCP. On the wire `has_many` is fully
+   writable: full replacement by `PATCH`, and add or remove on the
+   relationship endpoint. A child whose foreign key is not `Option` cannot
+   be dropped; the write is `409 {child}_parent_required`.
 
-### The contract's major choices
+### Choices that were contested
 
-Each has a one-line reason in the contract's decision index (§16).
+**Schema input.** The parsed `&[EntityDef]` becomes an explicit first
+argument of `gen_servers` and `gen_clients`, as it already is for
+`gen_api`. `Pipeline` passes the entities it parsed;
+`ClientsConfig::schema_entities` is removed.
 
-- **Strict media type.**
-  - Request bodies must be `application/vnd.api+json`; `application/json`
-    is `415`.
-  - `Accept` is honoured, with `*/*` satisfying it.
-  - `Vary: Accept` goes on every response.
-  - `jsonapi: {"version": "1.1"}` goes on every document.
-- **Relative links.** Every link and `Location` is a path. `links.self` is
-  on every resource object and equals `Location` on create. The server
-  cannot know its public origin.
-- **Relationship mapping.**
-  - A `belongs_to` field loses its `_id` suffix (`epic_id` → `epic`).
-    `many_to_many` and `has_many` keep their field names.
-  - Relation fields leave `attributes`.
-  - `has_many` is read-only on the wire. The store sets listed children's
-    foreign keys but never clears dropped ones, so it cannot honour
-    JSON:API's full replacement. IPC and MCP keep today's write.
-- **Pagination.**
-  - `page[offset]`/`page[limit]` with today's clamp, except
-    `page[limit]=0`, which is `400`.
-  - `meta: {total, limit, offset}`, exactly the old `PaginatedResult`
-    fields.
-  - All four pagination links always present, `null` when unavailable.
-  - Every link uses a canonical, percent-encoded query.
-- **Every unknown query parameter is `400`**, including `fields[…]`. This
-  is what the spec requires. Custom `GET` optional arguments move to an
-  `opArg[…]` family, because all-lowercase names are reserved by the spec.
-- **Custom `POST` bodies** are `{ "meta": { "args": { … } } }`, keyed by
-  Rust parameter names: one rule in place of today's three binding shapes.
-- **Statuses.** Create is `201` with the document. `PATCH` is `200` with
-  the document. Delete and relationship mutations are `204`. `PUT` is
-  `405`.
-- **A new store-contract variant, `{Entity}AlreadyExists(id)`**, is
-  constructed by both backends' create on a duplicate id. The E0003 scan
-  maps it to `409` by convention, as `*NotFound` maps to `404`.
-  - Duplicate detection is atomic on both backends.
-  - Consumers declare the variant beside `{Entity}NotFound`.
-- **Ids** follow one validity rule on both backends (markdown's path-safe
-  rule), checked by the handler, so a bad client id is `400`, not a store
-  `500`.
-- **One check order for every route**, so each bad request has exactly one
-  correct error. `detail` text is not normative.
-- **Related resources** named in a request body must exist (`404`), as the
-  spec requires. Dangling linkage in *responses* (a deleted target of a
-  markdown wikilink) is tolerated and simply not included.
-- **Relationship endpoints** are served from the generated store for every
-  relation field, so they work with no user code. An unsupported
-  relationship update (to-one `POST`/`DELETE`, junction `PATCH`) is `403`,
-  as the spec requires, not `405`.
-  - User-authored junction ops (`list_X`/`add_X`/`remove_X`) define a
-    to-many relationship on their entity module.
-  - Junction ops outside an entity module, or colliding with a relation
-    field, are a `CodegenError`. A lone `list_X` without an `add` or
-    `remove` partner is a custom op.
-  - Junction `POST`/`DELETE` read membership first, so repeats succeed
-    without calling user code. They are not atomic across several
-    identifiers. That is a recorded deviation from the spec's "completely
-    succeed or fail", because user code has no transaction to join.
-- **Errors.**
-  - One error object per response.
-  - `code` is the `AppError` variant in snake_case, or a fixed ontogen
-    code.
-  - `title` is the status reason phrase.
-  - `detail` is the old `error` text.
-  - `source.pointer`, `parameter` or `header` where one applies.
-- **The TS transport keeps `Transport` unchanged.**
-  - It flattens on read and unflattens on write, and rebuilds
-    `PaginatedResult` from `meta`.
-  - It throws `JsonApiError { status, errors }`, whose message is the old
-    text.
-  - It sends neither `sort` nor `include`, because the admin layer calls
-    `list` positionally.
+A module with CRUD-named ops but no entity behind it is served as custom
+ops, not rejected. That is the scan-dirs-only consumer, or a standalone
+caller passing `&[]`. Rejecting it would break a use case the servers stage
+supports today, and without a schema there is no resource to build. This
+lands in phase 1b, the first phase that builds resource objects.
+
+**Typed store errors, mapped by name suffix.** The E0003 scan maps
+`*NotFound` to `404` and gains three more suffixes:
+
+- **`{Entity}AlreadyExists(id)` → `409`.** Detection is atomic on both
+  backends. SeaORM retries a derived id that loses a race.
+- **`{Entity}IdRequired(reason)` → `400`.** The store detects it after
+  `before_create` hooks run, so a hook can assign the id. The HTTP handler
+  does no pre-check and does not learn the `IdStrategy`.
+- **`{Child}ParentRequired(child_id)` → `409`.** Decision 9's orphan case.
+
+The store generator constructs each variant it uses, so consumer
+`AppError`s must declare them, as they already declare `{Entity}NotFound`.
+
+**One source of truth for the markdown `IdStrategy`.** Today it is set
+twice: in `build.rs` (`MarkdownIoOptions.id_strategy`) and again at runtime
+(`VaultHandle::new(…, IdStrategy::…)`, e.g. tasks-tracker `main.rs`). The
+build-time value wins. The generated store passes it to each create, and
+`VaultHandle::new` loses its `IdStrategy` parameter (phase 1a). The
+generator reads the build-time value already, to emit the slug source, so
+a runtime copy can only disagree with it.
+
+**Strict media type.** Request bodies must be `application/vnd.api+json`,
+and `application/json` is `415`. A client still sending the old flat body
+with the old content type gets a clear error, not a confusing parse
+failure.
+
+**One identifier per relationship `POST` or `DELETE`.** More than one is
+`403 relationship_batch_unsupported`. The spec allows `403` for an
+unsupported relationship update. With one identifier, every relationship
+write is one store or junction-op call that succeeds or fails whole. A
+junction op is user code with no transaction to join, so a multi-identifier
+request could otherwise be left half-applied. The TS transport sends one id
+per request.
+
+**Junction ops outside an entity module** are served as custom ops at their
+current paths. They are not a build error.
+
+**Query parameters.** A route answers `400` to a parameter it does not
+accept. The spec requires that for any reserved parameter the server does
+not support, and for any name that follows none of its naming rules.
+Ontogen defines one implementation-specific family, `opArg`, on custom ops
+only.
+
+**Fixed latent defects.** Writing the contract surfaced these, and the
+named phases fix them:
+
+- A bare list parameter is extracted as `Query<String>`, which cannot
+  deserialize from a query map, so every such request fails
+  (`?skill_id=abc` gives `400 invalid type: map, expected a string`).
+  Phase 2 binds it as `filter[skill_id]`.
+- `has_many` updates never clear a dropped child's foreign key, on any
+  transport. Phase 1a (decision 9).
+- SeaORM inserts whatever id the client sends, including `""`. Phase 1a
+  (decision 4 and the shared id-validity rule).
+- Scoped routes diverge from unscoped ones. Phase 1c fixes in-memory
+  pagination, and phase 3a fixes action-style junction routes.
+- Axum's extractor rejections reach clients as plain text. Phase 1b.
 
 ## Consequences
 
@@ -161,89 +162,82 @@ Each has a one-line reason in the contract's decision index (§16).
 - Any JSON:API client can drive a generated server without custom code
   (the epic's conformance criterion).
 - Not-found, conflict, bad-request and media-type failures get real
-  statuses and machine-readable codes.
-- Relationships are visible and navigable on the wire. Third-party clients
-  gain `include` and `sort`.
-- IPC, MCP and the admin layer are untouched. The flat model stays
-  canonical.
-- The contract closes latent defects found while writing it:
-  - SeaORM's unchecked client ids;
-  - bare list parameters bound as `Query<String>`, which serde does not
-    appear able to fill from a query map;
-  - scoped routes that diverge from unscoped ones (in-memory pagination,
-    action-style junction routes);
-  - Axum's plain-text extractor rejections.
+  statuses and machine-readable codes, on HTTP. The new store errors are
+  typed on IPC and MCP too.
+- Relationships are visible, navigable and writable on the wire.
+  Third-party clients gain `include` and `sort`, and TS, IPC and MCP gain
+  `sort`.
+- IPC and MCP stay flat, and the admin layer is untouched.
 
 **Negative:**
 
 - **Breaking for every HTTP consumer outside the generated TS transport**
-  (ADR 0003): envelope, methods, query parameters and error body all
-  change. The 0.9.0 changelog carries the migration.
-- **Consumer `AppError`s gain one variant per entity**
-  (`{Entity}AlreadyExists`).
-- **TS behaviour changes.**
-  - The TS transport stops sending `has_many` edits over HTTP.
-  - `String(e)` reads `JsonApiError: …` instead of `Error: …`.
-- **Junction writes.** A junction `POST`/`DELETE` naming several ids can
-  fail part-way and leave the earlier ids applied.
+  (ADR 0003): envelope, methods, query parameters, custom-op bodies and the
+  error body all change. The 0.9.0 changelog carries the migration.
+- **Breaking for every consumer's `AppError`.** It gains `{Entity}IdRequired`
+  and `{Entity}AlreadyExists` per entity, and `{Child}ParentRequired` where
+  a required-foreign-key `has_many` exists.
+- **Breaking for direct callers.** `gen_servers` and `gen_clients` gain a
+  parameter, and `VaultHandle::new` loses one.
+- **TS changes.** `String(e)` reads `JsonApiError: …` instead of
+  `Error: …`. List methods gain a trailing optional argument.
 - **Cost.**
-  - Create and update fetch each linked resource to check it exists.
+  - Create and update fetch each linked resource to check that it exists.
   - `include` and related links fetch one target per id.
-  - Relationship `POST`/`DELETE` are a read and a write, not one
-    transaction, as every read-modify-write in the store already is.
-- **Mounting.** The generated router must be mounted at the root, because
-  links come from route templates.
-- **Shadowing.** A custom-op action still shadows a resource id of the same
-  string. That is unchanged and documented, not fixed.
+  - A markdown `has_many` write touches one file per affected child,
+    best-effort across files (ADR 0001 item 2).
+- **Mounting and shadowing.** The generated router must be mounted at the
+  root, because links come from route templates. A custom-op action still
+  shadows a resource id of the same string; that is unchanged, and
+  documented rather than fixed.
 
-**Follow-on work** is the epic's phases 1a through 4, as amended by the
-contract's phase mapping (§17). Beyond them:
-
-- a TS options parameter exposing `sort` and `include`;
-- OpenAPI emission, which the epic leaves out of scope;
-- E0003 phases 2-3, which apply to the new envelope unchanged.
+**Follow-on work** is the epic's phases 1a through 4, with the contract's
+§17 mapping sections to phases. Beyond them: OpenAPI emission, and E0003
+phases 2-3, which apply to the new envelope unchanged.
 
 ## Alternatives considered
 
 ### A. Keep the dialect and document it
 
-Write the dialect down and stop. Zero migration cost, but every new
-consumer still learns a format nobody else speaks, and the defects above
-stay. Rejected: the epic exists because the dialect is the problem.
+Zero migration cost, but every new consumer still learns a format nobody
+else speaks, and the defects above stay. Rejected: the epic exists because
+the dialect is the problem.
 
 ### B. JSON:API as an opt-in mode beside the dialect
 
-A `wire_format` switch. Two server emitters, two TS transports and two test
-matrices, all to preserve a format with no external users. Rejected by
-ADR 0003.
+Two server emitters, two TS transports and two test matrices, to preserve a
+format with no external users. Rejected by ADR 0003.
 
 ### C. Make the Rust entities JSON:API-shaped
 
-Give entities `attributes` and `relationships`. Every IPC command, MCP tool,
-store hook and admin component would change for a format they cannot use.
-Rejected; see the epic's "Why the flat representation stays canonical".
+Every IPC command, MCP tool, store hook and admin component would change
+for a format they cannot use. Rejected; see the epic's "Why the flat
+representation stays canonical".
 
 ### D. A different standard: OpenAPI-described REST, HAL, or JSON-LD
 
-- OpenAPI describes a dialect; it does not choose one.
-- HAL standardises links but not errors, pagination or filtering.
-- JSON-LD targets linked data rather than CRUD.
+OpenAPI describes a dialect; it does not choose one. HAL standardises links
+but not errors, pagination or filtering. JSON-LD targets linked data rather
+than CRUD. Rejected in favour of the one specification that covers the
+whole surface.
 
-JSON:API is the one specification that covers the whole surface, with
-client libraries in every target ecosystem. Rejected in its favour.
+### E. `has_many` read-only on the wire
 
-### E. Lenient negotiation: accept `application/json` bodies
+This was the first draft's answer to the store never clearing dropped
+children. It left the bug in place on IPC and MCP. It also made the TS
+transport silently drop `has_many` edits. Rejected for decision 9.
 
-This would ease `curl` use. But a client sending the old flat body with the
-old content type would get a confusing parse error, not a clear `415`.
-Rejected.
+### F. Check missing ids in the HTTP handler
 
-### F. `has_many` writable by full replacement
+This needs the `IdStrategy` threaded to the servers stage. It runs before
+`before_create` hooks, so it rejects an id a hook would have assigned. And
+it leaves IPC and MCP untyped. Rejected for `{Entity}IdRequired`.
 
-Clear the foreign key of dropped children. That fails for a required
-(non-`Option`) foreign key, and it changes store semantics for IPC and MCP
-too. Rejected for this epic; the child's to-one relationship is the write
-path.
+### G. Multi-identifier relationship writes, with partial failure recorded as a deviation
+
+This was the first draft's answer for junction ops. It is a standing
+violation of "a request MUST completely succeed or fail", for a capability
+the generated client never uses. Rejected for one identifier per request.
 
 ## Notes
 
@@ -256,5 +250,5 @@ path.
 - Sorting depends on [ADR 0006](0006-ordering-on-both-store-backends.md).
   Number 0005 is reserved for the OKF vault decision of
   [E0005](../planning/epics/okf-markdown-vault.md).
-- E0003's "the `{"error": string}` body stays unchanged" wire contract is
-  superseded by this ADR. Its mapping mechanism is not.
+- This ADR supersedes E0003's "the `{"error": string}` body stays
+  unchanged" wire contract. E0003's mapping mechanism stands.

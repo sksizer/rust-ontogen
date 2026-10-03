@@ -13,6 +13,26 @@ and MAY in this document carry their RFC 2119 meaning and bind the
 *generated server* and the *generated TS transport*. Rules quoted from the
 spec are not repeated unless ontogen makes a choice inside them.
 
+"Decision N" means item N of the epic's
+[Decisions (2026-10-03)](planning/epics/jsonapi-http-transport.md#decisions-2026-10-03)
+list. Choices this document makes itself are listed with their reasons in
+§16.
+
+## Operation index
+
+| Operation | Method and path | Success | Section |
+|---|---|---|---|
+| List | `GET /api/{type}` | `200` | §7 |
+| Get | `GET /api/{type}/{id}` | `200` | §8.1 |
+| Create | `POST /api/{type}` | `201` | §8.2 |
+| Update | `PATCH /api/{type}/{id}` | `200` | §8.3 |
+| Delete | `DELETE /api/{type}/{id}` | `204` | §8.4 |
+| Fetch relationship | `GET /api/{type}/{id}/relationships/{rel}` | `200` | §9 |
+| Change relationship | `PATCH`, `POST`, `DELETE` on the same path | `204` | §9 |
+| Fetch related | `GET /api/{type}/{id}/{rel}` | `200` | §9.3 |
+| Custom op | `GET` or `POST /api/{module}/{action}…` | `200`, or `204` for `()` | §10 |
+| Event stream | `GET /api/events/{name}…` | `200` `text/event-stream` | §12 |
+
 ## Contents
 
 1. [Scope](#1-scope)
@@ -40,9 +60,17 @@ emits, and the generated TS HTTP transport that consumes them. It replaces
 the ad-hoc dialect described in the epic's gap analysis: bare entities, bare
 arrays, `PaginatedResult`, `limit`/`offset`, `PUT`, and `{"error": string}`.
 
-Not covered, and unchanged: Tauri IPC commands, MCP tools, the Rust store
-and API layers (except the `order` argument from ADR 0006), and the flat TS
-`Transport` interface.
+It also fixes the store-layer changes the wire depends on:
+
+- the `order` argument and sort parsing (ADR 0006);
+- `has_many` writes that clear dropped children (decision 9);
+- the typed store errors `{Entity}AlreadyExists`, `{Entity}IdRequired` and
+  `{Child}ParentRequired` (§13.4);
+- the schema reaching the servers and clients stages (§5.1).
+
+Tauri IPC and MCP payloads stay flat. They gain only the optional `sort`
+argument (decision 8) and the store fixes above (§15). The TS `Transport`
+interface gains one trailing optional argument on list methods (§14).
 
 Out of scope, as the epic records: sparse fieldsets, the atomic operations
 extension, `lid`, `202 Accepted`, profiles, and OpenAPI emission. Each is
@@ -67,14 +95,16 @@ say the example is illustrative.
 `ship-the-emitter`, epic `markdown-backend` and tag `codegen`.
 
 The example does not yet exercise every feature, so some sections show it
-with additions that the named phase adds to tasks-tracker. That keeps every
+with additions that the named phase makes to tasks-tracker. That keeps every
 example in this document live once its phase lands:
 
-| Addition | Lands in | Why |
+| Addition | Lands in | Used by |
 |---|---|---|
-| `pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 })`, `paginated: ["task"]` | phase 1 | §7.2 examples |
-| A `ListTasksQuery { status: Option<String>, epic_id: Option<String> }` filter on `task::list`, with a matching `count` | phase 2 | §7.3 examples |
-| `Task.parent_id: Option<String>` (`belongs_to Task`) and `Task.subtasks: Vec<String>` (`has_many Task`, `foreign_key = "parent_id"`), as in `crates/markdown-pilot` | phase 3a | `has_many` examples in §5.3 and §9 |
+| `pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 })`, `paginated: ["task"]` | 1b | §7.2 |
+| A hand-written `task::list(store, query: ListTasksQuery, limit, offset)` with `ListTasksQuery { status: Option<String>, epic_id: Option<String> }` and a matching `count`, replacing the generated `list` (§7.3) | 2 | §7.3 |
+| `order: &[OrderBy<TaskSortField>]` added to that hand-written `list` | 3c | §7.4 |
+| `Task.parent_id: Option<String>` (`belongs_to Task`) and `Task.subtasks: Vec<String>` (`has_many Task`, `foreign_key = "parent_id"`), as in `crates/markdown-pilot` | 3a | §5.4, §9 |
+| A second tag, `release` | 3a | §9.2 |
 
 The task body is abbreviated as `"## Goal\n…"` after its first appearance.
 Response headers common to every response (§3.3) are shown once per
@@ -94,9 +124,10 @@ section, not on every example.
 
 ### 3.2 Requests
 
-**Content-Type.** A request that carries a body (`POST`, `PATCH`, and
-`DELETE` on a relationship endpoint) MUST have
-`Content-Type: application/vnd.api+json`. The server responds:
+**Content-Type.** A request that carries a body MUST have
+`Content-Type: application/vnd.api+json`. These are `POST`, `PATCH`, and
+`DELETE` on a relationship endpoint. A custom `POST` may also carry no body
+at all (§10.2). The server responds:
 
 | Request `Content-Type` | Response |
 |---|---|
@@ -104,14 +135,10 @@ section, not on every example.
 | `application/vnd.api+json; profile="…"` | processed; unknown profiles are ignored, as the spec requires |
 | `application/vnd.api+json; ext="…"` | `415`. Ontogen supports no extension, so every `ext` URI is unsupported |
 | `application/vnd.api+json` with any other parameter (e.g. `charset=utf-8`) | `415`, as the spec requires |
-| anything else, including `application/json`, or the header absent | `415` |
+| anything else, including `application/json`, or the header absent while a body is present | `415` |
 
-Why `application/json` is refused: one media type for every payload, and a
-client that sends a flat entity with the old content type gets a clear error
-rather than a body parse failure.
-
-Every `415` carries `source.header: "Content-Type"` (§13). A body on `GET`
-or on a resource `DELETE` is ignored and its `Content-Type` is not checked.
+Every `415` carries `source.header: "Content-Type"`. A body on `GET` or on
+a resource `DELETE` is ignored, and its `Content-Type` is not checked.
 
 **Accept.** Media types, parameter names and the `q` parameter are
 compared case-insensitively. A range with `q=0` is "not acceptable", as
@@ -131,9 +158,6 @@ RFC 9110 defines it. The rule is evaluated in this order:
 3. Otherwise the request is acceptable when a listed range with a non-zero
    `q` is `*/*` or `application/*`.
 4. Anything else is `406` with `source.header: "Accept"`.
-
-Why wildcards count at all: browsers, `curl` and `EventSource` send `*/*`,
-and HTTP lets a server answer a wildcard with its only representation.
 
 ### 3.3 Headers on every response
 
@@ -174,10 +198,9 @@ is fixed so that insta snapshots and example diffs are deterministic.
 | `included` | when the request carried `include` (§7.5) |
 | `errors` | error documents only (§13) |
 
-**`jsonapi` is emitted on every document, including errors.** Without it a
-client must assume 1.0. The contract relies on 1.1 semantics (the `ext` and
-`profile` negotiation rules in §3.2, and the 1.1 error and link members),
-and the member is a constant string.
+`jsonapi` is emitted on every document, including errors. The contract
+relies on 1.1 semantics: the `ext` and `profile` negotiation rules in §3.2,
+and the 1.1 error and link members.
 
 ### 4.2 Links are relative
 
@@ -185,10 +208,6 @@ Every link the server emits, and the `Location` header, is a relative
 reference: an absolute path plus an optional query, e.g.
 `/api/tasks/ship-the-emitter`. RFC 3986 permits a URI-reference, and
 RFC 9110 §10.2.2 permits a relative `Location`.
-
-Why relative: the generated server does not know its public origin. It sits
-behind proxies, Tauri dev servers and tunnels, and an absolute link built
-from `Host` would be wrong in all of them.
 
 Links are built from the route template ontogen generated (`/api/...`), not
 from the request's original URI. The generated router MUST therefore be
@@ -224,7 +243,42 @@ produce byte-equal links:
 
 ## 5. Resource objects
 
-### 5.1 Shape
+### 5.1 Schema input
+
+Building a resource object needs the schema. The generator must know:
+
+- which fields are attributes and which are relationships;
+- each relationship's kind and target, and whether a to-one is `Option`;
+- whether an event's item type is an entity;
+- the serde attributes that §5.3 restricts.
+
+Today neither stage sees it: `gen_servers` ignores its `ApiOutput` argument
+and rescans `api_dir`, and only `ClientsConfig` carries a
+`schema_entities` copy.
+
+From phase 1b the parsed schema is an explicit first argument of both
+stages, as it already is for `gen_api`:
+
+```rust
+pub fn gen_servers(entities: &[EntityDef], api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ServersConfig) -> Result<ServersOutput, CodegenError>;
+pub fn gen_clients(entities: &[EntityDef], api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError>;
+```
+
+- `Pipeline` passes the entities it parsed.
+- Standalone callers pass `parse_schema`'s output, or `&[]`.
+- `ClientsConfig::schema_entities` is removed. It was the only partial
+  route by which the schema reached a stage.
+
+A module is a **resource module** when its name is the module name of an
+entity in `entities`. Its CRUD ops are served as resources (§7, §8). A
+module with CRUD-classified ops (`list`, `get_by_id`, `create`, `update`,
+`delete`) but no entity behind it is served entirely as custom ops (§10.4).
+That module is what a scan-dirs-only consumer, or a standalone caller
+passing `&[]`, has. The alternative, a `CodegenError`, would break the
+scan-dirs-only use case the servers stage supports today, and those ops
+have no schema from which to build a resource.
+
+### 5.2 Shape
 
 ```json
 {
@@ -241,19 +295,20 @@ Member order is `type`, `id`, `attributes`, `relationships`, `links`.
 - **`type`** is the module's `url_plural`, kebab-case: `tasks`,
   `workout-sets` (decision 3). It is the same string as the URL segment.
   Plural overrides in `NamingConfig` apply to both.
-- **`id`** is the entity's `#[ontology(id)]` field. It MUST be a Rust
-  `String` (ADR 0001 contract item 1). The HTTP generator raises a
+- **`id`** is the value of the entity's `#[ontology(id)]` field, whatever
+  that field is called. The member is always named `id`. The field MUST be
+  a Rust `String` (ADR 0001 contract item 1). The generator raises a
   `CodegenError` for any other id type.
-- **`attributes`** is always present (§5.2).
+- **`attributes`** is always present (§5.3).
 - **`relationships`** is present when the type declares at least one
   relationship, and absent otherwise (`epics` and `tags` in the example).
-- **`links.self`** is always present, and equals the `Location` header on
+- **`links.self`** is always present. It equals the `Location` header on
   create (§8.2), as the spec requires when both exist.
-- No `meta` member.
+- There is no `meta` member.
 
-### 5.2 Attributes
+### 5.3 Attributes
 
-`attributes` is the entity's own serde serialization with the id field and
+`attributes` is the entity's serde serialization with the id field and
 every relation field removed. Concretely:
 
 - Member names are the Rust field names, in declaration order.
@@ -263,21 +318,19 @@ every relation field removed. Concretely:
   field (`body`).
 - Fields with role `Skip` are not attributes.
 
-The generator raises a `CodegenError` when an attribute name is not a legal
-JSON:API member name (for example a leading or trailing `_`), or is `type`
-or `id`.
+The generator raises a `CodegenError` when:
 
-It also raises one when an entity struct carries a serde attribute that
-changes its serialized shape: `rename`, `rename_all`, `alias`, `flatten`,
-`skip`, `skip_serializing`, `skip_serializing_if`, `serialize_with` or
-`with`. Attribute names, `unknown_attribute` detection, sort-field names and
-`null` for `None` all assume the field name and the serialized member are
-the same, and the generator does not track the alternatives.
-`#[serde(default)]` and `deserialize_with` change only deserialization and
-stay allowed. They are the only serde field attributes any in-tree schema
-uses.
+- an attribute name is not a legal JSON:API member name (for example, a
+  leading or trailing `_`), or is `type` or `id`;
+- an entity struct or field carries a serde attribute that changes its
+  serialized shape: `rename`, `rename_all`, `alias`, `flatten`, `skip`,
+  `skip_serializing`, `skip_serializing_if`, `serialize_with` or `with`.
 
-### 5.3 Relationships
+`#[serde(default)]` and `deserialize_with` change only deserialization, so
+they stay allowed. They are the only serde field attributes any in-tree
+schema uses.
+
+### 5.4 Relationships
 
 Every field with `FieldRole::Relation` leaves `attributes` and becomes a
 relationship:
@@ -287,37 +340,51 @@ relationship:
 | `belongs_to` | `epic_id: Option<String>` | `epic` | to-one | `{"type": "epics", "id": "…"}`, or `null` when `None` |
 | `belongs_to` | `workout_id: String` | `workout` | to-one | always an identifier |
 | `many_to_many` | `tags: Vec<String>` | `tags` | to-many | array of identifiers, in stored order |
-| `has_many` | `subtasks: Vec<String>` | `subtasks` | to-many | array of identifiers, id ascending (ADR 0006) |
+| `has_many` | `subtasks: Vec<String>` | `subtasks` | to-many | array of identifiers, id ascending (ADR 0006 §3) |
 
-Naming rule: a `belongs_to` field whose name ends in `_id` loses that
-suffix. Every other relation field keeps its name. The target type is
-`url_plural` of the relation's `target` entity.
-
-The generator raises a `CodegenError` when a relationship name equals an
-attribute name, `type`, `id` or `relationships`, or when two relation
-fields produce the same name. The spec gives fields one namespace, and
-`relationships` is a URL segment in §9.
+**Naming.** A `belongs_to` field whose name ends in `_id` loses that suffix.
+Every other relation field keeps its name. The target type is `url_plural`
+of the relation's `target` entity.
 
 Relationship names are also URL segments (`/relationships/{rel}`, §9),
 used verbatim: `/api/tasks/{id}/relationships/subtasks`, and for a
 two-word field, `…/relationships/sub_tasks`.
 
-**`has_many` is read-only on the wire.** It appears in responses with its
-derived linkage. A request that writes it fails with `403`: in a create or
-update body (§8.2, §8.3), and on its relationship endpoint (§9). Why: the
-store sets the foreign key of each listed child but never clears the
-foreign key of a child that was dropped from the list. It cannot honour the
-full replacement that JSON:API gives a to-many `PATCH`. The relationship is
-changed from the child's side, through its to-one relationship. Tauri IPC
-and MCP keep today's write behaviour.
+**Collisions.** The generator raises a `CodegenError` when:
 
-A user-authored junction-op relationship (§9.1) has no field on the
-entity. From phase 3a it appears in resource objects with `links` only.
-Before phase 3a it does not appear at all, and it never appears in event
-frames (§12), which carry no links. A relationship object with neither
-`links` nor `data` would be empty, which the spec forbids.
+- a relationship name equals an attribute name, `type`, `id` or
+  `relationships`;
+- two relationships share a name.
 
-Relationship objects have members in the order `links`, `data`:
+This applies to junction-op relationships (§9.1) as well. The spec gives
+fields one namespace, and `relationships` is a URL segment.
+
+**Writes.** Every relationship is writable on the wire except a junction-op
+relationship (§9.1), which is changed only through its own endpoint.
+
+- **to-one:** set, or cleared to `null` when the field is `Option`.
+- **`many_to_many`:** full replacement through `PATCH`; add and remove
+  through the relationship endpoint (§9).
+- **`has_many`** (decision 9):
+  - writes go through the children's foreign keys;
+  - a listed child gets its foreign key set to this resource, and moves
+    from any previous parent;
+  - a child dropped from the list gets its foreign key cleared;
+  - when the child's foreign key field is not `Option`, a child cannot be
+    dropped. The write fails with `409 {child}_parent_required` (§13.4)
+    before anything is written.
+
+On the markdown backend a `has_many` write rewrites one file per affected
+child. Multi-record writes are best-effort there (ADR 0001 contract
+item 2). Only an I/O failure part-way can leave some children changed,
+because the `409` check runs first.
+
+**Duplicate identifiers** in a to-many `data` array are collapsed to their
+first occurrence before anything else uses the array. This holds for
+create and update bodies (§8.2, §8.3) and for relationship `PATCH` (§9),
+and matches the add-once rule of relationship `POST`.
+
+**Relationship objects** have members in the order `links`, `data`:
 
 ```json
 "epic": {
@@ -329,11 +396,16 @@ Relationship objects have members in the order `links`, `data`:
 }
 ```
 
-Phase 1 emits `data` only. Phase 3a adds `links`, together with the
-endpoints they point at, because the spec requires a server to serve every
-link it emits.
+- Phase 1b emits `data` only. Phase 3a adds `links`, together with the
+  endpoints they point at, because the spec requires a server to serve
+  every link it emits.
+- A junction-op relationship has no field on the entity, so no `data`.
+  From phase 3a it appears with `links` only. Before phase 3a it does not
+  appear at all, and it never appears in event frames, which carry no
+  links (§12). A relationship object with neither member would be empty,
+  which the spec forbids.
 
-### 5.4 Worked example: one task
+### 5.5 Worked example: one task
 
 ```json
 {
@@ -383,23 +455,36 @@ These are written `‹epic markdown-backend›` and `‹tag codegen›`.
 
 ## 6. Query parameters
 
-Each JSON:API route accepts a fixed set of query parameters. Any other
-parameter, including an unknown member of an accepted family, a repeated
-parameter, or a parameter with a malformed name, is `400` with
-`source.parameter` naming it (code `invalid_query_parameter`). The spec
-requires this for names it reserves, and ontogen defines no
-implementation-specific parameters on resource routes.
+Each JSON:API route accepts a fixed set of query parameters, listed below.
+Anything else is `400 invalid_query_parameter` with `source.parameter`
+naming it. That covers:
+
+- a parameter the route does not accept;
+- an unknown member of an accepted family;
+- a repeated parameter;
+- a parameter whose name is malformed.
+
+The spec requires a `400` for any parameter it reserves that the server
+does not support, and for any parameter that follows none of its naming
+rules. Ontogen defines one implementation-specific family, `opArg`, and
+only on custom ops (§10.2).
 
 | Route | Accepted parameters |
 |---|---|
 | `GET /api/{type}` | `filter[…]` when the list takes a filter (§7.3); `sort` (§7.4); `include` (§7.5); `page[offset]`, `page[limit]` when paginated (§7.2) |
-| `GET /api/{type}/{id}` | `include` |
-| `POST /api/{type}`, `PATCH`, `DELETE /api/{type}/{id}` | none |
-| `GET /api/{type}/{id}/{rel}` (related link) | none |
-| `/api/{type}/{id}/relationships/{rel}`, any method | none |
+| `GET /api/{type}/{id}` | `include` (§7.5) |
+| `POST /api/{type}`; `PATCH` and `DELETE /api/{type}/{id}` | none |
+| `GET /api/{type}/{id}/{rel}` (related link) | `page[offset]`, `page[limit]` for a junction-op relationship in a paginated module (§9.1); otherwise none |
+| `GET /api/{type}/{id}/relationships/{rel}` | as for the related link |
+| `PATCH`, `POST`, `DELETE /api/{type}/{id}/relationships/{rel}` | none |
 | custom op, `GET` | `opArg[…]` (§10.2) |
 | custom op, `POST` | none |
 | event stream | outside these rules (§12) |
+
+`sort` and `include` are accepted names on the routes listed, in every
+phase. A route that cannot honour them answers with their own codes
+(§7.4, §7.5), not `invalid_query_parameter`. On every other route they
+fall under the general rule.
 
 `fields[…]` (sparse fieldsets) is not supported. It falls under the general
 rule and is `400` on every route, because the spec forbids sending fields a
@@ -429,12 +514,10 @@ Vary: Accept
 ```
 
 - An empty collection is `"data": []`, still `200`.
-- No `meta` and no pagination links. Why: the whole set is in `data`, so a
-  total would repeat `data.length`.
-- `page[…]` is `400` (`invalid_query_parameter`): the list is not paginated.
-- Order: id ascending, unless `sort` is given (ADR 0006 §3). Phase 1a
-  makes id order the store's default on both backends. `sort` arrives in
-  phase 3c.
+- No `meta` and no pagination links: the whole set is in `data`.
+- `page[…]` is `400 invalid_query_parameter`, because the list is not
+  paginated.
+- Order: id ascending, unless `sort` is given (ADR 0006 §3).
 
 ### 7.2 List, paginated
 
@@ -480,43 +563,40 @@ semantics as today's `limit`/`offset`, so the store signature is unchanged.
 Leading zeros are accepted (`page[offset]=020` is 20). Links always write
 the effective value in plain decimal.
 
-All of these `400`s use code `invalid_query_parameter` and
+All of these `400`s use code `invalid_query_parameter`, with
 `source.parameter` naming the parameter, e.g. `"page[limit]"`.
-
-Why `page[limit]=0` is refused, when today it returns an empty page: a
-zero-size page makes `last` and `next` undefined, and a client walking
-`next` would loop.
 
 **`meta`.** `total` is the filter-aware `count` (#172), so it counts the
 filtered set, not the table. `limit` and `offset` are the effective values.
 Together they are exactly the fields of today's `PaginatedResult`, which
 lets the TS transport rebuild it (§14).
 
-**Links.** With effective limit `L`, offset `O` and total `T`, and
+**Links.** A paginated document carries `self` plus the four pagination
+links (`first`, `prev`, `next`, `last`). All five keys are always present;
+a pagination link that is unavailable is `null`. Every link carries the
+request's `filter`, `sort` and `include` in canonical form (§4.3).
+
+With effective limit `L`, offset `O` and total `T`, and
 `last_offset = T == 0 ? 0 : floor((T - 1) / L) * L`:
 
 | Link | Offset | `null` when |
 |---|---|---|
 | `self` | `O` | never |
 | `first` | `0` | never |
-| `prev` | `last_offset` when `O > last_offset`, otherwise `max(0, O - L)` | `O == 0` |
+| `prev` | `last_offset` when `O >= T`, otherwise `max(0, O - L)` | `O == 0` |
 | `next` | `O + L` | `O + L >= T` |
 | `last` | `last_offset` | never |
 
-All five keys are always present, with `null` for an unavailable link. The
-spec allows omitting them instead. Always-present keys give clients one
-shape to read. Every link carries the request's `filter`, `sort` and
-`include` in canonical form (§4.3).
+An offset at or past the end gets a `prev` pointing at the last page, so a
+client that overshoots steps straight back to real data. With `T = 45` and
+`L = 10`, `O = 45` gives `prev` offset 40. An offset inside the last page
+(`O = 42`) gives `prev` offset 32, the page just before it.
 
-An offset past the last page gets a `prev` pointing at the last page, not
-at `O - L`, so a client that overshoots steps straight back to real data.
-With `T = 45` and `L = 10`, `O = 45` gives `prev` offset 40.
-
-**Ordering.** Pages are cut from the ADR 0006 order: the requested `sort`,
-then id ascending as the final tie-break, or id ascending alone. Page
-boundaries are therefore stable while the data is unchanged. The id-only
-default lands in phase 1a, with this envelope's prerequisites, so no phase
-ships pagination over an unordered list.
+**Ordering.** Pages are cut from the ADR 0006 §3 order: the requested
+`sort`, then id ascending as the final tie-break, or id ascending alone.
+Page boundaries are therefore stable while the data is unchanged. Phase 1a
+delivers the id-ascending default on both backends (ADR 0006 §6), before
+phase 1b ships this envelope.
 
 **Consistency.** `count` and the page query are separate store calls, as
 today, so a concurrent write can make `total` disagree with the pages by
@@ -524,13 +604,16 @@ the size of that write. The contract does not promise a snapshot.
 
 **Edge examples:**
 
-- `GET /api/tasks` returns offset 0 and limit 20. Its `self` is
-  `/api/tasks?page%5Boffset%5D=0&page%5Blimit%5D=20`, `prev` is `null`,
-  `next` is `…offset%5D=20…`, and `last` is `…offset%5D=40…`.
-- `GET /api/tasks?page[limit]=500` is clamped to 100. `meta.limit` is
-  `100`, `next` is `null`, and `last` is `…offset%5D=0&page%5Blimit%5D=100`.
-- For an empty vault, `T = 0`: `data` is `[]`, `meta.total` is `0`, `first`
-  and `last` are offset 0, and `prev` and `next` are `null`.
+- `GET /api/tasks` returns offset 0 and limit 20.
+  - `self` is `/api/tasks?page%5Boffset%5D=0&page%5Blimit%5D=20`.
+  - `prev` is `null`.
+  - `next` is `…offset%5D=20…` and `last` is `…offset%5D=40…`.
+- `GET /api/tasks?page[limit]=500` is clamped to 100.
+  - `meta.limit` is `100` and `next` is `null`.
+  - `last` is `…offset%5D=0&page%5Blimit%5D=100`.
+- For an empty vault, `T = 0`.
+  - `data` is `[]` and `meta.total` is `0`.
+  - `first` and `last` are offset 0; `prev` and `next` are `null`.
 - `GET /api/tasks?page[limit]=-1` is `400`:
 
 ```json
@@ -548,13 +631,37 @@ the size of that write. The contract does not promise a snapshot.
 
 ### 7.3 Filter
 
-Phase 2. A list whose API fn takes a user-authored `*Query` struct reads
-that struct from the `filter` family. Each `filter[name]` parameter becomes
-the struct field `name`, deserialized by serde from the string value
-exactly as `axum::extract::Query` does today. A bare non-`Option` list
-parameter (e.g. `skill_id: &str`) becomes a required `filter[skill_id]`.
+Phase 2. Filters are hand-written: the store takes none, and the generated
+CRUD `list` takes none.
 
-With `ListTasksQuery { status: Option<String>, epic_id: Option<String> }`:
+**A hand-written list replaces the generated one.** A `list` written in
+`api_dir/{module}.rs` replaces the generated `list` for that module, and
+`gen_api` stops emitting it. When the module is paginated, the generated
+`count` is replaced the same way. Today the API stage keeps the generated fn
+over a scanned fn of the same name (the merge in `src/api/mod.rs`), and
+phase 2 reverses that precedence for `list` and `count`. The hand-written
+list's parameters are, in this order:
+
+1. the store;
+2. its filter parameters;
+3. `order: &[OrderBy<XSortField>]`, from phase 3c, if it supports `sort`;
+4. `limit`, `offset`, if paginated.
+
+The matching `count` takes the same filter parameters and no `order`
+(ADR 0006 §1).
+
+**Filter parameters on the wire.** A filter parameter that is a
+user-authored `*Query` struct is read from the `filter` family. Each
+`filter[name]` parameter becomes the struct field `name`, deserialized by
+serde from the string value, exactly as `axum::extract::Query` does today.
+A bare filter parameter (e.g. `skill_id: &str`) becomes `filter[skill_id]`.
+
+That also fixes a defect. Today a bare parameter is extracted as
+`Query<String>`, which cannot deserialize from a query map, so every such
+request fails: `?skill_id=abc` returns `400 invalid type: map, expected a
+string`.
+
+With tasks-tracker's phase-2 `ListTasksQuery { status: Option<String>, epic_id: Option<String> }`:
 
 ```http
 GET /api/tasks?filter[status]=closed/done&filter[epic_id]=markdown-backend HTTP/1.1
@@ -580,42 +687,48 @@ HTTP/1.1 200 OK
 
 Rules:
 
-- Filter member names are the struct's serialized field names, not
-  relationship names. The filter above is `filter[epic_id]`, not
-  `filter[epic]`, because the struct is user-authored and ontogen does not
-  rewrite it.
-- A `filter[x]` that the struct does not deserialize is `400`
-  (`invalid_query_parameter`, `source.parameter: "filter[x]"`). Serde
-  ignores unknown fields by default, so the generated code detects them
-  (for example with `serde_ignored`) instead of trusting the struct.
-- A value serde rejects is `400`, same code, naming the parameter.
-- A missing required filter (a non-`Option` field or bare parameter) is
-  `400`, naming the parameter.
-- Nested or array forms (`filter[x][]`, `filter[x][y]`, `filter[x.y]`) are
-  `400`.
-- A list without filters answers any `filter[…]` with `400`.
+- Filter member names are the struct's field names, not relationship
+  names. The filter above is `filter[epic_id]`, not `filter[epic]`,
+  because the struct is user-authored and ontogen does not rewrite it.
+- Each of these is `400 invalid_query_parameter` naming the parameter:
+  - a `filter[x]` that the struct does not deserialize. Serde ignores
+    unknown fields by default, so the generated code detects them (for
+    example with `serde_ignored`) instead of trusting the struct;
+  - a value serde rejects;
+  - a missing required filter (a non-`Option` field or bare parameter);
+  - a nested or array form (`filter[x][]`, `filter[x][y]`, `filter[x.y]`);
+  - any `filter[…]` on a list that takes no filter.
 - The generated CRUD `list` takes no filter. Generic field filters are not
   part of this epic.
 
 ### 7.4 Sort
 
 Phase 3c. `sort` is honoured on a list whose API fn takes an
-`order: &[OrderBy<{Entity}SortField>]` argument (ADR 0006). The generated
-CRUD `list` always takes one. Sort fields are the entity's sortable fields:
-`id` plus every scalar attribute (ADR 0006 §2). Relationship names and
+`order: &[OrderBy<{Entity}SortField>]` argument (ADR 0006 §1):
+
+- The generated CRUD `list` always takes one.
+- A hand-written list (§7.3) takes one when its author adds it, and orders
+  with the store's `sort_{plural}` or `order_{plural}_query` helpers so the
+  order rules hold.
+
+tasks-tracker's phase-2 list gains it in phase 3c.
+
+Sort fields are `id` plus every scalar attribute (ADR 0006 §2). `id` names
+the `#[ontology(id)]` field whatever it is called. Relationship names and
 dotted paths are not sort fields.
 
 For `tasks` the sort fields are `id`, `title`, `status` and `created`.
 `body` is excluded, `epic` is a relationship, and `tags` is not a scalar.
 
 ```http
-GET /api/tasks?sort=-created,title HTTP/1.1
+GET /api/tasks?sort=-created,title&filter[status]=open/ready HTTP/1.1
 Accept: application/vnd.api+json
 ```
 
-The response is ordered by `created` descending, then `title` ascending,
-then `id` ascending (the implicit final key). Its `self` is
-`/api/tasks?sort=-created,title&page%5Boffset%5D=0&page%5Blimit%5D=20`.
+The response holds the tasks with status `open/ready`, ordered by `created`
+descending, then `title` ascending, then `id` ascending (the implicit final
+key). Its `self` is
+`/api/tasks?filter%5Bstatus%5D=open%2Fready&sort=-created,title&page%5Boffset%5D=0&page%5Blimit%5D=20`.
 
 Rules:
 
@@ -624,16 +737,19 @@ Rules:
 - `id` is appended as the last key, ascending, unless the request names
   `id`, in which case the requested direction stands.
 - `null` sorts before every value in ascending order and after every value
-  in descending order. Strings compare by byte. Both rules are fixed by
-  ADR 0006 for parity between the backends.
+  in descending order. Strings compare by byte. ADR 0006 §3 fixes both
+  rules for parity between the backends.
+- The value is split on `,` and parsed by `ontogen_core::order::parse_sort`,
+  the same function IPC and MCP use (decision 8).
 - Each of these is `400` with code `invalid_sort_field` and
   `source.parameter: "sort"`:
   - an unknown field (`sort=priority`), a relationship (`sort=epic`) or a
     dotted path (`sort=epic.title`);
   - a field named twice (`sort=title,-title`);
-  - an empty item (`sort=title,,status`, `sort=`).
-
-  The `detail` names the offending item, e.g.:
+  - an empty item (`sort=title,,status`, `sort=`);
+  - any `sort` on a list that takes no `order` argument, including every
+    list before phase 3c. The spec requires `400` from a server that does
+    not support the requested sort.
 
 ```json
 {
@@ -645,16 +761,12 @@ Rules:
 }
 ```
 
-- A list that takes no `order` argument (a user-authored list, or every
-  list before phase 3c) answers any `sort` with `400`
-  (`invalid_sort_field`), as the spec requires of a server that does not
-  support the requested sort.
-
 ### 7.5 Include
 
-Phase 3b. `include` is accepted on `GET /api/{type}` and
-`GET /api/{type}/{id}`. Every relationship of the primary type can be
-included, to-one and to-many alike, one level deep.
+Phase 3b. `include` is honoured on the two routes that accept it (§6):
+`GET /api/{type}` and `GET /api/{type}/{id}`. Every relationship of the
+primary type except a junction-op relationship can be included, to-one and
+to-many alike, one level deep.
 
 ```http
 GET /api/tasks?include=epic,tags HTTP/1.1
@@ -683,29 +795,33 @@ Rules:
   self-referential `parent` case). The spec forbids two objects for one
   `(type, id)`.
 - Included resources are fetched with the target entity's store `get`, one
-  call per distinct id. A linkage id that the store reports as not found
-  (a dangling markdown wikilink) is left out of `included`. Its identifier
-  stays in the linkage, and this is not an error. Why: the markdown
-  backend tolerates dangling links by design (ADR 0001 amendment 5), and
-  failing a list because one target was deleted would make the whole
-  collection unreadable. Any other store error fails the request.
+  call per distinct id.
+- A linkage id that the store reports as not found (a dangling markdown
+  wikilink) is left out of `included`. Its identifier stays in the linkage.
+  This is not an error, because the markdown backend tolerates dangling
+  links by design (ADR 0001 amendment 5). Any other store error fails the
+  request.
 - On a paginated list, only the page's relationships are included.
 - `include=` (empty value) is `"included": []`. The spec requires the
   member whenever `include` is given.
 - `include=epic,epic` is the same as `include=epic`.
-- Each of these is `400` with code `invalid_include_path` and
+- Each of these is `400 invalid_include_path` with
   `source.parameter: "include"`:
-  - a name that is not a relationship of the primary type (`include=owner`);
+  - a name that is not an includable relationship of the primary type
+    (`include=owner`, or a junction-op relationship);
   - a dotted path (`include=epic.tasks`), since nested inclusion is out of
     scope;
-  - `include` on any route other than the two above.
-- Before phase 3b, every route answers `include` with this `400`.
+  - any `include` before phase 3b.
+- On every other route, `include` is not an accepted parameter, and is
+  `400 invalid_query_parameter` (§6).
 
 Cost: one store `get` per distinct included id. That is acceptable at the
-page sizes `max_limit` allows, and the markdown backend already parses the
-whole directory per list.
+page sizes `max_limit` allows.
 
 ## 8. Single resources
+
+Error tables in this section list, for each check, its step in the check
+order of §13.2. Within a step, rows apply in table order.
 
 ### 8.1 Get
 
@@ -728,8 +844,14 @@ With `?include=epic`, the `self` link is
 `/api/tasks/ship-the-emitter?include=epic`, and
 `"included": [ ‹epic markdown-backend› ]` follows `data`.
 
-When the id does not exist (`GET /api/tasks/nope`), the response is `404`.
-The store returns `AppError::TaskNotFound("nope")`:
+**Errors.**
+
+- A path `{id}` that fails the id-validity rule (§8.2) is
+  `400 invalid_path_parameter` (step 4).
+- A query parameter other than `include` is `400 invalid_query_parameter`;
+  a bad `include` value is `400 invalid_include_path` (step 5).
+- When the id does not exist (`GET /api/tasks/nope`), the store returns
+  `AppError::TaskNotFound("nope")` and the response is `404` (step 9):
 
 ```json
 {
@@ -800,109 +922,106 @@ every `IdStrategy` (decision 4), so the server never answers `403` for a
 client-generated id.
 
 The spec asks *clients* to generate globally unique ids, preferably UUIDs.
-Ontogen accepts any string that is a valid id (row 11 below). Uniqueness
-within the type is enforced by the `409` of row 28, and the id's format is
-otherwise the consumer's choice (slugs are the norm in markdown vaults).
+Ontogen accepts any valid id:
 
-An id that breaks the validity rule is `400`, not `403`. The spec's `403`
-is for a server that does not support client ids at all, and this server
-supports them. The id itself is malformed.
-
-The response is always `201` with the full resource, never `204`. The
-server can change the resource (the id fill, `before_create` hooks), and
-the TS `create` returns the created entity.
-
-Body mapping: `data.id` becomes `CreateXInput.id`, or `""` when absent,
-which is today's "derive one" signal. `attributes` become the remaining
-non-relation fields. Each to-one `relationships.x.data` becomes the
-foreign-key field (`epic_id`). Each to-many `relationships.x.data`
-becomes the id vector (`tags`). A relationship absent from the body takes
-the field's default, as today's `#[serde(default)]` does.
-
-**Errors**, checked in this order. The first failure is the response
-(§13.1). Within one row, members are checked in the order they appear in
-the request body.
-
-| # | Condition | Status | `code` | `source` |
-|---|---|---|---|---|
-| 1 | `Accept` not satisfiable (§3.2) | 406 | `not_acceptable` | `header: "Accept"` |
-| 2 | `Content-Type` not acceptable (§3.2) | 415 | `unsupported_media_type` | `header: "Content-Type"` |
-| 3 | any query parameter | 400 | `invalid_query_parameter` | `parameter` |
-| 4 | body is not JSON | 400 | `invalid_document` | none |
-| 5 | top level is not an object | 400 | `invalid_document` | none |
-| 6 | `data` missing | 400 | `invalid_document` | `pointer: ""` |
-| 7 | `data` not an object | 400 | `invalid_document` | `pointer: "/data"` |
-| 8 | `data.type` missing | 400 | `invalid_document` | `pointer: "/data"` |
-| 9 | `data.type` not a string | 400 | `invalid_document` | `pointer: "/data/type"` |
-| 10 | `data.type` is not this collection's type (e.g. `"epics"` posted to `/api/tasks`) | 409 | `type_mismatch` | `pointer: "/data/type"` |
-| 11 | `data.id` present but not a valid id (see below) | 400 | `invalid_document` | `pointer: "/data/id"` |
-| 12 | `data.lid` present (unsupported) | 400 | `invalid_document` | `pointer: "/data/lid"` |
-| 13 | `IdStrategy::Provided` and `data.id` absent | 400 | `missing_id` | `pointer: "/data"` |
-| 14 | `attributes` present but not an object | 400 | `invalid_document` | `pointer: "/data/attributes"` |
-| 15 | an attribute name the type does not have, including a relation field written as an attribute (`epic_id`) | 400 | `unknown_attribute` | `pointer: "/data/attributes/{name}"` |
-| 16 | a required attribute missing | 400 | `missing_attribute` | `pointer: "/data/attributes"`, or `"/data"` when `attributes` is absent |
-| 17 | an attribute value serde rejects | 400 | `invalid_attribute` | `pointer: "/data/attributes/{name}"` |
-| 18 | `IdStrategy::SlugFromField(f)`, `data.id` absent, and attribute `f` slugifies to an empty string | 400 | `invalid_attribute` | `pointer: "/data/attributes/{f}"` |
-| 19 | `relationships` present but not an object | 400 | `invalid_document` | `pointer: "/data/relationships"` |
-| 20 | a relationship name the type does not have | 400 | `unknown_relationship` | `pointer: "/data/relationships/{name}"` |
-| 21 | a relationship object that is not an object or has no `data`; `data` of the wrong arity; an identifier without string `type` and `id` | 400 | `invalid_document` | `pointer` at the offending value: `/data/relationships/{name}`, `…/data` or `…/data/{i}` |
-| 22 | a `has_many` relationship present | 403 | `relationship_read_only` | `pointer: "/data/relationships/{name}"` |
-| 23 | a junction-op relationship present (§9.1) | 403 | `relationship_update_unsupported` | `pointer: "/data/relationships/{name}"` |
-| 24 | `data: null` on a non-`Option` to-one | 403 | `relationship_required` | `pointer: "/data/relationships/{name}/data"` |
-| 25 | a non-`Option` to-one absent | 400 | `missing_relationship` | `pointer: "/data/relationships"`, or `"/data"` when `relationships` is absent |
-| 26 | a linkage identifier of the wrong type | 409 | `type_mismatch` | `pointer: "/data/relationships/{name}/data"` (or `…/data/{i}`) |
-| 27 | a linked resource that does not exist | 404 | `related_resource_not_found` | same as 26 |
-| 28 | `data.id` already exists | 409 | `{entity}_already_exists` (e.g. `task_already_exists`) | `pointer: "/data/id"` |
-| 29 | any other `AppError` | per §13.3 | §13.3 | none |
-
-Rows 1 to 27 are decided by the handler. Rows 28 and 29 come from the
-store call.
-
-Notes on the table:
-
-- **Pointers.** A pointer only ever names a value present in the request,
-  as the spec requires. For something missing, it names the nearest
-  enclosing member that exists (rows 6, 8, 13, 16, 25).
-- **Row 11, valid ids.** One rule, on both backends, matching
-  `markdown_store::layout::validate_id`. An id is valid when it:
+- **Validity.** One rule applies on both backends. It matches
+  `markdown_store::layout::validate_id`, and phase 1a shares it with
+  SeaORM. An id is valid when it:
   - is a non-empty string that is not whitespace-only;
   - contains no `/`, `\`, `:` or NUL;
   - does not start with `.`;
   - does not end with `.` or a space.
+- **An invalid client id is `400`, not `403`.** The spec's `403` is for a
+  server that does not support client ids, and this one does.
+- **Uniqueness** within the type is the store's `409`. The id's format is
+  otherwise the consumer's choice; slugs are the norm in markdown vaults.
 
-  Phase 1a applies the rule to SeaORM ids too, for parity. The handler
-  checks it, so a bad id is a `400` here instead of a `500` from the store.
-  A whitespace-only id is refused rather than treated as absent, which is
-  what `IdStrategy` does with it inside the store.
-- **Rows 13 and 18.** The handler checks these before calling the store.
-  - The servers stage learns the store's `IdStrategy` from the Pipeline, by
-    the same fill-if-unset threading E0003 uses for `error_source_dir`. A
-    consumer calling `gen_servers` directly sets it on `ServersConfig`.
-  - Row 18 uses the same slug function the store uses. Phase 1a shares it
-    between the backends.
-- **Row 15.** Unknown attributes are refused, not ignored, because the
-  commonest cause is a client still sending the flat shape (`epic_id` in
-  `attributes`). The `detail` says so: "`epic_id` is not an attribute of
-  `tasks`; it is the `epic` relationship".
-- **Row 25.** A non-`Option` `belongs_to` has no default in `CreateXInput`,
-  so it cannot be omitted. Every other relationship absent from the body
-  takes the field's default (`None` or empty), as today's
-  `#[serde(default)]` does.
-- **Row 27.** The handler checks every linked id with the target's store
-  `get` before creating. The spec requires `404` for a reference to a
-  resource that does not exist, and the markdown backend would otherwise
-  write a dangling wikilink.
-- **Row 28.** The store reports a duplicate as
-  `AppError::{Entity}AlreadyExists(id)`, a new store-contract variant
-  alongside `{Entity}NotFound` (ADR 0004).
-  - On markdown it maps `markdown_store::Error::AlreadyExists`.
-  - On SeaORM it maps a unique-constraint violation on the primary-key
+The response is always `201` with the full resource, never `204`. The
+server can change the resource (the id fill, `before_create` hooks).
+
+**Body mapping:**
+
+- `data.id` becomes `CreateXInput.id`, or `""` when absent, which is
+  today's "derive one" signal.
+- `attributes` become the remaining non-relation fields.
+- Each to-one `relationships.x.data` becomes the foreign-key field
+  (`epic_id`).
+- Each to-many `relationships.x.data` becomes the id vector (`tags`,
+  `subtasks`). A `has_many` vector sets those children's foreign keys
+  (§5.4).
+- A relationship absent from the body takes the field's default (`None`
+  or empty), as today's `#[serde(default)]` does. A non-`Option` to-one has
+  no default, so it cannot be omitted.
+
+**Errors**, by step of §13.2:
+
+| Step | Condition | Status | `code` | `source` |
+|---|---|---|---|---|
+| 2 | `Accept` not satisfiable | 406 | `not_acceptable` | `header: "Accept"` |
+| 3 | `Content-Type` not acceptable | 415 | `unsupported_media_type` | `header: "Content-Type"` |
+| 5 | any query parameter | 400 | `invalid_query_parameter` | `parameter` |
+| 7 | body is not JSON, or its top level is not an object | 400 | `invalid_document` | none |
+| 7 | `data` missing | 400 | `invalid_document` | `pointer: ""` |
+| 7 | `data` not an object | 400 | `invalid_document` | `pointer: "/data"` |
+| 7 | `data.type` missing | 400 | `invalid_document` | `pointer: "/data"` |
+| 7 | `data.type` not a string | 400 | `invalid_document` | `pointer: "/data/type"` |
+| 7 | `data.type` is not this collection's type (`"epics"` posted to `/api/tasks`) | 409 | `type_mismatch` | `pointer: "/data/type"` |
+| 7 | `data.id` present but not a string, or not a valid id | 400 | `invalid_document` | `pointer: "/data/id"` |
+| 7 | `data.lid` present (unsupported) | 400 | `invalid_document` | `pointer: "/data/lid"` |
+| 7 | `attributes` present but not an object | 400 | `invalid_document` | `pointer: "/data/attributes"` |
+| 7 | an attribute name the type does not have, including a relation field written as an attribute (`epic_id`) | 400 | `unknown_attribute` | `pointer: "/data/attributes/{name}"` |
+| 7 | a required attribute missing | 400 | `missing_attribute` | `pointer: "/data/attributes"`, or `"/data"` when `attributes` is absent |
+| 7 | an attribute value serde rejects | 400 | `invalid_attribute` | `pointer: "/data/attributes/{name}"` |
+| 7 | `relationships` present but not an object | 400 | `invalid_document` | `pointer: "/data/relationships"` |
+| 7 | a relationship name the type does not have | 400 | `unknown_relationship` | `pointer: "/data/relationships/{name}"` |
+| 7 | a junction-op relationship present (§9.1) | 403 | `relationship_update_unsupported` | `pointer: "/data/relationships/{name}"` |
+| 7 | a relationship object that is not an object or has no `data`; `data` of the wrong arity; an identifier without string `type` and `id` | 400 | `invalid_document` | `pointer` at the offending value: `…/{name}`, `…/{name}/data` or `…/{name}/data/{i}` |
+| 7 | `data: null` on a non-`Option` to-one | 403 | `relationship_required` | `pointer: "/data/relationships/{name}/data"` |
+| 7 | a non-`Option` to-one absent | 400 | `missing_relationship` | `pointer: "/data/relationships"`, or `"/data"` when `relationships` is absent |
+| 7 | an identifier of the wrong type | 409 | `type_mismatch` | `pointer: "/data/relationships/{name}/data"` (or `…/data/{i}`) |
+| 8 | a linked resource that does not exist | 404 | `related_resource_not_found` | the identifier's pointer |
+| 9 | no id after `before_create` and the `IdStrategy` (`Provided` with no id; a slug source that slugifies to empty) | 400 | `{entity}_id_required` | none |
+| 9 | the id already exists | 409 | `{entity}_already_exists` | `pointer: "/data/id"` when the request carried `data.id`; otherwise none |
+| 9 | any other `AppError` | per §13.4 | §13.4 | none |
+
+Notes:
+
+- **Member order within step 7** is fixed by the schema, not by the body,
+  so no order-preserving JSON parser is needed:
+  - unknown attribute names come first, in byte order;
+  - then declared attributes, in declaration order;
+  - then unknown relationship names, in byte order;
+  - then declared relationships, in declaration order.
+
+  Within one declared relationship the order is its shape, then `null`,
+  then absence, then identifier types.
+- **Pointers** only ever name a value present in the request, as the spec
+  requires. For something missing, a pointer names the nearest enclosing
+  member that exists.
+- **Unknown attributes are refused, not ignored.** The commonest cause is a
+  client still sending the flat shape. The `detail` says so: "`epic_id` is
+  not an attribute of `tasks`; it is the `epic` relationship".
+- **Linked-resource checks (step 8).** The handler checks every linked id
+  with the target's store `get` before creating, in step-7 order. The spec
+  requires `404` for a reference to a resource that does not exist, and the
+  markdown backend would otherwise write a dangling wikilink.
+- **No id (step 9)** is detected by the store, after `before_create` hooks
+  have run, so a hook may assign the id. The store returns
+  `AppError::{Entity}IdRequired(reason)`. The handler does not know the
+  `IdStrategy` and does not pre-check.
+- **Duplicates (step 9)** are detected by the store as
+  `AppError::{Entity}AlreadyExists(id)`:
+  - on markdown, from `markdown_store::Error::AlreadyExists`;
+  - on SeaORM, from a unique-constraint violation on the primary-key
     insert.
-  - Detection is atomic on both backends, so two racing creates cannot
-    both succeed and neither can see a `500`.
-  - Derived ids never collide: markdown appends `-2`, `-3` and so on, and
-    phase 1a gives SeaORM the same rule. So row 28 only arises for a
-    client id, and `/data/id` always exists.
+
+  A derived id never reaches this error:
+  - markdown already probes `-2`, `-3` and so on;
+  - phase 1a gives SeaORM the same probe, and makes a derived-id insert
+    that loses a race retry with the next suffix.
+
+  A client id, or an id a hook assigned, can collide. Only the first
+  carries a pointer, because only it is in the request.
 
 Example: `POST /api/tasks` with `"type": "epics"`:
 
@@ -921,8 +1040,7 @@ Example: `POST /api/tasks` with `"type": "epics"`:
 
 ### 8.3 Update
 
-`PATCH /api/{type}/{id}`. `PUT` is no longer routed and answers `405`
-(§13.4).
+`PATCH /api/{type}/{id}`. `PUT` is not routed and answers `405` (§13.5).
 
 ```http
 PATCH /api/tasks/ship-the-emitter HTTP/1.1
@@ -975,30 +1093,37 @@ fields:
 | to-one `data: {type, id}` | `epic_id: Some(Some(id))` | set |
 | to-one `data: null`, field `Option<String>` | `epic_id: Some(None)` | cleared |
 | to-one `data: null`, field `String` | — | `403 relationship_required` |
-| to-many `data: [...]` | `tags: Some(vec)` | full replacement |
-| to-many `data: []` | `tags: Some(vec![])` | cleared |
-| `has_many` relationship | — | `403 relationship_read_only` |
+| `many_to_many` `data: [...]` | `tags: Some(vec)` | full replacement; `[]` clears |
+| `has_many` `data: [...]` | `subtasks: Some(vec)` | full replacement through the children's foreign keys (§5.4) |
 
 An update with no `attributes` and no `relationships` is a no-op. It
 returns `200` with the current resource, and the markdown backend performs
 no write.
 
-**Response: always `200` with the full resource.** Why 200 and not 204:
-`before_update` hooks may change fields the request did not mention, the
-spec then requires `200`, and the TS `update` returns the updated entity.
+The response is always `200` with the full resource: `before_update` hooks
+may change fields the request did not mention, and the spec then requires
+`200`.
 
-**Errors**, checked in this order. Row numbers refer to §8.2.
+**Errors**, by step of §13.2:
 
-1. Rows 1 to 10.
-2. `data.id` missing: `400 invalid_document`, `pointer: "/data"`.
-3. Row 11 (invalid id).
-4. `data.id` differs from the URL id: `409 id_mismatch`,
-   `pointer: "/data/id"`.
-5. Rows 12, 14, 15, 17, 19 to 24, 26 and 27.
-   - Row 17 includes `null` for a non-`Option` attribute.
-   - Rows 13, 16, 18, 25 and 28 do not apply to an update.
-6. The store call. A missing resource is `404 {entity}_not_found`, with no
-   `source`. Any other `AppError` follows §13.3.
+| Step | Condition | Status | `code` | `source` |
+|---|---|---|---|---|
+| 4 | path `{id}` fails the id-validity rule | 400 | `invalid_path_parameter` | none |
+| 2, 3, 5 | as in §8.2 | | | |
+| 7 | §8.2's step-7 rows up to and including `type_mismatch` | | | |
+| 7 | `data.id` missing | 400 | `invalid_document` | `pointer: "/data"` |
+| 7 | `data.id` not a string | 400 | `invalid_document` | `pointer: "/data/id"` |
+| 7 | `data.id` differs from the URL id | 409 | `id_mismatch` | `pointer: "/data/id"` |
+| 7 | §8.2's remaining step-7 rows, except `missing_attribute` and `missing_relationship` | | | |
+| 8 | a linked resource that does not exist | 404 | `related_resource_not_found` | the identifier's pointer |
+| 9 | the resource does not exist | 404 | `{entity}_not_found` | none |
+| 9 | a `has_many` replacement drops a child whose foreign key is not `Option` | 409 | `{child}_parent_required` | none |
+| 9 | any other `AppError` | per §13.4 | §13.4 | none |
+
+A body `id` is compared with the URL id exactly. A string that differs is
+`409`, whatever it contains (`""` included), as the spec requires for an id
+that does not match the endpoint. The validity rule applies to the URL
+`{id}`, at step 4.
 
 A missing resource is detected by the store, after the body checks. So a
 `PATCH` to a missing id with a malformed body gets the body's `400`, not
@@ -1031,38 +1156,42 @@ HTTP/1.1 204 No Content
 Vary: Accept
 ```
 
+- A path `{id}` that fails the validity rule is `400 invalid_path_parameter`.
 - A missing resource is `404 task_not_found`. The spec's SHOULD is taken.
 - A request body is ignored.
 - Query parameters are `400`.
-- `204` and not `200` with `meta`: there is nothing to report, and it is
-  today's status.
 
 ## 9. Relationship endpoints and related links
 
 Phase 3a. For every relationship of every resource type the server serves:
 
-| Method | Path | To-one | To-many relation field (`many_to_many`) | Junction op | To-many `has_many` |
+| Method | Path | To-one | `many_to_many` | `has_many` | Junction op |
 |---|---|---|---|---|---|
 | `GET` | `/api/{type}/{id}/relationships/{rel}` | linkage | linkage | linkage | linkage |
-| `PATCH` | same | set or clear | replace | `403` | `403` |
-| `POST` | same | `403` | add | add | `403` |
-| `DELETE` | same | `403` | remove | remove | `403` |
+| `PATCH` | same | set or clear | replace | replace | `403` |
+| `POST` | same | `403` | add | add | add |
+| `DELETE` | same | `403` | remove | remove | remove |
 | `GET` | `/api/{type}/{id}/{rel}` (related link) | resource or `null` | resource collection | resource collection | resource collection |
 
-The spec defines `POST` and `DELETE` only for to-many relationships, and
-requires `403` for an unsupported relationship update. Every `403` in the
-table therefore uses code `relationship_update_unsupported`, except writes
-to `has_many`, which use `relationship_read_only` (§5.3).
-
-`{rel}` is the relationship name verbatim (§5.3). Both route templates
-capture it, so a name that is not a relationship of `{type}` reaches the
-generated handler and is `404 relationship_not_found`, not a fall-through
-to the consumer's router.
-
-Any other method is `405` with `Allow: GET, HEAD, PATCH, POST, DELETE` on
-the relationship route and `Allow: GET, HEAD` on the related route. That
-holds whatever `{rel}` names, because routing happens before `{rel}` is
-looked up.
+- **`403`s in the table.** The spec defines `POST` and `DELETE` only for
+  to-many relationships, and requires `403` for an unsupported
+  relationship update. Every `403` in the table uses code
+  `relationship_update_unsupported`.
+- **One identifier per `POST` or `DELETE`.** A body with more than one is
+  `403 relationship_batch_unsupported`. `"data": []` is a successful no-op.
+  The spec allows `403` for an unsupported relationship update. Allowing
+  only one identifier makes every relationship write a single store or
+  junction call, which either succeeds or fails, so no request can be
+  partly applied. The TS transport sends one id per request.
+- **`{rel}` is captured.** It is the relationship name verbatim (§5.4).
+  Both route templates capture it, so a name that is not a relationship of
+  `{type}` reaches the generated handler and is
+  `404 relationship_not_found`. It does not fall through to the consumer's
+  router.
+- **Other methods** are `405`, with `Allow: GET, HEAD, PATCH, POST, DELETE`
+  on the relationship route and `Allow: GET, HEAD` on the related route.
+  That holds whatever `{rel}` names, because routing happens before `{rel}`
+  is looked up.
 
 ### 9.1 Where each endpoint's behaviour comes from
 
@@ -1073,19 +1202,20 @@ backends with no user code:
 - `GET …/relationships/{rel}` reads the field from `get_{entity}(id)`.
 - `PATCH` writes the field through
   `update_{entity}(id, XUpdate { field: Some(…), ..Default })`, with the
-  same mapping as §8.3.
-- `POST` (to-many) reads the current ids, appends each requested id that is
-  not already present, in request order, and writes the result through
-  `update_{entity}`.
-- `DELETE` (to-many) reads the current ids, removes each requested id, and
-  writes the result through `update_{entity}`.
+  semantics of §8.3.
+- `POST` (to-many) reads the current ids. If the requested id is absent, it
+  appends it and writes through `update_{entity}`. If it is present, it
+  writes nothing.
+- `DELETE` (to-many) reads the current ids. If the requested id is present,
+  it removes it and writes through `update_{entity}`. If it is absent, it
+  writes nothing. For `has_many`, removing a child clears its foreign key,
+  or fails with `409 {child}_parent_required` (§5.4).
 
 `POST` and `DELETE` are a read followed by one write, not one transaction.
 A concurrent writer to the same relationship can lose an update. That
-matches every other read-modify-write in the store today and is recorded
-in ADR 0004.
+matches every other read-modify-write in the store today.
 
-**Junction ops** are user-authored functions in an entity module:
+**Junction ops** are user-authored functions in a resource module:
 
 - `list_X(parent_id)`, classified `JunctionList`;
 - `add_Y(parent_id, child_id)`, classified `JunctionAdd`;
@@ -1096,88 +1226,70 @@ relationship named `X`, exactly as written in the fn name: `list_tags` /
 `add_tag` / `remove_tag` define `tags`, and `list_sub_tasks` defines
 `sub_tasks`.
 
-Classification changes in phase 3a. A one-parameter `list_X` counts as a
-junction op only when its module also has `add_Y` or `remove_Y`. Without
-either, it is a custom `GET` (§10), served at `/api/{type}/{action}/{param}`.
-Today any one-parameter `list_*` is a `JunctionList`, which would turn a
-plain `list_by_status(status)` into a relationship named `by_status`.
+- **Classification.** From phase 3a, a one-parameter `list_X` counts as a
+  junction op only when its module also has `add_Y` or `remove_Y`. Without
+  either it is a custom `GET` (§10), served at
+  `/api/{type}/{action}/{param}`. Today any one-parameter `list_*` is a
+  `JunctionList`, which would turn a plain `list_by_status(status)` into a
+  relationship named `by_status`.
+- **Outside a resource module.** Junction ops in a module that is not a
+  resource module (§5.1) have no resource type to hang a relationship on.
+  This includes today's test fixture `destination_skills`. They are served
+  as custom ops (§10.4).
+- **Target type.** The relationship's target type is `url_plural` of
+  `list_X`'s element type when that is an entity. Otherwise it is the
+  entity type whose `url_plural` is `X` kebab-cased. When neither names an
+  entity type, the generator raises a `CodegenError`.
+- **Collisions.** The name collision rule of §5.4 applies to junction-op
+  relationships.
 
-The relationship's target type is `url_plural` of `list_X`'s element type
-when that is an entity. Otherwise it is the entity type whose `url_plural`
-is `X` kebab-cased. When neither names an entity type, the generator raises
-a `CodegenError`.
-
-Each endpoint behaves as follows:
+Each junction endpoint behaves as follows:
 
 - **`GET …/relationships/X`** calls `list_X(parent_id)`. When it returns
   entities, linkage is built from their ids. When it returns `Vec<String>`,
   linkage is built from the strings.
-- **`POST`** first validates every identifier in the body: its shape, its
-  type, and the target's existence. It then calls `list_X(parent_id)` once,
-  and calls `add_Y(parent_id, child_id)` for each requested id that is not
-  already a member, in request order, once per distinct id.
-- **`DELETE`** validates the same way, reads membership the same way, and
-  calls `remove_Y` for each requested id that is a member.
-- **`PATCH`** is `403 relationship_update_unsupported`. No junction op
-  replaces a set, and the spec allows refusing replacement with `403`.
+- **`POST`** validates the identifier's shape and type, and that its target
+  exists. It then calls `list_X(parent_id)`. If the id is already a member,
+  the response is `204` without calling user code; otherwise it calls
+  `add_Y(parent_id, child_id)`.
+- **`DELETE`** validates the identifier's shape and type only, not its
+  target's existence, so a member whose target was deleted can still be
+  removed. It then calls `list_X(parent_id)`. If the id is not a member, the
+  response is `204` without calling user code; otherwise it calls
+  `remove_Y(parent_id, child_id)`.
+- **`PATCH`** is `403 relationship_update_unsupported`, because no junction
+  op replaces a set.
 
-The membership read is what makes an already-present `POST` and an
-already-absent `DELETE` succeed without calling user code, as the spec
-requires, whatever `add_Y` does with a duplicate.
-
-What the contract cannot give junction ops is atomicity. If `add_Y` fails
-on the second of three ids, the first stays added and the response is the
-error. The ops are user code with no transaction to join. This is a
-recorded deviation from the spec's "a request MUST completely succeed or
-fail" (ADR 0004). Clients that need all-or-nothing send one identifier per
-request.
+The membership read is what makes a repeated `POST`, or a `DELETE` of an
+absent member, succeed as the spec requires, whatever `add_Y` does with a
+duplicate.
 
 **Pagination.** When the module is paginated, junction `GET`s keep today's
 in-memory paging:
 
 - The relationship linkage `GET` and the related-link `GET` accept
   `page[offset]` and `page[limit]` with §7.2's rules.
-- They return `meta {total, limit, offset}` and the four pagination links
-  at the top level, where they paginate the primary data, which is the
-  relationship's members.
+- They return `meta {total, limit, offset}`, plus `self` and the four
+  pagination links at the top level, where they paginate the primary data:
+  the relationship's members.
 - Relation-field relationships are never paginated. Their linkage is
   already loaded with the resource.
 
-Generator errors for junction ops, each a `CodegenError` with a message that
-says where to move the ops:
+**In resource objects.** A junction-op relationship appears in the
+resource object's `relationships` with `links` only and no `data`, which
+the spec allows. Linkage would mean calling user code once per resource on
+every `get` and `list`. It follows that:
 
-- Junction ops in a module that is not an entity module (today's test
-  fixture `destination_skills`). The relationship would hang off a `type`
-  that has no resources.
-- A junction-op relationship whose name equals a relation field's
-  relationship name. Both names are compared as written, in snake_case.
-  That relationship would have two owners.
-
-A junction-op relationship appears in the resource object's
-`relationships` with `links` only and no `data`, which the spec allows.
-Linkage would mean calling user code once per resource on every `get` and
-`list`. It follows that:
-
-- it cannot be included, so `include` naming it is
-  `400 invalid_include_path`;
-- it cannot be written in a create or update body, which is
-  `403 relationship_update_unsupported` (§8.2 row 23);
+- it cannot be included (§7.5);
+- it cannot be written in a create or update body (§8.2,
+  `403 relationship_update_unsupported`);
 - the TS flattener leaves it out of the flat entity, as today, since the
   entity struct has no such field.
 
-**Before phase 3a**, junction ops keep their current paths and are served
-as custom ops (§10):
+**Before phase 3a**, junction ops in a resource module keep their current
+paths and are served as custom ops (§10.4).
 
-- `JunctionList` at `GET /api/{type}/{parent_id}/{segment}` responds
-  `{"meta": {"result": …}}`. The result is today's body: the list, or for a
-  paginated module the `{items, total, limit, offset}` object, with
-  `limit`/`offset` read from `opArg[limit]`/`opArg[offset]`.
-- `JunctionAdd` at `POST` on the same path takes
-  `{"meta": {"args": {"<child param>": "<id>"}}}` and responds `204`.
-- `JunctionRemove` at `DELETE /api/{type}/{parent_id}/{segment}/{child_id}`
-  responds `204`.
-
-### 9.2 Examples
+### 9.2 Examples and errors
 
 **Fetch to-one linkage:**
 
@@ -1199,7 +1311,7 @@ HTTP/1.1 200 OK
 
 An empty to-one is `"data": null`, still `200`.
 
-**Fetch to-many linkage:** `GET /api/tasks/ship-the-emitter/relationships/tags`
+**Fetch to-many linkage.** `GET /api/tasks/ship-the-emitter/relationships/tags`
 returns `200` with `links.self` and `links.related`, and
 `"data": [ { "type": "tags", "id": "codegen" } ]`. An empty to-many is
 `"data": []`.
@@ -1220,7 +1332,8 @@ Vary: Accept
 
 `{ "data": null }` clears it, also `204`.
 
-**Add, remove and replace to-many:**
+**Add, remove and replace to-many.** With the phase-3a `release` tag in
+the vault:
 
 ```http
 POST /api/tasks/ship-the-emitter/relationships/tags HTTP/1.1
@@ -1229,36 +1342,44 @@ Content-Type: application/vnd.api+json
 { "data": [ { "type": "tags", "id": "release" } ] }
 ```
 
-`204`. Posting an id already present is a no-op and still `204`. `DELETE`
-with the same body removes `release`; removing an absent id is also `204`.
-`PATCH` with `{"data": []}` clears the relationship.
+- The response is `204`. Posting an id already present is a no-op and
+  still `204`.
+- `DELETE` with the same body removes `release`. Removing an absent id is
+  also `204`.
+- `PATCH` with `{"data": []}` clears the relationship.
+- `PATCH /api/tasks/ship-the-emitter/relationships/subtasks` with
+  `{"data": [...]}` makes exactly those tasks the subtasks. Dropped
+  subtasks get `parent_id: null`.
 
-**Responses.** Every successful mutation is `204 No Content`. Why: the
-server makes no change beyond the request, so the spec allows `204`, and
-the TS junction methods already return `null`.
+**Responses.** Every successful relationship mutation is `204 No Content`.
+The server makes no change beyond the request, so the spec allows it.
 
-**Errors on relationship endpoints**, checked in this order (§13.1):
+**Errors**, by step of §13.2:
 
-| # | Condition | Status | `code` | `source` |
+| Step | Condition | Status | `code` | `source` |
 |---|---|---|---|---|
 | 1 | a method other than `GET`, `HEAD`, `PATCH`, `POST`, `DELETE` | 405 | `method_not_allowed` | none |
 | 2 | `Accept` not satisfiable | 406 | `not_acceptable` | `header: "Accept"` |
 | 3 | `Content-Type` not acceptable (`PATCH`, `POST`, `DELETE`) | 415 | `unsupported_media_type` | `header: "Content-Type"` |
+| 4 | path `{id}` fails the id-validity rule | 400 | `invalid_path_parameter` | none |
 | 4 | `{rel}` is not a relationship of `{type}` | 404 | `relationship_not_found` | none |
-| 5 | any query parameter, except `page[…]` on a paginated junction `GET` | 400 | `invalid_query_parameter` | `parameter` |
-| 6 | a write the relationship does not support (table above) | 403 | `relationship_update_unsupported` or `relationship_read_only` | none |
+| 5 | any query parameter not accepted by §6 | 400 | `invalid_query_parameter` | `parameter` |
+| 6 | a write the relationship does not support (table above) | 403 | `relationship_update_unsupported` | none |
 | 7 | body not JSON, or top level not an object | 400 | `invalid_document` | none |
-| 8 | `data` missing | 400 | `invalid_document` | `pointer: ""` |
-| 9 | `data` of the wrong arity for the relationship | 400 | `invalid_document` | `pointer: "/data"` |
-| 10 | an identifier without string `type` and `id` | 400 | `invalid_document` | `pointer: "/data"` (to-one) or `"/data/{i}"` |
-| 11 | an identifier of the wrong type | 409 | `type_mismatch` | same as 10 |
-| 12 | `null` on a non-`Option` to-one | 403 | `relationship_required` | `pointer: "/data"` |
-| 13 | a linked resource that does not exist (`PATCH`, `POST`) | 404 | `related_resource_not_found` | same as 10 |
-| 14 | parent resource missing | 404 | `{entity}_not_found` | none |
-| 15 | any other `AppError` from the store or a junction op | per §13.3 | §13.3 | none |
+| 7 | `data` missing | 400 | `invalid_document` | `pointer: ""` |
+| 7 | `data` of the wrong arity for the relationship | 400 | `invalid_document` | `pointer: "/data"` |
+| 7 | `POST` or `DELETE` with more than one identifier | 403 | `relationship_batch_unsupported` | `pointer: "/data"` |
+| 7 | an identifier without string `type` and `id` | 400 | `invalid_document` | `pointer: "/data"` (to-one) or `"/data/{i}"` |
+| 7 | `null` on a non-`Option` to-one | 403 | `relationship_required` | `pointer: "/data"` |
+| 7 | an identifier of the wrong type | 409 | `type_mismatch` | the identifier's pointer |
+| 8 | parent resource missing | 404 | `{entity}_not_found` | none |
+| 8 | a linked resource that does not exist (`PATCH`, `POST`; never `DELETE`) | 404 | `related_resource_not_found` | the identifier's pointer |
+| 9 | a `has_many` write drops a child whose foreign key is not `Option` | 409 | `{child}_parent_required` | none |
+| 9 | any other `AppError` from the store or a junction op | per §13.4 | §13.4 | none |
 
-Row 8 is where E0003 phase 1's "missing junction parameter → 400" lands: a
-junction add without its child id is a body with no `data`.
+The `data missing` row is where E0003 phase 1's "missing junction
+parameter → 400" lands: a junction add without its child id is a body with
+no `data`.
 
 ### 9.3 Related resource links
 
@@ -1274,27 +1395,32 @@ junction add without its child id is a body with no `data`.
 - When the parent is missing, the response is `404 {entity}_not_found`.
 - For a junction op whose `list_X` returns entities, those entities are the
   data, with no extra `get`.
-- Related collections are not filtered or sorted, and are paginated only
-  for a junction op in a paginated module (§9.1). Any other query
-  parameter is `400`.
+- Related collections are not filtered or sorted. They are paginated only
+  for a junction op in a paginated module (§9.1).
 
 ### 9.4 Route shadowing
 
 A custom op's static segment wins over `{id}` in Axum's router. For
-illustration, a custom `POST /api/workouts/start` shadows `PATCH` on a
-workout whose id is `start`. A custom `GET /api/workouts/summary/{id}`
-shadows the related link of every relationship on a workout with id
-`summary`.
+illustration:
+
+- A custom `POST /api/workouts/start` shadows `PATCH` on a workout whose id
+  is `start`.
+- A custom `GET /api/workouts/summary/{id}` shadows the related link of
+  every relationship on a workout with id `summary`.
 
 This is true today for `/{id}`. The contract records it and does not fix
 it.
 
 ## 10. Custom ops and singletons
 
+Custom requests and responses are fully conformant JSON:API documents
+(decisions 1 and 7).
+
 ### 10.1 Responses: meta-only documents
 
 Every custom op (`CustomGet`, `CustomPost`) responds with a meta-only
-document (decision 1). iron-log's `stats::get_workout`:
+document. iron-log's `stats::get_workout`, with illustrative values (the
+example's handler returns zeros):
 
 ```http
 GET /api/stats/workout HTTP/1.1
@@ -1311,18 +1437,14 @@ HTTP/1.1 200 OK
 ```
 
 - `result` is the fn's `Ok` value, serialized by serde exactly as today's
-  bare body was. It is a resource-free value even when `T` is an entity or
-  a `Vec` of entities. Decision 1 keeps custom ops out of resource
-  semantics, and the client types come from the Rust fn.
+  bare body was. It is a plain value even when `T` is an entity or a `Vec`
+  of entities; the client types come from the Rust fn.
 - A fn returning `()` responds `204 No Content`, as today.
 - The status is `200`, never `201`.
-- No `links` and no `data`: a meta-only document has no primary data, so
-  the spec does not call for a `self` link.
+- There is no `links` and no `data`. A meta-only document has no primary
+  data, so it needs no `self` link.
 - Errors use §13. `AppError`-typed fns get the status mapping. Other error
   types get `500 internal_error`.
-
-Example: iron-log's `stats::get_workout` stays at `GET /api/stats/workout`
-and now returns `{"jsonapi":…, "meta": {"result": WorkoutStats}}`.
 
 ### 10.2 Requests
 
@@ -1332,8 +1454,9 @@ segment per required non-`Input` parameter on `GET`.
 **`POST` bodies are meta-only documents.** Every argument that is not
 state, store or a path parameter is a member of `meta.args`, keyed by its
 Rust parameter name. That includes an `*Input` argument and `Option`
-arguments. For illustration, a `workout::start(state, input: StartWorkoutInput)`
-op, the shape `src/servers/tests.rs` uses:
+arguments. For illustration, a
+`workout::start(state, input: StartWorkoutInput)` op (the shape
+`src/servers/tests.rs` uses):
 
 ```http
 POST /api/workouts/start HTTP/1.1
@@ -1343,31 +1466,22 @@ Accept: application/vnd.api+json
 { "meta": { "args": { "input": { "template_id": "push-day" } } } }
 ```
 
-Rules for `POST` bodies:
+Rules for `POST` bodies, all within step 7 of §13.2:
 
-- An absent or `null` member is `None` for an `Option` argument.
+- A request with no body is read as `{"meta": {"args": {}}}`. It needs no
+  `Content-Type`; §3.2's check applies only when a body is present.
 - A body that is not a JSON object is `400 invalid_document` with no
   `source`.
-- When `meta`, or `meta.args`, is missing or not an object, the request is
+- When `meta` or `meta.args` is missing or is not an object, the request is
   `400 invalid_document`. The pointer names the nearest member that exists:
-  `""` when `meta` is missing, `/meta` when `args` is missing. If the fn
-  has no required arguments, the missing member is read as `{}` instead.
-- A missing required argument is `400 invalid_document` with
-  `pointer: "/meta/args"`.
-- An unknown member of `meta.args` is `400 invalid_document` with
-  `pointer: "/meta/args/{name}"`.
-- A value serde rejects is `400 invalid_document` pointing at its member.
-- Members are checked in body order. Missing required arguments are
-  checked after every present member.
-- A request with no body is read as `{"meta": {"args": {}}}`. It needs no
-  `Content-Type`; §3.2's check applies only when a body is present. A body
-  sent with any other media type is still `415`.
-
-Why one shape: today a custom `POST` takes either a bare `*Input`, a
-generated `{Fn}Body` struct, or query parameters for `Option` arguments.
-A JSON:API request document needs a top-level `data`, `errors` or `meta`
-member. `meta.args` gives every custom `POST` one rule that a generic
-client can follow.
+  `""` when `meta` is missing, `/meta` when `args` is missing. If the fn has
+  no required arguments, a missing member is read as `{}` instead.
+- Unknown members of `meta.args` are `400 invalid_document` at
+  `/meta/args/{name}`. They are checked first, in byte order.
+- Declared arguments are then checked in declaration order:
+  - a missing required argument is `400 invalid_document` at `/meta/args`;
+  - a value serde rejects is `400 invalid_document` at its member;
+  - an absent or `null` member is `None` for an `Option` argument.
 
 **`GET` optional arguments use the `opArg` family.** `Option` arguments of a
 `CustomGet` are `opArg[{name}]` query parameters. For illustration,
@@ -1378,12 +1492,10 @@ client can follow.
   today.
 - An unknown `opArg[…]`, a malformed value, or any other parameter is
   `400 invalid_query_parameter`.
-
-Why a new family: today's bare names (`?verbose=true`) are all-lowercase,
-and the spec requires `400` for such a name unless the spec itself defines
-it. An implementation-specific family must contain a non `a-z` character,
-and the spec recommends a capital letter. `opArg` is that family, and the
-only one ontogen defines.
+- The spec requires `400` for an all-lowercase name it does not itself
+  define, such as today's bare `?verbose=true`. An implementation-specific
+  family must contain a non-`a-z` character, and the spec recommends a
+  capital letter. `opArg` is that family.
 
 ### 10.3 Singletons
 
@@ -1393,8 +1505,33 @@ A singleton module (`// ontogen:singleton`, or
 §10.1 and §10.2.
 
 An op in a singleton module that classifies as `List`, `GetById`,
-`Create`, `Update`, `Delete` or a junction op is a `CodegenError`. It would
-need a `type`, and a singleton has none.
+`Create`, `Update`, `Delete` or a junction op is a `CodegenError`. A
+singleton module is opted into explicitly, so a CRUD op there is a
+mistake. A module with no entity behind it is the case §10.4 serves.
+
+### 10.4 Ops served as custom ops
+
+Three kinds of op have no resource to serve and are served as custom ops,
+at the route their classification gives today:
+
+- CRUD-classified ops in a module that is not a resource module (§5.1);
+- junction ops outside a resource module (§9.1);
+- before phase 3a, junction ops inside one.
+
+The §10.1 and §10.2 rules apply, with these routes:
+
+| Op | Route | Request | Response |
+|---|---|---|---|
+| `list` | `GET /api/{m}` | paginated: `opArg[limit]`, `opArg[offset]` | `meta.result`: the list, or `{items, total, limit, offset}` when paginated |
+| `get_by_id` | `GET /api/{m}/{id}` | — | `meta.result` |
+| `create` | `POST /api/{m}` | `meta.args.input` | `200`, `meta.result` |
+| `update` | `PATCH /api/{m}/{id}` | `meta.args.input` | `meta.result` |
+| `delete` | `DELETE /api/{m}/{id}` | — | `204` |
+| `JunctionList` | `GET /api/{m}/{parent_id}/{segment}` | paginated: `opArg[limit]`, `opArg[offset]` | `meta.result`, as for `list` |
+| `JunctionAdd` | `POST /api/{m}/{parent_id}/{segment}` | `meta.args.{child param}` | `204` |
+| `JunctionRemove` | `DELETE /api/{m}/{parent_id}/{segment}/{child_id}` | — | `204` |
+
+`update` uses `PATCH` here too, so that no generated route uses `PUT`.
 
 ## 11. Route prefix and extra surfaces
 
@@ -1409,9 +1546,9 @@ relationship, related, custom and event routes alike.
 - Every link and `Location` carries the prefix:
   `"self": "/api/projects/7c0e…/tasks/ship-the-emitter"`.
 - The resource `type` does not carry the prefix (`tasks`). Each scope is
-  served from its own store and no document mixes scopes, so each scope
-  acts as a separate API in the spec's sense, within which `(type, id)` is
-  unique.
+  served from its own store, and no document mixes scopes. Each scope
+  therefore acts as a separate API in the spec's sense, and `(type, id)` is
+  unique within it.
 - A prefix parameter that fails to parse (e.g. a non-UUID `project_id`) is
   `400 invalid_path_parameter`, with no `source`. The spec has no source
   member for path segments.
@@ -1420,12 +1557,12 @@ relationship, related, custom and event routes alike.
   on E0003's store-accessor contract.
 
 Scoped and unscoped routes MUST have identical wire behaviour. Today they
-diverge in two places, and phase 1 and phase 3a remove both divergences:
+diverge in two places:
 
 - Scoped pagination slices in memory instead of calling the page-taking
-  list.
+  list. Phase 1c removes this.
 - Scoped junction ops become action-style routes instead of the
-  `{parent_id}/{child}` form.
+  `{parent_id}/{child}` form. Phase 3a removes this.
 
 ### 11.2 Extra API surfaces
 
@@ -1441,14 +1578,13 @@ Routes, parameters, resume and lag are unchanged from
 [#185](https://github.com/sksizer/rust-ontogen/pull/185):
 
 - `GET /api/events/{event-name}` plus `/{param}` per required parameter.
+  iron-log's `activity_for_kind` is `GET /api/events/activity-for-kind/{kind}`.
   `sse_route_overrides` still apply. A `route_prefix` puts the routes under
   the prefix.
-- Required parameters are path segments: iron-log's `activity_for_kind`
-  is `GET /api/events/activity-for-kind/{kind}`.
 - `Option` parameters and `resume` are plain query parameters
   (`?resume=4`). The `Last-Event-ID` header wins over `?resume=`.
-- These routes respond `text/event-stream`, not a JSON:API document, so §3
-  negotiation and §6 query rules do not apply to them. `Accept` is not
+- These routes respond `text/event-stream`, not a JSON:API document, so the
+  §3 negotiation and §6 query rules do not apply to them. `Accept` is not
   checked. `EventSource` sends `text/event-stream`.
 
 **Frames.** Only the `data:` payload changes (decision 2). tasks-tracker has
@@ -1461,17 +1597,18 @@ id: 0:17
 data: {"type":"tasks","id":"ship-the-emitter","attributes":{"title":"Ship the emitter","status":"closed/done","created":"2026-06-06","body":"## Goal\n…"},"relationships":{"epic":{"data":{"type":"epics","id":"markdown-backend"}},"tags":{"data":[{"type":"tags","id":"codegen"}]}}}
 ```
 
-- When the event's item type `T` is a schema entity, `data:` is its
-  resource object (§5): `type`, `id`, `attributes`, `relationships`, in
-  that order.
+When the event's item type `T` is an entity (known from the schema, §5.1),
+`data:` is its resource object (§5): `type`, `id`, `attributes`,
+`relationships`, in that order.
+
 - Relationship objects carry `data` only, and the frame carries no
-  `links`. Junction-op relationships, which have no `data` (§9.1), are
-  left out. A frame is not tied to a request URL, and links would double the
+  `links`. A frame is not tied to a request URL, and links would double the
   size of every frame for no reader.
-- When `T` is not an entity (iron-log's `Activity`, whose `event_id` is
-  its `seq`), `data:` is `{"meta":{"result":T}}`. That is the same rule as
-  custom ops (§10.1), so a client has one rule for every non-resource
-  payload:
+- Junction-op relationships, which have no `data`, are left out.
+
+When `T` is not an entity, `data:` is `{"meta":{"result":T}}`, the same
+rule as custom ops (§10.1). An example is iron-log's `Activity`, whose
+`event_id` is its `seq`:
 
 ```text
 event: activity-for-kind
@@ -1479,18 +1616,18 @@ id: 4
 data: {"meta":{"result":{"seq":4,"kind":"workout","id":"w1"}}}
 ```
 
-These lines are unchanged:
+These are unchanged:
 
 - `id:` is emitted for resumable ops only, with the same `seq_id` / `no_id`
   rules and the same newline guard.
 - `event: lag` with `data: {"skipped":N}` keeps the stream open. It is a
   control frame, not a payload, so it gets no envelope.
-- `event: error` on a serialization failure, and the `:` keep-alive
-  comment every 15 s.
+- `event: error` on a serialization failure, and the `:` keep-alive comment
+  every 15 s.
 
 A subscribe call that fails before the stream opens returns a JSON:API
-error document (§13) with the mapped status. `EventSource` cannot read
-that body, but a `fetch`-based client and `curl` can.
+error document (§13) with the mapped status. `EventSource` cannot read that
+body, but a `fetch`-based client and `curl` can.
 
 ## 13. Errors
 
@@ -1509,170 +1646,189 @@ that body, but a `fetch`-based client and `curl` can.
 ```
 
 - **Exactly one error object per response.** The server stops at the first
-  failure. The spec allows this, and it keeps the response status and the
-  error status equal.
+  failure in §13.2's order. The spec allows this, and it keeps the response
+  status and the error status equal.
 - **Members**, in this order:
   - `status`: the HTTP status as a decimal string (`"404"`). Always present.
-  - `code`: a snake_case string from §13.2 or §13.3. Always present.
+  - `code`: a snake_case string from §13.3 or §13.4. Always present.
   - `title`: the status's reason phrase from RFC 9110 (`"Not Found"`,
-    `"Conflict"`). Always present. It is constant per status, which
-    satisfies the spec's "SHOULD NOT change from occurrence to occurrence".
+    `"Conflict"`). Always present. It is constant per status, as the spec
+    asks.
   - `detail`: an occurrence-specific sentence. For an `AppError` it is the
     error's `Display` text, as today's `{"error": …}` carried. Always
     present.
   - `source`: present only when one of the three members below applies.
 - **`source`** has exactly one member:
-  - `pointer`: an RFC 6901 pointer into the request body. It only points at
-    a value that exists in the request, as the spec requires. For a missing
-    member, it points at the object that should have held it
-    (`/data/attributes`).
+  - `pointer`: an RFC 6901 pointer into the request body. It names only a
+    value that exists in the request, as the spec requires. For something
+    missing, it names the nearest enclosing member that exists.
   - `parameter`: the query parameter's name, decoded, with raw brackets
     (`"page[limit]"`).
   - `header`: `"Content-Type"` or `"Accept"`.
-- Error objects carry no `id`, `links` or `meta`. Nothing ontogen knows
-  would fill them.
+- Error objects carry no `id`, `links` or `meta`.
 - **`status`, `code`, `title` and `source` are normative. `detail` is
   not.** Its wording may change between releases, and clients must not
-  parse it. The `detail` strings in this document are examples.
-  Generator tests may pin them.
+  parse it. The `detail` strings in this document are examples; generator
+  tests may pin them.
 
-**Check order.** Every route checks in this order, and the first failure is
-the response:
+### 13.2 Check order
 
-1. Routing: a method the route does not serve is `405` (§13.4).
-2. `Accept` (§3.2): `406`.
-3. `Content-Type`, when the request has a body (§3.2): `415`.
-4. Path parameters: a typed prefix parameter that fails to parse is
-   `400 invalid_path_parameter`. On relationship and related routes, an
-   unknown `{rel}` is `404 relationship_not_found`.
-5. Query parameters. A name the route does not accept comes first, the
-   first such name in request order. The accepted parameters follow, in
-   canonical order (§4.3): `filter[…]`, `sort`, `include`, `page[offset]`,
-   `page[limit]`, then `opArg[…]` in byte order of member name.
-6. Operation-level refusals decidable from the route alone: the `403`s of
-   §9's table.
-7. The request body, in the order of the operation's table (§8.2, §8.3,
-   §9.2, §10.2).
-8. Store reads the handler makes before acting: linked-resource existence
-   (`404 related_resource_not_found`), then the parent resource on
-   relationship routes (`404 {entity}_not_found`).
-9. The operation itself: the store call or the custom op, and its
+This is the only statement of the order. The per-operation tables (§8, §9)
+refer to its steps. Every route checks in this order, and the first failure
+is the response:
+
+1. **Routing.** A method the route does not serve is `405` (§13.5).
+2. **`Accept`** (§3.2): `406`.
+3. **`Content-Type`**, when the request has a body (§3.2): `415`.
+4. **Path parameters**, in path order:
+   - a typed prefix parameter that fails to parse is
+     `400 invalid_path_parameter`;
+   - a resource `{id}` that fails the id-validity rule (§8.2) is
+     `400 invalid_path_parameter`;
+   - on relationship and related routes, an unknown `{rel}` is
+     `404 relationship_not_found`.
+5. **Query parameters.**
+   - First, a name the route does not accept (§6): the first such name in
+     request order.
+   - Then the accepted parameters, in canonical order (§4.3): `filter[…]`,
+     `sort`, `include`, `page[offset]`, `page[limit]`, then `opArg[…]` in
+     byte order of member name.
+6. **Route-level refusals** decidable without the body: the `403`s of §9's
+   table.
+7. **The request body**, in the order of the operation's table. Members
+   are checked in schema order, so no order-preserving parser is needed:
+   - unknown names first, in byte order;
+   - then declared members, in declaration order.
+8. **Store reads the handler makes before acting.** First the parent
+   resource on relationship routes (`404 {entity}_not_found`). Then each
+   linked resource, in step-7 order (`404 related_resource_not_found`).
+9. **The operation itself**: the store call or the custom op, and its
    `AppError`.
 
-So `GET /api/tasks/nope?include=owner` is `400 invalid_include_path`, not
-`404`, and `GET /api/tasks?sort=priority&page[limit]=0` is the `sort` error.
-`sort` and `include` are accepted names wherever §6 lists them, in every
-phase. A route that cannot yet honour them answers with their own codes
-(§7.4, §7.5), not `invalid_query_parameter`.
+So:
 
-### 13.2 Ontogen-authored errors
+- `GET /api/tasks/nope?include=owner` is `400 invalid_include_path`, not
+  `404`.
+- `GET /api/tasks?sort=priority&page[limit]=0` is the `sort` error.
+- A `PATCH` to a missing id with a malformed body is the body's `400`.
 
-Errors the generated server raises itself, independent of the consumer's
-`AppError`:
+### 13.3 Ontogen-authored errors
+
+These are errors the generated server raises itself, independent of the
+consumer's `AppError`:
 
 | Status | `code` | Raised when |
 |---|---|---|
-| 400 | `invalid_query_parameter` | unknown, repeated or malformed query parameter, including `page`, `filter`, `opArg` and `fields` (§6, §7, §10.2) |
-| 400 | `invalid_sort_field` | bad `sort` (§7.4) |
-| 400 | `invalid_include_path` | bad `include` (§7.5) |
-| 400 | `invalid_path_parameter` | a typed path parameter fails to parse (§11.1) |
-| 400 | `invalid_document` | the body is not JSON, or is not a valid request document for the route |
-| 400 | `missing_id` | `IdStrategy::Provided` and no `data.id` (§8.2) |
+| 400 | `invalid_query_parameter` | an unknown, repeated or malformed query parameter, including `page`, `filter`, `opArg` and `fields` (§6, §7, §10.2) |
+| 400 | `invalid_sort_field` | a bad or unsupported `sort` (§7.4) |
+| 400 | `invalid_include_path` | a bad `include` on a route that accepts it (§7.5) |
+| 400 | `invalid_path_parameter` | a prefix parameter fails to parse, or a path `{id}` fails the validity rule (§8, §11.1) |
+| 400 | `invalid_document` | the body is not JSON, or not a valid request document for the route |
 | 400 | `unknown_attribute` / `missing_attribute` / `invalid_attribute` | attribute problems (§8.2, §8.3) |
 | 400 | `unknown_relationship` | a relationship name the type lacks (§8.2) |
 | 400 | `missing_relationship` | a non-`Option` to-one absent from a create body (§8.2) |
-| 403 | `relationship_read_only` | a write to a `has_many` relationship (§5.3) |
-| 403 | `relationship_required` | `null` on a non-`Option` to-one (§8.3, §9) |
+| 403 | `relationship_required` | `null` on a non-`Option` to-one (§8.2, §8.3, §9) |
 | 403 | `relationship_update_unsupported` | a relationship write the relationship does not support: `PATCH` on a junction op, `POST`/`DELETE` on a to-one, or a junction-op relationship in a create or update body (§8.2, §9) |
-| 404 | `related_resource_not_found` | a linked id that does not exist (§8.2, §9) |
+| 403 | `relationship_batch_unsupported` | a relationship `POST` or `DELETE` with more than one identifier (§9) |
+| 404 | `related_resource_not_found` | a linked id that does not exist (§8.2, §8.3, §9) |
 | 404 | `relationship_not_found` | `{rel}` is not a relationship of the type (§9) |
-| 405 | `method_not_allowed` | a method the route does not serve (§13.4) |
+| 405 | `method_not_allowed` | a method the route does not serve (§13.5) |
 | 406 | `not_acceptable` | §3.2 |
 | 409 | `type_mismatch` | a `type` that is not the endpoint's or the relationship's (§8.2, §8.3, §9) |
-| 409 | `id_mismatch` | `PATCH` body id differs from the URL id (§8.3) |
+| 409 | `id_mismatch` | a `PATCH` body id differs from the URL id (§8.3) |
 | 415 | `unsupported_media_type` | §3.2 |
-| 500 | `internal_error` | a store-construction or scope-accessor failure, or a custom op whose error type is not `AppError` |
+| 500 | `internal_error` | a store-construction or scope-accessor failure; a custom op whose error type is not `AppError`; an `AppError`-typed site in a consumer with no `AppError` in its schema directory |
 
 The `detail` for `internal_error` is the error's `Display` text, as today.
 
-### 13.3 `AppError`: E0003 phases 0-1, folded in
+### 13.4 `AppError`: E0003 phases 0-1, folded in
 
-Decision 6 folds E0003 phases 0 and 1 into E0004 phase 1:
+Decision 6 folds E0003 phases 0 and 1 into E0004:
 
 - the `ApiFn.error_type` capture;
 - the `AppError` scan over the schema directory;
 - the call-site routing predicate (last path segment `AppError`).
 
-The mapping that scan produces:
+The scan maps variants by name suffix:
 
-| `AppError` variant | Status | `code` |
+| `AppError` variant | Constructed by | Status |
 |---|---|---|
-| name ends in `NotFound` (`TaskNotFound`) | 404 | variant name in snake_case: `task_not_found` |
-| name ends in `AlreadyExists` (`TaskAlreadyExists`) | 409 | `task_already_exists` |
-| any other variant (`Md`, `DbError`) | 500 | `md`, `db_error` |
+| `{Entity}NotFound(id)` | store `get`, `update`, `delete` (today) | 404 |
+| `{Entity}IdRequired(reason)` | store `create`, when no id exists after `before_create` and the `IdStrategy` | 400 |
+| `{Entity}AlreadyExists(id)` | store `create`, on a duplicate id | 409 |
+| `{Child}ParentRequired(child_id)` | a parent's `has_many` write that would drop a child whose foreign key is not `Option` (§5.4) | 409 |
+| any other variant (`Md`, `DbError`) | — | 500 |
 
 - **`code` is the variant name**, converted to snake_case at generation
-  time. Clients can branch on it without parsing `detail`, and one rule
-  covers every variant, mapped or not. A variant whose snake_case name
-  equals a §13.2 code (an `InvalidDocument` variant, say) is a
-  `CodegenError`, so a code always means one thing.
-- **`*AlreadyExists → 409` is new.** It is the twin of the `*NotFound`
-  convention, for the duplicate-create case (decision 4). The store
-  generator constructs `{Entity}AlreadyExists(id)` on both backends, so
-  every consumer `AppError` must declare it, as it already declares
-  `{Entity}NotFound`. tasks-tracker gains `TaskAlreadyExists`,
-  `EpicAlreadyExists` and `TagAlreadyExists`.
-- **No `AppError` in the schema directory** (the scan-dirs-only use case):
-  every `AppError`-typed site maps to `500` with code `internal_error`.
-  E0003's "emit today's exact shape" rule no longer applies, because the
-  envelope changes regardless.
+  time: `task_not_found`, `task_id_required`, `task_already_exists`,
+  `subtask_parent_required`, `md`, `db_error`. One rule covers every
+  variant, mapped or not.
+- **Declaring the variants.** The store generator constructs every
+  variant in the table, so a consumer `AppError` must declare each one the
+  generated store uses:
+  - `NotFound`, `IdRequired` and `AlreadyExists` for every entity.
+    tasks-tracker gains `TaskIdRequired`, `TaskAlreadyExists` and the
+    equivalents for `Epic` and `Tag`.
+  - `ParentRequired` only for an entity that is the child of a `has_many`
+    whose foreign key is not `Option`. tasks-tracker needs none.
+- **Code clashes.** A variant whose snake_case name equals a §13.3 code
+  (an `InvalidDocument` variant, say) is a `CodegenError`, so a code always
+  means one thing.
+- **`source`.** `AppError`-derived errors carry no `source`, except
+  `*AlreadyExists` on a create that carried `data.id` (§8.2).
+- **No `AppError` in the schema directory** (the scan-dirs-only case):
+  every `AppError`-typed site maps to `500 internal_error`. E0003's "emit
+  today's exact shape" rule no longer applies, because the envelope
+  changes regardless.
 - **E0003 phases 2 and 3** stay in E0003 and slot into this document
   unchanged:
-  - `#[http(status = N)]` annotations override the convention. The
-    `title` becomes N's reason phrase and the `code` stays the variant
+  - `#[http(status = N)]` annotations override the suffix rule. The
+    `title` becomes N's reason phrase, and the `code` stays the variant
     name.
-  - An `error_handler` override owns the whole response. The consumer then
-    owns conformance too.
+  - An `error_handler` override owns the whole response, and with it
+    conformance.
 
-### 13.4 Statuses the spec mandates, and where each arises
+### 13.5 Statuses the spec mandates, and `405`
 
 | Status | Spec trigger | Where in this contract |
 |---|---|---|
 | 400 | unknown or unsupported query parameter; unsupported `include` or `sort` | §6, §7 |
-| 403 | unsupported create or update; refused to-many replacement | §5.3, §8, §9 |
+| 403 | unsupported relationship update | §8, §9 |
 | 404 | missing resource, relationship or related resource | §8, §9 |
-| 405 | (HTTP) a method the route does not serve | below |
 | 406 | unsatisfiable `Accept` | §3.2 |
 | 409 | duplicate client id; type or id mismatch | §8.2, §8.3, §9 |
 | 415 | bad `Content-Type` | §3.2 |
 
-**405.** A generated route that does not serve a method answers `405` with
-an `Allow` header listing the methods it does serve, and an
-`errors[]` body with code `method_not_allowed`. `HEAD` is listed wherever
-`GET` is, because Axum serves it. This covers:
-- `PUT` on `/api/tasks/{id}` (`Allow: GET, HEAD, PATCH, DELETE`);
-- `PUT` on `/api/tasks` (`Allow: GET, HEAD, POST`);
-- `PUT` on a relationship route (§9).
+**405.** A generated route that does not serve a method answers `405`, with
+an `Allow` header listing the methods it does serve, and an `errors[]` body
+with code `method_not_allowed`. `HEAD` is listed wherever `GET` is, because
+Axum serves it. Examples:
+
+- `PUT` on `/api/tasks/{id}`: `Allow: GET, HEAD, PATCH, DELETE`.
+- `PUT` on `/api/tasks`: `Allow: GET, HEAD, POST`.
+- `PUT` on a relationship route: see §9.
 
 `POST` or `DELETE` on a to-one relationship is not a `405`. The route
-serves those methods, and the spec makes an unsupported relationship
-update `403` (§9).
+serves those methods, and the spec makes an unsupported relationship update
+`403` (§9).
 
 The generated router installs this as its method-not-allowed fallback. It
 installs no path fallback: an unmatched path falls through to the
 consumer's router, which owns its own `404`.
 
-**Axum extractor rejections.** Rejections from Axum's own extractors (path,
-query, body) never reach the client in Axum's plain-text form. The
-`ontogen-jsonapi` extractors replace `Json`, `Query` and `Path` in
-generated handlers and produce the documents above.
+**Axum extractor rejections.** These never reach the client in Axum's
+plain-text form. The `ontogen-jsonapi` extractors replace `Json`, `Query`
+and `Path` in generated handlers and produce the documents above.
 
 ## 14. TS transport mapping
 
-The generated HTTP transport keeps the flat `Transport` interface: every
-method name, parameter list and return type is unchanged. JSON:API is
-applied and removed inside the transport. The admin layer needs no source
-change.
+The generated HTTP transport keeps the flat `Transport` interface:
+
+- every method name, parameter and return type is unchanged;
+- list methods gain one trailing optional argument (§14.2).
+
+JSON:API is applied and removed inside the transport. The admin layer needs
+no source change.
 
 ### 14.1 Requests
 
@@ -1685,8 +1841,8 @@ change.
 
 | `Transport` method | HTTP | Flat result built from |
 |---|---|---|
-| `xList(query?)` (unpaginated) | `GET /api/{type}` + `filter[k]=v` per defined key of `query` | `data.map(flatten)` → `R[]` |
-| `xList(query?, limit?, offset?)` (paginated) | adds `page[offset]`, `page[limit]` when defined | `{ items: data.map(flatten), total: meta.total, limit: meta.limit, offset: meta.offset }`, which is today's `PaginatedResult<R>` unchanged |
+| `xList(…, options?)` (unpaginated) | `GET /api/{type}`, plus `filter[k]=v` per defined key of `query` and `sort` from `options.sort` | `data.map(flatten)` → `R[]` |
+| `xList(…, limit?, offset?, …, options?)` (paginated) | adds `page[offset]`, `page[limit]` when defined | `{ items: data.map(flatten), total: meta.total, limit: meta.limit, offset: meta.offset }`, which is today's `PaginatedResult<R>` unchanged |
 | `xGetById(id)` | `GET /api/{type}/{id}` | `flatten(data)` |
 | `xCreate(input)` | `POST /api/{type}`, body `unflatten(input)` | `flatten(data)` (201) |
 | `xUpdate(id, input)` | `PATCH /api/{type}/{id}`, body `unflatten(input, id)` | `flatten(data)` |
@@ -1697,25 +1853,42 @@ change.
 | `xRemoveX(parentId, childId)` | `DELETE …/relationships/{rel}`, same body | `null` (204) |
 | custom `GET` | `GET /api/{m}/{action}/{path…}`, `Option` args as `opArg[name]` | `meta.result`, or `null` on 204 |
 | custom `POST` | body `{meta:{args:{<rust_param_name>: value, …}}}` | `meta.result`, or `null` on 204 |
+| op served as custom (§10.4) | its §10.4 route | `meta.result`, or `null` on 204 |
 | `subscribeX(args, handlers)` | unchanged URL, `?resume=` and lag | entity `T`: `flatten(JSON.parse(data))`; other `T`: `.meta.result` |
 
-The junction rows describe phase 3a. Between phases 1b and 3a, junction
-methods call the custom-op forms of §9.1 ("Before phase 3a") and read
-`meta.result`.
+The junction rows describe phase 3a. Between phases 1c and 3a, junction
+methods call the §10.4 forms and read `meta.result`.
 
-**Queries.** `toQueryString` gains a family form: `toQueryString({ filter: query, page: { offset, limit } })`
-emits `filter%5Bstatus%5D=…` and so on, skipping `null` and `undefined`.
-Arrays are not supported in filters, matching §7.3.
+**Sort** (decision 8). Every list method whose Rust fn takes an `order`
+argument gains a trailing optional argument, after every existing
+parameter (`projectId` included):
 
-The transport sends neither `sort` nor `include`. Why: adding them to
-`xList` would change the `Transport` signature that the admin layer calls
-positionally. A later options-object parameter can expose them.
-Third-party JSON:API clients use them directly.
+```ts
+export type TaskSortKey = 'id' | '-id' | 'title' | '-title' | 'status' | '-status' | 'created' | '-created';
+export interface ListOptions<K extends string> { sort?: K[] }
+
+taskList(query?: ListTasksQuery, limit?: number, offset?: number, options?: ListOptions<TaskSortKey>): Promise<PaginatedResult<Task>>;
+```
+
+- A trailing optional argument breaks no positional caller, so the admin
+  layer is unaffected.
+- The argument is on the shared `Transport` interface, so the IPC
+  transport implements it too (§15).
+- The HTTP transport sends `options.sort` as `sort=` the keys joined by
+  `,`. An absent or empty array sends nothing.
+- `include` is not exposed. The flat return shape has nowhere to put
+  included resources. The shared interface is the constraint, since IPC
+  has no `include` either.
+
+**Queries.** `toQueryString` gains a family form.
+`toQueryString({ filter: query, page: { offset, limit } })` emits
+`filter%5Bstatus%5D=…` and so on, skipping `null` and `undefined`. Arrays
+are not supported in filters, matching §7.3.
 
 ### 14.3 Flatten and unflatten
 
 The generator emits one pair of functions per entity, from the same
-relationship table as the server (§5.3). For `Task`:
+relationship table as the server (§5.4). For `Task`:
 
 ```ts
 const TASK_REL = { epic: { field: 'epic_id', many: false },
@@ -1731,23 +1904,18 @@ function flattenTask(r: JsonApiResource): Task {
 }
 ```
 
-- **`unflatten(input, id?)`** builds `{ data: { type, id?, attributes, relationships } }`.
-  - `id` goes in `data.id` when the argument is given (update) or when
-    `input.id` is a non-empty string (create). It never goes in
-    `attributes`, whatever its value, including `""`.
-  - Relation fields move to `relationships`: a to-one value `v` becomes
-    `{ data: v == null ? null : { type, id: v } }`, and a to-many array
-    becomes an identifier array.
-  - Every other key goes to `attributes`.
-  - Keys whose value is `undefined` are omitted. On update that means
-    "unchanged", matching `UpdateXInput`. `null` is kept and clears the
-    field.
-- **`has_many` fields are dropped from create and update bodies.** The
-  server refuses them (§5.3), and an admin edit form that round-trips the
-  whole entity would otherwise fail. This is the one behaviour change a
-  caller can observe: a `has_many` edit over HTTP is now ignored by the
-  transport instead of partly applied by the server. IPC is unaffected.
-  Phase 1 records it in the changelog.
+`unflatten(input, id?)` builds `{ data: { type, id?, attributes, relationships } }`:
+
+- **Id.** It goes in `data.id` when the argument is given (update), or when
+  `input.id` is a non-empty string (create). It never goes in
+  `attributes`, whatever its value, including `""`.
+- **Relation fields** move to `relationships`, `has_many` included:
+  - a to-one value `v` becomes `{ data: v == null ? null : { type, id: v } }`;
+  - a to-many array becomes an identifier array.
+- **Every other key** goes to `attributes`.
+- **Undefined and null.** Keys whose value is `undefined` are omitted; on
+  update that means "unchanged", matching `UpdateXInput`. `null` is kept,
+  and clears the field.
 
 ### 14.4 Errors
 
@@ -1766,16 +1934,16 @@ export class JsonApiError extends Error {
 
 - `message` is today's string: the server's `detail` is the old `error`
   text. `String(e)` is `"JsonApiError: Task not found: nope"`, where today
-  it reads `"Error: …"`. No admin-layer test pins that prefix. The admin
-  layer only renders `String(e)`.
+  it reads `"Error: …"`. No admin-layer test pins that prefix, and the
+  admin layer only renders `String(e)`.
 - Callers that want the status or the code read `e.status` and
-  `e.errors[0].code`. Today neither is available.
+  `e.errors[0]?.code`.
 - A non-JSON error body (a proxy's HTML `502`) still throws a
   `JsonApiError`, with `errors: []`.
 
 ### 14.5 What stays identical for callers
 
-- Every method name and signature on `Transport`.
+- Every existing method name, parameter and return type on `Transport`.
 - `PaginatedResult<T>`: same declaration, same fields, and same values.
   `limit` and `offset` are the effective values, as today.
 - Entities in and out are flat, with the same field names, `null` for
@@ -1787,98 +1955,105 @@ export class JsonApiError extends Error {
   `listHasQuery`).
 
 The admin layer's `tests/fixtures/event-transport.generated.ts` is a copy of
-generated output, so phase 1 regenerates it.
+generated output, so phase 1b regenerates it.
 
 ## 15. IPC and MCP
 
-Unchanged and flat. JSON:API exists only at the HTTP boundary:
+Payloads stay flat. JSON:API exists only at the HTTP boundary.
 
 - **Tauri IPC**: same commands, same `invoke` argument objects, same flat
   entities, `PaginatedResult` for paginated lists, `String` errors, and the
   same `EventFrame` channel (`{kind:"event", id, data}` with a flat `data`,
   and `{kind:"lag", skipped}`).
 - **MCP**: same tool names, the same flat argument schemas
-  (`schema_for_with_str_id` for update), the same results
-  (`{"success": true}` for create and update, entities for get, bare arrays
-  or `{items, total, limit, offset}` for lists), and event ops still
+  (`schema_for_with_str_id` for update), and the same results:
+  `{"success": true}` for create and update, entities for get, and bare
+  arrays or `{items, total, limit, offset}` for lists. Event ops are still
   skipped.
 
-Two store-level changes reach them without changing a payload:
+Three changes reach them, none of which changes a payload's shape:
 
-- The new `{Entity}AlreadyExists` and the `order` argument (ADR 0006).
-- IPC and MCP list handlers pass an empty order (`&[]`), so they get the
-  default id-ascending order and expose no new argument.
-- A duplicate create now fails with the `AlreadyExists` text instead of the
-  backend's message. Both are strings on these transports.
+1. **`sort` on list** (decision 8). The IPC list command gains an optional
+   `sort: Option<Vec<String>>` argument, and the TS IPC transport passes
+   `options.sort` into it. The MCP list tool schema gains an optional
+   `sort` array whose items enumerate the sort keys. Both parse with
+   `ontogen_core::order::parse_sort` (ADR 0006 §1) and return its error
+   text on a bad key.
+2. **`has_many` writes clear dropped children** (decision 9). Today an
+   update that drops a child leaves the child's foreign key set, on every
+   transport. The store fix in phase 1a corrects IPC and MCP as well as
+   HTTP.
+3. **New typed store errors.** `{Entity}AlreadyExists`, `{Entity}IdRequired`
+   and `{Child}ParentRequired` replace backend messages. On these
+   transports they are still strings.
 
 ## 16. Decision index
 
-Each choice this contract makes where the spec or the epic left one open,
-with its reason.
+Choices this contract makes where the spec or the epic left one open, with
+the section that states each and its reason.
 
-| # | Choice | Why |
+| Choice | § | Why |
 |---|---|---|
-| C1 | `jsonapi: {"version":"1.1"}` on every document | Without it clients assume 1.0, and the member costs nothing |
-| C2 | `application/json` request bodies are `415` | One media type, and old clients fail loudly instead of mis-parsing |
-| C3 | `*/*` and `application/*` satisfy `Accept` | Browsers, `curl` and `EventSource` send them |
-| C4 | `Vary: Accept` on every response | The response depends on `Accept` (406) |
-| C5 | Links and `Location` are relative | The server cannot know its public origin |
-| C6 | Canonical link query order and encoding | Byte-stable links for snapshots and caches |
-| C7 | `links.self` on every resource object | `Location` must match it, and clients can refetch without building URLs |
-| C8 | `relationships` omitted when a type has none | Avoids an empty object on every `tags` and `epics` resource |
-| C9 | Relationship name: `belongs_to` loses `_id`, others keep their field name | Matches how the field reads, and JSON:API names relationships, not keys |
-| C10 | `has_many` is read-only on the wire | The store cannot do the full replacement JSON:API requires |
-| C11 | Unknown attributes are `400` | Catches clients still sending the flat shape |
-| C12 | Offset pagination with `page[offset]`/`page[limit]` | Same semantics as today's store signature |
-| C13 | `page[limit]=0` is `400` | A zero page has no `next` or `last` |
-| C14 | `meta: {total, limit, offset}` on paginated lists only | Exactly rebuilds `PaginatedResult`, and is redundant when unpaginated |
-| C15 | All four pagination keys always present, `null` when unavailable | One shape to read |
-| C16 | `prev` past the end points at the last page | An overshooting client can step back to data |
-| C17 | Filter names are the `*Query` struct's field names | The struct is user-authored, and ontogen does not rename it |
-| C18 | `id` is the implicit last sort key | A total order makes pages stable (ADR 0006) |
-| C19 | Dangling linkage is skipped in `included` and related links, not an error | Markdown tolerates dangling wikilinks by design |
-| C20 | A client id is honoured under every `IdStrategy`; no `403` | Decision 4 |
-| C21 | `{Entity}AlreadyExists` store variant, mapped `409` by convention | Atomic duplicate detection on both backends, and typed for IPC and MCP |
-| C22 | `Provided` without an id is checked in the handler | The store's `IdStrategy` is known at generation time, so no `AppError` variant is needed |
-| C23 | Create is always `201` with the document | Ids and hooks change the resource, and TS returns the entity |
-| C24 | `PATCH` is always `200` with the document | Hooks may change the resource, and TS returns the entity |
-| C25 | Delete and relationship mutations are `204` | Nothing to report, and TS returns `null` |
-| C26 | Junction ops only in entity modules, never beside a same-named relation field, and a lone `list_X` is a custom op | Every relationship needs a resource type and one owner, and a plain list must not become one |
-| C27 | Junction-op relationships refuse `PATCH` with `403` | No junction op replaces a set |
-| C28 | Custom `POST` bodies are `{meta:{args:{…}}}` | One rule, and a valid JSON:API request document |
-| C29 | Custom `GET` optional args use the `opArg[…]` family | All-lowercase names are reserved by the spec |
-| C30 | CRUD ops in a singleton module are a `CodegenError` | A singleton has no `type` |
-| C31 | Non-entity event payloads and custom results are `{meta:{result}}` | One rule for every non-resource payload |
-| C32 | Event frames carry no links | A frame has no request URL, and links would double its size |
-| C33 | One error object per response | Status and error agree, and the server stops at the first failure |
-| C34 | `code` is the `AppError` variant in snake_case, or a fixed ontogen code | Machine-readable without parsing `detail` |
-| C35 | `title` is the reason phrase of the status | Constant per problem, as the spec asks |
-| C36 | The TS transport does not expose `sort` or `include` | Keeps the `Transport` signature the admin layer calls positionally |
-| C37 | `JsonApiError` carries `status` and `errors`, with the old message | Admin output is unchanged, and callers can branch on status |
-| C38 | No path fallback; `405` via a method fallback | The generated router is merged into a consumer router it must not hijack |
-| C39 | A JSON:API instance in `Accept` outranks wildcards | The spec requires `406` when every such instance is unusable |
-| C40 | One id-validity rule on both backends, checked in the handler (`400`) | A malformed id is a bad request, not a store `500`, and the backends agree |
-| C41 | Unsupported relationship methods (to-one `POST`/`DELETE`, junction `PATCH`) are `403`, not `405` | The spec requires `403` for an unsupported relationship update |
-| C42 | Junction `POST`/`DELETE` read membership first; partial failure is a recorded deviation | Gives the spec's idempotent success without trusting user code, which has no transaction to join |
-| C43 | Paginated junction lists stay paginated on the relationship routes | Keeps `xListX`'s `PaginatedResult` signature |
-| C44 | One check order for every route (§13.1) | Every request has exactly one correct error |
-| C45 | Shape-changing serde attributes on entities are a `CodegenError` | Attribute, sort and filter names all assume field name = member name |
-| C46 | `detail` is not normative | Wording can improve without a contract change, and clients branch on `code` |
+| `jsonapi: {"version":"1.1"}` on every document | 4.1 | Without it clients assume 1.0, and the member costs nothing |
+| `application/json` request bodies are `415` | 3.2 | One media type, and a client sending the old flat body fails loudly instead of mis-parsing |
+| A JSON:API instance in `Accept` outranks wildcards; otherwise `*/*` and `application/*` satisfy it | 3.2 | The spec requires `406` when every JSON:API instance is unusable, and browsers, `curl` and `EventSource` send `*/*` |
+| `Vary: Accept` on every response | 3.3 | The response depends on `Accept` (406) |
+| Links and `Location` are relative | 4.2 | The server cannot know its public origin behind proxies, dev servers and tunnels |
+| Canonical link query order and encoding | 4.3 | Byte-stable links for snapshots and caches |
+| The schema is an explicit input of the servers and clients stages | 5.1 | Nearly every rule needs it, and today neither stage sees it |
+| CRUD ops with no entity behind them are served as custom ops | 5.1, 10.4 | Keeps the scan-dirs-only use case working, and without a schema there is no resource to build |
+| `links.self` on every resource object | 5.2 | `Location` must match it, and clients can refetch without building URLs |
+| `relationships` omitted when a type has none | 5.2 | Avoids an empty object on every `tags` and `epics` resource |
+| Shape-changing serde attributes on entities are a `CodegenError` | 5.3 | Attribute, sort and filter names all assume field name = member name |
+| `belongs_to` loses `_id`; other relation fields keep their name | 5.4 | Matches how the field reads; JSON:API names relationships, not keys |
+| Duplicate identifiers collapse to their first occurrence | 5.4 | Matches the add-once rule of relationship `POST` |
+| Offset pagination with `page[offset]`/`page[limit]` | 7.2 | Same semantics as today's store signature |
+| `page[limit]=0` is `400` | 7.2 | A zero page has no `next` or `last` |
+| `meta: {total, limit, offset}` on paginated lists only | 7.2 | Exactly rebuilds `PaginatedResult`, and is redundant when unpaginated |
+| `self` plus the four pagination links, always present, `null` when unavailable | 7.2 | One shape to read |
+| `prev` at or past the end points at the last page | 7.2 | An overshooting client steps back to data |
+| A hand-written `list` replaces the generated one; `order` goes after filters, before page params | 7.3 | Filter and sort must combine, and the store has no filter |
+| Filter names are the `*Query` struct's field names | 7.3 | The struct is user-authored, and ontogen does not rename it |
+| `id` is the implicit last sort key | 7.4 | A total order makes pages stable (ADR 0006) |
+| Dangling linkage is skipped in `included` and related links, not an error | 7.5 | Markdown tolerates dangling wikilinks by design |
+| One id-validity rule on both backends; an invalid id is `400` | 8.2 | A malformed id is a bad request, not a store `500`, and the backends agree |
+| Unknown attributes are `400` | 8.2 | Catches clients still sending the flat shape |
+| Body members are checked in schema order, unknown names in byte order | 8.2, 13.2 | Deterministic without an order-preserving parser |
+| Missing ids are detected by the store, after hooks, as `{Entity}IdRequired` | 8.2, 13.4 | Hooks may assign the id, and the handler need not know the `IdStrategy` |
+| Duplicates are `{Entity}AlreadyExists`, and SeaORM retries a derived id that loses a race | 8.2, 13.4 | Atomic detection on both backends, typed for every transport |
+| Create is always `201` with the document | 8.2 | Ids and hooks change the resource, and TS returns the entity |
+| `PATCH` is always `200` with the document | 8.3 | Hooks may change the resource, and TS returns the entity |
+| A `PATCH` body id is compared exactly; any difference is `409` | 8.3 | The spec requires `409` for an id that does not match the endpoint |
+| Delete and relationship mutations are `204` | 8.4, 9 | Nothing to report, and TS returns `null` |
+| `has_many` is writable; dropping a required-foreign-key child is `409` | 5.4, 9 | Decision 9; the child cannot be orphaned |
+| Unsupported relationship updates are `403`, not `405` | 9 | The spec requires `403` for an unsupported relationship update |
+| One identifier per relationship `POST`/`DELETE` | 9 | Every write is one call, so no request is partly applied; TS sends one id |
+| A lone `list_X` is a custom op | 9.1 | A plain filtered list must not become a relationship |
+| Junction `DELETE` skips the target-existence check | 9.1 | A member whose target was deleted must still be removable |
+| Paginated junction lists stay paginated on the relationship routes | 9.1 | Keeps `xListX`'s `PaginatedResult` signature |
+| Custom `POST` bodies are `{meta:{args:{…}}}` | 10.2 | Decision 7; one rule, and a valid JSON:API request document |
+| Custom `GET` optional args use the `opArg[…]` family | 10.2 | Decision 7; the spec reserves all-lowercase names |
+| CRUD ops in a singleton module are a `CodegenError` | 10.3 | A singleton is opted into, so a CRUD op there is a mistake |
+| Non-entity event payloads and custom results are `{meta:{result}}` | 10.1, 12 | One rule for every non-resource payload |
+| Event frames carry no links | 12 | A frame has no request URL, and links would double its size |
+| One error object per response, first failure in §13.2 order | 13.1, 13.2 | Every request has exactly one correct error |
+| `code` is the `AppError` variant in snake_case, or a fixed ontogen code | 13.3, 13.4 | Machine-readable without parsing `detail` |
+| `title` is the reason phrase of the status | 13.1 | Constant per problem, as the spec asks |
+| `detail` is not normative | 13.1 | Wording can improve without a contract change |
+| No path fallback; `405` via a method fallback | 13.5 | The generated router is merged into a consumer router it must not hijack |
+| `sort` is a trailing optional on the shared `Transport`; `include` stays HTTP-only | 14.2 | Decision 8; the shared interface has no flat shape for included resources |
+| `JsonApiError` carries `status` and `errors`, with the old message | 14.4 | Admin output is unchanged, and callers can branch on status |
 
 ## 17. Phase mapping
 
-| Section | Phase |
+Phases 1a, 1b and 1c ship together as `0.9.0`.
+
+| Phase | Sections |
 |---|---|
-| §3 media type, §4 documents, §5 resource objects (relationship `data` only), §6 query rules | 1b |
-| §7.1, §7.2 list and pagination | 1b; the id-ascending default order (ADR 0006 §3) in 1a |
-| §7.3 filter | 2 |
-| §7.4 sort | 3c (store side per ADR 0006) |
-| §7.5 include | 3b |
-| §8 get, create, update, delete, `missing_id`, `*AlreadyExists`, related-resource existence checks | 1b; `IdStrategy` on SeaORM, the shared id-validity rule and slug function, and the `AlreadyExists` store variant in 1a |
-| §9 relationship endpoints, related links, relationship `links`, junction classification change | 3a; junction ops as custom ops in 1b |
-| §10 custom ops, `meta.args`, `opArg`, singleton check | 1b |
-| §11 route prefix (including removal of the scoped pagination divergence) | 1b; scoped junction routes in 3a |
-| §12 event frames | 1b |
-| §13 errors and the E0003 phase 0-1 scan | 1b |
-| §14 TS transport | 1b; junction methods in 3a |
-| `ontogen-jsonapi` runtime crate (document types, extractors, link building, error document) | 1a |
+| 1a | Store and runtime prerequisites. The `ontogen-jsonapi` crate (documents, link building, error document, extractors). The id-validity rule and slug function shared by both backends. `IdStrategy` on SeaORM, with one build-time source of truth and derived-id retry. `{Entity}AlreadyExists` and `{Entity}IdRequired` (§13.4). The `has_many` fix and `{Child}ParentRequired` (§5.4). The markdown id-ascending default order, many_to_many order and the parity fixture's default cases (ADR 0006 §6) |
+| 1b | CRUD over JSON:API. Schema input (§5.1). §3 media type, §4 documents, §5 resource objects (relationship `data` only), §6 query rules, §7.1–§7.2 list and pagination, §8 get, create, update and delete, §13 errors with the E0003 phase 0-1 scan, §13.5 `405`. §14 for CRUD methods, `JsonApiError`. Scoped CRUD routes |
+| 1c | Everything else on the 0.9.0 wire. §10 custom ops (`meta.args`, `opArg`, singleton check, §10.4 ops served as custom, junction ops included). §12 event frames. §11.1 scoped pagination. §14 for custom, junction and subscription methods |
+| 2 | §7.3 filter, including the hand-written-list precedence and the bare-parameter fix |
+| 3a | §9 relationship endpoints, related links and relationship `links`. The junction classification change. Scoped junction routes. TS junction methods |
+| 3b | §7.5 include |
+| 3c | §7.4 sort, the `order` argument (ADR 0006), and `sort` on TS, IPC and MCP (§14.2, §15) |
