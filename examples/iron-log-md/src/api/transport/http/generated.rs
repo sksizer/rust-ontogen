@@ -32,7 +32,7 @@ use crate::schema::{
 
 /// An `AppError` as an error object: the status its variant's name gives,
 /// and the name in snake_case as the code.
-fn app_error(e: crate::schema::AppError) -> ErrorObject {
+fn ontogen_app_error(e: crate::schema::AppError) -> ErrorObject {
     let (status, code) = match &e {
         crate::schema::AppError::ExerciseNotFound(..) => (StatusCode::NOT_FOUND, "exercise_not_found"),
         crate::schema::AppError::ExerciseIdRequired(..) => (StatusCode::BAD_REQUEST, "exercise_id_required"),
@@ -53,7 +53,7 @@ fn app_error(e: crate::schema::AppError) -> ErrorObject {
 
 /// A failure no `AppError` describes: opening the store, a scope accessor,
 /// or an op with another error type.
-fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
+fn ontogen_internal_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
 
@@ -126,7 +126,7 @@ fn set_field(fields: &mut serde_json::Map<String, serde_json::Value>, name: &str
 fn from_fields<T: serde::de::DeserializeOwned>(
     fields: serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, ErrorObject> {
-    serde_json::from_value(serde_json::Value::Object(fields)).map_err(internal_error)
+    serde_json::from_value(serde_json::Value::Object(fields)).map_err(ontogen_internal_error)
 }
 
 // ── `exercises` ──
@@ -156,7 +156,7 @@ fn exercise_as_resource<'a>(entity: &'a Exercise, collection: &str) -> ResourceO
 
 /// The id an `{id}` path segment names.
 fn exercise_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
-    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::ExerciseNotFound(id.to_string())))
+    id.as_str().ok_or_else(|| ontogen_app_error(crate::schema::AppError::ExerciseNotFound(id.to_string())))
 }
 
 /// The fields a create or update document for `exercises` sets, named as
@@ -203,7 +203,7 @@ fn tag_as_resource<'a>(entity: &'a Tag, collection: &str) -> ResourceObject<TagR
 
 /// The id an `{id}` path segment names.
 fn tag_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
-    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::TagNotFound(id.to_string())))
+    id.as_str().ok_or_else(|| ontogen_app_error(crate::schema::AppError::TagNotFound(id.to_string())))
 }
 
 /// The fields a create or update document for `tags` sets, named as
@@ -256,7 +256,7 @@ fn workout_as_resource<'a>(entity: &'a Workout, collection: &str) -> ResourceObj
 
 /// The id an `{id}` path segment names.
 fn workout_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
-    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::WorkoutNotFound(id.to_string())))
+    id.as_str().ok_or_else(|| ontogen_app_error(crate::schema::AppError::WorkoutNotFound(id.to_string())))
 }
 
 /// The ids a request document for `workouts` links, by relationship, to
@@ -306,12 +306,12 @@ fn workout_request_fields(
 /// Checks that each id a create or update document for `workouts` links
 /// names a resource that exists, in the order the document was read.
 async fn workout_check_linked(state: &AppState, linked: &WorkoutLinkedIds) -> Result<(), ErrorObject> {
-    let store = state.store().await.map_err(internal_error)?;
+    let store = state.store().await.map_err(ontogen_internal_error)?;
     for linked in &linked.tags {
         match tag::get_by_id(&store, &linked.id).await {
             Ok(_) => {}
             Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
-            Err(e) => return Err(app_error(e)),
+            Err(e) => return Err(ontogen_app_error(e)),
         }
     }
     Ok(())
@@ -362,7 +362,7 @@ fn workout_set_as_resource<'a>(
 
 /// The id an `{id}` path segment names.
 fn workout_set_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
-    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::WorkoutSetNotFound(id.to_string())))
+    id.as_str().ok_or_else(|| ontogen_app_error(crate::schema::AppError::WorkoutSetNotFound(id.to_string())))
 }
 
 /// The ids a request document for `workout-sets` links, by relationship, to
@@ -426,19 +426,19 @@ fn workout_set_request_fields(
 /// Checks that each id a create or update document for `workout-sets` links
 /// names a resource that exists, in the order the document was read.
 async fn workout_set_check_linked(state: &AppState, linked: &WorkoutSetLinkedIds) -> Result<(), ErrorObject> {
-    let store = state.store().await.map_err(internal_error)?;
+    let store = state.store().await.map_err(ontogen_internal_error)?;
     if let Some(linked) = &linked.workout {
         match workout::get_by_id(&store, &linked.id).await {
             Ok(_) => {}
             Err(crate::schema::AppError::WorkoutNotFound(..)) => return Err(linked.not_found("workouts")),
-            Err(e) => return Err(app_error(e)),
+            Err(e) => return Err(ontogen_app_error(e)),
         }
     }
     if let Some(linked) = &linked.exercise {
         match exercise::get_by_id(&store, &linked.id).await {
             Ok(_) => {}
             Err(crate::schema::AppError::ExerciseNotFound(..)) => return Err(linked.not_found("exercises")),
-            Err(e) => return Err(app_error(e)),
+            Err(e) => return Err(ontogen_app_error(e)),
         }
     }
     Ok(())
@@ -453,8 +453,8 @@ async fn exercise_list(
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "exercises")?;
     refuse_include(&query, "exercises")?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    let items = exercise::list(&ontogen_store).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let items = exercise::list(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/exercises";
     let data: Vec<_> = items.iter().map(|entity| exercise_as_resource(entity, collection)).collect();
     Ok(response::ok(&Document::new(data, Links::new(collection))))
@@ -467,8 +467,8 @@ async fn exercise_get_by_id(
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_include(&query, "exercises")?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    let entity = exercise::get_by_id(&ontogen_store, exercise_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let entity = exercise::get_by_id(&ontogen_store, exercise_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = "/api/exercises";
     let resource = exercise_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -488,12 +488,12 @@ async fn exercise_create(
     let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let fields = exercise_request_fields(&data, true)?;
     let input: CreateExerciseInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let entity = exercise::create(&ontogen_store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::ExerciseAlreadyExists(..) if data.id.is_some() => {
-            app_error(e).with_pointer("/data/id")
+            ontogen_app_error(e).with_pointer("/data/id")
         }
-        e => app_error(e),
+        e => ontogen_app_error(e),
     })?;
     let resource = exercise_as_resource(&entity, collection);
     let location = resource.links().self_link().to_owned();
@@ -517,8 +517,8 @@ async fn exercise_update(
     let data = request::parse_update(&body, endpoint, &id)?;
     let fields = exercise_request_fields(&data, false)?;
     let input: UpdateExerciseInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    let entity = exercise::update(&ontogen_store, exercise_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let entity = exercise::update(&ontogen_store, exercise_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
     let resource = exercise_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
     Ok(response::ok(&Document::new(resource, links)))
@@ -530,8 +530,8 @@ async fn exercise_delete(
     Path(id): Path<LookupKey>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    exercise::delete(&ontogen_store, exercise_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    exercise::delete(&ontogen_store, exercise_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     Ok(response::no_content())
 }
 
@@ -544,8 +544,8 @@ async fn tag_list(
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "tags")?;
     refuse_include(&query, "tags")?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    let items = tag::list(&ontogen_store).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let items = tag::list(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/tags";
     let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
     Ok(response::ok(&Document::new(data, Links::new(collection))))
@@ -558,8 +558,8 @@ async fn tag_get_by_id(
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_include(&query, "tags")?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    let entity = tag::get_by_id(&ontogen_store, tag_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let entity = tag::get_by_id(&ontogen_store, tag_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = "/api/tags";
     let resource = tag_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -579,10 +579,12 @@ async fn tag_create(
     let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let fields = tag_request_fields(&data, true)?;
     let input: CreateTagInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let entity = tag::create(&ontogen_store, input).await.map_err(|e| match e {
-        e @ crate::schema::AppError::TagAlreadyExists(..) if data.id.is_some() => app_error(e).with_pointer("/data/id"),
-        e => app_error(e),
+        e @ crate::schema::AppError::TagAlreadyExists(..) if data.id.is_some() => {
+            ontogen_app_error(e).with_pointer("/data/id")
+        }
+        e => ontogen_app_error(e),
     })?;
     let resource = tag_as_resource(&entity, collection);
     let location = resource.links().self_link().to_owned();
@@ -606,8 +608,8 @@ async fn tag_update(
     let data = request::parse_update(&body, endpoint, &id)?;
     let fields = tag_request_fields(&data, false)?;
     let input: UpdateTagInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    let entity = tag::update(&ontogen_store, tag_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let entity = tag::update(&ontogen_store, tag_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
     let resource = tag_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
     Ok(response::ok(&Document::new(resource, links)))
@@ -619,8 +621,8 @@ async fn tag_delete(
     Path(id): Path<LookupKey>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    tag::delete(&ontogen_store, tag_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    tag::delete(&ontogen_store, tag_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     Ok(response::no_content())
 }
 
@@ -633,8 +635,8 @@ async fn workout_list(
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "workouts")?;
     refuse_include(&query, "workouts")?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    let items = workout::list(&ontogen_store).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let items = workout::list(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/workouts";
     let data: Vec<_> = items.iter().map(|entity| workout_as_resource(entity, collection)).collect();
     Ok(response::ok(&Document::new(data, Links::new(collection))))
@@ -647,8 +649,8 @@ async fn workout_get_by_id(
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_include(&query, "workouts")?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    let entity = workout::get_by_id(&ontogen_store, workout_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let entity = workout::get_by_id(&ontogen_store, workout_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = "/api/workouts";
     let resource = workout_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -668,13 +670,13 @@ async fn workout_create(
     let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let (fields, linked) = workout_request_fields(&data, true)?;
     let input: CreateWorkoutInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     workout_check_linked(&ontogen_state, &linked).await?;
     let entity = workout::create(&ontogen_store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::WorkoutAlreadyExists(..) if data.id.is_some() => {
-            app_error(e).with_pointer("/data/id")
+            ontogen_app_error(e).with_pointer("/data/id")
         }
-        e => app_error(e),
+        e => ontogen_app_error(e),
     })?;
     let resource = workout_as_resource(&entity, collection);
     let location = resource.links().self_link().to_owned();
@@ -698,9 +700,9 @@ async fn workout_update(
     let data = request::parse_update(&body, endpoint, &id)?;
     let (fields, linked) = workout_request_fields(&data, false)?;
     let input: UpdateWorkoutInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     workout_check_linked(&ontogen_state, &linked).await?;
-    let entity = workout::update(&ontogen_store, workout_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let entity = workout::update(&ontogen_store, workout_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
     let resource = workout_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
     Ok(response::ok(&Document::new(resource, links)))
@@ -712,8 +714,8 @@ async fn workout_delete(
     Path(id): Path<LookupKey>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    workout::delete(&ontogen_store, workout_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    workout::delete(&ontogen_store, workout_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     Ok(response::no_content())
 }
 
@@ -726,8 +728,8 @@ async fn workout_set_list(
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "workout-sets")?;
     refuse_include(&query, "workout-sets")?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    let items = workout_set::list(&ontogen_store).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let items = workout_set::list(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/workout-sets";
     let data: Vec<_> = items.iter().map(|entity| workout_set_as_resource(entity, collection)).collect();
     Ok(response::ok(&Document::new(data, Links::new(collection))))
@@ -740,8 +742,9 @@ async fn workout_set_get_by_id(
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_include(&query, "workout-sets")?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    let entity = workout_set::get_by_id(&ontogen_store, workout_set_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let entity =
+        workout_set::get_by_id(&ontogen_store, workout_set_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = "/api/workout-sets";
     let resource = workout_set_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -761,13 +764,13 @@ async fn workout_set_create(
     let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let (fields, linked) = workout_set_request_fields(&data, true)?;
     let input: CreateWorkoutSetInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     workout_set_check_linked(&ontogen_state, &linked).await?;
     let entity = workout_set::create(&ontogen_store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::WorkoutSetAlreadyExists(..) if data.id.is_some() => {
-            app_error(e).with_pointer("/data/id")
+            ontogen_app_error(e).with_pointer("/data/id")
         }
-        e => app_error(e),
+        e => ontogen_app_error(e),
     })?;
     let resource = workout_set_as_resource(&entity, collection);
     let location = resource.links().self_link().to_owned();
@@ -791,9 +794,10 @@ async fn workout_set_update(
     let data = request::parse_update(&body, endpoint, &id)?;
     let (fields, linked) = workout_set_request_fields(&data, false)?;
     let input: UpdateWorkoutSetInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     workout_set_check_linked(&ontogen_state, &linked).await?;
-    let entity = workout_set::update(&ontogen_store, workout_set_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let entity =
+        workout_set::update(&ontogen_store, workout_set_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
     let resource = workout_set_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
     Ok(response::ok(&Document::new(resource, links)))
@@ -805,8 +809,8 @@ async fn workout_set_delete(
     Path(id): Path<LookupKey>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
-    workout_set::delete(&ontogen_store, workout_set_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    workout_set::delete(&ontogen_store, workout_set_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     Ok(response::no_content())
 }
 
