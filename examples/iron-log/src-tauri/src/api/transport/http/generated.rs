@@ -49,6 +49,7 @@ fn ontogen_app_error(e: crate::schema::AppError) -> ErrorObject {
         crate::schema::AppError::TagNotFound(..) => (StatusCode::NOT_FOUND, "tag_not_found"),
         crate::schema::AppError::TagIdRequired(..) => (StatusCode::BAD_REQUEST, "tag_id_required"),
         crate::schema::AppError::TagAlreadyExists(..) => (StatusCode::CONFLICT, "tag_already_exists"),
+        crate::schema::AppError::ActivityKindNotFound(..) => (StatusCode::NOT_FOUND, "activity_kind_not_found"),
         crate::schema::AppError::DbError(..) => (StatusCode::INTERNAL_SERVER_ERROR, "db_error"),
     };
     ErrorObject::app(status, code, e.to_string())
