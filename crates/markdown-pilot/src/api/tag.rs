@@ -21,7 +21,7 @@ pub async fn list(
     limit: Option<u64>,
     offset: Option<u64>,
 ) -> Result<Vec<Tag>, AppError> {
-    let tags = store.list_tags(None, None).await?;
+    let tags = store.list_tags(&[], None, None).await?;
     Ok(tags
         .into_iter()
         .filter(|t| matches(t, title_prefix, min_title_len))
@@ -32,6 +32,6 @@ pub async fn list(
 
 /// How many tags the same filter selects.
 pub async fn count(store: &Store, title_prefix: Option<&str>, min_title_len: Option<u32>) -> Result<u64, AppError> {
-    let tags = store.list_tags(None, None).await?;
+    let tags = store.list_tags(&[], None, None).await?;
     Ok(tags.iter().filter(|t| matches(t, title_prefix, min_title_len)).count() as u64)
 }

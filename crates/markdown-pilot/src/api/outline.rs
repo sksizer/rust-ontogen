@@ -16,7 +16,7 @@ pub async fn list(
     limit: Option<u64>,
     offset: Option<u64>,
 ) -> Result<Vec<Section>, AppError> {
-    let sections = store.list_sections(None, None).await?;
+    let sections = store.list_sections(&[], None, None).await?;
     Ok(sections
         .into_iter()
         .filter(|s| matches(s, title_contains.as_deref()))
@@ -27,6 +27,6 @@ pub async fn list(
 
 /// How many sections the same filter selects.
 pub async fn count(store: &Store, title_contains: Option<String>) -> Result<u64, AppError> {
-    let sections = store.list_sections(None, None).await?;
+    let sections = store.list_sections(&[], None, None).await?;
     Ok(sections.iter().filter(|s| matches(s, title_contains.as_deref())).count() as u64)
 }

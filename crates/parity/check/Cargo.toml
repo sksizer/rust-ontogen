@@ -10,6 +10,7 @@ repository = "https://github.com/sksizer/rust-ontogen"
 publish = false
 
 [dev-dependencies]
+ontogen-core = { path = "../../ontogen-core" }
 parity-markdown = { path = "../markdown" }
 parity-seaorm = { path = "../seaorm" }
 sea-orm = { version = "1", default-features = false, features = ["sqlx-sqlite", "runtime-tokio-rustls"] }

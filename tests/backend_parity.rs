@@ -4,14 +4,17 @@
 //! backends. Two consumers in one workspace can share the entire transport
 //! stack while their stores diverge.
 //!
-//! Enforced three ways, under every `IdStrategy` and with per-entity
+//! Enforced four ways, under every `IdStrategy` and with per-entity
 //! overrides (the default reaches the store of either backend through
 //! `StoreConfig`, an override through the entity, and neither may change
 //! anything above it):
 //! - `StoreOutput` method metadata is compared field-by-field (the fast
-//!   unit-level guard — `collect_method_meta` must never branch on backend);
+//!   unit-level guard — `collect_method_meta` must never branch on backend),
+//!   `list_*` with its `order` and `count_*` included;
 //! - the public signatures of each generated store module, `count_*`
 //!   included, are compared, since the API layer calls them by name;
+//! - each module's `{Entity}SortField` and `sort_{plural}` source, which
+//!   hand-written lists order with (ADR 0006 §7), is compared byte for byte;
 //! - the full downstream output trees (API with a paginated module, the
 //!   HTTP, IPC and MCP servers, the TS client, bindings and admin registry)
 //!   are diffed recursively, byte for byte.
@@ -35,6 +38,12 @@ fn fixture_schema() -> SchemaOutput {
     // fields.
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/markdown-pilot/src/schema");
     ontogen::parse_schema(&SchemaConfig { schema_dir: dir }).expect("parse pilot schema")
+}
+
+/// The runtime parity fixture's schema, with a field of every sortable type.
+fn parity_schema() -> SchemaOutput {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/parity/schema");
+    ontogen::parse_schema(&SchemaConfig { schema_dir: dir }).expect("parse parity schema")
 }
 
 /// Every strategy the pilot schema admits (each entity has a `title`).
@@ -99,7 +108,7 @@ pub async fn list(
     limit: Option<u64>,
     offset: Option<u64>,
 ) -> Result<Vec<Task>, AppError> {
-    let tasks = store.list_tasks(None, None).await?;
+    let tasks = store.list_tasks(&[], None, None).await?;
     let _ = (query, limit, offset);
     Ok(tasks)
 }
@@ -266,6 +275,15 @@ fn store_signatures(file: &Path) -> Vec<String> {
     out
 }
 
+/// The ordering block of a generated store module: from `{Entity}SortField`
+/// up to the `impl Store` block, which is where the backends' code begins.
+fn order_block(file: &Path) -> String {
+    let src = std::fs::read_to_string(file).expect("read store module");
+    let start = src.find("/// The fields `list_").unwrap_or_else(|| panic!("{}: no sort field enum", file.display()));
+    let end = start + src[start..].find("\nimpl Store {").expect("the impl Store block follows");
+    src[start..end].to_string()
+}
+
 #[test]
 fn store_method_metadata_is_backend_identical() {
     let schema = fixture_schema();
@@ -280,6 +298,36 @@ fn store_method_metadata_is_backend_identical() {
             method_meta_fingerprint(&markdown),
             "{strategy:?}: StoreMethodMeta must never branch on backend — gen_api consumes it"
         );
+        let fingerprint = method_meta_fingerprint(&seaorm);
+        assert!(
+            fingerprint.contains(
+                &"Task::list_tasks(order: &[OrderBy<TaskSortField>], limit: Option<u64>, offset: Option<u64>) -> Vec<Task>"
+                    .to_string()
+            ),
+            "{fingerprint:#?}"
+        );
+        assert!(fingerprint.contains(&"Task::count_tasks() -> u64".to_string()), "{fingerprint:#?}");
+    }
+}
+
+#[test]
+fn the_sort_field_and_in_memory_sort_are_byte_identical_across_backends() {
+    for schema in [fixture_schema(), parity_schema()] {
+        for strategy in strategies() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let (a, b) = (tmp.path().join("store_seaorm"), tmp.path().join("store_markdown"));
+            gen_store_with(&schema, Backend::Seaorm(None), &strategy, &a);
+            gen_store_with(&schema, markdown_backend(&schema.entities), &strategy, &b);
+
+            for entity in &schema.entities {
+                let file = format!("{}.rs", ontogen::to_snake_case(&entity.name));
+                let (block_a, block_b) = (order_block(&a.join(&file)), order_block(&b.join(&file)));
+                let plural = ontogen::pluralize(&ontogen::to_snake_case(&entity.name));
+                assert!(block_a.contains(&format!("pub enum {}SortField {{", entity.name)), "{file}: {block_a}");
+                assert!(block_a.contains(&format!("pub fn sort_{plural}(")), "{file}: {block_a}");
+                assert_eq!(block_a, block_b, "{strategy:?}: {file}: the ordering block differs between backends");
+            }
+        }
     }
 }
 
@@ -309,8 +357,7 @@ fn store_public_signatures_are_backend_identical() {
 /// for those too.
 #[test]
 fn the_runtime_parity_schema_is_backend_identical() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/parity/schema");
-    let schema = ontogen::parse_schema(&SchemaConfig { schema_dir: dir }).expect("parse parity schema");
+    let schema = parity_schema();
     for strategy in strategies() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (seaorm, markdown) = (tmp.path().join("seaorm"), tmp.path().join("markdown"));

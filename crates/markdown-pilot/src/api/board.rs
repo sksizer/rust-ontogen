@@ -9,7 +9,7 @@ use crate::store::task::TaskUpdate;
 /// The tasks carrying the tag `tag_id`, which must exist.
 pub async fn list_tasks(store: &Store, tag_id: &str) -> Result<Vec<Task>, AppError> {
     store.get_tag(tag_id).await?;
-    let tasks = store.list_tasks(None, None).await?;
+    let tasks = store.list_tasks(&[], None, None).await?;
     Ok(tasks.into_iter().filter(|t| t.tags.iter().any(|tag| tag == tag_id)).collect())
 }
 

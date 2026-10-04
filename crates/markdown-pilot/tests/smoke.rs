@@ -52,7 +52,7 @@ async fn note_crud_lifecycle() {
     let got = store.get_note("hello-vault").await.expect("get");
     assert_eq!(got.title, "Hello Vault");
     store.create_note(note("Another", "")).await.expect("create 2");
-    let all = store.list_notes(None, None).await.expect("list");
+    let all = store.list_notes(&[], None, None).await.expect("list");
     assert_eq!(all.len(), 2);
     assert_eq!(all[0].id, "another", "lexicographic by id");
 
@@ -205,7 +205,7 @@ async fn reserved_ids_dedupe_and_okf_index_files_are_not_records() {
 
     std::fs::write(dir.path().join("notes/index.md"), "# Notes\n\n* [Index](index-2.md)\n").unwrap();
     std::fs::write(dir.path().join("notes/log.md"), "# Log\n\n## 2026-10-03\n* **Creation**: index-2\n").unwrap();
-    let all = store.list_notes(None, None).await.expect("list");
+    let all = store.list_notes(&[], None, None).await.expect("list");
     assert_eq!(all.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), vec!["index-2"]);
     assert_eq!(store.count_notes().await.expect("count"), 1);
 

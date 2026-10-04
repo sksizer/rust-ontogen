@@ -32,7 +32,7 @@ pub async fn list(
 ) -> Result<Vec<Task>, AppError> {
     // The store has no filter, so the page is cut after filtering, from the
     // store's id-ascending order.
-    let tasks = store.list_tasks(None, None).await?;
+    let tasks = store.list_tasks(&[], None, None).await?;
     Ok(tasks
         .into_iter()
         .filter(|t| matches(t, &query))
@@ -43,6 +43,6 @@ pub async fn list(
 
 /// Count the tasks the same filter selects
 pub async fn count(store: &Store, query: ListTasksQuery) -> Result<u64, AppError> {
-    let tasks = store.list_tasks(None, None).await?;
+    let tasks = store.list_tasks(&[], None, None).await?;
     Ok(tasks.iter().filter(|t| matches(t, &query)).count() as u64)
 }

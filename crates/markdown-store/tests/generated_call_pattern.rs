@@ -111,7 +111,9 @@ impl Store {
         Ok(fm.into_task(id.to_string(), doc.body().to_string()))
     }
 
-    /// Shape of generated `list_tasks(limit, offset)`.
+    /// Shape of generated `list_tasks(order, limit, offset)`, less the
+    /// `sort_tasks` call between the read and the page: it calls nothing in
+    /// this crate.
     fn list_tasks(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Task>, Error> {
         let mut tasks = Vec::new();
         for (id, doc) in self.vault().entity(TASKS_DIR, TASK_TYPE).read_all()? {

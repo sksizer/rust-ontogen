@@ -744,7 +744,7 @@ async fn custom_post_documents_are_checked_member_by_member() {
     assert_eq!(reply.pointer(StatusCode::BAD_REQUEST, "invalid_document"), "/meta/args/status");
 
     // Nothing was created along the way.
-    assert!(server.store().list_tasks(None, None).await.expect("list").is_empty());
+    assert!(server.store().list_tasks(&[], None, None).await.expect("list").is_empty());
 }
 
 #[tokio::test]
