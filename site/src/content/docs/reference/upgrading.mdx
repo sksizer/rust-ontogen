@@ -5,7 +5,7 @@ description: Every breaking change in 0.9 and how to migrate, grouped by area.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Version 0.9 is still in progress. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, relationships, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API. Sorting and `include` arrive in later releases, and their sections will be added here. Work through the sections that apply to your project.
+Version 0.9 is still in progress. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, relationships, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API, and lists and gets honour `include`. Sorting arrives in a later release, and its section will be added here. Work through the sections that apply to your project.
 
 ## Build configuration
 
@@ -199,7 +199,7 @@ In a module named after an entity, a hand-written `list` now replaces the genera
 - `gen_api` no longer prints warnings about scan records it skips; the servers and clients stages print the same ones.
 - The HTTP generator refuses, as a build error, a list whose filter it cannot serve: a second `*Query` struct, a `*Query` struct taken neither by value nor by `&` (`Option<ListTasksQuery>`, `&mut ListTasksQuery`), a bare filter whose type one value cannot carry (`Vec<_>`, a tuple, a schema entity), and an `*Input` parameter on a `list`, which has no body. IPC and MCP generation does not apply these checks.
 
-If you call the runtime crate directly, `ontogen-jsonapi` changed: `QuerySpec` has a new field `filter_fields`, so a struct literal must set it or end with `..QuerySpec::NONE`; `QuerySpec` no longer implements `PartialEq` or `Eq`; and the crate no longer depends on `serde_urlencoded`. `QueryParams` gained `filter`, `filter_member`, `required_filter_member` and `link_query`, and the crate exports `filter_fields::<T>()`.
+If you call the runtime crate directly, `ontogen-jsonapi` changed: `QuerySpec` has a new field `filter_fields`, so a struct literal must set it or end with `..QuerySpec::NONE`; `QuerySpec` no longer implements `PartialEq` or `Eq`; and the crate no longer depends on `serde_urlencoded`. `QueryParams` gained `filter`, `filter_member`, `required_filter_member`, `link_query` and `include_paths`, and the crate exports `filter_fields::<T>()`. `link_query` takes the parsed include (`Option<&[&str]>`, from `QueryParams::include_paths`). `response::created` takes `Option<&str>`, the `Location` (`None` for a module that serves no `get_by_id`), and `ResourceObject::links()` returns `Option<&Links>` (`None` for such a module's resources).
 
 ### MCP tools
 
@@ -396,6 +396,45 @@ Content-Type: application/vnd.api+json
 
 Members that are absent are unchanged. `null` clears an `Option` attribute or an optional to-one (`403 relationship_required` for a required one, `400 invalid_attribute` for a required attribute). A to-many `data` array replaces the whole list. The response is `200` with the full resource.
 
+### A module with no `get_by_id` has no resource links
+
+A resource module that serves no `get_by_id` has no route at `/api/{type}/{id}`, so the generated server no longer emits a link to one. Its resource objects carry no `links` member, a create answers `201` with no `Location` header, and its create and update documents carry no top-level `links`. A list document keeps its top-level links, because the list itself serves the collection. A module that serves `get_by_id` is unchanged.
+
+Before, `POST /api/notes` on a module with `create` and `list` but no `get_by_id`:
+
+```http
+HTTP/1.1 201 Created
+Location: /api/notes/standup
+
+{
+  "jsonapi": { "version": "1.1" },
+  "links": { "self": "/api/notes/standup" },
+  "data": {
+    "type": "notes",
+    "id": "standup",
+    "attributes": { "title": "Standup" },
+    "links": { "self": "/api/notes/standup" }
+  }
+}
+```
+
+After:
+
+```http
+HTTP/1.1 201 Created
+
+{
+  "jsonapi": { "version": "1.1" },
+  "data": {
+    "type": "notes",
+    "id": "standup",
+    "attributes": { "title": "Standup" }
+  }
+}
+```
+
+A client that read `Location` or `links.self` from such a module must take the id from `data.id`. Add a `get_by_id` to the module to serve the links again.
+
 ### Delete
 
 `DELETE` answers `204` with no body. A missing resource is still `404`.
@@ -428,6 +467,39 @@ After, `GET /api/tasks?page[offset]=20&page[limit]=10`:
 ```
 
 `meta` holds exactly the old fields (`limit` and `offset` are the effective values). `pagination` belongs to an API surface and its primary surface's value covers every module on it, so setting it pages every entity module of that surface. The tasks-tracker example now sets `.api_paginated(..)` for `task`, `epic` and `tag`, so its three lists page, over HTTP and as MCP tools. A scoped list (`route_prefix`) pages like an unscoped one: the page goes to the store. `prev` is `null` on the first page and `next` on the last. `page[limit]=0`, a non-integer, and any other `page[…]` member (`page[number]`, `page[size]`) are `400`.
+
+### Compound documents
+
+Before, any `include` on a list or a get was `400 invalid_include_path`. After, `GET /api/{type}` and `GET /api/{type}/{id}` honour `include`: one level deep, a comma-separated list of relationship names, with the related resources in a top-level `included` member after `data`.
+
+After, `GET /api/tasks?include=epic,tags`:
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "links": {
+    "self":  "/api/tasks?include=epic,tags&page%5Boffset%5D=0&page%5Blimit%5D=20",
+    "first": "/api/tasks?include=epic,tags&page%5Boffset%5D=0&page%5Blimit%5D=20",
+    "prev":  null,
+    "next":  null,
+    "last":  "/api/tasks?include=epic,tags&page%5Boffset%5D=0&page%5Blimit%5D=20"
+  },
+  "meta": { "total": 1, "limit": 20, "offset": 0 },
+  "data": [ { "type": "tasks", "id": "ship-the-emitter", … } ],
+  "included": [
+    { "type": "epics", "id": "markdown-backend", … },
+    { "type": "tags", "id": "codegen", … }
+  ]
+}
+```
+
+- Every link carries `include`, after `filter` and `sort` and before `page`, so following `next` keeps it. On a get, the top-level `self` is `/api/tasks/ship-the-emitter?include=epic` and the resource's own `links.self` carries no query.
+- `included` holds each resource once, in `include` order and then in order of first appearance in `data`. A resource already in `data` is not repeated, and a dangling markdown wikilink is left out of `included` while its identifier stays in the linkage. `include=` is `"included": []`.
+- Each included resource is read through the target module's `get_by_id`, one read per distinct id, so a hand-written `get_by_id` applies.
+- A field relationship (`belongs_to`, `many_to_many`, `has_many`) can be included. A [junction op](#junction-ops) relationship cannot, because it has no linkage. A relationship whose target module serves no `get_by_id` cannot be included either.
+- An unknown name, a junction-op relationship, a relationship that cannot be included, a dotted path (`epic.tasks`) and an empty item (`epic,`) are each `400 invalid_include_path` with `source.parameter: "include"`. The check runs before the store is read, so `GET /api/tasks/nope?include=owner` is `400`, not `404`.
+- Relationship and related routes still refuse `include` as `400 invalid_query_parameter`.
+- The generated TypeScript transport does not send `include`: its flat return shape has nowhere to put included resources.
 
 ### Filtered lists
 
@@ -502,7 +574,7 @@ A struct whose fields serde does not report, for example one with `#[serde(flatt
 
 ### Unknown query parameters are refused
 
-A query parameter a route does not accept is `400 invalid_query_parameter`, with `source.parameter` naming it. That includes `limit` and `offset` (use `page[…]`), `page[…]` on a list that is not paginated, `fields[…]`, and `filter[…]` on a list that takes no filter. A request that sends stray parameters and used to work now fails. `sort` on a list and `include` on a list or a get are recognised but cannot be honoured yet: they are `400 invalid_sort_field` and `400 invalid_include_path`.
+A query parameter a route does not accept is `400 invalid_query_parameter`, with `source.parameter` naming it. That includes `limit` and `offset` (use `page[…]`), `page[…]` on a list that is not paginated, `fields[…]`, and `filter[…]` on a list that takes no filter. A request that sends stray parameters and used to work now fails. `include` on a list or a get is honoured (see [Compound documents](#compound-documents)). `sort` on a list is recognised but no list takes an `order` argument, so it is `400 invalid_sort_field`.
 
 ### Related resources must exist
 
@@ -800,7 +872,8 @@ If you call the generated HTTP routes from something other than the generated Ty
 - Send `Accept: application/vnd.api+json`, and `Content-Type: application/vnd.api+json` on requests with a body.
 - Wrap request bodies in `{"data": {"type": …, "attributes": …, "relationships": …}}` and read responses from `data`.
 - Use `PATCH` instead of `PUT` to update.
-- Create answers `201` with a `Location` header.
+- Create answers `201` with a `Location` header, except for a module that serves no `get_by_id`, whose resources carry no `links` either.
+- Add `include=epic,tags` to a list or get to receive the related resources in `included`.
 - Replace `limit` and `offset` with `page[limit]` and `page[offset]`, and read `meta.total`, `meta.limit` and `meta.offset` instead of the `PaginatedResult` fields.
 - Read errors from `errors[0]` (`status`, `code`, `detail`) instead of `error`.
 - Drop any query parameter the route does not accept.

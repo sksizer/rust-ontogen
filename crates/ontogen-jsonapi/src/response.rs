@@ -15,10 +15,11 @@ pub fn ok<T: Serialize>(document: &T) -> Response {
     document_response(StatusCode::OK, document, None)
 }
 
-/// `201 Created` with `document` and a `Location` equal to the resource's
-/// `links.self` (§8.2).
-pub fn created<T: Serialize>(location: &str, document: &T) -> Response {
-    document_response(StatusCode::CREATED, document, Some(location))
+/// `201 Created` with `document`, and `Location` when given: the resource's
+/// `links.self` (§8.2). A resource of a type whose module serves no
+/// `get_by_id` has no URL to give, so it is created without one.
+pub fn created<T: Serialize>(location: Option<&str>, document: &T) -> Response {
+    document_response(StatusCode::CREATED, document, location)
 }
 
 /// `204 No Content`: no body and no `Content-Type` (§3.1).
@@ -64,4 +65,20 @@ fn with_body(status: StatusCode, body: Vec<u8>) -> Response {
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(MEDIA_TYPE));
     headers.insert(header::VARY, HeaderValue::from_static("Accept"));
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn created_sets_location_only_when_given() {
+        let with = created(Some("/api/tasks/a"), &serde_json::json!({}));
+        assert_eq!(with.status(), StatusCode::CREATED);
+        assert_eq!(with.headers().get(header::LOCATION).unwrap(), "/api/tasks/a");
+        let without = created(None, &serde_json::json!({}));
+        assert_eq!(without.status(), StatusCode::CREATED);
+        assert!(without.headers().get(header::LOCATION).is_none());
+        assert_eq!(without.headers().get(header::CONTENT_TYPE).unwrap(), MEDIA_TYPE);
+    }
 }

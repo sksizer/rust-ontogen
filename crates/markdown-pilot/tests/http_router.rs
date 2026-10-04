@@ -249,8 +249,8 @@ async fn list_query_parameters_are_checked() {
     // The generated list takes no filter.
     assert_eq!(server.get("/api/notes?filter[title]=x").await.parameter("invalid_query_parameter"), "filter[title]");
 
-    // `sort` and `include` are accepted names that no route honours, and
-    // `sort` is checked first (§13.2 step 5).
+    // `sort` is an accepted name that no route honours, checked before
+    // `include` (§13.2 step 5).
     let error =
         server.get("/api/notes?include=x&sort=title").await.error(StatusCode::BAD_REQUEST, "invalid_sort_field");
     assert_eq!(error["source"], json!({ "parameter": "sort" }));
@@ -2254,6 +2254,692 @@ async fn a_scoped_filtered_list_answers_as_the_unscoped_one() {
     // The scope accessor refuses an unknown project.
     let reply = server.get_scoped("/api/projects/nope/sections?filter[parent_id]=root").await;
     reply.error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error");
+}
+
+// ── Include (§7.5) ──
+//
+// The graph the tests share, tasks listed in id order:
+//
+//   alpha   parent -        subtasks beta, charlie  tags -
+//   beta    parent alpha    subtasks delta          tags b, a
+//   charlie parent alpha    subtasks -              tags b, c
+//   delta   parent beta     subtasks -              tags c
+//
+// The pilot pages every module at `default_limit` 2 and `max_limit` 3, so a
+// page of three tasks is the most one request shows.
+
+async fn seed_task_graph(server: &Server) {
+    for title in ["Alpha", "Beta", "Charlie", "Delta"] {
+        server.task(title, "open").await;
+    }
+    for id in ["a", "b", "c"] {
+        server.tag(id, &id.to_uppercase()).await;
+    }
+    for (child, parent) in [("beta", "alpha"), ("charlie", "alpha"), ("delta", "beta")] {
+        let uri = format!("/api/tasks/{child}/relationships/parent");
+        server.write("PATCH", &uri, linkage(identifier("tasks", parent))).await.no_content();
+    }
+    for (task, tags) in [("beta", ["b", "a"].as_slice()), ("charlie", &["b", "c"]), ("delta", &["c"])] {
+        let uri = format!("/api/tasks/{task}/relationships/tags");
+        let members: Vec<Value> = tags.iter().map(|tag| identifier("tags", tag)).collect();
+        server.write("PATCH", &uri, linkage(Value::Array(members))).await.no_content();
+    }
+}
+
+/// A task resource object as the unscoped router sends it. The title is the
+/// id capitalised, which is how the tests create tasks.
+fn task_json(id: &str, parent: Option<&str>, subtasks: &[&str], tags: &[&str]) -> String {
+    let title = format!("{}{}", id[..1].to_uppercase(), &id[1..]);
+    let one = |type_name: &str, id: &str| format!(r#"{{"type":"{type_name}","id":"{id}"}}"#);
+    let many = |type_name: &str, ids: &[&str]| {
+        format!("[{}]", ids.iter().map(|id| one(type_name, id)).collect::<Vec<_>>().join(","))
+    };
+    let parent = parent.map_or_else(|| "null".to_owned(), |parent| one("tasks", parent));
+    format!(
+        concat!(
+            r#"{{"type":"tasks","id":"{id}","attributes":{{"title":"{title}","status":"open","body":""}},"#,
+            r#""relationships":{{"#,
+            r#""parent":{{"links":{{"self":"/api/tasks/{id}/relationships/parent","#,
+            r#""related":"/api/tasks/{id}/parent"}},"data":{parent}}},"#,
+            r#""subtasks":{{"links":{{"self":"/api/tasks/{id}/relationships/subtasks","#,
+            r#""related":"/api/tasks/{id}/subtasks"}},"data":{subtasks}}},"#,
+            r#""tags":{{"links":{{"self":"/api/tasks/{id}/relationships/tags","#,
+            r#""related":"/api/tasks/{id}/tags"}},"data":{tags}}},"#,
+            r#""labels":{{"links":{{"self":"/api/tasks/{id}/relationships/labels","#,
+            r#""related":"/api/tasks/{id}/labels"}}}}}},"#,
+            r#""links":{{"self":"/api/tasks/{id}"}}}}"#,
+        ),
+        id = id,
+        title = title,
+        parent = parent,
+        subtasks = many("tasks", subtasks),
+        tags = many("tags", tags),
+    )
+}
+
+/// A tag resource object, created as `(id, ID)`.
+fn tag_json(id: &str) -> String {
+    format!(
+        r#"{{"type":"tags","id":"{id}","attributes":{{"title":"{}"}},"links":{{"self":"/api/tags/{id}"}}}}"#,
+        id.to_uppercase()
+    )
+}
+
+/// The five pagination links of a page, each `base` (the path and the query
+/// before `page[offset]`, without a trailing `&`) plus the page.
+fn page_links(base: &str, offset: u32, limit: u32, total: u32) -> String {
+    let link = |offset: u32| format!(r#""{base}&page%5Boffset%5D={offset}&page%5Blimit%5D={limit}""#);
+    let prev = if offset == 0 { "null".to_owned() } else { link(offset.saturating_sub(limit)) };
+    let next = if offset + limit < total { link(offset + limit) } else { "null".to_owned() };
+    let last = if total == 0 { 0 } else { (total - 1) / limit * limit };
+    format!(r#"{{"self":{},"first":{},"prev":{prev},"next":{next},"last":{}}}"#, link(offset), link(0), link(last))
+}
+
+/// A paginated collection document as the unscoped router sends it;
+/// `included` is `None` when the request had no `include`.
+fn list_document(links: &str, meta: (u32, u32, u32), data: &[String], included: Option<&[String]>) -> String {
+    let (total, limit, offset) = meta;
+    let included = included.map_or_else(String::new, |included| format!(r#","included":[{}]"#, included.join(",")));
+    format!(
+        r#"{{"jsonapi":{{"version":"1.1"}},"links":{links},"meta":{{"total":{total},"limit":{limit},"offset":{offset}}},"data":[{}]{included}}}"#,
+        data.join(",")
+    )
+}
+
+/// A single-resource document as the unscoped router sends it.
+fn get_document(self_link: &str, data: &str, included: Option<&[String]>) -> String {
+    let included = included.map_or_else(String::new, |included| format!(r#","included":[{}]"#, included.join(",")));
+    format!(r#"{{"jsonapi":{{"version":"1.1"}},"links":{{"self":"{self_link}"}},"data":{data}{included}}}"#)
+}
+
+/// `type/id` of every member of `included`, in order.
+fn included_keys(reply: &Reply) -> Vec<String> {
+    let included = reply.body["included"].as_array().unwrap_or_else(|| panic!("no included member: {}", reply.raw));
+    included.iter().map(|r| format!("{}/{}", r["type"].as_str().unwrap(), r["id"].as_str().unwrap())).collect()
+}
+
+impl Server {
+    /// Follows a link a document of `scope` carried.
+    async fn follow(&self, scope: Scope, link: &Value) -> Reply {
+        let link = link.as_str().unwrap_or_else(|| panic!("a link, not {link}"));
+        match scope {
+            Scope::Unscoped => self.get(link).await,
+            Scope::Scoped => self.get_scoped(link).await,
+        }
+    }
+}
+
+impl Reply {
+    /// A `400 invalid_include_path` for `include`.
+    fn include_error(&self) -> Value {
+        let error = self.error(StatusCode::BAD_REQUEST, "invalid_include_path");
+        assert_eq!(error["title"], "Bad Request", "{}", self.raw);
+        assert_eq!(error["source"], json!({ "parameter": "include" }), "{}", self.raw);
+        assert!(error["detail"].as_str().is_some_and(|d| !d.is_empty()), "a detail: {}", self.raw);
+        error
+    }
+
+    /// A `400 invalid_query_parameter` naming `include`.
+    fn include_refused(&self) {
+        let error = self.error(StatusCode::BAD_REQUEST, "invalid_query_parameter");
+        assert_eq!(error["title"], "Bad Request", "{}", self.raw);
+        assert_eq!(error["source"], json!({ "parameter": "include" }), "{}", self.raw);
+    }
+}
+
+async fn a_list_includes_a_to_one_relationship(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+    let alpha = task_json("alpha", None, &["beta", "charlie"], &[]);
+    let beta = task_json("beta", Some("alpha"), &["delta"], &["b", "a"]);
+    let charlie = task_json("charlie", Some("alpha"), &[], &["b", "c"]);
+    let delta = task_json("delta", Some("beta"), &[], &["c"]);
+
+    // Beta and charlie share a parent, which is on no page row: it is
+    // included once. Delta's parent is on the page, so it is not repeated.
+    let reply = server.get_in(scope, "/api/tasks?include=parent&page[offset]=1&page[limit]=3").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    let links = page_links("/api/tasks?include=parent", 1, 3, 4);
+    let expected = list_document(
+        &links,
+        (4, 3, 1),
+        &[beta.clone(), charlie.clone(), delta.clone()],
+        Some(std::slice::from_ref(&alpha)),
+    );
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    // Included in data order: delta's parent follows charlie's.
+    let reply = server.get_in(scope, "/api/tasks?include=parent&page[offset]=2&page[limit]=2").await;
+    let links = page_links("/api/tasks?include=parent", 2, 2, 4);
+    let expected = list_document(&links, (4, 2, 2), &[charlie, delta], Some(&[alpha, beta]));
+    assert_eq!(reply.raw, scope.links(&expected));
+}
+in_both_scopes!(a_list_includes_a_to_one_relationship);
+
+async fn a_list_includes_a_many_to_many_relationship(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+    let data = [
+        task_json("beta", Some("alpha"), &["delta"], &["b", "a"]),
+        task_json("charlie", Some("alpha"), &[], &["b", "c"]),
+        task_json("delta", Some("beta"), &[], &["c"]),
+    ];
+
+    // Linkage order within a resource (b before a), data order across them,
+    // and tag b, linked twice, once.
+    let reply = server.get_in(scope, "/api/tasks?include=tags&page[offset]=1&page[limit]=3").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    let links = page_links("/api/tasks?include=tags", 1, 3, 4);
+    let included = [tag_json("b"), tag_json("a"), tag_json("c")];
+    let expected = list_document(&links, (4, 3, 1), &data, Some(&included));
+    assert_eq!(reply.raw, scope.links(&expected));
+}
+in_both_scopes!(a_list_includes_a_many_to_many_relationship);
+
+async fn a_list_includes_a_has_many_relationship(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+    let alpha = task_json("alpha", None, &["beta", "charlie"], &[]);
+    let beta = task_json("beta", Some("alpha"), &["delta"], &["b", "a"]);
+    let charlie = task_json("charlie", Some("alpha"), &[], &["b", "c"]);
+    let delta = task_json("delta", Some("beta"), &[], &["c"]);
+
+    let reply = server.get_in(scope, "/api/tasks?include=subtasks&page[limit]=1").await;
+    let links = page_links("/api/tasks?include=subtasks", 0, 1, 4);
+    let expected =
+        list_document(&links, (4, 1, 0), std::slice::from_ref(&alpha), Some(&[beta.clone(), charlie.clone()]));
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    // Beta and charlie are on this page, so only beta's own child is new.
+    let reply = server.get_in(scope, "/api/tasks?include=subtasks&page[offset]=1&page[limit]=2").await;
+    let links = page_links("/api/tasks?include=subtasks", 1, 2, 4);
+    let expected = list_document(&links, (4, 2, 1), &[beta, charlie], Some(&[delta]));
+    assert_eq!(reply.raw, scope.links(&expected));
+}
+in_both_scopes!(a_list_includes_a_has_many_relationship);
+
+async fn several_relationships_are_included_in_include_order(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+    // Alpha, beta and charlie. Tags b, a, c come from beta then charlie.
+    // Delta is beta's only subtask not on the page. Every parent is on it.
+    let page = "page[offset]=0&page[limit]=3";
+
+    let reply = server.get_in(scope, &format!("/api/tasks?include=tags,subtasks,parent&{page}")).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(included_keys(&reply), ["tags/b", "tags/a", "tags/c", "tasks/delta"]);
+    assert_eq!(
+        reply.body["links"]["self"],
+        scope.path("/api/tasks?include=tags,subtasks,parent&page%5Boffset%5D=0&page%5Blimit%5D=3")
+    );
+
+    let reply = server.get_in(scope, &format!("/api/tasks?include=parent,subtasks,tags&{page}")).await;
+    assert_eq!(included_keys(&reply), ["tasks/delta", "tags/b", "tags/a", "tags/c"]);
+    assert_eq!(
+        reply.body["links"]["self"],
+        scope.path("/api/tasks?include=parent,subtasks,tags&page%5Boffset%5D=0&page%5Blimit%5D=3")
+    );
+
+    // Each member is the target's own resource object.
+    for resource in reply.body["included"].as_array().unwrap() {
+        let uri = format!("/api/{}/{}", resource["type"].as_str().unwrap(), resource["id"].as_str().unwrap());
+        assert_eq!(resource, &server.get_in(scope, &uri).await.body["data"]);
+    }
+}
+in_both_scopes!(several_relationships_are_included_in_include_order);
+
+async fn a_get_includes_each_kind_of_relationship(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+    let alpha = task_json("alpha", None, &["beta", "charlie"], &[]);
+    let beta = task_json("beta", Some("alpha"), &["delta"], &["b", "a"]);
+    let charlie = task_json("charlie", Some("alpha"), &[], &["b", "c"]);
+    let delta = task_json("delta", Some("beta"), &[], &["c"]);
+
+    // To-one. The top-level `self` carries the query, the resource's own
+    // `links.self` does not.
+    let reply = server.get_in(scope, "/api/tasks/delta?include=parent").await;
+    let expected = get_document("/api/tasks/delta?include=parent", &delta, Some(std::slice::from_ref(&beta)));
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    // Many-to-many, in linkage order. The request names `tags` twice and the
+    // link once, `,` literal, request order kept.
+    let reply = server.get_in(scope, "/api/tasks/beta?include=tags,parent,tags").await;
+    let expected = get_document(
+        "/api/tasks/beta?include=tags,parent",
+        &beta,
+        Some(&[tag_json("b"), tag_json("a"), alpha.clone()]),
+    );
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    // Has-many.
+    let reply = server.get_in(scope, "/api/tasks/alpha?include=subtasks").await;
+    let expected = get_document("/api/tasks/alpha?include=subtasks", &alpha, Some(&[beta.clone(), charlie]));
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    // All three, in include order.
+    let reply = server.get_in(scope, "/api/tasks/beta?include=subtasks,parent,tags").await;
+    let expected = get_document(
+        "/api/tasks/beta?include=subtasks,parent,tags",
+        &beta,
+        Some(&[delta, alpha, tag_json("b"), tag_json("a")]),
+    );
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    // An encoded `,` reads as `,` and is written back literal.
+    let reply = server.get_in(scope, "/api/tasks/beta?include=tags%2Cparent").await;
+    assert_eq!(reply.body["links"]["self"], scope.path("/api/tasks/beta?include=tags,parent"));
+    assert_eq!(included_keys(&reply), ["tags/b", "tags/a", "tasks/alpha"]);
+    assert_eq!(reply.body["data"]["links"]["self"], scope.path("/api/tasks/beta"));
+}
+in_both_scopes!(a_get_includes_each_kind_of_relationship);
+
+async fn a_resource_is_included_once_whatever_reaches_it(scope: Scope) {
+    let server = Server::new();
+    for title in ["M1", "M2", "M3"] {
+        server.task(title, "open").await;
+    }
+    // M3 is M1's parent and M2's subtask: two relationships of one type
+    // reach it.
+    server.write("PATCH", "/api/tasks/m1/relationships/parent", linkage(identifier("tasks", "m3"))).await.no_content();
+    server.write("PATCH", "/api/tasks/m3/relationships/parent", linkage(identifier("tasks", "m2"))).await.no_content();
+    let m1 = task_json("m1", Some("m3"), &[], &[]);
+    let m2 = task_json("m2", None, &["m3"], &[]);
+    let m3 = task_json("m3", Some("m2"), &["m1"], &[]);
+
+    let reply = server.get_in(scope, "/api/tasks?include=parent,subtasks&page[limit]=2").await;
+    let links = page_links("/api/tasks?include=parent,subtasks", 0, 2, 3);
+    let expected = list_document(&links, (3, 2, 0), &[m1.clone(), m2.clone()], Some(std::slice::from_ref(&m3)));
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    // The order of the paths changes nothing here: the one path that
+    // reaches it first still puts it first, and it is not repeated.
+    let reply = server.get_in(scope, "/api/tasks?include=subtasks,parent&page[limit]=2").await;
+    assert_eq!(included_keys(&reply), ["tasks/m3"]);
+
+    // On the page already: neither path includes it.
+    let reply = server.get_in(scope, "/api/tasks?include=parent,subtasks&page[offset]=1&page[limit]=2").await;
+    assert_eq!(ids(&reply.body), ["m2", "m3"]);
+    assert_eq!(included_keys(&reply), ["tasks/m1"]);
+
+    // A get: M3's parent and its child are both new, in include order.
+    let reply = server.get_in(scope, "/api/tasks/m3?include=subtasks,parent").await;
+    assert_eq!(included_keys(&reply), ["tasks/m1", "tasks/m2"]);
+    let reply = server.get_in(scope, "/api/tasks/m3?include=parent,subtasks").await;
+    assert_eq!(included_keys(&reply), ["tasks/m2", "tasks/m1"]);
+}
+in_both_scopes!(a_resource_is_included_once_whatever_reaches_it);
+
+/// A task file written straight into the vault, the way an editor leaves
+/// one whose link names a note since deleted.
+fn write_task_file(server: &Server, id: &str, frontmatter: &str) {
+    let dir = server._dir.path().join("tasks");
+    std::fs::create_dir_all(&dir).expect("tasks dir");
+    let path = dir.join(format!("{id}.md"));
+    std::fs::write(path, format!("---\ntype: Task\n{frontmatter}---\n")).expect("write task file");
+}
+
+async fn a_dangling_link_stays_in_the_linkage_and_out_of_included(scope: Scope) {
+    let server = Server::new();
+    server.tag("a", "A").await;
+    write_task_file(
+        &server,
+        "ghosty",
+        "title: Ghosty\ntask_status: open\nparent_id: '[[nope]]'\ntags:\n- '[[ghost]]'\n- '[[a]]'\n",
+    );
+    write_task_file(&server, "haunted", "title: Haunted\ntask_status: open\ntags:\n- '[[ghost]]'\n");
+    let ghosty = task_json("ghosty", Some("nope"), &[], &["ghost", "a"]);
+    let haunted = task_json("haunted", None, &[], &["ghost"]);
+
+    let reply = server.get_in(scope, "/api/tasks/ghosty?include=parent,tags").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    let expected = get_document("/api/tasks/ghosty?include=parent,tags", &ghosty, Some(&[tag_json("a")]));
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    // Two tasks name the same missing tag; neither it nor the missing parent
+    // is an error or a member.
+    let reply = server.get_in(scope, "/api/tasks?include=tags,parent").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    let links = page_links("/api/tasks?include=tags,parent", 0, 2, 2);
+    let expected = list_document(&links, (2, 2, 0), &[ghosty, haunted], Some(&[tag_json("a")]));
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    // Nothing resolves: `included` is still there, empty.
+    let reply = server.get_in(scope, "/api/tasks/haunted?include=tags").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(reply.body["included"], json!([]));
+}
+in_both_scopes!(a_dangling_link_stays_in_the_linkage_and_out_of_included);
+
+async fn include_reads_only_the_page_and_every_pagination_link_carries_it(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+
+    // Request order of the parameters is not canonical order.
+    let reply = server.get_in(scope, "/api/tasks?page[limit]=1&include=tags&page[offset]=1").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(ids(&reply.body), ["beta"]);
+    // Charlie's and delta's tags (c) are not included: they are not on the page.
+    assert_eq!(included_keys(&reply), ["tags/b", "tags/a"]);
+    let link =
+        |offset: u32| scope.path(&format!("/api/tasks?include=tags&page%5Boffset%5D={offset}&page%5Blimit%5D=1"));
+    assert_eq!(
+        reply.body["links"],
+        json!({ "self": link(1), "first": link(0), "prev": link(0), "next": link(2), "last": link(3) })
+    );
+
+    // Following `next` keeps the include and its page.
+    let next = server.follow(scope, &reply.body["links"]["next"]).await;
+    assert_eq!(ids(&next.body), ["charlie"]);
+    assert_eq!(included_keys(&next), ["tags/b", "tags/c"]);
+    assert_eq!(next.body["links"]["self"], link(2));
+    let last = server.follow(scope, &next.body["links"]["last"]).await;
+    assert_eq!(ids(&last.body), ["delta"]);
+    assert_eq!(included_keys(&last), ["tags/c"]);
+    assert_eq!(last.body["links"]["next"], Value::Null);
+    let first = server.follow(scope, &last.body["links"]["first"]).await;
+    assert_eq!(ids(&first.body), ["alpha"]);
+    assert_eq!(first.body["included"], json!([]));
+    assert_eq!(first.body["links"]["prev"], Value::Null);
+}
+in_both_scopes!(include_reads_only_the_page_and_every_pagination_link_carries_it);
+
+async fn a_filtered_list_writes_include_after_its_filters(scope: Scope) {
+    let server = Server::new();
+    seed_sections(&server).await;
+
+    // `include` is first in the request, and still after the filters, in
+    // byte order of name, in the links.
+    let reply = server
+        .get_in(scope, "/api/sections?include=parent,children&filter[parent_id]=root&filter[min_children]=0")
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    let base = "/api/sections?filter%5Bmin_children%5D=0&filter%5Bparent_id%5D=root&include=parent,children";
+    let link = |offset: u32| scope.path(&format!("{base}&page%5Boffset%5D={offset}&page%5Blimit%5D=2"));
+    assert_eq!(
+        reply.body["links"],
+        json!({ "self": link(0), "first": link(0), "prev": null, "next": link(2), "last": link(2) })
+    );
+    // Intro and root are the page. Their parent, root, is on it; root's
+    // children are intro and root, on it, and usage.
+    assert_eq!(ids(&reply.body), ["intro", "root"]);
+    assert_eq!(included_keys(&reply), ["sections/usage"]);
+    assert_eq!(reply.body["included"][0], server.get_in(scope, "/api/sections/usage").await.body["data"]);
+
+    // Following `next` keeps both.
+    let next = server.follow(scope, &reply.body["links"]["next"]).await;
+    assert_eq!(ids(&next.body), ["usage"]);
+    // Usage's children are its linkage, in linkage order.
+    assert_eq!(
+        next.body["data"][0]["relationships"]["children"]["data"],
+        json!([identifier("sections", "cli"), identifier("sections", "install")])
+    );
+    assert_eq!(included_keys(&next), ["sections/root", "sections/cli", "sections/install"]);
+    assert_eq!(next.body["links"]["prev"], link(0));
+
+    // An empty include on a filtered list.
+    let reply = server.get_in(scope, "/api/sections?filter[parent_id]=root&include=").await;
+    assert_eq!(reply.body["included"], json!([]));
+    assert_eq!(
+        reply.body["links"]["self"],
+        scope.path("/api/sections?filter%5Bparent_id%5D=root&include=&page%5Boffset%5D=0&page%5Blimit%5D=2")
+    );
+
+    // A section's parent is required, so every section has one to include.
+    let reply = server.get_in(scope, "/api/sections/install?include=parent").await;
+    assert_eq!(included_keys(&reply), ["sections/usage"]);
+}
+in_both_scopes!(a_filtered_list_writes_include_after_its_filters);
+
+async fn an_empty_include_is_an_empty_included_member(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+
+    let reply = server.get_in(scope, "/api/tasks?include=&page[limit]=1").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    let links = page_links("/api/tasks?include=", 0, 1, 4);
+    let expected = list_document(&links, (4, 1, 0), &[task_json("alpha", None, &["beta", "charlie"], &[])], Some(&[]));
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    let reply = server.get_in(scope, "/api/tasks/alpha?include=").await;
+    let expected =
+        get_document("/api/tasks/alpha?include=", &task_json("alpha", None, &["beta", "charlie"], &[]), Some(&[]));
+    assert_eq!(reply.raw, scope.links(&expected));
+}
+in_both_scopes!(an_empty_include_is_an_empty_included_member);
+
+async fn without_include_there_is_no_included_member_and_the_links_are_unchanged(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+
+    let reply = server.get_in(scope, "/api/tasks?page[limit]=1").await;
+    let links = page_links("/api/tasks?", 0, 1, 4).replace("?&", "?");
+    let expected = list_document(&links, (4, 1, 0), &[task_json("alpha", None, &["beta", "charlie"], &[])], None);
+    assert_eq!(reply.raw, scope.links(&expected));
+    assert!(reply.body.get("included").is_none(), "{}", reply.raw);
+
+    let reply = server.get_in(scope, "/api/tasks/alpha").await;
+    let expected = get_document("/api/tasks/alpha", &task_json("alpha", None, &["beta", "charlie"], &[]), None);
+    assert_eq!(reply.raw, scope.links(&expected));
+}
+in_both_scopes!(without_include_there_is_no_included_member_and_the_links_are_unchanged);
+
+async fn a_type_with_nothing_to_include_takes_only_an_empty_include(scope: Scope) {
+    let server = Server::new();
+    server.tag("al", "Alpha").await;
+    server.note("Hello").await;
+
+    // `tag` has no relationships. `note`'s only one is a junction
+    // relationship, which has no linkage to include.
+    let reply = server.get_in(scope, "/api/tags?include=").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(reply.body["included"], json!([]));
+    assert_eq!(reply.body["links"]["self"], scope.path("/api/tags?include=&page%5Boffset%5D=0&page%5Blimit%5D=2"));
+    let reply = server.get_in(scope, "/api/tags/al?include=").await;
+    assert_eq!(reply.body["included"], json!([]));
+    assert_eq!(reply.body["links"]["self"], scope.path("/api/tags/al?include="));
+    let reply = server.get_in(scope, "/api/notes?include=").await;
+    assert_eq!(reply.body["included"], json!([]));
+    assert_eq!(reply.body["links"]["self"], scope.path("/api/notes?include=&page%5Boffset%5D=0&page%5Blimit%5D=2"));
+    let reply = server.get_in(scope, "/api/notes/hello?include=").await;
+    assert_eq!(reply.body["included"], json!([]));
+
+    // The tag list is hand-written with bare filters, which `include`
+    // follows in the links.
+    let reply = server.get_in(scope, "/api/tags?include=&filter[title_prefix]=Al").await;
+    assert_eq!(reply.body["included"], json!([]));
+    assert_eq!(
+        reply.body["links"]["self"],
+        scope.path("/api/tags?filter%5Btitle_prefix%5D=Al&include=&page%5Boffset%5D=0&page%5Blimit%5D=2")
+    );
+
+    for uri in [
+        "/api/tags?include=x",
+        "/api/tags/al?include=tasks",
+        "/api/notes?include=tags",
+        "/api/notes/hello?include=tags",
+    ] {
+        server.get_in(scope, uri).await.include_error();
+    }
+    let error = server.get_in(scope, "/api/notes?include=tags").await.include_error();
+    assert!(error["detail"].as_str().unwrap().contains("`tags`"), "{error}");
+}
+in_both_scopes!(a_type_with_nothing_to_include_takes_only_an_empty_include);
+
+async fn an_include_that_cannot_be_honoured_is_invalid_include_path(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+
+    // Unknown, junction, nested, and empty items; the same on a list and on a
+    // get.
+    for value in [
+        "owner",
+        "labels",
+        "parent.subtasks",
+        "tags.",
+        ".tags",
+        "parent,",
+        ",",
+        ",parent",
+        "parent,,tags",
+        "parent,owner",
+        "tags,labels",
+        "Parent",
+    ] {
+        for uri in [format!("/api/tasks?include={value}"), format!("/api/tasks/alpha?include={value}")] {
+            server.get_in(scope, &uri).await.include_error();
+        }
+    }
+
+    // The first offending item in request order is the one named.
+    for (value, named) in [("owner,labels", "owner"), ("labels,owner", "labels"), ("parent,a.b,owner", "a.b")] {
+        let error = server.get_in(scope, &format!("/api/tasks?include={value}")).await.include_error();
+        assert!(error["detail"].as_str().unwrap().contains(&format!("`{named}`")), "{value}: {error}");
+    }
+
+    // A section has no junction and a required parent.
+    seed_sections(&server).await;
+    server.get_in(scope, "/api/sections?filter[parent_id]=root&include=owner").await.include_error();
+    server.get_in(scope, "/api/sections/root?include=parent.children").await.include_error();
+
+    // A repeated parameter is not a bad path.
+    for uri in [
+        "/api/tasks?include=parent&include=tags",
+        "/api/tasks?include=&include=",
+        "/api/tasks/alpha?include=parent&include=parent",
+        "/api/tasks?include=parent&page[limit]=1&include=tags",
+    ] {
+        server.get_in(scope, uri).await.include_refused();
+    }
+}
+in_both_scopes!(an_include_that_cannot_be_honoured_is_invalid_include_path);
+
+async fn only_list_and_get_accept_include(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+    let document =
+        json!({ "data": { "type": "tasks", "attributes": { "title": "New", "status": "open", "body": "" } } });
+    let update = json!({ "data": { "type": "tasks", "id": "alpha", "attributes": { "title": "Renamed" } } });
+    let one_tag = linkage(json!([identifier("tags", "a")]));
+
+    // Relationship and related routes accept only the junction page, and
+    // that is a different parameter; `include` is refused there even where
+    // it would be a valid name.
+    for uri in [
+        "/api/tasks/beta/relationships/parent?include=parent",
+        "/api/tasks/beta/relationships/tags?include=tags",
+        "/api/tasks/beta/relationships/labels?include=tags",
+        "/api/tasks/beta/parent?include=parent",
+        "/api/tasks/beta/tags?include=tags",
+        "/api/tasks/beta/labels?include=tags",
+        "/api/tasks/beta/subtasks?include=",
+    ] {
+        server.get_in(scope, uri).await.include_refused();
+    }
+    for (method, uri) in
+        [("PATCH", "/api/tasks/beta/relationships/tags"), ("POST", "/api/tasks/beta/relationships/tags")]
+    {
+        let reply = server.write_in(scope, method, &format!("{uri}?include=tags"), one_tag.clone()).await;
+        reply.include_refused();
+    }
+    server.write_in(scope, "POST", "/api/tasks?include=parent", document).await.include_refused();
+    server.write_in(scope, "PATCH", "/api/tasks/alpha?include=parent", update).await.include_refused();
+    let reply =
+        server.raw_in(scope, "DELETE", "/api/tasks/alpha?include=parent", &[(header::ACCEPT, MEDIA_TYPE)], "").await;
+    reply.include_refused();
+
+    // None of those did anything.
+    assert_eq!(server.store().count_tasks().await.expect("count"), 4);
+    assert_eq!(server.store().get_task("alpha").await.expect("alpha").title, "Alpha");
+    assert_eq!(server.task_tags("beta").await, ["b", "a"]);
+}
+in_both_scopes!(only_list_and_get_accept_include);
+
+async fn include_is_checked_at_its_place_in_the_contract_order(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+    seed_sections(&server).await;
+
+    // Before the store read.
+    let reply = server.get_in(scope, "/api/tasks/nope?include=owner").await;
+    reply.include_error();
+    // A valid include does not shield a missing task.
+    server.get_in(scope, "/api/tasks/nope?include=parent").await.error(StatusCode::NOT_FOUND, "task_not_found");
+
+    // Before `page`, in canonical order and not in request order.
+    server.get_in(scope, "/api/tasks?include=owner&page[limit]=0").await.include_error();
+    server.get_in(scope, "/api/tasks?page[limit]=0&include=owner").await.include_error();
+    server.get_in(scope, "/api/tasks?page[offset]=x&include=owner").await.include_error();
+    // A valid include leaves the page error to speak.
+    let reply = server.get_in(scope, "/api/tasks?include=parent&page[limit]=0").await;
+    let error = reply.error(StatusCode::BAD_REQUEST, "invalid_query_parameter");
+    assert_eq!(error["source"], json!({ "parameter": "page[limit]" }));
+
+    // After `sort`.
+    let reply = server.get_in(scope, "/api/tasks?include=owner&sort=title").await;
+    let error = reply.error(StatusCode::BAD_REQUEST, "invalid_sort_field");
+    assert_eq!(error["source"], json!({ "parameter": "sort" }));
+
+    // A name the route does not accept comes before every accepted one.
+    let reply = server.get_in(scope, "/api/tasks?x=1&include=owner").await;
+    let error = reply.error(StatusCode::BAD_REQUEST, "invalid_query_parameter");
+    assert_eq!(error["source"], json!({ "parameter": "x" }));
+    let reply = server.get_in(scope, "/api/tasks?include=owner&x=1").await;
+    let error = reply.error(StatusCode::BAD_REQUEST, "invalid_query_parameter");
+    assert_eq!(error["source"], json!({ "parameter": "x" }));
+
+    // After a filter, struct member, bare filter or missing required filter.
+    for (uri, parameter) in [
+        ("/api/sections?filter[colour]=red&filter[parent_id]=root&include=owner", "filter[colour]"),
+        ("/api/sections?include=owner&filter[parent_id]=root&filter[min_children]=many", "filter[min_children]"),
+        ("/api/sections?include=owner", "filter[parent_id]"),
+        ("/api/tags?include=owner&filter[min_title_len]=-1", "filter[min_title_len]"),
+    ] {
+        let reply = server.get_in(scope, uri).await;
+        let error = reply.error(StatusCode::BAD_REQUEST, "invalid_query_parameter");
+        assert_eq!(error["source"], json!({ "parameter": parameter }), "{uri}: {}", reply.raw);
+    }
+
+    // `Accept` is checked first of all.
+    let reply =
+        server.raw_in(scope, "GET", "/api/tasks?include=owner", &[(header::ACCEPT, "application/json")], "").await;
+    let error = reply.error(StatusCode::NOT_ACCEPTABLE, "not_acceptable");
+    assert_eq!(error["source"], json!({ "header": "Accept" }));
+}
+in_both_scopes!(include_is_checked_at_its_place_in_the_contract_order);
+
+async fn a_head_on_a_list_with_include_answers_200(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+
+    let reply =
+        server.raw_in(scope, "HEAD", "/api/tasks?include=parent,tags", &[(header::ACCEPT, MEDIA_TYPE)], "").await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.headers[header::CONTENT_TYPE], MEDIA_TYPE);
+    assert_eq!(reply.raw, "");
+    let reply = server.raw_in(scope, "HEAD", "/api/tasks?include=owner", &[(header::ACCEPT, MEDIA_TYPE)], "").await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+in_both_scopes!(a_head_on_a_list_with_include_answers_200);
+
+/// A scoped router writes the prefix into every included resource's links,
+/// the relationship links of a task and the tag's own.
+#[tokio::test]
+async fn scoped_included_resources_carry_the_route_prefix() {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+
+    let reply = server.get_scoped("/api/projects/pilot/tasks/beta?include=tags,parent").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(reply.body["links"]["self"], "/api/projects/pilot/tasks/beta?include=tags,parent");
+    let included = reply.body["included"].as_array().unwrap();
+    assert_eq!(included[0]["links"]["self"], "/api/projects/pilot/tags/b");
+    assert_eq!(included[2]["links"]["self"], "/api/projects/pilot/tasks/alpha");
+    assert_eq!(
+        included[2]["relationships"]["subtasks"]["links"]["related"],
+        "/api/projects/pilot/tasks/alpha/subtasks"
+    );
+    assert!(!reply.raw.contains("\"/api/tags") && !reply.raw.contains("\"/api/tasks"), "{}", reply.raw);
 }
 
 fn project_path() -> String {

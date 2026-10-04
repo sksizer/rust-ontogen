@@ -11,7 +11,9 @@
 //! `filter[…]` values are read here, into the list's `*Query` struct
 //! ([`QueryParams::filter`]) and its bare filter parameters
 //! ([`QueryParams::filter_member`]); what a filter means is the handler's
-//! business. The semantics of `sort` and `include` are not decided here.
+//! business. `include` is checked against the relationships the handler
+//! names ([`QueryParams::include_paths`]). The semantics of `sort` are not
+//! decided here.
 
 mod form;
 
@@ -21,6 +23,7 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     error::{ErrorCode, ErrorObject},
+    include,
     links::CanonicalQuery,
 };
 
@@ -238,13 +241,17 @@ impl QueryParams {
         member_value(self.filter.get(name), &parameter)?.ok_or_else(|| required(&parameter))
     }
 
-    /// Every `filter[…]` member with its value as the request gave it
-    /// (decoded), for the links to repeat (§4.3). Fails on the first
+    /// The query the links repeat (§4.3): every `filter[…]` member with its
+    /// value as the request gave it (decoded), and `include` as
+    /// [`include_paths`](Self::include_paths) read it. Fails on the first
     /// repeated member in ascending byte order of name.
-    pub fn link_query(&self) -> Result<CanonicalQuery, ErrorObject> {
+    pub fn link_query(&self, include: Option<&[&str]>) -> Result<CanonicalQuery, ErrorObject> {
         let mut query = CanonicalQuery::new();
         for (member, value) in self.filters()? {
             query.set_filter(member, value);
+        }
+        if let Some(paths) = include {
+            query.set_include(paths.iter().copied());
         }
         Ok(query)
     }
@@ -257,6 +264,25 @@ impl QueryParams {
     /// The raw `include` value. Fails when `include` is repeated.
     pub fn include(&self) -> Result<Option<&str>, ErrorObject> {
         single(self.include.as_ref(), "include")
+    }
+
+    /// The relationships `include` names (§7.5), in request order and each
+    /// once, or `None` when the request has no `include`. `include=` names
+    /// none, which still asks for an empty `included`.
+    ///
+    /// `includable` are the relationships of `type_name` the route can
+    /// include and `excluded` its others, which the error detail tells
+    /// apart from names that are no relationship. A repeated `include` is
+    /// `400 invalid_query_parameter`; an item that is empty, dotted, or not
+    /// in `includable` is `400 invalid_include_path`, with
+    /// `source.parameter` `include`, the first such item in request order.
+    pub fn include_paths<'s>(
+        &self,
+        type_name: &str,
+        includable: &[&'s str],
+        excluded: &[&str],
+    ) -> Result<Option<Vec<&'s str>>, ErrorObject> {
+        self.include()?.map(|value| include::parse_paths(value, type_name, includable, excluded)).transpose()
     }
 
     /// `page[offset]`: one or more ASCII digits, leading zeros allowed, at
@@ -582,6 +608,37 @@ mod tests {
         assert_eq!(q.include().unwrap(), Some(""));
         let q = QueryParams::parse(Some("sort=a=b"), &LIST).unwrap();
         assert_eq!(q.sort().unwrap(), Some("a=b"));
+    }
+
+    #[test]
+    fn include_paths_read_the_value_against_the_routes_relationships() {
+        const TASK: &[&str] = &["epic", "tags"];
+        let paths = |raw: &str| QueryParams::parse(Some(raw), &LIST).unwrap().include_paths("tasks", TASK, &["labels"]);
+        assert_eq!(paths("").unwrap(), None);
+        assert_eq!(paths("include=").unwrap(), Some(vec![]));
+        assert_eq!(paths("include").unwrap(), Some(vec![]));
+        assert_eq!(paths("include=tags,epic,tags").unwrap(), Some(vec!["tags", "epic"]));
+        let err = paths("include=labels").unwrap_err();
+        assert_eq!(
+            (err.code(), err.source()),
+            ("invalid_include_path", Some(&crate::ErrorSource::Parameter("include".to_owned())))
+        );
+        // A repeat is a malformed parameter, whatever the values.
+        let err = paths("include=epic&include=epic").unwrap_err();
+        assert_eq!(err.code(), "invalid_query_parameter");
+    }
+
+    #[test]
+    fn the_link_query_carries_include_as_read() {
+        let q = QueryParams::parse(Some("include=tags,epic,tags&filter[status]=a"), &LIST).unwrap();
+        let paths = q.include_paths("tasks", &["epic", "tags"], &[]).unwrap();
+        let mut link_query = q.link_query(paths.as_deref()).unwrap();
+        assert_eq!(
+            link_query.set_page(0, 20).href("/api/tasks"),
+            "/api/tasks?filter%5Bstatus%5D=a&include=tags,epic&page%5Boffset%5D=0&page%5Blimit%5D=20"
+        );
+        assert_eq!(q.link_query(Some(&[])).unwrap().href("/api/tasks/x"), "/api/tasks/x?filter%5Bstatus%5D=a&include=");
+        assert_eq!(q.link_query(None).unwrap().href("/api/tasks"), "/api/tasks?filter%5Bstatus%5D=a");
     }
 
     #[test]
@@ -985,13 +1042,13 @@ mod tests {
         #[test]
         fn link_query_carries_every_member_as_sent() {
             let q = parse("filter[status]=closed/done&filter[epic_id]=markdown-backend", &TASKS);
-            let mut link_query = q.link_query().unwrap();
+            let mut link_query = q.link_query(None).unwrap();
             assert_eq!(
                 link_query.set_page(0, 20).href("/api/tasks"),
                 "/api/tasks?filter%5Bepic_id%5D=markdown-backend&filter%5Bstatus%5D=closed%2Fdone\
                  &page%5Boffset%5D=0&page%5Blimit%5D=20"
             );
-            let links = pagination_links("/api/tasks", &q.link_query().unwrap(), 0, 20, 1);
+            let links = pagination_links("/api/tasks", &q.link_query(None).unwrap(), 0, 20, 1);
             let expected = "/api/tasks?filter%5Bepic_id%5D=markdown-backend&filter%5Bstatus%5D=closed%2Fdone\
                             &page%5Boffset%5D=0&page%5Blimit%5D=20";
             assert_eq!(links.self_link(), expected);
@@ -999,14 +1056,14 @@ mod tests {
             assert_eq!((pagination.first.as_str(), pagination.last.as_str()), (expected, expected));
             // Bare members too, values decoded as the request gave them.
             let q = parse("filter[skill_id]=a+b&filter%5Bstatus%5D=", &TASKS);
-            assert_eq!(q.link_query().unwrap().query_string(), "filter%5Bskill_id%5D=a%20b&filter%5Bstatus%5D=");
-            assert_eq!(parse("", &TASKS).link_query().unwrap().href("/api/tasks"), "/api/tasks");
+            assert_eq!(q.link_query(None).unwrap().query_string(), "filter%5Bskill_id%5D=a%20b&filter%5Bstatus%5D=");
+            assert_eq!(parse("", &TASKS).link_query(None).unwrap().href("/api/tasks"), "/api/tasks");
         }
 
         #[test]
         fn link_query_fails_on_the_first_repeat_in_byte_order() {
             let q = parse("filter[status]=a&filter[status]=b&filter[epic_id]=1&filter[epic_id]=2", &TASKS);
-            assert_eq!(parameter(&q.link_query().unwrap_err()), "filter[epic_id]");
+            assert_eq!(parameter(&q.link_query(None).unwrap_err()), "filter[epic_id]");
         }
     }
 

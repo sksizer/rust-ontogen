@@ -13,11 +13,11 @@ use axum::{
     routing::get,
 };
 use ontogen_jsonapi::{
-    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, QueryParams, QuerySpec, Relationship,
-    ResourceIdentifier, ResourceObject,
+    AnyResource, Document, ErrorCode, ErrorObject, Included, Linkage, Links, LookupKey, QueryParams, QuerySpec,
+    Relationship, ResourceIdentifier, ResourceObject,
     error::{method_not_allowed, relationship_not_found},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
-    links::encode_path_segment,
+    links::{CanonicalQuery, encode_path_segment},
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
 };
@@ -93,19 +93,6 @@ fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> 
         None => Ok(()),
         Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
             .with_parameter("sort")),
-    }
-}
-
-/// No route includes related resources, so every `include` names a path the
-/// server cannot include.
-fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
-    match query.include()? {
-        None => Ok(()),
-        Some(_) => Err(ErrorObject::new(
-            ErrorCode::InvalidIncludePath,
-            format!("`{type_name}` has no relationship that can be included"),
-        )
-        .with_parameter("include")),
     }
 }
 
@@ -262,6 +249,28 @@ async fn ontogen_note_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<()
     Ok(())
 }
 
+/// The resources `paths` include for `entities`, path by path and each in
+/// linkage order: each once, and none of `entities` among them. `paths` are
+/// those `include_paths` admitted, so no other path occurs.
+async fn ontogen_note_included(
+    state: &AppState,
+    entities: &[Note],
+    paths: &[&str],
+) -> Result<Vec<AnyResource>, ErrorObject> {
+    let mut included = Included::new("notes", entities.iter().map(|entity| entity.id.as_str()));
+    for path in paths {
+        if *path == "links" {
+            let ids =
+                included.new_ids("notes", entities.iter().flat_map(|entity| entity.links.iter().map(String::as_str)));
+            let collection = "/api/notes";
+            for related in ontogen_note_fetch(state, &ids).await? {
+                included.push(note_as_resource(&related, collection))?;
+            }
+        }
+    }
+    Ok(included.finish())
+}
+
 // ── Note Handlers ──
 
 async fn note_list(
@@ -270,12 +279,17 @@ async fn note_list(
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "notes")?;
-    refuse_include(&query, "notes")?;
+    let include = query.include_paths("notes", &["links"], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let items = note::list(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/notes";
     let data: Vec<_> = items.iter().map(|entity| note_as_resource(entity, collection)).collect();
-    Ok(response::ok(&Document::new(data, Links::new(collection))))
+    let mut document = Document::new(data, Links::new(link_query.href(collection)));
+    if let Some(paths) = &include {
+        document = document.with_included(ontogen_note_included(&ontogen_state, &items, paths).await?);
+    }
+    Ok(response::ok(&document))
 }
 
 async fn note_get_by_id(
@@ -284,13 +298,17 @@ async fn note_get_by_id(
     Path(id): Path<LookupKey>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "notes")?;
+    let include = query.include_paths("notes", &["links"], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let entity = note::get_by_id(&ontogen_store, note_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = "/api/notes";
-    let resource = note_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    let mut document = Document::resource(note_as_resource(&entity, collection), &link_query);
+    if let Some(paths) = &include {
+        document =
+            document.with_included(ontogen_note_included(&ontogen_state, std::slice::from_ref(&entity), paths).await?);
+    }
+    Ok(response::ok(&document))
 }
 
 async fn note_create(
@@ -314,10 +332,9 @@ async fn note_create(
         }
         e => ontogen_app_error(e),
     })?;
-    let resource = note_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
+    let document = Document::resource(note_as_resource(&entity, collection), &CanonicalQuery::new());
+    let location = document.data().and_then(ResourceObject::links).map(Links::self_link);
+    Ok(response::created(location, &document))
 }
 
 async fn note_update(
@@ -339,9 +356,7 @@ async fn note_update(
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     note_check_linked(&ontogen_state, &linked).await?;
     let entity = note::update(&ontogen_store, note_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = note_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    Ok(response::ok(&Document::resource(note_as_resource(&entity, collection), &CanonicalQuery::new())))
 }
 
 async fn note_delete(

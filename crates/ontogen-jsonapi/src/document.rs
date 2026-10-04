@@ -7,6 +7,8 @@
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::value::RawValue;
 
+use crate::links::CanonicalQuery;
+
 /// The top-level `jsonapi` member, always `{"version":"1.1"}` (§4.1).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JsonApiObject;
@@ -51,8 +53,7 @@ pub struct Document<D, M = Absent> {
 }
 
 impl<D> Document<D, Absent> {
-    /// A document with primary data. Every such document has top-level
-    /// links (§4.1).
+    /// A document with primary data and its top-level links (§4.1).
     pub fn new(data: D, links: Links) -> Self {
         Document { jsonapi: JsonApiObject, links: Some(links), meta: None, data: Some(data), included: None }
     }
@@ -66,6 +67,18 @@ impl<D> Document<D, Absent> {
             data: self.data,
             included: self.included,
         }
+    }
+}
+
+impl<A> Document<ResourceObject<A>, Absent> {
+    /// The document of one resource (§8): its top-level `self` is the
+    /// resource's own `links.self` followed by `query` (§4.3), as a `GET`
+    /// with `include` writes it. A resource with no links, of a type whose
+    /// module serves no `get_by_id` (§5.2), has no URL to repeat, so the
+    /// document has no top-level links either (§4.1).
+    pub fn resource(resource: ResourceObject<A>, query: &CanonicalQuery) -> Self {
+        let links = resource.links().map(|links| Links::new(query.href(links.self_link())));
+        Document { jsonapi: JsonApiObject, links, meta: None, data: Some(resource), included: None }
     }
 }
 
@@ -85,7 +98,7 @@ impl<D, M> Document<D, M> {
         self
     }
 
-    /// The top-level links, when the document has primary data.
+    /// The top-level links.
     pub fn links(&self) -> Option<&Links> {
         self.links.as_ref()
     }
@@ -282,7 +295,8 @@ pub struct ResourceObject<A> {
     attributes: A,
     #[serde(skip_serializing_if = "Relationships::is_empty")]
     relationships: Relationships,
-    links: Links,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    links: Option<Links>,
 }
 
 /// A resource object whose attributes are already serialized, so resources
@@ -298,12 +312,21 @@ impl<A> ResourceObject<A> {
         attributes: A,
         self_link: impl Into<String>,
     ) -> Self {
+        let mut resource = Self::without_links(type_name, id, attributes);
+        resource.links = Some(Links::new(self_link));
+        resource
+    }
+
+    /// A resource with no relationships and no `links` member: one of a
+    /// type whose module serves no `get_by_id`, since a server must serve
+    /// every link it emits (§5.2).
+    pub fn without_links(type_name: impl Into<String>, id: impl Into<String>, attributes: A) -> Self {
         ResourceObject {
             type_name: type_name.into(),
             id: id.into(),
             attributes,
             relationships: Relationships::default(),
-            links: Links::new(self_link),
+            links: None,
         }
     }
 
@@ -335,9 +358,9 @@ impl<A> ResourceObject<A> {
         self.relationships.0.iter().map(|(name, rel)| (name.as_str(), rel))
     }
 
-    /// The resource's links.
-    pub fn links(&self) -> &Links {
-        &self.links
+    /// The resource's links, `None` when it has none.
+    pub fn links(&self) -> Option<&Links> {
+        self.links.as_ref()
     }
 
     /// The identifier of this resource.
@@ -549,6 +572,50 @@ mod tests {
             r#"{{"jsonapi":{{"version":"1.1"}},"links":{{"self":"/api/tasks/ship-the-emitter"}},"data":{TASK_JSON}}}"#
         );
         assert_eq!(serde_json::to_string(&doc).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_resource_without_links_omits_the_member() {
+        let resource = ResourceObject::without_links(
+            "epics",
+            "markdown-backend",
+            EpicAttributes { title: "Markdown backend", status: "in-progress", body: "" },
+        )
+        .with_relationship("owner", Relationship::from_data(Linkage::ToOne(None)));
+        assert_eq!(resource.links(), None);
+        assert_eq!(
+            serde_json::to_string(&resource).unwrap(),
+            concat!(
+                r#"{"type":"epics","id":"markdown-backend","#,
+                r#""attributes":{"title":"Markdown backend","status":"in-progress","body":""},"#,
+                r#""relationships":{"owner":{"data":null}}}"#,
+            )
+        );
+    }
+
+    #[test]
+    fn a_resource_document_repeats_the_resource_link_with_the_query() {
+        let doc = Document::resource(task(), &CanonicalQuery::new());
+        let expected = format!(
+            r#"{{"jsonapi":{{"version":"1.1"}},"links":{{"self":"/api/tasks/ship-the-emitter"}},"data":{TASK_JSON}}}"#
+        );
+        assert_eq!(serde_json::to_string(&doc).unwrap(), expected);
+        let mut query = CanonicalQuery::new();
+        query.set_include(["epic"]);
+        let doc = Document::resource(task(), &query);
+        assert_eq!(doc.links().map(Links::self_link), Some("/api/tasks/ship-the-emitter?include=epic"));
+        assert_eq!(doc.data().and_then(|r| r.links()).map(Links::self_link), Some("/api/tasks/ship-the-emitter"));
+    }
+
+    #[test]
+    fn a_resource_without_links_has_a_document_without_links() {
+        let resource =
+            ResourceObject::without_links("tags", "codegen", EpicAttributes { title: "", status: "", body: "" });
+        let doc = Document::resource(resource, &CanonicalQuery::new());
+        assert_eq!(
+            serde_json::to_string(&doc).unwrap(),
+            r#"{"jsonapi":{"version":"1.1"},"data":{"type":"tags","id":"codegen","attributes":{"title":"","status":"","body":""}}}"#
+        );
     }
 
     #[test]
