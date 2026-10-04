@@ -99,3 +99,19 @@ jobs:
       - run: "cargo ${{ matrix.cmd }} --locked --manifest-path ${{ matrix.manifest }}"
       - name: "Committed generator output is current"
         run: ".github/scripts/check-generated-drift.sh ${{ matrix.dir }}"
+      # A third-party JSON:API client (kitsu) drives tasks-tracker through
+      # list, get with include, create, patch, relationship endpoints and
+      # delete: the epic's evidence that the wire is plain JSON:API rather than
+      # something only the generated clients can read. After the drift guard,
+      # so the runner's own `cargo build` is a no-op and it serves exactly the
+      # checked binary. It serves a temp copy of the vault, so the tree stays
+      # clean either way.
+      - uses: "actions/setup-node@v4"
+        if: "${{ matrix.name == 'tasks-tracker' }}"
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "examples/tasks-tracker/conformance/package-lock.json"
+      - name: "A third-party JSON:API client drives the server"
+        if: "${{ matrix.name == 'tasks-tracker' }}"
+        run: "examples/tasks-tracker/conformance/run.sh --locked"
