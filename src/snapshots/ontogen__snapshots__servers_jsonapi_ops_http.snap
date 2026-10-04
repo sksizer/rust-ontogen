@@ -400,9 +400,9 @@ fn ontogen_task_frame_data(event: Event, entity: &Task) -> Result<Event, axum::E
 
 // ── Agent Handlers ──
 
-struct AgentListFilterParams;
+struct OntogenAgentListFilterParams;
 
-impl RouteQuery for AgentListFilterParams {
+impl RouteQuery for OntogenAgentListFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &["skill_id"],
         filter_fields: Some(filter_fields::<AgentQuery>),
@@ -414,7 +414,7 @@ impl RouteQuery for AgentListFilterParams {
 async fn agent_list(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    ontogen_query: Query<AgentListFilterParams>,
+    ontogen_query: Query<OntogenAgentListFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: AgentQuery = ontogen_query.filter()?;
     let ontogen_filter_skill_id = ontogen_query.filter_member::<String>("skill_id")?;
@@ -439,9 +439,9 @@ async fn agent_list(
 
 // ── Epic Handlers ──
 
-struct EpicListFilterParams;
+struct OntogenEpicListFilterParams;
 
-impl RouteQuery for EpicListFilterParams {
+impl RouteQuery for OntogenEpicListFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &["owner", "title"],
         filter_fields: Some(filter_fields::<ListEpicsQuery>),
@@ -455,7 +455,7 @@ impl RouteQuery for EpicListFilterParams {
 async fn epic_list(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    query: Query<EpicListFilterParams>,
+    query: Query<OntogenEpicListFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: ListEpicsQuery = query.filter()?;
     let ontogen_filter_owner = query.required_filter_member::<String>("owner")?;
@@ -864,9 +864,9 @@ async fn task_remove_tag(
 
 // ── Workout Handlers ──
 
-struct WorkoutGetSummaryOpArgs;
+struct OntogenWorkoutGetSummaryOpArgs;
 
-impl RouteQuery for WorkoutGetSummaryOpArgs {
+impl RouteQuery for OntogenWorkoutGetSummaryOpArgs {
     const SPEC: QuerySpec = QuerySpec { op_args: &["verbose", "label"], ..QuerySpec::NONE };
 }
 
@@ -874,7 +874,7 @@ async fn workout_get_summary(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<String>,
-    ontogen_query: Query<WorkoutGetSummaryOpArgs>,
+    ontogen_query: Query<OntogenWorkoutGetSummaryOpArgs>,
 ) -> Result<Response, ErrorObject> {
     let label = ontogen_query.op_arg::<String>("label")?;
     let verbose = ontogen_query.op_arg::<bool>("verbose")?;

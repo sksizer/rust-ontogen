@@ -458,9 +458,9 @@ async fn log_lines_sse(
 
 // ── Project-Scoped Handlers ──
 
-struct AgentListScopedFilterParams;
+struct OntogenAgentListScopedFilterParams;
 
-impl RouteQuery for AgentListScopedFilterParams {
+impl RouteQuery for OntogenAgentListScopedFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &["skill_id"],
         filter_fields: Some(filter_fields::<AgentQuery>),
@@ -473,7 +473,7 @@ async fn agent_list_scoped(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(ontogen_scope): Path<uuid::Uuid>,
-    ontogen_query: Query<AgentListScopedFilterParams>,
+    ontogen_query: Query<OntogenAgentListScopedFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: AgentQuery = ontogen_query.filter()?;
     let ontogen_filter_skill_id = ontogen_query.filter_member::<String>("skill_id")?;
@@ -496,9 +496,9 @@ async fn agent_list_scoped(
     Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
-struct EpicListScopedFilterParams;
+struct OntogenEpicListScopedFilterParams;
 
-impl RouteQuery for EpicListScopedFilterParams {
+impl RouteQuery for OntogenEpicListScopedFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &["owner", "title"],
         filter_fields: Some(filter_fields::<ListEpicsQuery>),
@@ -513,7 +513,7 @@ async fn epic_list_scoped(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(ontogen_scope): Path<uuid::Uuid>,
-    query: Query<EpicListScopedFilterParams>,
+    query: Query<OntogenEpicListScopedFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: ListEpicsQuery = query.filter()?;
     let ontogen_filter_owner = query.required_filter_member::<String>("owner")?;
@@ -934,9 +934,9 @@ async fn task_remove_tag_scoped(
     Ok(response::no_content())
 }
 
-struct WorkoutGetSummaryOpArgs;
+struct OntogenWorkoutGetSummaryOpArgs;
 
-impl RouteQuery for WorkoutGetSummaryOpArgs {
+impl RouteQuery for OntogenWorkoutGetSummaryOpArgs {
     const SPEC: QuerySpec = QuerySpec { op_args: &["verbose", "label"], ..QuerySpec::NONE };
 }
 
@@ -944,7 +944,7 @@ async fn workout_get_summary_scoped(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path((ontogen_scope, id)): Path<(uuid::Uuid, String)>,
-    ontogen_query: Query<WorkoutGetSummaryOpArgs>,
+    ontogen_query: Query<OntogenWorkoutGetSummaryOpArgs>,
 ) -> Result<Response, ErrorObject> {
     let label = ontogen_query.op_arg::<String>("label")?;
     let verbose = ontogen_query.op_arg::<bool>("verbose")?;

@@ -526,9 +526,9 @@ fn ontogen_task_frame_data(event: Event, entity: &Task) -> Result<Event, axum::E
 
 // ── Bookmark Handlers ──
 
-struct BookmarkListFilterParams;
+struct OntogenBookmarkListFilterParams;
 
-impl RouteQuery for BookmarkListFilterParams {
+impl RouteQuery for OntogenBookmarkListFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &[],
         filter_fields: Some(filter_fields::<BookmarkQuery>),
@@ -540,7 +540,7 @@ impl RouteQuery for BookmarkListFilterParams {
 async fn bookmark_list(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    ontogen_query: Query<BookmarkListFilterParams>,
+    ontogen_query: Query<OntogenBookmarkListFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: BookmarkQuery = ontogen_query.filter()?;
     let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
@@ -785,9 +785,9 @@ async fn section_delete(
     Ok(response::no_content())
 }
 
-struct SectionListFilterParams;
+struct OntogenSectionListFilterParams;
 
-impl RouteQuery for SectionListFilterParams {
+impl RouteQuery for OntogenSectionListFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &["parent_id"],
         filter_fields: Some(filter_fields::<ListSectionsQuery>),
@@ -801,7 +801,7 @@ impl RouteQuery for SectionListFilterParams {
 async fn section_list(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    query: Query<SectionListFilterParams>,
+    query: Query<OntogenSectionListFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: ListSectionsQuery = query.filter()?;
     let ontogen_filter_parent_id = query.required_filter_member::<String>("parent_id")?;
@@ -904,9 +904,9 @@ async fn tag_delete(
     Ok(response::no_content())
 }
 
-struct TagListFilterParams;
+struct OntogenTagListFilterParams;
 
-impl RouteQuery for TagListFilterParams {
+impl RouteQuery for OntogenTagListFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &["min_title_len", "title_prefix"],
         sort: true,
@@ -919,7 +919,7 @@ impl RouteQuery for TagListFilterParams {
 async fn tag_list(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    query: Query<TagListFilterParams>,
+    query: Query<OntogenTagListFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter_min_title_len = query.filter_member::<u32>("min_title_len")?;
     let ontogen_filter_title_prefix = query.filter_member::<String>("title_prefix")?;
@@ -1043,9 +1043,9 @@ async fn task_delete(
     Ok(response::no_content())
 }
 
-struct TaskGetSummaryOpArgs;
+struct OntogenTaskGetSummaryOpArgs;
 
-impl RouteQuery for TaskGetSummaryOpArgs {
+impl RouteQuery for OntogenTaskGetSummaryOpArgs {
     const SPEC: QuerySpec = QuerySpec { op_args: &["verbose", "limit"], ..QuerySpec::NONE };
 }
 
@@ -1053,7 +1053,7 @@ async fn task_get_summary(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(status): Path<String>,
-    ontogen_query: Query<TaskGetSummaryOpArgs>,
+    ontogen_query: Query<OntogenTaskGetSummaryOpArgs>,
 ) -> Result<Response, ErrorObject> {
     let limit = ontogen_query.op_arg::<u32>("limit")?;
     let verbose = ontogen_query.op_arg::<bool>("verbose")?;
@@ -1176,16 +1176,16 @@ async fn task_remove_tag(
 
 // ── Outline Handlers ──
 
-struct OutlineListFilterParams;
+struct OntogenOutlineListFilterParams;
 
-impl RouteQuery for OutlineListFilterParams {
+impl RouteQuery for OntogenOutlineListFilterParams {
     const SPEC: QuerySpec = QuerySpec { filter: &["title_contains"], op_args: &["limit", "offset"], ..QuerySpec::NONE };
 }
 
 async fn outline_list(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    ontogen_query: Query<OutlineListFilterParams>,
+    ontogen_query: Query<OntogenOutlineListFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter_title_contains = ontogen_query.filter_member::<String>("title_contains")?;
     let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);

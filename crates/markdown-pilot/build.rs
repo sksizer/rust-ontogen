@@ -6,12 +6,13 @@
 use ontogen::ServersConfig;
 use ontogen::servers::{NamingConfig, PaginationConfig, PrefixParam, RoutePrefix, ServerGenerator};
 
-/// The HTTP transport over the API layer: proves in root CI that the emitted
+/// The transports over the API layer: proves in root CI that the emitted
 /// axum handlers compile and the router builds against the axum version in
-/// Cargo.toml (see tests/http_router.rs). `src/api` holds hand-written
+/// Cargo.toml (see tests/http_router.rs), and that the MCP tool registry
+/// compiles and serves each op kind (tests/mcp_tools.rs). `src/api` holds hand-written
 /// modules and the api stage's `generated/`; the scan reads both (and
 /// nothing below `transport/` but its `mod.rs`, which it skips).
-fn servers_config(output: &str, route_prefix: Option<RoutePrefix>) -> ServersConfig {
+fn servers_config(generators: Vec<ServerGenerator>, route_prefix: Option<RoutePrefix>) -> ServersConfig {
     ServersConfig {
         api_dir: "src/api".into(),
         state_type: "AppState".into(),
@@ -19,7 +20,7 @@ fn servers_config(output: &str, route_prefix: Option<RoutePrefix>) -> ServersCon
         types_import_path: "crate::schema".into(),
         state_import: "crate::AppState".into(),
         naming: NamingConfig::default(),
-        generators: vec![ServerGenerator::HttpAxum { output: output.into() }],
+        generators,
         sse_route_overrides: Default::default(),
         route_prefix,
         store_type: Some("Store".into()),
@@ -66,14 +67,22 @@ fn main() {
         .store_id_strategy(ontogen::IdStrategy::SlugFromField("title".into()))
         .api("src/api/generated", "AppState")
         .api_paginated(vec!["note".into(), "section".into(), "tag".into(), "task".into()])
-        .servers(servers_config("src/api/transport/http/generated.rs", None))
+        .servers(servers_config(
+            vec![
+                ServerGenerator::HttpAxum { output: "src/api/transport/http/generated.rs".into() },
+                ServerGenerator::Mcp { output: "src/api/transport/mcp/generated.rs".into() },
+            ],
+            None,
+        ))
         .build()
         .unwrap_or_else(|e| panic!("ontogen pipeline failed: {e}"));
 
     // The same API under a route prefix, generated after the pipeline has
     // written the `generated/` modules it scans. The scoped router is
     // compiled and driven in CI too (tests/http_router.rs), so a scoped
-    // route that drifts from its unscoped twin fails there.
+    // route that drifts from its unscoped twin fails there. MCP is generated
+    // unscoped only: a scoped tool parses its scope argument as a UUID, and
+    // the pilot's one project is a name.
     let prefix = RoutePrefix {
         segments: "projects/:project_id".into(),
         state_accessor: "store_for".into(),
@@ -85,7 +94,10 @@ fn main() {
         &schema.entities,
         None,
         &[],
-        &servers_config("src/api/transport/http_scoped/generated.rs", Some(prefix)),
+        &servers_config(
+            vec![ServerGenerator::HttpAxum { output: "src/api/transport/http_scoped/generated.rs".into() }],
+            Some(prefix),
+        ),
     )
     .unwrap_or_else(|e| panic!("ontogen scoped servers failed: {e}"));
 }

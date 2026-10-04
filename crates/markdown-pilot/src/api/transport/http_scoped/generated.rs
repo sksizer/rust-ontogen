@@ -534,9 +534,9 @@ fn ontogen_task_frame_data(event: Event, entity: &Task) -> Result<Event, axum::E
 
 // ── Bookmark Handlers ──
 
-struct BookmarkListFilterParams;
+struct OntogenBookmarkListFilterParams;
 
-impl RouteQuery for BookmarkListFilterParams {
+impl RouteQuery for OntogenBookmarkListFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &[],
         filter_fields: Some(filter_fields::<BookmarkQuery>),
@@ -548,7 +548,7 @@ impl RouteQuery for BookmarkListFilterParams {
 async fn bookmark_list(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    ontogen_query: Query<BookmarkListFilterParams>,
+    ontogen_query: Query<OntogenBookmarkListFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: BookmarkQuery = ontogen_query.filter()?;
     let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
@@ -824,9 +824,9 @@ async fn section_delete_scoped(
     Ok(response::no_content())
 }
 
-struct SectionListScopedFilterParams;
+struct OntogenSectionListScopedFilterParams;
 
-impl RouteQuery for SectionListScopedFilterParams {
+impl RouteQuery for OntogenSectionListScopedFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &["parent_id"],
         filter_fields: Some(filter_fields::<ListSectionsQuery>),
@@ -841,7 +841,7 @@ async fn section_list_scoped(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(ontogen_scope): Path<String>,
-    query: Query<SectionListScopedFilterParams>,
+    query: Query<OntogenSectionListScopedFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: ListSectionsQuery = query.filter()?;
     let ontogen_filter_parent_id = query.required_filter_member::<String>("parent_id")?;
@@ -944,9 +944,9 @@ async fn tag_delete_scoped(
     Ok(response::no_content())
 }
 
-struct TagListScopedFilterParams;
+struct OntogenTagListScopedFilterParams;
 
-impl RouteQuery for TagListScopedFilterParams {
+impl RouteQuery for OntogenTagListScopedFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &["min_title_len", "title_prefix"],
         sort: true,
@@ -960,7 +960,7 @@ async fn tag_list_scoped(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(ontogen_scope): Path<String>,
-    query: Query<TagListScopedFilterParams>,
+    query: Query<OntogenTagListScopedFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter_min_title_len = query.filter_member::<u32>("min_title_len")?;
     let ontogen_filter_title_prefix = query.filter_member::<String>("title_prefix")?;
@@ -1085,9 +1085,9 @@ async fn task_delete_scoped(
     Ok(response::no_content())
 }
 
-struct TaskGetSummaryOpArgs;
+struct OntogenTaskGetSummaryOpArgs;
 
-impl RouteQuery for TaskGetSummaryOpArgs {
+impl RouteQuery for OntogenTaskGetSummaryOpArgs {
     const SPEC: QuerySpec = QuerySpec { op_args: &["verbose", "limit"], ..QuerySpec::NONE };
 }
 
@@ -1095,7 +1095,7 @@ async fn task_get_summary_scoped(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path((ontogen_scope, status)): Path<(String, String)>,
-    ontogen_query: Query<TaskGetSummaryOpArgs>,
+    ontogen_query: Query<OntogenTaskGetSummaryOpArgs>,
 ) -> Result<Response, ErrorObject> {
     let limit = ontogen_query.op_arg::<u32>("limit")?;
     let verbose = ontogen_query.op_arg::<bool>("verbose")?;
@@ -1233,9 +1233,9 @@ async fn task_remove_tag_scoped(
     Ok(response::no_content())
 }
 
-struct OutlineListScopedFilterParams;
+struct OntogenOutlineListScopedFilterParams;
 
-impl RouteQuery for OutlineListScopedFilterParams {
+impl RouteQuery for OntogenOutlineListScopedFilterParams {
     const SPEC: QuerySpec = QuerySpec { filter: &["title_contains"], op_args: &["limit", "offset"], ..QuerySpec::NONE };
 }
 
@@ -1243,7 +1243,7 @@ async fn outline_list_scoped(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(ontogen_scope): Path<String>,
-    ontogen_query: Query<OutlineListScopedFilterParams>,
+    ontogen_query: Query<OntogenOutlineListScopedFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter_title_contains = ontogen_query.filter_member::<String>("title_contains")?;
     let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);

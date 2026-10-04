@@ -10,7 +10,8 @@
 //! hand-written modules in `src/api` give the generated HTTP router one of
 //! every other route kind: custom ops, junction ops, CRUD in a module with
 //! no entity, filtered lists, and event streams. The same API is generated
-//! a second time under a route prefix (`api::transport::http_scoped`).
+//! a second time under a route prefix (`api::transport::http_scoped`), and
+//! as an MCP tool registry (`api::transport::mcp`).
 
 pub mod api;
 pub mod persistence;
