@@ -962,7 +962,7 @@ pub struct Task {
 
 ### Float NaN is refused on write
 
-A store `create_*` or `update_*` that sets a float field (`f32` or `f64`, optional or not) to NaN is an error on both backends. It fails after the `before_*` hook and before anything is stored, and it answers `500` over HTTP. Before, a hook or a direct caller could store a NaN. No transport can send one, since JSON cannot carry it, and the order has no place for it. An update checks only the fields it sets.
+A store `create_*` or `update_*` that sets a float field (`f32` or `f64`, optional or not) to NaN is an error on both backends. It fails after the `before_*` hook and before anything is stored, and it answers `500` over HTTP. Before, a hook or a direct caller could store a NaN. No transport can send one, since JSON cannot carry it, and the order has no place for it. An update checks only the fields it sets. On SeaORM, create also checks `#[ontology(skip)]` float fields, which SeaORM stores; markdown does not store skipped fields and does not check them.
 
 ### HTTP honours `sort`
 
@@ -1008,6 +1008,12 @@ await transport.taskList(undefined, 20, 0, { sort: ['-created', 'title'] });
 ```
 
 `TaskSortKey` (`'id' | '-id' | 'title' | '-title' | …`) and `ListOptions<K>` are exported from each generated client file, beside `PaginatedResult`. Positional callers do not change. The HTTP transport sends `sort=-created,title`, and the IPC transport passes `sort` in the invoke arguments. `toQueryString` now writes an array value as one comma-joined parameter and skips an empty array. Regenerate the TypeScript.
+
+### The clients stage refuses colliding parameter names
+
+A sorted list's TS method takes `options` as its last parameter, so a bare filter on that list that camelCases to `options` (`options`, `options_`) fails the build on every TS client; rename it. A route prefix parameter named `options` is refused on the `Transport` of a sorted list. More generally, a bare filter whose TS name equals `query`, `limit`, `offset`, the route prefix parameter or an earlier filter is refused, where it used to emit a method with a duplicate parameter that `tsc` rejects.
+
+With an `HttpTauriIpcSplit` client, the clients stage applies the IPC wire-key rules itself, even when the build generates only an HTTP server: a bare filter named `sort` on a sorted list, `query` beside a `*Query` struct, `limit` or `offset` on a paginated junction list, `channel` on an event op, or an argument named like the route prefix parameter fails the build instead of generating TypeScript that does not compile. An unsorted list may still take filters named `sort` or `options`.
 
 ## Calling the HTTP API directly
 

@@ -762,3 +762,8 @@ Phase 3c landed with these differences from §1. The decision is unchanged.
    store stage refuses an entity without an `#[ontology(id)]` field with a
    `CodegenError`. Every generated store method already read the id, so
    such an entity never produced a store that compiled.
+10. **SeaORM checks skipped floats on create.** §3 checks "every float
+    field" on create. SeaORM stores an `#[ontology(skip)]` field in a
+    column, so its create checks skipped floats too; markdown does not
+    store skipped fields and does not check them. An update cannot set a
+    skipped field, so only create is affected.
