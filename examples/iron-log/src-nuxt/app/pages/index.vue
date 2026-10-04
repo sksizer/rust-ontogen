@@ -5,7 +5,7 @@
 // Example usage:
 //   import { createIpcTransport } from '~/generated/transport'
 //   const transport = createIpcTransport()
-//   const exercises = await transport.listExercises()
+//   const exercises = await transport.exerciseList()
 </script>
 
 <template>

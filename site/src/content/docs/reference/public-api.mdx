@@ -242,6 +242,7 @@ let api = gen_api(&schema.entities, &ApiConfig {
     state_type: "AppState".to_string(),
     store_type: Some("Store".to_string()),
     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+    paginated: vec![],
 })?;
 ```
 
@@ -260,9 +261,9 @@ pub fn gen_servers(
 
 Generates transport-specific server handlers from the unified API surface:
 
-- **Axum HTTP handlers** -- route functions with `GET`/`POST`/`PATCH`/`DELETE` methods and path extraction. CRUD routes of entity-backed modules are JSON:API 1.1 resources, and every error is a JSON:API `errors` document with a status and `code` taken from your `AppError`. Includes an `entity_routes()` function returning a configured `Router`. The generated server depends on the `ontogen-jsonapi` crate and must be mounted at the router root. See [Server Transports](/guides/server-transports/#httpaxum-generation).
-- **Tauri IPC commands** -- `#[tauri::command]` functions with `State` extraction and `specta` type annotations for TypeScript binding generation.
-- **MCP tool definitions** -- tool name, description (from doc comments), and JSON Schema parameter definitions for the Model Context Protocol.
+- **Axum HTTP handlers** -- route functions with `GET`/`POST`/`PATCH`/`DELETE` methods and path extraction, speaking JSON:API 1.1. CRUD routes of entity-backed modules are resources, with `filter[…]`, `sort`, `include` and `page[…]` on lists and relationship endpoints for relation fields and junction ops; every other op is a custom op that sends and answers meta-only documents (`meta.args`, `meta.result`); and every error is a JSON:API `errors` document with a status and `code` taken from your `AppError`. Includes an `entity_routes()` function returning a configured `Router`. The generated server depends on the `ontogen-jsonapi` crate and must be mounted at the router root. See [Server Transports](/guides/server-transports/#httpaxum-generation).
+- **Tauri IPC commands** -- `#[tauri::command]` functions with `State` extraction and flat arguments and results, plus an `ipc_handler()` for `tauri::Builder::invoke_handler`.
+- **MCP tool definitions** -- tool name, description (from doc comments), and JSON Schema parameter definitions for the Model Context Protocol. Arguments and results are flat JSON.
 
 Each transport reads the same `ApiOutput` and produces handlers appropriate for its protocol. The `OpKind` classification drives HTTP verb selection, route structure, and parameter handling. Client-side TypeScript and admin-registry generation lives in the sibling [`gen_clients`](#gen_clients) entry point.
 
@@ -315,8 +316,8 @@ pub fn gen_clients(
 Sibling of [`gen_servers`](#gen_servers) for the client-side surface. Reads the same `ApiOutput` and emits:
 
 - **TypeScript bindings** -- schema-known entity / DTO aliases plus the `ontogen-ts` long-tail closure, written to every distinct `bindings_path` declared by the configured generators.
-- **TypeScript HTTP-only client** (`HttpTs`) -- one `httpEntity*` function per API operation against `fetch`. CRUD calls use JSON:API and return flat entities; non-2xx responses throw `JsonApiError`.
-- **TypeScript HTTP+IPC unified transport** (`HttpTauriIpcSplit`) -- a `Transport` interface with `createHttpTransport()` / `createIpcTransport()` implementations.
+- **TypeScript HTTP-only client** (`HttpTs`) -- an exported `httpCommands` object with one method per API operation against `fetch`, named and typed like the `Transport` methods. It speaks the JSON:API wire and returns flat values: entities, arrays, `PaginatedResult<T>` for a paginated list, and a custom op's `meta.result`. Non-2xx responses throw `JsonApiError`.
+- **TypeScript HTTP+IPC unified transport** (`HttpTauriIpcSplit`) -- a `Transport` interface with `createHttpTransport()` / `createIpcTransport()` implementations. The HTTP one flattens JSON:API documents into the same values the IPC one gets from Tauri, so calling code is the same on both.
 - **Admin-UI registry** (`AdminRegistry`) -- per-entity metadata (label, plural, field types, relation hints) for a generic admin layer.
 
 **Parameters:**
@@ -352,9 +353,9 @@ gen_clients(&schema, Some(&api), &[], &ClientsConfig {
     store_type: Some("Store".into()),
     store_import: Some("crate::store::Store".into()),
     pagination: None,
+    label_overrides: Default::default(),
     pool_extra_roots: vec![],
     pool_exclude_paths: vec!["src/persistence/db/entities/generated".into()],
-    // ... other config fields
     extra_surfaces: vec![],
 })?;
 ```

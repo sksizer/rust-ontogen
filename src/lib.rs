@@ -684,7 +684,10 @@ pub struct ServersConfig {
     pub naming: servers::NamingConfig,
     /// Which server transport generators to run (Axum, Tauri IPC, MCP).
     pub generators: Vec<servers::ServerGeneratorConfig>,
-    /// SSE route overrides keyed by entity name; values are full URL paths.
+    /// SSE route overrides keyed by event function name (`graph_updated`);
+    /// each value replaces the `/api/events/{kebab-name}` base path, written
+    /// colon-style, and a required parameter it does not name is appended as
+    /// a path segment.
     pub sse_route_overrides: std::collections::HashMap<String, String>,
     /// Optional route prefix applied to every generated route
     /// (e.g., `/projects/:project_id`).
@@ -761,7 +764,10 @@ pub struct ClientsConfig {
     /// to format in-process with a library of your choice, or
     /// [`TsFormatter::Command`] to shell out to an external formatter.
     pub ts_formatter: TsFormatter,
-    /// SSE route overrides keyed by entity name; values are full URL paths.
+    /// SSE route overrides keyed by event function name (`graph_updated`);
+    /// each value replaces the `/api/events/{kebab-name}` base path, written
+    /// colon-style, and a required parameter it does not name is appended as
+    /// a path segment.
     pub sse_route_overrides: std::collections::HashMap<String, String>,
     /// IPC commands to skip in TypeScript transport generation.
     pub ts_skip_commands: Vec<String>,

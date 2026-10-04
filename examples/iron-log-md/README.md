@@ -6,7 +6,7 @@ matters — the store backend. Workouts live as editable markdown files under
 `data/vault/` instead of SQLite rows.
 
 ```sh
-cargo run
+cargo run              # PORT=39101 cargo run serves on another port
 # in another shell:
 curl -s localhost:3001/api/workouts | jq   # a JSON:API collection
 curl -s -X POST localhost:3001/api/workouts -H 'content-type: application/vnd.api+json' \
@@ -17,6 +17,10 @@ curl -s -X PATCH localhost:3001/api/workouts/w-1 -H 'content-type: application/v
   -d '{"data":{"type":"workouts","id":"w-1","attributes":{"duration_minutes":60}}}'
 cat data/vault/workouts/w-1.md      # …your edits survived the generated update
 ```
+
+The HTTP API speaks JSON:API ([wire contract](../../docs/jsonapi-wire-contract.md));
+[the wire page](../../site/src/content/docs/examples/iron-log-md-wire.mdx)
+shows real requests and responses captured from this server.
 
 ## The byte-identical demo
 

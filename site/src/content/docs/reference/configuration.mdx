@@ -106,6 +106,28 @@ Generated DTOs include `Deserialize`, `JsonSchema`, and `specta::Type` derives f
 
 ---
 
+## `DocsConfig`
+
+Used by `gen_docs()`, or `Pipeline::docs(config)`. Writes a markdown data-model reference and one JSON Schema (draft 2020-12) per entity. The stage reads the parsed schema and feeds nothing downstream.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `markdown_output` | `PathBuf` | File the markdown reference is written to (e.g., `docs/data-model.md`). |
+| `json_schema_dir` | `PathBuf` | Directory that receives one `<entity_snake>.schema.json` per entity plus `export.schema.json`. |
+| `title` | `String` | The `# ` heading of the markdown reference, and the stem of the export bundle's title. |
+| `export_format` | `String` | The `manifest.format` constant in `export.schema.json`: your own name for the export bundle (e.g., `determined-fitness-log`). |
+
+```rust
+DocsConfig {
+    markdown_output: "docs/data-model.md".into(),
+    json_schema_dir: "docs/schema".into(),
+    title: "Iron Log data model".into(),
+    export_format: "iron-log-export".into(),
+}
+```
+
+---
+
 ## `StoreConfig`
 
 Used by [`gen_store()`](/reference/public-api/#gen_store).
@@ -151,6 +173,8 @@ store codegen error: the store stage needs a default id strategy: call Pipeline:
 An entity overrides the default in the schema with `#[ontology(entity, id = "provided" | "uuid" | "slug(<field>)")]` (see [Annotations](/reference/annotations/#id-strategy)). Each entity's create uses its override, else the default.
 
 `SlugFromField(f)` requires `f` to be a plain `String` field on every entity it applies to: every entity without an override for the default, the one entity for a `slug(f)` override. The generator fails otherwise, naming the entity. `Uuid` needs the `uuid` feature of `markdown-store` in a markdown consumer. [Creating records](/guides/store-layer/#creating-records) describes how a create uses the strategy, and the SeaORM dependency on `ontogen-core`.
+
+Over HTTP, a create whose document has no `data.id` gets its id from the strategy, and a client-supplied `data.id` is used under every strategy. A create left with no id (`Provided` with no id from the client or a `before_create` hook, or a slug source that slugifies to nothing) is `400 {entity}_id_required`; a duplicate id is `409 {entity}_already_exists`. See [Server Transports](/guides/server-transports/#httpaxum-generation).
 
 ### `Backend`
 
@@ -204,6 +228,7 @@ Used by [`gen_api()`](/reference/public-api/#gen_api).
 | `state_type` | `String` | The `AppState` type name. The scanner accepts a function when its rendered first-parameter type contains this string as a substring (`&AppState`, `&Arc<AppState>`, `State<'_, Arc<AppState>>` all match). See [accepted signatures](/guides/api-layer/#service-functions-accepted-signatures). |
 | `store_type` | `Option<String>` | The `Store` type name. Functions whose first parameter contains this substring are classified as entity-scoped (they operate on a specific store instance rather than the global state). Pick a distinctive name — `"Store"` will also match `"StoreContext"`, `"StoreManager"`, etc. |
 | `schema_module_path` | `String` | Rust import path for the schema module in generated code. Use [`ontogen::DEFAULT_SCHEMA_MODULE_PATH`](/reference/public-api/#default_schema_module_path) (`"crate::schema"`) for the canonical default. |
+| `paginated` | `Vec<String>` | Modules (snake_case entity names, e.g. `"workout"`) whose generated `list` takes `limit: Option<u64>, offset: Option<u64>` and gets a generated `count` beside it, so a paginated handler asks the store for one page and a total. A surface whose `pagination` is set needs every module it pages listed here; see [`PaginationConfig`](#paginationconfig). `Pipeline` sets it with `.api_paginated(..)`. |
 
 ```rust
 ApiConfig {
@@ -213,8 +238,11 @@ ApiConfig {
     state_type: "AppState".to_string(),
     store_type: Some("Store".to_string()),
     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+    paginated: vec![],
 }
 ```
+
+A hand-written `list` or `count` in a scanned directory replaces the generated one of the same module: the store takes no filter, so a filtered list, and the count that matches it, are written by hand. See [Filtered lists](/cookbook/custom-api-endpoints/#recipe-filtered-lists). Files under `output_dir` are never scanned, so `output_dir` may sit inside a scan directory. Every directory in `scan_dirs` must exist.
 
 ### How scanning works
 
@@ -235,10 +263,12 @@ If a function genuinely doesn't need state — a pure data transformation, a clo
 
 ## `ServersConfig`
 
-Used by [`gen_servers()`](/reference/public-api/#gen_servers). Controls **Rust server transports only** -- Axum, Tauri IPC, MCP. The HTTP transport serves CRUD routes as JSON:API; see [Server Transports](/guides/server-transports/#httpaxum-generation). The parsed schema is the first argument of `gen_servers`, not a config field.
+Used by [`gen_servers()`](/reference/public-api/#gen_servers). Controls **Rust server transports only** -- Axum, Tauri IPC, MCP. The parsed schema is the first argument of `gen_servers`, not a config field.
+
+The Axum server speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/): entities are resource objects, lists take `filter[…]`, `sort`, `include` and (when paginated) `page[offset]`/`page[limit]`, relationships have their own endpoints, custom ops send and answer meta-only documents, and every error is an `errors[]` document. Tauri IPC and MCP keep flat payloads. Besides which modules and functions are served, the fields below that shape the HTTP wire are `naming` (paths and resource types), `route_prefix`, `pagination`, `error_source_dir` (error statuses and codes) and `sse_route_overrides`. See [Server Transports](/guides/server-transports/#httpaxum-generation) and the normative [wire contract](https://github.com/sksizer/rust-ontogen/blob/main/docs/jsonapi-wire-contract.md).
 
 <Aside type="note">
-Client-side TypeScript and admin-registry generation moved out of this struct into its own [`ClientsConfig`](#clientsconfig), paired with [`gen_clients`](/reference/public-api/#gen_clients). If you're carrying a build script that sets `client_generators` or `ts_skip_commands` on `ServersConfig`, those fields now live on `ClientsConfig`. `schema_entities` is gone from both configs: `gen_servers` and `gen_clients` take the parsed schema as their first argument.
+Client-side TypeScript and admin-registry generation is configured by [`ClientsConfig`](#clientsconfig), paired with [`gen_clients`](/reference/public-api/#gen_clients); `ts_skip_commands` and the client generators live there. Neither config carries the schema: `gen_servers` and `gen_clients` take the parsed schema as their first argument.
 </Aside>
 
 | Field | Type | Description |
@@ -254,12 +284,12 @@ Client-side TypeScript and admin-registry generation moved out of this struct in
 | `route_prefix` | `Option<RoutePrefix>` | Optional route prefix for project-scoped routes. |
 | `store_type` | `Option<String>` | Store type for entity-scoped functions. |
 | `store_import` | `Option<String>` | Import path for the Store type. |
-| `pagination` | `Option<PaginationConfig>` | Pagination for list operations. A paginated list takes `page[offset]` and `page[limit]` and answers with `meta` and pagination links. |
+| `pagination` | `Option<PaginationConfig>` | Pagination for the primary surface's list operations. It covers every module on that surface, so each module's `list` must take `limit` and `offset` and have a `count` (see [`ApiConfig::paginated`](#apiconfig)). Over HTTP a paginated resource list takes `page[offset]` and `page[limit]` and answers with `meta` (`total`, `limit`, `offset`) and `first`/`prev`/`next`/`last` links; a list served as a custom op takes `opArg[offset]`/`opArg[limit]` and answers `meta.result` as `{items, total, limit, offset}`. See [`PaginationConfig`](#paginationconfig). |
 | `error_source_dir` | `Option<PathBuf>` | Directory scanned for the consumer's `enum AppError`. Each variant's name decides its HTTP status and `code` (`*NotFound` 404, `*IdRequired` 400, `*AlreadyExists` 409, `*ParentRequired` 403, otherwise 500). `None` means no scan, and every `AppError`-typed site answers `500 internal_error`. The [`Pipeline`](/reference/public-api/#pipeline) builder sets it to its schema directory when it is `None`. |
 | `extra_surfaces` | `Vec<ApiSurface>` | API surfaces scanned in addition to the primary one the fields above describe. Their modules merge into the same router, IPC handler, MCP registry and TypeScript transport. Empty for a single-surface crate. See [`ApiSurface`](#apisurface). |
 
 <Aside type="note">
-The supporting types below (`NamingConfig`, `ServerGenerator`, `ClientGenerator`, `RoutePrefix`, `PrefixParam`, `PaginationConfig`) live in the `ontogen::servers::*` module and are re-exported at the module level. The `ontogen::servers::config::*` and `ontogen::servers::types::*` paths used in earlier docs are now `pub(crate)` -- always import from `ontogen::servers::Foo` (or via `use ontogen::servers::{Foo, Bar};`). `ClientGenerator` lives at `ontogen::clients::ClientGenerator`.
+The supporting types below (`NamingConfig`, `ServerGenerator`, `ClientGenerator`, `RoutePrefix`, `PrefixParam`, `PaginationConfig`) live in the `ontogen::servers::*` module and are re-exported at the module level. The `ontogen::servers::config` and `ontogen::servers::types` modules are `pub(crate)`, so import from `ontogen::servers::Foo` (or via `use ontogen::servers::{Foo, Bar};`). `ClientGenerator` lives at `ontogen::clients::ClientGenerator`.
 </Aside>
 
 ### `NamingConfig`
@@ -268,7 +298,7 @@ Controls how entity names are transformed for URLs, labels, and module names. Li
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `plural_overrides` | `HashMap<String, String>` | Module name to plural form (e.g., `"evidence"` to `"evidence"`). |
+| `plural_overrides` | `HashMap<String, String>` | Module name to plural form (e.g., `"evidence"` to `"evidence"`). The kebab-cased plural is both the HTTP path segment and the JSON:API resource `type` (`workout_set` is `workout-sets`). |
 | `singular_overrides` | `HashMap<String, String>` | Module name to singular form. |
 | `label_overrides` | `HashMap<String, String>` | Module name to human label (e.g., `"work_session"` to `"Work Session"`). |
 | `plural_label_overrides` | `HashMap<String, String>` | Module name to human plural label. |
@@ -317,13 +347,13 @@ pub enum ServerGenerator {
 
 | Variant | Output | Description |
 |---------|--------|-------------|
-| `HttpAxum` | Rust file | Axum route handlers with `entity_routes()` router constructor. |
-| `TauriIpc` | Rust file | `#[tauri::command]` handlers with `State` extraction and `specta` annotations. |
-| `Mcp` | Rust file | MCP tool definitions with JSON Schema parameters. |
+| `HttpAxum` | Rust file | Axum handlers for the JSON:API wire, with an `entity_routes()` router constructor. |
+| `TauriIpc` | Rust file | `#[tauri::command]` handlers with `State` extraction, and an `ipc_handler()` to pass to `tauri::Builder::invoke_handler`. Arguments and results are flat. |
+| `Mcp` | Rust file | MCP tool definitions with JSON Schema parameters. Arguments and results are flat. |
 
 ### `RoutePrefix`
 
-Optional prefix for project-scoped routes (e.g., `/api/projects/{project_id}/nodes`). A scoped route has the shape of its unscoped one under the prefix, relationship routes and junction routes included; see [Route prefix](/guides/server-transports/#route-prefix-for-project-scoping).
+Optional prefix for project-scoped routes (e.g., `/api/projects/{project_id}/nodes`). A scoped route has the shape of its unscoped one under the prefix, relationship routes and junction routes included, and every `links` member and `Location` header it answers carries the prefix; the resource `type` does not. A prefix parameter that does not parse as its `rust_type` is `400 invalid_path_parameter`, and a failing `state_accessor` is `500 internal_error`. See [Route prefix](/guides/server-transports/#route-prefix-for-project-scoping).
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -349,8 +379,10 @@ That asymmetry is deliberate: `axum_path()` normalizes every route string at emi
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `default_limit` | `u32` | Default page size when `page[limit]` is not specified in the request. |
-| `max_limit` | `u32` | Maximum allowed page size. A `page[limit]` above this is clamped to it. |
+| `default_limit` | `u32` | Page size when the request gives no `page[limit]` (HTTP resource list), no `opArg[limit]` (HTTP custom-op list) or no `limit` (IPC, MCP, TypeScript). |
+| `max_limit` | `u32` | Largest page size. A larger requested limit is clamped to it. |
+
+Over HTTP, `page[limit]=0`, a value that is not plain ASCII digits, or another `page[…]` member (`page[number]`, `page[size]`) is `400 invalid_query_parameter`. On a list served as a custom op, `opArg[limit]=0` is allowed and answers an empty page. The generated TypeScript list method keeps its `limit`/`offset` arguments and returns `PaginatedResult<T>` (`items`, `total`, `limit`, `offset`) on every transport.
 
 ### `ApiSurface`
 
@@ -365,6 +397,7 @@ One directory of API modules with the import paths and store accessor its genera
 | `store_type` | `Option<String>` | Store type name for this surface's entity-scoped functions. Each surface is scanned with its own store type. |
 | `pagination` | `Option<PaginationConfig>` | Pagination for this surface's list operations. |
 | `paginated_modules` | `Vec<String>` | When non-empty, restricts `pagination` to these module names. Empty means every module of the surface paginates. |
+| `schema_dir` | `Option<PathBuf>` | Directory of this surface's `#[ontology(entity)]` structs. The admin registry parses it for the surface's field definitions; without it each of the surface's entities ships with `fields: []`. The surface's TypeScript types come from the type pool either way. |
 
 Modules are merged by name across surfaces. A module present in several surfaces becomes one module under one route prefix and one command prefix, with two rules: a function name may come from one surface only (a duplicate is a build error naming the module, the function and both surfaces), and the five CRUD functions (`list`, `get_by_id`, `create`, `update`, `delete`) must all come from the same surface. The surface that first defines a module imports it under its own name; every other surface's same-named module is imported as `{module}_{surface_index}` (`use determined_fitness::api::{workout as workout_1};`) and its handlers call through that alias. A type name that two surfaces import from different paths keeps the bare import for the lower-indexed surface and is written fully qualified in the other surface's handlers. The client generators key types by bare name, so a type name should denote one type across every surface: two distinct types that share a name would collapse into one TypeScript type, and the admin registry rejects an entity name that more than one surface's schema defines. `route_prefix` cannot be combined with an extra surface that has a `store_type`: scoped handlers open the store through the prefix's `state_accessor`, which yields the primary surface's store.
 
@@ -377,6 +410,7 @@ ApiSurface {
     store_type: Some("Store".into()),
     pagination: Some(PaginationConfig { default_limit: 50, max_limit: 500 }),
     paginated_modules: vec!["workout_set".into()],
+    schema_dir: Some("../determined-fitness/src/schema".into()),
 }
 ```
 
@@ -386,7 +420,9 @@ ApiSurface {
 
 Used by [`gen_clients()`](/reference/public-api/#gen_clients). The sibling of `ServersConfig` for the **client-side** surface: TypeScript bindings, the HTTP and HTTP+IPC transport clients, and the admin registry.
 
-The two configs overlap on naming, state, and routing because those decisions drive both sides of the wire -- URL pluralization, pagination, route prefixes. Both stages also take the parsed schema as their first argument, which is where the admin-registry generator gets its per-field metadata and enum values and where the sort keys come from; an empty schema (`&SchemaOutput::default()`) ships `admin-registry.ts` with empty `fields: []` per entity. The shared types are re-exported from `ontogen::servers`.
+The two configs overlap on naming, state, and routing because those decisions drive both sides of the wire -- URL pluralization, pagination, route prefixes. Both stages also take the parsed schema as their first argument, which is where the admin-registry generator gets its per-field metadata and enum values and where the sort keys come from; an empty schema (`&SchemaOutput::default()`) ships `admin-registry.ts` with empty `fields: []` per entity. The shared types are re-exported from `ontogen::servers`. `naming`, `route_prefix`, `pagination`, `sse_route_overrides` and `extra_surfaces` must match the `ServersConfig` values, or the TypeScript transport calls paths and parameters the server does not serve.
+
+`ClientsConfig` has no `Default`. `ClientsConfig::new(api_dir, state_type, service_import_path, types_import_path, state_import)` fills every other field with its inert value (no generators, no formatting, no route prefix, no store, no pagination, no label overrides), so a build script can write `ClientsConfig { generators: vec![...], ..ClientsConfig::new(...) }` and keep compiling when a field is added.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -404,6 +440,7 @@ The two configs overlap on naming, state, and routing because those decisions dr
 | `store_type` | `Option<String>` | Store type for entity-scoped functions. |
 | `store_import` | `Option<String>` | Import path for the Store type. |
 | `pagination` | `Option<PaginationConfig>` | Pagination for list operations. Same type as on [`ServersConfig`](#paginationconfig). |
+| `label_overrides` | `HashMap<String, String>` | Admin-registry field labels that replace the title-cased field name, keyed `module.field` for one entity's field (the snake_case module name: `workout_set.rpe`) or `field` for that field on every entity: `("avg_hr_bpm", "Average HR (bpm)")`. Not part of the wire. |
 | `pool_extra_roots` | `Vec<PathBuf>` | Extra source roots for the ontogen-ts type pool, beyond `CARGO_MANIFEST_DIR/src`. See [`pool_extra_roots`](#pool_extra_roots) below. |
 | `pool_exclude_paths` | `Vec<PathBuf>` | Source paths to drop from the pool after scanning. See [`pool_exclude_paths`](#pool_exclude_paths) below. |
 | `extra_surfaces` | `Vec<ApiSurface>` | API surfaces scanned in addition to the primary one. Same type and rules as on [`ServersConfig`](#apisurface); register a surface on both stages with [`Pipeline::api_surface`](/reference/public-api/#pipeline). |
@@ -432,6 +469,7 @@ ClientsConfig {
     store_type: Some("Store".into()),
     store_import: Some("crate::store::Store".into()),
     pagination: None,
+    label_overrides: Default::default(),
     pool_extra_roots: Vec::new(),
     pool_exclude_paths: Vec::new(),
     extra_surfaces: vec![],

@@ -49,6 +49,9 @@ pub enum AppError {
     TagIdRequired(String),
     #[error("Tag already exists: {0}")]
     TagAlreadyExists(String),
+    /// `activity_for_kind` was asked for a kind that is not an entity.
+    #[error("Activity kind not found: {0}")]
+    ActivityKindNotFound(String),
     #[error("Database error: {0}")]
     DbError(String),
 }
@@ -69,7 +72,7 @@ pub enum ChangeOp {
     Deleted,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityKind {
     Exercise,
     Workout,

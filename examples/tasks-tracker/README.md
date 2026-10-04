@@ -7,7 +7,9 @@ two ways from one generated pipeline.
 
 ## HTTP
 
-The HTTP API speaks JSON:API ([wire contract](../../docs/jsonapi-wire-contract.md)).
+The HTTP API speaks JSON:API ([wire contract](../../docs/jsonapi-wire-contract.md));
+[the wire page](../../site/src/content/docs/examples/tasks-tracker-wire.mdx)
+shows real requests and responses captured from this server.
 Lists page 20 at a time. The task list is hand-written in
 `src/api/v1/task.rs`: it takes a `ListTasksQuery { status, epic_id }`, so it
 answers `filter[status]` and `filter[epic_id]`, and its own `count` gives the
@@ -17,7 +19,7 @@ It replaces the generated `list` and `count`; the rest of the task module is
 generated.
 
 ```sh
-cargo run
+cargo run              # PORT=39102 cargo run serves on another port
 curl -s localhost:3002/api/tasks | jq
 # -g keeps curl from reading the brackets as a URL glob
 curl -sg 'localhost:3002/api/tasks?page[offset]=0&page[limit]=5' | jq '.meta, .links'
@@ -54,3 +56,14 @@ and Obsidian-navigable; the tracker is just one lens over it.
 The vault is an OKF 0.2 bundle (every record carries a `type`); the optional
 index files and `generated` stamps are left off here. See [the markdown backend
 guide](../../site/src/content/docs/guides/markdown-backend.mdx).
+
+## Conformance
+
+`conformance/` drives the HTTP API with [kitsu](https://www.npmjs.com/package/kitsu),
+a third-party JSON:API client, configured only through its documented options.
+It builds the example, serves a temporary copy of `data/` on port 39302
+(`PORT` overrides), and leaves the committed vault untouched. Needs Node and npm.
+
+```sh
+just conformance-tasks-tracker   # from the repo root
+```

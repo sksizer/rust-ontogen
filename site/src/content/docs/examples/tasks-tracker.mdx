@@ -14,8 +14,10 @@ The source lives at `examples/tasks-tracker/`.
 ## Over HTTP
 
 ```sh
-cargo run
+cargo run    # PORT=39102 cargo run serves on another port
 ```
+
+[Tasks Tracker: the wire](/examples/tasks-tracker-wire/) shows the real requests and responses, captured from a running server.
 
 ```sh
 curl -s localhost:3002/api/tasks -H 'accept: application/vnd.api+json' | jq

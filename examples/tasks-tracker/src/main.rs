@@ -2,6 +2,7 @@
 //!
 //! ```sh
 //! cargo run                      # HTTP API at 127.0.0.1:3002
+//! PORT=39102 cargo run           # the HTTP API on another port
 //! cargo run -- mcp-tools         # list the generated MCP tool registry
 //! cargo run -- mcp-call <tool> '<json-args>'   # dispatch one MCP tool
 //! ```
@@ -44,9 +45,22 @@ async fn main() {
         }
         None => {
             let app = tasks_tracker::api::transport::http::generated::entity_routes().with_state(state);
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:3002").await.expect("bind 127.0.0.1:3002");
-            println!("tasks-tracker serving the vault at http://127.0.0.1:3002 (try /api/tasks)");
+            let addr = format!("127.0.0.1:{}", port(3002));
+            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| panic!("bind {addr}: {e}"));
+            let addr = listener.local_addr().expect("local address");
+            println!("tasks-tracker serving the vault at http://{addr} (try /api/tasks)");
             axum::serve(listener, app).await.expect("serve");
         }
+    }
+}
+
+/// The port to serve on: `PORT` when set, so several examples can run side
+/// by side, otherwise `default`. A value that is not a port number stops the
+/// server instead of quietly binding somewhere else.
+fn port(default: u16) -> u16 {
+    match std::env::var("PORT") {
+        Ok(v) => v.parse().unwrap_or_else(|_| panic!("PORT must be a port number (0-65535), got {v:?}")),
+        Err(std::env::VarError::NotPresent) => default,
+        Err(e) => panic!("PORT: {e}"),
     }
 }

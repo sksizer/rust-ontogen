@@ -17,10 +17,8 @@ pub async fn activity_for_kind(
     kind: String,
     resume: Option<String>,
 ) -> Result<broadcast::Receiver<Activity>, AppError> {
-    if !["exercise", "workout", "workout_set", "tag"].contains(&kind.as_str()) {
-        return Err(AppError::DbError(format!("unknown kind: {kind}")));
-    }
+    let feed = state.kind_feed(&kind).ok_or(AppError::ActivityKindNotFound(kind))?;
     // This example keeps no history, so there is nothing to replay after `resume`.
     let _ = resume;
-    Ok(state.activity.subscribe())
+    Ok(feed.subscribe())
 }

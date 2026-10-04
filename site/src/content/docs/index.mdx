@@ -90,10 +90,10 @@ From that single struct definition, one `cargo build` generates:
     Forwarding functions that bridge your store to your transport layer. Generated modules merge seamlessly with hand-written custom endpoints.
   </Card>
   <Card title="Server Transports" icon="rocket">
-    Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions - all generated from the same API surface with consistent naming.
+    A JSON:API 1.1 server on Axum, Tauri IPC commands, and MCP tool definitions - all generated from the same API surface with consistent naming.
   </Card>
   <Card title="TypeScript Clients" icon="seti:typescript">
-    Typed client functions for HTTP and Tauri IPC, split transport layers that pick the right backend at runtime, and admin UI registry with per-field metadata.
+    Typed client functions for HTTP and Tauri IPC behind one `Transport` interface, so calling code is the same on both, and an admin UI registry with per-field metadata.
   </Card>
   <Card title="A Markdown Store" icon="seti:markdown">
     Or skip the database entirely. One config field routes the same generated CRUD at a vault of `.md` files -- editable in any editor, diffable in git, navigable in Obsidian, with hand edits preserved across writes.

@@ -1,0 +1,766 @@
+---
+title: "Tasks Tracker: the wire"
+description: Real JSON:API requests and responses captured from the tasks-tracker HTTP server.
+---
+
+This page shows what [Tasks Tracker](/examples/tasks-tracker/) sends and receives over HTTP. The generated Axum server speaks JSON:API 1.1: every request and response body is `application/vnd.api+json`. The [wire contract](https://github.com/sksizer/rust-ontogen/blob/main/docs/jsonapi-wire-contract.md) is the full specification, the [server transports guide](/guides/server-transports/) explains how the routes are generated, and [Upgrading](/reference/upgrading/) lists what changed for existing clients.
+
+To run the server yourself:
+
+```sh
+cd examples/tasks-tracker
+PORT=39102 cargo run    # without PORT it serves on 3002
+```
+
+Every pair below was captured from a real run against a scratch copy of `data/`, with `curl -sg -i` (`-g` so the brackets in `page[limit]` and `filter[status]` reach the server as written). The requests ran in the order shown, so each one sees the writes before it. Response bodies are formatted with `jq`. Of the response headers, only the status line, `Content-Type`, `Location`, `Allow` and `Vary` are shown.
+
+Tasks Tracker pages every list (`page[offset]`, `page[limit]`, default limit 20), filters and sorts the task list through a hand-written `ListTasksQuery`, and slugs ids from the title (`IdStrategy::SlugFromField("title")`). It has no custom or event ops; see [Iron Log: the wire](/examples/iron-log-wire/) for those.
+
+**Contents**
+
+- [Create a task and let the server pick the id](#create-a-task-and-let-the-server-pick-the-id)
+- [Create a task with a client id](#create-a-task-with-a-client-id)
+- [A filtered, sorted page](#a-filtered-sorted-page)
+- [One task with included resources](#one-task-with-included-resources)
+- [Update an attribute and a relationship](#update-an-attribute-and-a-relationship)
+- [Add to a relationship](#add-to-a-relationship)
+- [Read a relationship](#read-a-relationship)
+- [Read a related resource](#read-a-related-resource)
+- [Delete a task](#delete-a-task)
+- [Errors](#errors)
+
+## Create a task and let the server pick the id
+
+The request has no `id`, so the store slugs one from `title`. The response is `201` with a `Location` header, and `epic` and `tags` come back under `relationships`, each with `links` to its relationship endpoint and its related resource. The record is written to `data/vault/tasks/review-the-stack.md`.
+
+```http title="Request"
+POST /api/tasks HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "tasks",
+    "attributes": {
+      "title": "Review the stack",
+      "status": "open/ready",
+      "created": "2026-06-08",
+      "body": "## Goal\n\nReview the stacked PRs.\n"
+    },
+    "relationships": {
+      "epic": {
+        "data": {
+          "type": "epics",
+          "id": "markdown-backend"
+        }
+      },
+      "tags": {
+        "data": [
+          {
+            "type": "tags",
+            "id": "codegen"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 201 Created
+content-type: application/vnd.api+json
+vary: Accept
+location: /api/tasks/review-the-stack
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/tasks/review-the-stack"
+  },
+  "data": {
+    "type": "tasks",
+    "id": "review-the-stack",
+    "attributes": {
+      "title": "Review the stack",
+      "status": "open/ready",
+      "created": "2026-06-08",
+      "body": "## Goal\n\nReview the stacked PRs.\n"
+    },
+    "relationships": {
+      "epic": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/epic",
+          "related": "/api/tasks/review-the-stack/epic"
+        },
+        "data": {
+          "type": "epics",
+          "id": "markdown-backend"
+        }
+      },
+      "tags": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/tags",
+          "related": "/api/tasks/review-the-stack/tags"
+        },
+        "data": [
+          {
+            "type": "tags",
+            "id": "codegen"
+          }
+        ]
+      },
+      "parent": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/parent",
+          "related": "/api/tasks/review-the-stack/parent"
+        },
+        "data": null
+      },
+      "subtasks": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/subtasks",
+          "related": "/api/tasks/review-the-stack/subtasks"
+        },
+        "data": []
+      }
+    },
+    "links": {
+      "self": "/api/tasks/review-the-stack"
+    }
+  }
+}
+```
+
+## Create a task with a client id
+
+A client may send its own `id` instead; it must be a portable ASCII id, and a taken one is `409`. This task also names its parent, so `review-the-stack` gains it as a subtask.
+
+```http title="Request"
+POST /api/tasks HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "tasks",
+    "id": "write-the-wire-pages",
+    "attributes": {
+      "title": "Write the wire pages",
+      "status": "open/ready",
+      "created": "2026-06-07",
+      "body": ""
+    },
+    "relationships": {
+      "parent": {
+        "data": {
+          "type": "tasks",
+          "id": "review-the-stack"
+        }
+      }
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 201 Created
+content-type: application/vnd.api+json
+vary: Accept
+location: /api/tasks/write-the-wire-pages
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/tasks/write-the-wire-pages"
+  },
+  "data": {
+    "type": "tasks",
+    "id": "write-the-wire-pages",
+    "attributes": {
+      "title": "Write the wire pages",
+      "status": "open/ready",
+      "created": "2026-06-07",
+      "body": ""
+    },
+    "relationships": {
+      "epic": {
+        "links": {
+          "self": "/api/tasks/write-the-wire-pages/relationships/epic",
+          "related": "/api/tasks/write-the-wire-pages/epic"
+        },
+        "data": null
+      },
+      "tags": {
+        "links": {
+          "self": "/api/tasks/write-the-wire-pages/relationships/tags",
+          "related": "/api/tasks/write-the-wire-pages/tags"
+        },
+        "data": []
+      },
+      "parent": {
+        "links": {
+          "self": "/api/tasks/write-the-wire-pages/relationships/parent",
+          "related": "/api/tasks/write-the-wire-pages/parent"
+        },
+        "data": {
+          "type": "tasks",
+          "id": "review-the-stack"
+        }
+      },
+      "subtasks": {
+        "links": {
+          "self": "/api/tasks/write-the-wire-pages/relationships/subtasks",
+          "related": "/api/tasks/write-the-wire-pages/subtasks"
+        },
+        "data": []
+      }
+    },
+    "links": {
+      "self": "/api/tasks/write-the-wire-pages"
+    }
+  }
+}
+```
+
+## A filtered, sorted page
+
+`filter[status]` and `sort` are read by the hand-written list, and `page[limit]=1` cuts the result to one task. `meta.total` counts the whole filtered set, and every link repeats the filter, sort and page in canonical order, with brackets percent-encoded. `prev` is `null` on the first page.
+
+```http title="Request"
+GET /api/tasks?filter[status]=open/ready&sort=-created,title&page[limit]=1 HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/tasks?filter%5Bstatus%5D=open%2Fready&sort=-created,title&page%5Boffset%5D=0&page%5Blimit%5D=1",
+    "first": "/api/tasks?filter%5Bstatus%5D=open%2Fready&sort=-created,title&page%5Boffset%5D=0&page%5Blimit%5D=1",
+    "prev": null,
+    "next": "/api/tasks?filter%5Bstatus%5D=open%2Fready&sort=-created,title&page%5Boffset%5D=1&page%5Blimit%5D=1",
+    "last": "/api/tasks?filter%5Bstatus%5D=open%2Fready&sort=-created,title&page%5Boffset%5D=1&page%5Blimit%5D=1"
+  },
+  "meta": {
+    "total": 2,
+    "limit": 1,
+    "offset": 0
+  },
+  "data": [
+    {
+      "type": "tasks",
+      "id": "review-the-stack",
+      "attributes": {
+        "title": "Review the stack",
+        "status": "open/ready",
+        "created": "2026-06-08",
+        "body": "## Goal\n\nReview the stacked PRs.\n"
+      },
+      "relationships": {
+        "epic": {
+          "links": {
+            "self": "/api/tasks/review-the-stack/relationships/epic",
+            "related": "/api/tasks/review-the-stack/epic"
+          },
+          "data": {
+            "type": "epics",
+            "id": "markdown-backend"
+          }
+        },
+        "tags": {
+          "links": {
+            "self": "/api/tasks/review-the-stack/relationships/tags",
+            "related": "/api/tasks/review-the-stack/tags"
+          },
+          "data": [
+            {
+              "type": "tags",
+              "id": "codegen"
+            }
+          ]
+        },
+        "parent": {
+          "links": {
+            "self": "/api/tasks/review-the-stack/relationships/parent",
+            "related": "/api/tasks/review-the-stack/parent"
+          },
+          "data": null
+        },
+        "subtasks": {
+          "links": {
+            "self": "/api/tasks/review-the-stack/relationships/subtasks",
+            "related": "/api/tasks/review-the-stack/subtasks"
+          },
+          "data": [
+            {
+              "type": "tasks",
+              "id": "write-the-wire-pages"
+            }
+          ]
+        }
+      },
+      "links": {
+        "self": "/api/tasks/review-the-stack"
+      }
+    }
+  ]
+}
+```
+
+## One task with included resources
+
+`include=epic,subtasks` adds the related epic and the subtask to `included`. Included resources keep their own `links.self`; the subtask is a full resource object with its relationships.
+
+```http title="Request"
+GET /api/tasks/review-the-stack?include=epic,subtasks HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/tasks/review-the-stack?include=epic,subtasks"
+  },
+  "data": {
+    "type": "tasks",
+    "id": "review-the-stack",
+    "attributes": {
+      "title": "Review the stack",
+      "status": "open/ready",
+      "created": "2026-06-08",
+      "body": "## Goal\n\nReview the stacked PRs.\n"
+    },
+    "relationships": {
+      "epic": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/epic",
+          "related": "/api/tasks/review-the-stack/epic"
+        },
+        "data": {
+          "type": "epics",
+          "id": "markdown-backend"
+        }
+      },
+      "tags": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/tags",
+          "related": "/api/tasks/review-the-stack/tags"
+        },
+        "data": [
+          {
+            "type": "tags",
+            "id": "codegen"
+          }
+        ]
+      },
+      "parent": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/parent",
+          "related": "/api/tasks/review-the-stack/parent"
+        },
+        "data": null
+      },
+      "subtasks": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/subtasks",
+          "related": "/api/tasks/review-the-stack/subtasks"
+        },
+        "data": [
+          {
+            "type": "tasks",
+            "id": "write-the-wire-pages"
+          }
+        ]
+      }
+    },
+    "links": {
+      "self": "/api/tasks/review-the-stack"
+    }
+  },
+  "included": [
+    {
+      "type": "epics",
+      "id": "markdown-backend",
+      "attributes": {
+        "title": "Markdown backend",
+        "status": "in-progress",
+        "body": "Implement ADR 0001 as a stacked-PR campaign.\n"
+      },
+      "links": {
+        "self": "/api/epics/markdown-backend"
+      }
+    },
+    {
+      "type": "tasks",
+      "id": "write-the-wire-pages",
+      "attributes": {
+        "title": "Write the wire pages",
+        "status": "open/ready",
+        "created": "2026-06-07",
+        "body": ""
+      },
+      "relationships": {
+        "epic": {
+          "links": {
+            "self": "/api/tasks/write-the-wire-pages/relationships/epic",
+            "related": "/api/tasks/write-the-wire-pages/epic"
+          },
+          "data": null
+        },
+        "tags": {
+          "links": {
+            "self": "/api/tasks/write-the-wire-pages/relationships/tags",
+            "related": "/api/tasks/write-the-wire-pages/tags"
+          },
+          "data": []
+        },
+        "parent": {
+          "links": {
+            "self": "/api/tasks/write-the-wire-pages/relationships/parent",
+            "related": "/api/tasks/write-the-wire-pages/parent"
+          },
+          "data": {
+            "type": "tasks",
+            "id": "review-the-stack"
+          }
+        },
+        "subtasks": {
+          "links": {
+            "self": "/api/tasks/write-the-wire-pages/relationships/subtasks",
+            "related": "/api/tasks/write-the-wire-pages/subtasks"
+          },
+          "data": []
+        }
+      },
+      "links": {
+        "self": "/api/tasks/write-the-wire-pages"
+      }
+    }
+  ]
+}
+```
+
+## Update an attribute and a relationship
+
+A `PATCH` sets only the members it names. `status` changes, and `tags` is replaced by the list sent; `title`, `created`, `body` and `epic` are untouched.
+
+```http title="Request"
+PATCH /api/tasks/review-the-stack HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "tasks",
+    "id": "review-the-stack",
+    "attributes": {
+      "status": "in-progress"
+    },
+    "relationships": {
+      "tags": {
+        "data": [
+          {
+            "type": "tags",
+            "id": "codegen"
+          },
+          {
+            "type": "tags",
+            "id": "release"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/tasks/review-the-stack"
+  },
+  "data": {
+    "type": "tasks",
+    "id": "review-the-stack",
+    "attributes": {
+      "title": "Review the stack",
+      "status": "in-progress",
+      "created": "2026-06-08",
+      "body": "## Goal\n\nReview the stacked PRs.\n"
+    },
+    "relationships": {
+      "epic": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/epic",
+          "related": "/api/tasks/review-the-stack/epic"
+        },
+        "data": {
+          "type": "epics",
+          "id": "markdown-backend"
+        }
+      },
+      "tags": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/tags",
+          "related": "/api/tasks/review-the-stack/tags"
+        },
+        "data": [
+          {
+            "type": "tags",
+            "id": "codegen"
+          },
+          {
+            "type": "tags",
+            "id": "release"
+          }
+        ]
+      },
+      "parent": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/parent",
+          "related": "/api/tasks/review-the-stack/parent"
+        },
+        "data": null
+      },
+      "subtasks": {
+        "links": {
+          "self": "/api/tasks/review-the-stack/relationships/subtasks",
+          "related": "/api/tasks/review-the-stack/subtasks"
+        },
+        "data": [
+          {
+            "type": "tasks",
+            "id": "write-the-wire-pages"
+          }
+        ]
+      }
+    },
+    "links": {
+      "self": "/api/tasks/review-the-stack"
+    }
+  }
+}
+```
+
+## Add to a relationship
+
+`POST` to a relationship endpoint adds the identifiers it is not already holding and answers `204` with no body. A repeated `POST` of the same tag also answers `204` and writes nothing.
+
+```http title="Request"
+POST /api/tasks/ship-the-emitter/relationships/tags HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": [
+    {
+      "type": "tags",
+      "id": "release"
+    }
+  ]
+}
+```
+
+```http title="Response"
+HTTP/1.1 204 No Content
+vary: Accept
+```
+
+## Read a relationship
+
+The relationship endpoint answers with linkage only: resource identifiers, plus `self` and `related` links.
+
+```http title="Request"
+GET /api/tasks/ship-the-emitter/relationships/tags HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/tasks/ship-the-emitter/relationships/tags",
+    "related": "/api/tasks/ship-the-emitter/tags"
+  },
+  "data": [
+    {
+      "type": "tags",
+      "id": "codegen"
+    },
+    {
+      "type": "tags",
+      "id": "release"
+    }
+  ]
+}
+```
+
+## Read a related resource
+
+The related endpoint answers with the full related resource. For a to-one relationship that is a single resource object, or `null` when the relationship is empty.
+
+```http title="Request"
+GET /api/tasks/review-the-stack/epic HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/tasks/review-the-stack/epic"
+  },
+  "data": {
+    "type": "epics",
+    "id": "markdown-backend",
+    "attributes": {
+      "title": "Markdown backend",
+      "status": "in-progress",
+      "body": "Implement ADR 0001 as a stacked-PR campaign.\n"
+    },
+    "links": {
+      "self": "/api/epics/markdown-backend"
+    }
+  }
+}
+```
+
+## Delete a task
+
+A `DELETE` removes the task and its file under `data/vault/tasks/`, and answers `204` with no body.
+
+```http title="Request"
+DELETE /api/tasks/write-the-wire-pages HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 204 No Content
+vary: Accept
+```
+
+## Errors
+
+Every error is an `errors[]` document with `status`, `code`, `title` and `detail`, plus `source` when one part of the request is to blame.
+
+A missing task is `404`, with a `code` taken from the example's `AppError` variant (`TaskNotFound` becomes `task_not_found`):
+
+```http title="Request"
+GET /api/tasks/write-the-wire-pages HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 404 Not Found
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "404",
+      "code": "task_not_found",
+      "title": "Not Found",
+      "detail": "Task not found: write-the-wire-pages"
+    }
+  ]
+}
+```
+
+A filter member the list does not declare is `400`, and `source.parameter` names it:
+
+```http title="Request"
+GET /api/tasks?filter[colour]=red HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 400 Bad Request
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "400",
+      "code": "invalid_query_parameter",
+      "title": "Bad Request",
+      "detail": "`filter[colour]` is not a query parameter of this route",
+      "source": {
+        "parameter": "filter[colour]"
+      }
+    }
+  ]
+}
+```
+
+A method the route does not serve is `405`, and `Allow` lists the methods it does:
+
+```http title="Request"
+PUT /api/tasks/review-the-stack HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 405 Method Not Allowed
+content-type: application/vnd.api+json
+vary: Accept
+allow: GET, HEAD, PATCH, DELETE
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "405",
+      "code": "method_not_allowed",
+      "title": "Method Not Allowed",
+      "detail": "PUT is not allowed here; allowed: GET, HEAD, PATCH, DELETE"
+    }
+  ]
+}
+```

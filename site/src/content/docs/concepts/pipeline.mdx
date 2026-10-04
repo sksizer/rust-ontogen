@@ -237,18 +237,18 @@ Each transport gets its own metadata type:
 pub struct HttpRouteMeta {
     pub method: String,       // "GET"
     pub path: String,         // "/api/tasks/{id}"
-    pub handler_name: String, // "get_task_by_id"
+    pub handler_name: String, // "task_get_by_id"
     pub module_name: String,  // "task"
 }
 
 pub struct IpcCommandMeta {
-    pub command_name: String,    // "get_task"
+    pub command_name: String,    // "task_get_by_id"
     pub params: Vec<ParamMeta>,
     pub return_type: String,
 }
 
 pub struct McpToolMeta {
-    pub tool_name: String,       // "get_task"
+    pub tool_name: String,       // "task_get_by_id"
     pub description: String,     // "Get a single task by ID"
     pub params: Vec<ParamMeta>,  // tool inputs
 }
@@ -343,10 +343,10 @@ HttpRouteMeta { method: "GET",    path: "/api/tasks/{id}", handler: "task_get_by
 HttpRouteMeta { method: "POST",   path: "/api/tasks",     handler: "task_create" }
 HttpRouteMeta { method: "PATCH",  path: "/api/tasks/{id}", handler: "task_update" }
 HttpRouteMeta { method: "DELETE", path: "/api/tasks/{id}", handler: "task_delete" }
-HttpRouteMeta { method: "POST",   path: "/api/tasks/assign", handler: "assign_task" }
-IpcCommandMeta { command_name: "list_tasks", ... }
-IpcCommandMeta { command_name: "assign_task", ... }
-McpToolMeta { tool_name: "list_tasks", description: "List all tasks", ... }
+HttpRouteMeta { method: "POST",   path: "/api/tasks/assign", handler: "task_assign" }
+IpcCommandMeta { command_name: "task_list", ... }
+IpcCommandMeta { command_name: "task_assign", ... }
+McpToolMeta { tool_name: "task_list", description: "List all tasks", ... }
 ```
 
 One struct definition. Six pipeline stages. HTTP routes, IPC commands, MCP tools, and TypeScript clients -- all consistent, all derived from the same source.
