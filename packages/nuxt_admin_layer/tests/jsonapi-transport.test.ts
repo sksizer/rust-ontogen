@@ -331,6 +331,53 @@ describe('ops served as custom ops', () => {
   })
 })
 
+describe('junction ops of a resource', () => {
+  const codegen = { type: 'tags', id: 'codegen', attributes: { title: 'Codegen' } }
+  const pageMeta = { total: 3, limit: 1, offset: 2 }
+
+  it('reads related resources and flattens the target, paged with the page family', async () => {
+    reply(200, { jsonapi: { version: '1.1' }, data: [codegen], meta: pageMeta })
+    const page = await createHttpTransport().taskListLabels('ship it', 1, 2)
+
+    expect(page).toEqual({ items: [{ slug: 'codegen', title: 'Codegen' }], ...pageMeta })
+    expect(calls[0]).toMatchObject({
+      url: '/api/tasks/ship%20it/labels?page%5Boffset%5D=2&page%5Blimit%5D=1',
+      method: 'GET',
+      body: undefined,
+    })
+  })
+
+  it('reads ids from the relationship linkage', async () => {
+    reply(200, { data: [{ type: 'tags', id: 'codegen' }, { type: 'tags', id: 'wire' }], meta: pageMeta })
+    const page = await createHttpTransport().workoutSetListTags('s1')
+
+    expect(page).toEqual({ items: ['codegen', 'wire'], ...pageMeta })
+    expect(calls[0]).toMatchObject({ url: '/api/workout-sets/s1/relationships/tags', method: 'GET' })
+  })
+
+  it('adds and removes one identifier at the linkage and resolves null', async () => {
+    reply(204)
+    reply(204)
+    const transport = createHttpTransport()
+
+    expect(await transport.taskAddLabel('ship-it', 'code gen')).toBeNull()
+    expect(await transport.workoutSetRemoveTag('s 1', 'wire')).toBeNull()
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['POST', '/api/tasks/ship-it/relationships/labels'],
+      ['DELETE', '/api/workout-sets/s%201/relationships/tags'],
+    ])
+    expect(calls[0]?.body).toEqual({ data: [{ type: 'tags', id: 'code gen' }] })
+    expect(calls[1]?.body).toEqual({ data: [{ type: 'tags', id: 'wire' }] })
+    for (const call of calls) expect(call.headers).toEqual({ Accept: MEDIA_TYPE, 'Content-Type': MEDIA_TYPE })
+  })
+
+  it('calls a lone list_X as a custom GET returning its plain array', async () => {
+    reply(200, { meta: { result: [flatShipIt] } })
+    expect(await createHttpTransport().taskListDrafts('ship-it')).toEqual([flatShipIt])
+    expect(calls[0]).toMatchObject({ url: '/api/tasks/list-drafts/ship-it', method: 'GET' })
+  })
+})
+
 describe('subscriptions', () => {
   class FakeEventSource {
     static latest: FakeEventSource | null = null

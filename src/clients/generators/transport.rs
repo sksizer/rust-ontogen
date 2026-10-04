@@ -333,7 +333,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
             if !pp_only.is_empty() {
                 // An op served unscoped only takes the prefix argument to
                 // match the interface, and ignores it.
-                let unused = jsonapi::scope_of(f, scope.as_deref()).is_none();
+                let unused = jsonapi::scope_of(m, f, config, scope.as_deref()).is_none();
                 params.push(if unused { format!("_{pp_only}") } else { pp_only.clone() });
             }
             out.push_str(&format!(
