@@ -3,6 +3,7 @@
 //! generated one.
 
 pub use super::generated::section::*;
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::schema::{AppError, Section};
@@ -10,8 +11,10 @@ use crate::store::Store;
 
 /// Which sections `list` and `count` select; an absent field matches every
 /// section. Declared out of byte order, so a reader that walked the fields
-/// in declaration order would show in the tests.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// in declaration order would show in the tests. It refuses a field it does
+/// not declare, so a transport must hand it only its own members.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ListSectionsQuery {
     pub title_contains: Option<String>,
     pub min_children: Option<u32>,
