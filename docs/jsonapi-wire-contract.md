@@ -1843,7 +1843,29 @@ Decision 6 folds E0003 phases 0 and 1 into E0004:
 
 - the `ApiFn.error_type` capture;
 - the `AppError` scan over the schema directory;
-- the call-site routing predicate (last path segment `AppError`).
+- the call-site routing predicate (below).
+
+**Routing predicate.** A call goes through `app_error` iff its error type
+is the primary surface's `{types_import_path}::AppError`; every other error
+type, another surface's `AppError` included, is `500 internal_error`. The
+error type is resolved in the function's own surface:
+
+- through its file's `use` items: `use a::b::{AppError, X as Y}`,
+  `use a::b::{self as c}`, and a leading segment one `use` binds
+  (`schema::AppError` after `use crate::schema;`);
+- a `crate::` path is in the crate the surface's `service_import_path`
+  names (`fitness::api` puts `crate::schema::AppError` at
+  `fitness::schema::AppError`);
+- a path the surface's own `{types_import_path}::AppError` ends with (a
+  bare `AppError` no `use` binds, `schema::AppError`) is that surface's.
+
+Not resolved, so taken as written: a type alias (`type E = AppError;`), a
+re-export (`crate::schema::error::AppError` is not proven to be
+`crate::schema::AppError`), `self::`/`super::` paths, and names a glob
+brings in (a bare `AppError` under `use x::*` is read as the surface's
+own). An error type named `AppError` that resolves to no surface's
+`{types_import_path}::AppError` is `500 internal_error` with a
+`cargo:warning` naming the function.
 
 The scan maps variants by name suffix:
 

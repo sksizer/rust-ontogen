@@ -206,7 +206,9 @@ added to `ApiFn` (after `return_type_ast`, `parse.rs:75`). No AST is
 carried — unlike `return_type_ast` (needed for import recursion), the error
 type is only ever compared by last path segment.
 
-**Routing predicate.** A call site maps errors with `app_error` iff:
+**Routing predicate.** E0004 replaced this last-segment predicate: see the
+wire contract §13.4 (`docs/jsonapi-wire-contract.md`). A call site maps
+errors with `app_error` iff:
 
 - the internal config's `error_map` is `Some`, and
 - the function's `error_type`'s **last path segment** equals `AppError`

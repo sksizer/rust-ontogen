@@ -75,9 +75,10 @@ pub struct ApiFn {
     /// `collect_type_import`) recurse structurally into generic args
     /// instead of substring-matching the rendered string.
     pub return_type_ast: syn::Type,
-    /// The `E` from `Result<T, E>`, as a normalized string. `None` when the
-    /// return type is not a two-argument `Result`. It is only ever compared
-    /// as a path, so no AST is kept.
+    /// The `E` from `Result<T, E>`, as a path resolved through the file's
+    /// `use` items (see `resolve_through_uses`). `None` when the return type
+    /// is not a two-argument `Result`. It is only ever compared as a path,
+    /// so no AST is kept.
     pub error_type: Option<String>,
     /// Whether the first parameter is a store type (vs app state type).
     ///
@@ -615,6 +616,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
         return result;
     };
 
+    let uses = use_bindings(&syntax.items);
     let mut functions = Vec::new();
     let mut events = Vec::new();
     for item in &syntax.items {
@@ -742,6 +744,7 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
             let params = parse_params(func, skip_first);
 
             let (return_type, return_type_ast, error_type) = extract_result_types(&func.sig.output);
+            let error_type = error_type.map(|e| resolve_through_uses(&e, &uses));
 
             // A paginated list's companion. `count` takes the state or the
             // store (the first param is already known to be one of those;
@@ -882,13 +885,13 @@ fn first_type_arg(seg: &syn::PathSegment) -> Option<&Type> {
 }
 
 /// Extract `T` from `Result<T, E>` as both a normalized string and AST, and
-/// `E` as a normalized string.
+/// `E` as an AST.
 ///
 /// `E` is `None` unless the `Result` names both arguments: a one-argument
 /// alias such as `anyhow::Result<T>` hides its error type. When the return
 /// type is not a `Result<...>` at all, the result is `("()", syn::Type::Tuple(_))`
 /// for the unit type.
-fn extract_result_types(ret: &ReturnType) -> (String, Type, Option<String>) {
+fn extract_result_types(ret: &ReturnType) -> (String, Type, Option<Type>) {
     if let ReturnType::Type(_, ty) = ret
         && let Type::Path(tp) = ty.as_ref()
     {
@@ -901,12 +904,81 @@ fn extract_result_types(ret: &ReturnType) -> (String, Type, Option<String>) {
                 _ => None,
             });
             if let Some(t) = types.next() {
-                let error_type = types.next().map(norm_type);
-                return (norm_type(t), t.clone(), error_type);
+                return (norm_type(t), t.clone(), types.next().cloned());
             }
         }
     }
     ("()".to_string(), syn::parse_quote!(()), None)
+}
+
+/// The names a file's `use` items bind, each to the path it names
+/// (`use a::b::{AppError, X as Y}` binds `AppError` to `a::b::AppError` and
+/// `Y` to `a::b::X`; `use a::b::{self}` binds `b` to `a::b`). Globs bind no
+/// name: what `use a::*` brings in is not known without reading `a`.
+fn use_bindings(items: &[syn::Item]) -> HashMap<String, Vec<String>> {
+    fn walk(tree: &syn::UseTree, prefix: &mut Vec<String>, out: &mut HashMap<String, Vec<String>>) {
+        let bind = |ident: &syn::Ident, prefix: &[String]| {
+            let mut path = prefix.to_vec();
+            if ident != "self" {
+                path.push(ident.to_string());
+            }
+            path
+        };
+        match tree {
+            syn::UseTree::Path(p) => {
+                prefix.push(p.ident.to_string());
+                walk(&p.tree, prefix, out);
+                prefix.pop();
+            }
+            syn::UseTree::Name(n) => {
+                let path = bind(&n.ident, prefix);
+                if let Some(name) = path.last() {
+                    out.insert(name.clone(), path);
+                }
+            }
+            syn::UseTree::Rename(r) if r.rename != "_" => {
+                out.insert(r.rename.to_string(), bind(&r.ident, prefix));
+            }
+            syn::UseTree::Rename(_) | syn::UseTree::Glob(_) => {}
+            syn::UseTree::Group(g) => g.items.iter().for_each(|t| walk(t, prefix, out)),
+        }
+    }
+    let mut out = HashMap::new();
+    for item in items {
+        if let syn::Item::Use(u) = item {
+            walk(&u.tree, &mut Vec::new(), &mut out);
+        }
+    }
+    out
+}
+
+/// `ty` as a path, its leading segment replaced by what the file's `use`
+/// items bind it to, repeatedly: `use crate::schema; use schema::AppError;`
+/// makes `AppError` `crate::schema::AppError`. A leading `::` is dropped.
+///
+/// Only the file's `use` items are read. A name a glob brings in, a type
+/// alias, or a local item stays as written, and `self::`/`super::` paths
+/// stay relative: the module the file is mounted at is not known here.
+/// A type with generic arguments is rendered unresolved; it is never
+/// compared equal to an `AppError` path.
+fn resolve_through_uses(ty: &Type, uses: &HashMap<String, Vec<String>>) -> String {
+    let Type::Path(tp) = ty else { return norm_type(ty) };
+    if tp.qself.is_some() || tp.path.segments.iter().any(|s| !s.arguments.is_none()) {
+        return norm_type(ty);
+    }
+    let mut segments: Vec<String> = tp.path.segments.iter().map(|s| s.ident.to_string()).collect();
+    if tp.path.leading_colon.is_none() {
+        // Bounded so a binding that names itself (`use a::a;`) cannot loop.
+        for _ in 0..=uses.len() {
+            match uses.get(&segments[0]) {
+                Some(target) if target.len() > 1 || target[0] != segments[0] => {
+                    segments.splice(0..1, target.iter().cloned());
+                }
+                _ => break,
+            }
+        }
+    }
+    segments.join("::")
 }
 
 /// Scan a directory for API source files and parse them all.
@@ -1295,7 +1367,7 @@ mod tests {
     fn result_types(sig: &str) -> (String, Option<String>) {
         let func: syn::ItemFn = syn::parse_str(&format!("{sig} {{ todo!() }}")).unwrap();
         let (ok, _, err) = extract_result_types(&func.sig.output);
-        (ok, err)
+        (ok, err.as_ref().map(norm_type))
     }
 
     #[test]
@@ -1317,6 +1389,40 @@ mod tests {
         assert_eq!(result_types("fn f()"), ("()".to_string(), None));
     }
 
+    fn resolved(uses: &str, ty: &str) -> String {
+        let file = syn::parse_file(uses).unwrap();
+        resolve_through_uses(&syn::parse_str(ty).unwrap(), &use_bindings(&file.items))
+    }
+
+    #[test]
+    fn an_error_type_resolves_through_the_files_use_items() {
+        let uses = "use fitness::schema::{AppError, Workout};\nuse crate::schema::{self as api, AppError as ApiError};\n\
+                    use crate::{store::{self, Store}};\nuse ::other::Error;\n";
+        assert_eq!(resolved(uses, "AppError"), "fitness::schema::AppError");
+        assert_eq!(resolved(uses, "ApiError"), "crate::schema::AppError");
+        assert_eq!(resolved(uses, "api::AppError"), "crate::schema::AppError");
+        assert_eq!(resolved(uses, "store::StoreError"), "crate::store::StoreError");
+        assert_eq!(resolved(uses, "Error"), "other::Error");
+        assert_eq!(resolved(uses, "crate::schema::AppError"), "crate::schema::AppError");
+        assert_eq!(resolved(uses, "::fitness::schema::AppError"), "fitness::schema::AppError");
+    }
+
+    #[test]
+    fn a_use_may_name_another_uses_binding() {
+        assert_eq!(resolved("use crate::schema;\nuse schema::AppError;\n", "AppError"), "crate::schema::AppError");
+        // A binding that names itself stops rather than loops.
+        resolved("use a::a;\n", "a::E");
+    }
+
+    #[test]
+    fn what_the_use_items_do_not_bind_stays_as_written() {
+        let uses = "use crate::schema::*;\nuse crate::schema::AppError as _;\nuse self::local::Thing;\n";
+        assert_eq!(resolved(uses, "AppError"), "AppError");
+        assert_eq!(resolved(uses, "super::schema::AppError"), "super::schema::AppError");
+        assert_eq!(resolved(uses, "Thing"), "self::local::Thing");
+        assert_eq!(resolved("use fitness::schema::AppError;\n", "Box<AppError>"), "Box<AppError>");
+    }
+
     #[test]
     fn parsed_functions_carry_their_error_type() {
         let dir = tempfile::tempdir().unwrap();
@@ -1325,7 +1431,9 @@ mod tests {
             &path,
             "pub async fn get_by_id(store: &Store, id: String) -> Result<Task, crate::schema::AppError> { todo!() }\n\
              pub fn summary(state: &AppState) -> Result<String, String> { todo!() }\n\
-             pub fn ping(state: &AppState) -> anyhow::Result<()> { todo!() }\n",
+             pub fn ping(state: &AppState) -> anyhow::Result<()> { todo!() }\n\
+             use fitness::schema::AppError;\n\
+             pub fn pong(state: &AppState) -> Result<(), AppError> { todo!() }\n",
         )
         .unwrap();
         let module = parse_api_module(&path, "AppState", Some("Store")).module.expect("module parses");
@@ -1333,5 +1441,6 @@ mod tests {
         assert_eq!(error_of("get_by_id").as_deref(), Some("crate::schema::AppError"));
         assert_eq!(error_of("summary").as_deref(), Some("String"));
         assert_eq!(error_of("ping"), None);
+        assert_eq!(error_of("pong").as_deref(), Some("fitness::schema::AppError"));
     }
 }

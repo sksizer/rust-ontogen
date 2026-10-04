@@ -310,7 +310,8 @@ Call-site routing:
 - Generated CRUD handlers (`E` is `AppError` by construction —
   `src/api/gen_crud.rs` hard-codes it): `.map_err(app_error)`.
 - Hand-written handlers whose parsed `E`'s last path segment is `AppError`:
-  `.map_err(app_error)`.
+  `.map_err(app_error)`. (E0004 replaced this predicate; see
+  `docs/jsonapi-wire-contract.md` §13.4.)
 - Hand-written handlers with any other / unparseable `E`: today's
   `.map_err(|e| err(e.to_string()))` — behavior identical, nothing breaks.
 - The `JunctionAdd` missing-param check: `bad_request(...)`.

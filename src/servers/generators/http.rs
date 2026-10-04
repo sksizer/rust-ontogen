@@ -185,21 +185,72 @@ fn err_map(f: &ApiFn, config: &Config) -> &'static str {
 }
 
 /// True when `f` fails with the `AppError` that `app_error` takes: the one
-/// in the primary surface's types module.
-///
-/// The error type is read as `f`'s module names it. A bare `AppError`, or a
-/// path that ends `f`'s own surface's types path (`schema::AppError`), is
-/// that surface's `AppError`; any other path is taken as written. So the
-/// `AppError` of another surface's types module maps through
-/// `internal_error`: `app_error` cannot take it.
+/// in the primary surface's types module (§13.4). Anything else maps
+/// through `internal_error`, which takes any `Display` error, so a type
+/// this cannot place is a `500` rather than a build failure.
 pub(crate) fn returns_app_error(f: &ApiFn, config: &Config) -> bool {
-    let Some(error) = f.error_type.as_deref() else { return false };
-    let own = match f.surface {
-        0 => app_error_path(config),
-        i => format!("{}::AppError", config.extra_surfaces[i - 1].types_import_path),
+    error_path(f, config).is_some_and(|path| path == app_error_path(config))
+}
+
+/// `f`'s error type as a path the generated crate can compare, read in
+/// `f`'s surface.
+///
+/// The parser has resolved the type through `f`'s file's `use` items.
+/// Then a `crate::` path is in the crate the surface's service path names
+/// (`fitness::api` puts `crate::schema::AppError` at
+/// `fitness::schema::AppError`), and a path the surface's own
+/// `{types_import_path}::AppError` ends with (a bare `AppError` no `use`
+/// binds, `schema::AppError`) is that surface's `AppError`.
+///
+/// Not resolved, so taken as written: a type alias (`type E = AppError;`
+/// does not match), a re-export (`crate::schema::error::AppError` is not
+/// proven to be `crate::schema::AppError`), and `self::`/`super::` paths. A bare
+/// `AppError` a glob (`use fitness::schema::*;`) brings in is read as the
+/// surface's own, which is wrong only when the glob names another surface's
+/// types module.
+fn error_path(f: &ApiFn, config: &Config) -> Option<String> {
+    let error = f.error_type.as_deref()?;
+    let (service, types) = match f.surface {
+        0 => (config.service_import_path.as_str(), config.types_import_path.as_str()),
+        i => {
+            let surface = &config.extra_surfaces[i - 1];
+            (surface.service_import_path.as_str(), surface.types_import_path.as_str())
+        }
     };
-    let resolved = if own == error || own.ends_with(&format!("::{error}")) { own.as_str() } else { error };
-    resolved == app_error_path(config)
+    let own = format!("{types}::AppError");
+    let crate_root = service.split("::").next().unwrap_or("crate");
+    let path = match error.strip_prefix("crate::") {
+        Some(rest) if crate_root != "crate" => format!("{crate_root}::{rest}"),
+        _ => error.to_string(),
+    };
+    if own == path || own.ends_with(&format!("::{path}")) { Some(own) } else { Some(path) }
+}
+
+/// A `cargo:warning` for each fn whose error type is named `AppError` but
+/// is no surface's `{types_import_path}::AppError`, such as one under the
+/// primary types module by another path (`crate::schema::error::AppError`).
+/// It may be the consumer's `AppError` re-exported, but that cannot be
+/// proven here, so its errors answer `500 internal_error`.
+pub(crate) fn unplaced_app_error_warnings(modules: &[ApiModule], config: &Config) -> Vec<String> {
+    let known: Vec<String> = std::iter::once(app_error_path(config))
+        .chain(config.extra_surfaces.iter().map(|s| format!("{}::AppError", s.types_import_path)))
+        .collect();
+    modules
+        .iter()
+        .flat_map(|m| m.functions.iter().map(move |f| (m, f)))
+        .filter_map(|(m, f)| {
+            let path = error_path(f, config)?;
+            (path.rsplit("::").next() == Some("AppError") && !known.contains(&path)).then(|| {
+                format!(
+                    "cargo:warning=ontogen: `{}::{}` returns `{path}`, which is not proven to be `{}`; its errors \
+                     answer 500 internal_error. If it is that type, name it by that path.",
+                    m.name,
+                    f.name,
+                    app_error_path(config),
+                )
+            })
+        })
+        .collect()
 }
 
 fn await_str(is_async: bool) -> &'static str {

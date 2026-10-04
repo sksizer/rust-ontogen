@@ -5635,9 +5635,10 @@ fn a_filtered_list_in_a_resource_module_keeps_its_handler() {
 fn only_the_primary_surfaces_app_error_maps_through_app_error() {
     let tmp = tempfile::tempdir().unwrap();
     let surfaces = two_surface_fixture(tmp.path());
-    let ops = |surface: &str, store: &str, errors: &[(&str, &str)]| {
-        let file = tmp.path().join(surface).join("workout.rs");
-        let mut source = std::fs::read_to_string(&file).unwrap();
+    let ops = |surface: &str, file: &str, uses: &str, store: &str, errors: &[(&str, &str)]| {
+        let file = tmp.path().join(surface).join(file);
+        let mut source = std::fs::read_to_string(&file).unwrap_or_default();
+        source.insert_str(0, uses);
         for (name, error) in errors {
             source.push_str(&format!(
                 "pub async fn {name}({store}, id: &str) -> Result<Workout, {error}> {{ todo!() }}\n"
@@ -5645,9 +5646,37 @@ fn only_the_primary_surfaces_app_error_maps_through_app_error() {
         }
         std::fs::write(file, source).unwrap();
     };
-    ops("primary", "state: &AppState", &[("finish", "AppError"), ("resume", "schema::AppError")]);
+    ops("primary", "workout.rs", "", "state: &AppState", &[("finish", "AppError"), ("resume", "schema::AppError")]);
+    ops(
+        "primary",
+        "session.rs",
+        "use fitness::schema::AppError;\nuse crate::schema::{self as api_schema, AppError as ApiError};\nuse \
+         fitness::schema;\n",
+        "state: &AppState",
+        &[
+            ("close", "AppError"),
+            ("reopen", "ApiError"),
+            ("pause", "api_schema::AppError"),
+            ("skip", "schema::AppError"),
+            ("halt", "::fitness::schema::AppError"),
+        ],
+    );
+    ops(
+        "primary",
+        "plan.rs",
+        "use crate::schema::*;\nuse crate::schema::error;\n",
+        "state: &AppState",
+        &[
+            ("adopt", "AppError"),
+            ("draft", "crate::schema::error::AppError"),
+            ("shelve", "error::AppError"),
+            ("borrow", "super::schema::AppError"),
+        ],
+    );
     ops(
         "fitness",
+        "workout.rs",
+        "",
         "store: &FitnessStore",
         &[
             ("archive", "AppError"),
@@ -5659,7 +5688,9 @@ fn only_the_primary_surfaces_app_error_maps_through_app_error() {
     write_synthetic_api(&tmp.path().join("schema"), "mod.rs", "pub enum AppError { WorkoutNotFound(String) }\n");
     let mut config = two_surface_config(surfaces);
     config.error_map = crate::servers::error_map::scan(&tmp.path().join("schema")).unwrap();
-    let http = generate_http(tmp.path(), config);
+    config.generators = vec![ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
+    let modules = crate::servers::generate_transport(&config).expect("generate_transport failed");
+    let http = std::fs::read_to_string(tmp.path().join("http.rs")).unwrap();
 
     assert!(http.contains("fn app_error(e: crate::schema::AppError) -> ErrorObject {"), "{http}");
     let mapping = |handler: &str| {
@@ -5676,12 +5707,40 @@ fn only_the_primary_surfaces_app_error_maps_through_app_error() {
     for (handler, expected) in [
         ("workout_finish", "app_error"),
         ("workout_resume", "app_error"),
-        // A bare or relative `AppError` in the fitness surface is its own.
+        // The file's `use` items decide what a bare or leading-segment name is.
+        ("session_close", "internal_error"),
+        ("session_reopen", "app_error"),
+        ("session_pause", "app_error"),
+        ("session_skip", "internal_error"),
+        ("session_halt", "internal_error"),
+        // A glob binds no name: a bare `AppError` is read as the surface's own.
+        ("plan_adopt", "app_error"),
+        // Under the primary types module, but not provably its `AppError`.
+        ("plan_draft", "internal_error"),
+        ("plan_shelve", "internal_error"),
+        ("plan_borrow", "internal_error"),
+        // A bare or relative `AppError` in the fitness surface is its own,
+        // and its `crate::` is the `fitness` crate its service path names.
         ("workout_archive", "internal_error"),
         ("workout_rename", "internal_error"),
         ("workout_retire", "internal_error"),
-        ("workout_restore", "app_error"),
+        ("workout_restore", "internal_error"),
     ] {
         assert_eq!(mapping(handler), expected, "{handler}");
     }
+
+    let warnings = crate::servers::generators::http::unplaced_app_error_warnings(&modules, &config);
+    let warned: Vec<&str> = ["plan::draft", "plan::shelve", "plan::borrow"]
+        .into_iter()
+        .filter(|f| warnings.iter().any(|w| w.contains(&format!("`{f}`"))))
+        .collect();
+    assert_eq!(warned, ["plan::draft", "plan::shelve", "plan::borrow"], "{warnings:#?}");
+    assert_eq!(warnings.len(), 3, "another surface's own `AppError` is not warned about: {warnings:#?}");
+    assert!(warnings[0].starts_with("cargo:warning="), "{}", warnings[0]);
+    assert!(
+        warnings.iter().any(|w| w.contains("returns `crate::schema::error::AppError`")
+            && w.contains("not proven to be `crate::schema::AppError`")
+            && w.contains("500 internal_error")),
+        "{warnings:#?}"
+    );
 }
