@@ -432,3 +432,127 @@ fn builder_api_scans_the_transports_api_dirs_unless_told_otherwise() {
     let tag = std::fs::read_to_string(generated.join("tag.rs")).unwrap();
     assert!(tag.contains("fn list("), "other entities keep their list:\n{tag}");
 }
+
+const HAND_WRITTEN_LIST: &str = "use crate::schema::{AppError, Workout};\nuse crate::store::Store;\n\n\
+     pub async fn list(store: &Store, name: Option<String>) -> Result<Vec<Workout>, AppError> { todo!() }\n";
+
+fn servers_config(api: &Path, error_source_dir: &Path) -> ontogen::ServersConfig {
+    ontogen::ServersConfig {
+        api_dir: api.to_path_buf(),
+        state_type: "AppState".into(),
+        service_import_path: "crate::api".into(),
+        types_import_path: "crate::schema".into(),
+        state_import: "crate::AppState".into(),
+        naming: Default::default(),
+        generators: vec![],
+        sse_route_overrides: Default::default(),
+        route_prefix: None,
+        store_type: Some("Store".into()),
+        store_import: None,
+        pagination: None,
+        extra_surfaces: vec![],
+        error_source_dir: Some(error_source_dir.to_path_buf()),
+    }
+}
+
+#[test]
+fn builder_explicit_api_scan_dirs_add_to_the_transports_dirs() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let api = tmp.path().join("api");
+    let other = tmp.path().join("other");
+    std::fs::create_dir_all(&api).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(api.join("workout.rs"), HAND_WRITTEN_LIST).unwrap();
+    let generated = api.join("generated");
+
+    Pipeline::new(fixture_schema_dir())
+        .api(&generated, "AppState")
+        .api_store_type(Some("Store".into()))
+        .api_scan_dirs(vec![other])
+        .servers(servers_config(&api, tmp.path()))
+        .build()
+        .expect("pipeline failed");
+
+    let workout = std::fs::read_to_string(generated.join("workout.rs")).unwrap();
+    assert!(!workout.contains("fn list("), "the servers' api_dir is still scanned:\n{workout}");
+}
+
+#[test]
+fn builder_direct_gen_api_without_the_servers_dir_gets_the_same_surface_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let api = tmp.path().join("api");
+    std::fs::create_dir_all(&api).unwrap();
+    std::fs::write(api.join("workout.rs"), HAND_WRITTEN_LIST).unwrap();
+    let generated = api.join("generated");
+
+    let entities =
+        ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: fixture_schema_dir() }).expect("schema").entities;
+    let api_out = ontogen::gen_api(
+        &entities,
+        &ontogen::ApiConfig {
+            output_dir: generated,
+            exclude: vec![],
+            scan_dirs: vec![],
+            state_type: "AppState".into(),
+            store_type: Some("Store".into()),
+            schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+            paginated: vec![],
+        },
+    )
+    .expect("gen_api");
+    let Err(err) = ontogen::gen_servers(&entities, Some(&api_out), &[], &servers_config(&api, tmp.path())) else {
+        panic!("the generated and the hand-written list collide");
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("fn `workout::list` is defined twice in API directory"), "{msg}");
+    assert!(msg.contains("ApiConfig::scan_dirs"), "{msg}");
+}
+
+#[test]
+fn builder_a_stateless_hand_written_list_does_not_replace_the_generated_one() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let api = tmp.path().join("api");
+    std::fs::create_dir_all(&api).unwrap();
+    std::fs::write(
+        api.join("workout.rs"),
+        "use crate::schema::{AppError, Workout};\n\n#[ontogen::stateless]\n\
+         pub async fn list() -> Result<Vec<Workout>, AppError> { todo!() }\n",
+    )
+    .unwrap();
+    let generated = api.join("generated");
+
+    let err = Pipeline::new(fixture_schema_dir())
+        .api(&generated, "AppState")
+        .api_store_type(Some("Store".into()))
+        .servers(servers_config(&api, tmp.path()))
+        .build()
+        .expect_err("the generated list stays, so the names collide");
+    let msg = err.to_string();
+    assert!(msg.contains("fn `workout::list` is defined twice in API directory"), "{msg}");
+    assert!(msg.contains("never replaces it"), "{msg}");
+}
+
+#[test]
+fn builder_a_missing_explicit_api_scan_dir_is_an_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let err = Pipeline::new(fixture_schema_dir())
+        .api(tmp.path().join("generated"), "AppState")
+        .api_scan_dirs(vec![tmp.path().join("nope")])
+        .build()
+        .expect_err("a missing explicit dir is refused");
+    assert!(err.to_string().contains("API scan directory does not exist"), "{err}");
+}
+
+#[test]
+fn builder_a_missing_transport_api_dir_is_skipped_by_the_api_stage() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let generated = tmp.path().join("elsewhere/generated");
+    let err = Pipeline::new(fixture_schema_dir())
+        .api(&generated, "AppState")
+        .servers(servers_config(&tmp.path().join("missing"), tmp.path()))
+        .build()
+        .expect_err("the servers stage reports its own missing directory");
+    let msg = err.to_string();
+    assert!(msg.contains("API directory does not exist"), "{msg}");
+    assert!(generated.join("workout.rs").exists(), "the api stage ran");
+}

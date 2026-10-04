@@ -398,6 +398,16 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_scan_dir_is_an_error_not_a_panic() {
+        let entities = parse_schema_dir(&schema_dir()).expect("parse failed");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = base_config(tmp.path().join("generated"));
+        config.scan_dirs = vec![tmp.path().join("nope")];
+        let Err(err) = api::generate(&entities, &config) else { panic!("a missing scan dir is refused") };
+        assert!(err.to_string().contains("API scan directory does not exist"), "{err}");
+    }
+
+    #[test]
     fn files_under_the_output_dir_are_not_scanned() {
         let entities = parse_schema_dir(&schema_dir()).expect("parse failed");
         let workout = entities.iter().find(|e| e.name == "Workout").expect("Workout").clone();

@@ -1140,6 +1140,26 @@ pub fn scan_surfaces(surfaces: &[ApiSurface], state_type: &str) -> Result<ScanRe
     Ok(result)
 }
 
+/// The error for a fn name defined by two files of one surface's directory.
+///
+/// The usual cause is a generated `list`/`count` beside a hand-written one the
+/// api stage did not scan, so the message states that rule.
+fn same_surface_duplicate(module: &str, name: &str, dir: &str) -> String {
+    if matches!(name, "list" | "count") {
+        format!(
+            "ontogen: fn `{module}::{name}` is defined twice in API directory `{dir}` (the generated module and a \
+             hand-written one). A hand-written `list` or `count` replaces the generated one only when the api stage \
+             scans this directory (`Pipeline::api_scan_dirs`, or `ApiConfig::scan_dirs` when calling `gen_api` \
+             directly; `Pipeline` already scans the transports' `api_dir`s), and a `#[ontogen::stateless]` `{name}` \
+             never replaces it"
+        )
+    } else {
+        format!(
+            "ontogen: fn `{module}::{name}` is defined twice in API directory `{dir}`; a function name may be defined once per module"
+        )
+    }
+}
+
 /// Merge per-surface module lists into one, folding same-named modules together.
 ///
 /// Module order is the primary surface's, with modules only later surfaces
@@ -1161,6 +1181,9 @@ pub fn merge_surfaces(per_surface: Vec<Vec<ApiModule>>, surfaces: &[ApiSurface])
             existing.has_count |= incoming.has_count;
             for f in incoming.functions {
                 if let Some(prior) = existing.functions.iter().find(|p| p.name == f.name) {
+                    if prior.surface == surface {
+                        return Err(same_surface_duplicate(module, &f.name, &dir(surface).to_string()));
+                    }
                     return Err(format!(
                         "ontogen: fn `{}::{}` is defined by both API surfaces `{}` and `{}`; a function name may come \
                          from one surface only",
@@ -1174,6 +1197,14 @@ pub fn merge_surfaces(per_surface: Vec<Vec<ApiModule>>, surfaces: &[ApiSurface])
             }
             for ev in incoming.events {
                 if let Some(prior) = existing.events.iter().find(|p| p.name == ev.name) {
+                    if prior.surface == surface {
+                        return Err(format!(
+                            "ontogen: event `{}::{}` is defined twice in API directory `{}`",
+                            module,
+                            ev.name,
+                            dir(surface),
+                        ));
+                    }
                     return Err(format!(
                         "ontogen: event `{}::{}` is defined by both API surfaces `{}` and `{}`",
                         module,
@@ -1596,5 +1627,47 @@ mod tests {
         assert!(err.contains("module `task` is paginated"), "{err}");
         assert!(err.contains("a hand-written `list` replaces the generated `count`"), "{err}");
         assert!(err.contains("a `count` taking the same filter as the list"), "{err}");
+    }
+
+    fn one_surface(dir: &Path) -> Vec<crate::servers::ApiSurface> {
+        vec![crate::servers::ApiSurface {
+            api_dir: dir.to_path_buf(),
+            service_import_path: "crate::api".to_string(),
+            types_import_path: "crate::schema".to_string(),
+            store_accessor: None,
+            store_type: Some("Store".to_string()),
+            pagination: None,
+            paginated_modules: Vec::new(),
+            schema_dir: None,
+        }]
+    }
+
+    fn write_task_files(dir: &Path, generated: &str, hand_written: &str) {
+        std::fs::create_dir_all(dir.join("generated")).unwrap();
+        std::fs::write(dir.join("generated/task.rs"), generated).unwrap();
+        std::fs::write(dir.join("task.rs"), hand_written).unwrap();
+    }
+
+    const LIST: &str = "pub async fn list(store: &Store) -> Result<Vec<Task>, AppError> { todo!() }\n";
+
+    #[test]
+    fn a_list_in_the_generated_and_the_hand_written_file_names_the_scan_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_task_files(tmp.path(), LIST, LIST);
+        let err = scan_surfaces(&one_surface(tmp.path()), "AppState").unwrap_err();
+        assert!(err.contains("fn `task::list` is defined twice in API directory"), "{err}");
+        assert!(err.contains("`Pipeline::api_scan_dirs`") && err.contains("`ApiConfig::scan_dirs`"), "{err}");
+        assert!(err.contains("`#[ontogen::stateless]` `list` never replaces it"), "{err}");
+        assert!(!err.contains("both API surfaces"), "{err}");
+    }
+
+    #[test]
+    fn another_duplicated_fn_in_one_surface_says_it_is_defined_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let publish = "pub async fn publish(store: &Store) -> Result<(), AppError> { todo!() }\n";
+        write_task_files(tmp.path(), publish, publish);
+        let err = scan_surfaces(&one_surface(tmp.path()), "AppState").unwrap_err();
+        assert!(err.contains("fn `task::publish` is defined twice in API directory"), "{err}");
+        assert!(!err.contains("api_scan_dirs"), "{err}");
     }
 }

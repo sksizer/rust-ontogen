@@ -634,10 +634,13 @@ pub struct ApiConfig {
     /// replaces the generated one. Files under `output_dir` are not scanned,
     /// so `output_dir` may sit inside a scan directory.
     ///
-    /// Through [`Pipeline`], an empty list means the servers stage's
-    /// `api_dir`, its `extra_surfaces`' `api_dir`s and the clients stage's
-    /// `api_dir`, without repeats. Called directly, an empty list scans
-    /// nothing and only generated CRUD modules are included.
+    /// [`Pipeline`] adds the servers stage's `api_dir`, its `extra_surfaces`'
+    /// `api_dir`s and the clients stage's `api_dir` to this list, without
+    /// repeats. Called directly, only the directories listed here are scanned
+    /// (an empty list scans nothing), so a hand-written `list` or `count` in a
+    /// directory the servers stage reads but this list omits does not replace
+    /// the generated one and the servers stage reports the module as defined
+    /// twice. Every listed directory must exist.
     pub scan_dirs: Vec<PathBuf>,
     /// The application state type name used as the first parameter of every
     /// generated handler (e.g., `"AppState"`).
