@@ -123,8 +123,9 @@ async fn a_list_reports_a_missing_or_mistyped_filter() {
 
     let e = server.err("section_list", json!({ "title_contains": "o" })).await;
     assert_eq!(e, "Missing required parameter: parent_id");
+    // A string filter's type error words its type as every other read does.
     let e = server.err("section_list", json!({ "parent_id": 5 })).await;
-    assert!(e.starts_with("Invalid parameter parent_id: invalid type: integer `5`"), "{e}");
+    assert_eq!(e, "Invalid parameter parent_id: invalid type: integer `5`, expected a string");
     let e = server.err("section_list", json!({ "parent_id": "root", "min_children": "one" })).await;
     assert!(e.starts_with("Invalid filter: invalid type: string \"one\""), "{e}");
     let e = server.err("tag_list", json!({ "min_title_len": -1 })).await;
@@ -149,6 +150,73 @@ fn a_list_advertises_every_argument_it_reads() {
     assert_eq!(properties("outline_list"), names(&["title_contains", "limit", "offset"]));
     assert_eq!(properties("task_get_summary"), names(&["status", "verbose", "limit"]));
     assert_eq!(properties("task_capture"), names(&["input", "status"]));
+}
+
+/// Every tool, not only a list, refuses an argument its input schema does
+/// not name, with the list's error, and does nothing: CRUD (in a module
+/// with an entity and in one without), custom `GET` and `POST`, and
+/// junction ops.
+#[tokio::test]
+async fn every_tool_refuses_an_argument_it_does_not_read() {
+    let server = Server::new();
+    let task = json!({ "title": "Write docs", "status": "open", "body": "" });
+    server.ok("task_create", task.clone()).await;
+    server.ok("tag_create", json!({ "title": "Docs" })).await;
+
+    let with = |args: Value, key: &str| {
+        let mut args = args;
+        args.as_object_mut().expect("object").insert(key.to_string(), json!(1));
+        args
+    };
+    for (tool, args) in [
+        ("task_get_by_id", json!({ "id": "write-docs" })),
+        ("task_create", json!({ "title": "Other", "status": "open", "body": "" })),
+        ("task_update", json!({ "id": "write-docs", "status": "done" })),
+        ("task_delete", json!({ "id": "write-docs" })),
+        ("bookmark_create", json!({ "url": "https://a.example", "title": "A" })),
+        ("task_get_summary", json!({ "status": "open" })),
+        ("task_capture", json!({ "input": { "title": "Plan", "status": "open", "body": "" } })),
+        ("task_set_state", json!({ "id": "write-docs", "state": "blocked" })),
+        ("task_complete", json!({ "id": "write-docs" })),
+        ("task_purge_done", json!({})),
+        ("task_add_tag", json!({ "id": "write-docs", "tag_id": "docs" })),
+        ("task_remove_tag", json!({ "id": "write-docs", "tag_id": "docs" })),
+        ("task_list_tags", json!({ "id": "write-docs" })),
+    ] {
+        assert_eq!(server.err(tool, with(args, "extra")).await, "Unknown argument: extra", "{tool}");
+    }
+
+    // Nothing was written: the task is as created, with no tag, and no
+    // other task or bookmark exists.
+    let stored = server.ok("task_get_by_id", json!({ "id": "write-docs" })).await;
+    assert_eq!((stored["title"].as_str(), stored["status"].as_str()), (Some("Write docs"), Some("open")));
+    assert_eq!(server.ok("task_list", json!({})).await["total"], 1);
+    assert_eq!(server.ok("task_list_tags", json!({ "id": "write-docs" })).await["total"], 0);
+    assert_eq!(server.ok("bookmark_list", json!({})).await["total"], 0);
+
+    // The body's own fields stay nested under it: one at the top level is
+    // no argument of a tool that takes the body beside another argument.
+    let e = server.err("task_capture", json!({ "input": task, "title": "Ship it" })).await;
+    assert_eq!(e, "Unknown argument: title");
+}
+
+/// The arguments a tool's schema names are still read: a custom op and a
+/// CRUD tool called with each of them answer as before.
+#[tokio::test]
+async fn a_tool_still_reads_every_argument_it_names() {
+    let server = Server::new();
+    let task = server
+        .ok("task_capture", json!({ "input": { "title": "Ship it", "status": "open", "body": "" }, "status": "done" }))
+        .await;
+    assert_eq!(task["status"], "done");
+    assert_eq!(properties("task_update"), names(&["id", "title", "status", "parent_id", "subtasks", "tags", "body"]));
+    let args = json!({ "id": "ship-it", "title": "Shipped", "status": "open", "parent_id": null, "subtasks": [],
+                       "tags": [], "body": "b" });
+    assert_eq!(server.ok("task_update", args).await, json!({ "success": true }));
+    let stored = server.ok("task_get_by_id", json!({ "id": "ship-it" })).await;
+    assert_eq!((stored["title"].as_str(), stored["body"].as_str()), (Some("Shipped"), Some("b")));
+    let summary = server.ok("task_get_summary", json!({ "status": "open", "verbose": true, "limit": 1 })).await;
+    assert_eq!(summary["count"], 1);
 }
 
 #[tokio::test]
@@ -202,7 +270,7 @@ async fn crud_tools_over_the_store() {
     server.ok("task_update", json!({ "id": "write-docs", "status": "done" })).await;
     assert_eq!(server.ok("task_get_by_id", json!({ "id": "write-docs" })).await["status"], "done");
     let e = server.err("task_get_by_id", json!({ "id": 7 })).await;
-    assert!(e.starts_with("Invalid parameter id: invalid type: integer `7`"), "{e}");
+    assert_eq!(e, "Invalid parameter id: invalid type: integer `7`, expected a string");
     assert_eq!(server.err("task_get_by_id", json!({})).await, "Missing required parameter: id");
 
     server.ok("task_delete", json!({ "id": "write-docs" })).await;

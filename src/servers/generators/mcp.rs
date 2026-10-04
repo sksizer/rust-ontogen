@@ -150,9 +150,14 @@ fn schema_for_with_int_id<T: JsonSchema>() -> Value {{
 }}
 
 /// The string argument `key`: missing is one error, any other type another.
+/// A value of another type is worded as serde words it for a `String`
+/// (`expected a string`), not for a `&str` (`expected a borrowed string`).
 fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {{
     let value = args.get(key).ok_or_else(|| format!(\"Missing required parameter: {{key}}\"))?;
-    <&str>::deserialize(value).map_err(|e| format!(\"Invalid parameter {{key}}: {{e}}\"))
+    value.as_str().ok_or_else(|| {{
+        let e = String::deserialize(value).expect_err(\"a value that is no string is no String\");
+        format!(\"Invalid parameter {{key}}: {{e}}\")
+    }})
 }}
 
 /// `args` without the keys a tool reads on its own: the rest is the struct
@@ -168,8 +173,17 @@ fn args_without(args: &Value, keys: &[&str]) -> Value {{
 }}
 
 /// Refuses an argument the tool's input schema does not name, so a
-/// misspelt filter is an error rather than a wider list.
+/// misspelt argument is an error rather than one silently dropped (a
+/// misspelt filter is not a wider list). A schema that leaves its object
+/// open (an `additionalProperties` other than `false`) or composes it
+/// (`allOf`, `anyOf`, `oneOf`, `$ref`) names no closed set of arguments, so
+/// it refuses none.
 fn refuse_unknown_args(args: &Value, schema: Value) -> Result<(), String> {{
+    let open = schema.get(\"additionalProperties\").is_some_and(|a| a != &Value::Bool(false))
+        || [\"allOf\", \"anyOf\", \"oneOf\", \"$ref\"].iter().any(|k| schema.get(*k).is_some());
+    if open {{
+        return Ok(());
+    }}
     let named = schema.get(\"properties\").and_then(Value::as_object);
     let unknown = args.as_object().and_then(|args| args.keys().find(|key| !named.is_some_and(|n| n.contains_key(*key))));
     match unknown {{
@@ -318,13 +332,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                         None => "EmptyInput".to_string(),
                     };
                     let schema_base = format!("schema_for::<{schema_input}>");
-                    let schema_fn = tool_schema_fn(&schema_base, config, paginate);
-                    // The input schema names every argument the tool reads, so
-                    // an argument it does not name would be silently ignored.
-                    let mut extraction = format!(
-                        "                    refuse_unknown_args(ontogen_args, {})?;\n",
-                        tool_schema_value(&schema_base, config, paginate)
-                    );
+                    let mut extraction = String::new();
                     if let Some(qp) = f.filter_struct() {
                         let qt = extract_input_type(&qp.ty);
                         let rest = struct_args(&list_struct_skipped_keys(f, config, paginate));
@@ -386,13 +394,14 @@ fn with_pagination_schema(mut schema: Value) -> Value {
 "
                         )
                     };
-                    push_tool(&mut out, &tool_name, &desc, &schema_fn, &format!("{extraction}{body}"));
+                    let schema = ToolSchema { base: &schema_base, config, paginate };
+                    push_tool(&mut out, &tool_name, &desc, &schema, &format!("{extraction}{body}"));
                 }
 
                 OpKind::GetById => {
                     let await_str = if is_async { ".await" } else { "" };
                     let fn_name = &f.name;
-                    let schema_fn = tool_schema_fn("schema_for::<GetByIdInput>", config, false);
+                    let schema = ToolSchema { base: "schema_for::<GetByIdInput>", config, paginate: false };
                     let body = format!(
                         "\
 {prefix}                    let id = required_str(ontogen_args, \"id\")?;
@@ -400,13 +409,14 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     serde_json::to_value(item).map_err(|e| format!(\"Serialize error: {{e}}\"))
 "
                     );
-                    push_tool(&mut out, &tool_name, &desc, &schema_fn, &body);
+                    push_tool(&mut out, &tool_name, &desc, &schema, &body);
                 }
 
                 OpKind::Create => {
                     let input_type = extract_input_type(&f.params[0].ty);
                     let await_str = if is_async { ".await" } else { "" };
-                    let schema_fn = tool_schema_fn(&format!("schema_for::<{input_type}>"), config, false);
+                    let schema_base = format!("schema_for::<{input_type}>");
+                    let schema = ToolSchema { base: &schema_base, config, paginate: false };
                     let rest = struct_args(&scope_key(config).into_iter().collect::<Vec<_>>());
                     let body = format!(
                         "\
@@ -416,13 +426,14 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     Ok(json!({{\"success\": true}}))
 "
                     );
-                    push_tool(&mut out, &tool_name, &desc, &schema_fn, &body);
+                    push_tool(&mut out, &tool_name, &desc, &schema, &body);
                 }
 
                 OpKind::Update => {
                     let input_type = extract_input_type(&f.params[1].ty);
                     let await_str = if is_async { ".await" } else { "" };
-                    let schema_fn = tool_schema_fn(&format!("schema_for_with_str_id::<{input_type}>"), config, false);
+                    let schema_base = format!("schema_for_with_str_id::<{input_type}>");
+                    let schema = ToolSchema { base: &schema_base, config, paginate: false };
                     let rest =
                         struct_args(&["id".to_string()].into_iter().chain(scope_key(config)).collect::<Vec<_>>());
                     let body = format!(
@@ -434,12 +445,12 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     Ok(json!({{\"success\": true}}))
 "
                     );
-                    push_tool(&mut out, &tool_name, &desc, &schema_fn, &body);
+                    push_tool(&mut out, &tool_name, &desc, &schema, &body);
                 }
 
                 OpKind::Delete => {
                     let await_str = if is_async { ".await" } else { "" };
-                    let schema_fn = tool_schema_fn("schema_for::<GetByIdInput>", config, false);
+                    let schema = ToolSchema { base: "schema_for::<GetByIdInput>", config, paginate: false };
                     let body = format!(
                         "\
 {prefix}                    let id = required_str(ontogen_args, \"id\")?.to_string();
@@ -447,7 +458,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     Ok(json!({{\"success\": true}}))
 "
                     );
-                    push_tool(&mut out, &tool_name, &desc, &schema_fn, &body);
+                    push_tool(&mut out, &tool_name, &desc, &schema, &body);
                 }
 
                 OpKind::JunctionList { .. } => {
@@ -553,7 +564,8 @@ fn generate_generic_mcp_tool(out: &mut String, m: &ApiModule, f: &ApiFn, config:
         (None, true) => "EmptyInput".to_string(),
         (None, false) => generic_input_schema_name(m, f),
     };
-    let schema_fn = tool_schema_fn(&format!("schema_for::<{schema_input}>"), config, pagination.is_some());
+    let schema_base = format!("schema_for::<{schema_input}>");
+    let schema = ToolSchema { base: &schema_base, config, paginate: pagination.is_some() };
 
     let mut extraction = String::new();
     let mut call_args: Vec<String> = first_arg.map(str::to_string).into_iter().collect();
@@ -587,7 +599,7 @@ fn generate_generic_mcp_tool(out: &mut String, m: &ApiModule, f: &ApiFn, config:
             "                    let ontogen_result = {call};\n                    serde_json::to_value(ontogen_result).map_err(|e| format!(\"Serialize error: {{e}}\"))\n"
         )
     };
-    push_tool(out, &tool_name, &desc, &schema_fn, &format!("{extraction}{hp}{result}"));
+    push_tool(out, &tool_name, &desc, &schema, &format!("{extraction}{hp}{result}"));
 }
 
 /// The closing of a paginated list tool: the page and its total.
@@ -611,10 +623,25 @@ fn in_memory_page(default_limit: u32, max_limit: u32) -> String {
     )
 }
 
+/// A tool's input schema: `base` (a `schema_for::<T>` path), with the
+/// scope's argument when a route prefix is configured and the page's when
+/// `paginate`.
+struct ToolSchema<'a> {
+    base: &'a str,
+    config: &'a Config,
+    paginate: bool,
+}
+
 /// One entry of the tool registry. The handler's own bindings are
 /// `ontogen_`-prefixed so an argument bound under its fn param's name
 /// (`state`, `store`, `limit`, ...) cannot shadow them.
-fn push_tool(out: &mut String, tool_name: &str, desc: &str, schema_fn: &str, body: &str) {
+///
+/// The input schema names every argument the tool reads, so the handler
+/// first refuses an argument it does not name, which would otherwise be
+/// silently ignored, as HTTP refuses an unknown member.
+fn push_tool(out: &mut String, tool_name: &str, desc: &str, schema: &ToolSchema, body: &str) {
+    let schema_fn = tool_schema_fn(schema.base, schema.config, schema.paginate);
+    let schema_value = tool_schema_value(schema.base, schema.config, schema.paginate);
     out.push_str(&format!(
         "\
         McpToolDef {{
@@ -623,6 +650,7 @@ fn push_tool(out: &mut String, tool_name: &str, desc: &str, schema_fn: &str, bod
             schema_fn: {schema_fn},
             handler: |ontogen_state, ontogen_args| {{
                 Box::pin(async move {{
+                    refuse_unknown_args(ontogen_args, {schema_value})?;
 {body}                }})
             }},
         }},

@@ -34,9 +34,9 @@ fn prefix_validation_line(config: &Config) -> String {
             let pp = &prefix.params[0];
             let accessor = &prefix.state_accessor;
             format!(
-                "    if let Some(ref pid) = {} {{\n\
-                 \x20       let uuid = uuid::Uuid::parse_str(pid).map_err(|e| e.to_string())?;\n\
-                 \x20       state.{}(&uuid).map_err(|e| e.to_string())?;\n\
+                "    if let Some(ref ontogen_pid) = {} {{\n\
+                 \x20       let ontogen_uuid = uuid::Uuid::parse_str(ontogen_pid).map_err(|ontogen_e| ontogen_e.to_string())?;\n\
+                 \x20       ontogen_state.{}(&ontogen_uuid).map_err(|ontogen_e| ontogen_e.to_string())?;\n\
                  \x20   }}\n",
                 pp.name, accessor,
             )
@@ -49,7 +49,7 @@ fn prefix_validation_line(config: &Config) -> String {
 ///
 /// When project_id is provided, constructs Store via store_for().
 /// When not provided, falls back to the fn's surface accessor
-/// (`state.{store_accessor}().await`).
+/// (`ontogen_state.{store_accessor}().await`).
 fn store_construction_line(config: &Config, f: &ApiFn) -> String {
     let store_accessor = &f.store_accessor;
     match &config.route_prefix {
@@ -57,16 +57,18 @@ fn store_construction_line(config: &Config, f: &ApiFn) -> String {
             let pp = &prefix.params[0];
             let accessor = &prefix.state_accessor;
             format!(
-                "    let store = if let Some(ref pid) = {} {{\n\
-                 \x20       let uuid = uuid::Uuid::parse_str(pid).map_err(|e| e.to_string())?;\n\
-                 \x20       state.{}(&uuid).map_err(|e| e.to_string())?\n\
+                "    let ontogen_store = if let Some(ref ontogen_pid) = {} {{\n\
+                 \x20       let ontogen_uuid = uuid::Uuid::parse_str(ontogen_pid).map_err(|ontogen_e| ontogen_e.to_string())?;\n\
+                 \x20       ontogen_state.{}(&ontogen_uuid).map_err(|ontogen_e| ontogen_e.to_string())?\n\
                  \x20   }} else {{\n\
-                 \x20       state.{store_accessor}().await.map_err(|e| e.to_string())?\n\
+                 \x20       ontogen_state.{store_accessor}().await.map_err(|ontogen_e| ontogen_e.to_string())?\n\
                  \x20   }};\n",
                 pp.name, accessor,
             )
         }
-        None => format!("    let store = state.{store_accessor}().await.map_err(|e| e.to_string())?;\n"),
+        None => format!(
+            "    let ontogen_store = ontogen_state.{store_accessor}().await.map_err(|ontogen_e| ontogen_e.to_string())?;\n"
+        ),
     }
 }
 
@@ -88,7 +90,67 @@ pub fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
     })
 }
 
+/// Refuses a fn whose IPC command would take an argument under a name the
+/// command itself takes another parameter under. A command's parameter
+/// names are the IPC wire keys the TS transport invokes it with, so neither
+/// side can be renamed in the generated code:
+///
+/// - a list that takes a `*Query` struct takes it as `query`, so no other
+///   argument of it may be named `query`;
+/// - a paginated junction list takes the page as `limit` and `offset`, so
+///   its one argument, the parent's id, may be named neither (a paginated
+///   list's own page is its last two parameters, which
+///   `parse::check_paginated_lists` holds it to, so it has no other `limit`
+///   or `offset`);
+/// - an event subscription takes its channel as `channel`, so no argument of
+///   the event fn may be named `channel`.
+pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<(), String> {
+    let refuse = |m: &ApiModule, fn_name: &str, command: &str, arg: &str, use_: &str| {
+        Err(format!(
+            "ontogen: the IPC command `{command}` cannot be generated: `{}::{fn_name}` takes an argument named \
+             `{arg}`, which is the IPC wire key the command itself uses for {use_}, so the two would collide. \
+             Rename the argument.",
+            m.name
+        ))
+    };
+    for m in modules {
+        for f in &m.functions {
+            let command = command_name(&m.name, f, config);
+            match classify_op(f) {
+                OpKind::List if f.filter_struct().is_some() => {
+                    if let Some(p) = f.bare_filters().into_iter().find(|p| p.name == "query") {
+                        return refuse(m, &f.name, &command, &p.name, "the list's `*Query` filter struct");
+                    }
+                }
+                OpKind::JunctionList { .. }
+                    if config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<") =>
+                {
+                    if let Some(p) = f.params.iter().find(|p| p.name == "limit" || p.name == "offset") {
+                        return refuse(m, &f.name, &command, &p.name, "the page's `limit` and `offset`");
+                    }
+                }
+                _ => {}
+            }
+        }
+        for ev in &m.events {
+            if let Some(p) = ev.params.iter().find(|p| p.name == "channel") {
+                let command = format!("{}_subscribe", ev.name);
+                return refuse(m, &ev.name, &command, &p.name, "the subscription's event channel");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Generate IPC command handlers and write to the output file.
+///
+/// Each command parameter that carries a fn argument is named after it, as
+/// that name is the IPC wire key the TS transport invokes with. Every other
+/// binding a command makes of its own is `ontogen_`-prefixed
+/// (`ontogen_state`, `ontogen_store`, `ontogen_limit`, …), so an argument
+/// named `state`, `store` or `limit` neither collides with one nor is
+/// shadowed by one. Tauri's `State` extractor is matched by type, not by
+/// name, so its parameter is not a wire key.
 pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
     let mut out = String::new();
     let state_type = &config.state_type;
@@ -163,9 +225,9 @@ pub struct PaginatedResult<T: Serialize> {
 
             // Determine per-function prefix and first-arg behavior
             let (fn_pp_line, fn_pp_body, first_arg) = if f.first_param_is_store {
-                (pp_line.clone(), store_construction_line(config, f), "&store")
+                (pp_line.clone(), store_construction_line(config, f), "&ontogen_store")
             } else {
-                (pp_line.clone(), pp_validate.clone(), "&state")
+                (pp_line.clone(), pp_validate.clone(), "&ontogen_state")
             };
 
             match op {
@@ -206,15 +268,15 @@ pub struct PaginatedResult<T: Serialize> {
                             "\
 #[tauri::command]
 pub async fn {cmd_name}(
-{param_lines}{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
+{param_lines}{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
 ) -> Result<PaginatedResult<{item_type}>, String> {{
-{fn_pp_body}    let limit = limit.unwrap_or({default_limit}).min({max_limit});
-    let offset = offset.unwrap_or(0);
-    let items = {svc}::list({first_arg}{list_args}, Some(u64::from(limit)), Some(u64::from(offset))){await_str}
-        .map_err(|e| e.to_string())?;
-    let total = {svc}::count({first_arg}{count_args}){await_str}
-        .map_err(|e| e.to_string())?;
-    Ok(PaginatedResult {{ items, total, limit, offset }})
+{fn_pp_body}    let ontogen_limit = limit.unwrap_or({default_limit}).min({max_limit});
+    let ontogen_offset = offset.unwrap_or(0);
+    let ontogen_items = {svc}::list({first_arg}{list_args}, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset))){await_str}
+        .map_err(|ontogen_e| ontogen_e.to_string())?;
+    let ontogen_total = {svc}::count({first_arg}{count_args}){await_str}
+        .map_err(|ontogen_e| ontogen_e.to_string())?;
+    {PAGE_RESULT}
 }}
 
 "
@@ -226,10 +288,10 @@ pub async fn {cmd_name}(
                             "\
 #[tauri::command]
 pub async fn {cmd_name}(
-{param_lines}{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
+{param_lines}{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
 {fn_pp_body}    {svc}::list({first_arg}{extra_args}{page_args}){await_str}
-        .map_err(|e| e.to_string())
+        .map_err(|ontogen_e| ontogen_e.to_string())
 }}
 
 "
@@ -247,11 +309,11 @@ pub async fn {cmd_name}(
 #[tauri::command]
 pub async fn {cmd_name}(
     id: String,
-{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
+{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
 {fn_pp_body}    {svc}::{fn_name}({first_arg}, &id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|ontogen_e| ontogen_e.to_string())
 }}
 
 "
@@ -262,10 +324,10 @@ pub async fn {cmd_name}(
 #[tauri::command]
 pub async fn {cmd_name}(
     id: String,
-{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
+{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
 {fn_pp_body}    {svc}::{fn_name}({first_arg}, &id)
-        .map_err(|e| e.to_string())
+        .map_err(|ontogen_e| ontogen_e.to_string())
 }}
 
 "
@@ -283,10 +345,10 @@ pub async fn {cmd_name}(
 #[tauri::command]
 pub async fn {cmd_name}(
     input: {input_type},
-{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
+{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
 {fn_pp_body}    {svc}::create({first_arg}, input){await_str}
-        .map_err(|e| e.to_string())
+        .map_err(|ontogen_e| ontogen_e.to_string())
 }}
 
 "
@@ -304,10 +366,10 @@ pub async fn {cmd_name}(
 pub async fn {cmd_name}(
     id: String,
     input: {input_type},
-{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
+{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
 {fn_pp_body}    {svc}::update({first_arg}, &id, input){await_str}
-        .map_err(|e| e.to_string())
+        .map_err(|ontogen_e| ontogen_e.to_string())
 }}
 
 "
@@ -323,10 +385,10 @@ pub async fn {cmd_name}(
 #[tauri::command]
 pub async fn {cmd_name}(
     id: String,
-{fn_pp_line}    state: State<'_, Arc<{state_type}>>,
+{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
 ) -> Result<(), String> {{
 {fn_pp_body}    {svc}::delete({first_arg}, &id){await_str}
-        .map_err(|e| e.to_string())
+        .map_err(|ontogen_e| ontogen_e.to_string())
 }}
 
 "
@@ -482,18 +544,18 @@ fn generate_event_subscription(out: &mut String, m: &ApiModule, ev: &EventFn, co
     }
     out.push_str(&format!(
         "    channel: tauri::ipc::Channel<ontogen_core::events::EventFrame<{item_type}>>,\n\
-         \x20   state: State<'_, Arc<{state_type}>>,\n\
+         \x20   ontogen_state: State<'_, Arc<{state_type}>>,\n\
          ) -> Result<u64, String> {{\n"
     ));
-    let mut args = vec!["&state".to_string()];
+    let mut args = vec!["&ontogen_state".to_string()];
     args.extend(ev.params.iter().map(|p| forward_arg_expr(&p.name, &p.ty_ast)));
     let await_str = if ev.is_async { ".await" } else { "" };
-    let map_err = if ev.returns_result { ".map_err(|e| e.to_string())?" } else { "" };
+    let map_err = if ev.returns_result { ".map_err(|ontogen_e| ontogen_e.to_string())?" } else { "" };
     let id_fn = if ev.is_resumable() { "ontogen_core::events::seq_id" } else { "ontogen_core::events::no_id" };
     out.push_str(&format!(
-        "    let rx = {svc}::{fn_name}({}){await_str}{map_err};\n\
-         \x20   Ok(EVENT_SUBSCRIPTIONS.spawn(ontogen_core::events::forward(rx, {id_fn}, move |frame| {{\n\
-         \x20       channel.send(frame)\n\
+        "    let ontogen_rx = {svc}::{fn_name}({}){await_str}{map_err};\n\
+         \x20   Ok(EVENT_SUBSCRIPTIONS.spawn(ontogen_core::events::forward(ontogen_rx, {id_fn}, move |ontogen_frame| {{\n\
+         \x20       channel.send(ontogen_frame)\n\
          \x20   }})))\n\
          }}\n\n",
         args.join(", ")
@@ -518,16 +580,16 @@ fn generate_generic_ipc_handler(out: &mut String, m: &ApiModule, f: &ApiFn, conf
     let state_type = &config.state_type;
     let pp_line = prefix_param_line(config);
 
-    // Stateless handlers omit the `state: State<...>` extractor, the prefix
+    // Stateless handlers omit the `ontogen_state: State<...>` extractor, the prefix
     // validation / store-construction body, and the positional state/store
     // argument when forwarding to the service function. The route-prefix
     // parameter (e.g. `:project_id`) is still threaded through if configured.
     let (fn_pp_body, first_arg) = if f.is_stateless {
         (String::new(), None)
     } else if f.first_param_is_store {
-        (store_construction_line(config, f), Some("&store"))
+        (store_construction_line(config, f), Some("&ontogen_store"))
     } else {
-        (prefix_validation_line(config), Some("&state"))
+        (prefix_validation_line(config), Some("&ontogen_state"))
     };
 
     let cmd_fn_name = command_name(module, f, config);
@@ -540,7 +602,7 @@ fn generate_generic_ipc_handler(out: &mut String, m: &ApiModule, f: &ApiFn, conf
 
     out.push_str(&pp_line);
     if !f.is_stateless {
-        out.push_str(&format!("    state: State<'_, Arc<{state_type}>>,\n"));
+        out.push_str(&format!("    ontogen_state: State<'_, Arc<{state_type}>>,\n"));
     }
     out.push_str(&format!(") -> Result<{}, String> {{\n", ret_type));
     out.push_str(&fn_pp_body);
@@ -560,7 +622,7 @@ fn generate_generic_ipc_handler(out: &mut String, m: &ApiModule, f: &ApiFn, conf
     }
     out.push(')');
     out.push_str(await_str);
-    out.push_str("\n        .map_err(|e| e.to_string())\n");
+    out.push_str("\n        .map_err(|ontogen_e| ontogen_e.to_string())\n");
     out.push_str("}\n\n");
 }
 
@@ -589,9 +651,9 @@ fn generate_paginated_ipc_handler(
     let (fn_pp_body, first_arg) = if f.is_stateless {
         (String::new(), None)
     } else if f.first_param_is_store {
-        (store_construction_line(config, f), Some("&store"))
+        (store_construction_line(config, f), Some("&ontogen_store"))
     } else {
-        (prefix_validation_line(config), Some("&state"))
+        (prefix_validation_line(config), Some("&ontogen_state"))
     };
 
     let cmd_fn_name = command_name(module, f, config);
@@ -606,12 +668,12 @@ fn generate_paginated_ipc_handler(
     out.push_str("    offset: Option<u32>,\n");
     out.push_str(&pp_line);
     if !f.is_stateless {
-        out.push_str(&format!("    state: State<'_, Arc<{state_type}>>,\n"));
+        out.push_str(&format!("    ontogen_state: State<'_, Arc<{state_type}>>,\n"));
     }
     out.push_str(&format!(") -> Result<PaginatedResult<{}>, String> {{\n", item_type));
     out.push_str(&fn_pp_body);
 
-    out.push_str(&format!("    let all_items = {}::{}(", svc, fn_name));
+    out.push_str(&format!("    let ontogen_all = {}::{}(", svc, fn_name));
     let mut first = true;
     if let Some(arg) = first_arg {
         out.push_str(arg);
@@ -626,11 +688,23 @@ fn generate_paginated_ipc_handler(
     }
     out.push(')');
     out.push_str(await_str);
-    out.push_str("\n        .map_err(|e| e.to_string())?;\n");
-    out.push_str("    let total = all_items.len() as u64;\n");
-    out.push_str(&format!("    let limit = limit.unwrap_or({default_limit}).min({max_limit});\n"));
-    out.push_str("    let offset = offset.unwrap_or(0);\n");
-    out.push_str("    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();\n");
-    out.push_str("    Ok(PaginatedResult { items, total, limit, offset })\n");
+    out.push_str("\n        .map_err(|ontogen_e| ontogen_e.to_string())?;\n");
+    out.push_str("    let ontogen_total = ontogen_all.len() as u64;\n");
+    out.push_str(&format!("    let ontogen_limit = limit.unwrap_or({default_limit}).min({max_limit});\n"));
+    out.push_str("    let ontogen_offset = offset.unwrap_or(0);\n");
+    out.push_str(
+        "    let ontogen_items = ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();\n",
+    );
+    out.push_str(PAGE_RESULT);
+    out.push('\n');
     out.push_str("}\n\n");
 }
+
+/// The closing of a paginated command: the page and its total, from the
+/// command's `ontogen_`-prefixed bindings.
+const PAGE_RESULT: &str = "    Ok(PaginatedResult {
+        items: ontogen_items,
+        total: ontogen_total,
+        limit: ontogen_limit,
+        offset: ontogen_offset,
+    })";

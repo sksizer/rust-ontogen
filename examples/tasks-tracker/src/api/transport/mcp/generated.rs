@@ -66,9 +66,14 @@ fn schema_for_with_int_id<T: JsonSchema>() -> Value {
 }
 
 /// The string argument `key`: missing is one error, any other type another.
+/// A value of another type is worded as serde words it for a `String`
+/// (`expected a string`), not for a `&str` (`expected a borrowed string`).
 fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     let value = args.get(key).ok_or_else(|| format!("Missing required parameter: {key}"))?;
-    <&str>::deserialize(value).map_err(|e| format!("Invalid parameter {key}: {e}"))
+    value.as_str().ok_or_else(|| {
+        let e = String::deserialize(value).expect_err("a value that is no string is no String");
+        format!("Invalid parameter {key}: {e}")
+    })
 }
 
 /// `args` without the keys a tool reads on its own: the rest is the struct
@@ -84,8 +89,17 @@ fn args_without(args: &Value, keys: &[&str]) -> Value {
 }
 
 /// Refuses an argument the tool's input schema does not name, so a
-/// misspelt filter is an error rather than a wider list.
+/// misspelt argument is an error rather than one silently dropped (a
+/// misspelt filter is not a wider list). A schema that leaves its object
+/// open (an `additionalProperties` other than `false`) or composes it
+/// (`allOf`, `anyOf`, `oneOf`, `$ref`) names no closed set of arguments, so
+/// it refuses none.
 fn refuse_unknown_args(args: &Value, schema: Value) -> Result<(), String> {
+    let open = schema.get("additionalProperties").is_some_and(|a| a != &Value::Bool(false))
+        || ["allOf", "anyOf", "oneOf", "$ref"].iter().any(|k| schema.get(*k).is_some());
+    if open {
+        return Ok(());
+    }
     let named = schema.get("properties").and_then(Value::as_object);
     let unknown =
         args.as_object().and_then(|args| args.keys().find(|key| !named.is_some_and(|n| n.contains_key(*key))));
@@ -167,6 +181,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for::<GetByIdInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<GetByIdInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let id = required_str(ontogen_args, "id")?;
                     let item = epic::get_by_id(&ontogen_store, id).await.map_err(|e| e.to_string())?;
@@ -180,6 +195,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for::<CreateEpicInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<CreateEpicInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let input: CreateEpicInput =
                         serde_json::from_value(ontogen_args.clone()).map_err(|e| format!("Invalid input: {e}"))?;
@@ -194,6 +210,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for_with_str_id::<UpdateEpicInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for_with_str_id::<UpdateEpicInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let id = required_str(ontogen_args, "id")?.to_string();
                     let input: UpdateEpicInput = serde_json::from_value(args_without(ontogen_args, &["id"]))
@@ -209,6 +226,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for::<GetByIdInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<GetByIdInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let id = required_str(ontogen_args, "id")?.to_string();
                     epic::delete(&ontogen_store, &id).await.map_err(|e| e.to_string())?;
@@ -245,6 +263,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for::<GetByIdInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<GetByIdInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let id = required_str(ontogen_args, "id")?;
                     let item = tag::get_by_id(&ontogen_store, id).await.map_err(|e| e.to_string())?;
@@ -258,6 +277,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for::<CreateTagInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<CreateTagInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let input: CreateTagInput =
                         serde_json::from_value(ontogen_args.clone()).map_err(|e| format!("Invalid input: {e}"))?;
@@ -272,6 +292,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for_with_str_id::<UpdateTagInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for_with_str_id::<UpdateTagInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let id = required_str(ontogen_args, "id")?.to_string();
                     let input: UpdateTagInput = serde_json::from_value(args_without(ontogen_args, &["id"]))
@@ -287,6 +308,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for::<GetByIdInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<GetByIdInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let id = required_str(ontogen_args, "id")?.to_string();
                     tag::delete(&ontogen_store, &id).await.map_err(|e| e.to_string())?;
@@ -300,6 +322,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for::<GetByIdInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<GetByIdInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let id = required_str(ontogen_args, "id")?;
                     let item = task::get_by_id(&ontogen_store, id).await.map_err(|e| e.to_string())?;
@@ -313,6 +336,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for::<CreateTaskInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<CreateTaskInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let input: CreateTaskInput =
                         serde_json::from_value(ontogen_args.clone()).map_err(|e| format!("Invalid input: {e}"))?;
@@ -327,6 +351,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for_with_str_id::<UpdateTaskInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for_with_str_id::<UpdateTaskInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let id = required_str(ontogen_args, "id")?.to_string();
                     let input: UpdateTaskInput = serde_json::from_value(args_without(ontogen_args, &["id"]))
@@ -342,6 +367,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             schema_fn: schema_for::<GetByIdInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<GetByIdInput>())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let id = required_str(ontogen_args, "id")?.to_string();
                     task::delete(&ontogen_store, &id).await.map_err(|e| e.to_string())?;
