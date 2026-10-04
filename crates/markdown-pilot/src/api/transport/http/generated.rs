@@ -10,11 +10,11 @@ use axum::{
     extract::State,
     http::{Method, StatusCode},
     response::Response,
-    routing::get,
+    routing::{delete, get, post},
 };
 use ontogen_jsonapi::{
     Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
-    ResourceIdentifier, ResourceObject,
+    ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
     error::method_not_allowed,
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::{CanonicalQuery, encode_path_segment, pagination_links},
@@ -24,11 +24,14 @@ use ontogen_jsonapi::{
 use serde::Serialize;
 
 use crate::AppState;
-use crate::api::{note, section, tag, task};
+use crate::api::{bookmark, note, section, tag, task};
 use crate::schema::{
-    CreateNoteInput, CreateSectionInput, CreateTagInput, CreateTaskInput, Note, Section, Tag, Task, UpdateNoteInput,
-    UpdateSectionInput, UpdateTagInput, UpdateTaskInput,
+    CreateBookmarkInput, CreateNoteInput, CreateSectionInput, CreateTagInput, CreateTaskInput, Note, Section, Tag,
+    Task, UpdateBookmarkInput, UpdateNoteInput, UpdateSectionInput, UpdateTagInput, UpdateTaskInput,
 };
+use axum::response::sse::{Event, KeepAlive, Sse};
+use ontogen_core::events::EventFrame;
+use std::convert::Infallible;
 
 /// An `AppError` as an error object: the status its variant's name gives,
 /// and the name in snake_case as the code.
@@ -47,6 +50,7 @@ fn app_error(e: crate::schema::AppError) -> ErrorObject {
         crate::schema::AppError::TagNotFound(..) => (StatusCode::NOT_FOUND, "tag_not_found"),
         crate::schema::AppError::TagIdRequired(..) => (StatusCode::BAD_REQUEST, "tag_id_required"),
         crate::schema::AppError::TagAlreadyExists(..) => (StatusCode::CONFLICT, "tag_already_exists"),
+        crate::schema::AppError::BookmarkNotFound(..) => (StatusCode::NOT_FOUND, "bookmark_not_found"),
         crate::schema::AppError::Md(..) => (StatusCode::INTERNAL_SERVER_ERROR, "md"),
     };
     ErrorObject::app(status, code, e.to_string())
@@ -63,6 +67,60 @@ fn allow<const N: usize>(
     allowed: [Method; N],
 ) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
     move |method| std::future::ready(method_not_allowed(&method, &allowed))
+}
+
+/// One page of a list that is not served as a resource.
+#[derive(Serialize)]
+pub struct PaginatedResult<T: Serialize> {
+    pub items: Vec<T>,
+    pub total: u64,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+/// Writes an event item that is not an entity as `{"meta":{"result":…}}`.
+fn result_frame<T: Serialize>(event: Event, item: &T) -> Result<Event, axum::Error> {
+    event.json_data(ResultFrame::new(item))
+}
+
+/// A paginated list that is not served as a resource takes its page as
+/// `opArg[limit]` and `opArg[offset]`.
+struct PageOpArgs;
+
+impl RouteQuery for PageOpArgs {
+    const SPEC: QuerySpec = QuerySpec { op_args: &["limit", "offset"], ..QuerySpec::NONE };
+}
+
+/// Writes an event item into its frame's `data:`.
+type FrameData<T> = fn(Event, &T) -> Result<Event, axum::Error>;
+
+fn sse_event<T>(name: &'static str, frame: EventFrame<T>, data: FrameData<T>) -> Event {
+    match frame {
+        EventFrame::Event { id, data: item } => {
+            let event = data(Event::default().event(name), &item)
+                .unwrap_or_else(|e| Event::default().event("error").data(e.to_string()));
+            match id {
+                Some(id) if !id.contains(['\n', '\r', '\0']) => event.id(id),
+                _ => event,
+            }
+        }
+        EventFrame::Lag { skipped } => Event::default().event("lag").data(format!("{{\"skipped\":{skipped}}}")),
+    }
+}
+
+fn sse_stream<T>(
+    name: &'static str,
+    rx: tokio::sync::broadcast::Receiver<T>,
+    id: ontogen_core::events::IdFn<T>,
+    data: FrameData<T>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>>
+where
+    T: Clone + Send + 'static,
+{
+    let stream = futures::stream::unfold(rx, move |mut rx| async move {
+        ontogen_core::events::next_frame(&mut rx, id).await.map(|frame| (Ok(sse_event(name, frame, data)), rx))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 // ── JSON:API resources ──
@@ -453,6 +511,79 @@ async fn task_check_linked(state: &AppState, linked: &TaskLinkedIds) -> Result<(
     Ok(())
 }
 
+/// A `Task` event item as its resource object. A frame is not tied to a
+/// request URL, so it carries no links.
+fn task_frame_data(event: Event, entity: &Task) -> Result<Event, axum::Error> {
+    event.json_data(task_as_resource(entity, "/api/tasks").into_unlinked())
+}
+
+// ── Bookmark Handlers ──
+
+async fn bookmark_list(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Query<PageOpArgs>,
+) -> Result<Response, ErrorObject> {
+    let limit = ontogen_query.op_arg::<u32>("limit")?.unwrap_or(2).min(3);
+    let offset = ontogen_query.op_arg::<u32>("offset")?.unwrap_or(0);
+    let items = bookmark::list(&state, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
+    let total = bookmark::count(&state).await.map_err(app_error)?;
+    let result = PaginatedResult { items, total, limit, offset };
+    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+}
+
+async fn bookmark_get_by_id(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<String>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let result = bookmark::get_by_id(&state, &id).await.map_err(app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+}
+
+async fn bookmark_create(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_body = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    request::check_op_arg_names(&ontogen_args, &["input"])?;
+    let input = request::op_arg::<CreateBookmarkInput>(&ontogen_args, "input", true)?;
+    let result = bookmark::create(&state, input).await.map_err(app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+}
+
+async fn bookmark_update(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(id) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_body = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    request::check_op_arg_names(&ontogen_args, &["input"])?;
+    let input = request::op_arg::<UpdateBookmarkInput>(&ontogen_args, "input", true)?;
+    let result = bookmark::update(&state, &id, input).await.map_err(app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+}
+
+async fn bookmark_delete(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<String>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    bookmark::delete(&state, &id).await.map_err(app_error)?;
+    Ok(response::no_content())
+}
+
 // ── Note Handlers ──
 
 async fn note_list(
@@ -831,9 +962,158 @@ async fn task_delete(
     Ok(response::no_content())
 }
 
+struct TaskGetSummaryOpArgs;
+
+impl RouteQuery for TaskGetSummaryOpArgs {
+    const SPEC: QuerySpec = QuerySpec { op_args: &["verbose", "limit"], ..QuerySpec::NONE };
+}
+
+async fn task_get_summary(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(status): Path<String>,
+    ontogen_query: Query<TaskGetSummaryOpArgs>,
+) -> Result<Response, ErrorObject> {
+    let limit = ontogen_query.op_arg::<u32>("limit")?;
+    let verbose = ontogen_query.op_arg::<bool>("verbose")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let result = task::get_summary(&store, &status, verbose, limit).await.map_err(app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+}
+
+async fn task_capture(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_body = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    request::check_op_arg_names(&ontogen_args, &["input", "status"])?;
+    let input = request::op_arg::<CreateTaskInput>(&ontogen_args, "input", true)?;
+    let status = request::op_arg::<Option<String>>(&ontogen_args, "status", false)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let result = task::capture(&store, input, status).await.map_err(app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+}
+
+async fn task_complete(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_body = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    request::check_op_arg_names(&ontogen_args, &["id"])?;
+    let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
+    let store = state.store().await.map_err(internal_error)?;
+    task::complete(&store, &id).await.map_err(app_error)?;
+    Ok(response::no_content())
+}
+
+async fn task_purge_done(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_body = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_body, false)?;
+    request::check_op_arg_names(&ontogen_args, &[])?;
+    let store = state.store().await.map_err(internal_error)?;
+    let result = task::purge_done(&store).await.map_err(app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+}
+
+async fn task_list_tags(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<String>,
+    ontogen_query: Query<PageOpArgs>,
+) -> Result<Response, ErrorObject> {
+    let limit = ontogen_query.op_arg::<u32>("limit")?.unwrap_or(2).min(3);
+    let offset = ontogen_query.op_arg::<u32>("offset")?.unwrap_or(0);
+    let store = state.store().await.map_err(internal_error)?;
+    let all = task::list_tags(&store, &id).await.map_err(app_error)?;
+    let total = all.len() as u64;
+    let items = all.into_iter().skip(offset as usize).take(limit as usize).collect();
+    let result = PaginatedResult { items, total, limit, offset };
+    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+}
+
+async fn task_add_tag(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(id) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_body = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    request::check_op_arg_names(&ontogen_args, &["tag_id"])?;
+    let tag_id = request::op_arg::<String>(&ontogen_args, "tag_id", true)?;
+    let store = state.store().await.map_err(internal_error)?;
+    task::add_tag(&store, &id, &tag_id).await.map_err(app_error)?;
+    Ok(response::no_content())
+}
+
+async fn task_remove_tag(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((id, tag_id)): Path<(String, String)>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    task::remove_tag(&store, &id, &tag_id).await.map_err(app_error)?;
+    Ok(response::no_content())
+}
+
+// ── bookmark_feed SSE Handler ──
+
+async fn bookmark_feed_sse(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let rx = bookmark::bookmark_feed(&state);
+    sse_stream("bookmark-feed", rx, ontogen_core::events::no_id, result_frame)
+}
+
+// ── task_feed SSE Handler ──
+
+async fn task_feed_sse(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let rx = task::task_feed(&state);
+    sse_stream("task-feed", rx, ontogen_core::events::no_id, task_frame_data)
+}
+
+// ── watch_task SSE Handler ──
+
+async fn watch_task_sse(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ErrorObject> {
+    let rx = task::watch_task(&state, id).await.map_err(app_error)?;
+    Ok(sse_stream("watch-task", rx, ontogen_core::events::no_id, task_frame_data))
+}
+
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/api/bookmarks", get(bookmark_list).post(bookmark_create).fallback(allow([Method::GET, Method::POST])))
+        .route(
+            "/api/bookmarks/{id}",
+            get(bookmark_get_by_id).patch(bookmark_update).delete(bookmark_delete).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
         .route("/api/notes", get(note_list).post(note_create).fallback(allow([Method::GET, Method::POST])))
         .route(
             "/api/notes/{id}",
@@ -870,4 +1150,16 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
+        .route("/api/tasks/summary/{status}", get(task_get_summary).fallback(allow([Method::GET])))
+        .route("/api/tasks/capture", post(task_capture).fallback(allow([Method::POST])))
+        .route("/api/tasks/complete", post(task_complete).fallback(allow([Method::POST])))
+        .route("/api/tasks/purge-done", post(task_purge_done).fallback(allow([Method::POST])))
+        .route(
+            "/api/tasks/{parent_id}/tags",
+            get(task_list_tags).post(task_add_tag).fallback(allow([Method::GET, Method::POST])),
+        )
+        .route("/api/tasks/{parent_id}/tags/{child_id}", delete(task_remove_tag).fallback(allow([Method::DELETE])))
+        .route("/api/events/bookmark-feed", get(bookmark_feed_sse).fallback(allow([Method::GET])))
+        .route("/api/events/task-feed", get(task_feed_sse).fallback(allow([Method::GET])))
+        .route("/api/events/watch-task/{id}", get(watch_task_sse).fallback(allow([Method::GET])))
 }

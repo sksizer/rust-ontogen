@@ -12,12 +12,20 @@ fn main() {
     println!("cargo:rerun-if-changed=src/schema/section.rs");
     println!("cargo:rerun-if-changed=src/schema/task.rs");
     println!("cargo:rerun-if-changed=src/schema/tag.rs");
+    println!("cargo:rerun-if-changed=src/schema/bookmark.rs");
+    println!("cargo:rerun-if-changed=src/schema/task_summary.rs");
+    println!("cargo:rerun-if-changed=src/schema/mod.rs");
+    // The hand-written API modules the servers stage scans beside generated/.
+    println!("cargo:rerun-if-changed=src/api/bookmark.rs");
+    println!("cargo:rerun-if-changed=src/api/task.rs");
 
-    // HTTP transport over the generated service layer: proves in root CI
-    // that the emitted axum handlers compile and the router builds against
-    // the axum version in Cargo.toml (see tests/http_router.rs).
+    // HTTP transport over the API layer: proves in root CI that the emitted
+    // axum handlers compile and the router builds against the axum version
+    // in Cargo.toml (see tests/http_router.rs). `src/api` holds hand-written
+    // modules and the api stage's `generated/`; the scan reads both (and
+    // nothing below `transport/` but its `mod.rs`, which it skips).
     let servers_config = ServersConfig {
-        api_dir: "src/api/generated".into(),
+        api_dir: "src/api".into(),
         state_type: "AppState".into(),
         service_import_path: "crate::api".into(),
         types_import_path: "crate::schema".into(),
