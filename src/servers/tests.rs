@@ -5868,7 +5868,10 @@ pub(crate) fn resource_fixture(root: &std::path::Path, app_error: bool) -> Confi
 /// served as a custom op (§10), a list's filter (§7.3, §10.4), and both
 /// event frame shapes (§12).
 ///
-/// `task` gains junction ops over `tag`; `epic`'s list takes a
+/// `task` gains junction ops over `tag`, which define its relationship
+/// `labels` (§9.1), and a lone `list_overdue`, a custom GET; `workout`, which
+/// has no entity, has junction ops of its own, served as custom ops
+/// (§10.4); `epic`'s list takes a
 /// `ListEpicsQuery` struct and two bare filters, `title` (optional) and
 /// `owner` (required), declared out of byte order; `agent`, which has no
 /// entity, has a list that takes an `AgentQuery` struct and an optional
@@ -5883,7 +5886,8 @@ pub(crate) fn ops_fixture(root: &std::path::Path, scoped: bool) -> Config {
     let task = std::fs::read_to_string(api_dir.join("task.rs")).unwrap()
         + "pub async fn list_labels(store: &Store, task_id: &str) -> Result<Vec<Tag>, AppError> { todo!() }\n\
            pub async fn add_label(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n\
-           pub async fn remove_label(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n";
+           pub async fn remove_label(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n\
+           pub async fn list_overdue(store: &Store, before: &str) -> Result<Vec<Task>, AppError> { todo!() }\n";
     write_synthetic_api(&api_dir, "task.rs", &task);
     let epic_filter = "query: ListEpicsQuery, title: Option<&str>, owner: &str";
     write_synthetic_api(
@@ -5907,6 +5911,9 @@ pub(crate) fn ops_fixture(root: &std::path::Path, scoped: bool) -> Config {
          pub async fn start(store: &Store, input: StartWorkoutInput, note: Option<String>) -> Result<WorkoutSummary, anyhow::Error> { todo!() }\n\
          pub async fn rename(store: &Store, id: &str, name: String) -> Result<(), AppError> { todo!() }\n\
          pub async fn pause(store: &Store) -> Result<(), AppError> { todo!() }\n\
+         pub async fn list_labels(store: &Store, workout_id: &str) -> Result<Vec<String>, AppError> { todo!() }\n\
+         pub async fn add_label(store: &Store, workout_id: &str, label: &str) -> Result<(), AppError> { todo!() }\n\
+         pub async fn remove_label(store: &Store, workout_id: &str, label: &str) -> Result<(), AppError> { todo!() }\n\
          #[ontogen::stateless]\n\
          pub fn get_version() -> Result<String, anyhow::Error> { todo!() }\n",
     );
@@ -5999,14 +6006,16 @@ fn a_resource_module_is_served_as_jsonapi() {
     assert!(flat.contains(&compact("Ok(response::no_content())")));
     assert!(flat.contains(&compact("ontogen_core::id::validate_id(id).map_err(|e| e.reason)")));
 
-    // Attributes split from relationships (§5.3, §5.4), `data` only.
+    // Attributes split from relationships (§5.3, §5.4), each relationship
+    // with the links of the routes that serve it (§9).
     assert!(http.contains("attributes.serialize_field(\"title\", &self.0.title)?;"));
     assert!(!http.contains("serialize_field(\"epic_id\""), "a relation field is not an attribute:\n{http}");
     assert!(flat.contains(&compact(
-        ".with_relationship(\"epic\", Relationship::from_data(Linkage::ToOne(entity.epic_id.as_ref()\
+        ".with_relationship(\"epic\", Relationship::new(Links::new(format!(\"{self_link}/relationships/epic\"))\
+         .with_related(format!(\"{self_link}/epic\")), Linkage::ToOne(entity.epic_id.as_ref()\
          .map(|id| ResourceIdentifier::new(\"epics\", id.as_str())))))"
     )));
-    assert!(!http.contains("Relationship::new("), "a relationship carries no links:\n{http}");
+    assert!(!http.contains("Relationship::from_data("), "every relationship carries links:\n{http}");
 
     // Requiredness follows `CreateTaskInput`: `title` and `body` have no
     // default, `notes` is an `Option` and `done` carries `#[serde(default)]`.
@@ -7400,43 +7409,64 @@ fn a_custom_post_reads_every_argument_from_meta_args() {
 }
 
 #[test]
-fn junction_ops_are_served_as_custom_ops_at_their_routes() {
+fn junction_ops_outside_a_resource_module_are_served_as_custom_ops_at_their_routes() {
     let tmp = tempfile::tempdir().unwrap();
     let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
     let flat = compact(&http);
 
     assert!(flat.contains(&compact(
-        ".route(\"/api/tasks/{parent_id}/labels\", get(task_list_labels).post(task_add_label)\
+        ".route(\"/api/workouts/{parent_id}/labels\", get(workout_list_labels).post(workout_add_label)\
          .fallback(allow([Method::GET, Method::POST])))"
     )));
     assert!(flat.contains(&compact(
-        ".route(\"/api/tasks/{parent_id}/labels/{child_id}\", delete(task_remove_label).fallback(allow([Method::DELETE])))"
+        ".route(\"/api/workouts/{parent_id}/labels/{child_id}\", delete(workout_remove_label)\
+         .fallback(allow([Method::DELETE])))"
     )));
     // A paginated junction list slices the fn's whole result.
     assert_in_order(
-        "task_list_labels",
-        &handler_body(&http, "task_list_labels"),
+        "workout_list_labels",
+        &handler_body(&http, "workout_list_labels"),
         &[
-            "Path(task_id): Path<String>, ontogen_query: Query<PageOpArgs>",
+            "Path(workout_id): Path<String>, ontogen_query: Query<PageOpArgs>",
             "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
             "let ontogen_offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);",
-            "let ontogen_all = task::list_labels(&ontogen_store, &task_id).await.map_err(ontogen_app_error)?;",
+            "let ontogen_all = workout::list_labels(&ontogen_store, &workout_id).await.map_err(ontogen_app_error)?;",
             "let ontogen_total = ontogen_all.len() as u64;",
             "let ontogen_items = ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();",
             "let ontogen_result = PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };",
         ],
     );
     assert_in_order(
-        "task_add_label",
-        &handler_body(&http, "task_add_label"),
+        "workout_add_label",
+        &handler_body(&http, "workout_add_label"),
         &[
             "ontogen_path: Result<Path<String>, ErrorObject>,",
-            "let Path(task_id) = ontogen_path?;",
-            "request::check_op_arg_names(&ontogen_args, &[\"tag_id\"])?;",
-            "task::add_label(&ontogen_store, &task_id, &tag_id).await.map_err(ontogen_app_error)?;",
+            "let Path(workout_id) = ontogen_path?;",
+            "request::check_op_arg_names(&ontogen_args, &[\"label\"])?;",
+            "workout::add_label(&ontogen_store, &workout_id, &label).await.map_err(ontogen_app_error)?;",
             "Ok(response::no_content())",
         ],
     );
+    assert_in_order(
+        "workout_remove_label",
+        &handler_body(&http, "workout_remove_label"),
+        &["Path((workout_id, label)): Path<(String, String)>, _: Query<NoParams>", "Ok(response::no_content())"],
+    );
+
+    // A resource module's junction ops have no handler of their own: they
+    // serve its relationship routes (§9.1).
+    for op in ["list_labels", "add_label", "remove_label"] {
+        assert!(!http.contains(&format!("async fn task_{op}(")), "task::{op}:\n{http}");
+    }
+    // A `list_X` with no add or remove beside it is a custom GET, answering
+    // its whole result: it has no page.
+    assert!(flat.contains(&compact(
+        ".route(\"/api/tasks/list-overdue/{before}\", get(task_list_overdue).fallback(allow([Method::GET])))"
+    )));
+    let lone = handler_body(&http, "task_list_overdue");
+    assert!(lone.contains(&compact("Path(before): Path<String>, _: Query<NoParams>")), "{lone}");
+    assert!(lone.contains(&compact("let ontogen_result = task::list_overdue(&ontogen_store, &before)")), "{lone}");
+    assert!(!lone.contains("PaginatedResult"), "{lone}");
 }
 
 #[test]
@@ -7551,15 +7581,26 @@ fn scoped_ops_have_the_unscoped_wire() {
     for list in ["report_list_scoped", "agent_list_scoped"] {
         assert!(!handler_body(&http, list).contains("skip("), "{list} slices nothing in memory");
     }
-    // A scoped junction list keeps its action-style route but pages like the
-    // unscoped one.
+    // A scoped junction list outside a resource module has the unscoped
+    // route under the prefix, and pages like the unscoped one.
     assert_in_order(
-        "task_list_labels_scoped",
-        &handler_body(&http, "task_list_labels_scoped"),
+        "workout_list_labels_scoped",
+        &handler_body(&http, "workout_list_labels_scoped"),
         &[
-            "ontogen_query: Query<PageOpArgs>",
+            "Path((ontogen_scope, workout_id)): Path<(uuid::Uuid, String)>, ontogen_query: Query<PageOpArgs>",
             "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
+            "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;",
+            "workout::list_labels(&ontogen_store, &workout_id)",
             "let ontogen_result = PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };",
+        ],
+    );
+    assert_in_order(
+        "workout_add_label_scoped",
+        &handler_body(&http, "workout_add_label_scoped"),
+        &[
+            "ontogen_path: Result<Path<(uuid::Uuid, String)>, ErrorObject>,",
+            "let Path((ontogen_scope, workout_id)) = ontogen_path?;",
+            "request::check_op_arg_names(&ontogen_args, &[\"label\"])?;",
         ],
     );
     // A custom op reads its arguments as the unscoped one does, after the
@@ -7578,15 +7619,17 @@ fn scoped_ops_have_the_unscoped_wire() {
     assert!(flat.contains(&compact(
         "Path((ontogen_scope, id)): Path<(uuid::Uuid, String)>, ontogen_query: Query<OntogenWorkoutGetSummaryOpArgs>"
     )));
-    // Scoped junction ops are action-style routes, served as custom ops.
     assert!(flat.contains(&compact(
-        ".route(\"/api/projects/{project_id}/tasks/list-labels/{task_id}\", get(task_list_labels_scoped)"
+        ".route(\"/api/projects/{project_id}/workouts/{parent_id}/labels\", get(workout_list_labels_scoped)\
+         .post(workout_add_label_scoped).fallback(allow([Method::GET, Method::POST])))"
     )));
-    assert!(
-        flat.contains(&compact(".route(\"/api/projects/{project_id}/tasks/add-label\", post(task_add_label_scoped)"))
-    );
+    assert!(flat.contains(&compact(
+        ".route(\"/api/projects/{project_id}/workouts/{parent_id}/labels/{child_id}\", \
+         delete(workout_remove_label_scoped).fallback(allow([Method::DELETE])))"
+    )));
+    assert!(!flat.contains("list-labels") && !flat.contains("add-label"), "no action-style junction route:\n{http}");
     // Every handler name is unique, including `tag::list` and
-    // `task::list_labels`, whose scoped names are derived from different
+    // `workout::list_labels`, whose scoped names are derived from different
     // command names.
     let names: Vec<&str> = http.lines().filter_map(|l| l.strip_prefix("async fn ")?.split('(').next()).collect();
     let mut unique = names.clone();
@@ -7598,29 +7641,379 @@ fn scoped_ops_have_the_unscoped_wire() {
 }
 
 /// A junction add or remove answers `204` whatever its fn returns, under the
-/// route prefix as at its unscoped route.
+/// route prefix as at its unscoped route: served as a custom op outside a
+/// resource module, and through the relationship route inside one.
 #[test]
 fn a_junction_add_or_remove_answers_204_scoped_or_not() {
     for scoped in [false, true] {
         let tmp = tempfile::tempdir().unwrap();
         let mut config = resource_fixture(tmp.path(), true);
         let api_dir = tmp.path().join("api");
-        let task = std::fs::read_to_string(api_dir.join("task.rs")).unwrap()
-            + "pub async fn list_labels(store: &Store, task_id: &str) -> Result<Vec<Tag>, AppError> { todo!() }\n\
-               pub async fn add_label(store: &Store, task_id: &str, tag_id: &str) -> Result<bool, AppError> { todo!() }\n\
-               pub async fn remove_label(store: &Store, task_id: &str, tag_id: &str) -> Result<bool, AppError> { todo!() }\n";
+        let ops = |module: &str, parent: &str| {
+            format!(
+                "pub async fn list_labels(store: &Store, {parent}: &str) -> Result<Vec<Tag>, AppError> {{ todo!() }}\n\
+                 pub async fn add_label(store: &Store, {parent}: &str, tag_id: &str) -> Result<bool, AppError> {{ todo!() }}\n\
+                 pub async fn remove_label(store: &Store, {parent}: &str, tag_id: &str) -> Result<bool, AppError> {{ todo!() }}\n\
+                 // {module}\n"
+            )
+        };
+        let task = std::fs::read_to_string(api_dir.join("task.rs")).unwrap() + &ops("task", "task_id");
         write_synthetic_api(&api_dir, "task.rs", &task);
+        write_synthetic_api(&api_dir, "crew.rs", &ops("crew", "crew_id"));
         if scoped {
             config.route_prefix = test_config_with_prefix(PathBuf::new()).route_prefix;
         }
         let http = generate_http(tmp.path(), config);
         let suffix = if scoped { "_scoped" } else { "" };
-        for handler in ["task_add_label", "task_remove_label"] {
+        for handler in ["crew_add_label", "crew_remove_label"] {
             let body = handler_body(&http, &format!("{handler}{suffix}"));
             assert!(body.contains("Ok(response::no_content())"), "{handler}{suffix}: {body}");
             assert!(!body.contains("ResultMeta"), "{handler}{suffix}: {body}");
         }
+        for (handler, op) in [("relationship_post", "add_label"), ("relationship_delete", "remove_label")] {
+            let body = handler_body(&http, &format!("ontogen_task_{handler}{suffix}"));
+            assert_in_order(
+                handler,
+                &body,
+                &[&format!("task::{op}("), ".await.map_err(ontogen_app_error)?;", "Ok(response::no_content())"],
+            );
+        }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JSON:API relationship and related routes (wire contract §9)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A resource module serving relationships has the relationship route
+/// (`GET`, `PATCH`, `POST`, `DELETE`) and the related route (`GET`), each
+/// with the method fallback that lists them, under the scope of its
+/// `get_by_id`. Its junction ops have no route of their own.
+#[test]
+fn a_resource_with_relationships_serves_the_relationship_and_related_routes() {
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let http = generate_http(tmp.path(), ops_fixture(tmp.path(), scoped));
+        let flat = compact(&http);
+        let (base, suffix) = if scoped { ("/api/projects/{project_id}", "_scoped") } else { ("/api", "") };
+        assert!(
+            flat.contains(&compact(&format!(
+                ".route(\"{base}/tasks/{{id}}/relationships/{{rel}}\", get(ontogen_task_relationship_get{suffix})\
+             .patch(ontogen_task_relationship_patch{suffix}).post(ontogen_task_relationship_post{suffix})\
+             .delete(ontogen_task_relationship_delete{suffix})\
+             .fallback(allow([Method::GET, Method::PATCH, Method::POST, Method::DELETE])))"
+            ))),
+            "{http}"
+        );
+        assert!(flat.contains(&compact(&format!(
+            ".route(\"{base}/tasks/{{id}}/{{rel}}\", get(ontogen_task_related_get{suffix})\
+             .fallback(allow([Method::GET])))"
+        ))));
+        // `epic` and `tag` have no relationship, so no such route.
+        assert_eq!(http.matches("/relationships/{rel}\"").count(), 1, "{http}");
+        assert!(!http.contains("ontogen_epic_relationship") && !http.contains("ontogen_tag_related"));
+
+        // Each handler matches `{rel}` against every relationship, field
+        // ones first, and answers any other name with `404`.
+        let path = if scoped {
+            "Path((ontogen_scope, id, rel)): Path<(uuid::Uuid, LookupKey, LookupKey)>"
+        } else {
+            "Path((id, rel)): Path<(LookupKey, LookupKey)>"
+        };
+        for handler in ["relationship_get", "related_get"] {
+            assert_in_order(
+                handler,
+                &handler_body(&http, &format!("ontogen_task_{handler}{suffix}")),
+                &[
+                    path,
+                    "RawQuery(ontogen_raw_query): RawQuery",
+                    "match rel.as_str() {",
+                    "Some(\"epic\") =>",
+                    "Some(\"tags\") =>",
+                    "Some(\"labels\") =>",
+                    "_ => Err(relationship_not_found(\"tasks\", &rel)),",
+                ],
+            );
+        }
+        for handler in ["relationship_patch", "relationship_post", "relationship_delete"] {
+            let ty = if scoped { "(uuid::Uuid, LookupKey, LookupKey)" } else { "(LookupKey, LookupKey)" };
+            assert_in_order(
+                handler,
+                &handler_body(&http, &format!("ontogen_task_{handler}{suffix}")),
+                &[
+                    "_: AcceptGuard,",
+                    &format!("ontogen_path: Result<Path<{ty}>, ErrorObject>,"),
+                    "ontogen_query: Result<Query<NoParams>, ErrorObject>,",
+                    "ontogen_body: Body",
+                    "= ontogen_path?;",
+                    "match rel.as_str() {",
+                    "_ => Err(relationship_not_found(\"tasks\", &rel)),",
+                ],
+            );
+        }
+        // The parent is read through the prefix when scoped.
+        let read = if scoped {
+            "ontogen_task_read_scoped(&ontogen_state, &ontogen_scope, &id).await?;"
+        } else {
+            "ontogen_task_read(&ontogen_state, &id).await?;"
+        };
+        assert!(flat.contains(&compact(read)), "{http}");
+        let opens = if scoped {
+            "let store = state.store_for(ontogen_scope).map_err(ontogen_internal_error)?;"
+        } else {
+            "let store = state.store().await.map_err(ontogen_internal_error)?;"
+        };
+        assert!(flat.contains(&compact(opens)), "{http}");
+    }
+}
+
+/// Every relationship of a type whose module serves the relationship routes
+/// carries their links; a junction relationship carries the links alone
+/// (§5.4, §9.1). It is a member name of the type, so a create or update
+/// naming it is refused rather than unknown.
+#[test]
+fn every_relationship_links_its_routes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
+    let flat = compact(&http);
+    for (rel, data) in [
+        ("epic", "Linkage::ToOne(entity.epic_id.as_ref().map(|id| ResourceIdentifier::new(\"epics\", id.as_str())))"),
+        (
+            "tags",
+            "Linkage::ToMany(entity.tags.iter().map(|id| ResourceIdentifier::new(\"tags\", id.as_str())).collect())",
+        ),
+    ] {
+        assert!(flat.contains(&compact(&format!(
+            ".with_relationship(\"{rel}\", Relationship::new(Links::new(format!(\"{{self_link}}/relationships/{rel}\"))\
+             .with_related(format!(\"{{self_link}}/{rel}\")), {data}))"
+        ))), "{rel}:\n{http}");
+    }
+    assert!(flat.contains(&compact(
+        ".with_relationship(\"labels\", Relationship::from_links(Links::new(format!(\"{self_link}/relationships/labels\"))\
+         .with_related(format!(\"{self_link}/labels\"))))"
+    )));
+    assert!(!flat.contains("Relationship::from_data("), "{http}");
+    // Event frames drop the links and the junction relationship.
+    assert!(flat.contains(&compact("event.json_data(task_as_resource(entity, \"/api/tasks\").into_unlinked())")));
+
+    assert_in_order(
+        "task_request_fields",
+        &compact(&http[http.find("fn task_request_fields(").unwrap()..]),
+        &[
+            "request::check_relationship_names(relationships, \"tasks\", &[\"epic\", \"tags\", \"labels\"])?;",
+            "relationships.and_then(|r| r.get(\"epic\"))",
+            "relationships.and_then(|r| r.get(\"tags\"))",
+            "if relationships.is_some_and(|r| r.contains_key(\"labels\")) {",
+            "return Err(relationship_update_unsupported(\"tasks\", \"labels\", \"a create or update\")\
+             .with_pointer(\"/data/relationships/labels\"));",
+            "Ok((fields, linked))",
+        ],
+    );
+}
+
+/// The type without a served `get_by_id` serves no relationship route, so
+/// its relationships carry linkage only: a server must serve every link it
+/// emits.
+#[test]
+fn without_get_by_id_relationships_carry_linkage_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = resource_fixture(tmp.path(), true);
+    let task: String = std::fs::read_to_string(config.api_dir.join("task.rs"))
+        .unwrap()
+        .lines()
+        .filter(|l| !l.contains("fn get_by_id("))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    write_synthetic_api(&config.api_dir, "task.rs", &task);
+    let http = generate_http(tmp.path(), config);
+    assert!(!http.contains("/relationships/{rel}"), "{http}");
+    assert!(!http.contains("ontogen_task_rel") && !http.contains("Links::new(format!(\"{self_link}"), "{http}");
+    assert!(compact(&http).contains(&compact(
+        ".with_relationship(\"epic\", Relationship::from_data(Linkage::ToOne(entity.epic_id.as_ref()\
+         .map(|id| ResourceIdentifier::new(\"epics\", id.as_str())))))"
+    )));
+}
+
+/// The arms of a relationship handler, in §13.2 order: the query (step 5),
+/// a refusal (6), the body (7), the parent and each linked resource (8),
+/// then the write (9).
+#[test]
+fn relationship_handlers_check_in_the_contract_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
+    let arm = |handler: &str, rel: &str| {
+        let body = handler_body(&http, handler);
+        let at = body.find(&compact(&format!("Some(\"{rel}\") =>"))).unwrap_or_else(|| panic!("{rel} in {body}"));
+        let arm = &body[at..];
+        arm[..arm.find("Some(\"").filter(|&i| i > 0).or_else(|| arm.find("_=>")).unwrap()].to_string()
+    };
+
+    assert_in_order(
+        "PATCH epic",
+        &arm("ontogen_task_relationship_patch", "epic"),
+        &[
+            "ontogen_query?;",
+            "let ontogen_bytes = ontogen_body.into_bytes()?;",
+            "request::to_one(&request::parse_relationship(&ontogen_bytes)?, \"\", \"epics\", true)?",
+            ".map(|ontogen_member| LinkedId { id: ontogen_member, pointer: \"/data\".to_owned() });",
+            "let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;",
+            "ontogen_epic_check_ids(&ontogen_state, ontogen_linked.as_slice()).await?;",
+            "ontogen_task_write_field(&ontogen_state, &ontogen_entity.id, \"epic_id\", \
+             ontogen_linked.map(|ontogen_member| ontogen_member.id).into()).await?;",
+            "Ok(response::no_content())",
+        ],
+    );
+    assert_in_order(
+        "PATCH tags",
+        &arm("ontogen_task_relationship_patch", "tags"),
+        &[
+            "request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, \"\", \"tags\", None)?;",
+            "ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;",
+            "\"tags\", ontogen_linked.into_iter().map(|ontogen_member| ontogen_member.id).collect()",
+        ],
+    );
+    assert_in_order(
+        "POST tags",
+        &arm("ontogen_task_relationship_post", "tags"),
+        &[
+            "request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, \"\", \"tags\", Some(1))?;",
+            "ontogen_task_read(&ontogen_state, &id).await?;",
+            "ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;",
+            "if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.tags, &ontogen_linked) {",
+        ],
+    );
+    // `DELETE` never checks its target.
+    let delete = arm("ontogen_task_relationship_delete", "tags");
+    assert!(!delete.contains("check_ids"), "{delete}");
+    assert!(
+        delete
+            .contains(&compact("if let Some(ontogen_ids) = ontogen_removed(&ontogen_entity.tags, &ontogen_linked) {"))
+    );
+
+    // A junction write reads the membership, then calls the op only when it
+    // must.
+    assert_in_order(
+        "POST labels",
+        &arm("ontogen_task_relationship_post", "labels"),
+        &[
+            "ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;",
+            "if let Some(ontogen_child) = ontogen_linked.first() {",
+            "let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;",
+            "let ontogen_members = task::list_labels(&ontogen_store, &ontogen_entity.id).await.map_err(ontogen_app_error)?;",
+            "if !ontogen_members.iter().any(|ontogen_member| ontogen_member.id == ontogen_child.id) {",
+            "task::add_label(&ontogen_store, &ontogen_entity.id, &ontogen_child.id).await.map_err(ontogen_app_error)?;",
+        ],
+    );
+    assert_in_order(
+        "DELETE labels",
+        &arm("ontogen_task_relationship_delete", "labels"),
+        &[
+            "if ontogen_members.iter().any(|ontogen_member| ontogen_member.id == ontogen_child.id) {",
+            "task::remove_label(&ontogen_store, &ontogen_entity.id, &ontogen_child.id)",
+        ],
+    );
+
+    // A paginated junction pages its members in memory, on both routes.
+    for handler in ["ontogen_task_relationship_get", "ontogen_task_related_get"] {
+        assert_in_order(
+            handler,
+            &arm(handler, "labels"),
+            &[
+                "QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec { page: true, ..QuerySpec::NONE })?;",
+                "let (ontogen_offset, ontogen_limit) = page(&ontogen_query, 20, 100)?;",
+                "let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;",
+                "task::list_labels(&ontogen_store, &ontogen_entity.id)",
+                ".skip(ontogen_offset as usize).take(ontogen_limit as usize)",
+                "pagination_links(&ontogen_self, &CanonicalQuery::new(), ontogen_offset, ontogen_limit, ontogen_total)",
+                ".with_meta(PageMeta { total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset",
+            ],
+        );
+    }
+    // A field relationship accepts no query parameter and is not paged.
+    let epic = arm("ontogen_task_relationship_get", "epic");
+    assert!(
+        epic.starts_with(&compact(
+            "Some(\"epic\") => { QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;"
+        )),
+        "{epic}"
+    );
+    // Related resources: the target's resource objects, a dangling id
+    // skipped by the fetch.
+    assert_in_order(
+        "related epic",
+        &arm("ontogen_task_related_get", "epic"),
+        &[
+            "let ontogen_related = ontogen_epic_fetch(&ontogen_state, ontogen_entity.epic_id.as_slice()).await?;",
+            "ontogen_related.first().map(|ontogen_member| epic_as_resource(ontogen_member, \"/api/epics\"));",
+            "Links::new(ontogen_self)",
+        ],
+    );
+    assert!(compact(&http).contains(&compact("Err(crate::schema::AppError::EpicNotFound(..)) => {}")));
+}
+
+/// The `403`s decided from the route alone (§9's table, §13.2 step 6): a
+/// to-one has no members to add or remove, no junction op replaces a set,
+/// a junction without `remove_Y` removes nothing, and a module without
+/// `update` writes no field relationship. A handler whose every arm refuses
+/// reads neither the state nor the body, but still extracts the body.
+#[test]
+fn unsupported_relationship_writes_are_refused_from_the_route() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = resource_fixture(tmp.path(), true);
+    let task: String = std::fs::read_to_string(config.api_dir.join("task.rs"))
+        .unwrap()
+        .lines()
+        .filter(|l| !l.contains("fn update("))
+        .map(|l| format!("{l}\n"))
+        .collect::<String>()
+        + "pub async fn list_labels(store: &Store, task_id: &str) -> Result<Vec<Tag>, AppError> { todo!() }\n\
+           pub async fn add_label(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n";
+    write_synthetic_api(&config.api_dir, "task.rs", &task);
+    let http = generate_http(tmp.path(), config);
+    let refused = |handler: &str, rel: &str, method: &str| {
+        let body = handler_body(&http, handler);
+        let arm = compact(&format!(
+            "Some(\"{rel}\") => {{ ontogen_query?; Err(relationship_update_unsupported(\"tasks\", \"{rel}\", \"{method}\")) }}"
+        ));
+        assert!(body.contains(&arm), "{handler} {rel}: {body}");
+    };
+    for rel in ["epic", "tags", "labels"] {
+        refused("ontogen_task_relationship_patch", rel, "PATCH");
+    }
+    for rel in ["epic", "tags"] {
+        refused("ontogen_task_relationship_post", rel, "POST");
+    }
+    for rel in ["epic", "tags", "labels"] {
+        refused("ontogen_task_relationship_delete", rel, "DELETE");
+    }
+    // Only the junction's `POST` writes.
+    assert!(handler_body(&http, "ontogen_task_relationship_post").contains("task::add_label("));
+    for handler in ["ontogen_task_relationship_patch", "ontogen_task_relationship_delete"] {
+        let body = handler_body(&http, handler);
+        assert!(
+            body.starts_with(&compact(&format!(
+                "async fn {handler}( _: AcceptGuard, ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>, \
+             ontogen_query: Result<Query<NoParams>, ErrorObject>, _: Body, ) -> Result<Response, ErrorObject> {{ \
+             let Path((_, rel)) = ontogen_path?;"
+            ))),
+            "{body}"
+        );
+    }
+    assert!(!http.contains("ontogen_task_write_field"), "{http}");
+}
+
+/// A junction op that cannot define a relationship fails generation (the
+/// rules themselves are `ResourceModel::junctions`'s tests).
+#[test]
+fn a_junction_op_that_defines_no_relationship_fails_generation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = resource_fixture(tmp.path(), true);
+    let task = std::fs::read_to_string(config.api_dir.join("task.rs")).unwrap()
+        + "pub async fn add_label(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n";
+    write_synthetic_api(&config.api_dir, "task.rs", &task);
+    config.generators = vec![ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
+    let err = crate::servers::generate_transport(&config).unwrap_err();
+    assert!(err.contains("`task::add_label` is a junction op") && err.contains("list_labels"), "{err}");
 }
 
 #[test]
@@ -7640,11 +8033,76 @@ fn server_metadata_routes_every_op_where_the_generator_does() {
             };
             let method = route.method.to_ascii_lowercase();
             let needle = format!("{method}({handler})");
-            let registered =
-                flat.split(".route(").any(|r| r.starts_with(&format!("\"{}\"", route.path)) && r.contains(&needle));
+            // A relationship route captures `{rel}`, which the metadata
+            // names: `labels` is served at `…/{rel}`.
+            let serves = |template: &str| {
+                let (template, path): (Vec<&str>, Vec<&str>) =
+                    (template.split('/').collect(), route.path.split('/').collect());
+                template.len() == path.len()
+                    && template.iter().zip(&path).all(|(t, p)| t == p || (*t == "{rel}" && !p.starts_with('{')))
+            };
+            let registered = flat.split(".route(\"").skip(1).any(|r| {
+                let (template, handlers) = r.split_once('"').unwrap();
+                serves(template) && handlers.contains(&needle)
+            });
             assert!(registered, "{} {} ({handler}) is not a generated route:\n{http}", route.method, route.path);
             assert_ne!(route.method, "PUT", "no route is PUT");
         }
+    }
+}
+
+/// A junction op of a resource module is reported at the relationship route
+/// that reaches it, with its relationship's name for `{rel}`, under the scope
+/// of the module's `get_by_id`; one outside a resource module at its own
+/// route, the same scoped or not.
+#[test]
+fn server_metadata_reports_junction_ops_at_their_relationship_routes() {
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ops_fixture(tmp.path(), scoped);
+        let epic = std::fs::read_to_string(config.api_dir.join("epic.rs")).unwrap()
+            + "pub async fn list_tags(store: &Store, epic_id: &str) -> Result<Vec<String>, AppError> { todo!() }\n\
+               pub async fn add_tag(store: &Store, epic_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n";
+        write_synthetic_api(&config.api_dir, "epic.rs", &epic);
+        let modules = crate::servers::generate_transport(&config).unwrap();
+        let meta = crate::servers::extract_server_metadata(&modules, &config);
+        // The metadata row `module::command` gets: the route of the fn of that
+        // name.
+        let route = |module: &str, command: &str| {
+            let m = modules.iter().find(|m| m.name == module).unwrap();
+            let f = m.functions.iter().find(|f| f.name == command).unwrap();
+            let (method, path) = crate::servers::generators::http::route_of(m, f, &config);
+            let handler = crate::servers::generators::http::route_handler(m, f, &config);
+            let row = meta.http_routes.iter().find(|r| {
+                r.module_name == module
+                    && r.method == method.to_ascii_uppercase()
+                    && r.path == path
+                    && r.handler_name == handler
+            });
+            let row = row.unwrap_or_else(|| panic!("{module}::{command}: no metadata row {method} {path}"));
+            (row.method.as_str(), row.path.clone(), row.handler_name.as_str())
+        };
+        let prefix = if scoped { "/api/projects/{project_id}" } else { "/api" };
+        let at = |path: &str| format!("{prefix}{path}");
+        assert_eq!(route("task", "list_labels"), ("GET", at("/tasks/{id}/labels"), "ontogen_task_related_get"));
+        assert_eq!(
+            route("task", "add_label"),
+            ("POST", at("/tasks/{id}/relationships/labels"), "ontogen_task_relationship_post")
+        );
+        assert_eq!(
+            route("task", "remove_label"),
+            ("DELETE", at("/tasks/{id}/relationships/labels"), "ontogen_task_relationship_delete")
+        );
+        // A list returning ids is reached through the linkage.
+        assert_eq!(
+            route("epic", "list_tags"),
+            ("GET", at("/epics/{id}/relationships/tags"), "ontogen_epic_relationship_get")
+        );
+        assert_eq!(route("workout", "list_labels"), ("GET", at("/workouts/{parent_id}/labels"), "workout_list_labels"));
+        assert_eq!(
+            route("workout", "remove_label"),
+            ("DELETE", at("/workouts/{parent_id}/labels/{child_id}"), "workout_remove_label")
+        );
     }
 }
 
