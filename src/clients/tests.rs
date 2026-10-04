@@ -1363,15 +1363,34 @@ fn every_junction_call_reaches_a_server_route() {
     assert_eq!(calls["boardRemoveTag"].1, call("DELETE", "/api/boards/{}/tags/{}"));
 }
 
+/// `status`: a custom GET taking the state rather than a store, and a
+/// stateless one. Neither is store-scoped, so a `route_prefix` leaves both
+/// unscoped.
+const STATUS_MODULE: &str = "\
+use crate::AppState;
+
+pub async fn get_health(state: &AppState) -> Result<String, anyhow::Error> { todo!() }
+#[ontogen::stateless]
+pub fn get_version() -> Result<String, anyhow::Error> { todo!() }
+";
+
 /// Both clients, scoped and not, against the server generated beside them:
-/// resource CRUD, CRUD with no entity, junction ops and custom GETs and POSTs.
+/// resource CRUD, CRUD with no entity, junction ops, custom GETs and POSTs,
+/// and ops that are not store-scoped.
 #[test]
 fn every_call_of_every_op_kind_reaches_a_server_route() {
     for (scoped, adjust) in [(false, (|_| {}) as fn(&mut crate::ClientsConfig)), (true, scope_under_projects)] {
-        let (server, clients) = jsonapi_stack(false, &[], adjust);
+        let (server, clients) = jsonapi_stack(false, &[("status.rs", STATUS_MODULE)], adjust);
         let calls = assert_calls_are_served(&server, &clients, scoped, &|_| true);
         for (name, (given, absent)) in &calls {
             assert_eq!(given.is_some() && absent.is_some(), !name.starts_with("subscribe"), "{name}");
+        }
+        if scoped {
+            assert_eq!(
+                ts_method(&clients.transport, "statusGetVersion"),
+                "async statusGetVersion(_projectId?: string): Promise<string> {\n      return callOp<string>('GET', \
+                 '/statuses/version');\n    },\n"
+            );
         }
     }
 }

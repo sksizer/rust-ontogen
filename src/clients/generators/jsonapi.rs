@@ -413,6 +413,7 @@ pub(crate) struct Method {
 /// client that calls scoped routes through `scopedPath`, and is `None` for
 /// one that calls only unscoped routes.
 pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -> Option<Method> {
+    let scope = scope_of(f, scope);
     let base = config.naming.url_for_module(m);
     let fetch = |p: &str| fetch(p, scope);
     let ret = if f.return_type == "()" { "null".to_string() } else { rust_type_to_ts(&f.return_type) };
@@ -489,6 +490,12 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&s
         _ => unreachable!("a resource serves CRUD ops only"),
     };
     Some(method)
+}
+
+/// The scope `f`'s calls take from a client's `scope`: only a store-scoped
+/// op is served under the route prefix; any other keeps its unscoped route.
+pub(crate) fn scope_of<'a>(f: &ApiFn, scope: Option<&'a str>) -> Option<&'a str> {
+    scope.filter(|_| f.first_param_is_store)
 }
 
 /// The path expression a call fetches: `path` as a template literal when it
@@ -660,6 +667,7 @@ fn paginated_result(array: &str) -> String {
 /// any other list is an op (§10.4), paging with the `opArg` family. Every
 /// paginated list returns `PaginatedResult`.
 pub(crate) fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -> Method {
+    let scope = scope_of(f, scope);
     let base = config.naming.url_for_module(m);
     let path = |p: &str| fetch(p, scope);
     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
