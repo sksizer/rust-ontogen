@@ -110,7 +110,7 @@ We'll add an `Exercise` entity to a fitness tracking app -- something with a cou
    Contains `list()`, `get_by_id()`, `create()`, `update()`, `delete()` forwarding functions.
 
    **Transports** (if `gen_servers` is configured):
-   The generated transport files (`http/generated.rs`, `ipc/generated.rs`) are updated to include handlers for the new entity. Over HTTP it is the JSON:API resource type `exercises`, served at `/api/exercises` and `/api/exercises/{id}`; over IPC and MCP its commands and tools are `exercise_list`, `exercise_get_by_id`, `exercise_create`, `exercise_update` and `exercise_delete`, and the TypeScript client gains the matching `exerciseList`, `exerciseGetById`, ... methods.
+   The generated transport files (`http/generated.rs`, `ipc/generated.rs`) include handlers for the new entity. Over HTTP it is the JSON:API resource type `exercises`, served at `/api/exercises` and `/api/exercises/{id}`; over IPC and MCP its commands and tools are `exercise_list`, `exercise_get_by_id`, `exercise_create`, `exercise_update` and `exercise_delete`, and the TypeScript client has the matching `exerciseList`, `exerciseGetById`, ... methods.
 
 5. ### Add the error variant
 
@@ -212,7 +212,7 @@ pub tags: Vec<String>,
 
 Rebuild, and the generated code updates everywhere:
 - A new `exercise_tags` junction table entity appears.
-- Store CRUD gains `sync_junction()` calls in create/update and `populate_exercise_relations()` for reads.
+- Store CRUD calls `sync_junction()` in create/update and `populate_exercise_relations()` for reads.
 - DTOs include the `tags` field.
 - Over HTTP, `tags` is a to-many relationship of the `exercises` resource, not an attribute: it appears under `relationships` and has its own endpoints (`/api/exercises/{id}/relationships/tags`). IPC, MCP and the TypeScript client keep it as a flat `tags` array of ids. See [Relationships](/guides/relationships/).
 

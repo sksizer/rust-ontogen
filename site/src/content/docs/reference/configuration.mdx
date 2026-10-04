@@ -268,7 +268,7 @@ Used by [`gen_servers()`](/reference/public-api/#gen_servers). Controls **Rust s
 The Axum server speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/): entities are resource objects, lists take `filter[…]`, `sort`, `include` and (when paginated) `page[offset]`/`page[limit]`, relationships have their own endpoints, custom ops send and answer meta-only documents, and every error is an `errors[]` document. Tauri IPC and MCP keep flat payloads. Besides which modules and functions are served, the fields below that shape the HTTP wire are `naming` (paths and resource types), `route_prefix`, `pagination`, `error_source_dir` (error statuses and codes) and `sse_route_overrides`. See [Server Transports](/guides/server-transports/#httpaxum-generation) and the normative [wire contract](https://github.com/sksizer/rust-ontogen/blob/main/docs/jsonapi-wire-contract.md).
 
 <Aside type="note">
-Client-side TypeScript and admin-registry generation moved out of this struct into its own [`ClientsConfig`](#clientsconfig), paired with [`gen_clients`](/reference/public-api/#gen_clients). If you're carrying a build script that sets `client_generators` or `ts_skip_commands` on `ServersConfig`, those fields now live on `ClientsConfig`. `schema_entities` is gone from both configs: `gen_servers` and `gen_clients` take the parsed schema as their first argument.
+Client-side TypeScript and admin-registry generation is configured by [`ClientsConfig`](#clientsconfig), paired with [`gen_clients`](/reference/public-api/#gen_clients); `ts_skip_commands` and the client generators live there. Neither config carries the schema: `gen_servers` and `gen_clients` take the parsed schema as their first argument.
 </Aside>
 
 | Field | Type | Description |
@@ -289,7 +289,7 @@ Client-side TypeScript and admin-registry generation moved out of this struct in
 | `extra_surfaces` | `Vec<ApiSurface>` | API surfaces scanned in addition to the primary one the fields above describe. Their modules merge into the same router, IPC handler, MCP registry and TypeScript transport. Empty for a single-surface crate. See [`ApiSurface`](#apisurface). |
 
 <Aside type="note">
-The supporting types below (`NamingConfig`, `ServerGenerator`, `ClientGenerator`, `RoutePrefix`, `PrefixParam`, `PaginationConfig`) live in the `ontogen::servers::*` module and are re-exported at the module level. The `ontogen::servers::config::*` and `ontogen::servers::types::*` paths used in earlier docs are now `pub(crate)` -- always import from `ontogen::servers::Foo` (or via `use ontogen::servers::{Foo, Bar};`). `ClientGenerator` lives at `ontogen::clients::ClientGenerator`.
+The supporting types below (`NamingConfig`, `ServerGenerator`, `ClientGenerator`, `RoutePrefix`, `PrefixParam`, `PaginationConfig`) live in the `ontogen::servers::*` module and are re-exported at the module level. The `ontogen::servers::config` and `ontogen::servers::types` modules are `pub(crate)`, so import from `ontogen::servers::Foo` (or via `use ontogen::servers::{Foo, Bar};`). `ClientGenerator` lives at `ontogen::clients::ClientGenerator`.
 </Aside>
 
 ### `NamingConfig`

@@ -64,7 +64,7 @@ my-app/
    thiserror = "2"
    ```
 
-   `specta` and `schemars` are dependencies of the generated DTOs (`Create{Entity}Input` / `Update{Entity}Input`) which still derive `specta::Type` and `JsonSchema`. The TypeScript bindings themselves no longer run through specta — see the [TypeScript bindings guide](/guides/typescript-bindings/) for how ontogen-ts handles type emission instead.
+   `specta` and `schemars` are dependencies of the generated DTOs (`Create{Entity}Input` / `Update{Entity}Input`) which derive `specta::Type` and `JsonSchema`. The TypeScript bindings do not go through specta: ontogen-ts emits them at build time -- see the [TypeScript bindings guide](/guides/typescript-bindings/).
 
 2. ### Write the build script
 
