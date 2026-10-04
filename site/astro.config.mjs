@@ -90,9 +90,13 @@ export default defineConfig({
 					label: 'Examples',
 					items: [
 						{ label: 'Iron Log', slug: 'examples/iron-log' },
+						{ label: 'Iron Log: the wire', slug: 'examples/iron-log-wire' },
 						{ label: 'Iron Log MD', slug: 'examples/iron-log-md' },
+						{ label: 'Iron Log MD: the wire', slug: 'examples/iron-log-md-wire' },
 						{ label: 'Tasks Tracker', slug: 'examples/tasks-tracker' },
+						{ label: 'Tasks Tracker: the wire', slug: 'examples/tasks-tracker-wire' },
 						{ label: 'Notes KB', slug: 'examples/notes-kb' },
+						{ label: 'Notes KB: the wire', slug: 'examples/notes-kb-wire' },
 					],
 				},
 				{ label: 'Roadmap', slug: 'roadmap' },
