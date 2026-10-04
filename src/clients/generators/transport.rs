@@ -608,13 +608,14 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                          \x20   }},\n",
                     ));
                 }
+                // A junction add or remove resolves to `null` whatever the fn
+                // returns, as the `Transport` interface and the HTTP route
+                // (`204`) have it.
                 OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-                    // JunctionAdd/Remove have exactly 2 string params, no pagination.
-                    // The generic custom IPC path produces correct output.
-                    generate_ipc_custom_method(out, f, &cmd_name, config);
+                    generate_ipc_custom_method(out, f, &cmd_name, config, true);
                 }
                 OpKind::CustomGet | OpKind::CustomPost => {
-                    generate_ipc_custom_method(out, f, &cmd_name, config);
+                    generate_ipc_custom_method(out, f, &cmd_name, config, false);
                 }
                 OpKind::EventStream => continue,
             }
@@ -879,10 +880,16 @@ fn generate_ipc_subscribe_method(out: &mut String, ev: &EventFn, config: &Config
 }
 
 /// Generate a custom IPC method.
-fn generate_ipc_custom_method(out: &mut String, f: &crate::servers::parse::ApiFn, cmd_name: &str, config: &Config) {
+fn generate_ipc_custom_method(
+    out: &mut String,
+    f: &crate::servers::parse::ApiFn,
+    cmd_name: &str,
+    config: &Config,
+    resolves_null: bool,
+) {
     let camel = snake_to_camel(cmd_name);
     let ts_ret = rust_type_to_ts(&f.return_type);
-    let returns_unit = f.return_type == "()";
+    let returns_unit = resolves_null || f.return_type == "()";
     let ret_str = if returns_unit { "null".to_string() } else { ts_ret.clone() };
     let pp_only = ts_prefix_param_only(config);
     let ipc_arg = ts_ipc_prefix_arg(config);

@@ -1645,3 +1645,28 @@ fn a_filtered_paginated_resource_list_keeps_its_flat_page_on_server_and_clients(
     assert!(ts_method(&clients.transport, "taskList").contains("httpGet<JsonApiPageDocument>"));
     assert_tag_crud_is_a_resource(&http, &clients);
 }
+
+const LABEL_MODULE: &str = "\
+use crate::schema::Tag;
+use crate::store::Store;
+
+pub async fn list_tags(store: &Store, label_id: &str) -> Result<Vec<Tag>, anyhow::Error> { todo!() }
+pub async fn add_tag(store: &Store, label_id: &str, tag_id: &str) -> Result<Tag, anyhow::Error> { todo!() }
+pub async fn remove_tag(store: &Store, label_id: &str, tag_id: &str) -> Result<Tag, anyhow::Error> { todo!() }
+";
+
+/// A junction add or remove resolves to `null` on every transport, whatever
+/// its fn returns: the interface declares `Promise<null>` and the HTTP route
+/// answers `204`, so the IPC method must not promise the fn's value.
+#[test]
+fn a_junction_add_or_remove_resolves_null_on_every_transport() {
+    let (_, clients) = jsonapi_stack(false, &[("label.rs", LABEL_MODULE)], |_| {});
+    let ts = &clients.transport;
+    let ipc = &ts[ts.find("export function createIpcTransport").unwrap()..];
+    for name in ["labelAddTag", "labelRemoveTag"] {
+        assert!(ts.contains(&format!("  {name}(labelId: string, tagId: string): Promise<null>;")), "{ts}");
+        let method = ts_method(ipc, name);
+        assert!(method.contains("): Promise<null> {"), "{method}");
+        assert!(method.contains("return null;"), "{method}");
+    }
+}
