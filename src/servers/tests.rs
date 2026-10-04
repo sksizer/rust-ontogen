@@ -5846,14 +5846,26 @@ pub(crate) fn app_error_crud_source(entity: &str) -> String {
     paged_crud_module_source(entity, "Store").replace("anyhow::Error", "AppError")
 }
 
-/// A config serving `task`, `epic` and `tag` as resources, plus `report`,
-/// a module with CRUD-named fns and no entity behind it. Every module
-/// paginates. With `app_error`, the schema directory declares `AppError`.
+/// [`app_error_crud_source`] whose `list` takes the order the generated
+/// CRUD `list` takes, `&[OrderBy<{Entity}SortField>]`, before its page.
+pub(crate) fn sorted_crud_source(entity: &str) -> String {
+    app_error_crud_source(entity).replace(
+        "list(store: &Store, limit",
+        &format!("list(store: &Store, order: &[OrderBy<{}SortField>], limit", capitalize(entity)),
+    )
+}
+
+/// A config serving `task`, `epic` and `tag` as resources, each with the
+/// sorted CRUD module `gen_api` emits ([`sorted_crud_source`]), plus
+/// `report`, a module with CRUD-named fns and no entity behind it, whose
+/// `list` takes no order. Every module paginates. With `app_error`, the
+/// schema directory declares `AppError`.
 pub(crate) fn resource_fixture(root: &std::path::Path, app_error: bool) -> Config {
     let api_dir = root.join("api");
-    for entity in ["task", "epic", "tag", "report"] {
-        write_synthetic_api(&api_dir, &format!("{entity}.rs"), &app_error_crud_source(entity));
+    for entity in ["task", "epic", "tag"] {
+        write_synthetic_api(&api_dir, &format!("{entity}.rs"), &sorted_crud_source(entity));
     }
+    write_synthetic_api(&api_dir, "report.rs", &app_error_crud_source("report"));
     let schema_dir = root.join("schema");
     write_synthetic_api(&schema_dir, "mod.rs", if app_error { RESOURCE_APP_ERROR } else { "" });
 
@@ -5876,7 +5888,8 @@ pub(crate) fn resource_fixture(root: &std::path::Path, app_error: bool) -> Confi
 /// has no entity, has junction ops of its own, served as custom ops
 /// (§10.4); `epic`'s list takes a
 /// `ListEpicsQuery` struct and two bare filters, `title` (optional) and
-/// `owner` (required), declared out of byte order; `agent`, which has no
+/// `owner` (required), declared out of byte order, then an order; `tag`'s
+/// list is hand-written without an order, so it refuses `sort`; `agent`, which has no
 /// entity, has a list that takes an `AgentQuery` struct and an optional
 /// owned `skill_id`; `workout` has a custom GET with path and `opArg` arguments, custom
 /// POSTs with and without arguments, and a stateless GET; `activity` has an
@@ -5897,9 +5910,13 @@ pub(crate) fn ops_fixture(root: &std::path::Path, scoped: bool) -> Config {
         &api_dir,
         "epic.rs",
         &app_error_crud_source("epic")
-            .replace("list(store: &Store, limit", &format!("list(store: &Store, {epic_filter}, limit"))
+            .replace(
+                "list(store: &Store, limit",
+                &format!("list(store: &Store, {epic_filter}, order: &[OrderBy<EpicSortField>], limit"),
+            )
             .replace("count(store: &Store)", &format!("count(store: &Store, {epic_filter})")),
     );
+    write_synthetic_api(&api_dir, "tag.rs", &app_error_crud_source("tag"));
     write_synthetic_api(
         &api_dir,
         "agent.rs",
@@ -6000,7 +6017,9 @@ fn a_resource_module_is_served_as_jsonapi() {
     assert!(flat.contains(&compact("let links = pagination_links(collection, &link_query, offset, limit, total);")));
     assert!(flat.contains(&compact("with_meta(PageMeta { total, limit, offset })")));
     assert!(flat.contains(&compact("let (offset, limit) = page(&query, 20, 100)?;")));
-    assert!(flat.contains(&compact("task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset)))")));
+    assert!(
+        flat.contains(&compact("task::list(&ontogen_store, &order, Some(u64::from(limit)), Some(u64::from(offset)))"))
+    );
     // `Location` is the created resource's `links.self` (§8.2).
     assert!(flat.contains(&compact(
         "let document = Document::resource(task_as_resource(&entity, collection), &CanonicalQuery::new()); \
@@ -6988,13 +7007,14 @@ fn a_paginated_filtered_resource_list_reads_struct_then_bare_filters_in_byte_ord
             "let ontogen_filter: ListEpicsQuery = query.filter()?;",
             "let ontogen_filter_owner = query.required_filter_member::<String>(\"owner\")?;",
             "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
-            "refuse_sort(&query, \"epics\")?;",
+            "let order = query.sort_order(\"epics\")?;",
             "let include = query.include_paths(\"epics\", &[], &[])?;",
             "let (offset, limit) = page(&query, 20, 100)?;",
             "let link_query = query.link_query(include.as_deref())?;",
             "let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;",
             "let items = epic::list(&ontogen_store, ontogen_filter.clone(), ontogen_filter_title.as_deref(), \
-             &ontogen_filter_owner, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;",
+             &ontogen_filter_owner, &order, Some(u64::from(limit)), Some(u64::from(offset))).await\
+             .map_err(ontogen_app_error)?;",
             "let total = epic::count(&ontogen_store, ontogen_filter, ontogen_filter_title.as_deref(), \
              &ontogen_filter_owner).await.map_err(ontogen_app_error)?;",
             "let collection = \"/api/epics\";",
@@ -7031,12 +7051,13 @@ fn a_scoped_filtered_resource_list_reads_its_filter_as_the_unscoped_one_does() {
             "let ontogen_filter: ListEpicsQuery = query.filter()?;",
             "let ontogen_filter_owner = query.required_filter_member::<String>(\"owner\")?;",
             "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
-            "refuse_sort(&query, \"epics\")?;",
+            "let order = query.sort_order(\"epics\")?;",
             "let include = query.include_paths(\"epics\", &[], &[])?;",
             "let (offset, limit) = page(&query, 20, 100)?;",
             "let link_query = query.link_query(include.as_deref())?;",
             "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;",
-            "epic::list(&ontogen_store, ontogen_filter.clone(), ontogen_filter_title.as_deref(), &ontogen_filter_owner,",
+            "epic::list(&ontogen_store, ontogen_filter.clone(), ontogen_filter_title.as_deref(), &ontogen_filter_owner, \
+             &order,",
             "epic::count(&ontogen_store, ontogen_filter, ontogen_filter_title.as_deref(), &ontogen_filter_owner)",
             "let collection = &format!(\"/api/projects/{}/epics\", encode_path_segment(&ontogen_scope.to_string()));",
             "let links = pagination_links(collection, &link_query, offset, limit, total);",
@@ -8578,7 +8599,7 @@ fn a_list_and_a_get_read_include_in_the_contract_order() {
             "task_list",
             &handler_body(&http, &format!("task_list{suffix}")),
             &[
-                "refuse_sort(&query, \"tasks\")?;",
+                "let order = query.sort_order(\"tasks\")?;",
                 include,
                 "let (offset, limit) = page(&query, 20, 100)?;",
                 "let link_query = query.link_query(include.as_deref())?;",
@@ -8616,7 +8637,7 @@ fn a_list_and_a_get_read_include_in_the_contract_order() {
             &handler_body(&http, &format!("epic_list{suffix}")),
             &[
                 "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
-                "refuse_sort(&query, \"epics\")?;",
+                "let order = query.sort_order(\"epics\")?;",
                 "let include = query.include_paths(\"epics\", &[], &[])?;",
                 "let (offset, limit) = page(&query, 20, 100)?;",
                 "let link_query = query.link_query(include.as_deref())?;",
@@ -8895,4 +8916,490 @@ fn a_string_prefix_named_by_its_path_is_borrowed_as_str() {
             "{create}"
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Sort (wire contract §7.4, §15; ADR 0006 §1)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The one file `generator` writes for `config`.
+fn generate_one(root: &std::path::Path, mut config: Config, generator: fn(PathBuf) -> ServerGenerator) -> String {
+    let output = root.join("out.rs");
+    config.generators = vec![generator(output.clone())];
+    crate::servers::generate_transport(&config).unwrap_or_else(|e| panic!("generate_transport failed: {e}"));
+    std::fs::read_to_string(output).unwrap()
+}
+
+fn http_gen(output: PathBuf) -> ServerGenerator {
+    ServerGenerator::HttpAxum { output }
+}
+
+fn ipc_gen(output: PathBuf) -> ServerGenerator {
+    ServerGenerator::TauriIpc { output }
+}
+
+fn mcp_gen(output: PathBuf) -> ServerGenerator {
+    ServerGenerator::Mcp { output }
+}
+
+/// [`resource_fixture`] unpaginated, with three sorted lists: `task`'s
+/// takes only its order, `epic`'s is the generated CRUD list with a page no
+/// surface paginates, and `tag`'s is hand-written, filtered, and names its
+/// order by full paths. With `scoped`, a route prefix serves them under
+/// `projects/{project_id}`.
+fn unpaginated_sort_fixture(root: &std::path::Path, scoped: bool) -> Config {
+    let mut config = resource_fixture(root, true);
+    config.pagination = None;
+    let without_count = |source: String| -> String {
+        source.lines().filter(|l| !l.contains("fn count(")).map(|l| format!("{l}\n")).collect()
+    };
+    write_synthetic_api(
+        &config.api_dir,
+        "task.rs",
+        &without_count(sorted_crud_source("task")).replace(
+            "order: &[OrderBy<TaskSortField>], limit: Option<u64>, offset: Option<u64>",
+            "order: &[OrderBy<TaskSortField>]",
+        ),
+    );
+    write_synthetic_api(
+        &config.api_dir,
+        "tag.rs",
+        &without_count(app_error_crud_source("tag")).replace(
+            "store: &Store, limit: Option<u64>, offset: Option<u64>",
+            "store: &Store, query: ListTagsQuery, \
+             order: &[ontogen_core::order::OrderBy<crate::store::tag::TagSortField>]",
+        ),
+    );
+    if scoped {
+        config.route_prefix = test_config_with_prefix(PathBuf::new()).route_prefix;
+    }
+    config
+}
+
+/// A list that takes an order reads `sort` after its filter and before
+/// `include` and the page (§13.2 step 5), and passes the order after the
+/// filter, whatever path names its type, paginated or not, scoped or not.
+#[test]
+fn an_unpaginated_sorted_list_reads_sort_and_passes_the_order() {
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let http = generate_one(tmp.path(), unpaginated_sort_fixture(tmp.path(), scoped), http_gen);
+        let suffix = if scoped { "_scoped" } else { "" };
+        let open = if scoped { "ontogen_state.store_for(&ontogen_scope)" } else { "ontogen_state.store().await" };
+        assert_in_order(
+            "task_list",
+            &handler_body(&http, &format!("task_list{suffix}")),
+            &[
+                "let order = query.sort_order(\"tasks\")?;",
+                "let include = query.include_paths(",
+                "let link_query = query.link_query(include.as_deref())?;",
+                open,
+                "let items = task::list(&ontogen_store, &order).await.map_err(ontogen_app_error)?;",
+                "let mut document = Document::new(data, Links::new(link_query.href(collection)));",
+            ],
+        );
+        assert_in_order(
+            "epic_list",
+            &handler_body(&http, &format!("epic_list{suffix}")),
+            &[
+                "let order = query.sort_order(\"epics\")?;",
+                "let items = epic::list(&ontogen_store, &order, None, None).await.map_err(ontogen_app_error)?;",
+            ],
+        );
+        assert_in_order(
+            "tag_list",
+            &handler_body(&http, &format!("tag_list{suffix}")),
+            &[
+                "let ontogen_filter: ListTagsQuery = query.filter()?;",
+                "let order = query.sort_order(\"tags\")?;",
+                "let include = query.include_paths(\"tags\", &[], &[])?;",
+                "let items = tag::list(&ontogen_store, ontogen_filter, &order).await.map_err(ontogen_app_error)?;",
+            ],
+        );
+        assert!(!http.contains("refuse_sort"), "every resource list takes an order:\n{http}");
+        assert!(!http.contains("SortField") && !http.contains("OrderBy"), "the order's types are inferred:\n{http}");
+        assert!(!http.contains("ErrorCode"), "nothing names an error code of its own:\n{http}");
+    }
+}
+
+/// A list whose API fn takes no order answers any `sort` with `400
+/// invalid_sort_field` (§7.4), through `refuse_sort`, which is emitted only
+/// beside such a list.
+#[test]
+fn refuse_sort_is_emitted_for_and_only_for_a_list_that_takes_no_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
+    assert_eq!(http.matches("fn refuse_sort(").count(), 1, "{http}");
+    assert!(http.contains("/// The answer to `sort` on a list whose API fn takes no order"), "{http}");
+    assert!(handler_body(&http, "tag_list").contains(&compact("refuse_sort(&query, \"tags\")?;")), "{http}");
+    assert!(!handler_body(&http, "tag_list").contains("sort_order"), "{http}");
+    for sorted in ["task_list", "epic_list"] {
+        assert!(!handler_body(&http, sorted).contains("refuse_sort"), "{sorted}:\n{http}");
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), resource_fixture(tmp.path(), true));
+    assert!(!http.contains("refuse_sort"), "no list refuses `sort`, so no helper:\n{http}");
+}
+
+/// The error generating `files` over [`resource_fixture`], paginated or not,
+/// with every transport: the order rules hold for each of them.
+fn order_error(files: &[(&str, &str)], paginated: bool) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = resource_fixture(tmp.path(), true);
+    if !paginated {
+        config.pagination = None;
+    }
+    for (file, source) in files {
+        write_synthetic_api(&config.api_dir, file, source);
+    }
+    for generator in [http_gen, ipc_gen, mcp_gen] {
+        let mut config = config.clone();
+        config.generators = vec![generator(tmp.path().join("out.rs"))];
+        let err = crate::servers::generate_transport(&config).expect_err("the order is refused");
+        assert!(err.contains("takes the order"), "every transport refuses it: {err}");
+    }
+    config.generators = vec![http_gen(tmp.path().join("out.rs"))];
+    crate::servers::generate_transport(&config).unwrap_err()
+}
+
+const TASK_REST: &str = "\
+pub async fn get_by_id(store: &Store, id: &str) -> Result<Task, AppError> { todo!() }
+pub async fn create(store: &Store, input: CreateTaskInput) -> Result<Task, AppError> { todo!() }
+pub async fn update(store: &Store, id: &str, input: UpdateTaskInput) -> Result<Task, AppError> { todo!() }
+pub async fn delete(store: &Store, id: &str) -> Result<(), AppError> { todo!() }
+";
+
+/// `task.rs` with `list` taking `params` after the store and `count`
+/// taking `count`, beside the other CRUD ops.
+fn task_with_list(params: &str, count: &str) -> String {
+    format!(
+        "pub async fn list(store: &Store, {params}) -> Result<Vec<Task>, AppError> {{ todo!() }}\n\
+         pub async fn count(store: &Store{count}) -> Result<u64, AppError> {{ todo!() }}\n{TASK_REST}"
+    )
+}
+
+const PAGE: &str = "limit: Option<u64>, offset: Option<u64>";
+
+#[test]
+fn a_list_takes_one_order_at_most() {
+    let task =
+        task_with_list(&format!("order: &[OrderBy<TaskSortField>], again: &[OrderBy<TaskSortField>], {PAGE}"), "");
+    assert_eq!(
+        order_error(&[("task.rs", &task)], true),
+        "ontogen: `task::list` takes the order `order: &[OrderBy<TaskSortField>]` and a second one, \
+         `again: &[OrderBy<TaskSortField>]`; a list takes at most one order, which `sort` is read into"
+    );
+}
+
+#[test]
+fn only_a_list_takes_an_order() {
+    let task = format!(
+        "{}pub async fn find_open(store: &Store, order: &[OrderBy<TaskSortField>]) -> Result<Vec<Task>, AppError> \
+         {{ todo!() }}\n",
+        sorted_crud_source("task")
+    );
+    assert_eq!(
+        order_error(&[("task.rs", &task)], true),
+        "ontogen: `task::find_open` takes the order `order: &[OrderBy<TaskSortField>]`, but only a module's `list`, \
+         served as its collection, reads `sort` into an order; remove the parameter"
+    );
+}
+
+/// The order follows the filter (§7.3): last before the page, or last.
+#[test]
+fn the_order_is_the_last_parameter_before_the_page() {
+    let paged = task_with_list(&format!("order: &[OrderBy<TaskSortField>], status: &str, {PAGE}"), ", status: &str");
+    assert_eq!(
+        order_error(&[("task.rs", &paged)], true),
+        "ontogen: `task::list` takes the order `order: &[OrderBy<TaskSortField>]`, which must be its last parameter \
+         before `limit` and `offset`, after the filter: a list takes the store, its filter, its order, then its page"
+    );
+    let unpaged = format!(
+        "pub async fn list(store: &Store, order: &[OrderBy<TaskSortField>], status: &str) -> Result<Vec<Task>, \
+         AppError> {{ todo!() }}\n{TASK_REST}"
+    );
+    assert!(
+        order_error(&[("task.rs", &unpaged)], false)
+            .contains("`order: &[OrderBy<TaskSortField>]`, which must be its last parameter, after the filter"),
+    );
+    // Where the filter comes first, the same lists generate.
+    for (source, paginated) in [
+        (task_with_list(&format!("status: &str, order: &[OrderBy<TaskSortField>], {PAGE}"), ", status: &str"), true),
+        (
+            unpaged.replace(
+                "order: &[OrderBy<TaskSortField>], status: &str",
+                "status: &str, order: &[OrderBy<TaskSortField>]",
+            ),
+            false,
+        ),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = resource_fixture(tmp.path(), true);
+        if !paginated {
+            config.pagination = None;
+        }
+        write_synthetic_api(&config.api_dir, "task.rs", &source);
+        let http = generate_one(tmp.path(), config, http_gen);
+        assert!(handler_body(&http, "task_list").contains(&compact("&ontogen_filter_status, &order")), "{http}");
+    }
+}
+
+/// The order sorts the entity its module serves, by its `{Entity}SortField`.
+#[test]
+fn the_order_sorts_the_modules_own_entity() {
+    for field in ["EpicSortField", "TaskOrder", "crate::store::epic::EpicSortField"] {
+        let task = task_with_list(&format!("order: &[OrderBy<{field}>], {PAGE}"), "");
+        assert_eq!(
+            order_error(&[("task.rs", &task)], true),
+            format!(
+                "ontogen: `task::list` takes the order `order: &[OrderBy<{field}>]`, but the module `task` lists \
+                 `Task`, whose sort fields are `TaskSortField`; take `&[OrderBy<TaskSortField>]`"
+            ),
+            "{field}"
+        );
+    }
+}
+
+/// A list in a module with no entity behind it is a custom op (§10.4),
+/// which takes no `sort`.
+#[test]
+fn a_list_with_no_entity_behind_it_takes_no_order() {
+    let report = app_error_crud_source("report")
+        .replace("list(store: &Store, limit", "list(store: &Store, order: &[OrderBy<ReportSortField>], limit");
+    assert_eq!(
+        order_error(&[("report.rs", &report)], true),
+        "ontogen: `report::list` takes the order `order: &[OrderBy<ReportSortField>]`, but the module `report` has no \
+         schema entity behind it, so its `list` is served as a custom op, which cannot be sorted; remove the parameter"
+    );
+}
+
+/// The IPC list command takes the sort keys as `sort` (§15), parses them
+/// with the parser the other transports use before it opens the store, and
+/// passes the order after the filter.
+#[test]
+fn an_ipc_list_takes_its_sort_keys_as_sort() {
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let ipc = compact(&generate_one(tmp.path(), ops_fixture(tmp.path(), scoped), ipc_gen));
+        let parse = "let ontogen_order = ontogen_core::order::parse_sort(sort.unwrap_or_default())\
+                     .map_err(|ontogen_e| ontogen_e.to_string())?;";
+        let open = if scoped {
+            "let ontogen_store = if let Some(ref ontogen_pid) = project_id"
+        } else {
+            "let ontogen_store ="
+        };
+        assert_in_order(
+            "epic_list",
+            &ipc[ipc.find(&compact("pub async fn epic_list(")).unwrap()..],
+            &[
+                "query: ListEpicsQuery, title: Option<String>, owner: String, sort: Option<Vec<String>>, \
+                 limit: Option<u32>, offset: Option<u32>,",
+                parse,
+                open,
+                "epic::list(&ontogen_store, query.clone(), title.as_deref(), &owner, &ontogen_order, \
+                 Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))",
+                "epic::count(&ontogen_store, query, title.as_deref(), &owner)",
+            ],
+        );
+        assert_in_order(
+            "task_list",
+            &ipc[ipc.find(&compact("pub async fn task_list(")).unwrap()..],
+            &[
+                "sort: Option<Vec<String>>, limit: Option<u32>,",
+                parse,
+                "task::list(&ontogen_store, &ontogen_order, Some(u64::from(ontogen_limit))",
+                "task::count(&ontogen_store)",
+            ],
+        );
+        // The order's types are the store's: inferred, never imported.
+        assert!(!ipc.contains("SortField") && !ipc.contains("OrderBy"), "{ipc}");
+        let tag = &ipc[ipc.find(&compact("pub async fn tag_list(")).unwrap()..];
+        let tag = &tag[..tag.find("#[tauri::command]").unwrap()];
+        assert!(
+            !tag.contains("sort") && !tag.contains("ontogen_order"),
+            "a list with no order takes no `sort`:\n{tag}"
+        );
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let ipc = compact(&generate_one(tmp.path(), unpaginated_sort_fixture(tmp.path(), false), ipc_gen));
+    for call in [
+        "task::list(&ontogen_store, &ontogen_order)",
+        "epic::list(&ontogen_store, &ontogen_order, None, None)",
+        "tag::list(&ontogen_store, query, &ontogen_order)",
+    ] {
+        assert!(ipc.contains(&compact(call)), "{call} in:\n{ipc}");
+    }
+}
+
+/// A sorted list's command takes its sort keys as `sort`, so a filter named
+/// `sort` fails the build (§15); on a list with no order it is a filter
+/// like any other.
+#[test]
+fn an_ipc_sorted_list_refuses_a_filter_named_sort() {
+    let sorted = task_with_list(
+        &format!("sort: Option<String>, order: &[OrderBy<TaskSortField>], {PAGE}"),
+        ", sort: Option<String>",
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = resource_fixture(tmp.path(), true);
+    write_synthetic_api(&config.api_dir, "task.rs", &sorted);
+    config.generators = vec![ipc_gen(tmp.path().join("ipc.rs"))];
+    assert_eq!(
+        crate::servers::generate_transport(&config).unwrap_err(),
+        "ontogen: the IPC command `task_list` cannot be generated: `task::list` takes an argument named `sort`, which \
+         is the IPC wire key the command itself uses for the list's sort keys, so the two would collide. Rename the \
+         argument."
+    );
+    // HTTP reads it from `filter[sort]`, which `sort` cannot collide with.
+    config.generators = vec![http_gen(tmp.path().join("http.rs"))];
+    crate::servers::generate_transport(&config).unwrap_or_else(|e| panic!("HTTP: {e}"));
+
+    let unsorted = task_with_list(&format!("sort: Option<String>, {PAGE}"), ", sort: Option<String>");
+    write_synthetic_api(&config.api_dir, "task.rs", &unsorted);
+    let ipc = generate_one(tmp.path(), config, ipc_gen);
+    assert!(compact(&ipc).contains(&compact("pub async fn task_list( sort: Option<String>,")), "{ipc}");
+}
+
+/// The MCP list tool advertises `sort` as an array of the entity's sort
+/// keys (§15, ADR 0006 §1), checks arguments against that schema, reads the
+/// argument strictly and parses it with the shared parser.
+#[test]
+fn an_mcp_list_tool_advertises_and_reads_its_sort_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mcp = generate_one(tmp.path(), ops_fixture(tmp.path(), false), mcp_gen);
+    let flat = compact(&mcp);
+    assert_eq!(mcp.matches("fn with_sort_schema(").count(), 1, "{mcp}");
+    assert!(
+        flat.contains(&compact(
+            "json!({ \"type\": \"array\", \"items\": { \"type\": \"string\", \"enum\": keys }, \"description\": \
+             \"Sort keys, applied in order: a field name sorts ascending, and `-` before it descending. The id is \
+             the final tie-break.\" })"
+        )),
+        "{mcp}"
+    );
+    assert!(
+        flat.contains(&compact(
+            "fn sort_arg(args: &Value) -> Result<Vec<&str>, String> { match args.get(\"sort\") { None | \
+             Some(Value::Null) => Ok(Vec::new()), Some(Value::Array(keys)) => keys .iter() .map(|key| \
+             key.as_str().ok_or_else(|| format!(\"Invalid sort: expected a string, got {key}\"))) .collect(), \
+             Some(other) => Err(format!(\"Invalid sort: expected an array of strings, got {other}\")), } }"
+        )),
+        "{mcp}"
+    );
+
+    let tool = |name: &str| {
+        let at = flat.find(&compact(&format!("name: \"{name}\""))).unwrap_or_else(|| panic!("no {name}"));
+        let tool = &flat[at..];
+        tool[..tool.find("McpToolDef{").unwrap_or(tool.len())].to_string()
+    };
+    let task = tool("task_list");
+    let schema = "with_sort_schema( with_pagination_schema(schema_for::<EmptyInput>()), \
+                  &[\"id\", \"-id\", \"title\", \"-title\", \"notes\", \"-notes\", \"done\", \"-done\"], )";
+    assert_in_order(
+        "task_list",
+        &task,
+        &[
+            &format!("schema_fn: || {{ {schema} }},"),
+            &format!("refuse_unknown_args( ontogen_args, {schema}, )?;"),
+            "let ontogen_order = ontogen_core::order::parse_sort(sort_arg(ontogen_args)?).map_err(|e| e.to_string())?;",
+            "let ontogen_store =",
+            "task::list(&ontogen_store, &ontogen_order, Some(ontogen_limit), Some(ontogen_offset))",
+            "task::count(&ontogen_store)",
+        ],
+    );
+    // The `*Query` struct is read without `sort`, which the tool reads itself.
+    assert_in_order(
+        "epic_list",
+        &tool("epic_list"),
+        &[
+            "&[\"id\", \"-id\", \"title\", \"-title\"]",
+            "args_without(ontogen_args, &[\"title\", \"owner\", \"sort\", \"limit\", \"offset\"])",
+            "let owner = required_str(ontogen_args, \"owner\")?;",
+            "let ontogen_order =",
+            "epic::list( &ontogen_store, ontogen_filter.clone(), title.as_deref(), owner, &ontogen_order,",
+        ],
+    );
+    let tag = tool("tag_list");
+    assert!(!tag.contains("sort"), "a list with no order has no `sort`:\n{tag}");
+    assert!(!mcp.contains("SortField") && !mcp.contains("OrderBy"), "the order's types are inferred:\n{mcp}");
+
+    // No list takes an order: no helpers.
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "gadget.rs", &crud_module_source("gadget", "Store"));
+    let mcp = generate_one(tmp.path(), test_config(api_dir), mcp_gen);
+    assert!(!mcp.contains("sort"), "{mcp}");
+}
+
+/// The sort keys come from the store's sortable fields (ADR 0006 §2): the
+/// id under `id`, schema enums and integer primitives included, the body,
+/// relations and lists left out.
+#[test]
+fn an_mcp_list_tool_enumerates_the_entitys_sort_keys() {
+    let source = r#"
+        #[serde(rename_all = "kebab-case")]
+        pub enum Phase { Draft, InReview }
+
+        #[derive(OntologyEntity)]
+        #[ontology(entity)]
+        pub struct Paper {
+            #[ontology(id)]
+            pub slug: String,
+            pub title: String,
+            pub phase: Phase,
+            pub pages: Option<u32>,
+            pub score: f64,
+            pub labels: Vec<String>,
+            #[ontology(body)]
+            pub body: String,
+        }
+    "#;
+    let path = std::path::Path::new("schema.rs");
+    let entities = crate::schema::parse::parse_schema_source(source, path).unwrap();
+    let enums = crate::schema::parse::parse_schema_enums_source(source, path).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "paper.rs",
+        "pub async fn list(store: &Store, order: &[OrderBy<PaperSortField>]) -> Result<Vec<Paper>, AppError> { todo!() }\n",
+    );
+    let mut config = test_config(api_dir);
+    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming).unwrap();
+    config.enums = enums;
+    let mcp = generate_one(tmp.path(), config, mcp_gen);
+    assert!(
+        compact(&mcp).contains(&compact(
+            "schema_fn: || { with_sort_schema(schema_for::<EmptyInput>(), &[\"id\", \"-id\", \"title\", \"-title\", \
+             \"phase\", \"-phase\", \"pages\", \"-pages\", \"score\", \"-score\"]) },"
+        )),
+        "{mcp}"
+    );
+}
+
+/// A sorted list tool reads its sort keys from `sort`, so a filter named
+/// `sort` fails the build; on a list with no order it is a filter like any
+/// other. A `*Query` field serialized as `sort` is not known here: the
+/// tool reads the struct without `sort` (see the test above).
+#[test]
+fn an_mcp_sorted_list_refuses_a_filter_named_sort() {
+    let sorted = task_with_list(
+        &format!("sort: Option<String>, order: &[OrderBy<TaskSortField>], {PAGE}"),
+        ", sort: Option<String>",
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = resource_fixture(tmp.path(), true);
+    write_synthetic_api(&config.api_dir, "task.rs", &sorted);
+    config.generators = vec![mcp_gen(tmp.path().join("mcp.rs"))];
+    assert_eq!(
+        crate::servers::generate_transport(&config).unwrap_err(),
+        "ontogen: the MCP tool `task_list` cannot be generated: `task::list` takes a filter named `sort`, which is \
+         the argument the tool itself reads its sort keys from, so the two would share one key. Rename the argument."
+    );
+    let unsorted = task_with_list(&format!("sort: Option<String>, {PAGE}"), ", sort: Option<String>");
+    write_synthetic_api(&config.api_dir, "task.rs", &unsorted);
+    let mcp = generate_one(tmp.path(), config, mcp_gen);
+    assert!(mcp.contains("let sort: Option<String> = ontogen_args"), "{mcp}");
 }

@@ -1334,7 +1334,8 @@ pub fn qualify_shared_types(modules: &mut [ApiModule], surfaces: &[ApiSurface]) 
 fn fn_type_imports(f: &ApiFn) -> Vec<String> {
     let mut names = Vec::new();
     collect_type_import(&f.return_type_ast, &mut names);
-    for p in &f.params {
+    // An order's types are the store's and never imported from a surface.
+    for p in f.params.iter().filter(|p| p.order_sort_field().is_none()) {
         collect_type_import(&p.ty_ast, &mut names);
     }
     names
