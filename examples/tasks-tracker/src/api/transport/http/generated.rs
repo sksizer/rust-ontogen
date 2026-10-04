@@ -328,16 +328,16 @@ async fn task_check_linked(state: &AppState, linked: &TaskLinkedIds) -> Result<(
 // ── Epic Handlers ──
 
 async fn epic_list(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     query: Query<PagedListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "epics")?;
     refuse_include(&query, "epics")?;
     let (offset, limit) = page(&query, 20, 100)?;
-    let store = state.store().await.map_err(internal_error)?;
-    let items = epic::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
-    let total = epic::count(&store).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let items = epic::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
+    let total = epic::count(&ontogen_store).await.map_err(app_error)?;
     let collection = "/api/epics";
     let data: Vec<_> = items.iter().map(|entity| epic_as_resource(entity, collection)).collect();
     let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
@@ -345,14 +345,14 @@ async fn epic_list(
 }
 
 async fn epic_get_by_id(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<LookupKey>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_include(&query, "epics")?;
-    let store = state.store().await.map_err(internal_error)?;
-    let entity = epic::get_by_id(&store, epic_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let entity = epic::get_by_id(&ontogen_store, epic_lookup_key(&id)?).await.map_err(app_error)?;
     let collection = "/api/epics";
     let resource = epic_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -360,7 +360,7 @@ async fn epic_get_by_id(
 }
 
 async fn epic_create(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
@@ -372,8 +372,8 @@ async fn epic_create(
     let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let fields = epic_request_fields(&data, true)?;
     let input: CreateEpicInput = from_fields(fields)?;
-    let store = state.store().await.map_err(internal_error)?;
-    let entity = epic::create(&store, input).await.map_err(|e| match e {
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let entity = epic::create(&ontogen_store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::EpicAlreadyExists(..) if data.id.is_some() => {
             app_error(e).with_pointer("/data/id")
         }
@@ -386,7 +386,7 @@ async fn epic_create(
 }
 
 async fn epic_update(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     path_params: Result<Path<LookupKey>, ErrorObject>,
     query: Result<Query<NoParams>, ErrorObject>,
@@ -401,37 +401,37 @@ async fn epic_update(
     let data = request::parse_update(&body, endpoint, &id)?;
     let fields = epic_request_fields(&data, false)?;
     let input: UpdateEpicInput = from_fields(fields)?;
-    let store = state.store().await.map_err(internal_error)?;
-    let entity = epic::update(&store, epic_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let entity = epic::update(&ontogen_store, epic_lookup_key(&id)?, input).await.map_err(app_error)?;
     let resource = epic_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
     Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn epic_delete(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<LookupKey>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.store().await.map_err(internal_error)?;
-    epic::delete(&store, epic_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    epic::delete(&ontogen_store, epic_lookup_key(&id)?).await.map_err(app_error)?;
     Ok(response::no_content())
 }
 
 // ── Tag Handlers ──
 
 async fn tag_list(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     query: Query<PagedListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "tags")?;
     refuse_include(&query, "tags")?;
     let (offset, limit) = page(&query, 20, 100)?;
-    let store = state.store().await.map_err(internal_error)?;
-    let items = tag::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
-    let total = tag::count(&store).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let items = tag::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
+    let total = tag::count(&ontogen_store).await.map_err(app_error)?;
     let collection = "/api/tags";
     let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
     let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
@@ -439,14 +439,14 @@ async fn tag_list(
 }
 
 async fn tag_get_by_id(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<LookupKey>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_include(&query, "tags")?;
-    let store = state.store().await.map_err(internal_error)?;
-    let entity = tag::get_by_id(&store, tag_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let entity = tag::get_by_id(&ontogen_store, tag_lookup_key(&id)?).await.map_err(app_error)?;
     let collection = "/api/tags";
     let resource = tag_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -454,7 +454,7 @@ async fn tag_get_by_id(
 }
 
 async fn tag_create(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
@@ -466,8 +466,8 @@ async fn tag_create(
     let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let fields = tag_request_fields(&data, true)?;
     let input: CreateTagInput = from_fields(fields)?;
-    let store = state.store().await.map_err(internal_error)?;
-    let entity = tag::create(&store, input).await.map_err(|e| match e {
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let entity = tag::create(&ontogen_store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::TagAlreadyExists(..) if data.id.is_some() => app_error(e).with_pointer("/data/id"),
         e => app_error(e),
     })?;
@@ -478,7 +478,7 @@ async fn tag_create(
 }
 
 async fn tag_update(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     path_params: Result<Path<LookupKey>, ErrorObject>,
     query: Result<Query<NoParams>, ErrorObject>,
@@ -493,37 +493,37 @@ async fn tag_update(
     let data = request::parse_update(&body, endpoint, &id)?;
     let fields = tag_request_fields(&data, false)?;
     let input: UpdateTagInput = from_fields(fields)?;
-    let store = state.store().await.map_err(internal_error)?;
-    let entity = tag::update(&store, tag_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let entity = tag::update(&ontogen_store, tag_lookup_key(&id)?, input).await.map_err(app_error)?;
     let resource = tag_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
     Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn tag_delete(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<LookupKey>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.store().await.map_err(internal_error)?;
-    tag::delete(&store, tag_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    tag::delete(&ontogen_store, tag_lookup_key(&id)?).await.map_err(app_error)?;
     Ok(response::no_content())
 }
 
 // ── Task Handlers ──
 
 async fn task_list(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     query: Query<PagedListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "tasks")?;
     refuse_include(&query, "tasks")?;
     let (offset, limit) = page(&query, 20, 100)?;
-    let store = state.store().await.map_err(internal_error)?;
-    let items = task::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
-    let total = task::count(&store).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let items = task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
+    let total = task::count(&ontogen_store).await.map_err(app_error)?;
     let collection = "/api/tasks";
     let data: Vec<_> = items.iter().map(|entity| task_as_resource(entity, collection)).collect();
     let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
@@ -531,14 +531,14 @@ async fn task_list(
 }
 
 async fn task_get_by_id(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<LookupKey>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_include(&query, "tasks")?;
-    let store = state.store().await.map_err(internal_error)?;
-    let entity = task::get_by_id(&store, task_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let entity = task::get_by_id(&ontogen_store, task_lookup_key(&id)?).await.map_err(app_error)?;
     let collection = "/api/tasks";
     let resource = task_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -546,7 +546,7 @@ async fn task_get_by_id(
 }
 
 async fn task_create(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
@@ -558,9 +558,9 @@ async fn task_create(
     let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let (fields, linked) = task_request_fields(&data, true)?;
     let input: CreateTaskInput = from_fields(fields)?;
-    let store = state.store().await.map_err(internal_error)?;
-    task_check_linked(&state, &linked).await?;
-    let entity = task::create(&store, input).await.map_err(|e| match e {
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    task_check_linked(&ontogen_state, &linked).await?;
+    let entity = task::create(&ontogen_store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::TaskAlreadyExists(..) if data.id.is_some() => {
             app_error(e).with_pointer("/data/id")
         }
@@ -573,7 +573,7 @@ async fn task_create(
 }
 
 async fn task_update(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     path_params: Result<Path<LookupKey>, ErrorObject>,
     query: Result<Query<NoParams>, ErrorObject>,
@@ -588,22 +588,22 @@ async fn task_update(
     let data = request::parse_update(&body, endpoint, &id)?;
     let (fields, linked) = task_request_fields(&data, false)?;
     let input: UpdateTaskInput = from_fields(fields)?;
-    let store = state.store().await.map_err(internal_error)?;
-    task_check_linked(&state, &linked).await?;
-    let entity = task::update(&store, task_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    task_check_linked(&ontogen_state, &linked).await?;
+    let entity = task::update(&ontogen_store, task_lookup_key(&id)?, input).await.map_err(app_error)?;
     let resource = task_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
     Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn task_delete(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<LookupKey>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.store().await.map_err(internal_error)?;
-    task::delete(&store, task_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    task::delete(&ontogen_store, task_lookup_key(&id)?).await.map_err(app_error)?;
     Ok(response::no_content())
 }
 

@@ -199,28 +199,28 @@ async fn note_check_linked(state: &AppState, linked: &NoteLinkedIds) -> Result<(
 // ── Note Handlers ──
 
 async fn note_list(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "notes")?;
     refuse_include(&query, "notes")?;
-    let store = state.store().await.map_err(internal_error)?;
-    let items = note::list(&store).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let items = note::list(&ontogen_store).await.map_err(app_error)?;
     let collection = "/api/notes";
     let data: Vec<_> = items.iter().map(|entity| note_as_resource(entity, collection)).collect();
     Ok(response::ok(&Document::new(data, Links::new(collection))))
 }
 
 async fn note_get_by_id(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<LookupKey>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_include(&query, "notes")?;
-    let store = state.store().await.map_err(internal_error)?;
-    let entity = note::get_by_id(&store, note_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let entity = note::get_by_id(&ontogen_store, note_lookup_key(&id)?).await.map_err(app_error)?;
     let collection = "/api/notes";
     let resource = note_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -228,7 +228,7 @@ async fn note_get_by_id(
 }
 
 async fn note_create(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
@@ -240,9 +240,9 @@ async fn note_create(
     let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let (fields, linked) = note_request_fields(&data, true)?;
     let input: CreateNoteInput = from_fields(fields)?;
-    let store = state.store().await.map_err(internal_error)?;
-    note_check_linked(&state, &linked).await?;
-    let entity = note::create(&store, input).await.map_err(|e| match e {
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    note_check_linked(&ontogen_state, &linked).await?;
+    let entity = note::create(&ontogen_store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::NoteAlreadyExists(..) if data.id.is_some() => {
             app_error(e).with_pointer("/data/id")
         }
@@ -255,7 +255,7 @@ async fn note_create(
 }
 
 async fn note_update(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     path_params: Result<Path<LookupKey>, ErrorObject>,
     query: Result<Query<NoParams>, ErrorObject>,
@@ -270,22 +270,22 @@ async fn note_update(
     let data = request::parse_update(&body, endpoint, &id)?;
     let (fields, linked) = note_request_fields(&data, false)?;
     let input: UpdateNoteInput = from_fields(fields)?;
-    let store = state.store().await.map_err(internal_error)?;
-    note_check_linked(&state, &linked).await?;
-    let entity = note::update(&store, note_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    note_check_linked(&ontogen_state, &linked).await?;
+    let entity = note::update(&ontogen_store, note_lookup_key(&id)?, input).await.map_err(app_error)?;
     let resource = note_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
     Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn note_delete(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<LookupKey>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.store().await.map_err(internal_error)?;
-    note::delete(&store, note_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    note::delete(&ontogen_store, note_lookup_key(&id)?).await.map_err(app_error)?;
     Ok(response::no_content())
 }
 
