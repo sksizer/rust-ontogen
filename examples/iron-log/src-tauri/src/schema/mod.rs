@@ -72,7 +72,7 @@ pub enum ChangeOp {
     Deleted,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityKind {
     Exercise,
     Workout,

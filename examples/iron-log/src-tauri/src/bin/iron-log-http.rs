@@ -20,10 +20,7 @@ async fn main() {
     let db = open_db().await;
     create_tables(&db).await;
     let state = Arc::new(AppState::new(Arc::new(db)));
-    tokio::spawn({
-        let state = state.clone();
-        async move { state.publish_activity().await }
-    });
+    tokio::spawn(state.publish_activity());
 
     let app = iron_log::api::transport::http::generated::entity_routes().with_state(state);
 
