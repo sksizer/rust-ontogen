@@ -714,6 +714,31 @@ pub struct Tag {
 }
 "#;
 
+/// `board`, a module with no entity behind it, beside the generated resource
+/// modules: CRUD-named and junction ops served as custom ops, a custom GET
+/// with a path and an optional argument, custom POSTs with and without
+/// arguments, and an event op whose item type is an entity.
+const BOARD_MODULE: &str = "\
+use crate::schema::{CreateTaskInput, Tag, Task, UpdateTaskInput};
+use crate::store::Store;
+use crate::AppState;
+
+pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Task>, anyhow::Error> { todo!() }
+pub async fn count(store: &Store) -> Result<u64, anyhow::Error> { todo!() }
+pub async fn get_by_id(store: &Store, id: &str) -> Result<Task, anyhow::Error> { todo!() }
+pub async fn create(store: &Store, input: CreateTaskInput) -> Result<Task, anyhow::Error> { todo!() }
+pub async fn update(store: &Store, id: &str, input: UpdateTaskInput) -> Result<Task, anyhow::Error> { todo!() }
+pub async fn delete(store: &Store, id: &str) -> Result<(), anyhow::Error> { todo!() }
+pub async fn list_tags(store: &Store, board_id: &str) -> Result<Vec<Tag>, anyhow::Error> { todo!() }
+pub async fn add_tag(store: &Store, board_id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }
+pub async fn remove_tag(store: &Store, board_id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }
+pub async fn get_summary(store: &Store, id: &str, include_done: Option<bool>) -> Result<Task, anyhow::Error> { todo!() }
+pub async fn archive(store: &Store, task_id: &str, reason: Option<String>) -> Result<Task, anyhow::Error> { todo!() }
+pub async fn import(store: &Store, input: CreateTaskInput, dry_run: Option<bool>) -> Result<u64, anyhow::Error> { todo!() }
+pub async fn reset(store: &Store) -> Result<(), anyhow::Error> { todo!() }
+pub async fn task_changes(state: &AppState, resume: Option<String>) -> Result<tokio::sync::broadcast::Receiver<Task>, anyhow::Error> { todo!() }
+";
+
 /// What [`jsonapi_clients`] generated.
 struct JsonApiClients {
     transport: String,
@@ -721,7 +746,8 @@ struct JsonApiClients {
     bindings: String,
 }
 
-/// The `HttpTauriIpcSplit` and `HttpTs` output for [`JSONAPI_SCHEMA`], through
+/// The `HttpTauriIpcSplit` and `HttpTs` output for [`JSONAPI_SCHEMA`] and
+/// [`BOARD_MODULE`], through
 /// the public `gen_api` → `gen_clients` path. With `paginated`, every list
 /// pages. `adjust` edits the clients config before generation.
 fn jsonapi_clients(paginated: bool, adjust: impl FnOnce(&mut crate::ClientsConfig)) -> JsonApiClients {
@@ -746,6 +772,7 @@ fn jsonapi_clients(paginated: bool, adjust: impl FnOnce(&mut crate::ClientsConfi
         },
     )
     .unwrap();
+    fs::write(api_dir.join("board.rs"), BOARD_MODULE).unwrap();
     let ts = tmp.path().join("ts");
     fs::create_dir_all(&ts).unwrap();
     // Named for the admin-layer fixture, which sits beside other bindings.
@@ -773,9 +800,12 @@ fn jsonapi_clients(paginated: bool, adjust: impl FnOnce(&mut crate::ClientsConfi
     }
 }
 
-/// The text of `function name(` through its closing `}` line.
+/// The text of `function name(` or `function name<` through its closing `}` line.
 fn ts_function<'a>(ts: &'a str, name: &str) -> &'a str {
-    let start = ts.find(&format!("function {name}(")).unwrap_or_else(|| panic!("no `{name}` in:\n{ts}"));
+    let start = [format!("function {name}("), format!("function {name}<")]
+        .iter()
+        .find_map(|head| ts.find(head.as_str()))
+        .unwrap_or_else(|| panic!("no `{name}` in:\n{ts}"));
     let end = ts[start..].find("\n}\n").map_or(ts.len(), |i| start + i + 3);
     &ts[start..end]
 }
@@ -953,7 +983,7 @@ fn every_http_call_throws_json_api_error() {
 }
 
 #[test]
-fn a_module_with_no_entity_keeps_its_flat_crud_and_put() {
+fn a_module_with_no_entity_serves_its_crud_as_custom_ops() {
     let tmp = tempfile::tempdir().unwrap();
     let api_dir = tmp.path().join("api");
     write_synthetic_api(&api_dir, "widget.rs", &crate::servers::tests::paged_crud_module_source("widget", "Store"));
@@ -977,16 +1007,270 @@ fn a_module_with_no_entity_keeps_its_flat_crud_and_put() {
     let ts = fs::read_to_string(&transport_out).unwrap();
     let http = fs::read_to_string(&http_out).unwrap();
 
-    assert!(ts_method(&ts, "widgetList").contains("return httpGet(`/widgets${toQueryString({ limit, offset })}`);"));
-    assert!(
-        ts_method(&ts, "widgetUpdate").contains("return httpPut<Widget>(`/widgets/${encodeURIComponent(id)}`, input);")
-    );
-    assert!(ts_method(&http, "widgetUpdate").contains("return httpPut<Widget>("));
     for ts in [&ts, &http] {
-        assert!(ts.contains("async function httpPut<T>("), "{ts}");
+        assert!(
+            ts_method(ts, "widgetList").contains(
+                "return callOp<PaginatedResult<Widget>>('GET', `/widgets${toQueryString({ opArg: { limit, offset } \
+                 })}`);"
+            ),
+            "{ts}"
+        );
+        assert!(
+            ts_method(ts, "widgetUpdate")
+                .contains("return callOp<Widget>('PATCH', `/widgets/${encodeURIComponent(id)}`, { input });"),
+            "{ts}"
+        );
+        assert!(!ts.contains("httpPut"), "no generated route takes a PUT:\n{ts}");
         assert!(!ts.contains("flatten"), "no resource, no flattener:\n{ts}");
         assert!(ts.contains("export class JsonApiError"), "errors are JSON:API documents on every route:\n{ts}");
     }
+}
+
+#[test]
+fn call_op_sends_meta_args_and_reads_meta_result() {
+    let clients = jsonapi_clients(false, |_| {});
+    for ts in [&clients.transport, &clients.http] {
+        let call = ts_function(ts, "callOp");
+        assert!(
+            call.contains("function callOp<T>(method: string, path: string, args?: Record<string, unknown>)"),
+            "{call}"
+        );
+        assert!(
+            call.contains("httpRequest(method, path, args === undefined ? undefined : { meta: { args } })"),
+            "no arguments, no body:\n{call}"
+        );
+        assert!(call.contains("if (res.status === 204) return null as T;"), "{call}");
+        assert!(call.contains("return doc.meta.result;"), "{call}");
+        assert!(!ts.contains("httpPut"), "{ts}");
+    }
+}
+
+/// The `board` methods of both clients: each line of `expected` appears in
+/// the method of the same name, in either client.
+fn assert_board_calls(clients: &JsonApiClients, expected: &[(&str, &str)]) {
+    for ts in [&clients.transport, &clients.http] {
+        for (name, call) in expected {
+            let method = ts_method(ts, name);
+            assert!(method.contains(call), "expected `{call}` in:\n{method}");
+        }
+    }
+}
+
+#[test]
+fn a_custom_get_puts_required_args_in_the_path_and_optional_ones_in_op_arg() {
+    assert_board_calls(
+        &jsonapi_clients(false, |_| {}),
+        &[(
+            "boardGetSummary",
+            "return callOp<Task>('GET', `/boards/summary/${encodeURIComponent(id)}${toQueryString({ opArg: { \
+             include_done: includeDone } })}`);",
+        )],
+    );
+}
+
+#[test]
+fn a_custom_post_sends_every_arg_as_meta_args_and_no_query() {
+    let clients = jsonapi_clients(false, |_| {});
+    assert_board_calls(
+        &clients,
+        &[
+            // Optional args too, keyed by their Rust names.
+            ("boardArchive", "return callOp<Task>('POST', '/boards/archive', { task_id: taskId, reason });"),
+            // An `*Input` arg under its Rust name, beside an optional one.
+            ("boardImport", "return callOp<number>('POST', '/boards/import', { input, dry_run: dryRun });"),
+            // No args, no body; `()` resolves to null.
+            ("boardReset", "return callOp<null>('POST', '/boards/reset');"),
+        ],
+    );
+    for ts in [&clients.transport, &clients.http] {
+        assert!(ts_method(ts, "boardReset").contains("Promise<null>"), "{ts}");
+    }
+}
+
+#[test]
+fn crud_ops_with_no_entity_are_served_as_custom_ops() {
+    assert_board_calls(
+        &jsonapi_clients(true, |_| {}),
+        &[
+            (
+                "boardList",
+                "return callOp<PaginatedResult<Task>>('GET', `/boards${toQueryString({ opArg: { limit, offset } })}`);",
+            ),
+            ("boardGetById", "return callOp<Task>('GET', `/boards/${encodeURIComponent(id)}`);"),
+            ("boardCreate", "return callOp<Task>('POST', '/boards', { input });"),
+            ("boardUpdate", "return callOp<Task>('PATCH', `/boards/${encodeURIComponent(id)}`, { input });"),
+            ("boardDelete", "return callOp<null>('DELETE', `/boards/${encodeURIComponent(id)}`);"),
+        ],
+    );
+    // Unpaginated, the list is the plain route.
+    assert_board_calls(&jsonapi_clients(false, |_| {}), &[("boardList", "return callOp<Task[]>('GET', '/boards');")]);
+}
+
+#[test]
+fn junction_ops_are_served_as_custom_ops_at_their_nested_routes() {
+    let parent = "`/boards/${encodeURIComponent(boardId)}/tags";
+    assert_board_calls(
+        &jsonapi_clients(true, |_| {}),
+        &[
+            (
+                "boardListTags",
+                &format!(
+                    "return callOp<PaginatedResult<Tag>>('GET', {parent}${{toQueryString({{ opArg: {{ limit, offset }} }})}}`);"
+                ),
+            ),
+            ("boardAddTag", &format!("return callOp<null>('POST', {parent}`, {{ tag_id: tagId }});")),
+            ("boardRemoveTag", &format!("return callOp<null>('DELETE', {parent}/${{encodeURIComponent(tagId)}}`);")),
+        ],
+    );
+    assert_board_calls(
+        &jsonapi_clients(false, |_| {}),
+        &[("boardListTags", &format!("return callOp<Tag[]>('GET', {parent}`);"))],
+    );
+}
+
+#[test]
+fn a_scoped_junction_op_keeps_its_unscoped_path_under_the_prefix() {
+    let ts = jsonapi_clients(false, |config| {
+        config.route_prefix = Some(crate::servers::RoutePrefix {
+            segments: "projects/:project_id".to_string(),
+            state_accessor: "store_for".to_string(),
+            params: vec![crate::servers::PrefixParam {
+                name: "project_id".to_string(),
+                rust_type: "String".to_string(),
+                ts_type: "string".to_string(),
+            }],
+        });
+    })
+    .transport;
+    assert!(
+        ts_method(&ts, "boardAddTag").contains(
+            "async boardAddTag(boardId: string, tagId: string, projectId?: string): Promise<null> {\n      return \
+             callOp<null>('POST', scopedPath(projectId, `/boards/${encodeURIComponent(boardId)}/tags`), { tag_id: \
+             tagId });"
+        ),
+        "{ts}"
+    );
+    assert!(ts_method(&ts, "boardArchive").contains("callOp<Task>('POST', scopedPath(projectId, '/boards/archive'), "));
+}
+
+#[test]
+fn an_entity_event_frame_is_flattened() {
+    let ts = jsonapi_clients(false, |_| {}).transport;
+    let subscribe = ts_method(&ts, "subscribeTaskChanges");
+    assert!(
+        subscribe.contains("        (frame) => flattenTask(frame as JsonApiResource),\n        handlers,"),
+        "{subscribe}"
+    );
+    let sse = ts_function(&ts, "subscribeSse");
+    assert!(sse.contains("  decode: (frame: unknown) => T,\n  handlers: SubscriptionHandlers<T>,"), "{sse}");
+    assert!(sse.contains("data = decode(JSON.parse(event.data));"), "{sse}");
+    // IPC frames stay flat.
+    let ipc = &ts[ts.find("export function createIpcTransport").unwrap()..];
+    assert!(!ipc.contains("flatten"), "{ipc}");
+}
+
+/// A transport for `modules` over the [`JSONAPI_SCHEMA`] resources.
+fn transport_over_resources(modules: &[ApiModule], bindings: &str) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let entities =
+        crate::schema::parse::parse_schema_source(JSONAPI_SCHEMA, std::path::Path::new("schema.rs")).unwrap();
+    let mut config = two_surface_client_config(vec![ApiSurface {
+        api_dir: tmp.path().join("api"),
+        service_import_path: "crate::api".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        store_accessor: None,
+        store_type: Some("Store".to_string()),
+        pagination: None,
+        paginated_modules: Vec::new(),
+        schema_dir: None,
+    }]);
+    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming).unwrap();
+    let (bindings_path, output) = (tmp.path().join("bindings.ts"), tmp.path().join("transport.ts"));
+    fs::write(&bindings_path, bindings).unwrap();
+    crate::clients::generators::transport::generate(&output, &bindings_path, modules, &config);
+    fs::read_to_string(&output).unwrap()
+}
+
+/// `{module}` with one parameterless event op per `(name, item type)`.
+fn event_module(module: &str, events: &[(&str, syn::Type)]) -> ApiModule {
+    ApiModule {
+        name: module.to_string(),
+        functions: Vec::new(),
+        events: events
+            .iter()
+            .map(|(name, ty)| crate::servers::parse::EventFn {
+                name: (*name).to_string(),
+                item_type: crate::servers::types::norm_type(ty),
+                item_type_ast: ty.clone(),
+                ..Default::default()
+            })
+            .collect(),
+        is_singleton: false,
+        has_count: false,
+    }
+}
+
+#[test]
+fn an_entity_only_an_event_carries_still_gets_a_flattener() {
+    let module = event_module(
+        "feed",
+        &[("tag_added", syn::parse_quote!(crate::schema::Tag)), ("pulse", syn::parse_quote!(Pulse))],
+    );
+    let ts = transport_over_resources(
+        &[module],
+        "export type Tag = { slug: string; title: string };\nexport type Pulse = { n: number };\n",
+    );
+    assert!(ts.contains("const TAG_RESOURCE: JsonApiResourceDef = {"), "{ts}");
+    assert!(ts.contains("function flattenTag(r: JsonApiResource): Tag {"), "{ts}");
+    assert!(!ts.contains("TASK_RESOURCE"), "only the resources the transport reads:\n{ts}");
+    assert!(ts_method(&ts, "subscribeTagAdded").contains("(frame) => flattenTag(frame as JsonApiResource),"), "{ts}");
+    // Any other item is the frame's `meta.result`.
+    assert!(ts_method(&ts, "subscribePulse").contains("(frame) => metaResult<Pulse>(frame),"), "{ts}");
+    assert!(ts_function(&ts, "metaResult").contains("return (frame as { meta: { result: T } }).meta.result;"));
+    // A parameterless op's global listener decodes its frames the same way.
+    assert!(
+        ts_method(&ts, "onTagAdded")
+            .contains("try { callback(flattenTag(JSON.parse(event.data) as JsonApiResource)); }"),
+        "{ts}"
+    );
+    assert!(ts_method(&ts, "onPulse").contains("try { callback(metaResult<Pulse>(JSON.parse(event.data))); }"), "{ts}");
+}
+
+#[test]
+fn the_http_only_client_calls_the_server_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "auto_start.rs",
+        "// ontogen:singleton\npub async fn get_status(store: &Store) -> Result<u64, anyhow::Error> { todo!() }\n",
+    );
+    write_synthetic_api(
+        &api_dir,
+        "skill_file.rs",
+        "pub async fn publish(store: &Store, id: &str) -> Result<(), anyhow::Error> { todo!() }\n",
+    );
+    let config = two_surface_client_config(vec![ApiSurface {
+        api_dir,
+        service_import_path: "crate::api".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        store_accessor: None,
+        store_type: Some("Store".to_string()),
+        pagination: None,
+        paginated_modules: Vec::new(),
+        schema_dir: None,
+    }]);
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let (bindings, output) = (tmp.path().join("bindings.ts"), tmp.path().join("http.ts"));
+    fs::write(&bindings, "").unwrap();
+    crate::clients::generators::ts_client::generate(&output, &bindings, &modules, &config);
+    let http = fs::read_to_string(&output).unwrap();
+    // A singleton keeps its singular segment; a multi-word module is kebab-case.
+    assert!(ts_method(&http, "autoStartGetStatus").contains("callOp<number>('GET', '/auto-start/status');"), "{http}");
+    assert!(
+        ts_method(&http, "skillFilePublish").contains("callOp<null>('POST', '/skill-files/publish', { id });"),
+        "{http}"
+    );
 }
 
 /// The generated transport `packages/nuxt_admin_layer/tests/jsonapi-transport.test.ts`
