@@ -7,7 +7,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 Generated CRUD covers the standard five operations: list, get, create, update, delete. But real applications need more -- bulk operations, filtered queries, aggregations, business logic endpoints. Ontogen handles this by scanning your hand-written API modules and merging them into the same pipeline as generated code.
 
-The result: your custom endpoints show up in Axum routes, Tauri IPC commands, and MCP tools automatically. No extra wiring.
+The result: your custom endpoints show up in Axum routes, Tauri IPC commands, MCP tools and the TypeScript client automatically. No extra wiring. Over HTTP each one is a JSON:API custom op: its arguments travel in `meta.args` (or the URL, for a `GET`) and its result comes back in `meta.result`. Over IPC and MCP the arguments and the result stay flat.
 
 ## How it works
 
@@ -22,36 +22,33 @@ The scan happens at build time. When you add a new `.rs` file to a scan director
 
 ## Recipe: Add a custom endpoint
 
+The [iron-log example](/examples/iron-log/) has one custom endpoint, a workout stats summary. This recipe walks through it.
+
 <Steps>
 
 1. ### Create the module file
 
-   Put your custom endpoint in the API directory alongside the `generated/` subdirectory. For example, if your generated CRUD for workouts lives at `src/api/v1/generated/workout.rs`, create a custom module at `src/api/v1/workout_stats.rs`:
+   Put your custom endpoint in the API directory alongside the `generated/` subdirectory. iron-log's generated CRUD lives under `src/api/v1/generated/`, and the stats endpoint is `src/api/v1/stats.rs`:
 
    ```rust
-   // src/api/v1/workout_stats.rs
+   // src/api/v1/stats.rs
 
-   use crate::schema::{AppError, Workout};
+   use crate::schema::{AppError, WorkoutStats};
    use crate::store::Store;
 
-   /// Get the total number of workouts in the last 30 days
-   pub async fn recent_count(store: &Store) -> Result<i64, AppError> {
-       store.count_recent_workouts(30).await
-   }
-
-   /// Get the heaviest workout set across all exercises
-   pub async fn personal_best(
-       store: &Store,
-       exercise_id: &str,
-   ) -> Result<Option<Workout>, AppError> {
-       store.get_personal_best(exercise_id).await
+   /// Read-only stats summary.
+   pub async fn get_workout(_store: &Store) -> Result<WorkoutStats, AppError> {
+       Ok(WorkoutStats { total_count: 0, total_duration_minutes: 0 })
    }
    ```
 
-   Two things matter here:
+   Three things matter here:
 
-   - **First parameter type**: the scanner checks whether the first parameter is your `AppState` type or your `Store` type (as configured in `ApiConfig`). This determines scoping -- `Store`-scoped functions get entity routes, `AppState`-scoped functions get app-level routes.
-   - **Doc comments**: the `///` comments become the `doc` field in `ApiFnMeta`. MCP tools use this as the tool description. Future OpenAPI generation will use it too. Write useful descriptions.
+   - **First parameter type**: the scanner checks whether the first parameter is your `AppState` type or your `Store` type (as configured in `ApiConfig`). A function that takes the store is served under the [route prefix](/reference/configuration/#routeprefix) when one is configured; one that takes the state stays unscoped.
+   - **The name**: `get_workout` takes no arguments after the store, and a function like that is a `GET` only when its name starts with a read prefix such as `get_`; otherwise it is a `POST`. See [Function classification rules](#function-classification-rules).
+   - **Doc comments**: the `///` comments become the `doc` field in `ApiFnMeta`. MCP tools use this as the tool description. Write useful descriptions.
+
+   `WorkoutStats` lives in `crate::schema`, the `types_import_path`, because the generated handlers import every type an API function names from there.
 
 2. ### Register in `mod.rs`
 
@@ -59,13 +56,15 @@ The scan happens at build time. When you add a new `.rs` file to a scan director
 
    ```rust
    // src/api/v1/mod.rs
+   pub mod activity;
    pub mod generated;
-   pub mod workout_stats;  // your custom module
+   pub mod stats; // your custom module
+   pub use generated::*;
    ```
 
 3. ### Configure scan directories
 
-   Make sure your `ApiConfig` includes the directory to scan:
+   The [`Pipeline`](/concepts/pipeline/) builder scans the servers' and clients' `api_dir` (`src/api/v1` in iron-log), so with it there is nothing to add; `.api_scan_dirs(..)` adds more directories. A direct `gen_api` caller lists the directory in `ApiConfig::scan_dirs`:
 
    ```rust
    let api = gen_api(&schema.entities, &ApiConfig {
@@ -75,10 +74,9 @@ The scan happens at build time. When you add a new `.rs` file to a scan director
        state_type: "AppState".to_string(),
        store_type: Some("Store".to_string()),
        schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
+       paginated: vec![],
    })?;
    ```
-
-   With the [`Pipeline`](/concepts/pipeline/) builder, this is `.api("src/api/v1/generated", "AppState").api_scan_dirs(vec!["src/api/v1".into()])`.
 
    The scanner reads every `.rs` file in `src/api/v1/` (excluding the `generated/` subdirectory) and extracts function signatures.
 
@@ -88,19 +86,115 @@ The scan happens at build time. When you add a new `.rs` file to a scan director
    cargo build
    ```
 
-   The scanner parses your new file, extracts `recent_count` and `personal_best`, classifies them, and includes them in `ApiOutput`. Downstream generators produce handlers for them.
+   The scanner parses `stats.rs`, extracts `get_workout`, classifies it as `CustomGet`, and includes it in `ApiOutput`. Downstream generators produce handlers for it.
 
 5. ### Check the generated transports
 
-   After the build, look at your generated transport files. Your custom functions should appear alongside the CRUD handlers.
+   After the build, `get_workout` appears in every generated transport beside the CRUD handlers:
 
-   **HTTP routes**: `recent_count` becomes a `GET` endpoint (no body parameter, classified as `CustomGet`). `personal_best` is also `GET` because its first parameter (`exercise_id: i64`) is an id-like primitive that fits in a URL path segment.
-
-   **IPC commands**: both functions get `#[tauri::command]` wrappers.
-
-   **MCP tools**: both get tool definitions with your doc comments as descriptions.
+   - **HTTP**: `GET /api/stats/workout`, served by `stat_get_workout`, answering `{ "jsonapi": { "version": "1.1" }, "meta": { "result": { "total_count": 0, "total_duration_minutes": 0 } } }`.
+   - **IPC**: a `#[tauri::command]` named `stat_get_workout`, returning `WorkoutStats` as is.
+   - **TypeScript**: `statGetWorkout(): Promise<WorkoutStats>`. The HTTP transport calls `callOp<WorkoutStats>('GET', '/stats/workout')`, which unwraps `meta.result`; the IPC transport calls `invoke('stat_get_workout')`.
+   - **MCP** (when the `Mcp` generator is configured): a tool named `stat_get_workout`, described by the doc comment.
 
 </Steps>
+
+## Custom ops on the wire
+
+Over HTTP, every function that is not served as a JSON:API resource or relationship is a custom op: the custom functions classified below, and the CRUD and junction functions of a module with no entity behind it. A custom op's request and response are meta-only JSON:API documents. The normative rules are §10 of the [wire contract](https://github.com/sksizer/rust-ontogen/blob/main/docs/jsonapi-wire-contract.md#10-custom-ops-and-singletons).
+
+The examples here use the hand-written task operations in [`crates/markdown-pilot/src/api/task.rs`](https://github.com/sksizer/rust-ontogen/blob/main/crates/markdown-pilot/src/api/task.rs), the fixture the generated router is tested against (`crates/markdown-pilot/tests/http_router.rs`):
+
+| Function | Route | Arguments | Success |
+|----------|-------|-----------|---------|
+| `get_summary(store, status: &str, verbose: Option<bool>, limit: Option<u32>) -> TaskSummary` | `GET /api/tasks/summary/{status}` | `status` in the path; `opArg[verbose]`, `opArg[limit]` | `200`, `meta.result` |
+| `list_by_status(store, status: &str) -> Vec<Task>` | `GET /api/tasks/list-by-status/{status}` | `status` in the path | `200`, `meta.result` |
+| `capture(store, input: CreateTaskInput, status: Option<String>) -> Task` | `POST /api/tasks/capture` | `meta.args.input`, `meta.args.status` | `200`, `meta.result` |
+| `complete(store, id: &str) -> ()` | `POST /api/tasks/complete` | `meta.args.id` | `204` |
+| `purge_done(store) -> u64` | `POST /api/tasks/purge-done` | none; no body needed | `200`, `meta.result` |
+
+### Responses
+
+A custom op answers a meta-only document with status `200`. iron-log's `GET /api/stats/workout`, with illustrative values (the example's handler returns zeros):
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/vnd.api+json
+Vary: Accept
+
+{
+  "jsonapi": { "version": "1.1" },
+  "meta": { "result": { "total_count": 12, "total_duration_minutes": 540 } }
+}
+```
+
+- `result` is the function's `Ok` value as serde serializes it. It is a plain value even when it is an entity or a `Vec` of entities: `list_by_status` answers an array of plain `Task` objects, not resource objects.
+- The status is `200`, never `201`, even for an op that creates something (`capture`). There is no `data`, no `links` and no `Location`.
+- A function returning `()` answers `204 No Content` with no body (`complete`).
+
+### `POST` bodies
+
+A `POST` carries its arguments as a meta-only document. Every argument after the state or store is a member of `meta.args`, keyed by its Rust parameter name -- an `*Input` argument and `Option` arguments included:
+
+```http
+POST /api/tasks/capture HTTP/1.1
+Content-Type: application/vnd.api+json
+Accept: application/vnd.api+json
+
+{ "meta": { "args": { "input": { "title": "Alpha", "status": "open", "body": "" }, "status": "inbox" } } }
+```
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "meta": { "result": { "id": "alpha", "title": "Alpha", "status": "inbox", "parent_id": null, "subtasks": [], "tags": [], "body": "" } }
+}
+```
+
+- A body must be sent as `Content-Type: application/vnd.api+json`; `application/json` is `415`.
+- A request with no body reads as `{ "meta": { "args": {} } }`, so a function without required arguments (`purge_done`) needs none. An absent or `null` member is `None` for an `Option` argument.
+- An unknown member of `meta.args` is `400 invalid_document` with `source.pointer` `/meta/args/{name}`; a missing required argument points at `/meta/args`; a value serde rejects points at its member. Other top-level members of the document are ignored.
+- A `POST` op takes no query parameters at all, not even `opArg[…]`: `POST /api/tasks/capture?opArg[status]=inbox` is `400 invalid_query_parameter`.
+
+### `GET` arguments
+
+A `GET` has no body. Its required arguments are path segments, in declaration order, and its `Option` arguments are `opArg[{name}]` query parameters, each value read by serde from the string:
+
+```http
+GET /api/tasks/summary/open?opArg[verbose]=true&opArg[limit]=1 HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```json
+{ "jsonapi": { "version": "1.1" }, "meta": { "result": { "status": "open", "count": 2, "titles": ["Alpha"] } } }
+```
+
+- Any other query parameter -- a bare `?verbose=true`, an `opArg[…]` the function does not declare -- or a value serde rejects is `400 invalid_query_parameter`, with `source.parameter` naming it.
+- An `Option` argument read from `opArg` must have a plain inner type (`Option<bool>`, `Option<String>`, `Option<u32>`). One with generic arguments (`Option<Vec<String>>`), a tuple, or a schema entity fails the build, and so does an `*Input` argument on a `GET`: there is no body to carry it.
+
+### Paths
+
+A custom op is served at `/api/{module}/{action}`, plus one segment per required argument on a `GET`:
+
+- `{module}` is the kebab-cased plural of the module name (`task` is `tasks`, `workout_set` is `workout-sets`), or for a [singleton module](/guides/api-layer/#singleton-modules--ontogensingleton) the kebab-cased name itself (`auto_start` is `auto-start`). `NamingConfig::plural_overrides` applies.
+- `{action}` is the function name without a leading `get_`, and without the module name as a `{module}_` prefix or a `_{module}` / `_{plural}` suffix, kebab-cased: `get_summary` is `summary`, `purge_done` is `purge-done`.
+- With a `route_prefix`, a function that takes the store is served under the prefix: `/api/projects/{project_id}/tasks/capture`.
+- A method the route does not serve is `405` with an `Allow` header: `GET /api/tasks/capture` answers `Allow: POST`.
+
+### The TypeScript client
+
+Each custom op becomes a `Transport` method named in camelCase after its IPC command (`stat_get_workout` is `statGetWorkout`), with the function's own arguments and return type. The HTTP transport sends them through `callOp(method, path, args?)`:
+
+```ts
+// taskGetSummary(status, verbose?, limit?): required args in the path, Option args as opArg[…]
+return callOp<TaskSummary>('GET', `/tasks/summary/${encodeURIComponent(status)}${toQueryString({ opArg: { verbose, limit } })}`);
+// taskCapture(input, status?): every arg in meta.args, keyed by its Rust name
+return callOp<Task>('POST', '/tasks/capture', { input, status });
+```
+
+An argument whose Rust name has an underscore keeps it on the wire: a `dry_run` parameter is the method's `dryRun` and the body's `dry_run`.
+
+`callOp` sends `{ meta: { args } }` only when there are arguments, resolves to `meta.result`, and resolves to `null` for a `204` (a `()` function's method returns `Promise<null>`). A non-2xx reply throws a `JsonApiError` carrying the HTTP `status` and the `errors` array. The IPC transport calls the same method with `invoke` and flat arguments, so calling code does not change between transports. See [Client Generation](/guides/client-generation/).
 
 ## Function classification rules
 
@@ -151,21 +245,30 @@ So `get_status(state)` emits `GET`, and `refresh_cache(state)` emits `POST`. Ove
 
 The id-like primitive allowlist is: `bool`, `char`, `i8`–`i128`, `isize`, `u8`–`u128`, `usize`, `f32`, `f64`, `String`, `str`, and `Uuid`. References to any of these (`&str`, `&String`) are also path-extractable. Anything else (a single-segment custom struct, a fully-qualified path like `crate::schema::Foo`, or a generic container like `Vec<T>` / `HashMap<K, V>`) is treated as body-carrying.
 
-For custom functions, the module name becomes part of the route path. The function name is kebab-cased for the URL segment.
+For custom functions, the module name and the function name make up the route path; see [Paths](#paths).
 
 <Aside type="tip">
-**`get_*` with a body.** A function named `get_filtered_sessions(store, filter: &ExportFilterRequest)` reads as a "get" semantically, but the filter is too complex to fit in a URL. Classification handles this automatically: because `ExportFilterRequest` is a custom struct, the function emits a `POST /api/{module}/filtered-sessions` route with the filter as the JSON body. The HTTP method is `POST` but the operation remains read-only on the IPC and MCP sides (those transports don't distinguish GET from POST).
+**`get_*` with a body.** A function named `get_filtered_sessions(store, filter: &ExportFilterRequest)` reads as a "get" semantically, but the filter is too complex to fit in a URL. Classification handles this automatically: because `ExportFilterRequest` is a custom struct, the function emits a `POST /api/{module}/filtered-sessions` route with the filter in the body as `meta.args.filter`. The HTTP method is `POST` but the operation remains read-only on the IPC and MCP sides (those transports don't distinguish GET from POST).
 
 If you need to force a method regardless of name or param shape, use the source-side `#[ontogen::http::post]` / `#[ontogen::http::get]` attributes -- see [Forcing a method](#forcing-a-method) below.
 </Aside>
 
 ### Errors from custom endpoints
 
-A custom endpoint's success body is unchanged, but its errors are not. A failure from a generated route, custom ones included, is a JSON:API error document (`application/vnd.api+json`, an `errors` array with one object). If the function returns your `AppError`, the variant decides the status and `code` through the same suffix rule as the CRUD routes (`*NotFound` 404, `*IdRequired` 400, `*AlreadyExists` 409, `*ParentRequired` 403, otherwise 500, `code` the variant name in snake_case); `detail` is the error's `Display` text. A function whose error type is not `AppError` answers `500 internal_error`. "Your `AppError`" means `{types_import_path}::AppError`, read through the file's `use` items; one reached by another path (a re-export such as `crate::schema::error::AppError`, or a type alias) is not recognized, answers `500 internal_error`, and a type named `AppError` there gets a build warning. A malformed query parameter, or a method the route does not serve (`405` with `Allow`), is also an `errors` document. The scan reads `ServersConfig::error_source_dir`; see the [upgrade notes](/reference/upgrading/#apperror).
+A failure from a generated route, custom ones included, is a JSON:API error document (`application/vnd.api+json`, an `errors` array with exactly one object). `complete` on an id that does not exist answers `404`:
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "errors": [ { "status": "404", "code": "task_not_found", "title": "Not Found", "detail": "Task not found: nope" } ]
+}
+```
+
+If the function returns your `AppError`, the variant decides the status and `code` through the same suffix rule as the CRUD routes (`*NotFound` 404, `*IdRequired` 400, `*AlreadyExists` 409, `*ParentRequired` 403, otherwise 500, `code` the variant name in snake_case); `detail` is the error's `Display` text. A function whose error type is not `AppError` answers `500 internal_error`. "Your `AppError`" means `{types_import_path}::AppError`, read through the file's `use` items; one reached by another path (a re-export such as `crate::schema::error::AppError`, or a type alias) is not recognized, answers `500 internal_error`, and a type named `AppError` there gets a build warning. A malformed query parameter, or a method the route does not serve (`405` with `Allow`), is also an `errors` document. The scan reads [`ServersConfig::error_source_dir`](/reference/configuration/#serversconfig). Clients branch on `status` and `code`, never on `detail`, whose wording may change. See [Errors](/guides/server-transports/#errors) for every code the generated server raises itself.
 
 ## Recipe: Filtered lists
 
-The store takes no filter, so a filtered list is hand-written. Put it in the module named after the entity, and it replaces the generated `list`. This recipe assumes the module is paginated: it is named in `.api_paginated(..)` and its surface sets `pagination` (here `PaginationConfig { default_limit: 20, max_limit: 100 }`, as in the tasks-tracker example), so the `list` takes `limit` and `offset` and has a `count` beside it:
+The store takes no filter, so a filtered list is hand-written. Put it in the module named after the entity, and it replaces the generated `list`. This recipe assumes the module is paginated: it is named in `.api_paginated(..)` and its surface sets `pagination` (here `PaginationConfig { default_limit: 20, max_limit: 100 }`, as in the tasks-tracker example), so the `list` takes `limit` and `offset` and has a `count` beside it. This is the tasks-tracker example's `src/api/v1/task.rs`, without its comments:
 
 ```rust
 // src/api/v1/task.rs
@@ -307,16 +410,16 @@ pub async fn health_check(state: &AppState) -> Result<String, AppError> { ... }
 The parser accepts the function when the rendered first-parameter type contains your configured `state_type` or `store_type` as a substring. `&AppState`, `&Arc<AppState>`, and `State<'_, Arc<AppState>>` all match `state_type = "AppState"`. See [Service functions: accepted signatures](/guides/api-layer/#service-functions-accepted-signatures) for the full table including edge cases.
 
 <Aside type="caution">
-A `pub fn` whose first parameter doesn't match — or that takes `&self`, or has no parameters at all — used to be silently dropped. The build now emits a `cargo:warning=` per dropped function so you find out before clients fail to compile. If you don't see your function in the generated transports, check the `cargo build` output.
+A `pub fn` whose first parameter doesn't match — or that takes `&self`, or has no parameters at all — is dropped, and the build emits a `cargo:warning=` per dropped function so you find out before clients fail to compile. If you don't see your function in the generated transports, check the `cargo build` output.
 </Aside>
 
 **Return type must be `Result<T, AppError>`** (or whatever your error type is):
 
 ```rust
-pub async fn count(store: &Store) -> Result<i64, AppError> { ... }
+pub async fn count_recent(store: &Store) -> Result<i64, AppError> { ... }
 ```
 
-**Parameters after the state/store are extracted as route params or query params:**
+**Parameters after the state/store travel in the path, as `opArg[…]` query parameters, or in `meta.args`:**
 
 ```rust
 // `id` becomes a path parameter: GET /api/workouts/sets/{id}
@@ -324,6 +427,9 @@ pub async fn get_sets(store: &Store, id: &str) -> Result<Vec<WorkoutSet>, AppErr
 
 // `input` becomes `meta.args.input`: POST /api/workouts/import
 pub async fn import(store: &Store, input: ImportWorkoutsInput) -> Result<Vec<Workout>, AppError> { ... }
+
+// not `get_*`, so `id` is `meta.args.id`: POST /api/workouts/archive, answering 204
+pub async fn archive(store: &Store, id: &str) -> Result<(), AppError> { ... }
 ```
 
 You can take parameters by reference (`&str`, `&[u8]`, `&Path`, `&CStr`, `&OsStr`, `&MyStruct`) or wrap them in `Option<…>`. The generator declares the matching sized owned type in the handler and forwards the borrow back to your function. See [Parameter types: references and `Option` shapes](/guides/api-layer/#parameter-types-references-and-option-shapes) for the full table.
