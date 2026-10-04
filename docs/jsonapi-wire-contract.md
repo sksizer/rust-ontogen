@@ -2224,9 +2224,15 @@ A filtered list's filter parameters are forwarded to `list` and `count` on
 both transports since https://github.com/sksizer/rust-ontogen/pull/172; the
 payloads are unchanged. A bare filter keeps its declared type on both (an
 `Option` one is optional). The MCP list tool's input schema lists the bare
-filters beside the `*Query` struct's fields and the page, and an argument
-object the struct cannot be read from is the tool's error
-(`Invalid filter: …`), not an empty filter.
+filters beside the `*Query` struct's fields and the page. The tool reads
+the struct from its arguments without the ones it reads itself (bare
+filters, the page, the route-prefix parameter); an argument object the
+struct cannot be read from is the tool's error (`Invalid filter: …`), not an
+empty filter, and an argument the schema does not list is refused
+(`Unknown argument: …`), as HTTP refuses an unknown member. An MCP custom
+op reads each argument as its declared type, and one that takes an
+`*Input` beside other arguments takes the input under its parameter name,
+as the IPC command does.
 
 Five changes reach them, none of which changes a payload's shape:
 

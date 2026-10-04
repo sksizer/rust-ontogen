@@ -148,9 +148,19 @@ In a module named after an entity, a hand-written `list` now replaces the genera
 - `gen_api` no longer prints warnings about scan records it skips; the servers and clients stages print the same ones.
 - The HTTP generator refuses, as a build error, a list whose filter it cannot serve: a second `*Query` struct, a `*Query` struct taken neither by value nor by `&` (`Option<ListTasksQuery>`, `&mut ListTasksQuery`), a bare filter whose type one value cannot carry (`Vec<_>`, a tuple, a schema entity), and an `*Input` parameter on a `list`, which has no body. IPC and MCP generation does not apply these checks.
 
-The MCP list tool reads a `*Query` struct strictly: an argument object it cannot be read from (`{"status": 5}` for a `String` field) is the tool error `Invalid filter: …`. Before, it was silently read as `Default::default()`, which listed everything, so the struct no longer needs `Default`. A `#[serde(deny_unknown_fields)]` struct now fails whenever the arguments also carry the page, the route prefix or a bare filter. The tool's input schema now lists the list's bare filters too, so a bare filter's type must implement `JsonSchema`, as a custom op's MCP argument already must.
-
 If you call the runtime crate directly, `ontogen-jsonapi` changed: `QuerySpec` has a new field `filter_fields`, so a struct literal must set it or end with `..QuerySpec::NONE`; `QuerySpec` no longer implements `PartialEq` or `Eq`; and the crate no longer depends on `serde_urlencoded`. `QueryParams` gained `filter`, `filter_member`, `required_filter_member` and `link_query`, and the crate exports `filter_fields::<T>()`.
+
+### MCP tools
+
+The MCP tools keep their names and their flat payloads, with these changes:
+
+- **A list tool refuses an argument it does not read.** `task_list {"colour": "red"}` is the tool error `Unknown argument: colour`; before, the key was ignored and the tool listed everything. The tool reads exactly the arguments its input schema lists: the filter struct's fields, the bare filters, `limit` and `offset` when paginated, and the route-prefix parameter when scoped. A serde alias the schema does not name is refused too.
+- **A list tool reads its `*Query` struct strictly**, from its arguments without the ones the tool reads itself (bare filters, the page and the route-prefix parameter), so a `#[serde(deny_unknown_fields)]` struct works. An argument object the struct cannot be read from (`{"status": 5}` for a `String` field) is the tool error `Invalid filter: …`; before, it was silently read as `Default::default()`, which listed everything, so the struct no longer needs `Default`.
+- **A list tool's input schema lists its bare filters** beside the struct's fields and the page, so a bare filter's type must implement `JsonSchema`, as a custom op's MCP argument already must.
+- **A custom op reads each argument as its declared type.** Before, an `Option<bool>` or `Option<u32>` argument was read as a string and the generated code did not compile. A custom op that takes an `*Input` beside other arguments takes the input under its parameter name, as the IPC command does: `{"input": {…}, "status": "open"}`. Before, that op did not compile either. An op whose only argument is its input still takes the input's fields flat.
+- **A required string argument of the wrong type** is `Invalid parameter id: invalid type: …`, not `Missing required parameter: id`, which now means only that the key is absent.
+- Create and update read their input without the route-prefix parameter (and update without `id`), so a `deny_unknown_fields` input works there too.
+- The generated schema-only structs are named `Ontogen{Module}{Fn}Filter` and `Ontogen{Module}{Fn}Input` so they cannot collide with your types; the HTTP query-spec types are likewise `Ontogen{Handler}FilterParams` and `Ontogen{Module}{Fn}OpArgs`.
 
 ### A list's `*Query` struct is named through `types_import_path`
 
