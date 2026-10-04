@@ -1,12 +1,11 @@
 # JSON:API wire contract for the generated HTTP server
 
-Status: normative contract for epic
-[E0004](planning/epics/jsonapi-http-transport.md), recorded as
+Status: normative contract for the HTTP wire that epic
+[E0004](planning/epics/jsonapi-http-transport.md) implemented, recorded as
 [ADR 0004](architecture/0004-jsonapi-http-wire-format.md). Sorting rests on
-[ADR 0006](architecture/0006-ordering-on-both-store-backends.md). Every
-phase of E0004 implements against this document. Where code and this
-document disagree, the code is wrong, or this document is amended in the
-same PR.
+[ADR 0006](architecture/0006-ordering-on-both-store-backends.md). This
+document specifies the shipped wire. Where code and this document disagree,
+the code is wrong, or this document is amended in the same PR.
 
 The spec is [JSON:API 1.1](https://jsonapi.org/format/1.1/). MUST, SHOULD
 and MAY in this document carry their RFC 2119 meaning and bind the
@@ -61,7 +60,7 @@ that consumes them. It replaces the ad-hoc dialect described in the epic's
 gap analysis: bare entities, bare arrays, `PaginatedResult`,
 `limit`/`offset`, `PUT`, and `{"error": string}`.
 
-It also fixes the store-layer changes the wire depends on:
+It also specifies the store-layer behaviour the wire depends on:
 
 - the `order` argument and sort parsing (ADR 0006);
 - `has_many` writes that clear dropped children (decision 9);
@@ -69,9 +68,10 @@ It also fixes the store-layer changes the wire depends on:
   `{Child}ParentRequired` (§13.4);
 - the schema reaching the servers and clients stages (§5.1).
 
-Tauri IPC and MCP payloads stay flat. They gain only the optional `sort`
-argument (decision 8) and the store fixes above (§15). The TS `Transport`
-interface gains one trailing optional argument on list methods (§14).
+Tauri IPC and MCP payloads stay flat. Beyond the store fixes above, their
+only addition is the optional `sort` argument (decision 8, §15). The TS
+`Transport` interface takes one trailing optional argument on list methods
+(§14).
 
 Out of scope, as the epic records: sparse fieldsets, the atomic operations
 extension, `lid`, `202 Accepted`, profiles, and OpenAPI emission. Each is
@@ -1126,16 +1126,16 @@ Ontogen accepts any valid id:
   unsuffixed slug can be reserved.
 - **Scope.** The rule governs ids being created: a client `data.id`, and a
   derived or hook-assigned id, which the store checks. A path `{id}` is
-  only a lookup key and is never checked against it (§8.1). The server
-  must serve every link it emits, and a SeaORM row created before the rule
-  (an id containing `:` or uppercase letters, `Index`, `café`, or one over
-  200 bytes, say) is still listed. It stays readable, updatable and
-  deletable at its `links.self`. It can no longer be created under that
-  id. The exception is ids `.`, `..` and `""`: they are listed but
-  unreachable, because clients resolve the dot segments of `/tasks/.` and
-  `/tasks/..` away (RFC 3986 §5.2.4; WHATWG URL parsing also decodes
-  `%2E`), and `/tasks/` is the collection path. Such rows must be renamed
-  before upgrading. ADR 0004 carries the migration note.
+  only a lookup key and is never checked against it (§8.1). The server must
+  serve every link it emits, so a stored row whose id fails the rule (an id
+  containing `:` or uppercase letters, `Index`, `café`, or one over 200
+  bytes, say) is listed, and is readable, updatable and deletable at its
+  `links.self`; no create can make a row with that id. The exception is ids
+  `.`, `..` and `""`: they are listed but unreachable, because clients
+  resolve the dot segments of `/tasks/.` and `/tasks/..` away (RFC 3986
+  §5.2.4; WHATWG URL parsing also decodes `%2E`), and `/tasks/` is the
+  collection path. Such rows must be renamed to be reachable. ADR 0004
+  carries the migration note.
 - **Markdown lookups.** A markdown lookup goes through a looser
   path-safety check (`markdown_store::layout::validate_lookup_id`): no
   path separator, `:` or NUL, no dot path or leading `.`, no trailing `.`
@@ -1656,9 +1656,8 @@ The server makes no change beyond the request, so the spec allows it.
 | 9 | a `has_many` write drops a child whose foreign key is not `Option` | 403 | `{child}_parent_required` | none |
 | 9 | any other `AppError` from the store or a junction op | per §13.4 | §13.4 | none |
 
-The `data missing` row is where E0003 phase 1's "missing junction
-parameter → 400" lands: a junction add without its child id is a body with
-no `data`.
+The `data missing` row covers a junction add without its child id: it is a
+body with no `data`, so it is `400 invalid_document`.
 
 ### 9.3 Related resource links
 
@@ -1734,8 +1733,8 @@ HTTP/1.1 200 OK
 
 ### 10.2 Requests
 
-Routes are unchanged: `/api/{url_for_module}/{action}`, plus one path
-segment per required non-`Input` parameter on `GET`.
+Routes are `/api/{url_for_module}/{action}`, plus one path segment per
+required non-`Input` parameter on `GET`.
 
 **`POST` bodies are meta-only documents.** Every argument that is not
 state, store or a path parameter is a member of `meta.args`, keyed by its
@@ -1939,7 +1938,7 @@ wire is indistinguishable from a single-surface server.
 
 ## 12. Event streams
 
-Routes, parameters, resume and lag are unchanged from
+Routes, parameters, resume and lag are those of
 https://github.com/sksizer/rust-ontogen/pull/184 and
 https://github.com/sksizer/rust-ontogen/pull/185:
 
@@ -1953,9 +1952,9 @@ https://github.com/sksizer/rust-ontogen/pull/185:
   §3 negotiation and §6 query rules do not apply to them. `Accept` is not
   checked. `EventSource` sends `text/event-stream`.
 
-**Frames.** Only the `data:` payload changes (decision 2). tasks-tracker has
-no event ops. For illustration, a resumable `task_changed` op yielding
-`Task`, with ids from `seq_id`:
+**Frames.** Only the `data:` payload is JSON:API-shaped (decision 2).
+tasks-tracker has no event ops. For illustration, a resumable
+`task_changed` op yielding `Task`, with ids from `seq_id`:
 
 ```text
 event: task-changed
@@ -1982,7 +1981,7 @@ data: {"meta":{"result":{"seq":4,"kind":"workout","id":"w1"}}}
 id: 4
 ```
 
-These are unchanged:
+The rest of the stream follows those PRs:
 
 - `id:` is emitted for resumable ops only, with the same `seq_id` / `no_id`
   rules and the same newline guard.
@@ -2121,9 +2120,10 @@ consumer's `AppError`:
 
 The `detail` for `internal_error` is the error's `Display` text.
 
-### 13.4 `AppError`: E0003 phases 0-1, folded in
+### 13.4 `AppError` status mapping
 
-Decision 6 folds E0003 phases 0 and 1 into E0004:
+The mapping has three parts, designed in E0003 phases 0 and 1
+(decision 6):
 
 - the `ApiFn.error_type` capture;
 - the `AppError` scan over the schema directory;
@@ -2179,9 +2179,8 @@ The scan maps variants by name suffix:
 - **`source`.** `AppError`-derived errors carry no `source`, except
   `*AlreadyExists` on a create that carried `data.id` (§8.2).
 - **No `AppError` in the schema directory** (the scan-dirs-only case):
-  every `AppError`-typed site maps to `500 internal_error`. E0003's "emit
-  today's exact shape" rule no longer applies, because the envelope
-  changes regardless.
+  every `AppError`-typed site maps to `500 internal_error`, in the same
+  `errors[]` document as every other error.
 - **E0003 phases 2 and 3** stay in E0003 and slot into this document
   unchanged:
   - `#[http(status = N)]` annotations override the suffix rule. The
@@ -2374,10 +2373,10 @@ export class JsonApiError extends Error {
 }
 ```
 
-- `message` is the first error's `detail` when it has one, which for an
-  `AppError` is its `Display` text (§13.1). `String(e)` is
-  `"JsonApiError: Task not found: nope"`, and the admin layer only renders
-  `String(e)`.
+- `message` is the first error's `detail`, else its `title`, else the
+  response's status text; for an `AppError` the `detail` is its `Display`
+  text (§13.1). `String(e)` is `"JsonApiError: Task not found: nope"`, and
+  the admin layer only renders `String(e)`.
 - Callers that want the status or the code read `e.status` and
   `e.errors[0]?.code`.
 - A non-JSON error body (a proxy's HTML `502`) still throws a
@@ -2444,8 +2443,8 @@ refused on every TS client.
 - **MCP**: same tool names, the same flat argument schemas
   (`schema_for_with_str_id` for update), and the same results:
   `{"success": true}` for create and update, entities for get, and bare
-  arrays or `{items, total, limit, offset}` for lists. Event ops are still
-  skipped.
+  arrays or `{items, total, limit, offset}` for lists. Event ops have no
+  MCP tool.
 
 A filtered list's filter parameters are forwarded to `list` and `count` on
 both transports since https://github.com/sksizer/rust-ontogen/pull/172. The
@@ -2474,12 +2473,13 @@ reads each argument as its declared type, and one that takes an `*Input`
 beside other arguments takes the input under its parameter name, as the IPC
 command does.
 
-Six changes reach them. Only the sixth changes a payload's shape:
+Six rules govern IPC and MCP beyond the flat payloads above. Only the
+sixth bears on a payload's shape:
 
-1. **`sort` on list** (decision 8). The IPC list command gains an optional
+1. **`sort` on list** (decision 8). The IPC list command takes an optional
    `sort: Option<Vec<String>>` argument, and the TS IPC transport passes
-   `options.sort` into it. The MCP list tool schema gains an optional
-   `sort` array whose items enumerate the sort keys. Both parse with
+   `options.sort` into it. The MCP list tool schema has an optional `sort`
+   array whose items enumerate the sort keys. Both parse with
    `ontogen_core::order::parse_sort` (ADR 0006 §1) and return its error
    text on a bad key. They read it before they open the store, so a bad
    key is reported whether or not the store would open. The MCP tool
@@ -2491,9 +2491,9 @@ Six changes reach them. Only the sixth changes a payload's shape:
    that drops a child clears the child's foreign key in the store, so IPC
    and MCP behave as HTTP does. A listed child that does not exist is
    `{Child}NotFound`, and nothing is written (§5.4).
-3. **New typed store errors.** `{Entity}AlreadyExists`, `{Entity}IdRequired`
-   and `{Child}ParentRequired` replace backend messages. On these
-   transports they are still strings.
+3. **Typed store errors.** `{Entity}AlreadyExists`, `{Entity}IdRequired`
+   and `{Child}ParentRequired` name these failures. On these transports
+   they are strings.
 4. **No `xCount()` for a paginated module.** The servers stage takes a
    paginated module's `count` off its module list, since the list's page
    reports `total`, so no IPC command or MCP tool serves it. The TS IPC
@@ -2501,15 +2501,14 @@ Six changes reach them. Only the sixth changes a payload's shape:
 5. **Junction add and remove resolve `null`.** The TS IPC transport
    declares `xAddY` and `xRemoveY` as `Promise<null>` and resolves `null`
    whatever the Rust fn returns, as the HTTP transport does (§14). The IPC
-   command's own return value is unchanged.
+   command itself returns what the Rust fn returns.
 6. **A lone `list_X` is a custom op** (§9.1). A one-parameter `list_X`
-   whose module has no `add_Y` or `remove_Y` for its relationship is no
-   longer a junction list on any transport. In a paginated module its IPC
-   command and MCP tool lose `limit` and `offset` and return the plain
-   list, where they returned `{items, total, limit, offset}` sliced in
-   memory. The TS IPC transport's `xListX` changes the same way (§14).
-   Junction ops themselves are unchanged on IPC and MCP, in a resource
-   module or not.
+   whose module has no `add_Y` or `remove_Y` for its relationship is not a
+   junction list on any transport. In a paginated module its IPC command
+   and MCP tool take no `limit` or `offset` and return the plain list. The
+   TS IPC transport's `xListX` does the same (§14).
+   Junction ops themselves are served on IPC and MCP as commands and tools
+   of their own, in a resource module or not.
 
 ## 16. Decision index
 
@@ -2519,7 +2518,7 @@ the section that states each and its reason.
 | Choice | § | Why |
 |---|---|---|
 | `jsonapi: {"version":"1.1"}` on every document | 4.1 | Without it clients assume 1.0, and the member costs nothing |
-| `application/json` request bodies are `415` | 3.2 | One media type, and a client sending the old flat body fails loudly instead of mis-parsing |
+| `application/json` request bodies are `415` | 3.2 | One media type, and a client sending a flat body fails loudly instead of mis-parsing |
 | A JSON:API instance in `Accept` outranks wildcards; otherwise `*/*` and `application/*` satisfy it | 3.2 | The spec requires `406` when every JSON:API instance is unusable, and browsers, `curl` and `EventSource` send `*/*` |
 | `Vary: Accept` on every response | 3.3 | The response depends on `Accept` (406) |
 | Links and `Location` are relative | 4.2 | The server cannot know its public origin behind proxies, dev servers and tunnels |
@@ -2556,7 +2555,7 @@ the section that states each and its reason.
 | A relationship that cannot be included is a runtime `400 invalid_include_path`, not a build error; junction-op relationships are never includable | 7.5 | JSON:API requires 400 for an unsupported include path, and a list-only module is a legitimate configuration; included resources must be reachable by linkage (full linkage), and junction relationships carry links only |
 | An empty item in a non-empty `include` is `400 invalid_include_path`; only `include=` is `included: []` | 7.5 | `sort` refuses empty items the same way, and `include=epic,` is a malformed list, not an empty one |
 | One id-validity rule on both backends, applied to ids being created: lowercase `[a-z0-9._~-]`, at most 200 bytes, not `index`/`log`, not a Windows device name (`con`, `nul.x`, …); an invalid one is `400` | 8.2 | A malformed id is a bad request, not a store `500`; the backends agree, and every id is a filename on Linux, macOS and Windows and a URL segment |
-| A path `{id}` is a lookup key, never validated | 8.1 | Every row the store lists stays servable at its `links.self`, including SeaORM rows that predate the rule |
+| A path `{id}` is a lookup key, never validated | 8.1 | Every row the store lists stays servable at its `links.self`, including rows whose id fails the rule |
 | Unknown attributes are `400` | 8.2 | Catches clients still sending the flat shape |
 | Body members are checked in schema order, unknown names in byte order | 8.2, 13.2 | Deterministic without an order-preserving parser |
 | Missing ids are detected by the store, after hooks, as `{Entity}IdRequired` | 8.2, 13.4 | Hooks may assign the id, and the handler need not know the `IdStrategy` |
