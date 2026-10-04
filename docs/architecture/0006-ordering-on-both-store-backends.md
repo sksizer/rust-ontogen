@@ -742,3 +742,18 @@ Phase 3c landed with these differences from §1. The decision is unchanged.
    immediately before the page (or last when there is no page), is
    repeated, or names another entity's sort field. The clients stage
    refuses one on a fn it cannot send (wire contract §7.3).
+7. **The markdown NaN error goes through the catch-all.** §5 names
+   `AppError::Md`, but `AppError` is the consumer's type, so the generated
+   store cannot name a variant of it. The NaN refusal is
+   `AppError::from(markdown_store::Error::Serialize { .. })`, the route the
+   integer-range check of §5 already takes; in the examples that converts
+   to their `Md` variant. SeaORM returns `AppError::DbError`, as §4 says.
+8. **The id tie-break is emitted like every other key.** §4 words it as
+   `order_by_asc(Column::{Id})`. `order_{plural}_query` applies every key
+   of `effective(order)` the same way, the id included, so the tie-break is
+   `order_by_with_nulls(Id, Asc, NullOrdering::First)`. The id is never
+   null, so the SQL orders the same.
+9. **An entity needs an id field.** Every key list ends with the id, so the
+   store stage refuses an entity without an `#[ontology(id)]` field with a
+   `CodegenError`. Every generated store method already read the id, so
+   such an entity never produced a store that compiled.
