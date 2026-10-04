@@ -206,14 +206,16 @@ pub enum OpKind {
     Create,                                    // POST /tasks
     Update,                                    // PATCH /tasks/{id}
     Delete,                                    // DELETE /tasks/{id}
-    JunctionList   { child_segment: String },  // GET /agents/{id}/roles
-    JunctionAdd    { child_segment: String },  // POST /agents/{id}/roles
-    JunctionRemove { child_segment: String },  // DELETE /agents/{id}/roles/{child_id}
+    JunctionList   { child_segment: String },  // GET /tasks/{id}/labels
+    JunctionAdd    { child_segment: String },  // POST /tasks/{id}/relationships/labels
+    JunctionRemove { child_segment: String },  // DELETE /tasks/{id}/relationships/labels
     CustomGet,                                 // GET with non-standard params
     CustomPost,                                // POST with non-standard params
     EventStream,                               // SSE endpoint
 }
 ```
+
+The junction comments show `list_labels`, `add_label` and `remove_label` in an entity module, which define the relationship `labels`. In a module with no entity behind them they are `GET` and `POST /{module}/{id}/labels` and `DELETE /{module}/{id}/labels/{child_id}`.
 
 The HTTP generator uses this to pick the right HTTP method and route pattern. The IPC generator uses it to name commands. The MCP generator uses it to set tool descriptions. One classification, three transports.
 

@@ -108,7 +108,7 @@ The scanner classifies each function into an `OpKind` that drives HTTP verb and 
 
 ### CRUD and junction vocabulary
 
-The CRUD rows are served as JSON:API resources when the module is backed by a schema entity; see [Server Transports](/guides/server-transports/#httpaxum-generation). Custom operations, junction operations and the CRUD functions of a module with no entity behind it are served as custom ops: arguments go in `meta.args` (`POST`, `PATCH`) or `opArg[name]` (`GET`), and the result comes back under `meta.result`. In such a module `update` is a `PATCH` like everywhere else. See [Operations that are not CRUD](/guides/server-transports/#operations-that-are-not-crud).
+The CRUD rows are served as JSON:API resources when the module is backed by a schema entity; see [Server Transports](/guides/server-transports/#httpaxum-generation). In such a module the junction rows define a to-many relationship named after `list_{children}`, served only on its relationship endpoints (`/api/workouts/{id}/relationships/{children}` and `/api/workouts/{id}/{children}`); see [Relationships](/guides/relationships/#junction-ops). Custom operations, and the junction and CRUD functions of a module with no entity behind it, are served as custom ops: arguments go in `meta.args` (`POST`, `PATCH`) or `opArg[name]` (`GET`), and the result comes back under `meta.result`. In such a module `update` is a `PATCH` like everywhere else. See [Operations that are not CRUD](/guides/server-transports/#operations-that-are-not-crud).
 
 | Function name | `OpKind` | HTTP | Route example |
 |---------------|----------|------|---------------|
@@ -120,6 +120,8 @@ The CRUD rows are served as JSON:API resources when the module is backed by a sc
 | `add_{child}(parent_id, child_id)` | `JunctionAdd` | `POST` | `/api/workouts/{parent_id}/{child}` |
 | `remove_{child}(parent_id, child_id)` | `JunctionRemove` | `DELETE` | `/api/workouts/{parent_id}/{child}/{child_id}` |
 | `list_{children}(parent_id)` | `JunctionList` | `GET` | `/api/workouts/{parent_id}/{children}` |
+
+The junction route examples are those of a module with no entity behind it. A `list_{children}(parent_id)` is a junction list only when its module also has the `add_{child}` or `remove_{child}` of the same relationship; on its own it is a `CustomGet`, at `/api/workouts/list-{children}/{parent_id}`.
 
 ### Custom functions (CustomGet / CustomPost)
 

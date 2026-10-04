@@ -323,7 +323,7 @@ pub enum ServerGenerator {
 
 ### `RoutePrefix`
 
-Optional prefix for project-scoped routes (e.g., `/api/projects/{project_id}/nodes`).
+Optional prefix for project-scoped routes (e.g., `/api/projects/{project_id}/nodes`). A scoped route has the shape of its unscoped one under the prefix, relationship routes and junction routes included; see [Route prefix](/guides/server-transports/#route-prefix-for-project-scoping).
 
 | Field | Type | Description |
 |-------|------|-------------|

@@ -5,7 +5,7 @@ description: Every breaking change in 0.9 and how to migrate, grouped by area.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Version 0.9 is still in progress. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API. Sorting and relationship endpoints arrive in later releases, and their sections will be added here. Work through the sections that apply to your project.
+Version 0.9 is still in progress. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, relationships, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API. Sorting and `include` arrive in later releases, and their sections will be added here. Work through the sections that apply to your project.
 
 ## Build configuration
 
@@ -134,6 +134,44 @@ These shapes fail `gen_servers` and `gen_clients` with a `CodegenError` that nam
 - **A parameter whose type name ends in `Input` on an op served without a body.** An `#[ontogen::http::get]` op, `get_by_id`, `delete`, `list_X` and `remove_Y` carry no request body, so such a parameter has nowhere to arrive. Change the op to a `POST`, or pass the fields as separate parameters.
 - **A CRUD-named op in a module with no entity that takes arguments beyond its route's.** Such an op takes exactly `get_by_id(id)`, `delete(id)`, `create(input)` or `update(id, input)`. Rename it, or drop the extra parameters. A `list` with extra arguments is a filtered list instead, not an error.
 - **An `Option` argument of a bodyless op that one query value cannot carry.** On a custom `GET`, an entity-less `get_by_id` or `delete`, or a junction list or remove, an `Option` whose inner type has generic arguments (`Option<Vec<String>>`), is a tuple, or is a schema entity cannot be read from one `opArg` value. Take it in a `POST` body instead.
+- **Junction ops in a module named after an entity that do not make a relationship.** There, `list_X`, `add_Y` and `remove_Y` now define a to-many relationship named `X`, served on the [relationship endpoints](#junction-ops), so they must fit one. Each of these is refused:
+  - a relationship name that is already taken: by an attribute, by a relation field's relationship, by another junction op's relationship, or `type`, `id` or `relationships`. The common case is `list_tags` beside a `tags` relation field;
+  - an `add_Y` or `remove_Y` without the `list_X` of the same relationship (`add_tag` without `list_tags`);
+  - an id parameter of `list_X`, `add_Y` or `remove_Y` that is not `&str`, `String` or `&String` (a `Uuid` or an integer);
+  - a `list_X` that returns anything but `Vec<Target>` or `Vec<String>`, or whose target is neither its element type nor the entity whose plural is `X`;
+  - junction ops in a module that does not serve `get_by_id`.
+- **A relationship whose target's module serves no `get_by_id`.** An entity whose module serves `get_by_id` and that has a relationship gets relationship endpoints, and they read related resources through the target module's `get_by_id`. Every target, of a relation field or a junction op, must therefore have one. Before, only create and update needed it.
+
+For the name clash, rename the junction ops. If they only edit the relation field, delete them instead: the field's own relationship endpoints add and remove its members.
+
+```rust
+// Before: the relationship `tags` clashes with the `Task.tags` relation field.
+pub async fn list_tags(store: &Store, id: &str) -> Result<Vec<Tag>, AppError> { /* … */ }
+pub async fn add_tag(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> { /* … */ }
+pub async fn remove_tag(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> { /* … */ }
+
+// After: the relationship `labels`, whose target is `tags` (the element type).
+pub async fn list_labels(store: &Store, id: &str) -> Result<Vec<Tag>, AppError> { /* … */ }
+pub async fn add_label(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> { /* … */ }
+pub async fn remove_label(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> { /* … */ }
+```
+
+The rename also renames the IPC commands, MCP tools and TypeScript methods (`task_list_labels`, `taskAddLabel`).
+
+### A `list_X` without `add_Y` or `remove_Y` is a custom op
+
+A function `list_X` with one parameter after the state or store used to be a junction list wherever it was. It is now a junction list only when its module also has an `add_Y` or `remove_Y` for the same relationship (`add_tag` or `remove_tag` beside `list_tags`, `add_sub_task` beside `list_sub_tasks`). Otherwise it is a custom `GET`, on every transport and in every build, so a plain `list_by_status(store, status)` no longer becomes a junction list named `by_status`. A junction list on a paginated surface was paged in memory; a custom `GET` is not paged.
+
+For `task::list_by_status(store: &Store, status: &str) -> Result<Vec<Task>, AppError>` on a paginated surface:
+
+| Transport | Before | After |
+|-----------|--------|-------|
+| HTTP | `GET /api/tasks/open/by-status?limit=20&offset=0`, `{items, total, limit, offset}` | `GET /api/tasks/list-by-status/open`, `{"jsonapi": …, "meta": {"result": [ … ]}}` |
+| Tauri IPC | `task_list_by_status { status, limit, offset }`, `PaginatedResult<Task>` | `task_list_by_status { status }`, `Vec<Task>` |
+| MCP | tool `task_list_by_status` with `status`, `limit`, `offset`, answering `{items, total, limit, offset}` | the same tool with `status` only, answering the array; `limit` and `offset` are `Unknown argument` |
+| TypeScript | `taskListByStatus(status, limit?, offset?): Promise<PaginatedResult<Task>>` | `taskListByStatus(status): Promise<Task[]>` |
+
+Callers that relied on the page slice the array themselves. Without pagination, only the HTTP route and its document change. To keep a junction list, give the module the `add_Y` or `remove_Y` that makes it a relationship.
 
 ### IPC commands keep argument names for the wire
 
@@ -287,8 +325,20 @@ After:
       "body": "## Goal\n…"
     },
     "relationships": {
-      "epic": { "data": { "type": "epics", "id": "markdown-backend" } },
-      "tags": { "data": [ { "type": "tags", "id": "codegen" } ] }
+      "epic": {
+        "links": {
+          "self": "/api/tasks/ship-the-emitter/relationships/epic",
+          "related": "/api/tasks/ship-the-emitter/epic"
+        },
+        "data": { "type": "epics", "id": "markdown-backend" }
+      },
+      "tags": {
+        "links": {
+          "self": "/api/tasks/ship-the-emitter/relationships/tags",
+          "related": "/api/tasks/ship-the-emitter/tags"
+        },
+        "data": [ { "type": "tags", "id": "codegen" } ]
+      }
     },
     "links": { "self": "/api/tasks/ship-the-emitter" }
   }
@@ -297,7 +347,7 @@ After:
 
 - `type` is the module's kebab-case plural, the same string as the URL segment.
 - A `belongs_to` field named `epic_id` becomes the relationship `epic`; other relation fields keep their name. A to-one is an identifier or `null`; a to-many is an array of identifiers.
-- Relationship objects carry `data` only. Relationship `links` and the relationship endpoints arrive in a later release.
+- Each relationship object carries `links` to its [relationship endpoints](#relationship-endpoints) and its `data`. Relationships are listed in field order, followed by those of the module's junction ops, which have `links` only.
 - A list is `{"jsonapi": …, "links": {"self": …}, "data": [ … ]}`, with `[]` when empty, ordered by id.
 
 ### Create
@@ -453,6 +503,64 @@ A query parameter a route does not accept is `400 invalid_query_parameter`, with
 
 A create or update that links a resource that does not exist, for example an `epic` or a `tags` id, is `404 related_resource_not_found` before anything is written. Before, a markdown vault accepted it and wrote a dangling wikilink.
 
+### Relationship endpoints
+
+Each relationship of an entity type is now reachable on its own, through two new routes. They exist for an entity whose module serves `get_by_id` and that has at least one relationship, a relation field or a [junction op](#junction-ops):
+
+| Route | Methods | Answers |
+|-------|---------|---------|
+| `/api/{type}/{id}/relationships/{rel}` | `GET`, `PATCH`, `POST`, `DELETE` | the linkage on `GET`; `204` on a change |
+| `/api/{type}/{id}/{rel}` | `GET` | the related resource, `null`, or a collection of resources |
+
+`{rel}` is the relationship name (`epic`, `tags`, `subtasks`). Every relationship in a resource object now carries `links` to both routes, before its `data`:
+
+```json
+"epic": {
+  "links": {
+    "self": "/api/tasks/ship-the-emitter/relationships/epic",
+    "related": "/api/tasks/ship-the-emitter/epic"
+  },
+  "data": { "type": "epics", "id": "markdown-backend" }
+}
+```
+
+Add a tag to a task, then read the task's tags, against the tasks-tracker example:
+
+```sh
+curl -i -X POST http://127.0.0.1:3002/api/tasks/ship-the-emitter/relationships/tags \
+  -H 'Accept: application/vnd.api+json' \
+  -H 'Content-Type: application/vnd.api+json' \
+  -d '{"data": [{"type": "tags", "id": "release"}]}'
+# HTTP/1.1 204 No Content
+
+curl http://127.0.0.1:3002/api/tasks/ship-the-emitter/tags -H 'Accept: application/vnd.api+json'
+```
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "links": { "self": "/api/tasks/ship-the-emitter/tags" },
+  "data": [
+    { "type": "tags", "id": "codegen", "attributes": { "title": "Codegen" }, "links": { "self": "/api/tags/codegen" } },
+    { "type": "tags", "id": "release", "attributes": { "title": "Release" }, "links": { "self": "/api/tags/release" } }
+  ]
+}
+```
+
+- `GET …/relationships/{rel}` answers the linkage: an identifier or `null` for a to-one, an array for a to-many, with `links.self` and `links.related`.
+- `PATCH` sets or clears a to-one (`{"data": null}`) and replaces a to-many (`{"data": []}` clears it), with the same rules as a resource `PATCH` of that one field, `has_many` included.
+- `POST` and `DELETE` add and remove one member of a to-many. The body holds exactly one identifier; more is `403 relationship_batch_unsupported`, and `{"data": []}` changes nothing. Adding a member already present, or removing one that is absent, is `204` and writes nothing. On a to-one both are `403 relationship_update_unsupported`.
+- A relation field is read through the module's `get_by_id` and written through its `update`, so its hooks run. A module with no `update` answers every write `403 relationship_update_unsupported`.
+- The related route loads each resource with the target module's `get_by_id`. A dangling id is skipped, and a to-one whose target is missing is `"data": null`.
+- An unknown `{rel}` is `404 relationship_not_found`, a missing parent `404 {entity}_not_found`, and a missing linked resource on `PATCH` or `POST` `404 related_resource_not_found`. Another method is `405`, with `Allow: GET, HEAD, PATCH, POST, DELETE` or `Allow: GET, HEAD`.
+- Neither route takes query parameters, except `page[offset]` and `page[limit]` on a junction op's relationship in a paginated module.
+- An entity whose module has no `get_by_id` gets neither route, and its relationships carry `data` only.
+- Under a `route_prefix`, both routes exist where the type's scoped `get_by_id` does, with the prefix in every link.
+
+<Aside type="caution" title="Routes of your own under an entity path">
+The two templates capture any segments after an entity id, so a route in your own router with the same shape, such as `/api/tasks/{task_id}/{view}`, now conflicts with the generated router, and Axum panics when the two are merged. A route of yours with a fixed last segment, such as `/api/tasks/{id}/history`, still registers and wins over `{rel}` for that segment, so `history` cannot be a relationship name there. Move such routes off the `/api/{type}/{id}/…` paths of entities with relationships.
+</Aside>
+
 ### Errors
 
 Every error from a generated HTTP route, CRUD or not, is a JSON:API error document with one error object. Before:
@@ -565,7 +673,26 @@ After, `GET /api/reports?opArg[limit]=10` on a paginated surface:
 
 ### Junction ops
 
-Junction ops (`list_X`, `add_Y`, `remove_Y`) keep their routes, `/api/tasks/{parent_id}/tags` and `/api/tasks/{parent_id}/tags/{child_id}`, but use the custom op wire. This applies to every module with junction ops, entity-backed or not.
+**In a module named after an entity**, junction ops (`list_X`, `add_Y`, `remove_Y`) no longer have routes of their own. They define a to-many relationship named `X`, spelled as `list_X` spells it, and the [relationship endpoints](#relationship-endpoints) serve it. Its target is the element type of `list_X` (`Vec<Tag>` targets `tags`), or for a `Vec<String>` list, the entity whose plural is `X`. The ops must pass the [build checks](#ops-the-generator-now-refuses), and a lone `list_X` is [not a junction op at all](#a-list_x-without-add_y-or-remove_y-is-a-custom-op).
+
+For `task::list_labels(store, id) -> Vec<Tag>`, `add_label(store, id, tag_id)` and `remove_label(store, id, tag_id)`:
+
+| Op | Before | After |
+|----|--------|-------|
+| `list_labels` | `GET /api/tasks/{id}/labels`, the bare array, or `{items, total, limit, offset}` with `?limit=…&offset=…` when paginated | `GET /api/tasks/{id}/labels`, a JSON:API collection of `tags` resources; when paginated, `page[offset]` and `page[limit]` with `meta` and pagination links, like any list |
+| `add_label` | `POST /api/tasks/{id}/labels`, body `{"tag_id": "codegen"}` | `POST /api/tasks/{id}/relationships/labels`, body `{"data": [{"type": "tags", "id": "codegen"}]}` |
+| `remove_label` | `DELETE /api/tasks/{id}/labels/codegen` | `DELETE /api/tasks/{id}/relationships/labels`, body `{"data": [{"type": "tags", "id": "codegen"}]}` |
+
+Add and remove still answer `204`.
+
+- `GET /api/tasks/{id}/relationships/labels` answers the linkage, built from the listed entities' ids. A `list_X` that returns `Vec<String>` is read there; its related route loads each id with the target's `get_by_id` and skips ids that are gone.
+- The parent is read with `get_by_id` before your op runs, so a missing task is `404 task_not_found`. An add also checks that the tag exists (`404 related_resource_not_found`); a remove does not, so a member whose tag was deleted can still be removed.
+- Add and remove call `list_X` first. A tag already listed is `204` without calling `add_label`, and one not listed is `204` without calling `remove_label`.
+- `PATCH` is `403 relationship_update_unsupported`, and so is `POST` when the module has no `add_Y` and `DELETE` when it has no `remove_Y`.
+- A resource object lists the relationship after its relation fields, with `links` only: `"labels": {"links": {"self": "/api/tasks/ship-the-emitter/relationships/labels", "related": "/api/tasks/ship-the-emitter/labels"}}`. Sending it in a create or update body is `403 relationship_update_unsupported`.
+- The route segment is the name exactly as `list_X` spells it: `list_sub_tasks` is served at `…/relationships/sub_tasks` and `…/sub_tasks`, where the old route was `…/sub-tasks`.
+
+**In a module with no entity behind it**, junction ops keep their routes, `/api/{m}/{parent_id}/{segment}` and `/api/{m}/{parent_id}/{segment}/{child_id}`, and use the custom op wire:
 
 - `list_X` answers its list under `meta.result`. When the module is paginated, the page is `opArg[limit]` and `opArg[offset]` (as above) and the result is the `{items, total, limit, offset}` object.
 - `add_Y` takes the child id in `meta.args`, keyed by the function's child parameter name. Before, the body was `{"tag_id": "codegen"}`; now it is `{"meta": {"args": {"tag_id": "codegen"}}}`.
@@ -611,15 +738,22 @@ A subscribe call that fails before the stream opens now answers an error documen
 
 ### Route prefix
 
-A scoped list (`route_prefix`) that is not served as a resource, meaning a list in a module with no entity behind it, used to fetch every record and slice the page in memory. It now passes the page to the store's `list` and calls `count`, like an unscoped one. A hand-written scoped `list` must therefore honour its `limit` and `offset`. Scoped custom ops and junction ops follow the rules above, under the prefix. The split transport now calls the action-style scoped junction routes when a `projectId` is given (`POST …/add-tag` with `{"meta":{"args":{"task_id":…,"tag_id":…}}}`, and likewise for list and remove); before, it called nested routes that the server does not serve under a prefix. An op whose first parameter is the state rather than a store, or that takes neither, is not scoped on the server, and the split transport now calls its unscoped route even when given a `projectId`; its prefix parameter is named `_projectId`. Scoped junction ops keep their action-style routes (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`, `…/remove-tag`), but a scoped junction list on a paginated surface now pages like an unscoped one: it takes `opArg[limit]` and `opArg[offset]` and answers the `{items, total, limit, offset}` object, where it used to return the whole list.
+A scoped list (`route_prefix`) that is not served as a resource, meaning a list in a module with no entity behind it, used to fetch every record and slice the page in memory. It now passes the page to the store's `list` and calls `count`, like an unscoped one. A hand-written scoped `list` must therefore honour its `limit` and `offset`. Scoped custom ops follow the rules above, under the prefix.
+
+Scoped junction ops lose their action-style routes. Before, they were custom ops at `/api/projects/{project_id}/tasks/list-tags/{task_id}`, `POST …/tasks/add-tag` and `…/tasks/remove-tag`, with both ids in the body. Now every scoped route has its unscoped shape under the prefix:
+
+- in a module named after an entity, the scoped [relationship endpoints](#relationship-endpoints): `/api/projects/{project_id}/tasks/{id}/relationships/labels` and `/api/projects/{project_id}/tasks/{id}/labels`;
+- in a module with no entity behind it, `GET` and `POST /api/projects/{project_id}/{m}/{parent_id}/{segment}` and `DELETE /api/projects/{project_id}/{m}/{parent_id}/{segment}/{child_id}`, with only the child id in `meta.args`. A scoped junction list on a paginated surface pages like an unscoped one, with `opArg[limit]` and `opArg[offset]`, where it used to return the whole list.
+
+The split transport calls these routes when given a `projectId`; before, it called nested routes that the server did not serve under a prefix. An op whose first parameter is the state rather than a store, or that takes neither, is not scoped on the server, and the split transport now calls its unscoped route even when given a `projectId`; its prefix parameter is named `_projectId`.
 
 ## TypeScript clients
 
-The generated `Transport` interface is unchanged, with the two exceptions below (a paginated module has no `xCount()`, and a junction add or remove is declared `Promise<null>`): the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A filtered list sends `filter[…]`: the query struct's fields and the bare parameters, for example `toQueryString({ filter: { ...query, skill_id: skillId }, page: { offset, limit } })`, and a filtered list with no entity behind it sends `filter[…]` with `opArg[limit]` and `opArg[offset]`. Method signatures do not change. In the generated bindings, an `Option` field of a list's `*Query` struct is now optional (`status?: string | null`, was `status: string | null`), so `taskList({ status: 'open/ready' })` type-checks; other types keep every field required. When the filter struct has a required field, the list's `query` parameter is required too (`query: ListTasksQuery`, was `query?:`), on the `Transport` interface and every client, and the IPC transport sends it as given rather than `query ?? {}`. The IPC transport now sends a list's bare filters under their own names (`invoke('queue_list', { mode })`), as the Rust command takes them; before, a bare filter whose type name contained `Query` was sent as `query`. The `HttpTs` client imports its types from the configured bindings file; before, it always imported `./bindings`. If you build `ontogen_ts::EmitConfig` with a struct literal, add the new `deserialize_only` field or end it with `..Default::default()`. The changes to the client's custom, junction and subscription methods follow below.
+The generated `Transport` interface is unchanged, with the three exceptions below (a paginated module has no `xCount()`, a junction add or remove is declared `Promise<null>`, and a lone `list_X` takes no page): the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A filtered list sends `filter[…]`: the query struct's fields and the bare parameters, for example `toQueryString({ filter: { ...query, skill_id: skillId }, page: { offset, limit } })`, and a filtered list with no entity behind it sends `filter[…]` with `opArg[limit]` and `opArg[offset]`. Method signatures do not change. In the generated bindings, an `Option` field of a list's `*Query` struct is now optional (`status?: string | null`, was `status: string | null`), so `taskList({ status: 'open/ready' })` type-checks; other types keep every field required. When the filter struct has a required field, the list's `query` parameter is required too (`query: ListTasksQuery`, was `query?:`), on the `Transport` interface and every client, and the IPC transport sends it as given rather than `query ?? {}`. The IPC transport now sends a list's bare filters under their own names (`invoke('queue_list', { mode })`), as the Rust command takes them; before, a bare filter whose type name contained `Query` was sent as `query`. The `HttpTs` client imports its types from the configured bindings file; before, it always imported `./bindings`. If you build `ontogen_ts::EmitConfig` with a struct literal, add the new `deserialize_only` field or end it with `..Default::default()`. The changes to the client's custom, junction and subscription methods follow below.
 
-One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone, because no generated route uses `PUT` any more; updates use `httpPatch`. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript. The IPC transport changes only in how it sends a list's bare filters, as described above, and the MCP changes are listed under [MCP tools](#mcp-tools).
+One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone, because no generated route uses `PUT` any more; updates use `httpPatch`. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript. The IPC transport changes only in how it sends a list's bare filters, as described above, and in a lone `list_X` (below), and the MCP changes are listed under [MCP tools](#mcp-tools).
 
-The generated calls for ops follow the wire above, and every one of them returns `meta.result` (`null` on `204`). Each keeps its signature, except for the changes listed at the end of this section: `xCount()` is removed for a paginated module, a junction add or remove is declared `Promise<null>`, and the `HttpTs` client's paginated lists take `limit?` and `offset?` and return `PaginatedResult<T>`. For example:
+The generated calls for custom ops, and for junction ops in a module with no entity behind it, follow the wire above, and every one of them returns `meta.result` (`null` on `204`). Each keeps its signature, except for the changes listed at the end of this section: `xCount()` is removed for a paginated module, a junction add or remove is declared `Promise<null>`, a lone `list_X` takes no page, and the `HttpTs` client's paginated lists take `limit?` and `offset?` and return `PaginatedResult<T>`. For example:
 
 ```ts
 async workoutStart(input: StartWorkoutInput, note: string | null): Promise<Workout> {
@@ -629,9 +763,28 @@ async workoutStart(input: StartWorkoutInput, note: string | null): Promise<Worko
 
 Before, the same method posted `input` bare and put `note` on the query string.
 
-A custom `GET` sends its `Option` arguments as `opArg[name]`, and a paginated entity-less or junction list sends `opArg[limit]` and `opArg[offset]`. `subscribeX` hands the callback a flat entity for an entity item and the `meta.result` value for any other item, and the legacy `on{Event}` listeners decode frames the same way. `SubscriptionHandlers.onEvent` still receives flat items.
+A custom `GET` sends its `Option` arguments as `opArg[name]`, and a paginated entity-less list, or a junction list in a module with no entity, sends `opArg[limit]` and `opArg[offset]`. `subscribeX` hands the callback a flat entity for an entity item and the `meta.result` value for any other item, and the legacy `on{Event}` listeners decode frames the same way. `SubscriptionHandlers.onEvent` still receives flat items.
 
 For a module whose list is paginated, the generated `xCount()` method is removed from the `Transport` interface and from the clients (both HTTP clients and the IPC transport). The server never served it: there was no HTTP route and no IPC command, because the count is the `total` of the paginated list. Read `PaginatedResult.total` instead. A junction `add` or `remove` op is declared `Promise<null>` on the `Transport` interface whatever its Rust return type, matching the `204` the server answers.
+
+Junction methods of a module named after an entity call the [relationship endpoints](#junction-ops), with the same signatures:
+
+```ts
+taskListLabels(taskId: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>>;
+// before: GET /api/tasks/{taskId}/labels?limit=…&offset=…
+// after:  GET /api/tasks/{taskId}/labels?page[offset]=…&page[limit]=…, flattened like taskList
+//         (a list of ids reads GET …/relationships/labels and maps each identifier to its id)
+
+taskAddLabel(taskId: string, tagId: string): Promise<null>;
+// before: POST /api/tasks/{taskId}/labels with { tag_id: tagId }
+// after:  POST /api/tasks/{taskId}/relationships/labels with { data: [{ type: 'tags', id: tagId }] }
+
+taskRemoveLabel(taskId: string, tagId: string): Promise<null>;
+// before: DELETE /api/tasks/{taskId}/labels/{tagId}
+// after:  DELETE /api/tasks/{taskId}/relationships/labels with { data: [{ type: 'tags', id: tagId }] }
+```
+
+Given a `projectId`, every junction method calls the same path under the prefix; there is no separate scoped form. A lone `list_X` is a custom `GET` (see [A `list_X` without `add_Y` or `remove_Y` is a custom op](#a-list_x-without-add_y-or-remove_y-is-a-custom-op)): on both HTTP clients and the IPC transport it loses `limit?` and `offset?` and returns its plain array.
 
 The HTTP-only client (`HttpTs`) changes in two ways. Its custom op methods now call the server's actual paths, kebab-cased and singleton-aware, where some used the module's Rust name. Its paginated lists, including junction lists, take `limit?` and `offset?` and return `PaginatedResult<T>`; before, they took no page arguments and returned the server's default first page.
 
@@ -647,7 +800,9 @@ If you call the generated HTTP routes from something other than the generated Ty
 - Read errors from `errors[0]` (`status`, `code`, `detail`) instead of `error`.
 - Drop any query parameter the route does not accept.
 - A create whose client `data.id` breaks the [id rule](/guides/store-layer/#creating-records) is `400 invalid_document` with `source.pointer: "/data/id"`, and the rule's message is the `detail`. An id that no strategy can supply is `400 {entity}_id_required`, whose `detail` is the store's reason.
-- Custom ops, junction ops and the CRUD ops of a module with no entity behind it: send arguments as `meta.args` (a `POST` or `PATCH` body) or `opArg[name]` (a `GET`), and read the result from `meta.result`.
+- Custom ops, junction ops of a module with no entity behind it, and the CRUD ops of such a module: send arguments as `meta.args` (a `POST` or `PATCH` body) or `opArg[name]` (a `GET`), and read the result from `meta.result`.
+- Junction ops of a module named after an entity: use the relationship endpoints. List with `GET /api/{type}/{id}/{rel}` (or `…/relationships/{rel}` for ids), add with `POST /api/{type}/{id}/relationships/{rel}` and remove with `DELETE` on the same path, each with `{"data": [{"type": …, "id": …}]}`.
+- Relationship objects carry `links.self` and `links.related`; follow them instead of building URLs. A lone `list_X` is a custom `GET` at `/api/{type}/{action}/{param}`.
 - Event streams: an entity item is a resource object, any other item is `{"meta": {"result": …}}`.
 - A filtered `list`: send `filter[name]` for each query-struct field and bare parameter, and read `meta.total` as for any list. A filtered list with no entity behind it takes `filter[…]` plus `opArg[limit]` and `opArg[offset]`, and answers `meta.result`.
 

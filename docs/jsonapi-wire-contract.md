@@ -88,11 +88,13 @@ say the example is illustrative.
 |---|---|---|---|
 | `Epic { id, title, status, body }` | `epic` | `epics` | `/api/epics` |
 | `Tag { id, title }` | `tag` | `tags` | `/api/tags` |
-| `Task { id, title, status, created, epic_id, tags, body }` | `task` | `tasks` | `/api/tasks` |
+| `Task { id, title, status, created, epic_id, tags, parent_id, subtasks, body }` | `task` | `tasks` | `/api/tasks` |
 
 `Task.epic_id` is `belongs_to Epic` (an `Option<String>`). `Task.tags` is
-`many_to_many Tag`. The vault holds one record of each: task
-`ship-the-emitter`, epic `markdown-backend` and tag `codegen`.
+`many_to_many Tag`. `Task.parent_id` is `belongs_to Task` (an
+`Option<String>`), and `Task.subtasks` is `has_many Task` through
+`parent_id`. The vault holds task `ship-the-emitter`, which has no parent
+and no subtasks, epic `markdown-backend`, and tags `codegen` and `release`.
 
 The example does not yet exercise every feature, so some sections show it
 with additions that the named phase makes to tasks-tracker. That keeps every
@@ -110,10 +112,7 @@ example in this document live once its phase lands:
 not a module: the primary surface's `pagination` covers every module on it,
 and tasks-tracker has one surface.
 
-Examples show the wire after every phase has landed. Before phase 3a:
-- relationship objects carry `data` only, without the `links` shown here;
-- junction-op relationships are absent altogether, since they have no
-  `data` (§5.4).
+Examples show the wire after every phase has landed.
 
 The task body is abbreviated as `"## Goal\n…"` after its first appearance.
 Response headers common to every response (§3.3) are shown once per
@@ -139,8 +138,7 @@ section, not on every example.
 - `PATCH` to a resource;
 - a custom `POST`, or a `POST` or `PATCH` row of §10.4, with a body (one
   may also carry none, §10.2);
-- `POST`, `PATCH` and `DELETE` on a relationship endpoint (§9, served from
-  phase 3a).
+- `POST`, `PATCH` and `DELETE` on a relationship endpoint (§9).
 
 The server responds:
 
@@ -319,7 +317,8 @@ Member order is `type`, `id`, `attributes`, `relationships`, `links`.
   `CodegenError` for any other id type.
 - **`attributes`** is always present (§5.3).
 - **`relationships`** is present when the type declares at least one
-  relationship, and absent otherwise (`epics` and `tags` in the example).
+  relationship, a relation field (§5.4) or a junction-op relationship
+  (§9.1), and absent otherwise (`epics` and `tags` in the example).
 - **`links.self`** is always present. It equals the `Location` header on
   create (§8.2), as the spec requires when both exist.
 - There is no `meta` member.
@@ -366,7 +365,13 @@ of the relation's `target` entity.
 
 Relationship names are also URL segments (`/relationships/{rel}`, §9),
 used verbatim: `/api/tasks/{id}/relationships/subtasks`, and for a
-two-word field, `…/relationships/sub_tasks`.
+two-word field, `…/relationships/sub_tasks`. Links percent-encode the name
+as a path segment (§4.2), which leaves an ASCII name unchanged.
+
+**Order.** A resource object lists its relation fields first, in field
+declaration order, then its junction-op relationships (§9.1) in the
+declaration order of their `list_X`. A task's relationships are `epic`,
+`tags`, `parent`, `subtasks`.
 
 **Collisions.** The generator raises a `CodegenError` when:
 
@@ -421,14 +426,17 @@ and matches the add-once rule of relationship `POST`.
 }
 ```
 
-- Phase 1b emits `data` only. Phase 3a adds `links`, together with the
-  endpoints they point at, because the spec requires a server to serve
-  every link it emits.
-- A junction-op relationship has no field on the entity, so no `data`.
-  From phase 3a it appears with `links` only. Before phase 3a it does not
-  appear at all, and it never appears in event frames, which carry no
+- `links` holds `self`, the relationship endpoint, and `related`, the
+  related-resource endpoint (§9). It is present on every relationship of a
+  type whose module serves those endpoints: the module serves `get_by_id`
+  as the type's resource (§9). The spec requires a server to serve every
+  link it emits, so a type whose module serves no `get_by_id` has no
+  relationship routes, and its relationship objects carry `data` only.
+- A junction-op relationship has no field on the entity, so no `data`. It
+  appears with `links` only, and never in event frames, which carry no
   links (§12). A relationship object with neither member would be empty,
-  which the spec forbids.
+  which the spec forbids. A junction-op relationship always has `links`,
+  because its module must serve `get_by_id` (§9.1).
 
 ### 5.5 Worked example: one task
 
@@ -456,6 +464,20 @@ and matches the add-once rule of relationship `POST`.
         "related": "/api/tasks/ship-the-emitter/tags"
       },
       "data": [ { "type": "tags", "id": "codegen" } ]
+    },
+    "parent": {
+      "links": {
+        "self": "/api/tasks/ship-the-emitter/relationships/parent",
+        "related": "/api/tasks/ship-the-emitter/parent"
+      },
+      "data": null
+    },
+    "subtasks": {
+      "links": {
+        "self": "/api/tasks/ship-the-emitter/relationships/subtasks",
+        "related": "/api/tasks/ship-the-emitter/subtasks"
+      },
+      "data": []
     }
   },
   "links": { "self": "/api/tasks/ship-the-emitter" }
@@ -476,7 +498,9 @@ are:
   "links": { "self": "/api/tags/codegen" } }
 ```
 
-These are written `‹epic markdown-backend›` and `‹tag codegen›`.
+These are written `‹epic markdown-backend›` and `‹tag codegen›`. `epics`
+and `tags` declare no relationship, so neither has `relationships`, and
+neither serves relationship routes.
 
 ## 6. Query parameters
 
@@ -982,7 +1006,9 @@ Vary: Accept
                     "created": "2026-06-06", "body": "## Goal\n\nReview.\n" },
     "relationships": {
       "epic": { "links": { "…": "…" }, "data": { "type": "epics", "id": "markdown-backend" } },
-      "tags": { "links": { "…": "…" }, "data": [ { "type": "tags", "id": "codegen" } ] }
+      "tags": { "links": { "…": "…" }, "data": [ { "type": "tags", "id": "codegen" } ] },
+      "parent": { "links": { "…": "…" }, "data": null },
+      "subtasks": { "links": { "…": "…" }, "data": [] }
     },
     "links": { "self": "/api/tasks/review-the-stack" }
   }
@@ -1204,7 +1230,9 @@ HTTP/1.1 200 OK
                     "created": "2026-06-06", "body": "## Goal\n…" },
     "relationships": {
       "epic": { "links": { "…": "…" }, "data": null },
-      "tags": { "links": { "…": "…" }, "data": [] }
+      "tags": { "links": { "…": "…" }, "data": [] },
+      "parent": { "links": { "…": "…" }, "data": null },
+      "subtasks": { "links": { "…": "…" }, "data": [] }
     },
     "links": { "self": "/api/tasks/ship-the-emitter" }
   }
@@ -1294,20 +1322,31 @@ Vary: Accept
 
 ## 9. Relationship endpoints and related links
 
-Phase 3a. For every relationship of every resource type the server serves:
+A resource type has relationship and related routes when its module
+serves `get_by_id` as the type's resource (§8.1) and the type has at least
+one relationship, a relation field (§5.4) or a junction-op relationship
+(§9.1). For every relationship of such a type the server serves:
 
 | Method | Path | To-one | `many_to_many` | `has_many` | Junction op |
 |---|---|---|---|---|---|
 | `GET` | `/api/{type}/{id}/relationships/{rel}` | linkage | linkage | linkage | linkage |
 | `PATCH` | same | set or clear | replace | replace | `403` |
-| `POST` | same | `403` | add | add | add |
-| `DELETE` | same | `403` | remove | remove | remove |
+| `POST` | same | `403` | add | add | add, or `403` without `add_Y` |
+| `DELETE` | same | `403` | remove | remove | remove, or `403` without `remove_Y` |
 | `GET` | `/api/{type}/{id}/{rel}` (related link) | resource or `null` | resource collection | resource collection | resource collection |
 
-- **`403`s in the table.** The spec defines `POST` and `DELETE` only for
-  to-many relationships, and requires `403` for an unsupported
-  relationship update. Every `403` in the table uses code
-  `relationship_update_unsupported`.
+- **Which types.** A type whose module serves no `get_by_id`, or that has
+  no relationship, registers neither route, and its relationship objects
+  carry no `links` (§5.4). The routes exist under a route prefix exactly
+  where the type's `get_by_id` route does (§11.1).
+- **`403`s.** The spec defines `POST` and `DELETE` only for to-many
+  relationships, and requires `403` for an unsupported relationship
+  update. Every `403` in the table uses code
+  `relationship_update_unsupported`, and so does a `PATCH`, `POST` or
+  `DELETE` on a relation field of a type whose module serves no `update`
+  as its resource, since relation fields are written through `update`
+  (§9.1). Each of these is decided from the route and method alone, before
+  the body is read (§13.2 step 6).
 - **One identifier per `POST` or `DELETE`.** A body with more than one is
   `403 relationship_batch_unsupported`. `"data": []` is a successful no-op.
   The spec allows `403` for an unsupported relationship update. Allowing
@@ -1316,35 +1355,55 @@ Phase 3a. For every relationship of every resource type the server serves:
   partly applied. The TS transport sends one id per request.
 - **`{rel}` is captured.** It is the relationship name verbatim (§5.4).
   Both route templates capture it, so a name that is not a relationship of
-  `{type}` reaches the generated handler and is
-  `404 relationship_not_found`. It does not fall through to the consumer's
-  router.
+  `{type}`, or a segment that does not percent-decode to UTF-8, reaches the
+  generated handler and is `404 relationship_not_found`. It does not fall
+  through to the consumer's router.
 - **Other methods** are `405`, with `Allow: GET, HEAD, PATCH, POST, DELETE`
   on the relationship route and `Allow: GET, HEAD` on the related route.
   That holds whatever `{rel}` names, because routing happens before `{rel}`
   is looked up.
+- **Consumer routes.** The two templates match every path of the shapes
+  `/api/{type}/{x}/{y}` and `/api/{type}/{x}/relationships/{y}` under such
+  a type. A consumer route of the same shape merged into the generated
+  router, such as `/api/tasks/{task_id}/{view}`, conflicts with it, and
+  Axum panics when the routers are merged. A consumer route with a static
+  last segment, such as `/api/tasks/{id}/history`, is accepted and wins
+  over `{rel}` for that segment (§9.4).
+- **Build-time checks.** For a type that serves these routes, the target
+  type of every relationship, relation field or junction op, must have a
+  module that serves `get_by_id`: the handlers read linked and related
+  resources through it. A target whose module serves none is a
+  `CodegenError` naming the relationship. The junction-op checks are in
+  §9.1. Like the other HTTP checks (§10.3), they run in builds that
+  generate an HTTP server or an HTTP TypeScript client.
 
 ### 9.1 Where each endpoint's behaviour comes from
 
 **Relation fields** (`belongs_to`, `many_to_many`, `has_many` on the
-entity) are served from the generated store alone, so they work on both
-backends with no user code:
+entity) are served through the module's own `get_by_id` and `update`, the
+functions its resource routes call, so they work on both backends with no
+user code and pass through the same hooks and errors as a resource
+`PATCH`:
 
-- `GET …/relationships/{rel}` reads the field from `get_{entity}(id)`.
-- `PATCH` writes the field through
-  `update_{entity}(id, XUpdate { field: Some(…), ..Default })`, with the
-  semantics of §8.3.
-- `POST` (to-many) reads the current ids. If the requested id is absent, it
-  appends it and writes through `update_{entity}`. If it is present, it
-  writes nothing.
+- `GET …/relationships/{rel}` reads the field from `get_by_id(id)`.
+- `PATCH` builds the module's update input with only that field set
+  (`UpdateXInput { field: Some(…), .. }`) and calls `update(id, input)`,
+  with the semantics of §8.3.
+- `POST` (to-many) reads the current ids from `get_by_id`. If the requested
+  id is absent, it appends it and writes through `update`. If it is
+  present, it writes nothing.
 - `DELETE` (to-many) reads the current ids. If the requested id is present,
-  it removes it and writes through `update_{entity}`. If it is absent, it
-  writes nothing. For `has_many`, removing a child clears its foreign key,
-  or fails with `403 {child}_parent_required` (§5.4).
+  it removes it and writes through `update`. If it is absent, it writes
+  nothing. For `has_many`, removing a child clears its foreign key, or
+  fails with `403 {child}_parent_required` (§5.4).
+- `"data": []` on `POST` or `DELETE` writes nothing. The parent is still
+  read, so a missing parent is still `404`.
+- When the module serves no `update`, `PATCH`, `POST` and `DELETE` are
+  `403 relationship_update_unsupported` (§9).
 
 `POST` and `DELETE` are a read followed by one write, not one transaction.
 A concurrent writer to the same relationship can lose an update. That
-matches every other read-modify-write in the store today.
+matches every other read-modify-write in the store.
 
 **Junction ops** are user-authored functions in a resource module:
 
@@ -1357,36 +1416,58 @@ relationship named `X`, exactly as written in the fn name: `list_tags` /
 `add_tag` / `remove_tag` define `tags`, and `list_sub_tasks` defines
 `sub_tasks`.
 
-- **Classification.** From phase 3a, a one-parameter `list_X` counts as a
-  junction op only when its module also has `add_Y` or `remove_Y`. Without
-  either it is a custom `GET` (§10), served at
-  `/api/{type}/{action}/{param}`. Today any one-parameter `list_*` is a
-  `JunctionList`, which would turn a plain `list_by_status(status)` into a
-  relationship named `by_status`.
+- **Classification.** A one-parameter `list_X` is a junction op only when
+  its module also has an `add_Y` or a `remove_Y` for the same relationship:
+  `add_tag` or `remove_tag` beside `list_tags`, `add_sub_task` beside
+  `list_sub_tasks`. Without one it is a custom `GET` (§10), served at
+  `/api/{type}/{action}/{param}`. That keeps a plain
+  `list_by_status(status)` from becoming a relationship named `by_status`.
+  The rule holds on every transport: over IPC and MCP and in both TS
+  transports, a lone `list_X` returns its plain `Vec`, with no page (§14,
+  §15).
 - **Outside a resource module.** Junction ops in a module that is not a
   resource module (§5.1) have no resource type to hang a relationship on.
-  This includes today's test fixture `destination_skills`. They are served
-  as custom ops (§10.4).
-- **Target type.** The relationship's target type is `url_plural` of
-  `list_X`'s element type when that is an entity. Otherwise it is the
-  entity type whose `url_plural` is `X` kebab-cased. When neither names an
-  entity type, the generator raises a `CodegenError`.
-- **Collisions.** The name collision rule of §5.4 applies to junction-op
-  relationships.
+  This includes the test fixture `destination_skills`. They are served as
+  custom ops (§10.4), scoped or not.
+- **Target type.** The relationship's target is the element type of
+  `list_X`'s `Vec<…>` when that is an entity. Otherwise it is the entity
+  whose `url_plural` is `X` with `_` replaced by `-`. When neither names an
+  entity, the generator raises a `CodegenError`.
+- **Signatures.** `list_X` returns `Vec<Target>` (the entities) or
+  `Vec<String>` (their ids), inside the fn's `Result`. Each id parameter of
+  `list_X`, `add_Y` and `remove_Y` is a `&str`, `String` or `&String`. The
+  generator raises a `CodegenError` naming the fn for any other return or
+  parameter type.
+- **`list_X` is required.** An `add_Y` or `remove_Y` in a resource module
+  with no `list_X` for its relationship is a `CodegenError`: linkage and
+  membership are read through `list_X`.
+- **`get_by_id` is required.** A resource module with a junction-op
+  relationship must serve `get_by_id` as its resource, which the routes use
+  to check the parent. Otherwise the generator raises a `CodegenError`.
+- **Collisions.** The name rules of §5.4 apply. A junction-op
+  relationship's name must be a legal member name, must not be `type`,
+  `id` or `relationships`, and must not equal an attribute, a relation
+  field's relationship, or another junction-op relationship. So
+  `list_tags` beside a `tags` relation field is a `CodegenError`; ops for a
+  second set of tags take another name (`list_labels`, `add_label`,
+  `remove_label`).
 
-Each junction endpoint behaves as follows:
+Each junction endpoint behaves as follows. The checks ahead of it run in
+§13.2 order: the `403`s below at step 6, the identifier's shape and type
+at step 7, then the parent and, for `POST`, the target at step 8.
 
 - **`GET …/relationships/X`** calls `list_X(parent_id)`. When it returns
   entities, linkage is built from their ids. When it returns `Vec<String>`,
   linkage is built from the strings.
-- **`POST`** validates the identifier's shape and type, and that its target
-  exists. It then calls `list_X(parent_id)`. If the id is already a member,
-  the response is `204` without calling user code; otherwise it calls
-  `add_Y(parent_id, child_id)`.
-- **`DELETE`** validates the identifier's shape and type only, not its
-  target's existence, so a member whose target was deleted can still be
-  removed. It then calls `list_X(parent_id)`. If the id is not a member, the
-  response is `204` without calling user code; otherwise it calls
+- **`POST`** is `403 relationship_update_unsupported` when the module has
+  no `add_Y`. Otherwise, with the target known to exist, it calls
+  `list_X(parent_id)`. If the id is already a member, the response is `204`
+  without calling `add_Y`; otherwise it calls `add_Y(parent_id, child_id)`.
+- **`DELETE`** is `403 relationship_update_unsupported` when the module has
+  no `remove_Y`. Otherwise it does not check that the target exists, so a
+  member whose target was deleted can still be removed. It calls
+  `list_X(parent_id)`. If the id is not a member, the response is `204`
+  without calling `remove_Y`; otherwise it calls
   `remove_Y(parent_id, child_id)`.
 - **`PATCH`** is `403 relationship_update_unsupported`, because no junction
   op replaces a set.
@@ -1395,14 +1476,15 @@ The membership read is what makes a repeated `POST`, or a `DELETE` of an
 absent member, succeed as the spec requires, whatever `add_Y` does with a
 duplicate.
 
-**Pagination.** When the module is paginated, junction `GET`s keep today's
-in-memory paging:
+**Pagination.** When the module is paginated, junction `GET`s page the
+result of `list_X` in memory:
 
 - The relationship linkage `GET` and the related-link `GET` accept
   `page[offset]` and `page[limit]` with §7.2's rules.
 - They return `meta {total, limit, offset}`, plus `self` and the four
   pagination links at the top level, where they paginate the primary data:
-  the relationship's members.
+  the relationship's members. The linkage document's `links` also carries
+  `related`.
 - Relation-field relationships are never paginated. Their linkage is
   already loaded with the resource.
 
@@ -1414,11 +1496,12 @@ every `get` and `list`. It follows that:
 - it cannot be included (§7.5);
 - it cannot be written in a create or update body (§8.2,
   `403 relationship_update_unsupported`);
-- the TS flattener leaves it out of the flat entity, as today, since the
-  entity struct has no such field.
+- the TS flattener leaves it out of the flat entity, since the entity
+  struct has no such field.
 
-**Before phase 3a**, junction ops in a resource module keep their current
-paths and are served as custom ops (§10.4).
+**No routes of their own.** Junction ops of a resource module are reached
+only through these endpoints. They have no `/api/{type}/{parent_id}/…`
+route, and the TS transport calls the endpoints (§14.2).
 
 ### 9.2 Examples and errors
 
@@ -1463,8 +1546,8 @@ Vary: Accept
 
 `{ "data": null }` clears it, also `204`.
 
-**Add, remove and replace to-many.** With the phase-3a `release` tag in
-the vault:
+**Add, remove and replace to-many.** With the `release` tag in the
+vault:
 
 ```http
 POST /api/tasks/ship-the-emitter/relationships/tags HTTP/1.1
@@ -1492,9 +1575,9 @@ The server makes no change beyond the request, so the spec allows it.
 | 1 | a method other than `GET`, `HEAD`, `PATCH`, `POST`, `DELETE` | 405 | `method_not_allowed` | none |
 | 2 | `Accept` not satisfiable | 406 | `not_acceptable` | `header: "Accept"` |
 | 3 | `Content-Type` not acceptable (`PATCH`, `POST`, `DELETE`) | 415 | `unsupported_media_type` | `header: "Content-Type"` |
-| 4 | `{rel}` is not a relationship of `{type}` | 404 | `relationship_not_found` | none |
+| 4 | `{rel}` is not a relationship of `{type}`, or does not percent-decode | 404 | `relationship_not_found` | none |
 | 5 | any query parameter not accepted by §6 | 400 | `invalid_query_parameter` | `parameter` |
-| 6 | a write the relationship does not support (table above) | 403 | `relationship_update_unsupported` | none |
+| 6 | a write the relationship does not support (§9: the table, a relation field without `update`, a junction op without `add_Y` or `remove_Y`) | 403 | `relationship_update_unsupported` | none |
 | 7 | body not JSON, or top level not an object | 400 | `invalid_document` | none |
 | 7 | `data` missing | 400 | `invalid_document` | `pointer: ""` |
 | 7 | `data` of the wrong arity for the relationship | 400 | `invalid_document` | `pointer: "/data"` |
@@ -1516,17 +1599,21 @@ no `data`.
 `GET /api/tasks/ship-the-emitter/epic` returns
 `{ "jsonapi", "links": { "self": "/api/tasks/ship-the-emitter/epic" }, "data": ‹epic markdown-backend› }`.
 
-- An empty to-one is `"data": null`.
+- An empty to-one is `"data": null`, as for
+  `GET /api/tasks/ship-the-emitter/parent`.
 - `GET /api/tasks/ship-the-emitter/tags` returns
   `"data": [ ‹tag codegen› ]`, ordered as the linkage.
-- Resources are loaded with the target's store `get`, one call per id.
+- Resources are loaded with the target module's `get_by_id`, one call per
+  id. Each is the target's own resource object, with the target's links
+  (§11.1 says when they carry a route prefix).
 - A dangling id is skipped (§7.5). A to-one whose target is missing is
   `"data": null`.
 - When the parent is missing, the response is `404 {entity}_not_found`.
 - For a junction op whose `list_X` returns entities, those entities are the
   data, with no extra `get`.
 - Related collections are not filtered or sorted. They are paginated only
-  for a junction op in a paginated module (§9.1).
+  for a junction op in a paginated module (§9.1), and then carry `self` and
+  the four pagination links. Otherwise the document's only link is `self`.
 
 ### 9.4 Route shadowing
 
@@ -1655,14 +1742,13 @@ may have. IPC-only and MCP-only builds are unaffected.
 
 ### 10.4 Ops served as custom ops
 
-Three kinds of op have no resource to serve and are served as custom ops,
-at the route their classification gives today:
+Two kinds of op have no resource to serve and are served as custom ops:
 
 - CRUD-classified ops in a module that is not a resource module (§5.1);
-- junction ops outside a resource module (§9.1);
-- before phase 3a, junction ops inside one.
+- junction ops outside a resource module (§9.1).
 
-The §10.1 and §10.2 rules apply, with these routes:
+The §10.1 and §10.2 rules apply, with these routes, scoped or not
+(§11.1):
 
 | Op | Route | Request | Response |
 |---|---|---|---|
@@ -1676,6 +1762,9 @@ The §10.1 and §10.2 rules apply, with these routes:
 | `JunctionRemove` | `DELETE /api/{m}/{parent_id}/{segment}/{child_id}` | — | `204` |
 
 `update` uses `PATCH` here too, so that no generated route uses `PUT`.
+`{segment}` is the kebab-case plural the junction fn names: `list_tags`,
+`add_tag` and `remove_tag` all use `tags`, and `add_sub_task` uses
+`sub-tasks`.
 
 A CRUD-named op in a module with no entity takes exactly its row's
 arguments: `get_by_id(id)`, `delete(id)`, `create(input)`,
@@ -1734,22 +1823,24 @@ relationship, related, custom and event routes alike.
   `500 internal_error`, as E0003 phase 1 keeps it. Mapping it to `404` waits
   on E0003's store-accessor contract.
 
-Scoped and unscoped routes MUST have identical wire behaviour. A scoped
-filtered list behaves as an unscoped one, whether it is served as a resource
-or, with no entity behind it, as a custom op (§10.4). A scoped
-list that is not served as a resource passes the page to the store's
-page-taking `list` and calls `count`, like an unscoped one, so a hand-written
-scoped `list` must honour its page. The one remaining divergence:
+Scoped and unscoped routes MUST have identical wire behaviour, and a
+scoped route has the shape of its unscoped one under the prefix:
 
-- Scoped junction ops are action-style custom-op routes
-  (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`,
-  `…/remove-tag`) instead of the `{parent_id}/{child}` form. Only the route
-  differs: a scoped `JunctionList` pages with `opArg[limit]`/`opArg[offset]`
-  like the unscoped one. Relationship endpoints (§9, phase 3a) replace these
-  routes.
-
-A client calling a scoped junction op uses that action route with both
-arguments in `meta.args`: `{"<parent param>":…, "<child param>":…}`.
+- A scoped filtered list behaves as an unscoped one, whether it is served
+  as a resource or, with no entity behind it, as a custom op (§10.4). A
+  scoped list that is not served as a resource passes the page to the
+  store's page-taking `list` and calls `count`, like an unscoped one, so a
+  hand-written scoped `list` must honour its page.
+- A type's relationship and related routes (§9) exist under the prefix
+  wherever its `get_by_id` route does, which is when `get_by_id` takes the
+  store. Their links carry the prefix, and so do the links of a related
+  resource whose own type's `get_by_id` route exists under the prefix.
+- Junction ops outside a resource module are served at their §10.4 routes
+  under the prefix:
+  `GET`/`POST /api/projects/{project_id}/{m}/{parent_id}/{segment}` and
+  `DELETE …/{segment}/{child_id}`. An add carries only the child id in
+  `meta.args`, and a scoped `JunctionList` pages with
+  `opArg[limit]`/`opArg[offset]` like the unscoped one.
 
 ### 11.2 Extra API surfaces
 
@@ -1780,7 +1871,7 @@ no event ops. For illustration, a resumable `task_changed` op yielding
 
 ```text
 event: task-changed
-data: {"type":"tasks","id":"ship-the-emitter","attributes":{"title":"Ship the emitter","status":"closed/done","created":"2026-06-06","body":"## Goal\n…"},"relationships":{"epic":{"data":{"type":"epics","id":"markdown-backend"}},"tags":{"data":[{"type":"tags","id":"codegen"}]}}}
+data: {"type":"tasks","id":"ship-the-emitter","attributes":{"title":"Ship the emitter","status":"closed/done","created":"2026-06-06","body":"## Goal\n…"},"relationships":{"epic":{"data":{"type":"epics","id":"markdown-backend"}},"tags":{"data":[{"type":"tags","id":"codegen"}]},"parent":{"data":null},"subtasks":{"data":[]}}}
 id: 0:17
 ```
 
@@ -1885,8 +1976,8 @@ is the response:
      first missing required field in declaration order, then the bare
      filters in byte order of name (a repeat, a bad value or a missing
      required filter).
-6. **Route-level refusals** decidable without the body: the `403`s of §9's
-   table.
+6. **Route-level refusals** decidable without the body: the `403`s of
+   §9.
 7. **The request body**, in the order of the operation's table. A body
    larger than the server accepts is `413 content_too_large`, ahead of
    every row of the table. Members are checked in schema order, so no
@@ -1900,8 +1991,9 @@ is the response:
    Custom-op `meta.args` (§10.2) is one family: unknown names in byte
    order, then declared arguments in declaration order.
 8. **Store reads the handler makes before acting.** First the parent
-   resource on relationship routes (`404 {entity}_not_found`). Then each
-   linked resource, in step-7 order (`404 related_resource_not_found`).
+   resource on relationship and related routes (`404 {entity}_not_found`).
+   Then each linked resource, in step-7 order
+   (`404 related_resource_not_found`).
 9. **The operation itself**: the store call or the custom op, and its
    `AppError`.
 
@@ -1928,10 +2020,10 @@ consumer's `AppError`:
 | 400 | `unknown_relationship` | a relationship name the type lacks (§8.2) |
 | 400 | `missing_relationship` | a non-`Option` to-one absent from a create body (§8.2) |
 | 403 | `relationship_required` | `null` on a non-`Option` to-one (§8.2, §8.3, §9) |
-| 403 | `relationship_update_unsupported` | a relationship write the relationship does not support: `PATCH` on a junction op, `POST`/`DELETE` on a to-one, or a junction-op relationship in a create or update body (§8.2, §9) |
+| 403 | `relationship_update_unsupported` | a relationship write the relationship does not support: `PATCH` on a junction op, `POST`/`DELETE` on a to-one, a write to a relation field of a type whose module serves no `update`, `POST` on a junction op without `add_Y` or `DELETE` without `remove_Y`, or a junction-op relationship in a create or update body (§8.2, §9) |
 | 403 | `relationship_batch_unsupported` | a relationship `POST` or `DELETE` with more than one identifier (§9) |
 | 404 | `related_resource_not_found` | a linked id that does not exist (§8.2, §8.3, §9) |
-| 404 | `relationship_not_found` | `{rel}` is not a relationship of the type (§9) |
+| 404 | `relationship_not_found` | `{rel}` is not a relationship of the type, or does not percent-decode (§9) |
 | 405 | `method_not_allowed` | a method the route does not serve (§13.5) |
 | 406 | `not_acceptable` | §3.2 |
 | 409 | `type_mismatch` | a `type` that is not the endpoint's or the relationship's (§8.2, §8.3, §9) |
@@ -2049,11 +2141,13 @@ and `Path` in generated handlers and produce the documents above.
 
 The generated HTTP transport keeps the flat `Transport` interface:
 
-- every method name, parameter and return type is unchanged, with two
+- every method name, parameter and return type is unchanged, with three
   exceptions: a paginated module has no `xCount()` method, because no route
-  or IPC command serves its `count` (the page carries `total`); and a junction
+  or IPC command serves its `count` (the page carries `total`); a junction
   `xAddY` or `xRemoveY` is declared `Promise<null>` whatever its Rust return
-  type, matching the `204` its route answers;
+  type, matching the `204` its route answers; and a lone `xListX`, a
+  custom `GET` (§9.1), takes no `limit?` or `offset?` and returns its plain
+  array;
 - list methods gain one trailing optional argument (§14.2).
 
 JSON:API is applied and removed inside the transport. The admin layer needs
@@ -2077,20 +2171,22 @@ no source change.
 | `xCreate(input)` | `POST /api/{type}`, body `unflatten(input)` | `flatten(data)` (201) |
 | `xUpdate(id, input)` | `PATCH /api/{type}/{id}`, body `unflatten(input, id)` | `flatten(data)` |
 | `xDelete(id)` | `DELETE /api/{type}/{id}` | `null` (204) |
-| `xListX(parentId)` (junction) | entities: `GET /api/{type}/{parentId}/{rel}`; ids: `GET …/relationships/{rel}` | `data.map(flatten)` or `data.map(i => i.id)` |
-| `xListX(parentId, limit?, offset?)` (junction, paginated module) | as above, plus `page[offset]`, `page[limit]` | `PaginatedResult` from `data` and `meta`, as for `xList` |
-| `xAddX(parentId, childId)` | `POST …/relationships/{rel}`, body `{data:[{type, id: childId}]}` | `null` (204) |
-| `xRemoveX(parentId, childId)` | `DELETE …/relationships/{rel}`, same body | `null` (204) |
+| `xListX(parentId)` (junction op of a resource module) | entities: `GET /api/{type}/{parentId}/{rel}`; ids: `GET …/relationships/{rel}` | `data.map(flatten)` or `data.map(i => i.id)` |
+| `xListX(parentId, limit?, offset?)` (the same, paginated module) | as above, plus `page[offset]`, `page[limit]` when defined | `PaginatedResult` from `data` and `meta`, as for `xList` |
+| `xAddY(parentId, childId)` (the same) | `POST …/relationships/{rel}`, body `{data:[{type, id: childId}]}` | `null` (204) |
+| `xRemoveY(parentId, childId)` (the same) | `DELETE …/relationships/{rel}`, same body | `null` (204) |
 | custom `GET` | `GET /api/{m}/{action}/{path…}`, `Option` args as `opArg[name]` | `meta.result`, or `null` on 204 |
 | custom `POST` | body `{meta:{args:{<rust_param_name>: value, …}}}` | `meta.result`, or `null` on 204 |
-| op served as custom (§10.4) | its §10.4 route | `meta.result`, or `null` on 204 |
+| op served as custom (§10.4), junction ops outside a resource module included | its §10.4 route | `meta.result`, or `null` on 204 |
+| lone `xListX(param)` (§9.1) | the custom `GET` `/api/{type}/{action}/{param}` | `meta.result`, its plain array |
 | `subscribeX(args, handlers)` | unchanged URL, `?resume=` and lag | entity `T`: `flatten(JSON.parse(data))`; other `T`: `.meta.result` |
 | legacy `on{Event}(callback)` | as `subscribeX` | the same decoding; the callback gets the flat item |
 
-Junction methods call the §10.4 forms and read `meta.result`; the junction
-rows above describe the relationship endpoints of phase 3a. When a prefix
-value is given, the TS client calls the scoped action route with both
-arguments in `meta.args` (§11.1).
+`{rel}` is the relationship name as the server matches it (§9),
+percent-encoded at generation time when it is not plain ASCII. The target's
+`flatten` is emitted whenever a junction list returns entities. When a
+prefix value is given, every method calls the same path under the prefix;
+no junction method has a separate scoped form (§11.1).
 
 **Sort** (decision 8). Every list method whose Rust fn takes an `order`
 argument gains a trailing optional argument, after every existing
@@ -2139,7 +2235,9 @@ relationship table as the server (§5.4). For `Task`:
 
 ```ts
 const TASK_REL = { epic: { field: 'epic_id', many: false },
-                   tags: { field: 'tags', many: true } } as const;
+                   tags: { field: 'tags', many: true },
+                   parent: { field: 'parent_id', many: false },
+                   subtasks: { field: 'subtasks', many: true } } as const;
 
 function flattenTask(r: JsonApiResource): Task {
   return {
@@ -2147,6 +2245,8 @@ function flattenTask(r: JsonApiResource): Task {
     ...r.attributes,
     epic_id: r.relationships?.epic?.data?.id ?? null,
     tags: (r.relationships?.tags?.data ?? []).map((i) => i.id),
+    parent_id: r.relationships?.parent?.data?.id ?? null,
+    subtasks: (r.relationships?.subtasks?.data ?? []).map((i) => i.id),
   } as Task;
 }
 ```
@@ -2191,8 +2291,9 @@ export class JsonApiError extends Error {
 ### 14.5 What stays identical for callers
 
 - Every existing method name, parameter and return type on `Transport`,
-  except the two in §14's introduction: `xCount()` of a paginated module is
-  removed, and a junction add or remove is declared `Promise<null>`.
+  except the three in §14's introduction: `xCount()` of a paginated module
+  is removed, a junction add or remove is declared `Promise<null>`, and a
+  lone `xListX` takes no page and returns a plain array.
 - `PaginatedResult<T>`: same declaration, same fields, and same values.
   `limit` and `offset` are the effective values, as today.
 - Entities in and out are flat, with the same field names, `null` for
@@ -2260,7 +2361,7 @@ op reads each argument as its declared type, and one that takes an
 `*Input` beside other arguments takes the input under its parameter name,
 as the IPC command does.
 
-Five changes reach them, none of which changes a payload's shape:
+Six changes reach them. Only the sixth changes a payload's shape:
 
 1. **`sort` on list** (decision 8). The IPC list command gains an optional
    `sort: Option<Vec<String>>` argument, and the TS IPC transport passes
@@ -2284,6 +2385,14 @@ Five changes reach them, none of which changes a payload's shape:
    `xAddY` and `xRemoveY` as `Promise<null>` and resolves `null` whatever the
    Rust fn returns, as the HTTP transport does (§14). The IPC command's own
    return value is unchanged.
+6. **A lone `list_X` is a custom op** (§9.1). A one-parameter `list_X`
+   whose module has no `add_Y` or `remove_Y` for its relationship is no
+   longer a junction list on any transport. In a paginated module its IPC
+   command and MCP tool lose `limit` and `offset` and return the plain
+   list, where they returned `{items, total, limit, offset}` sliced in
+   memory. The TS IPC transport's `xListX` changes the same way (§14).
+   Junction ops themselves are unchanged on IPC and MCP, in a resource
+   module or not.
 
 ## 16. Decision index
 
@@ -2333,6 +2442,12 @@ the section that states each and its reason.
 | Unsupported relationship updates are `403`, not `405` | 9 | The spec requires `403` for an unsupported relationship update |
 | One identifier per relationship `POST`/`DELETE` | 9 | Every write is one call, so no request is partly applied; TS sends one id |
 | A lone `list_X` is a custom op | 9.1 | A plain filtered list must not become a relationship |
+| Relationship routes and relationship `links` only for a type whose module serves `get_by_id` and that has a relationship | 5.4, 9 | The spec requires a server to serve every link it emits, and the routes read the parent through `get_by_id` |
+| Relation fields are read and written through the module's `get_by_id` and `update`; without `update` a write is `403` | 9, 9.1 | A relationship write is a resource `PATCH` of one field, with the same hooks and errors; a module that does not update its resources does not update their relationships |
+| A junction op without `add_Y` refuses `POST`, without `remove_Y` refuses `DELETE`, with `403` | 9.1 | The spec's `403` for an unsupported relationship update; the route exists because the relationship does |
+| A junction-op relationship needs `list_X` returning `Vec<Target>` or `Vec<String>`, string id parameters, and `get_by_id` in its module | 9.1 | Linkage and membership are read through `list_X`, the ids come from the URL and identifier strings, and the parent is checked through `get_by_id` |
+| Junction-op relationships follow the relation fields, in `list_X` order | 5.4 | One deterministic order for snapshots |
+| Junction ops outside a resource module have the same route shape scoped and unscoped | 10.4, 11.1 | Scoped and unscoped routes must not diverge |
 | Junction `DELETE` skips the target-existence check | 9.1 | A member whose target was deleted must still be removable |
 | Paginated junction lists stay paginated on the relationship routes | 9.1 | Keeps `xListX`'s `PaginatedResult` signature |
 | Custom `POST` bodies are `{meta:{args:{…}}}` | 10.2 | Decision 7; one rule, and a valid JSON:API request document |
@@ -2360,6 +2475,6 @@ Phases 1a, 1b and 1c ship together as `0.9.0`.
 | 1b | CRUD over JSON:API. Schema input (§5.1). §3 media type, §4 documents, §5 resource objects (relationship `data` only), §6 query rules, §7.1–§7.2 list and pagination, §8 get, create, update and delete, §13 errors with the E0003 phase 0-1 scan, §13.5 `405`. §14 for CRUD methods, `JsonApiError`. Scoped CRUD routes, including their pagination (the page goes to the store). Modules with no entity behind them are left unchanged until 1c |
 | 1c | Everything else on the 0.9.0 wire. §10 custom ops (`meta.args`, `opArg`, singleton check, §10.4 ops served as custom, junction ops included). §12 event frames. §11.1 scoped pagination of what 1b leaves, the lists not served as resources. §14 for custom, junction and subscription methods |
 | 2 | §7.3 filter, including the hand-written-list precedence (the API stage scans before it emits, and the transports' api dirs when `api_scan_dirs` is unset) and the bare-parameter fix. Filtered lists as resources and as custom ops (§10.4, §11.1). The TS filter family (§14.2) |
-| 3a | §9 relationship endpoints, related links and relationship `links`. The junction classification change. Scoped junction routes. TS junction methods |
+| 3a | §9 relationship endpoints, related links and relationship `links` (§5.4). The junction classification change and the junction-op build checks (§9.1). Scoped junction routes (§10.4, §11.1). TS junction methods (§14.2). tasks-tracker's `parent_id`, `subtasks` and `release` tag (§2) |
 | 3b | §7.5 include |
 | 3c | §7.4 sort, the `order` argument (ADR 0006), and `sort` on TS, IPC and MCP (§14.2, §15) |
