@@ -229,7 +229,7 @@ src/api/transport/http/generated.rs
 src/api/transport/ipc/generated.rs
 ```
 
-The HTTP file generates Axum route handlers. The IPC file generates Tauri command handlers. Both call through the same API layer.
+The HTTP file generates Axum route handlers that speak JSON:API: resource routes for each entity, relationship and related-resource endpoints for workouts and workout sets, the `/api/stats/workout` custom op, and the `/api/events/…` streams. The IPC file generates Tauri command handlers. Both call through the same API layer. [Iron Log: the wire](/examples/iron-log-wire/) shows the HTTP requests and responses, captured from a running server.
 
 The IPC file contains 20 commands (5 per entity x 4 entities). Each command extracts `State<'_, Arc<AppState>>`, gets the store, calls the API function, and maps errors to strings.
 
@@ -245,7 +245,7 @@ A split transport layer that provides typed functions for every CRUD operation. 
 
 ## The `build.rs`
 
-Iron Log's build script uses the `Pipeline` builder. The full file is around 85 lines; here it is, verbatim from `examples/iron-log/src-tauri/build.rs` minus one long explanatory comment:
+Iron Log's build script uses the `Pipeline` builder. The full file is around 75 lines; here it is, verbatim from `examples/iron-log/src-tauri/build.rs` minus one long explanatory comment:
 
 ```rust
 use std::path::PathBuf;
@@ -282,16 +282,11 @@ fn main() {
         store_import: Some("crate::store::Store".into()),
         pagination: None,
         extra_surfaces: vec![],
-        error_source_dir: None, // Pipeline fills in its schema directory
+        // The pipeline scans its schema directory for `AppError`.
+        error_source_dir: None,
     };
 
     let clients_config = ClientsConfig {
-        api_dir: "src/api/v1".into(),
-        state_type: "AppState".into(),
-        service_import_path: "crate::api::v1".into(),
-        types_import_path: "crate::schema".into(),
-        state_import: "crate::AppState".into(),
-        naming: NamingConfig::default(),
         generators: vec![
             ClientGenerator::HttpTauriIpcSplit {
                 output: "../src-nuxt/app/generated/transport.ts".into(),
@@ -301,16 +296,9 @@ fn main() {
                 output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
             },
         ],
-        ts_formatter: ontogen::TsFormatter::None,
-        sse_route_overrides: Default::default(),
-        ts_skip_commands: vec![],
-        route_prefix: None,
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
-        pagination: None,
-        pool_extra_roots: Vec::new(),
-        pool_exclude_paths: Vec::new(),
-        extra_surfaces: vec![],
+        ..ClientsConfig::new("src/api/v1", "AppState", "crate::api::v1", "crate::schema", "crate::AppState")
     };
 
     let pipeline = Pipeline::new("src/schema")
@@ -332,9 +320,9 @@ fn main() {
 }
 ```
 
-Two fields worth noticing, because they're easy to miss and the compiler will demand them:
+Two things worth noticing:
 
-- **`ts_formatter`** — `TsFormatter::None` emits the TypeScript exactly as generated. Iron Log's Nuxt app runs its own formatter over the tree, so there's nothing for Ontogen to do here.
+- **`..ClientsConfig::new(...)`** — the constructor takes the five inputs client generation cannot infer and sets every other field to an inert default (no TypeScript formatter, no route prefix, no pagination, no label overrides). The struct literal names only what Iron Log changes, so a field added to `ClientsConfig` later does not break this `build.rs`.
 - **`error_source_dir`** — left `None` because `Pipeline` fills it with the schema directory. The generated HTTP server scans that directory for `enum AppError` and maps each variant to an HTTP status and `code`. A direct `gen_servers` caller sets it, and passes `&schema` as the first argument of `gen_servers` and `gen_clients`.
 
 Pipeline runs every stage in dependency order regardless of method-call order. It also threads each stage's typed output (`SchemaOutput → SeaOrmOutput → ApiOutput → ServersOutput / ()`) into the next, applies `schema_module_path` defaults to `StoreConfig`/`ApiConfig`, and passes `schema.entities` to the servers and clients stages, so the HTTP resources and the admin-registry field metadata come from the parsed schema.
@@ -414,8 +402,14 @@ cd src-tauri && cargo tauri dev
 
 The Tauri build triggers `build.rs`, which runs the Ontogen pipeline and generates all 36 files before compilation. The Nuxt dev server picks up the generated TypeScript client.
 
+To serve the HTTP API without Tauri, run the headless binary. It creates its SQLite tables from the generated SeaORM entities, in memory unless `IRON_LOG_DB` names a file:
+
+```bash
+cd src-tauri && PORT=39104 cargo run --bin iron-log-http   # without PORT it serves on 3004
+```
+
 <Aside type="note">
-Iron Log uses SQLite via SeaORM. You'll need to create the database schema before running the app. The SQL migrations aren't part of the example yet -- you'd need to create the tables manually or add SeaORM migrations. See the entity definitions for the expected table structures.
+Iron Log uses SQLite via SeaORM. The Tauri app does not create its database schema, and the SQL migrations aren't part of the example yet -- you'd need to create the tables manually or add SeaORM migrations. See the entity definitions for the expected table structures. The headless `iron-log-http` binary creates its own tables.
 </Aside>
 
 ## What to look at
@@ -428,4 +422,4 @@ If you're exploring the example to understand Ontogen, start here:
 4. **`src/api/transport/ipc/generated.rs`** -- 20 Tauri IPC commands, all generated from 4 entities.
 5. **`build.rs`** -- the full pipeline in one file, six stages, explicit data flow.
 
-The progression from schema definition to transport handler is the point. One annotated struct becomes a SeaORM entity, a conversion layer, a DTO pair, five CRUD store methods, five API forwarding functions, five HTTP routes, five IPC commands, and five TypeScript client functions. Multiply by four entities, and you have a complete backend from 80 lines of schema code.
+The progression from schema definition to transport handler is the point. One annotated struct becomes a SeaORM entity, a conversion layer, a DTO pair, five CRUD store methods, five API forwarding functions, five JSON:API handlers, five IPC commands, and five TypeScript client functions. Multiply by four entities, and you have a complete backend from 80 lines of schema code.

@@ -62,6 +62,10 @@ curl -sN localhost:3004/api/events/activity-for-kind/workout
 
 `cargo run` on its own still starts the Tauri app.
 
+The HTTP API speaks JSON:API ([wire contract](../../docs/jsonapi-wire-contract.md));
+[the wire page](../../site/src/content/docs/examples/iron-log-wire.mdx) shows
+real requests and responses captured from this server.
+
 ## Project Structure
 
 ```
