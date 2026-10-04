@@ -324,7 +324,8 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             handler: |state, args| {
                 Box::pin(async move {
                     let store = state.store().await.map_err(|e| e.to_string())?;
-                    let query: ListTasksQuery = serde_json::from_value(args.clone()).unwrap_or_default();
+                    let query: ListTasksQuery =
+                        serde_json::from_value(args.clone()).map_err(|e| format!("Invalid filter: {e}"))?;
                     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100);
                     let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
                     let items = task::list(&store, query.clone(), Some(limit), Some(offset))
