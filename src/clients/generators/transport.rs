@@ -453,7 +453,7 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
         let module = &m.name;
 
         for f in &m.functions {
-            let op = classify_op(f);
+            let op = classify_op(m, f);
             let cmd_name = command_name(module, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;

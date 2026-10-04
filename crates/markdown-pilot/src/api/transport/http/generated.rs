@@ -1128,7 +1128,7 @@ async fn task_purge_done(
     Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
-async fn task_list_tags(
+async fn task_list_labels(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<String>,
@@ -1137,7 +1137,7 @@ async fn task_list_tags(
     let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
     let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let ontogen_all = task::list_tags(&ontogen_store, &id).await.map_err(ontogen_app_error)?;
+    let ontogen_all = task::list_labels(&ontogen_store, &id).await.map_err(ontogen_app_error)?;
     let ontogen_total = ontogen_all.len() as u64;
     let ontogen_items = ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();
     let ontogen_result =
@@ -1145,7 +1145,7 @@ async fn task_list_tags(
     Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
-async fn task_add_tag(
+async fn task_add_label(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     ontogen_path: Result<Path<String>, ErrorObject>,
@@ -1159,18 +1159,18 @@ async fn task_add_tag(
     request::check_op_arg_names(&ontogen_args, &["tag_id"])?;
     let tag_id = request::op_arg::<String>(&ontogen_args, "tag_id", true)?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    task::add_tag(&ontogen_store, &id, &tag_id).await.map_err(ontogen_app_error)?;
+    task::add_label(&ontogen_store, &id, &tag_id).await.map_err(ontogen_app_error)?;
     Ok(response::no_content())
 }
 
-async fn task_remove_tag(
+async fn task_remove_label(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path((id, tag_id)): Path<(String, String)>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    task::remove_tag(&ontogen_store, &id, &tag_id).await.map_err(ontogen_app_error)?;
+    task::remove_label(&ontogen_store, &id, &tag_id).await.map_err(ontogen_app_error)?;
     Ok(response::no_content())
 }
 
@@ -1289,10 +1289,10 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
         .route("/api/tasks/purge-done", post(task_purge_done).fallback(allow([Method::POST])))
         .route("/api/outlines", get(outline_list).fallback(allow([Method::GET])))
         .route(
-            "/api/tasks/{parent_id}/tags",
-            get(task_list_tags).post(task_add_tag).fallback(allow([Method::GET, Method::POST])),
+            "/api/tasks/{parent_id}/labels",
+            get(task_list_labels).post(task_add_label).fallback(allow([Method::GET, Method::POST])),
         )
-        .route("/api/tasks/{parent_id}/tags/{child_id}", delete(task_remove_tag).fallback(allow([Method::DELETE])))
+        .route("/api/tasks/{parent_id}/labels/{child_id}", delete(task_remove_label).fallback(allow([Method::DELETE])))
         .route("/api/events/bookmark-feed", get(bookmark_feed_sse).fallback(allow([Method::GET])))
         .route("/api/events/task-feed", get(task_feed_sse).fallback(allow([Method::GET])))
         .route("/api/events/watch-task/{id}", get(watch_task_sse).fallback(allow([Method::GET])))

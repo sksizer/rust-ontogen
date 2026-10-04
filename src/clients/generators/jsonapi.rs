@@ -342,7 +342,7 @@ pub(crate) enum Served<'a> {
 ///
 /// [`ResourceModel::serving`]: crate::resource::ResourceModel::serving
 pub(crate) fn served<'a>(module: &ApiModule, f: &ApiFn, config: &'a Config) -> Served<'a> {
-    match config.resources.serving(&module.name, f) {
+    match config.resources.serving(module, f) {
         Some(resource) => Served::Resource(resource),
         None => Served::Op,
     }
@@ -418,7 +418,7 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&s
     let ret = if f.return_type == "()" { "null".to_string() } else { rust_type_to_ts(&f.return_type) };
     let input_type = |i: usize| rust_type_to_ts(&extract_input_type(&f.params[i].ty));
     let id_path = format!("/{base}/${{encodeURIComponent(id)}}");
-    let op = classify_op(f);
+    let op = classify_op(m, f);
     let resource = match served(m, f, config) {
         Served::Resource(r) => r,
         Served::Op if op == OpKind::List => return Some(list_method(m, f, config, scope)),
@@ -527,7 +527,7 @@ struct OpRoute<'a> {
 /// its list a GET taking every argument in the path, its add and remove
 /// POSTs taking both in `meta.args`. Unscoped, it keeps its nested route.
 fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> OpRoute<'a> {
-    let classified = classify_op(f);
+    let classified = classify_op(m, f);
     let op = match &classified {
         OpKind::JunctionList { .. } if scoped => OpKind::CustomGet,
         OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } if scoped => OpKind::CustomPost,

@@ -45,7 +45,7 @@ pub(in crate::servers) fn axum_path(path: &str) -> String {
 ///
 /// [`ResourceModel::serving`]: crate::resource::ResourceModel::serving
 pub(in crate::servers) fn served_resource<'a>(m: &ApiModule, f: &ApiFn, config: &'a Config) -> Option<&'a Resource> {
-    config.resources.serving(&m.name, f)
+    config.resources.serving(m, f)
 }
 
 /// Check that every op [`served_resource`] picks can be served as its
@@ -57,7 +57,7 @@ pub(in crate::servers) fn check_resource_ops(modules: &[ApiModule], config: &Con
     for m in modules {
         for f in &m.functions {
             let Some(resource) = served_resource(m, f, config) else { continue };
-            let op = classify_op(f);
+            let op = classify_op(m, f);
             let entity = resource.entity.name.as_str();
             let refuse = |why: String| -> Result<(), String> {
                 Err(format!(
@@ -346,7 +346,7 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
         out.push_str(&format!("// ── {} Handlers ──\n\n", capitalize(&m.name)));
         for f in functions {
             let (method, path, handler_name) = emit_fn(&mut out, m, f, config, None);
-            if is_junction(f) {
+            if is_junction(m, f) {
                 junction_routes.entry(path).or_default().push((method, handler_name));
             } else {
                 routes.add(&path, method, &handler_name);
@@ -485,7 +485,7 @@ pub(in crate::servers) fn route_of(m: &ApiModule, f: &ApiFn, config: &Config) ->
         Some(prefix) => format!("/api/{}/{url}", axum_path(&prefix.segments)),
     };
     let (method, path) = if served_resource(m, f, config).is_some() {
-        match classify_op(f) {
+        match classify_op(m, f) {
             OpKind::List => ("get", ""),
             OpKind::GetById => ("get", "/{id}"),
             OpKind::Create => ("post", ""),
@@ -500,8 +500,11 @@ pub(in crate::servers) fn route_of(m: &ApiModule, f: &ApiFn, config: &Config) ->
     (method, format!("{base}{path}"))
 }
 
-fn is_junction(f: &ApiFn) -> bool {
-    matches!(classify_op(f), OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. })
+fn is_junction(m: &ApiModule, f: &ApiFn) -> bool {
+    matches!(
+        classify_op(m, f),
+        OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }
+    )
 }
 
 /// Every resource an event op's item type names, with the item type as the
@@ -786,7 +789,7 @@ fn from_fields<T: serde::de::DeserializeOwned>(
 
 /// The Rust type a module's CRUD fns read and return, as this file names it.
 fn entity_type(m: &ApiModule) -> Option<String> {
-    m.functions.iter().find_map(|f| match classify_op(f) {
+    m.functions.iter().find_map(|f| match classify_op(m, f) {
         OpKind::List if f.return_type.starts_with("Vec<") => Some(inner_type(&f.return_type)),
         OpKind::GetById | OpKind::Create | OpKind::Update => Some(f.return_type.clone()),
         _ => None,
@@ -893,7 +896,7 @@ fn emit_resource_helpers(
     frames: &[(&Resource, &str)],
 ) -> bool {
     let served: Vec<OpKind> =
-        m.functions.iter().filter(|f| served_resource(m, f, config).is_some()).map(classify_op).collect();
+        m.functions.iter().filter(|f| served_resource(m, f, config).is_some()).map(|f| classify_op(m, f)).collect();
     if served.is_empty() {
         return false;
     }
@@ -1059,7 +1062,7 @@ fn check_linked_fn(module: &str, scoped: bool) -> String {
 /// store is opened twice, which costs one accessor call.
 fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modules: &[ApiModule], config: &Config) {
     let writes = m.functions.iter().filter(|f| {
-        matches!(classify_op(f), OpKind::Create | OpKind::Update) && served_resource(m, f, config).is_some()
+        matches!(classify_op(m, f), OpKind::Create | OpKind::Update) && served_resource(m, f, config).is_some()
     });
     let mut kinds: Vec<bool> = writes.map(|f| is_scoped(f, config)).collect();
     kinds.sort_unstable();
@@ -1141,7 +1144,7 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
 /// checks every id it links (§13.2).
 fn write_steps(op: &ResourceOp<'_>) -> (String, String) {
     let fields_fn = resource_names(&op.m.name).fields;
-    let create = classify_op(op.f) == OpKind::Create;
+    let create = classify_op(op.m, op.f) == OpKind::Create;
     if op.resource.relationships.is_empty() {
         return (format!("    let fields = {fields_fn}(&data, {create})?;\n"), String::new());
     }
@@ -1303,7 +1306,7 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
          Links::new(resource.links().self_link());\n    Ok(response::ok(&Document::new(resource, links)))\n}}\n\n"
     );
 
-    match classify_op(f) {
+    match classify_op(m, f) {
         OpKind::List => {
             let paging = config.pagination_for(&m.name, f.surface);
             let params = if f.takes_filter() {
@@ -1468,7 +1471,7 @@ enum Paging {
 /// from `opArg[…]` and anything else from one more path segment, as a
 /// `CustomGet` does.
 fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> OpShape<'a> {
-    let classified = classify_op(f);
+    let classified = classify_op(m, f);
     let scoped_junction_list = scoped && matches!(classified, OpKind::JunctionList { .. });
     let op = match &classified {
         OpKind::JunctionList { .. } if scoped => OpKind::CustomGet,
@@ -1671,7 +1674,7 @@ fn op_handler(
     };
     let first_arg: Vec<String> = first_arg.map(str::to_string).into_iter().collect();
     let store_paged = matches!(shape.page, Some(Paging::Store { .. }));
-    let args: Vec<String> = if classify_op(f) == OpKind::List {
+    let args: Vec<String> = if classify_op(m, f) == OpKind::List {
         // A list's filter, then its page: from the store when it pages,
         // and none when it does not.
         let page = f.params[f.filter().len()..]

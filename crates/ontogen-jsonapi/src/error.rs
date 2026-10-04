@@ -9,7 +9,7 @@ use http::StatusCode;
 use http::{HeaderValue, Method, header};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
-use crate::document::JsonApiObject;
+use crate::{document::JsonApiObject, path::LookupKey};
 
 /// The errors the generated server raises itself (§13.3). An `AppError`
 /// variant's code is its snake_case name instead, built with
@@ -337,6 +337,31 @@ pub fn reason_phrase(status: StatusCode) -> &'static str {
     }
 }
 
+/// `404 relationship_not_found`: `rel` names no relationship of the resource
+/// type `type_name` (§9).
+///
+/// A relationship route captures `{rel}` rather than listing each name, so
+/// that an unknown one is answered here and does not fall through to the
+/// consumer's router. A `rel` that does not decode names no relationship and
+/// is written as sent. The error has no `source`: the path is not a body
+/// member or a query parameter.
+pub fn relationship_not_found(type_name: &str, rel: &LookupKey) -> ErrorObject {
+    ErrorObject::new(ErrorCode::RelationshipNotFound, format!("`{type_name}` has no relationship `{rel}`"))
+}
+
+/// `403 relationship_update_unsupported`: the relationship `rel` of
+/// `type_name` does not accept `method` (§9).
+///
+/// The spec requires `403` for a relationship update the server does not
+/// support. The refusal is decided from the route alone (§13.2 step 6),
+/// before the body is read, so the error has no `source`.
+pub fn relationship_update_unsupported(type_name: &str, rel: &str, method: &str) -> ErrorObject {
+    ErrorObject::new(
+        ErrorCode::RelationshipUpdateUnsupported,
+        format!("the relationship `{rel}` of `{type_name}` cannot be changed with {method}"),
+    )
+}
+
 /// The `405` response for a route serving `allowed` (§13.5).
 ///
 /// `Allow` lists the methods in a fixed order (`GET, HEAD, PATCH, POST,
@@ -514,6 +539,33 @@ mod tests {
             ContentTooLarge,
             UnsupportedMediaType,
             InternalError,
+        );
+    }
+
+    #[test]
+    fn relationship_route_errors_have_no_source() {
+        let error = relationship_not_found("tasks", &LookupKey::from("owner"));
+        assert_eq!(
+            serde_json::to_value(&error).unwrap(),
+            serde_json::json!({
+                "status": "404",
+                "code": "relationship_not_found",
+                "title": "Not Found",
+                "detail": "`tasks` has no relationship `owner`"
+            })
+        );
+        let undecodable = relationship_not_found("tasks", &LookupKey::undecodable("%FF"));
+        assert_eq!(undecodable.detail(), "`tasks` has no relationship `%FF`");
+
+        let error = relationship_update_unsupported("tasks", "epic", "POST");
+        assert_eq!(
+            serde_json::to_value(&error).unwrap(),
+            serde_json::json!({
+                "status": "403",
+                "code": "relationship_update_unsupported",
+                "title": "Forbidden",
+                "detail": "the relationship `epic` of `tasks` cannot be changed with POST"
+            })
         );
     }
 

@@ -179,22 +179,22 @@ pub struct OntogenTaskSetStateInput {
     pub store: Option<String>,
 }
 
-/// The arguments of the `list_tags` tool.
+/// The arguments of the `list_labels` tool.
 #[derive(JsonSchema)]
-pub struct OntogenTaskListTagsInput {
+pub struct OntogenTaskListLabelsInput {
     pub id: String,
 }
 
-/// The arguments of the `add_tag` tool.
+/// The arguments of the `add_label` tool.
 #[derive(JsonSchema)]
-pub struct OntogenTaskAddTagInput {
+pub struct OntogenTaskAddLabelInput {
     pub id: String,
     pub tag_id: String,
 }
 
-/// The arguments of the `remove_tag` tool.
+/// The arguments of the `remove_label` tool.
 #[derive(JsonSchema)]
-pub struct OntogenTaskRemoveTagInput {
+pub struct OntogenTaskRemoveLabelInput {
     pub id: String,
     pub tag_id: String,
 }
@@ -781,18 +781,18 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             },
         },
         McpToolDef {
-            name: "task_list_tags",
-            description: "A task's tags, in the order the task lists them.",
-            schema_fn: || with_pagination_schema(schema_for::<OntogenTaskListTagsInput>()),
+            name: "task_list_labels",
+            description: "A task's labels: the tags it lists, in its order.",
+            schema_fn: || with_pagination_schema(schema_for::<OntogenTaskListLabelsInput>()),
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
                     refuse_unknown_args(
                         ontogen_args,
-                        with_pagination_schema(schema_for::<OntogenTaskListTagsInput>()),
+                        with_pagination_schema(schema_for::<OntogenTaskListLabelsInput>()),
                     )?;
                     let id = required_str(ontogen_args, "id")?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
-                    let ontogen_all = task::list_tags(&ontogen_store, id).await.map_err(|e| e.to_string())?;
+                    let ontogen_all = task::list_labels(&ontogen_store, id).await.map_err(|e| e.to_string())?;
                     let ontogen_total = ontogen_all.len();
                     let ontogen_limit = ontogen_args
                         .get("limit")
@@ -814,31 +814,31 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             },
         },
         McpToolDef {
-            name: "task_add_tag",
-            description: "Tag a task. Tagging it twice changes nothing.",
-            schema_fn: schema_for::<OntogenTaskAddTagInput>,
+            name: "task_add_label",
+            description: "Label a task with a tag. Labelling it twice changes nothing.",
+            schema_fn: schema_for::<OntogenTaskAddLabelInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
-                    refuse_unknown_args(ontogen_args, schema_for::<OntogenTaskAddTagInput>())?;
+                    refuse_unknown_args(ontogen_args, schema_for::<OntogenTaskAddLabelInput>())?;
                     let id = required_str(ontogen_args, "id")?;
                     let tag_id = required_str(ontogen_args, "tag_id")?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
-                    task::add_tag(&ontogen_store, id, tag_id).await.map_err(|e| e.to_string())?;
+                    task::add_label(&ontogen_store, id, tag_id).await.map_err(|e| e.to_string())?;
                     Ok(json!({"success": true}))
                 })
             },
         },
         McpToolDef {
-            name: "task_remove_tag",
-            description: "Untag a task.",
-            schema_fn: schema_for::<OntogenTaskRemoveTagInput>,
+            name: "task_remove_label",
+            description: "Take a tag off a task's labels.",
+            schema_fn: schema_for::<OntogenTaskRemoveLabelInput>,
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
-                    refuse_unknown_args(ontogen_args, schema_for::<OntogenTaskRemoveTagInput>())?;
+                    refuse_unknown_args(ontogen_args, schema_for::<OntogenTaskRemoveLabelInput>())?;
                     let id = required_str(ontogen_args, "id")?;
                     let tag_id = required_str(ontogen_args, "tag_id")?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
-                    task::remove_tag(&ontogen_store, id, tag_id).await.map_err(|e| e.to_string())?;
+                    task::remove_label(&ontogen_store, id, tag_id).await.map_err(|e| e.to_string())?;
                     Ok(json!({"success": true}))
                 })
             },

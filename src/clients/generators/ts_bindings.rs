@@ -72,7 +72,7 @@ pub fn filter_struct_names(modules: &[ApiModule], config: &Config) -> HashSet<St
     for m in modules {
         for f in &m.functions {
             let cmd_name = command_name(&m.name, f, config);
-            if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) || classify_op(f) != OpKind::List {
+            if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) || classify_op(m, f) != OpKind::List {
                 continue;
             }
             if let Some(p) = f.filter_struct() {

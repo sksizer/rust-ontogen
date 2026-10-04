@@ -267,8 +267,9 @@ fn make_param_event_module() -> ApiModule {
 /// that HTTP routes, IPC command names, and TS transport calls stay in sync.
 ///
 /// Models the real `destination_skills` module: a two-word module with
-/// junction ops (add_skill/remove_skill/list_skills/list_destinations) plus
-/// a custom post (`publish`).
+/// junction ops (add_skill/remove_skill/list_skills), a reverse list
+/// (`list_destinations`) that has no add or remove beside it and so is a
+/// custom GET, and a custom post (`publish`).
 fn make_junction_module() -> ApiModule {
     ApiModule {
         name: "destination_skills".to_string(),
@@ -296,7 +297,7 @@ fn make_junction_module() -> ApiModule {
                 return_type_ast: ty_ast("Vec<Skill>"),
                 ..Default::default()
             },
-            // Junction list (reverse): list_destinations(skill_id)
+            // A lone list (reverse): list_destinations(skill_id), a custom GET
             ApiFn {
                 name: "list_destinations".to_string(),
                 doc: "List destinations linked to a skill.".to_string(),
@@ -1024,12 +1025,25 @@ fn test_api_module_is_crud() {
 // classify.rs - Operation classification
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Classify `f` as the only fn of its module, as a fn with no junction
+/// siblings is classified.
+fn classify_alone(f: &ApiFn) -> OpKind {
+    let module = ApiModule {
+        name: "solo".to_string(),
+        functions: vec![f.clone()],
+        events: vec![],
+        is_singleton: false,
+        has_count: false,
+    };
+    classify_op(&module, f)
+}
+
 #[test]
 fn test_classify_crud_operations() {
     let module = make_crud_module("node", true);
 
     for f in &module.functions {
-        let op = classify_op(f);
+        let op = classify_op(&module, f);
         match f.name.as_str() {
             "list" => assert!(matches!(op, OpKind::List)),
             "get_by_id" => assert!(matches!(op, OpKind::GetById)),
@@ -1041,15 +1055,52 @@ fn test_classify_crud_operations() {
     }
 }
 
+/// A one-parameter `list_X` is a junction list only beside an unforced
+/// `add_Y` or `remove_Y` with the same child segment; alone it is a custom
+/// GET, in every transport, since each classifies with `classify_op`.
+#[test]
+fn a_list_is_a_junction_list_only_beside_its_add_or_remove() {
+    let f = |name: &str, params: &[&str]| ApiFn {
+        name: name.to_string(),
+        params: params.iter().map(|p| param(p, "&str")).collect(),
+        ..Default::default()
+    };
+    let classify = |functions: Vec<ApiFn>| {
+        let m = ApiModule { name: "task".into(), functions, events: vec![], is_singleton: false, has_count: false };
+        m.functions.iter().map(|g| classify_op(&m, g)).collect::<Vec<_>>()
+    };
+    let list = |segment: &str| OpKind::JunctionList { child_segment: segment.to_string() };
+
+    assert_eq!(classify(vec![f("list_tags", &["id"])]), [OpKind::CustomGet]);
+    assert_eq!(classify(vec![f("list_by_status", &["status"])]), [OpKind::CustomGet]);
+    assert_eq!(
+        classify(vec![f("list_tags", &["id"]), f("add_tag", &["id", "tag_id"])]),
+        [list("tags"), OpKind::JunctionAdd { child_segment: "tags".into() }]
+    );
+    assert_eq!(
+        classify(vec![f("remove_tag", &["id", "tag_id"]), f("list_tags", &["id"])]),
+        [OpKind::JunctionRemove { child_segment: "tags".into() }, list("tags")]
+    );
+    assert_eq!(classify(vec![f("list_sub_tasks", &["id"]), f("add_sub_task", &["id", "t"])])[0], list("sub-tasks"));
+    // A partner for another segment, or a forced one, does not count; an add
+    // or remove keeps its kind either way.
+    assert_eq!(
+        classify(vec![f("list_tags", &["id"]), f("add_label", &["id", "l"])]),
+        [OpKind::CustomGet, OpKind::JunctionAdd { child_segment: "labels".into() }]
+    );
+    let forced = ApiFn { force_method: Some(ForcedMethod::Post), ..f("add_tag", &["id", "tag_id"]) };
+    assert_eq!(classify(vec![f("list_tags", &["id"]), forced]), [OpKind::CustomGet, OpKind::CustomPost]);
+}
+
 #[test]
 fn test_classify_custom_operations() {
     let custom = make_custom_module();
 
     let snapshot = &custom.functions[0]; // get_graph_snapshot
-    assert!(matches!(classify_op(snapshot), OpKind::CustomGet));
+    assert!(matches!(classify_op(&custom, snapshot), OpKind::CustomGet));
 
     let detail = &custom.functions[1]; // get_node_detail
-    assert!(matches!(classify_op(detail), OpKind::CustomGet));
+    assert!(matches!(classify_op(&custom, detail), OpKind::CustomGet));
 
     // A non-get function with params should be CustomPost
     let post_fn = ApiFn {
@@ -1058,7 +1109,7 @@ fn test_classify_custom_operations() {
         params: vec![param("path", "&str")],
         ..Default::default()
     };
-    assert!(matches!(classify_op(&post_fn), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&post_fn), OpKind::CustomPost));
 }
 
 /// Zero-user-param functions now classify based on the name-prefix
@@ -1081,7 +1132,7 @@ fn test_classify_no_params_defaults_to_post() {
         return_type_ast: ty_ast("Vec<String>"),
         ..Default::default()
     };
-    assert!(matches!(classify_op(&action_fn), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&action_fn), OpKind::CustomPost));
 
     // Read-prefixed name → CustomGet.
     let read_fn = ApiFn {
@@ -1091,7 +1142,7 @@ fn test_classify_no_params_defaults_to_post() {
         return_type_ast: ty_ast("Vec<String>"),
         ..Default::default()
     };
-    assert!(matches!(classify_op(&read_fn), OpKind::CustomGet));
+    assert!(matches!(classify_alone(&read_fn), OpKind::CustomGet));
 }
 
 /// Cover the full known-read-prefix allowlist for zero-user-param fns,
@@ -1133,7 +1184,7 @@ fn test_classify_zero_param_prefix_matrix() {
 
     for (name, expect_get) in cases {
         let f = zero_param(name);
-        let op = classify_op(&f);
+        let op = classify_alone(&f);
         let got_get = matches!(op, OpKind::CustomGet);
         assert_eq!(
             got_get,
@@ -1194,7 +1245,7 @@ fn test_of016_classify_get_with_first_param_ast() {
 
     for (name, ty_str, expect_get) in cases {
         let f = fn_with_first_param(name, ty_str);
-        let op = classify_op(&f);
+        let op = classify_alone(&f);
         let got_get = matches!(op, OpKind::CustomGet);
         assert_eq!(got_get, *expect_get, "OF-016: name=`{name}` first_param=`{ty_str}` got op={op:?}");
     }
@@ -1207,7 +1258,7 @@ fn test_of016_classify_get_with_first_param_ast() {
         return_type_ast: ty_ast("Summary"),
         ..Default::default()
     };
-    assert!(matches!(classify_op(&zero), OpKind::CustomGet));
+    assert!(matches!(classify_alone(&zero), OpKind::CustomGet));
 }
 
 /// `force_method: Some(ForcedMethod::Post)` short-circuits the classifier
@@ -1230,29 +1281,29 @@ fn test_force_method_post_overrides_classifier() {
 
     // Zero-param non-read-prefix: default classifier and forced both produce CustomPost.
     let pause_unforced = make_fn("pause", vec![], None);
-    assert!(matches!(classify_op(&pause_unforced), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&pause_unforced), OpKind::CustomPost));
     let pause_forced = make_fn("pause", vec![], Some(ForcedMethod::Post));
-    assert!(matches!(classify_op(&pause_forced), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&pause_forced), OpKind::CustomPost));
 
     // Zero-param read-prefix: default classifier says CustomGet;
     // ForcedMethod::Post flips it to CustomPost. This is the path where
     // the attribute remains load-bearing.
     let get_unforced = make_fn("get_state", vec![], None);
-    assert!(matches!(classify_op(&get_unforced), OpKind::CustomGet));
+    assert!(matches!(classify_alone(&get_unforced), OpKind::CustomGet));
     let get_forced = make_fn("get_state", vec![], Some(ForcedMethod::Post));
-    assert!(matches!(classify_op(&get_forced), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&get_forced), OpKind::CustomPost));
 
     // The override beats the named-CRUD branch too: `list` would normally
     // route as OpKind::List, but ForcedMethod::Post short-circuits before
     // name matching runs.
     let list_forced = make_fn("list", vec![], Some(ForcedMethod::Post));
-    assert!(matches!(classify_op(&list_forced), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&list_forced), OpKind::CustomPost));
 
     // Unrelated case: function that would already classify as CustomPost
     // (non-read-prefix name with id-like params) — ForcedMethod::Post is a
     // no-op because the result is the same.
     let switch_forced = make_fn("switch_project", vec![param("path", "&str")], Some(ForcedMethod::Post));
-    assert!(matches!(classify_op(&switch_forced), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&switch_forced), OpKind::CustomPost));
 }
 
 /// `force_method: Some(ForcedMethod::Get)` short-circuits the classifier and
@@ -1274,34 +1325,34 @@ fn test_force_method_get_overrides_classifier() {
     // being in the allowlist, because the allowlist is zero-param-only.
     let count_params = vec![param("collection_path", "Option<String>"), param("glob_pattern", "Option<String>")];
     let count_unforced = make_fn("count_matching_files", count_params.clone(), None);
-    assert!(matches!(classify_op(&count_unforced), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&count_unforced), OpKind::CustomPost));
     let count_forced = make_fn("count_matching_files", count_params, Some(ForcedMethod::Get));
-    assert!(matches!(classify_op(&count_forced), OpKind::CustomGet));
+    assert!(matches!(classify_alone(&count_forced), OpKind::CustomGet));
 
     // The same holds for the other four inert prefixes.
     for name in ["exists_note", "find_by_tag", "is_indexed", "has_children"] {
         let unforced = make_fn(name, vec![param("id", "String")], None);
-        assert!(matches!(classify_op(&unforced), OpKind::CustomPost), "{name} unforced");
+        assert!(matches!(classify_alone(&unforced), OpKind::CustomPost), "{name} unforced");
         let forced = make_fn(name, vec![param("id", "String")], Some(ForcedMethod::Get));
-        assert!(matches!(classify_op(&forced), OpKind::CustomGet), "{name} forced");
+        assert!(matches!(classify_alone(&forced), OpKind::CustomGet), "{name} forced");
     }
 
     // The override beats the named-CRUD branch, mirroring `Post`: `create`
     // would normally route as OpKind::Create.
     let create_forced = make_fn("create", vec![param("body", "NoteDoc")], Some(ForcedMethod::Get));
-    assert!(matches!(classify_op(&create_forced), OpKind::CustomGet));
+    assert!(matches!(classify_alone(&create_forced), OpKind::CustomGet));
 
     // It also beats the body-carrying-first-param check that demotes a
     // `get_*` to CustomPost. The override does not re-run that check — the
     // author is asserting the shape suits a GET.
     let get_body_unforced = make_fn("get_report", vec![param("req", "ReportRequest")], None);
-    assert!(matches!(classify_op(&get_body_unforced), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&get_body_unforced), OpKind::CustomPost));
     let get_body_forced = make_fn("get_report", vec![param("req", "ReportRequest")], Some(ForcedMethod::Get));
-    assert!(matches!(classify_op(&get_body_forced), OpKind::CustomGet));
+    assert!(matches!(classify_alone(&get_body_forced), OpKind::CustomGet));
 
     // No-op where the result already matches.
     let already = make_fn("get_state", vec![], Some(ForcedMethod::Get));
-    assert!(matches!(classify_op(&already), OpKind::CustomGet));
+    assert!(matches!(classify_alone(&already), OpKind::CustomGet));
 }
 
 /// The two overrides are independent and each wins outright, so a handler
@@ -1319,9 +1370,9 @@ fn test_force_method_get_and_post_are_symmetric() {
         }
     }
     let name = "count_things";
-    assert!(matches!(classify_op(&make_fn(name, None)), OpKind::CustomPost));
-    assert!(matches!(classify_op(&make_fn(name, Some(ForcedMethod::Get))), OpKind::CustomGet));
-    assert!(matches!(classify_op(&make_fn(name, Some(ForcedMethod::Post))), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&make_fn(name, None)), OpKind::CustomPost));
+    assert!(matches!(classify_alone(&make_fn(name, Some(ForcedMethod::Get))), OpKind::CustomGet));
+    assert!(matches!(classify_alone(&make_fn(name, Some(ForcedMethod::Post))), OpKind::CustomPost));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2596,7 +2647,7 @@ fn test_transport_post_with_only_optional_params_sends_them_as_meta_args() {
         }],
     };
     assert!(
-        matches!(classify_op(&module.functions[0]), OpKind::CustomPost),
+        matches!(classify_op(&module, &module.functions[0]), OpKind::CustomPost),
         "precondition: this shape classifies POST, which is the whole problem"
     );
 
@@ -2883,15 +2934,15 @@ fn test_http_generator_junction_module() {
     let content = std::fs::read_to_string(&output).unwrap();
 
     // Junction routes must use the kebab-case URL plural (`destination-skills`)
-    // and the child segment (`skills` / `destinations`), NOT the snake_case
-    // module name or action-style URLs (`/destination_skills/add-skill`).
+    // and the child segment (`skills`), NOT the snake_case module name or
+    // action-style URLs (`/destination_skills/add-skill`).
     assert!(
         content.contains("/api/destination-skills/{parent_id}/skills"),
         "junction URL should use kebab-case plural and child segment"
     );
     assert!(
-        content.contains("/api/destination-skills/{parent_id}/destinations"),
-        "reverse junction list URL should use kebab-case plural and reverse child segment"
+        content.contains("/api/destination-skills/list-destinations/{skill_id}"),
+        "a list with no add or remove beside it is a custom GET at its action route:\n{content}"
     );
     assert!(
         content.contains("/api/destination-skills/{parent_id}/skills/{child_id}"),
@@ -3079,8 +3130,8 @@ fn test_ts_transport_junction_module() {
         "HTTP junction remove should DELETE the nested child URL"
     );
     assert!(
-        content.contains("/destination-skills/${encodeURIComponent(skillId)}/destinations`"),
-        "HTTP junction list (reverse) should GET /destination-skills/:id/destinations"
+        content.contains("/destination-skills/list-destinations/${encodeURIComponent(skillId)}`"),
+        "a list with no add or remove beside it is a custom GET at its action route:\n{content}"
     );
 
     // IPC transport must invoke the singular entity-first command names that
@@ -3187,8 +3238,8 @@ fn test_junction_cross_transport_consistency() {
             "/destination-skills/${encodeURIComponent(destinationId)}/skills",
         ),
         (
-            "/api/destination-skills/{parent_id}/destinations",
-            "/destination-skills/${encodeURIComponent(skillId)}/destinations",
+            "/api/destination-skills/list-destinations/{skill_id}",
+            "/destination-skills/list-destinations/${encodeURIComponent(skillId)}",
         ),
     ];
     for (rust_route, ts_url) in &expected_http_junctions {
@@ -4516,12 +4567,12 @@ pub fn get_status() -> Result<String, anyhow::Error> { todo!() }
         matches!(pause_fn.force_method, Some(ForcedMethod::Post)),
         "#[ontogen::http::post] must stamp force_method=Some(ForcedMethod::Post)"
     );
-    assert!(matches!(classify_op(pause_fn), OpKind::CustomPost), "ForcedMethod::Post must produce CustomPost");
+    assert!(matches!(classify_op(module, pause_fn), OpKind::CustomPost), "ForcedMethod::Post must produce CustomPost");
 
     let get_status_fn = module.functions.iter().find(|f| f.name == "get_status").unwrap();
     assert!(get_status_fn.force_method.is_none(), "unmarked fn must keep force_method=None");
     assert!(
-        matches!(classify_op(get_status_fn), OpKind::CustomGet),
+        matches!(classify_op(module, get_status_fn), OpKind::CustomGet),
         "unmarked zero-param fn with known-read prefix must classify as CustomGet"
     );
 }
@@ -4555,7 +4606,7 @@ pub fn backup() -> Result<(), anyhow::Error> { todo!() }
         matches!(backup_fn.force_method, Some(ForcedMethod::Post)),
         "bare #[post] must stamp force_method=Some(ForcedMethod::Post)"
     );
-    assert!(matches!(classify_op(backup_fn), OpKind::CustomPost));
+    assert!(matches!(classify_op(module, backup_fn), OpKind::CustomPost));
 }
 
 /// End-to-end HTTP: a `#[ontogen::http::post]`-annotated zero-param
@@ -5830,9 +5881,9 @@ pub(crate) fn ops_fixture(root: &std::path::Path, scoped: bool) -> Config {
     let mut config = resource_fixture(root, true);
     let api_dir = root.join("api");
     let task = std::fs::read_to_string(api_dir.join("task.rs")).unwrap()
-        + "pub async fn list_tags(store: &Store, task_id: &str) -> Result<Vec<Tag>, AppError> { todo!() }\n\
-           pub async fn add_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n\
-           pub async fn remove_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n";
+        + "pub async fn list_labels(store: &Store, task_id: &str) -> Result<Vec<Tag>, AppError> { todo!() }\n\
+           pub async fn add_label(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n\
+           pub async fn remove_label(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n";
     write_synthetic_api(&api_dir, "task.rs", &task);
     let epic_filter = "query: ListEpicsQuery, title: Option<&str>, owner: &str";
     write_synthetic_api(
@@ -6686,11 +6737,13 @@ pub async fn list(store: &Store, filter: GadgetQuery, query: Option<String>) -> 
 
 /// A paginated junction list takes the page as `limit` and `offset`, so its
 /// one argument, the parent's id, named either fails the build.
-/// Unpaginated, the same fn generates.
+/// Unpaginated, the same fn generates. (`add_tag` makes `list_tags` a
+/// junction list; alone it would be a custom read, with no page.)
 #[test]
 fn a_paginated_ipc_command_refuses_an_argument_named_like_the_page() {
     let task = "\
 pub async fn list_tags(store: &Store, limit: &str) -> Result<Vec<Tag>, AppError> { todo!() }
+pub async fn add_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }
 ";
     assert_eq!(
         ipc_generation_error(&[("task.rs", task)], true),
@@ -7353,34 +7406,34 @@ fn junction_ops_are_served_as_custom_ops_at_their_routes() {
     let flat = compact(&http);
 
     assert!(flat.contains(&compact(
-        ".route(\"/api/tasks/{parent_id}/tags\", get(task_list_tags).post(task_add_tag)\
+        ".route(\"/api/tasks/{parent_id}/labels\", get(task_list_labels).post(task_add_label)\
          .fallback(allow([Method::GET, Method::POST])))"
     )));
     assert!(flat.contains(&compact(
-        ".route(\"/api/tasks/{parent_id}/tags/{child_id}\", delete(task_remove_tag).fallback(allow([Method::DELETE])))"
+        ".route(\"/api/tasks/{parent_id}/labels/{child_id}\", delete(task_remove_label).fallback(allow([Method::DELETE])))"
     )));
     // A paginated junction list slices the fn's whole result.
     assert_in_order(
-        "task_list_tags",
-        &handler_body(&http, "task_list_tags"),
+        "task_list_labels",
+        &handler_body(&http, "task_list_labels"),
         &[
             "Path(task_id): Path<String>, ontogen_query: Query<PageOpArgs>",
             "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
             "let ontogen_offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);",
-            "let ontogen_all = task::list_tags(&ontogen_store, &task_id).await.map_err(ontogen_app_error)?;",
+            "let ontogen_all = task::list_labels(&ontogen_store, &task_id).await.map_err(ontogen_app_error)?;",
             "let ontogen_total = ontogen_all.len() as u64;",
             "let ontogen_items = ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();",
             "let ontogen_result = PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };",
         ],
     );
     assert_in_order(
-        "task_add_tag",
-        &handler_body(&http, "task_add_tag"),
+        "task_add_label",
+        &handler_body(&http, "task_add_label"),
         &[
             "ontogen_path: Result<Path<String>, ErrorObject>,",
             "let Path(task_id) = ontogen_path?;",
             "request::check_op_arg_names(&ontogen_args, &[\"tag_id\"])?;",
-            "task::add_tag(&ontogen_store, &task_id, &tag_id).await.map_err(ontogen_app_error)?;",
+            "task::add_label(&ontogen_store, &task_id, &tag_id).await.map_err(ontogen_app_error)?;",
             "Ok(response::no_content())",
         ],
     );
@@ -7501,8 +7554,8 @@ fn scoped_ops_have_the_unscoped_wire() {
     // A scoped junction list keeps its action-style route but pages like the
     // unscoped one.
     assert_in_order(
-        "task_list_tags_scoped",
-        &handler_body(&http, "task_list_tags_scoped"),
+        "task_list_labels_scoped",
+        &handler_body(&http, "task_list_labels_scoped"),
         &[
             "ontogen_query: Query<PageOpArgs>",
             "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
@@ -7527,11 +7580,13 @@ fn scoped_ops_have_the_unscoped_wire() {
     )));
     // Scoped junction ops are action-style routes, served as custom ops.
     assert!(flat.contains(&compact(
-        ".route(\"/api/projects/{project_id}/tasks/list-tags/{task_id}\", get(task_list_tags_scoped)"
+        ".route(\"/api/projects/{project_id}/tasks/list-labels/{task_id}\", get(task_list_labels_scoped)"
     )));
-    assert!(flat.contains(&compact(".route(\"/api/projects/{project_id}/tasks/add-tag\", post(task_add_tag_scoped)")));
+    assert!(
+        flat.contains(&compact(".route(\"/api/projects/{project_id}/tasks/add-label\", post(task_add_label_scoped)"))
+    );
     // Every handler name is unique, including `tag::list` and
-    // `task::list_tags`, whose scoped names are derived from different
+    // `task::list_labels`, whose scoped names are derived from different
     // command names.
     let names: Vec<&str> = http.lines().filter_map(|l| l.strip_prefix("async fn ")?.split('(').next()).collect();
     let mut unique = names.clone();
@@ -7551,15 +7606,16 @@ fn a_junction_add_or_remove_answers_204_scoped_or_not() {
         let mut config = resource_fixture(tmp.path(), true);
         let api_dir = tmp.path().join("api");
         let task = std::fs::read_to_string(api_dir.join("task.rs")).unwrap()
-            + "pub async fn add_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<bool, AppError> { todo!() }\n\
-               pub async fn remove_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<bool, AppError> { todo!() }\n";
+            + "pub async fn list_labels(store: &Store, task_id: &str) -> Result<Vec<Tag>, AppError> { todo!() }\n\
+               pub async fn add_label(store: &Store, task_id: &str, tag_id: &str) -> Result<bool, AppError> { todo!() }\n\
+               pub async fn remove_label(store: &Store, task_id: &str, tag_id: &str) -> Result<bool, AppError> { todo!() }\n";
         write_synthetic_api(&api_dir, "task.rs", &task);
         if scoped {
             config.route_prefix = test_config_with_prefix(PathBuf::new()).route_prefix;
         }
         let http = generate_http(tmp.path(), config);
         let suffix = if scoped { "_scoped" } else { "" };
-        for handler in ["task_add_tag", "task_remove_tag"] {
+        for handler in ["task_add_label", "task_remove_label"] {
             let body = handler_body(&http, &format!("{handler}{suffix}"));
             assert!(body.contains("Ok(response::no_content())"), "{handler}{suffix}: {body}");
             assert!(!body.contains("ResultMeta"), "{handler}{suffix}: {body}");

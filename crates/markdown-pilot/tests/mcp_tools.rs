@@ -179,9 +179,9 @@ async fn every_tool_refuses_an_argument_it_does_not_read() {
         ("task_set_state", json!({ "id": "write-docs", "state": "blocked" })),
         ("task_complete", json!({ "id": "write-docs" })),
         ("task_purge_done", json!({})),
-        ("task_add_tag", json!({ "id": "write-docs", "tag_id": "docs" })),
-        ("task_remove_tag", json!({ "id": "write-docs", "tag_id": "docs" })),
-        ("task_list_tags", json!({ "id": "write-docs" })),
+        ("task_add_label", json!({ "id": "write-docs", "tag_id": "docs" })),
+        ("task_remove_label", json!({ "id": "write-docs", "tag_id": "docs" })),
+        ("task_list_labels", json!({ "id": "write-docs" })),
     ] {
         assert_eq!(server.err(tool, with(args, "extra")).await, "Unknown argument: extra", "{tool}");
     }
@@ -191,7 +191,7 @@ async fn every_tool_refuses_an_argument_it_does_not_read() {
     let stored = server.ok("task_get_by_id", json!({ "id": "write-docs" })).await;
     assert_eq!((stored["title"].as_str(), stored["status"].as_str()), (Some("Write docs"), Some("open")));
     assert_eq!(server.ok("task_list", json!({})).await["total"], 1);
-    assert_eq!(server.ok("task_list_tags", json!({ "id": "write-docs" })).await["total"], 0);
+    assert_eq!(server.ok("task_list_labels", json!({ "id": "write-docs" })).await["total"], 0);
     assert_eq!(server.ok("bookmark_list", json!({})).await["total"], 0);
 
     // The body's own fields stay nested under it: one at the top level is
@@ -341,15 +341,15 @@ async fn junction_tools() {
         server.ok("tag_create", json!({ "title": title })).await;
     }
     for tag in ["docs", "urgent", "later"] {
-        server.ok("task_add_tag", json!({ "id": "write-docs", "tag_id": tag })).await;
+        server.ok("task_add_label", json!({ "id": "write-docs", "tag_id": tag })).await;
     }
 
     // A junction list pages in memory.
-    let page = server.ok("task_list_tags", json!({ "id": "write-docs" })).await;
+    let page = server.ok("task_list_labels", json!({ "id": "write-docs" })).await;
     assert_eq!(ids(&page), ["docs", "urgent"]);
     assert_eq!(page["total"], 3);
-    server.ok("task_remove_tag", json!({ "id": "write-docs", "tag_id": "urgent" })).await;
-    let page = server.ok("task_list_tags", json!({ "id": "write-docs", "offset": 1 })).await;
+    server.ok("task_remove_label", json!({ "id": "write-docs", "tag_id": "urgent" })).await;
+    let page = server.ok("task_list_labels", json!({ "id": "write-docs", "offset": 1 })).await;
     assert_eq!(ids(&page), ["later"]);
     assert_eq!(page["total"], 2);
 }

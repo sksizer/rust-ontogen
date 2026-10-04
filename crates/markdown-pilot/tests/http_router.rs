@@ -747,43 +747,43 @@ async fn junction_ops_are_served_as_custom_ops() {
     }
 
     for tag_id in ["a", "b", "c", "a"] {
-        server.op("POST", "/api/tasks/alpha/tags", &args(json!({ "tag_id": tag_id }))).await.no_content();
+        server.op("POST", "/api/tasks/alpha/labels", &args(json!({ "tag_id": tag_id }))).await.no_content();
     }
 
     // Paginated in memory: `default_limit: 2`, `max_limit: 3`.
-    server.get("/api/tasks/alpha/tags").await.ok_result(concat!(
+    server.get("/api/tasks/alpha/labels").await.ok_result(concat!(
         r#"{"items":[{"id":"a","title":"A"},{"id":"b","title":"B"}],"#,
         r#""total":3,"limit":2,"offset":0}"#,
     ));
     server
-        .get("/api/tasks/alpha/tags?opArg[offset]=2&opArg[limit]=50")
+        .get("/api/tasks/alpha/labels?opArg[offset]=2&opArg[limit]=50")
         .await
         .ok_result(r#"{"items":[{"id":"c","title":"C"}],"total":3,"limit":3,"offset":2}"#);
     // The page is an `opArg`, not `page[…]`.
-    let reply = server.get("/api/tasks/alpha/tags?page[limit]=1").await;
+    let reply = server.get("/api/tasks/alpha/labels?page[limit]=1").await;
     assert_eq!(reply.parameter("invalid_query_parameter"), "page[limit]");
     // Its values are page values: digits only, as `page[…]` reads them.
     for bad in ["two", "%2B5", "-1", "", "1.5"] {
-        let reply = server.get(&format!("/api/tasks/alpha/tags?opArg[limit]={bad}")).await;
+        let reply = server.get(&format!("/api/tasks/alpha/labels?opArg[limit]={bad}")).await;
         assert_eq!(reply.parameter("invalid_query_parameter"), "opArg[limit]", "opArg[limit]={bad}");
     }
-    let reply = server.get("/api/tasks/alpha/tags?opArg[offset]=%2B1").await;
+    let reply = server.get("/api/tasks/alpha/labels?opArg[offset]=%2B1").await;
     assert_eq!(reply.parameter("invalid_query_parameter"), "opArg[offset]");
 
-    server.send(Request::delete("/api/tasks/alpha/tags/b").body(Body::empty()).unwrap()).await.no_content();
+    server.send(Request::delete("/api/tasks/alpha/labels/b").body(Body::empty()).unwrap()).await.no_content();
     assert_eq!(server.store().get_task("alpha").await.expect("task").tags, ["a", "c"]);
 
     // The child argument is required, and the ops' `AppError`s map.
-    let reply = server.op("POST", "/api/tasks/alpha/tags", &args(json!({}))).await;
+    let reply = server.op("POST", "/api/tasks/alpha/labels", &args(json!({}))).await;
     assert_eq!(reply.pointer(StatusCode::BAD_REQUEST, "invalid_document"), "/meta/args");
-    let reply = server.op("POST", "/api/tasks/alpha/tags", &args(json!({ "tag_id": "nope" }))).await;
+    let reply = server.op("POST", "/api/tasks/alpha/labels", &args(json!({ "tag_id": "nope" }))).await;
     reply.error(StatusCode::NOT_FOUND, "tag_not_found");
-    server.get("/api/tasks/nope/tags").await.error(StatusCode::NOT_FOUND, "task_not_found");
+    server.get("/api/tasks/nope/labels").await.error(StatusCode::NOT_FOUND, "task_not_found");
 
-    let reply = server.op("PATCH", "/api/tasks/alpha/tags", &args(json!({ "tag_id": "a" }))).await;
+    let reply = server.op("PATCH", "/api/tasks/alpha/labels", &args(json!({ "tag_id": "a" }))).await;
     reply.error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
     assert_eq!(reply.headers[header::ALLOW], "GET, HEAD, POST");
-    let reply = server.get("/api/tasks/alpha/tags/a").await;
+    let reply = server.get("/api/tasks/alpha/labels/a").await;
     reply.error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
     assert_eq!(reply.headers[header::ALLOW], "DELETE");
 }
@@ -1029,7 +1029,7 @@ async fn filter_parameters_are_checked() {
     // junction list served as a custom op.
     assert_eq!(parameter("/api/notes?filter[title]=x").await, "filter[title]");
     server.task("Alpha", "open").await;
-    assert_eq!(parameter("/api/tasks/alpha/tags?filter[id]=x").await, "filter[id]");
+    assert_eq!(parameter("/api/tasks/alpha/labels?filter[id]=x").await, "filter[id]");
 }
 
 #[tokio::test]

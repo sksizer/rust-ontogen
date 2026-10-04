@@ -66,6 +66,17 @@ pub fn parse_object(body: &[u8]) -> Result<Map<String, Value>, ErrorObject> {
     }
 }
 
+/// Reads a relationship endpoint's body (`PATCH`, `POST` or `DELETE` on
+/// `/api/{type}/{id}/relationships/{rel}`, §9): a JSON object, returned whole.
+///
+/// The whole body is the relationship object, so the handler reads its
+/// linkage with [`to_one`] or [`to_many_linked`] at pointer `""`: a missing
+/// `data` is reported at `""`, and the identifiers at `/data` and
+/// `/data/{i}`, as §9.2 places them.
+pub fn parse_relationship(body: &[u8]) -> Result<Value, ErrorObject> {
+    parse_object(body).map(Value::Object)
+}
+
 /// Reads a create document (`POST /api/{type}`, §8.2) up to the attribute
 /// checks.
 ///
@@ -694,6 +705,35 @@ mod tests {
             (403, "relationship_required".to_owned(), "/data".to_owned())
         );
         assert_eq!(rel_failure(to_many(&json!({"data": [{"type": "x", "id": "1"}]}), "", "tags", None)).2, "/data/0");
+    }
+
+    #[test]
+    fn a_relationship_body_is_read_whole_for_its_linkage() {
+        let no_source = |body: &str| {
+            let err = parse_relationship(body.as_bytes()).unwrap_err();
+            (err.status().as_u16(), err.code().to_owned(), err.source().cloned())
+        };
+        for body in ["", "{", "[]", "null", r#""data""#] {
+            assert_eq!(no_source(body), (400, "invalid_document".to_owned(), None), "{body:?}");
+        }
+
+        let doc = parse_relationship(br#"{"data":{"type":"epics","id":"markdown-backend"},"meta":{}}"#).unwrap();
+        assert_eq!(to_one(&doc, "", "epics", true).unwrap().as_deref(), Some("markdown-backend"));
+        let doc = parse_relationship(br#"{"data":[{"type":"tags","id":"a"},{"type":"tags","id":"b"}]}"#).unwrap();
+        let pointers: Vec<String> =
+            to_many_linked(&doc, "", "tags", None).unwrap().into_iter().map(|l| l.pointer).collect();
+        assert_eq!(pointers, ["/data/0", "/data/1"]);
+
+        let doc = parse_relationship(b"{}").unwrap();
+        assert_eq!(
+            rel_failure(to_many_linked(&doc, "", "tags", Some(1))),
+            (400, "invalid_document".to_owned(), String::new())
+        );
+        let doc = parse_relationship(br#"{"data":[{"type":"tags","id":"a"},{"type":"tags","id":"b"}]}"#).unwrap();
+        assert_eq!(
+            rel_failure(to_many_linked(&doc, "", "tags", Some(1))),
+            (403, "relationship_batch_unsupported".to_owned(), "/data".to_owned())
+        );
     }
 
     #[test]

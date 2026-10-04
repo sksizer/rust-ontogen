@@ -35,12 +35,36 @@ use crate::servers::parse::{ApiFn, ApiModule, ForcedMethod, Param};
 /// body-carrying-first-param check the `get_*` branch applies, for the same
 /// reason `Post` does not re-run anything — an explicit override that
 /// second-guesses the author is not an override.
-pub fn classify_op(func: &ApiFn) -> OpKind {
-    match func.force_method {
+///
+/// # Junction lists need a partner
+///
+/// A one-parameter `list_X` is a junction list only when `m` also has an
+/// unforced `add_Y` or `remove_Y` with the same child segment (wire contract
+/// §9.1). Alone it is a [`OpKind::CustomGet`]: the name marks it a read and
+/// its one argument is a path segment, as for any custom read. Without the
+/// partner rule a plain `list_by_status(status)` would become a relationship
+/// named `by_status`. That is why classification takes the module: the rule
+/// looks at the fn's siblings.
+pub fn classify_op(m: &ApiModule, f: &ApiFn) -> OpKind {
+    match f.force_method {
         Some(ForcedMethod::Post) => OpKind::CustomPost,
         Some(ForcedMethod::Get) => OpKind::CustomGet,
-        None => classify_by_name_and_params(&func.name, &func.params),
+        None => match classify_by_name_and_params(&f.name, &f.params) {
+            OpKind::JunctionList { child_segment } if !has_junction_write(m, &child_segment) => OpKind::CustomGet,
+            op => op,
+        },
     }
+}
+
+/// True when `m` has an unforced `add_Y` or `remove_Y` whose child segment
+/// is `segment`: the partner that makes a `list_X` a junction list.
+fn has_junction_write(m: &ApiModule, segment: &str) -> bool {
+    m.functions.iter().filter(|g| g.force_method.is_none()).any(|g| {
+        matches!(
+            classify_by_name_and_params(&g.name, &g.params),
+            OpKind::JunctionAdd { child_segment } | OpKind::JunctionRemove { child_segment } if child_segment == segment
+        )
+    })
 }
 
 /// Allowlist of name prefixes that classify a custom function as a read
@@ -83,8 +107,9 @@ fn name_implies_read(name: &str) -> bool {
 
 /// Classify a function by name and parameters.
 ///
-/// Lower-level entry point used when an `ApiFn` is not available
-/// (e.g., the API layer's IR conversion).
+/// The per-fn heuristic behind [`classify_op`], which adds the overrides and
+/// the module-wide junction-list rule. On its own it classifies every
+/// one-parameter `list_X` as a [`OpKind::JunctionList`].
 ///
 /// # Default for zero-user-param functions
 ///
@@ -186,6 +211,11 @@ pub fn classify_by_name_and_params(name: &str, params: &[Param]) -> OpKind {
 ///   one `*Query` struct, taken by value or by `&`, is a member, and so is every
 ///   other filter argument, which must read from one value as an `opArg`
 ///   does, optional or not.
+/// - A resource module's junction ops define relationships
+///   ([`ResourceModel::junctions`], §9.1), served at the relationship routes.
+/// - A module that serves those routes reads each related resource with its
+///   target module's `get_by_id` (§9.1, §9.3), so every target module must
+///   serve one.
 ///
 /// # Errors
 ///
@@ -193,7 +223,7 @@ pub fn classify_by_name_and_params(name: &str, params: &[Param]) -> OpKind {
 pub(crate) fn check_http_ops(modules: &[ApiModule], resources: &ResourceModel) -> Result<(), String> {
     for m in modules {
         for f in &m.functions {
-            let op = classify_op(f);
+            let op = classify_op(m, f);
             let crud_or_junction = matches!(
                 op,
                 OpKind::List
@@ -253,6 +283,24 @@ pub(crate) fn check_http_ops(modules: &[ApiModule], resources: &ResourceModel) -
                      which reads it from `meta.args`, or take a type one value can carry",
                     m.name, f.name, p.name, p.ty, p.name
                 ));
+            }
+        }
+        let junctions = resources.junctions(m)?;
+        if resources.serves_relationships(m)
+            && let Some(resource) = resources.by_module(&m.name)
+        {
+            let fields =
+                resource.relationships.iter().map(|r| ("get_by_id", &r.name, &r.target_module, &r.target_type));
+            let junctions = junctions.iter().map(|j| (j.list.name.as_str(), &j.name, &j.target_module, &j.target_type));
+            for (fn_name, rel, target_module, target_type) in fields.chain(junctions) {
+                if !modules.iter().any(|t| t.name == *target_module && resources.serves_get_by_id(t)) {
+                    return Err(format!(
+                        "ontogen: `{}::{fn_name}` serves the relationship `{rel}` of the JSON:API resource `{}`, \
+                         whose related link reads every `{target_type}` it links with `{target_module}::get_by_id`, \
+                         which no module serves",
+                        m.name, resource.resource_type
+                    ));
+                }
             }
         }
     }

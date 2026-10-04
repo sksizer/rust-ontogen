@@ -127,11 +127,12 @@ fn omissions<'a>(snake: &str, config: &ApiConfig, scanned: impl Iterator<Item = 
 // ─── Scanning → IR conversion ────────────────────────────────────────────────
 
 /// Convert a scanned `parse::ApiFn` into an IR `ApiFnMeta`.
-fn convert_scanned_fn(func: &parse::ApiFn, scan_dir: &Path, module_name: &str) -> ApiFnMeta {
+fn convert_scanned_fn(func: &parse::ApiFn, scan_dir: &Path, module: &parse::ApiModule) -> ApiFnMeta {
+    let module_name = &module.name;
     let params: Vec<ParamMeta> =
         func.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
 
-    let classified_op = classify_op(func);
+    let classified_op = classify_op(module, func);
 
     ApiFnMeta {
         name: func.name.clone(),
@@ -188,7 +189,7 @@ fn merge_scanned_module(modules: &mut Vec<ApiModule>, scanned: &parse::ApiModule
     let scanned_fns: Vec<ApiFnMeta> = scanned
         .functions
         .iter()
-        .map(|f| convert_scanned_fn(f, scan_dir, &scanned.name))
+        .map(|f| convert_scanned_fn(f, scan_dir, scanned))
         .chain(scanned.events.iter().map(|e| convert_scanned_event(e, scan_dir, &scanned.name)))
         .collect();
 

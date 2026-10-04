@@ -266,7 +266,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
     // body's fields, so the tool advertises every argument it reads.
     for m in modules {
         for f in &m.functions {
-            let op = classify_op(f);
+            let op = classify_op(m, f);
             if !matches!(
                 op,
                 OpKind::CustomGet
@@ -285,7 +285,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
     // struct's fields, so the tool advertises every argument it reads.
     for m in modules {
         for f in &m.functions {
-            if classify_op(f) == OpKind::List && !f.bare_filters().is_empty() {
+            if classify_op(m, f) == OpKind::List && !f.bare_filters().is_empty() {
                 out.push_str(&list_filter_schema_struct(m, f));
             }
         }
@@ -307,7 +307,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
         for f in &m.functions {
             // Use the canonical entity-first command name for tool names
             let tool_name = crate::servers::generators::ipc::command_name(module, f, config);
-            let op = classify_op(f);
+            let op = classify_op(m, f);
             let svc = m.service_ident(f.surface);
             let is_async = f.is_async;
             let desc = if f.doc.is_empty() { format!("{} {}", f.name, module) } else { f.doc.clone() };
@@ -696,7 +696,7 @@ pub(crate) fn check_scope_key(modules: &[ApiModule], config: &Config) -> Result<
     };
     for m in modules {
         for f in &m.functions {
-            let keys: Vec<&str> = match classify_op(f) {
+            let keys: Vec<&str> = match classify_op(m, f) {
                 OpKind::GetById | OpKind::Update | OpKind::Delete => vec!["id"],
                 OpKind::Create | OpKind::EventStream => vec![],
                 OpKind::List => f.bare_filters().into_iter().map(|p| p.name.as_str()).collect(),
