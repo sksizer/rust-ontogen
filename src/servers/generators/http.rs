@@ -673,8 +673,9 @@ const ON_DEMAND_HELPERS: &[(&str, &str)] = &[
     (
         "query_rejection",
         "\
-/// The error document for a rejection of Axum's own `Query`, which a list
-/// that takes a filter and an event stream still read their parameters with.
+/// The error document for a rejection of Axum's own `Query`. A list that
+/// takes a filter and an event stream read their query parameters with it,
+/// not with the JSON:API `Query`.
 fn query_rejection(e: QueryRejection) -> ErrorObject {
     ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
 }
@@ -1726,9 +1727,13 @@ const PAGE_RESULT: &str = "    let ontogen_result = PaginatedResult {\n        i
 /// by the handler's `FrameData` (§12): `result_frame`, or the entity's own
 /// `{module}_frame_data`.
 const SSE_HELPERS: &str = "\
-/// Writes an event item into its frame's `data:`.
+/// How an event op's items are written into their frames' `data:`:
+/// `result_frame`, or the item entity's own `…_frame_data`.
 type FrameData<T> = fn(Event, &T) -> Result<Event, axum::Error>;
 
+/// One frame as an SSE event: an item as event `name`, its `data:` written
+/// by `data`, with its id as `id:` unless the id holds a line break or NUL;
+/// a lag as event `lag` with `{\"skipped\":n}`.
 fn sse_event<T>(name: &'static str, frame: EventFrame<T>, data: FrameData<T>) -> Event {
     match frame {
         EventFrame::Event { id, data: item } => {
@@ -1743,6 +1748,7 @@ fn sse_event<T>(name: &'static str, frame: EventFrame<T>, data: FrameData<T>) ->
     }
 }
 
+/// An event op's receiver as an SSE stream of frames, kept alive while idle.
 fn sse_stream<T>(
     name: &'static str,
     rx: tokio::sync::broadcast::Receiver<T>,

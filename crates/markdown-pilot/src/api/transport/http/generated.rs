@@ -91,9 +91,13 @@ impl RouteQuery for PageOpArgs {
     const SPEC: QuerySpec = QuerySpec { op_args: &["limit", "offset"], ..QuerySpec::NONE };
 }
 
-/// Writes an event item into its frame's `data:`.
+/// How an event op's items are written into their frames' `data:`:
+/// `result_frame`, or the item entity's own `…_frame_data`.
 type FrameData<T> = fn(Event, &T) -> Result<Event, axum::Error>;
 
+/// One frame as an SSE event: an item as event `name`, its `data:` written
+/// by `data`, with its id as `id:` unless the id holds a line break or NUL;
+/// a lag as event `lag` with `{"skipped":n}`.
 fn sse_event<T>(name: &'static str, frame: EventFrame<T>, data: FrameData<T>) -> Event {
     match frame {
         EventFrame::Event { id, data: item } => {
@@ -108,6 +112,7 @@ fn sse_event<T>(name: &'static str, frame: EventFrame<T>, data: FrameData<T>) ->
     }
 }
 
+/// An event op's receiver as an SSE stream of frames, kept alive while idle.
 fn sse_stream<T>(
     name: &'static str,
     rx: tokio::sync::broadcast::Receiver<T>,
