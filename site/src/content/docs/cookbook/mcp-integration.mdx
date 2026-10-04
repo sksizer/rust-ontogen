@@ -17,13 +17,15 @@ For a `Workout` entity, you'd get tools like:
 
 | Tool name | Description | Parameters |
 |-----------|-------------|------------|
-| `list_workouts` | List all workouts | (none) |
-| `get_workout` | Get a single workout by ID | `{ "id": "string" }` |
-| `create_workout` | Create a new workout | `{ "id": "string", "name": "string?", "date": "string", ... }` |
-| `update_workout` | Update an existing workout | `{ "id": "string", "name": "string?", ... }` |
-| `delete_workout` | Delete a workout by ID | `{ "id": "string" }` |
+| `workout_list` | List all workouts (One page of workouts when paginated) | `{ "sort": ["string"]? }`, plus `limit?` and `offset?` when the module is paginated |
+| `workout_get_by_id` | Get a single workout by ID | `{ "id": "string" }` |
+| `workout_create` | Create a new workout | `{ "id": "string", "name": "string?", "date": "string", ... }` |
+| `workout_update` | Update an existing workout | `{ "id": "string", "name": "string?", ... }` |
+| `workout_delete` | Delete a workout by ID | `{ "id": "string" }` |
 
-The descriptions come from your API function doc comments. The parameter schemas come from your entity field types and DTOs.
+Tool names are the IPC command names, `{module}_{fn}`. The descriptions come from your API function doc comments. The parameter schemas come from your entity field types and DTOs.
+
+Arguments and results are flat JSON, the same values the API functions take and return -- the HTTP server's JSON:API documents do not apply to MCP. A tool returns the entity itself, a list returns an array, and a paginated list returns `{ "items": [...], "total": N, "limit": N, "offset": N }`. A tool error is the error's `Display` text.
 
 ## Recipe: Generate MCP tools
 
@@ -80,26 +82,18 @@ The descriptions come from your API function doc comments. The parameter schemas
 
    The generated code gives you tool definitions (names, descriptions, parameter schemas). You need to serve them via an MCP-compatible transport -- typically stdio for local tools or HTTP with SSE for remote tools.
 
-   Here's a minimal example using the generated tool registry:
+   The generated module provides `tool_definitions()` for a `tools/list` response and `handle_tool_call(state, name, args)` to dispatch a `tools/call`:
 
    ```rust
    use crate::api::transport::mcp::generated;
 
-   // Register tools with your MCP server implementation
-   let tools = generated::tool_definitions();
-   // Each tool has: name, description, parameters_schema (JSON Schema string)
-
-   for tool in &tools {
-       mcp_server.register_tool(
-           &tool.name,
-           &tool.description,
-           &tool.parameters_schema,
-           |params| {
-               // Route to the appropriate API function based on tool name
-               // The generated code provides a dispatch function for this
-           },
-       );
+   // tools/list: each tool has a name, a description and an input_schema (a serde_json::Value)
+   for tool in generated::tool_definitions() {
+       mcp_server.register_tool(tool.name, tool.description, tool.input_schema);
    }
+
+   // tools/call: runs the matching handler and returns its flat JSON result
+   let result = generated::handle_tool_call(&state, tool_name, &args)?;
    ```
 
    The exact integration depends on which MCP server library you use. The generated code provides the tool metadata -- you wire it into your server framework.
@@ -141,7 +135,7 @@ Required vs optional is determined by the field types in your DTOs. `Option<T>` 
 
 ## Custom endpoints as MCP tools
 
-Custom API endpoints you write in your scan directories automatically become MCP tools. The function name becomes the tool name (underscored), the doc comment becomes the description, and the parameters become the schema.
+Custom API endpoints you write in your scan directories automatically become MCP tools. The tool is named like its IPC command (`{module}_{fn}`), the doc comment becomes the description, and the parameters become the schema.
 
 ```rust
 /// Get training volume (total sets x reps x weight) for an exercise
@@ -153,8 +147,8 @@ pub async fn training_volume(
 ) -> Result<f64, AppError> { ... }
 ```
 
-This produces an MCP tool:
-- **Name**: `training_volume`
+In a `workout` module this produces an MCP tool:
+- **Name**: `workout_training_volume`
 - **Description**: "Get training volume (total sets x reps x weight) for an exercise over the last N days. Useful for tracking progressive overload."
 - **Parameters**: `{ "exercise_id": { "type": "string" }, "days": { "type": "integer" } }`
 

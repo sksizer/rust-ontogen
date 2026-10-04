@@ -7,7 +7,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 Ontogen pairs naturally with Tauri. You define entities in the Tauri crate's `src/schema/`, run the generator pipeline in `build.rs`, and get Tauri IPC command handlers alongside your Axum HTTP handlers -- both generated from the same API surface.
 
-The TypeScript client generator produces a split transport layer that uses Tauri IPC when running as a desktop app and HTTP when running in a browser. Your frontend code calls the same functions either way.
+The TypeScript client generator produces one `Transport` interface with two implementations: `createIpcTransport()` for the desktop app and `createHttpTransport()` for a browser. Your frontend code calls the same methods either way. IPC passes flat arguments and results; the HTTP transport speaks the server's JSON:API wire and flattens it back into the same entity types.
 
 This recipe walks through setting up a Tauri + Ontogen project from scratch.
 
@@ -109,12 +109,6 @@ my-app/
        };
 
        let clients_config = ClientsConfig {
-           api_dir: "src/api/v1".into(),
-           state_type: "AppState".into(),
-           service_import_path: "crate::api::v1".into(),
-           types_import_path: "crate::schema".into(),
-           state_import: "crate::AppState".into(),
-           naming: NamingConfig::default(),
            generators: vec![
                ClientGenerator::HttpTauriIpcSplit {
                    output: "../src-nuxt/app/generated/transport.ts".into(),
@@ -124,17 +118,11 @@ my-app/
                    output: "../src-nuxt/app/admin/generated/admin-registry.ts".into(),
                },
            ],
-           // Generated TS is emitted unformatted unless you set this.
-           ts_formatter: ontogen::TsFormatter::None,
-           sse_route_overrides: Default::default(),
-           ts_skip_commands: vec![],
-           route_prefix: None,
            store_type: Some("Store".into()),
            store_import: Some("crate::store::Store".into()),
-           pagination: None,
-           pool_extra_roots: Vec::new(),
-           pool_exclude_paths: Vec::new(),
-           extra_surfaces: vec![],
+           // Every other field at its inert default: no formatting, no
+           // route prefix, no pagination.
+           ..ClientsConfig::new("src/api/v1", "AppState", "crate::api::v1", "crate::schema", "crate::AppState")
        };
 
        Pipeline::new("src/schema")
@@ -160,7 +148,7 @@ my-app/
 
    Notice `tauri_build::build()` at the end. Ontogen runs first, generates all the code, and then Tauri's build step runs. Order matters.
 
-   The `ontogen::servers::*` re-exports (`ClientGenerator`, `NamingConfig`, `ServerGenerator`) replace the older `ontogen::servers::config::*` and `ontogen::servers::types::*` paths, which are now `pub(crate)`.
+   The client config's `route_prefix`, `pagination` and `naming` must match the server config's, so the HTTP transport calls the routes the server serves.
 
 3. ### Set up `AppState`
 
@@ -196,7 +184,7 @@ my-app/
 
 4. ### Register IPC commands
 
-   In `src/main.rs`, register the generated commands with Tauri:
+   The generated IPC module ends with `ipc_handler()`, which wraps `tauri::generate_handler!` over every generated command. In `src/main.rs`, pass it to Tauri:
 
    ```rust
    use std::sync::Arc;
@@ -206,45 +194,39 @@ my-app/
            .setup(|app| {
                // Initialize your database
                let db = /* create DatabaseConnection */;
-               let state = Arc::new(iron_log::AppState::new(db));
+               let state = Arc::new(my_app::AppState::new(db));
                app.manage(state);
                Ok(())
            })
-           .invoke_handler(tauri::generate_handler![
-               // Import from your generated IPC module
-               iron_log::api::transport::ipc::generated::get_exercises,
-               iron_log::api::transport::ipc::generated::get_exercise_by_id,
-               iron_log::api::transport::ipc::generated::create_exercise,
-               iron_log::api::transport::ipc::generated::update_exercise,
-               iron_log::api::transport::ipc::generated::delete_exercise,
-               // ... repeat for each entity
-           ])
+           .invoke_handler(my_app::api::transport::ipc::generated::ipc_handler())
            .run(tauri::generate_context!())
            .expect("error while running tauri application");
    }
    ```
 
-   Each entity gets five IPC commands (list, get, create, update, delete). The generated command names follow the pattern `get_{entities}`, `get_{entity}_by_id`, `create_{entity}`, `update_{entity}`, `delete_{entity}`.
+   Each entity gets five IPC commands named `{entity}_{op}`: `exercise_list`, `exercise_get_by_id`, `exercise_create`, `exercise_update`, `exercise_delete`. A custom endpoint is `{module}_{fn}` with the module singularized (`stats::get_workout` is `stat_get_workout`), and an event op adds a `{event}_subscribe` / `{event}_unsubscribe` pair.
 
 5. ### Use the TypeScript client
 
-   The generated `transport.ts` gives you typed functions that work in both web and desktop contexts:
+   The generated `transport.ts` exports the `Transport` interface and its two implementations. Pick one when the app starts:
 
    ```typescript
-   import { getExercises, createExercise } from '~/generated/transport';
+   import { createHttpTransport, createIpcTransport } from '~/generated/transport';
 
-   // Works via Tauri IPC in desktop, HTTP in browser
-   const exercises = await getExercises();
+   const transport = '__TAURI_INTERNALS__' in window ? createIpcTransport() : createHttpTransport();
 
-   const newExercise = await createExercise({
+   const exercises = await transport.exerciseList({ sort: ['name'] });
+
+   const newExercise = await transport.exerciseCreate({
      id: 'ex-bench-press',
      name: 'Bench Press',
      muscle_group: 'chest',
      equipment: 'barbell',
+     notes: null,
    });
    ```
 
-   The split transport detects at runtime whether Tauri's IPC is available. If it is, calls go through `invoke()`. If not, they fall back to HTTP fetch.
+   `createIpcTransport()` calls `invoke('exercise_create', { input })` and gets the `Exercise` back as is. `createHttpTransport()` sends `POST /api/exercises` as a JSON:API document, reads the resource object it answers, and returns the same flat `Exercise`; a failure throws a `JsonApiError` carrying the HTTP `status` and the `errors` array. See [Client Generation](/guides/client-generation/).
 
 </Steps>
 
@@ -254,36 +236,37 @@ Each entity's CRUD operations become Tauri commands. Here's what the generator p
 
 ```rust
 #[tauri::command]
-#[specta::specta]
-pub async fn get_exercises(
-    state: State<'_, Arc<AppState>>,
+pub async fn exercise_list(
+    sort: Option<Vec<String>>,
+    ontogen_state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<Exercise>, String> {
-    let store = state.store().await.map_err(|e| e.to_string())?;
-    exercise::list(&store, &[]).await.map_err(|e| e.to_string())
+    let ontogen_order =
+        ontogen_core::order::parse_sort(sort.unwrap_or_default()).map_err(|ontogen_e| ontogen_e.to_string())?;
+    let ontogen_store = ontogen_state.store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    exercise::list(&ontogen_store, &ontogen_order).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
-#[specta::specta]
-pub async fn create_exercise(
+pub async fn exercise_create(
     input: CreateExerciseInput,
-    state: State<'_, Arc<AppState>>,
+    ontogen_state: State<'_, Arc<AppState>>,
 ) -> Result<Exercise, String> {
-    let store = state.store().await.map_err(|e| e.to_string())?;
-    exercise::create(&store, input).await.map_err(|e| e.to_string())
+    let ontogen_store = ontogen_state.store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    exercise::create(&ontogen_store, input).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 ```
 
 Key things to notice:
 
 - `State<'_, Arc<AppState>>` is Tauri's state extractor. The `AppState` is the same one you registered with `app.manage()`.
-- `#[specta::specta]` enables TypeScript type generation from the Rust signatures.
+- Arguments and results are flat: the `Exercise` itself, not a JSON:API document. `sort` takes the same keys as the HTTP `sort` parameter (`name`, `-name`).
 - Errors are mapped to `String` because Tauri IPC requires string-serializable errors.
 - The handler delegates to the API layer (`exercise::list`, `exercise::create`), which delegates to the store.
 
 ## Both transports, same API
 
-The power of Ontogen's pipeline is that both transport layers (HTTP and IPC) are generated from the same `ApiOutput`. Adding a new entity or custom endpoint automatically appears in both.
+The power of Ontogen's pipeline is that both transport layers (HTTP and IPC) are generated from the same `ApiOutput`. Adding a new entity or custom endpoint automatically appears in both. The wires differ -- the Axum server speaks JSON:API, IPC stays flat -- but the `Transport` methods hide that, so calling code is the same.
 
 <Aside type="note">
-If you have endpoints that only make sense for one transport (say, a file upload that only works over HTTP), you can exclude specific commands from the TypeScript IPC client using `ts_skip_commands` in the server config.
+If you have endpoints that only make sense for one transport (say, a file upload that only works over HTTP), you can leave specific commands out of the generated TypeScript with `ClientsConfig::ts_skip_commands`. The server-side handlers are still generated.
 </Aside>
