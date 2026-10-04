@@ -4,8 +4,6 @@
 
 pub mod model;
 pub mod parse;
-// The store, servers and clients stages read it once they emit sort code.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod sort;
 
 // Re-export the key types at the schema module level
