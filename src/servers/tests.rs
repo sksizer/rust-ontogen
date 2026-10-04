@@ -5115,7 +5115,8 @@ fn test_mixed_module_routes_are_per_fn_and_order_independent() {
         let meta = crate::servers::extract_server_metadata(&[module], &config);
         let path = |handler: &str| meta.http_routes.iter().find(|r| r.handler_name == handler).unwrap().path.clone();
         assert_eq!(path("workout_start"), "/api/workouts/start");
-        assert_eq!(path("workout_list"), "/api/projects/{project_id}/workouts");
+        assert_eq!(path("workout_list_scoped"), "/api/projects/{project_id}/workouts");
+        assert!(meta.http_routes.iter().all(|r| r.handler_name != "workout_list"), "{:#?}", meta.http_routes);
 
         outputs.push(http);
     }
@@ -8026,11 +8027,7 @@ fn server_metadata_routes_every_op_where_the_generator_does() {
         let meta = crate::servers::extract_server_metadata(&modules, &config);
         let flat = compact(&http);
         for route in meta.http_routes.iter() {
-            let handler = if route.path.starts_with("/api/projects/") && !route.handler_name.ends_with("_scoped") {
-                format!("{}_scoped", route.handler_name)
-            } else {
-                route.handler_name.clone()
-            };
+            let handler = &route.handler_name;
             let method = route.method.to_ascii_lowercase();
             let needle = format!("{method}({handler})");
             let registered = flat.split(".route(\"").skip(1).any(|r| {
@@ -8094,13 +8091,13 @@ fn server_metadata_reports_relationship_routes_with_their_rel_template() {
         assert!(rows("tag").is_empty(), "a type with no relationship serves no relationship routes");
         for command in ["task_list_labels", "task_add_label", "task_remove_label", "epic_list_tags", "epic_add_tag"] {
             assert!(
-                meta.http_routes.iter().all(|r| r.handler_name != command),
+                meta.http_routes.iter().all(|r| r.handler_name.trim_end_matches("_scoped") != command),
                 "`{command}` has no route of its own:\n{:#?}",
                 meta.http_routes
             );
         }
         let own = |command: &str| {
-            let r = meta.http_routes.iter().find(|r| r.handler_name == command).unwrap();
+            let r = meta.http_routes.iter().find(|r| r.handler_name == format!("{command}{suffix}")).unwrap();
             (r.method.as_str(), r.path.clone())
         };
         assert_eq!(own("workout_list_labels"), ("GET", format!("{prefix}/workouts/{{parent_id}}/labels")));

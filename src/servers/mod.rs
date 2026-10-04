@@ -97,9 +97,10 @@ pub fn generate(
 
 /// Build `ServersOutput` from the same parsed modules the generators consumed.
 ///
-/// HTTP routes mirror the path/method decisions made by the HTTP generator
-/// (including project-scoping for store-based modules when `route_prefix`
-/// is set), one row per method of each route it registers. A junction op of
+/// HTTP routes mirror the path, method and handler-name decisions made by
+/// the HTTP generator (including project-scoping for store-based modules
+/// when `route_prefix` is set), one row per method of each route it
+/// registers. A junction op of
 /// a resource module has no route of its own: its module's relationship
 /// routes are reported instead, with their `{rel}` capture. IPC commands
 /// and MCP tools are 1:1 with API functions - `route_prefix` does not
@@ -111,27 +112,28 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
 
     for m in modules {
         for f in &m.functions {
-            let handler_name = generators::ipc::command_name(&m.name, f, config);
+            let command_name = generators::ipc::command_name(&m.name, f, config);
             let params: Vec<ParamMeta> =
                 f.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
 
             if !generators::http::is_relationship_op(m, f, config) {
                 let (method, path) = generators::http::route_of(m, f, config);
+                let scoped = generators::http::is_scoped(f, config);
                 http_routes.push(HttpRouteMeta {
                     method: method.to_ascii_uppercase(),
                     path,
-                    handler_name: handler_name.clone(),
+                    handler_name: generators::http::handler_name(m, f, config, scoped),
                     module_name: m.name.clone(),
                 });
             }
 
             ipc_commands.push(IpcCommandMeta {
-                command_name: handler_name.clone(),
+                command_name: command_name.clone(),
                 params: params.clone(),
                 return_type: f.return_type.clone(),
             });
 
-            mcp_tools.push(McpToolMeta { tool_name: handler_name, description: f.doc.clone(), params });
+            mcp_tools.push(McpToolMeta { tool_name: command_name, description: f.doc.clone(), params });
         }
 
         for (method, path, handler_name) in generators::http::relationship_route_table(m, config) {
