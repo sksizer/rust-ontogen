@@ -484,6 +484,25 @@ pub(crate) fn emit_struct_named(
     }
 }
 
+/// Whether a pool struct, read as a deserialize-only filter (a member of
+/// [`EmitConfig::deserialize_only`]), keeps a property the client must send:
+/// a field that is not `Option`, has no `#[serde(default)]` (on the field or
+/// the struct), or has its own deserializer. `None` when `item` is not a
+/// named-field struct or its attributes do not parse.
+///
+/// A `#[serde(flatten)]` member is not counted: its keys are those of another
+/// type, so a struct whose only required keys arrive that way reports `false`.
+#[must_use]
+pub fn struct_has_required_field(item: &syn::Item, config: &EmitConfig) -> Option<bool> {
+    let syn::Item::Struct(s) = item else { return None };
+    let Fields::Named(fields) = &s.fields else { return None };
+    let referenced_by = TypePath::new(vec![s.ident.to_string()]).ok()?;
+    let container = extract_container_attrs(&s.attrs, &referenced_by).ok()?;
+    let rename_all = container.rename_all.or(config.case_default);
+    let collected = collect_named_fields(fields, config, &referenced_by, rename_all, container.default, true).ok()?;
+    Some(collected.properties.iter().any(|(_, opt, _)| opt.is_empty()))
+}
+
 /// A named-field group — a struct body or an enum struct-variant body —
 /// split into the two pieces TypeScript renders differently.
 struct NamedFields {
@@ -2189,5 +2208,16 @@ mod tests {
         // and we get `user_name`, NOT camelCased `userName`.
         assert!(ts.contains("user_name: string"), "ts was: {ts}");
         assert!(!ts.contains("userName"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn struct_has_required_field_reads_option_default_and_deserializer() {
+        let has = |src: &str| struct_has_required_field(&syn::parse_str(src).unwrap(), &EmitConfig::default());
+        assert_eq!(has("struct Q { a: Option<String>, b: Option<u8> }"), Some(false));
+        assert_eq!(has("struct Q { a: Option<String>, b: String }"), Some(true));
+        assert_eq!(has("struct Q { #[serde(default)] b: String }"), Some(false));
+        assert_eq!(has("#[serde(default)] struct Q { b: String }"), Some(false));
+        assert_eq!(has("struct Q { #[serde(deserialize_with = \"f\")] a: Option<String> }"), Some(true));
+        assert_eq!(has("enum Q { A }"), None);
     }
 }

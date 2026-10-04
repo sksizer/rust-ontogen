@@ -72,6 +72,7 @@ pub fn generate(
     // Convert public ClientsConfig → internal Config
     let internal = config::Config {
         api_dir: config.api_dir.clone(),
+        required_query_structs: Default::default(),
         state_type: config.state_type.clone(),
         service_import_path: config.service_import_path.clone(),
         types_import_path: config.types_import_path.clone(),
@@ -153,6 +154,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
     // directly — no cargo invocation, no side-car binary, no target-dir
     // contention, no recursion guard.
     let long_tail = generators::ts_bindings::long_tail(&modules, config, &config.entities);
+    let mut required_query_structs: std::collections::HashSet<String> = Default::default();
     if !long_tail.is_empty() && !written_bindings.is_empty() {
         let manifest_dir = std::path::PathBuf::from(
             std::env::var("CARGO_MANIFEST_DIR")
@@ -299,6 +301,11 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
                 ontogen_ts::Resolution::Resolved(key) => {
                     if filter_structs.contains(name) {
                         emit_config.deserialize_only.insert(key.clone());
+                        if pool.get(&key).and_then(|item| ontogen_ts::struct_has_required_field(item, &emit_config))
+                            == Some(true)
+                        {
+                            required_query_structs.insert(name.clone());
+                        }
                     }
                     roots.push(key);
                 }
@@ -349,6 +356,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         //    over-includes but never misses.
         rerun_if_changed_under(&src_dir);
     }
+    let config = &config::Config { required_query_structs, ..config.clone() };
 
     for generator in &config.generators {
         match generator {
