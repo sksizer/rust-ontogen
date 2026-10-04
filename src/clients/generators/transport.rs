@@ -258,7 +258,7 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
 
             match op {
                 OpKind::List => {
-                    let list = jsonapi::list_method(m, f, config, "", &|p, _| p.to_string());
+                    let list = jsonapi::list_method(m, f, config, None);
                     let mut params = list.params;
                     if !pp_only.is_empty() {
                         params.push(pp_only.clone());
@@ -373,29 +373,19 @@ fn generate_http_helpers(out: &mut String, config: &Config) {
 fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Config) {
     let pp_trailing = ts_trailing_prefix_param(config);
     let pp_only = ts_prefix_param_only(config);
-    let has_prefix = config.route_prefix.is_some();
-    let pp_camel = config.route_prefix.as_ref().map(|p| snake_to_camel(&p.params[0].name)).unwrap_or_default();
-
-    // Helper to wrap path with scopedPath when prefix is configured
-    let sp = |path: &str| -> String {
-        if has_prefix { format!("scopedPath({}, '{}')", pp_camel, path) } else { format!("'{}'", path) }
-    };
-    let sp_template = |path: &str| -> String {
-        if has_prefix { format!("scopedPath({}, `{}`)", pp_camel, path) } else { format!("`{}`", path) }
-    };
+    let scope = config.route_prefix.as_ref().map(|p| snake_to_camel(&p.params[0].name));
 
     out.push_str("// ── HTTP Transport ──\n\n");
     out.push_str("export function createHttpTransport(): Transport {\n");
     out.push_str("  return {\n");
 
-    let path = |p: &str, template: bool| if template { sp_template(p) } else { sp(p) };
     for m in modules {
         for f in &m.functions {
             let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
-            let Some(method) = jsonapi::method(m, f, config, &path) else { continue };
+            let Some(method) = jsonapi::method(m, f, config, scope.as_deref()) else { continue };
             let mut params = method.params;
             if !pp_only.is_empty() {
                 params.push(pp_only.clone());

@@ -409,154 +409,193 @@ pub(crate) struct Method {
 }
 
 /// The method `f` of module `m` gets in either HTTP client, or `None` for an
-/// event op. `path` turns a request path into the expression the call
-/// fetches: `(path, true)` for a template literal's text, `(path, false)` for
-/// a plain string's.
-pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, path: &dyn Fn(&str, bool) -> String) -> Option<Method> {
+/// event op. `scope` names the route-prefix parameter (`projectId`) of a
+/// client that calls scoped routes through `scopedPath`, and is `None` for
+/// one that calls only unscoped routes.
+pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -> Option<Method> {
     let base = config.naming.url_for_module(m);
-    let fetch = |p: &str| path(p, p.contains("${"));
+    let fetch = |p: &str| fetch(p, scope);
     let ret = if f.return_type == "()" { "null".to_string() } else { rust_type_to_ts(&f.return_type) };
     let input_type = |i: usize| rust_type_to_ts(&extract_input_type(&f.params[i].ty));
     let id_path = format!("/{base}/${{encodeURIComponent(id)}}");
     let op = classify_op(f);
     let resource = match served(m, f, config) {
-        Served::Resource(r) => Some(r),
-        Served::FilteredList | Served::Op => None,
+        Served::Resource(r) => r,
+        Served::FilteredList | Served::Op if op == OpKind::List => return Some(list_method(m, f, config, scope)),
+        Served::FilteredList | Served::Op => {
+            let (params, return_type) = match op {
+                OpKind::EventStream => return None,
+                OpKind::GetById => (vec!["id: string".to_string()], ret),
+                OpKind::Create => (vec![format!("input: {}", input_type(0))], ret),
+                OpKind::Update => (vec!["id: string".to_string(), format!("input: {}", input_type(1))], ret),
+                OpKind::Delete => (vec!["id: string".to_string()], "null".to_string()),
+                OpKind::JunctionList { .. } if is_paginated(m, f, config) => {
+                    let mut params = ts_params_in_declaration_order(f);
+                    params.push("limit?: number".to_string());
+                    params.push("offset?: number".to_string());
+                    (params, paginated_result(&ret))
+                }
+                OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
+                    (ts_params_in_declaration_order(f), "null".to_string())
+                }
+                OpKind::List | OpKind::JunctionList { .. } | OpKind::CustomGet | OpKind::CustomPost => {
+                    (ts_params_in_declaration_order(f), ret)
+                }
+            };
+            let body = op_body(m, f, config, &return_type, scope);
+            return Some(Method { params, return_type, body });
+        }
     };
 
-    let method = match (&op, resource) {
-        (OpKind::EventStream, _) => return None,
-        (OpKind::List, _) => list_method(m, f, config, &base, path),
-
-        (OpKind::GetById, Some(r)) => Method {
+    let method = match op {
+        OpKind::List => list_method(m, f, config, scope),
+        OpKind::GetById => Method {
             params: vec!["id: string".to_string()],
             return_type: ret,
             body: vec![
                 format!("const {{ data }} = await httpGet<JsonApiResourceDocument>({});", fetch(&id_path)),
-                format!("return {}(data);", flatten_fn(r)),
+                format!("return {}(data);", flatten_fn(resource)),
             ],
         },
-        (OpKind::Create, Some(r)) => Method {
+        OpKind::Create => Method {
             params: vec![format!("input: {}", input_type(0))],
             return_type: ret,
             body: vec![
                 format!(
                     "const {{ data }} = await httpPost<JsonApiResourceDocument>({}, {}(input));",
                     fetch(&format!("/{base}")),
-                    unflatten_fn(r)
+                    unflatten_fn(resource)
                 ),
-                format!("return {}(data);", flatten_fn(r)),
+                format!("return {}(data);", flatten_fn(resource)),
             ],
         },
-        (OpKind::Update, Some(r)) => Method {
+        OpKind::Update => Method {
             params: vec!["id: string".to_string(), format!("input: {}", input_type(1))],
             return_type: ret,
             body: vec![
                 format!(
                     "const {{ data }} = await httpPatch<JsonApiResourceDocument>(\n  {},\n  {}(input, id),\n);",
                     fetch(&id_path),
-                    unflatten_fn(r)
+                    unflatten_fn(resource)
                 ),
-                format!("return {}(data);", flatten_fn(r)),
+                format!("return {}(data);", flatten_fn(resource)),
             ],
         },
-        (OpKind::Delete, Some(_)) => Method {
+        OpKind::Delete => Method {
             params: vec!["id: string".to_string()],
             return_type: "null".to_string(),
             body: vec![format!("await httpDelete({});", fetch(&id_path)), "return null;".to_string()],
         },
-
-        // §10.4: CRUD ops with no resource behind them.
-        (OpKind::GetById, None) => Method {
-            params: vec!["id: string".to_string()],
-            body: vec![op_call(&ret, "GET", &fetch(&id_path), &[])],
-            return_type: ret,
-        },
-        (OpKind::Create, None) => Method {
-            params: vec![format!("input: {}", input_type(0))],
-            body: vec![op_call(&ret, "POST", &fetch(&format!("/{base}")), &[(&f.params[0].name, "input")])],
-            return_type: ret,
-        },
-        (OpKind::Update, None) => Method {
-            params: vec!["id: string".to_string(), format!("input: {}", input_type(1))],
-            body: vec![op_call(&ret, "PATCH", &fetch(&id_path), &[(&f.params[1].name, "input")])],
-            return_type: ret,
-        },
-        (OpKind::Delete, None) => Method {
-            params: vec!["id: string".to_string()],
-            return_type: "null".to_string(),
-            body: vec![op_call("null", "DELETE", &fetch(&id_path), &[])],
-        },
-
-        // §10.4: junction ops, at their nested routes.
-        (OpKind::JunctionList { child_segment }, _) => {
-            let paginated = is_paginated(m, f, config);
-            let mut params = ts_params_in_declaration_order(f);
-            let mut route = format!("/{base}/{}/{child_segment}", path_segment(&f.params[0]));
-            let return_type = if paginated {
-                params.push("limit?: number".to_string());
-                params.push("offset?: number".to_string());
-                route.push_str(&op_args_query(&[("limit", "limit"), ("offset", "offset")]));
-                paginated_result(&ret)
-            } else {
-                ret
-            };
-            Method { params, body: vec![op_call(&return_type, "GET", &fetch(&route), &[])], return_type }
-        }
-        (OpKind::JunctionAdd { child_segment }, _) => {
-            let child = &f.params[1];
-            let route = format!("/{base}/{}/{child_segment}", path_segment(&f.params[0]));
-            Method {
-                params: ts_params_in_declaration_order(f),
-                return_type: "null".to_string(),
-                body: vec![op_call("null", "POST", &fetch(&route), &[(&child.name, &snake_to_camel(&child.name))])],
-            }
-        }
-        (OpKind::JunctionRemove { child_segment }, _) => {
-            let route =
-                format!("/{base}/{}/{child_segment}/{}", path_segment(&f.params[0]), path_segment(&f.params[1]));
-            Method {
-                params: ts_params_in_declaration_order(f),
-                return_type: "null".to_string(),
-                body: vec![op_call("null", "DELETE", &fetch(&route), &[])],
-            }
-        }
-
-        // §10.1–§10.2: a GET takes its required arguments in the path and
-        // its optional ones in the `opArg` family; a POST sends them all as
-        // `meta.args`.
-        (OpKind::CustomGet | OpKind::CustomPost, _) => {
-            let action = config.naming.derive_action(&m.name, &f.name);
-            let mut route = format!("/{base}");
-            if !action.is_empty() {
-                route.push_str(&format!("/{action}"));
-            }
-            let args: Vec<(String, String)> = f
-                .params
-                .iter()
-                .map(|p| (p.name.clone(), if is_input(p) { "input".to_string() } else { snake_to_camel(&p.name) }))
-                .collect();
-            let call = if op == OpKind::CustomGet {
-                for p in f.params.iter().filter(|p| !is_option(p) && !is_input(p)) {
-                    route.push_str(&format!("/{}", path_segment(p)));
-                }
-                let optional: Vec<(&str, &str)> = f
-                    .params
-                    .iter()
-                    .zip(&args)
-                    .filter(|(p, _)| is_option(p))
-                    .map(|(_, (name, value))| (name.as_str(), value.as_str()))
-                    .collect();
-                route.push_str(&op_args_query(&optional));
-                op_call(&ret, "GET", &fetch(&route), &[])
-            } else {
-                let args: Vec<(&str, &str)> = args.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
-                op_call(&ret, "POST", &fetch(&route), &args)
-            };
-            Method { params: ts_params_in_declaration_order(f), return_type: ret, body: vec![call] }
-        }
+        _ => unreachable!("a resource serves CRUD ops only"),
     };
     Some(method)
+}
+
+/// The path expression a call fetches: `path` as a template literal when it
+/// interpolates, else as a string, through `scopedPath` for a client with a
+/// `scope`.
+fn fetch(path: &str, scope: Option<&str>) -> String {
+    let literal = if path.contains("${") { format!("`{path}`") } else { format!("'{path}'") };
+    match scope {
+        Some(prefix_arg) => format!("scopedPath({prefix_arg}, {literal})"),
+        None => literal,
+    }
+}
+
+/// The call that reaches an op served as a custom op (§10), as the server's
+/// `op_shape` routes it: the HTTP method, the path (template-literal text
+/// under `/api`), the `opArg` members and the `meta.args` members, each
+/// member a `(Rust name, TS expression)` pair.
+#[derive(PartialEq, Eq)]
+struct OpRoute<'a> {
+    method: &'static str,
+    path: String,
+    op_args: Vec<(&'a str, String)>,
+    args: Vec<(&'a str, String)>,
+}
+
+/// The route `f` of `m` is called at, `scoped` when it is served under the
+/// route prefix (§11.1). There a junction op is an action-style custom op:
+/// its list a GET taking every argument in the path, its add and remove
+/// POSTs taking both in `meta.args`. Unscoped, it keeps its nested route.
+fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> OpRoute<'a> {
+    let classified = classify_op(f);
+    let op = match &classified {
+        OpKind::JunctionList { .. } if scoped => OpKind::CustomGet,
+        OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } if scoped => OpKind::CustomPost,
+        op => op.clone(),
+    };
+    let base = format!("/{}", config.naming.url_for_module(m));
+    let value = |p: &Param| if is_input(p) { "input".to_string() } else { snake_to_camel(&p.name) };
+    let segment = |p: &Param| path_segment(&value(p));
+    let (method, mut path, named) = match &op {
+        OpKind::CustomGet | OpKind::CustomPost => {
+            let action = config.naming.derive_action(&m.name, &f.name);
+            let path = if action.is_empty() { base } else { format!("{base}/{action}") };
+            (if op == OpKind::CustomGet { "GET" } else { "POST" }, path, 0)
+        }
+        OpKind::List => ("GET", base, 0),
+        OpKind::GetById => ("GET", format!("{base}{}", path_segment("id")), 1),
+        OpKind::Create => ("POST", base, 0),
+        OpKind::Update => ("PATCH", format!("{base}{}", path_segment("id")), 1),
+        OpKind::Delete => ("DELETE", format!("{base}{}", path_segment("id")), 1),
+        OpKind::JunctionList { child_segment } => {
+            ("GET", format!("{base}{}/{child_segment}", segment(&f.params[0])), 1)
+        }
+        OpKind::JunctionAdd { child_segment } => {
+            ("POST", format!("{base}{}/{child_segment}", segment(&f.params[0])), 1)
+        }
+        OpKind::JunctionRemove { child_segment } => {
+            ("DELETE", format!("{base}{}/{child_segment}{}", segment(&f.params[0]), segment(&f.params[1])), 2)
+        }
+        OpKind::EventStream => unreachable!("event fns are not ApiFns"),
+    };
+    let rest = &f.params[named.min(f.params.len())..];
+    let page = || {
+        if is_paginated(m, f, config) {
+            vec![("limit", "limit".to_string()), ("offset", "offset".to_string())]
+        } else {
+            Vec::new()
+        }
+    };
+    let mut op_args = Vec::new();
+    let mut args = Vec::new();
+    match op {
+        // An unfiltered list's only parameters are its page.
+        OpKind::List | OpKind::JunctionList { .. } => op_args = page(),
+        OpKind::CustomGet if matches!(classified, OpKind::JunctionList { .. }) => {
+            path.extend(rest.iter().map(segment));
+            op_args = page();
+        }
+        _ if matches!(method, "POST" | "PATCH") => args = rest.iter().map(|p| (p.name.as_str(), value(p))).collect(),
+        _ => {
+            for p in rest {
+                if is_option(p) {
+                    op_args.push((p.name.as_str(), value(p)));
+                } else {
+                    path.push_str(&segment(p));
+                }
+            }
+        }
+    }
+    OpRoute { method, path, op_args, args }
+}
+
+/// The statements of an op served as a custom op. A client with a `scope`
+/// calls the scoped route when given the prefix argument and the unscoped
+/// one otherwise: through `scopedPath` alone when both share a shape, else
+/// by branching on the argument.
+fn op_body(m: &ApiModule, f: &ApiFn, config: &Config, return_type: &str, scope: Option<&str>) -> Vec<String> {
+    let unscoped = op_route(m, f, config, false);
+    let Some(prefix_arg) = scope else { return vec![op_call(return_type, &unscoped, None)] };
+    let scoped = op_route(m, f, config, true);
+    if scoped == unscoped {
+        return vec![op_call(return_type, &unscoped, scope)];
+    }
+    vec![
+        format!("if ({prefix_arg}) {{\n  {}\n}}", op_call(return_type, &scoped, scope)),
+        op_call(return_type, &unscoped, None),
+    ]
 }
 
 /// True when `f`'s parameter `p` is an `Option`.
@@ -569,29 +608,31 @@ fn is_input(p: &Param) -> bool {
     p.ty.contains("Input")
 }
 
-/// `${encodeURIComponent(parentId)}`: `p` as one path segment.
-fn path_segment(p: &Param) -> String {
-    format!("${{encodeURIComponent({})}}", snake_to_camel(&p.name))
+/// `/${encodeURIComponent(parentId)}`: the TS expression `value` as one path
+/// segment.
+fn path_segment(value: &str) -> String {
+    format!("/${{encodeURIComponent({value})}}")
 }
 
 /// `${toQueryString({ opArg: { verbose, include_done: includeDone } })}`, or
 /// nothing for no arguments. `toQueryString` drops the ones left undefined.
-fn op_args_query(args: &[(&str, &str)]) -> String {
+fn op_args_query(args: &[(&str, String)]) -> String {
     if args.is_empty() {
         return String::new();
     }
     format!("${{toQueryString({{ opArg: {} }})}}", object_literal(args))
 }
 
-/// `return callOp<R>('METHOD', path, { args });`, without the argument
-/// object when there are no arguments.
-fn op_call(return_type: &str, http_method: &str, path_expr: &str, args: &[(&str, &str)]) -> String {
-    let args = if args.is_empty() { String::new() } else { format!(", {}", object_literal(args)) };
-    format!("return callOp<{return_type}>('{http_method}', {path_expr}{args});")
+/// `return callOp<R>('METHOD', path, { args });` for `route`, without the
+/// argument object when there are no arguments.
+fn op_call(return_type: &str, route: &OpRoute, scope: Option<&str>) -> String {
+    let path = fetch(&format!("{}{}", route.path, op_args_query(&route.op_args)), scope);
+    let args = if route.args.is_empty() { String::new() } else { format!(", {}", object_literal(&route.args)) };
+    format!("return callOp<{return_type}>('{}', {path}{args});", route.method)
 }
 
 /// `{ a, b: c }`, using the shorthand where a key and its value match.
-fn object_literal(members: &[(&str, &str)]) -> String {
+fn object_literal(members: &[(&str, String)]) -> String {
     let members: Vec<String> = members
         .iter()
         .map(|(key, value)| if key == value { (*key).to_string() } else { format!("{key}: {value}") })
@@ -618,13 +659,9 @@ fn paginated_result(array: &str) -> String {
 /// `limit`/`offset` as plain query parameters and returns the body as sent;
 /// any other list is an op (§10.4), paging with the `opArg` family. Every
 /// paginated list returns `PaginatedResult`.
-pub(crate) fn list_method(
-    m: &ApiModule,
-    f: &ApiFn,
-    config: &Config,
-    base: &str,
-    path: &dyn Fn(&str, bool) -> String,
-) -> Method {
+pub(crate) fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -> Method {
+    let base = config.naming.url_for_module(m);
+    let path = |p: &str| fetch(p, scope);
     let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
     let paginated = is_paginated(m, f, config);
     // A list that takes the page owns its limit/offset: they are never caller params.
@@ -653,7 +690,7 @@ pub(crate) fn list_method(
         Served::Resource(r) if paginated => vec![
             format!(
                 "const {{ data, meta }} = await httpGet<JsonApiPageDocument>({});",
-                path(&format!("/{base}${{toQueryString({{ page: {{ offset, limit }} }})}}"), true)
+                path(&format!("/{base}${{toQueryString({{ page: {{ offset, limit }} }})}}"))
             ),
             format!(
                 "return {{ items: data.map({}), total: meta.total, limit: meta.limit, offset: meta.offset }};",
@@ -661,18 +698,10 @@ pub(crate) fn list_method(
             ),
         ],
         Served::Resource(r) => vec![
-            format!(
-                "const {{ data }} = await httpGet<JsonApiCollectionDocument>({});",
-                path(&format!("/{base}"), false)
-            ),
+            format!("const {{ data }} = await httpGet<JsonApiCollectionDocument>({});", path(&format!("/{base}"))),
             format!("return data.map({});", flatten_fn(r)),
         ],
-        Served::Op => {
-            let page =
-                if paginated { op_args_query(&[("limit", "limit"), ("offset", "offset")]) } else { String::new() };
-            let route = format!("/{base}{page}");
-            vec![op_call(&return_type, "GET", &path(&route, paginated), &[])]
-        }
+        Served::Op => op_body(m, f, config, &return_type, scope),
         Served::FilteredList => {
             let path_expr = if query_param.is_some() && plain_params.is_empty() {
                 let qs_arg = if paginated {
@@ -680,7 +709,7 @@ pub(crate) fn list_method(
                 } else {
                     "toQueryString(query ?? {})".to_string()
                 };
-                path(&format!("/{base}${{{qs_arg}}}"), true)
+                path(&format!("/{base}${{{qs_arg}}}"))
             } else {
                 let qs = plain_params
                     .iter()
@@ -688,9 +717,9 @@ pub(crate) fn list_method(
                     .collect::<Vec<_>>()
                     .join("&");
                 if paginated {
-                    path(&format!("/{base}?{qs}&${{toQueryString({{ limit, offset }}).slice(1)}}"), true)
+                    path(&format!("/{base}?{qs}&${{toQueryString({{ limit, offset }}).slice(1)}}"))
                 } else {
-                    path(&format!("/{base}?{qs}"), true)
+                    path(&format!("/{base}?{qs}"))
                 }
             };
             vec![format!("return httpGet({path_expr});")]
