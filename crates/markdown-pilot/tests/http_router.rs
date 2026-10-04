@@ -304,15 +304,20 @@ async fn relationships_carry_linkage_in_declared_order() {
         .await;
     assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.raw);
     assert_eq!(reply.headers[header::LOCATION], "/api/tasks/ship-it");
-    // Duplicates collapse to their first occurrence (§5.4).
-    assert!(
-        reply.raw.contains(concat!(
-            r#""relationships":{"parent":{"data":null},"subtasks":{"data":[]},"#,
-            r#""tags":{"data":[{"type":"tags","id":"codegen"}]}},"links":{"self":"/api/tasks/ship-it"}}"#,
-        )),
-        "{}",
-        reply.raw
+    // Duplicates collapse to their first occurrence (§5.4). Each
+    // relationship links its relationship and related routes, and the
+    // junction relationship `labels` has the links alone.
+    let links = |rel: &str| {
+        format!(r#"{{"self":"/api/tasks/ship-it/relationships/{rel}","related":"/api/tasks/ship-it/{rel}"}}"#)
+    };
+    let relationships = format!(
+        r#""relationships":{{"parent":{{"links":{},"data":null}},"subtasks":{{"links":{},"data":[]}},"tags":{{"links":{},"data":[{{"type":"tags","id":"codegen"}}]}},"labels":{{"links":{}}}}},"links":{{"self":"/api/tasks/ship-it"}}}}"#,
+        links("parent"),
+        links("subtasks"),
+        links("tags"),
+        links("labels"),
     );
+    assert!(reply.raw.contains(&relationships), "{}", reply.raw);
 }
 
 #[tokio::test]
@@ -736,56 +741,416 @@ async fn custom_op_checks_run_in_order() {
     server.op("POST", "/api/tasks/capture", bad_body).await.error(StatusCode::BAD_REQUEST, "invalid_document");
 }
 
-// ── Junction ops (§10.4) ──
+// ── Relationship routes (§9) ──
+
+/// A relationship document: `{"data": data}`.
+fn linkage(data: Value) -> Value {
+    json!({ "data": data })
+}
+
+/// One resource identifier.
+fn identifier(type_name: &str, id: &str) -> Value {
+    json!({ "type": type_name, "id": id })
+}
+
+impl Server {
+    /// A write to the router generated under `projects/:project_id`.
+    async fn write_scoped(&self, method: &str, uri: &str, body: Value) -> Reply {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::ACCEPT, MEDIA_TYPE)
+            .header(header::CONTENT_TYPE, MEDIA_TYPE)
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        self.send_to(scoped_routes(), request).await
+    }
+
+    async fn task_parent(&self, id: &str) -> Option<String> {
+        self.store().get_task(id).await.expect("task").parent_id
+    }
+
+    async fn task_tags(&self, id: &str) -> Vec<String> {
+        self.store().get_task(id).await.expect("task").tags
+    }
+}
 
 #[tokio::test]
-async fn junction_ops_are_served_as_custom_ops() {
+async fn a_to_one_relationship_is_read_and_set_through_its_parent() {
+    let server = Server::new();
+    server.task("Alpha", "open").await;
+    server.task("Beta", "open").await;
+    let parent = "/api/tasks/beta/relationships/parent";
+
+    let reply = server.get(parent).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(reply.headers[header::CONTENT_TYPE], MEDIA_TYPE);
+    assert_eq!(
+        reply.raw,
+        concat!(
+            r#"{"jsonapi":{"version":"1.1"},"links":{"self":"/api/tasks/beta/relationships/parent","#,
+            r#""related":"/api/tasks/beta/parent"},"data":null}"#,
+        )
+    );
+
+    server.write("PATCH", parent, linkage(identifier("tasks", "alpha"))).await.no_content();
+    assert_eq!(server.store().get_task("beta").await.expect("beta").parent_id.as_deref(), Some("alpha"));
+    assert_eq!(server.get(parent).await.body["data"], identifier("tasks", "alpha"));
+    // The other end of the relation follows: `subtasks` is derived.
+    assert_eq!(
+        server.get("/api/tasks/alpha/relationships/subtasks").await.body["data"],
+        json!([identifier("tasks", "beta")])
+    );
+
+    server.write("PATCH", parent, linkage(Value::Null)).await.no_content();
+    assert_eq!(server.store().get_task("beta").await.expect("beta").parent_id, None);
+
+    // The linked task must exist and be of the relationship's type.
+    let reply = server.write("PATCH", parent, linkage(identifier("tasks", "nope"))).await;
+    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "related_resource_not_found"), "/data");
+    let reply = server.write("PATCH", parent, linkage(identifier("tags", "alpha"))).await;
+    assert_eq!(reply.pointer(StatusCode::CONFLICT, "type_mismatch"), "/data");
+    let reply = server.write("PATCH", parent, linkage(json!([identifier("tasks", "alpha")]))).await;
+    assert_eq!(reply.pointer(StatusCode::BAD_REQUEST, "invalid_document"), "/data");
+    let reply = server.write("PATCH", parent, json!({})).await;
+    assert_eq!(reply.pointer(StatusCode::BAD_REQUEST, "invalid_document"), "");
+    // A to-one has no members to add or remove.
+    for method in ["POST", "DELETE"] {
+        let reply = server.write(method, parent, linkage(json!([identifier("tasks", "alpha")]))).await;
+        let error = reply.error(StatusCode::FORBIDDEN, "relationship_update_unsupported");
+        assert!(error.get("source").is_none(), "{}", reply.raw);
+    }
+    // The parent is read before the linked task.
+    let reply =
+        server.write("PATCH", "/api/tasks/nope/relationships/parent", linkage(identifier("tasks", "nope"))).await;
+    reply.error(StatusCode::NOT_FOUND, "task_not_found");
+
+    // A required to-one cannot be emptied.
+    seed_sections(&server).await;
+    let reply = server.write("PATCH", "/api/sections/intro/relationships/parent", linkage(Value::Null)).await;
+    assert_eq!(reply.pointer(StatusCode::FORBIDDEN, "relationship_required"), "/data");
+    let reply = server
+        .write("PATCH", "/api/sections/intro/relationships/parent", linkage(identifier("sections", "usage")))
+        .await;
+    reply.no_content();
+    assert_eq!(server.store().get_section("intro").await.expect("intro").parent_id, "usage");
+}
+
+#[tokio::test]
+async fn a_many_to_many_relationship_adds_removes_and_replaces_members() {
     let server = Server::new();
     server.task("Alpha", "open").await;
     for (id, title) in [("a", "A"), ("b", "B"), ("c", "C")] {
         server.tag(id, title).await;
     }
+    let tags = "/api/tasks/alpha/relationships/tags";
+    let one = |id: &str| linkage(json!([identifier("tags", id)]));
 
-    for tag_id in ["a", "b", "c", "a"] {
-        server.op("POST", "/api/tasks/alpha/labels", &args(json!({ "tag_id": tag_id }))).await.no_content();
+    // Adding a member twice changes nothing; `[]` is a no-op.
+    for id in ["a", "b", "a"] {
+        server.write("POST", tags, one(id)).await.no_content();
     }
+    server.write("POST", tags, linkage(json!([]))).await.no_content();
+    assert_eq!(server.task_tags("alpha").await, ["a", "b"]);
+    let reply = server.write("POST", tags, linkage(json!([identifier("tags", "c"), identifier("tags", "a")]))).await;
+    assert_eq!(reply.pointer(StatusCode::FORBIDDEN, "relationship_batch_unsupported"), "/data");
+    let reply = server.write("POST", tags, one("nope")).await;
+    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "related_resource_not_found"), "/data/0");
+
+    // Removing an absent member, or one that names nothing, is a no-op.
+    for id in ["a", "a", "nope"] {
+        server.write("DELETE", tags, one(id)).await.no_content();
+    }
+    assert_eq!(server.task_tags("alpha").await, ["b"]);
+
+    // A replacement collapses duplicates to their first occurrence.
+    let replace = linkage(json!([identifier("tags", "c"), identifier("tags", "b"), identifier("tags", "c")]));
+    server.write("PATCH", tags, replace).await.no_content();
+    assert_eq!(server.task_tags("alpha").await, ["c", "b"]);
+    let reply = server.get(tags).await;
+    assert_eq!(reply.body["data"], json!([identifier("tags", "c"), identifier("tags", "b")]));
+    assert_eq!(reply.body["links"], json!({ "self": tags, "related": "/api/tasks/alpha/tags" }));
+    assert!(reply.body.get("meta").is_none(), "a field relationship is never paginated: {}", reply.raw);
+    server.write("PATCH", tags, linkage(json!([]))).await.no_content();
+    assert!(server.task_tags("alpha").await.is_empty());
+}
+
+#[tokio::test]
+async fn a_has_many_relationship_writes_the_childrens_foreign_keys() {
+    let server = Server::new();
+    for title in ["Alpha", "Beta", "Gamma"] {
+        server.task(title, "open").await;
+    }
+    let subtasks = "/api/tasks/alpha/relationships/subtasks";
+
+    server.write("POST", subtasks, linkage(json!([identifier("tasks", "beta")]))).await.no_content();
+    assert_eq!(server.task_parent("beta").await.as_deref(), Some("alpha"));
+    server.write("PATCH", subtasks, linkage(json!([identifier("tasks", "gamma")]))).await.no_content();
+    assert_eq!((server.task_parent("beta").await, server.task_parent("gamma").await.as_deref()), (None, Some("alpha")));
+    server.write("DELETE", subtasks, linkage(json!([identifier("tasks", "gamma")]))).await.no_content();
+    assert_eq!(server.task_parent("gamma").await, None);
+
+    // A child whose foreign key is not an `Option` cannot be dropped.
+    seed_sections(&server).await;
+    let children = "/api/sections/usage/relationships/children";
+    let reply = server.write("PATCH", children, linkage(json!([identifier("sections", "install")]))).await;
+    let error = reply.error(StatusCode::FORBIDDEN, "section_parent_required");
+    assert!(error.get("source").is_none(), "{}", reply.raw);
+    let reply = server.write("DELETE", children, linkage(json!([identifier("sections", "cli")]))).await;
+    reply.error(StatusCode::FORBIDDEN, "section_parent_required");
+    // Adding one moves it from its previous parent.
+    server.write("POST", children, linkage(json!([identifier("sections", "intro")]))).await.no_content();
+    assert_eq!(server.store().get_section("intro").await.expect("intro").parent_id, "usage");
+}
+
+#[tokio::test]
+async fn a_junction_relationship_calls_its_ops() {
+    let server = Server::new();
+    server.task("Alpha", "open").await;
+    for (id, title) in [("a", "A"), ("b", "B"), ("c", "C")] {
+        server.tag(id, title).await;
+    }
+    let labels = "/api/tasks/alpha/relationships/labels";
+    let one = |id: &str| linkage(json!([identifier("tags", id)]));
+
+    // A member added twice is added once: the membership read answers it.
+    for id in ["a", "b", "c", "a"] {
+        server.write("POST", labels, one(id)).await.no_content();
+    }
+    assert_eq!(server.task_tags("alpha").await, ["a", "b", "c"]);
 
     // Paginated in memory: `default_limit: 2`, `max_limit: 3`.
-    server.get("/api/tasks/alpha/labels").await.ok_result(concat!(
-        r#"{"items":[{"id":"a","title":"A"},{"id":"b","title":"B"}],"#,
-        r#""total":3,"limit":2,"offset":0}"#,
-    ));
-    server
-        .get("/api/tasks/alpha/labels?opArg[offset]=2&opArg[limit]=50")
-        .await
-        .ok_result(r#"{"items":[{"id":"c","title":"C"}],"total":3,"limit":3,"offset":2}"#);
-    // The page is an `opArg`, not `page[…]`.
-    let reply = server.get("/api/tasks/alpha/labels?page[limit]=1").await;
-    assert_eq!(reply.parameter("invalid_query_parameter"), "page[limit]");
-    // Its values are page values: digits only, as `page[…]` reads them.
-    for bad in ["two", "%2B5", "-1", "", "1.5"] {
-        let reply = server.get(&format!("/api/tasks/alpha/labels?opArg[limit]={bad}")).await;
-        assert_eq!(reply.parameter("invalid_query_parameter"), "opArg[limit]", "opArg[limit]={bad}");
+    let reply = server.get(labels).await;
+    assert_eq!(
+        reply.raw,
+        concat!(
+            r#"{"jsonapi":{"version":"1.1"},"links":{"#,
+            r#""self":"/api/tasks/alpha/relationships/labels?page%5Boffset%5D=0&page%5Blimit%5D=2","#,
+            r#""related":"/api/tasks/alpha/labels","#,
+            r#""first":"/api/tasks/alpha/relationships/labels?page%5Boffset%5D=0&page%5Blimit%5D=2","#,
+            r#""prev":null,"#,
+            r#""next":"/api/tasks/alpha/relationships/labels?page%5Boffset%5D=2&page%5Blimit%5D=2","#,
+            r#""last":"/api/tasks/alpha/relationships/labels?page%5Boffset%5D=2&page%5Blimit%5D=2"},"#,
+            r#""meta":{"total":3,"limit":2,"offset":0},"#,
+            r#""data":[{"type":"tags","id":"a"},{"type":"tags","id":"b"}]}"#,
+        )
+    );
+    let reply = server.get(&format!("{labels}?page[offset]=2&page[limit]=50")).await;
+    assert_eq!(reply.body["data"], json!([identifier("tags", "c")]));
+    assert_eq!(reply.body["meta"], json!({ "total": 3, "limit": 3, "offset": 2 }));
+    assert_eq!(
+        server.get(&format!("{labels}?page[limit]=0")).await.parameter("invalid_query_parameter"),
+        "page[limit]"
+    );
+    assert_eq!(
+        server.get(&format!("{labels}?opArg[limit]=1")).await.parameter("invalid_query_parameter"),
+        "opArg[limit]"
+    );
+
+    // A member removed twice is removed once; a target is never checked.
+    for id in ["b", "b", "nope"] {
+        server.write("DELETE", labels, one(id)).await.no_content();
     }
-    let reply = server.get("/api/tasks/alpha/labels?opArg[offset]=%2B1").await;
-    assert_eq!(reply.parameter("invalid_query_parameter"), "opArg[offset]");
+    assert_eq!(server.task_tags("alpha").await, ["a", "c"]);
 
-    server.send(Request::delete("/api/tasks/alpha/labels/b").body(Body::empty()).unwrap()).await.no_content();
-    assert_eq!(server.store().get_task("alpha").await.expect("task").tags, ["a", "c"]);
+    // No junction op replaces a set.
+    let reply = server.write("PATCH", labels, one("a")).await;
+    let error = reply.error(StatusCode::FORBIDDEN, "relationship_update_unsupported");
+    assert!(error.get("source").is_none(), "{}", reply.raw);
+    let reply = server.write("POST", labels, one("nope")).await;
+    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "related_resource_not_found"), "/data/0");
+    let reply = server.write("POST", labels, json!({})).await;
+    assert_eq!(reply.pointer(StatusCode::BAD_REQUEST, "invalid_document"), "");
+    server.get("/api/tasks/nope/relationships/labels").await.error(StatusCode::NOT_FOUND, "task_not_found");
+}
 
-    // The child argument is required, and the ops' `AppError`s map.
-    let reply = server.op("POST", "/api/tasks/alpha/labels", &args(json!({}))).await;
-    assert_eq!(reply.pointer(StatusCode::BAD_REQUEST, "invalid_document"), "/meta/args");
-    let reply = server.op("POST", "/api/tasks/alpha/labels", &args(json!({ "tag_id": "nope" }))).await;
-    reply.error(StatusCode::NOT_FOUND, "tag_not_found");
-    server.get("/api/tasks/nope/labels").await.error(StatusCode::NOT_FOUND, "task_not_found");
+#[tokio::test]
+async fn related_links_answer_the_related_resources() {
+    let server = Server::new();
+    server.task("Alpha", "open").await;
+    server.task("Beta", "open").await;
+    for (id, title) in [("a", "A"), ("b", "B"), ("c", "C")] {
+        server.tag(id, title).await;
+    }
+    server
+        .write("PATCH", "/api/tasks/beta/relationships/parent", linkage(identifier("tasks", "alpha")))
+        .await
+        .no_content();
+    let all = linkage(json!([identifier("tags", "a"), identifier("tags", "b"), identifier("tags", "c")]));
+    server.write("PATCH", "/api/tasks/alpha/relationships/tags", all).await.no_content();
 
-    let reply = server.op("PATCH", "/api/tasks/alpha/labels", &args(json!({ "tag_id": "a" }))).await;
-    reply.error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
-    assert_eq!(reply.headers[header::ALLOW], "GET, HEAD, POST");
-    let reply = server.get("/api/tasks/alpha/labels/a").await;
-    reply.error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
-    assert_eq!(reply.headers[header::ALLOW], "DELETE");
+    // To-one: the resource, or `null`.
+    let reply = server.get("/api/tasks/beta/parent").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(reply.body["links"], json!({ "self": "/api/tasks/beta/parent" }));
+    assert_eq!(reply.body["data"], server.get("/api/tasks/alpha").await.body["data"]);
+    assert_eq!(
+        server.get("/api/tasks/alpha/parent").await.raw,
+        r#"{"jsonapi":{"version":"1.1"},"links":{"self":"/api/tasks/alpha/parent"},"data":null}"#
+    );
+
+    // To-many, in linkage order; a dangling id is skipped.
+    server.store().delete_tag("b").await.expect("delete b");
+    let reply = server.get("/api/tasks/alpha/tags").await;
+    assert_eq!(ids(&reply.body), ["a", "c"]);
+    assert_eq!(reply.body["data"][0]["links"]["self"], "/api/tags/a");
+    assert!(reply.body.get("meta").is_none(), "{}", reply.raw);
+    assert_eq!(ids(&server.get("/api/tasks/alpha/subtasks").await.body), ["beta"]);
+
+    // A junction relationship: `list_labels`'s entities, paged.
+    server
+        .write("DELETE", "/api/tasks/alpha/relationships/tags", linkage(json!([identifier("tags", "b")])))
+        .await
+        .no_content();
+    let reply = server.get("/api/tasks/alpha/labels?page[limit]=1&page[offset]=1").await;
+    assert_eq!(ids(&reply.body), ["c"]);
+    assert_eq!(reply.body["data"][0]["attributes"], json!({ "title": "C" }));
+    assert_eq!(reply.body["meta"], json!({ "total": 2, "limit": 1, "offset": 1 }));
+    assert_eq!(reply.body["links"]["self"], "/api/tasks/alpha/labels?page%5Boffset%5D=1&page%5Blimit%5D=1");
+    assert!(reply.body["links"].get("related").is_none(), "{}", reply.raw);
+
+    server.get("/api/tasks/nope/tags").await.error(StatusCode::NOT_FOUND, "task_not_found");
+    // Only a junction relationship pages.
+    assert_eq!(
+        server.get("/api/tasks/alpha/tags?page[limit]=1").await.parameter("invalid_query_parameter"),
+        "page[limit]"
+    );
+}
+
+#[tokio::test]
+async fn relationship_routes_check_in_the_contract_order() {
+    let server = Server::new();
+    server.task("Alpha", "open").await;
+
+    // Step 4: an unknown `{rel}` is a 404 on both routes and every method,
+    // ahead of the query, the body and the parent.
+    for uri in
+        ["/api/tasks/alpha/relationships/nope", "/api/tasks/alpha/nope", "/api/tasks/nope/relationships/nope?x=1"]
+    {
+        let error = server.get(uri).await.error(StatusCode::NOT_FOUND, "relationship_not_found");
+        assert!(error.get("source").is_none());
+    }
+    for method in ["PATCH", "POST", "DELETE"] {
+        let reply = server.op(method, "/api/tasks/nope/relationships/nope?x=1", "not json").await;
+        reply.error(StatusCode::NOT_FOUND, "relationship_not_found");
+    }
+    // Undecodable, it names no relationship either.
+    server.get("/api/tasks/alpha/relationships/%FF").await.error(StatusCode::NOT_FOUND, "relationship_not_found");
+
+    // Step 3 precedes it: the body's media type.
+    let reply = server
+        .raw("PATCH", "/api/tasks/alpha/relationships/nope", &[(header::CONTENT_TYPE, "application/json")], "{}")
+        .await;
+    reply.error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type");
+
+    // Step 5, then 6, then 7, then 8.
+    let reply = server.op("PATCH", "/api/tasks/alpha/relationships/labels?x=1", "not json").await;
+    assert_eq!(reply.parameter("invalid_query_parameter"), "x");
+    server
+        .op("PATCH", "/api/tasks/alpha/relationships/labels", "not json")
+        .await
+        .error(StatusCode::FORBIDDEN, "relationship_update_unsupported");
+    server
+        .op("POST", "/api/tasks/nope/relationships/tags", "not json")
+        .await
+        .error(StatusCode::BAD_REQUEST, "invalid_document");
+    let reply =
+        server.op("POST", "/api/tasks/nope/relationships/tags", r#"{"data":[{"type":"tags","id":"nope"}]}"#).await;
+    reply.error(StatusCode::NOT_FOUND, "task_not_found");
+    // A relationship route takes no `include` or `sort`.
+    assert_eq!(
+        server.get("/api/tasks/alpha/relationships/parent?include=parent").await.parameter("invalid_query_parameter"),
+        "include"
+    );
+
+    // Step 1: routing happens before `{rel}` is read.
+    for uri in ["/api/tasks/alpha/relationships/parent", "/api/tasks/alpha/relationships/nope"] {
+        let reply = server.op("PUT", uri, "{}").await;
+        reply.error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
+        assert_eq!(reply.headers[header::ALLOW], "GET, HEAD, PATCH, POST, DELETE");
+    }
+    for method in ["PUT", "POST", "PATCH", "DELETE"] {
+        let reply = server.op(method, "/api/tasks/alpha/parent", "{}").await;
+        reply.error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
+        assert_eq!(reply.headers[header::ALLOW], "GET, HEAD");
+    }
+}
+
+#[tokio::test]
+async fn a_junction_relationship_cannot_be_written_in_a_resource_document() {
+    let server = Server::new();
+    server.task("Alpha", "open").await;
+    server.tag("a", "A").await;
+    let labelled = json!({ "labels": linkage(json!([identifier("tags", "a")])) });
+
+    let reply = server
+        .write(
+            "POST",
+            "/api/tasks",
+            json!({ "data": { "type": "tasks", "attributes": { "title": "Beta", "status": "open", "body": "" }, "relationships": labelled } }),
+        )
+        .await;
+    assert_eq!(reply.pointer(StatusCode::FORBIDDEN, "relationship_update_unsupported"), "/data/relationships/labels");
+    let reply = server
+        .write(
+            "PATCH",
+            "/api/tasks/alpha",
+            json!({ "data": { "type": "tasks", "id": "alpha", "relationships": labelled } }),
+        )
+        .await;
+    assert_eq!(reply.pointer(StatusCode::FORBIDDEN, "relationship_update_unsupported"), "/data/relationships/labels");
+    // It is a relationship the type has: an unknown name is reported first.
+    let reply = server
+        .write(
+            "PATCH",
+            "/api/tasks/alpha",
+            json!({ "data": { "type": "tasks", "id": "alpha", "relationships": { "labels": labelled["labels"], "zzz": {} } } }),
+        )
+        .await;
+    assert_eq!(reply.pointer(StatusCode::BAD_REQUEST, "unknown_relationship"), "/data/relationships/zzz");
+    assert!(server.task_tags("alpha").await.is_empty());
+}
+
+#[tokio::test]
+async fn scoped_relationship_routes_answer_as_the_unscoped_ones() {
+    let server = Server::new();
+    server.task("Alpha", "open").await;
+    server.task("Beta", "open").await;
+    server.tag("a", "A").await;
+    let scoped = |uri: &str| uri.replacen("/api/", &format!("/api/{}/", project_path()), 1);
+
+    server
+        .write_scoped(
+            "POST",
+            &scoped("/api/tasks/alpha/relationships/labels"),
+            linkage(json!([identifier("tags", "a")])),
+        )
+        .await
+        .no_content();
+    server
+        .write_scoped("PATCH", &scoped("/api/tasks/beta/relationships/parent"), linkage(identifier("tasks", "alpha")))
+        .await
+        .no_content();
+    for uri in [
+        "/api/tasks/alpha",
+        "/api/tasks/alpha/relationships/labels",
+        "/api/tasks/alpha/labels",
+        "/api/tasks/alpha/relationships/tags",
+        "/api/tasks/alpha/tags",
+        "/api/tasks/beta/parent",
+        "/api/tasks/alpha/subtasks?page[limit]=1",
+        "/api/tasks/alpha/relationships/nope",
+    ] {
+        let unscoped = server.get(uri).await;
+        let reply = server.get_scoped(&scoped(uri)).await;
+        assert_eq!(reply.status, unscoped.status, "{uri}: {}", reply.raw);
+        assert_eq!(reply.raw, unscoped.raw.replace("\"/api/", &format!("\"/api/{}/", project_path())), "{uri}");
+    }
+    let reply = server.get_scoped(&scoped("/api/tasks/alpha")).await;
+    assert_eq!(
+        reply.body["data"]["relationships"]["labels"]["links"]["related"],
+        "/api/projects/pilot/tasks/alpha/labels"
+    );
 }
 
 // ── A module with no entity (§10.4) ──

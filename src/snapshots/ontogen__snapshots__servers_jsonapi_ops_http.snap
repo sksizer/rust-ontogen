@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{State, rejection::QueryRejection},
+    extract::{RawQuery, State, rejection::QueryRejection},
     http::{Method, StatusCode},
     response::Response,
     routing::{delete, get, post},
@@ -19,7 +19,7 @@ use axum::{
 use ontogen_jsonapi::{
     Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
     ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
-    error::method_not_allowed,
+    error::{method_not_allowed, relationship_not_found, relationship_update_unsupported},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     filter_fields,
     links::{CanonicalQuery, encode_path_segment, pagination_links},
@@ -84,6 +84,20 @@ pub struct PaginatedResult<T: Serialize> {
 /// Writes an event item that is not an entity as `{"meta":{"result":…}}`.
 fn ontogen_result_frame<T: Serialize>(event: Event, item: &T) -> Result<Event, axum::Error> {
     event.json_data(ResultFrame::new(item))
+}
+
+/// `ids` with each id of `linked` it lacks appended, or `None` when it lacks
+/// none: a relationship `POST` that adds nothing writes nothing.
+fn ontogen_added(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
+    let added: Vec<String> = linked.iter().map(|l| l.id.clone()).filter(|id| !ids.contains(id)).collect();
+    (!added.is_empty()).then(|| [ids, added.as_slice()].concat())
+}
+
+/// `ids` without the ids of `linked`, or `None` when it holds none of them: a
+/// relationship `DELETE` that removes nothing writes nothing.
+fn ontogen_removed(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
+    let kept: Vec<String> = ids.iter().filter(|id| !linked.iter().any(|l| l.id == **id)).cloned().collect();
+    (kept.len() != ids.len()).then_some(kept)
 }
 
 /// A paginated list that is not served as a resource takes its page as
@@ -306,18 +320,26 @@ impl Serialize for TaskResourceAttributes<'_> {
 /// under `collection`.
 fn task_as_resource<'a>(entity: &'a Task, collection: &str) -> ResourceObject<TaskResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
-    ResourceObject::new("tasks", entity.id.clone(), TaskResourceAttributes(entity), self_link)
+    ResourceObject::new("tasks", entity.id.clone(), TaskResourceAttributes(entity), self_link.clone())
         .with_relationship(
             "epic",
-            Relationship::from_data(Linkage::ToOne(
-                entity.epic_id.as_ref().map(|id| ResourceIdentifier::new("epics", id.as_str())),
-            )),
+            Relationship::new(
+                Links::new(format!("{self_link}/relationships/epic")).with_related(format!("{self_link}/epic")),
+                Linkage::ToOne(entity.epic_id.as_ref().map(|id| ResourceIdentifier::new("epics", id.as_str()))),
+            ),
         )
         .with_relationship(
             "tags",
-            Relationship::from_data(Linkage::ToMany(
-                entity.tags.iter().map(|id| ResourceIdentifier::new("tags", id.as_str())).collect(),
-            )),
+            Relationship::new(
+                Links::new(format!("{self_link}/relationships/tags")).with_related(format!("{self_link}/tags")),
+                Linkage::ToMany(entity.tags.iter().map(|id| ResourceIdentifier::new("tags", id.as_str())).collect()),
+            ),
+        )
+        .with_relationship(
+            "labels",
+            Relationship::from_links(
+                Links::new(format!("{self_link}/relationships/labels")).with_related(format!("{self_link}/labels")),
+            ),
         )
 }
 
@@ -356,7 +378,7 @@ fn task_request_fields(
     set_field(&mut fields, "done", request::attribute::<bool>(attributes, "done", false)?);
     set_field(&mut fields, "body", request::attribute::<String>(attributes, "body", create)?);
     let relationships = data.relationships()?;
-    request::check_relationship_names(relationships, "tasks", &["epic", "tags"])?;
+    request::check_relationship_names(relationships, "tasks", &["epic", "tags", "labels"])?;
     let mut linked = TaskLinkedIds::default();
     if let Some(rel) = relationships.and_then(|r| r.get("epic")) {
         let id = request::to_one(rel, "/data/relationships/epic", "epics", true)?;
@@ -367,6 +389,10 @@ fn task_request_fields(
         let ids = request::to_many_linked(rel, "/data/relationships/tags", "tags", None)?;
         fields.insert("tags".to_owned(), ids.iter().map(|l| serde_json::Value::String(l.id.clone())).collect());
         linked.tags = ids;
+    }
+    if relationships.is_some_and(|r| r.contains_key("labels")) {
+        return Err(relationship_update_unsupported("tasks", "labels", "a create or update")
+            .with_pointer("/data/relationships/labels"));
     }
     Ok((fields, linked))
 }
@@ -396,6 +422,84 @@ async fn task_check_linked(state: &AppState, linked: &TaskLinkedIds) -> Result<(
 /// request URL, so it carries no links.
 fn ontogen_task_frame_data(event: Event, entity: &Task) -> Result<Event, axum::Error> {
     event.json_data(task_as_resource(entity, "/api/tasks").into_unlinked())
+}
+
+/// The `tasks` resource `id` names, read as its `GET` reads it: the
+/// parent of a relationship route.
+async fn ontogen_task_read(state: &AppState, id: &LookupKey) -> Result<Task, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    task::get_by_id(&store, task_lookup_key(id)?).await.map_err(ontogen_app_error)
+}
+
+/// Sets the relation field `field` of the `tasks` resource `id` to
+/// `value` through `task::update`, as a resource `PATCH` naming only that
+/// relationship does.
+async fn ontogen_task_write_field(
+    state: &AppState,
+    id: &str,
+    field: &str,
+    value: serde_json::Value,
+) -> Result<(), ErrorObject> {
+    let input: UpdateTaskInput = from_fields(serde_json::Map::from_iter([(field.to_owned(), value)]))?;
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    task::update(&store, id, input).await.map_err(ontogen_app_error)?;
+    Ok(())
+}
+
+/// The `epics` resources `ids` name, in order, without the ids that
+/// name none.
+async fn ontogen_epic_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Epic>, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    let mut found = Vec::with_capacity(ids.len());
+    for id in ids {
+        match epic::get_by_id(&store, id).await {
+            Ok(entity) => found.push(entity),
+            Err(crate::schema::AppError::EpicNotFound(..)) => {}
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(found)
+}
+
+/// Checks that a `epics` resource exists for each of `ids`, in order.
+async fn ontogen_epic_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    for linked in ids {
+        match epic::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::EpicNotFound(..)) => return Err(linked.not_found("epics")),
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(())
+}
+
+/// The `tags` resources `ids` name, in order, without the ids that
+/// name none.
+async fn ontogen_tag_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Tag>, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    let mut found = Vec::with_capacity(ids.len());
+    for id in ids {
+        match tag::get_by_id(&store, id).await {
+            Ok(entity) => found.push(entity),
+            Err(crate::schema::AppError::TagNotFound(..)) => {}
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(found)
+}
+
+/// Checks that a `tags` resource exists for each of `ids`, in order.
+async fn ontogen_tag_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    for linked in ids {
+        match tag::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(())
 }
 
 // ── Agent Handlers ──
@@ -816,50 +920,281 @@ async fn task_delete(
     Ok(response::no_content())
 }
 
-async fn task_list_labels(
+async fn task_list_overdue(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    Path(task_id): Path<String>,
-    ontogen_query: Query<PageOpArgs>,
-) -> Result<Response, ErrorObject> {
-    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(20).min(100);
-    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let ontogen_all = task::list_labels(&ontogen_store, &task_id).await.map_err(ontogen_app_error)?;
-    let ontogen_total = ontogen_all.len() as u64;
-    let ontogen_items = ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();
-    let ontogen_result =
-        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
-    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
-}
-
-async fn task_add_label(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    ontogen_path: Result<Path<String>, ErrorObject>,
-    ontogen_query: Result<Query<NoParams>, ErrorObject>,
-    ontogen_body: Body,
-) -> Result<Response, ErrorObject> {
-    let Path(task_id) = ontogen_path?;
-    ontogen_query?;
-    let ontogen_bytes = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
-    request::check_op_arg_names(&ontogen_args, &["tag_id"])?;
-    let tag_id = request::op_arg::<String>(&ontogen_args, "tag_id", true)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    task::add_label(&ontogen_store, &task_id, &tag_id).await.map_err(ontogen_app_error)?;
-    Ok(response::no_content())
-}
-
-async fn task_remove_label(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path((task_id, tag_id)): Path<(String, String)>,
+    Path(before): Path<String>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    task::remove_label(&ontogen_store, &task_id, &tag_id).await.map_err(ontogen_app_error)?;
-    Ok(response::no_content())
+    let ontogen_result = task::list_overdue(&ontogen_store, &before).await.map_err(ontogen_app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn ontogen_task_relationship_get(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((id, rel)): Path<(LookupKey, LookupKey)>,
+    RawQuery(ontogen_raw_query): RawQuery,
+) -> Result<Response, ErrorObject> {
+    let ontogen_collection = "/api/tasks";
+    match rel.as_str() {
+        Some("epic") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            let ontogen_base = format!("{ontogen_collection}/{}", encode_path_segment(&ontogen_entity.id));
+            let ontogen_links =
+                Links::new(format!("{ontogen_base}/relationships/epic")).with_related(format!("{ontogen_base}/epic"));
+            let ontogen_data = Linkage::ToOne(
+                ontogen_entity
+                    .epic_id
+                    .as_ref()
+                    .map(|ontogen_member| ResourceIdentifier::new("epics", ontogen_member.as_str())),
+            );
+            Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
+        }
+        Some("tags") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            let ontogen_base = format!("{ontogen_collection}/{}", encode_path_segment(&ontogen_entity.id));
+            let ontogen_links =
+                Links::new(format!("{ontogen_base}/relationships/tags")).with_related(format!("{ontogen_base}/tags"));
+            let ontogen_data = Linkage::ToMany(
+                ontogen_entity
+                    .tags
+                    .iter()
+                    .map(|ontogen_member| ResourceIdentifier::new("tags", ontogen_member.as_str()))
+                    .collect(),
+            );
+            Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
+        }
+        Some("labels") => {
+            let ontogen_query =
+                QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec { page: true, ..QuerySpec::NONE })?;
+            let (ontogen_offset, ontogen_limit) = page(&ontogen_query, 20, 100)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+            let ontogen_members =
+                task::list_labels(&ontogen_store, &ontogen_entity.id).await.map_err(ontogen_app_error)?;
+            let ontogen_total = ontogen_members.len() as u64;
+            let ontogen_data = Linkage::ToMany(
+                ontogen_members
+                    .iter()
+                    .skip(ontogen_offset as usize)
+                    .take(ontogen_limit as usize)
+                    .map(|ontogen_member| ResourceIdentifier::new("tags", ontogen_member.id.as_str()))
+                    .collect(),
+            );
+            let ontogen_base = format!("{ontogen_collection}/{}", encode_path_segment(&ontogen_entity.id));
+            let ontogen_self = format!("{ontogen_base}/relationships/labels");
+            let ontogen_links =
+                pagination_links(&ontogen_self, &CanonicalQuery::new(), ontogen_offset, ontogen_limit, ontogen_total)
+                    .with_related(format!("{ontogen_base}/labels"));
+            Ok(response::ok(&Document::new(ontogen_data, ontogen_links).with_meta(PageMeta {
+                total: ontogen_total,
+                limit: ontogen_limit,
+                offset: ontogen_offset,
+            })))
+        }
+        _ => Err(relationship_not_found("tasks", &rel)),
+    }
+}
+
+async fn ontogen_task_relationship_patch(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((id, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("epic") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked = request::to_one(&request::parse_relationship(&ontogen_bytes)?, "", "epics", true)?
+                .map(|ontogen_member| LinkedId { id: ontogen_member, pointer: "/data".to_owned() });
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            ontogen_epic_check_ids(&ontogen_state, ontogen_linked.as_slice()).await?;
+            ontogen_task_write_field(
+                &ontogen_state,
+                &ontogen_entity.id,
+                "epic_id",
+                ontogen_linked.map(|ontogen_member| ontogen_member.id).into(),
+            )
+            .await?;
+            Ok(response::no_content())
+        }
+        Some("tags") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tags", None)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;
+            ontogen_task_write_field(
+                &ontogen_state,
+                &ontogen_entity.id,
+                "tags",
+                ontogen_linked.into_iter().map(|ontogen_member| ontogen_member.id).collect(),
+            )
+            .await?;
+            Ok(response::no_content())
+        }
+        Some("labels") => {
+            ontogen_query?;
+            Err(relationship_update_unsupported("tasks", "labels", "PATCH"))
+        }
+        _ => Err(relationship_not_found("tasks", &rel)),
+    }
+}
+
+async fn ontogen_task_relationship_post(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((id, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("epic") => {
+            ontogen_query?;
+            Err(relationship_update_unsupported("tasks", "epic", "POST"))
+        }
+        Some("tags") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tags", Some(1))?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;
+            if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.tags, &ontogen_linked) {
+                ontogen_task_write_field(&ontogen_state, &ontogen_entity.id, "tags", ontogen_ids.into()).await?;
+            }
+            Ok(response::no_content())
+        }
+        Some("labels") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tags", Some(1))?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;
+            if let Some(ontogen_child) = ontogen_linked.first() {
+                let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+                let ontogen_members =
+                    task::list_labels(&ontogen_store, &ontogen_entity.id).await.map_err(ontogen_app_error)?;
+                if !ontogen_members.iter().any(|ontogen_member| ontogen_member.id == ontogen_child.id) {
+                    task::add_label(&ontogen_store, &ontogen_entity.id, &ontogen_child.id)
+                        .await
+                        .map_err(ontogen_app_error)?;
+                }
+            }
+            Ok(response::no_content())
+        }
+        _ => Err(relationship_not_found("tasks", &rel)),
+    }
+}
+
+async fn ontogen_task_relationship_delete(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((id, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("epic") => {
+            ontogen_query?;
+            Err(relationship_update_unsupported("tasks", "epic", "DELETE"))
+        }
+        Some("tags") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tags", Some(1))?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            if let Some(ontogen_ids) = ontogen_removed(&ontogen_entity.tags, &ontogen_linked) {
+                ontogen_task_write_field(&ontogen_state, &ontogen_entity.id, "tags", ontogen_ids.into()).await?;
+            }
+            Ok(response::no_content())
+        }
+        Some("labels") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tags", Some(1))?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            if let Some(ontogen_child) = ontogen_linked.first() {
+                let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+                let ontogen_members =
+                    task::list_labels(&ontogen_store, &ontogen_entity.id).await.map_err(ontogen_app_error)?;
+                if ontogen_members.iter().any(|ontogen_member| ontogen_member.id == ontogen_child.id) {
+                    task::remove_label(&ontogen_store, &ontogen_entity.id, &ontogen_child.id)
+                        .await
+                        .map_err(ontogen_app_error)?;
+                }
+            }
+            Ok(response::no_content())
+        }
+        _ => Err(relationship_not_found("tasks", &rel)),
+    }
+}
+
+async fn ontogen_task_related_get(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((id, rel)): Path<(LookupKey, LookupKey)>,
+    RawQuery(ontogen_raw_query): RawQuery,
+) -> Result<Response, ErrorObject> {
+    let ontogen_collection = "/api/tasks";
+    match rel.as_str() {
+        Some("epic") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            let ontogen_related = ontogen_epic_fetch(&ontogen_state, ontogen_entity.epic_id.as_slice()).await?;
+            let ontogen_data =
+                ontogen_related.first().map(|ontogen_member| epic_as_resource(ontogen_member, "/api/epics"));
+            let ontogen_self = format!("{ontogen_collection}/{}/epic", encode_path_segment(&ontogen_entity.id));
+            Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
+        }
+        Some("tags") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            let ontogen_related = ontogen_tag_fetch(&ontogen_state, &ontogen_entity.tags).await?;
+            let ontogen_data: Vec<_> =
+                ontogen_related.iter().map(|ontogen_member| tag_as_resource(ontogen_member, "/api/tags")).collect();
+            let ontogen_self = format!("{ontogen_collection}/{}/tags", encode_path_segment(&ontogen_entity.id));
+            Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
+        }
+        Some("labels") => {
+            let ontogen_query =
+                QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec { page: true, ..QuerySpec::NONE })?;
+            let (ontogen_offset, ontogen_limit) = page(&ontogen_query, 20, 100)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+            let ontogen_members =
+                task::list_labels(&ontogen_store, &ontogen_entity.id).await.map_err(ontogen_app_error)?;
+            let ontogen_total = ontogen_members.len() as u64;
+            let ontogen_data: Vec<_> = ontogen_members
+                .iter()
+                .skip(ontogen_offset as usize)
+                .take(ontogen_limit as usize)
+                .map(|ontogen_member| tag_as_resource(ontogen_member, "/api/tags"))
+                .collect();
+            let ontogen_self = format!("{ontogen_collection}/{}/labels", encode_path_segment(&ontogen_entity.id));
+            let ontogen_links =
+                pagination_links(&ontogen_self, &CanonicalQuery::new(), ontogen_offset, ontogen_limit, ontogen_total);
+            Ok(response::ok(&Document::new(ontogen_data, ontogen_links).with_meta(PageMeta {
+                total: ontogen_total,
+                limit: ontogen_limit,
+                offset: ontogen_offset,
+            })))
+        }
+        _ => Err(relationship_not_found("tasks", &rel)),
+    }
 }
 
 // ── Workout Handlers ──
@@ -930,6 +1265,52 @@ async fn workout_pause(
     request::check_op_arg_names(&ontogen_args, &[])?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     workout::pause(&ontogen_store).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+async fn workout_list_labels(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(workout_id): Path<String>,
+    ontogen_query: Query<PageOpArgs>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(20).min(100);
+    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let ontogen_all = workout::list_labels(&ontogen_store, &workout_id).await.map_err(ontogen_app_error)?;
+    let ontogen_total = ontogen_all.len() as u64;
+    let ontogen_items = ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();
+    let ontogen_result =
+        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn workout_add_label(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(workout_id) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["label"])?;
+    let label = request::op_arg::<String>(&ontogen_args, "label", true)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    workout::add_label(&ontogen_store, &workout_id, &label).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+async fn workout_remove_label(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((workout_id, label)): Path<(String, String)>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    workout::remove_label(&ontogen_store, &workout_id, &label).await.map_err(ontogen_app_error)?;
     Ok(response::no_content())
 }
 
@@ -1025,16 +1406,29 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
+        .route("/api/tasks/list-overdue/{before}", get(task_list_overdue).fallback(allow([Method::GET])))
+        .route(
+            "/api/tasks/{id}/relationships/{rel}",
+            get(ontogen_task_relationship_get)
+                .patch(ontogen_task_relationship_patch)
+                .post(ontogen_task_relationship_post)
+                .delete(ontogen_task_relationship_delete)
+                .fallback(allow([Method::GET, Method::PATCH, Method::POST, Method::DELETE])),
+        )
+        .route("/api/tasks/{id}/{rel}", get(ontogen_task_related_get).fallback(allow([Method::GET])))
         .route("/api/workouts/summary/{id}", get(workout_get_summary).fallback(allow([Method::GET])))
         .route("/api/workouts/start", post(workout_start).fallback(allow([Method::POST])))
         .route("/api/workouts/rename", post(workout_rename).fallback(allow([Method::POST])))
         .route("/api/workouts/pause", post(workout_pause).fallback(allow([Method::POST])))
         .route("/api/workouts/version", get(workout_get_version).fallback(allow([Method::GET])))
         .route(
-            "/api/tasks/{parent_id}/labels",
-            get(task_list_labels).post(task_add_label).fallback(allow([Method::GET, Method::POST])),
+            "/api/workouts/{parent_id}/labels",
+            get(workout_list_labels).post(workout_add_label).fallback(allow([Method::GET, Method::POST])),
         )
-        .route("/api/tasks/{parent_id}/labels/{child_id}", delete(task_remove_label).fallback(allow([Method::DELETE])))
+        .route(
+            "/api/workouts/{parent_id}/labels/{child_id}",
+            delete(workout_remove_label).fallback(allow([Method::DELETE])),
+        )
         .route("/api/events/task-changed", get(task_changed_sse).fallback(allow([Method::GET])))
         .route("/api/events/activity-for-kind/{kind}", get(activity_for_kind_sse).fallback(allow([Method::GET])))
         .route("/api/events/log-lines", get(log_lines_sse).fallback(allow([Method::GET])))

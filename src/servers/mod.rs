@@ -116,7 +116,7 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
             http_routes.push(HttpRouteMeta {
                 method: method.to_ascii_uppercase(),
                 path,
-                handler_name: handler_name.clone(),
+                handler_name: generators::http::route_handler(m, f, config),
                 module_name: m.name.clone(),
             });
 

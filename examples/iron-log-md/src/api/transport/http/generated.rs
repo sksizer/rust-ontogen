@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::State,
+    extract::{RawQuery, State},
     http::{Method, StatusCode},
     response::Response,
     routing::get,
@@ -15,7 +15,7 @@ use axum::{
 use ontogen_jsonapi::{
     Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, QueryParams, QuerySpec, Relationship,
     ResourceIdentifier, ResourceObject,
-    error::method_not_allowed,
+    error::{method_not_allowed, relationship_not_found, relationship_update_unsupported},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::encode_path_segment,
     request::{self, Endpoint, LinkedId, ResourceData},
@@ -62,6 +62,20 @@ fn allow<const N: usize>(
     allowed: [Method; N],
 ) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
     move |method| std::future::ready(method_not_allowed(&method, &allowed))
+}
+
+/// `ids` with each id of `linked` it lacks appended, or `None` when it lacks
+/// none: a relationship `POST` that adds nothing writes nothing.
+fn ontogen_added(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
+    let added: Vec<String> = linked.iter().map(|l| l.id.clone()).filter(|id| !ids.contains(id)).collect();
+    (!added.is_empty()).then(|| [ids, added.as_slice()].concat())
+}
+
+/// `ids` without the ids of `linked`, or `None` when it holds none of them: a
+/// relationship `DELETE` that removes nothing writes nothing.
+fn ontogen_removed(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
+    let kept: Vec<String> = ids.iter().filter(|id| !linked.iter().any(|l| l.id == **id)).cloned().collect();
+    (kept.len() != ids.len()).then_some(kept)
 }
 
 // ── JSON:API resources ──
@@ -246,12 +260,14 @@ impl Serialize for WorkoutResourceAttributes<'_> {
 /// under `collection`.
 fn workout_as_resource<'a>(entity: &'a Workout, collection: &str) -> ResourceObject<WorkoutResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
-    ResourceObject::new("workouts", entity.id.clone(), WorkoutResourceAttributes(entity), self_link).with_relationship(
-        "tags",
-        Relationship::from_data(Linkage::ToMany(
-            entity.tags.iter().map(|id| ResourceIdentifier::new("tags", id.as_str())).collect(),
-        )),
-    )
+    ResourceObject::new("workouts", entity.id.clone(), WorkoutResourceAttributes(entity), self_link.clone())
+        .with_relationship(
+            "tags",
+            Relationship::new(
+                Links::new(format!("{self_link}/relationships/tags")).with_related(format!("{self_link}/tags")),
+                Linkage::ToMany(entity.tags.iter().map(|id| ResourceIdentifier::new("tags", id.as_str())).collect()),
+            ),
+        )
 }
 
 /// The id an `{id}` path segment names.
@@ -343,20 +359,20 @@ fn workout_set_as_resource<'a>(
     collection: &str,
 ) -> ResourceObject<WorkoutSetResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
-    ResourceObject::new("workout-sets", entity.id.clone(), WorkoutSetResourceAttributes(entity), self_link)
+    ResourceObject::new("workout-sets", entity.id.clone(), WorkoutSetResourceAttributes(entity), self_link.clone())
         .with_relationship(
             "workout",
-            Relationship::from_data(Linkage::ToOne(Some(ResourceIdentifier::new(
-                "workouts",
-                entity.workout_id.as_str(),
-            )))),
+            Relationship::new(
+                Links::new(format!("{self_link}/relationships/workout")).with_related(format!("{self_link}/workout")),
+                Linkage::ToOne(Some(ResourceIdentifier::new("workouts", entity.workout_id.as_str()))),
+            ),
         )
         .with_relationship(
             "exercise",
-            Relationship::from_data(Linkage::ToOne(Some(ResourceIdentifier::new(
-                "exercises",
-                entity.exercise_id.as_str(),
-            )))),
+            Relationship::new(
+                Links::new(format!("{self_link}/relationships/exercise")).with_related(format!("{self_link}/exercise")),
+                Linkage::ToOne(Some(ResourceIdentifier::new("exercises", entity.exercise_id.as_str()))),
+            ),
         )
 }
 
@@ -435,6 +451,134 @@ async fn workout_set_check_linked(state: &AppState, linked: &WorkoutSetLinkedIds
         }
     }
     if let Some(linked) = &linked.exercise {
+        match exercise::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::ExerciseNotFound(..)) => return Err(linked.not_found("exercises")),
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(())
+}
+
+/// The `workouts` resource `id` names, read as its `GET` reads it: the
+/// parent of a relationship route.
+async fn ontogen_workout_read(state: &AppState, id: &LookupKey) -> Result<Workout, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    workout::get_by_id(&store, workout_lookup_key(id)?).await.map_err(ontogen_app_error)
+}
+
+/// Sets the relation field `field` of the `workouts` resource `id` to
+/// `value` through `workout::update`, as a resource `PATCH` naming only that
+/// relationship does.
+async fn ontogen_workout_write_field(
+    state: &AppState,
+    id: &str,
+    field: &str,
+    value: serde_json::Value,
+) -> Result<(), ErrorObject> {
+    let input: UpdateWorkoutInput = from_fields(serde_json::Map::from_iter([(field.to_owned(), value)]))?;
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    workout::update(&store, id, input).await.map_err(ontogen_app_error)?;
+    Ok(())
+}
+
+/// The `tags` resources `ids` name, in order, without the ids that
+/// name none.
+async fn ontogen_tag_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Tag>, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    let mut found = Vec::with_capacity(ids.len());
+    for id in ids {
+        match tag::get_by_id(&store, id).await {
+            Ok(entity) => found.push(entity),
+            Err(crate::schema::AppError::TagNotFound(..)) => {}
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(found)
+}
+
+/// Checks that a `tags` resource exists for each of `ids`, in order.
+async fn ontogen_tag_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    for linked in ids {
+        match tag::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(())
+}
+
+/// The `workout-sets` resource `id` names, read as its `GET` reads it: the
+/// parent of a relationship route.
+async fn ontogen_workout_set_read(state: &AppState, id: &LookupKey) -> Result<WorkoutSet, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    workout_set::get_by_id(&store, workout_set_lookup_key(id)?).await.map_err(ontogen_app_error)
+}
+
+/// Sets the relation field `field` of the `workout-sets` resource `id` to
+/// `value` through `workout_set::update`, as a resource `PATCH` naming only that
+/// relationship does.
+async fn ontogen_workout_set_write_field(
+    state: &AppState,
+    id: &str,
+    field: &str,
+    value: serde_json::Value,
+) -> Result<(), ErrorObject> {
+    let input: UpdateWorkoutSetInput = from_fields(serde_json::Map::from_iter([(field.to_owned(), value)]))?;
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    workout_set::update(&store, id, input).await.map_err(ontogen_app_error)?;
+    Ok(())
+}
+
+/// The `workouts` resources `ids` name, in order, without the ids that
+/// name none.
+async fn ontogen_workout_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Workout>, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    let mut found = Vec::with_capacity(ids.len());
+    for id in ids {
+        match workout::get_by_id(&store, id).await {
+            Ok(entity) => found.push(entity),
+            Err(crate::schema::AppError::WorkoutNotFound(..)) => {}
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(found)
+}
+
+/// Checks that a `workouts` resource exists for each of `ids`, in order.
+async fn ontogen_workout_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    for linked in ids {
+        match workout::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::WorkoutNotFound(..)) => return Err(linked.not_found("workouts")),
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(())
+}
+
+/// The `exercises` resources `ids` name, in order, without the ids that
+/// name none.
+async fn ontogen_exercise_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Exercise>, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    let mut found = Vec::with_capacity(ids.len());
+    for id in ids {
+        match exercise::get_by_id(&store, id).await {
+            Ok(entity) => found.push(entity),
+            Err(crate::schema::AppError::ExerciseNotFound(..)) => {}
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(found)
+}
+
+/// Checks that a `exercises` resource exists for each of `ids`, in order.
+async fn ontogen_exercise_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    for linked in ids {
         match exercise::get_by_id(&store, &linked.id).await {
             Ok(_) => {}
             Err(crate::schema::AppError::ExerciseNotFound(..)) => return Err(linked.not_found("exercises")),
@@ -719,6 +863,132 @@ async fn workout_delete(
     Ok(response::no_content())
 }
 
+async fn ontogen_workout_relationship_get(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((id, rel)): Path<(LookupKey, LookupKey)>,
+    RawQuery(ontogen_raw_query): RawQuery,
+) -> Result<Response, ErrorObject> {
+    let ontogen_collection = "/api/workouts";
+    match rel.as_str() {
+        Some("tags") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_workout_read(&ontogen_state, &id).await?;
+            let ontogen_base = format!("{ontogen_collection}/{}", encode_path_segment(&ontogen_entity.id));
+            let ontogen_links =
+                Links::new(format!("{ontogen_base}/relationships/tags")).with_related(format!("{ontogen_base}/tags"));
+            let ontogen_data = Linkage::ToMany(
+                ontogen_entity
+                    .tags
+                    .iter()
+                    .map(|ontogen_member| ResourceIdentifier::new("tags", ontogen_member.as_str()))
+                    .collect(),
+            );
+            Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
+        }
+        _ => Err(relationship_not_found("workouts", &rel)),
+    }
+}
+
+async fn ontogen_workout_relationship_patch(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((id, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("tags") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tags", None)?;
+            let ontogen_entity = ontogen_workout_read(&ontogen_state, &id).await?;
+            ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;
+            ontogen_workout_write_field(
+                &ontogen_state,
+                &ontogen_entity.id,
+                "tags",
+                ontogen_linked.into_iter().map(|ontogen_member| ontogen_member.id).collect(),
+            )
+            .await?;
+            Ok(response::no_content())
+        }
+        _ => Err(relationship_not_found("workouts", &rel)),
+    }
+}
+
+async fn ontogen_workout_relationship_post(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((id, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("tags") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tags", Some(1))?;
+            let ontogen_entity = ontogen_workout_read(&ontogen_state, &id).await?;
+            ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;
+            if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.tags, &ontogen_linked) {
+                ontogen_workout_write_field(&ontogen_state, &ontogen_entity.id, "tags", ontogen_ids.into()).await?;
+            }
+            Ok(response::no_content())
+        }
+        _ => Err(relationship_not_found("workouts", &rel)),
+    }
+}
+
+async fn ontogen_workout_relationship_delete(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((id, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("tags") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tags", Some(1))?;
+            let ontogen_entity = ontogen_workout_read(&ontogen_state, &id).await?;
+            if let Some(ontogen_ids) = ontogen_removed(&ontogen_entity.tags, &ontogen_linked) {
+                ontogen_workout_write_field(&ontogen_state, &ontogen_entity.id, "tags", ontogen_ids.into()).await?;
+            }
+            Ok(response::no_content())
+        }
+        _ => Err(relationship_not_found("workouts", &rel)),
+    }
+}
+
+async fn ontogen_workout_related_get(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((id, rel)): Path<(LookupKey, LookupKey)>,
+    RawQuery(ontogen_raw_query): RawQuery,
+) -> Result<Response, ErrorObject> {
+    let ontogen_collection = "/api/workouts";
+    match rel.as_str() {
+        Some("tags") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_workout_read(&ontogen_state, &id).await?;
+            let ontogen_related = ontogen_tag_fetch(&ontogen_state, &ontogen_entity.tags).await?;
+            let ontogen_data: Vec<_> =
+                ontogen_related.iter().map(|ontogen_member| tag_as_resource(ontogen_member, "/api/tags")).collect();
+            let ontogen_self = format!("{ontogen_collection}/{}/tags", encode_path_segment(&ontogen_entity.id));
+            Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
+        }
+        _ => Err(relationship_not_found("workouts", &rel)),
+    }
+}
+
 // ── Workout_set Handlers ──
 
 async fn workout_set_list(
@@ -814,6 +1084,156 @@ async fn workout_set_delete(
     Ok(response::no_content())
 }
 
+async fn ontogen_workout_set_relationship_get(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((id, rel)): Path<(LookupKey, LookupKey)>,
+    RawQuery(ontogen_raw_query): RawQuery,
+) -> Result<Response, ErrorObject> {
+    let ontogen_collection = "/api/workout-sets";
+    match rel.as_str() {
+        Some("workout") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_workout_set_read(&ontogen_state, &id).await?;
+            let ontogen_base = format!("{ontogen_collection}/{}", encode_path_segment(&ontogen_entity.id));
+            let ontogen_links = Links::new(format!("{ontogen_base}/relationships/workout"))
+                .with_related(format!("{ontogen_base}/workout"));
+            let ontogen_data =
+                Linkage::ToOne(Some(ResourceIdentifier::new("workouts", ontogen_entity.workout_id.as_str())));
+            Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
+        }
+        Some("exercise") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_workout_set_read(&ontogen_state, &id).await?;
+            let ontogen_base = format!("{ontogen_collection}/{}", encode_path_segment(&ontogen_entity.id));
+            let ontogen_links = Links::new(format!("{ontogen_base}/relationships/exercise"))
+                .with_related(format!("{ontogen_base}/exercise"));
+            let ontogen_data =
+                Linkage::ToOne(Some(ResourceIdentifier::new("exercises", ontogen_entity.exercise_id.as_str())));
+            Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
+        }
+        _ => Err(relationship_not_found("workout-sets", &rel)),
+    }
+}
+
+async fn ontogen_workout_set_relationship_patch(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((id, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("workout") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked = request::to_one(&request::parse_relationship(&ontogen_bytes)?, "", "workouts", false)?
+                .map(|ontogen_member| LinkedId { id: ontogen_member, pointer: "/data".to_owned() });
+            let ontogen_entity = ontogen_workout_set_read(&ontogen_state, &id).await?;
+            ontogen_workout_check_ids(&ontogen_state, ontogen_linked.as_slice()).await?;
+            ontogen_workout_set_write_field(
+                &ontogen_state,
+                &ontogen_entity.id,
+                "workout_id",
+                ontogen_linked.map(|ontogen_member| ontogen_member.id).into(),
+            )
+            .await?;
+            Ok(response::no_content())
+        }
+        Some("exercise") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_one(&request::parse_relationship(&ontogen_bytes)?, "", "exercises", false)?
+                    .map(|ontogen_member| LinkedId { id: ontogen_member, pointer: "/data".to_owned() });
+            let ontogen_entity = ontogen_workout_set_read(&ontogen_state, &id).await?;
+            ontogen_exercise_check_ids(&ontogen_state, ontogen_linked.as_slice()).await?;
+            ontogen_workout_set_write_field(
+                &ontogen_state,
+                &ontogen_entity.id,
+                "exercise_id",
+                ontogen_linked.map(|ontogen_member| ontogen_member.id).into(),
+            )
+            .await?;
+            Ok(response::no_content())
+        }
+        _ => Err(relationship_not_found("workout-sets", &rel)),
+    }
+}
+
+async fn ontogen_workout_set_relationship_post(
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    _: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((_, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("workout") => {
+            ontogen_query?;
+            Err(relationship_update_unsupported("workout-sets", "workout", "POST"))
+        }
+        Some("exercise") => {
+            ontogen_query?;
+            Err(relationship_update_unsupported("workout-sets", "exercise", "POST"))
+        }
+        _ => Err(relationship_not_found("workout-sets", &rel)),
+    }
+}
+
+async fn ontogen_workout_set_relationship_delete(
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    _: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((_, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("workout") => {
+            ontogen_query?;
+            Err(relationship_update_unsupported("workout-sets", "workout", "DELETE"))
+        }
+        Some("exercise") => {
+            ontogen_query?;
+            Err(relationship_update_unsupported("workout-sets", "exercise", "DELETE"))
+        }
+        _ => Err(relationship_not_found("workout-sets", &rel)),
+    }
+}
+
+async fn ontogen_workout_set_related_get(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((id, rel)): Path<(LookupKey, LookupKey)>,
+    RawQuery(ontogen_raw_query): RawQuery,
+) -> Result<Response, ErrorObject> {
+    let ontogen_collection = "/api/workout-sets";
+    match rel.as_str() {
+        Some("workout") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_workout_set_read(&ontogen_state, &id).await?;
+            let ontogen_related =
+                ontogen_workout_fetch(&ontogen_state, std::slice::from_ref(&ontogen_entity.workout_id)).await?;
+            let ontogen_data =
+                ontogen_related.first().map(|ontogen_member| workout_as_resource(ontogen_member, "/api/workouts"));
+            let ontogen_self = format!("{ontogen_collection}/{}/workout", encode_path_segment(&ontogen_entity.id));
+            Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
+        }
+        Some("exercise") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_workout_set_read(&ontogen_state, &id).await?;
+            let ontogen_related =
+                ontogen_exercise_fetch(&ontogen_state, std::slice::from_ref(&ontogen_entity.exercise_id)).await?;
+            let ontogen_data =
+                ontogen_related.first().map(|ontogen_member| exercise_as_resource(ontogen_member, "/api/exercises"));
+            let ontogen_self = format!("{ontogen_collection}/{}/exercise", encode_path_segment(&ontogen_entity.id));
+            Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
+        }
+        _ => Err(relationship_not_found("workout-sets", &rel)),
+    }
+}
+
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -845,6 +1265,15 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
             ])),
         )
         .route(
+            "/api/workouts/{id}/relationships/{rel}",
+            get(ontogen_workout_relationship_get)
+                .patch(ontogen_workout_relationship_patch)
+                .post(ontogen_workout_relationship_post)
+                .delete(ontogen_workout_relationship_delete)
+                .fallback(allow([Method::GET, Method::PATCH, Method::POST, Method::DELETE])),
+        )
+        .route("/api/workouts/{id}/{rel}", get(ontogen_workout_related_get).fallback(allow([Method::GET])))
+        .route(
             "/api/workout-sets",
             get(workout_set_list).post(workout_set_create).fallback(allow([Method::GET, Method::POST])),
         )
@@ -856,4 +1285,13 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
+        .route(
+            "/api/workout-sets/{id}/relationships/{rel}",
+            get(ontogen_workout_set_relationship_get)
+                .patch(ontogen_workout_set_relationship_patch)
+                .post(ontogen_workout_set_relationship_post)
+                .delete(ontogen_workout_set_relationship_delete)
+                .fallback(allow([Method::GET, Method::PATCH, Method::POST, Method::DELETE])),
+        )
+        .route("/api/workout-sets/{id}/{rel}", get(ontogen_workout_set_related_get).fallback(allow([Method::GET])))
 }

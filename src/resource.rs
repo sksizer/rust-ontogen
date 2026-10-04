@@ -74,15 +74,10 @@ pub(crate) struct Relationship {
 /// the ops live in the module, not on the entity: there is no field behind
 /// it, so it never carries linkage in a resource object.
 #[derive(Debug, Clone)]
-// The relationship-route and TypeScript generators are the readers of most
-// fields; the check in `check_http_ops` reads only the target's.
-#[allow(dead_code)]
 pub(crate) struct JunctionRelationship<'a> {
     /// `X` of `list_X`, verbatim (`labels`, `sub_tasks`): the member name
     /// and the `{rel}` URL segment.
     pub name: String,
-    /// The target entity's Rust name (`Tag`).
-    pub target_entity: String,
     /// The target entity's API module (`tag`).
     pub target_module: String,
     /// The target's resource `type` (`tags`).
@@ -236,7 +231,6 @@ impl ResourceModel {
             }
             junctions.push(JunctionRelationship {
                 name,
-                target_entity: target.entity.name.clone(),
                 target_module: target.module.clone(),
                 target_type: target.resource_type.clone(),
                 list,
@@ -843,7 +837,7 @@ mod tests {
         Ok(junctions
             .into_iter()
             .map(|j| {
-                assert_eq!(j.target_module, to_snake_case(&j.target_entity));
+                assert_eq!(model.by_module(&j.target_module).unwrap().resource_type, j.target_type);
                 assert_eq!(j.list.name, format!("list_{}", j.name));
                 (j.name, j.target_type, j.lists_entities, j.add.is_some(), j.remove.is_some())
             })
