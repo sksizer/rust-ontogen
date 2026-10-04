@@ -83,7 +83,6 @@ pub(crate) struct Config {
 
     /// The schema's string enums. A field of an enum type sorts only when
     /// the enum is one of these, so a list's sort keys depend on them.
-    #[expect(dead_code, reason = "the MCP sort schema reads them")]
     pub(crate) enums: Vec<EnumDef>,
 
     /// The `AppError` found under `ServersConfig::error_source_dir`, if any.

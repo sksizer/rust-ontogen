@@ -226,6 +226,7 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     if modules.is_empty() {
         return Ok(modules);
     }
+    classify::check_order_params(&modules, &config.resources)?;
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::HttpAxum { .. })) {
         classify::check_http_ops(&modules, &config.resources, config.route_prefix.as_ref())?;
         generators::http::check_resource_ops(&modules, config)?;
@@ -239,6 +240,7 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     }
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::Mcp { .. })) {
         generators::mcp::check_scope_key(&modules, config)?;
+        generators::mcp::check_sort_key(&modules, config)?;
     }
 
     for generator in &config.generators {

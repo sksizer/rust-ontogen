@@ -97,6 +97,8 @@ pub fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
 ///
 /// - a list that takes a `*Query` struct takes it as `query`, so no other
 ///   argument of it may be named `query`;
+/// - a list that takes an order takes its sort keys as `sort`, so no filter
+///   of it may be named `sort`;
 /// - a paginated junction list takes the page as `limit` and `offset`, so
 ///   its one argument, the parent's id, may be named neither (a paginated
 ///   list's own page is its last two parameters, which
@@ -120,9 +122,17 @@ pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<
         for f in &m.functions {
             let command = command_name(&m.name, f, config);
             match classify_op(m, f) {
-                OpKind::List if f.filter_struct().is_some() => {
-                    if let Some(p) = f.bare_filters().into_iter().find(|p| p.name == "query") {
+                OpKind::List => {
+                    let bare = f.bare_filters();
+                    if f.filter_struct().is_some()
+                        && let Some(p) = bare.iter().find(|p| p.name == "query")
+                    {
                         return refuse(m, &f.name, &command, &p.name, "the list's `*Query` filter struct");
+                    }
+                    if f.takes_order()
+                        && let Some(p) = bare.iter().find(|p| p.name == "sort")
+                    {
+                        return refuse(m, &f.name, &command, &p.name, "the list's sort keys");
                     }
                 }
                 OpKind::JunctionList { .. }
@@ -155,14 +165,27 @@ pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<
 
 /// The names of the parameters a fn's command takes for its arguments, as
 /// the generator emits them: `id` and `input` for CRUD ops, `query` for a
-/// list's `*Query` struct, `limit` and `offset` for a paginated junction
-/// list's page, and each other argument under its own name.
+/// list's `*Query` struct, `sort` for a list's order, `limit` and `offset`
+/// for a paginated junction list's page, and each other argument under its
+/// own name.
 fn command_arg_names<'a>(m: &ApiModule, f: &'a ApiFn, paginated: bool) -> Vec<&'a str> {
     match classify_op(m, f) {
         OpKind::GetById | OpKind::Delete => vec!["id"],
         OpKind::Create => vec!["input"],
         OpKind::Update => vec!["id", "input"],
-        OpKind::List => f.params.iter().map(|p| if p.is_filter_struct() { "query" } else { p.name.as_str() }).collect(),
+        OpKind::List => f
+            .params
+            .iter()
+            .map(|p| {
+                if p.is_filter_struct() {
+                    "query"
+                } else if p.order_sort_field().is_some() {
+                    "sort"
+                } else {
+                    p.name.as_str()
+                }
+            })
+            .collect(),
         OpKind::JunctionList { .. } if paginated && f.return_type.starts_with("Vec<") => {
             f.params.iter().map(|p| p.name.as_str()).chain(["limit", "offset"]).collect()
         }
@@ -276,14 +299,22 @@ pub struct PaginatedResult<T: Serialize> {
                     for pp in f.bare_filters() {
                         param_lines.push_str(&format!("    {}: {},\n", pp.name, param_to_owned_type(&pp.ty_ast)));
                     }
+                    // A list that takes an order reads it from `sort`, as the
+                    // other transports do, and passes it after its filter.
+                    let (sort, order_arg) = if f.takes_order() {
+                        param_lines.push_str("    sort: Option<Vec<String>>,\n");
+                        (ORDER_FROM_SORT, ", &ontogen_order")
+                    } else {
+                        ("", "")
+                    };
                     // A filtered page calls `count` with the same filter after
                     // `list`, which gets a clone of whatever it would consume.
                     let filter_args = |counted: bool| -> String {
                         f.filter().iter().map(|p| format!(", {}", filter_arg(p, &binding(p), counted))).collect()
                     };
-                    let extra_args = filter_args(false);
-                    let count_args = extra_args.clone();
-                    let list_args = filter_args(true);
+                    let count_args = filter_args(false);
+                    let extra_args = format!("{count_args}{order_arg}");
+                    let list_args = format!("{}{order_arg}", filter_args(true));
                     if let Some(pg) = pagination
                         && paginated
                     {
@@ -298,7 +329,7 @@ pub struct PaginatedResult<T: Serialize> {
 pub async fn {cmd_name}(
 {param_lines}{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
 ) -> Result<PaginatedResult<{item_type}>, String> {{
-{fn_pp_body}    let ontogen_limit = limit.unwrap_or({default_limit}).min({max_limit});
+{sort}{fn_pp_body}    let ontogen_limit = limit.unwrap_or({default_limit}).min({max_limit});
     let ontogen_offset = offset.unwrap_or(0);
     let ontogen_items = {svc}::list({first_arg}{list_args}, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset))){await_str}
         .map_err(|ontogen_e| ontogen_e.to_string())?;
@@ -318,7 +349,7 @@ pub async fn {cmd_name}(
 pub async fn {cmd_name}(
 {param_lines}{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
-{fn_pp_body}    {svc}::list({first_arg}{extra_args}{page_args}){await_str}
+{sort}{fn_pp_body}    {svc}::list({first_arg}{extra_args}{page_args}){await_str}
         .map_err(|ontogen_e| ontogen_e.to_string())
 }}
 
@@ -727,6 +758,13 @@ fn generate_paginated_ipc_handler(
     out.push('\n');
     out.push_str("}\n\n");
 }
+
+/// A sorted list command's read of its `sort` argument into the order its
+/// list takes, with the parser HTTP and MCP use: absent is the default
+/// order, and a bad key is the parser's error text.
+const ORDER_FROM_SORT: &str = "    let ontogen_order = ontogen_core::order::parse_sort(sort.unwrap_or_default())
+        .map_err(|ontogen_e| ontogen_e.to_string())?;
+";
 
 /// The closing of a paginated command: the page and its total, from the
 /// command's `ontogen_`-prefixed bindings.

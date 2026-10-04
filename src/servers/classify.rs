@@ -470,6 +470,73 @@ fn check_list_filter(m: &ApiModule, f: &ApiFn, resources: &ResourceModel) -> Res
     Ok(())
 }
 
+/// The rules of an order parameter, `&[OrderBy<{Entity}SortField>]` (wire
+/// contract §7.3, §7.4; ADR 0006 §1.1), checked for every transport, since
+/// each one parses `sort` into it:
+///
+/// - only a `list` served as its module's collection takes one, and at most
+///   one;
+/// - it is the list's last parameter, or the last before its page, so that
+///   it follows the filter as §7.3 orders them;
+/// - its module serves an entity, and the order sorts that entity: a list
+///   in a module with no entity behind it is a custom op (§10.4), which
+///   takes no `sort`.
+///
+/// # Errors
+///
+/// The first fn that breaks a rule, named `module::fn`.
+pub(crate) fn check_order_params(modules: &[ApiModule], resources: &ResourceModel) -> Result<(), String> {
+    for m in modules {
+        for f in &m.functions {
+            let orders: Vec<(usize, &Param)> =
+                f.params.iter().enumerate().filter(|(_, p)| p.order_sort_field().is_some()).collect();
+            let Some(&(at, order)) = orders.first() else { continue };
+            let what = format!("`{}::{}` takes the order `{}: {}`", m.name, f.name, order.name, order.ty);
+            if let Some((_, second)) = orders.get(1) {
+                return Err(format!(
+                    "ontogen: {what} and a second one, `{}: {}`; a list takes at most one order, which `sort` \
+                     is read into",
+                    second.name, second.ty
+                ));
+            }
+            if f.name != "list" || classify_op(m, f) != OpKind::List {
+                return Err(format!(
+                    "ontogen: {what}, but only a module's `list`, served as its collection, reads `sort` into an \
+                     order; remove the parameter"
+                ));
+            }
+            let last = f.params.len() - 1 - f.page().len();
+            if at != last {
+                let place = if f.takes_page() {
+                    "its last parameter before `limit` and `offset`"
+                } else {
+                    "its last parameter"
+                };
+                return Err(format!(
+                    "ontogen: {what}, which must be {place}, after the filter: a list takes the store, its filter, \
+                     its order, then its page"
+                ));
+            }
+            let Some(resource) = resources.by_module(&m.name) else {
+                return Err(format!(
+                    "ontogen: {what}, but the module `{}` has no schema entity behind it, so its `list` is served \
+                     as a custom op, which cannot be sorted; remove the parameter",
+                    m.name
+                ));
+            };
+            let entity = &resource.entity.name;
+            if f.sort_entity() != Some(entity.as_str()) {
+                return Err(format!(
+                    "ontogen: {what}, but the module `{}` lists `{entity}`, whose sort fields are \
+                     `{entity}SortField`; take `&[OrderBy<{entity}SortField>]`",
+                    m.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// True when the filter struct `p` is taken as the struct or a shared borrow
 /// of it, which the handler reads into an owned value and hands over or
 /// lends. An `Option` would never be `None`, since every request yields the

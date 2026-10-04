@@ -99,6 +99,16 @@ fn ontogen_removed(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
     (kept.len() != ids.len()).then_some(kept)
 }
 
+/// The answer to `sort` on a list whose API fn takes no order: the server
+/// cannot order it, which JSON:API answers with a `400`.
+fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
+    match query.sort()? {
+        None => Ok(()),
+        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
+            .with_parameter("sort")),
+    }
+}
+
 /// A paginated list that is not served as a resource takes its page as
 /// `opArg[limit]` and `opArg[offset]`.
 struct PageOpArgs;
@@ -162,16 +172,6 @@ struct GetParams;
 
 impl RouteQuery for GetParams {
     const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
-}
-
-/// No list takes an `order` argument, so every `sort` asks for an order the
-/// server does not support.
-fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
-    match query.sort()? {
-        None => Ok(()),
-        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
-            .with_parameter("sort")),
-    }
 }
 
 /// The effective `(offset, limit)` of a paginated list.

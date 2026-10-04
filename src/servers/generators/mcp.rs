@@ -7,6 +7,7 @@ use std::path::Path;
 
 use ontogen_core::ir::OpKind;
 
+use crate::schema::sort::{sort_fields, sort_keys};
 use crate::servers::classify::classify_op;
 use crate::servers::config::{Config, PaginationConfig};
 use crate::servers::generators::{filter_arg, surface_use_stmts};
@@ -262,6 +263,10 @@ fn with_pagination_schema(mut schema: Value) -> Value {
         );
     }
 
+    if modules.iter().any(|m| m.functions.iter().any(|f| classify_op(m, f) == OpKind::List && f.takes_order())) {
+        out.push_str(SORT_HELPERS);
+    }
+
     // A custom op's input schema names each plain parameter beside its
     // body's fields, so the tool advertises every argument it reads.
     for m in modules {
@@ -343,6 +348,14 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     for pp in f.bare_filters() {
                         extraction.push_str(&arg_extraction(pp));
                     }
+                    // A list that takes an order reads it from `sort` after its
+                    // filter, as HTTP does, and passes it after the filter.
+                    let order_arg = if f.takes_order() {
+                        extraction.push_str(ORDER_FROM_SORT);
+                        ", &ontogen_order"
+                    } else {
+                        ""
+                    };
                     // A filtered page calls `count` with the same filter after
                     // `list`, which gets a clone of whatever it would consume.
                     let filter_args = |counted: bool| -> String {
@@ -356,7 +369,8 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                             })
                             .collect()
                     };
-                    let extra_args = filter_args(false);
+                    let count_args = filter_args(false);
+                    let extra_args = format!("{count_args}{order_arg}");
                     let body = if let Some(pg) = pagination {
                         let default_limit = pg.default_limit;
                         let max_limit = pg.max_limit;
@@ -368,13 +382,13 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                         // A filtered page calls `count` with the same filter,
                         // after `list` has consumed it.
                         let read = if pushes_page {
-                            let list_args = filter_args(true);
+                            let list_args = format!("{}{order_arg}", filter_args(true));
                             format!(
                                 "\
                     let ontogen_limit = ontogen_args.get(\"limit\").and_then(|v| v.as_u64()).unwrap_or({default_limit}).min({max_limit});
                     let ontogen_offset = ontogen_args.get(\"offset\").and_then(|v| v.as_u64()).unwrap_or(0);
                     let ontogen_items = {svc}::list({first_arg}{list_args}, Some(ontogen_limit), Some(ontogen_offset)){await_str}.map_err(|e| e.to_string())?;
-                    let ontogen_total = {svc}::count({first_arg}{extra_args}){await_str}.map_err(|e| e.to_string())?;
+                    let ontogen_total = {svc}::count({first_arg}{count_args}){await_str}.map_err(|e| e.to_string())?;
 "
                             )
                         } else {
@@ -394,14 +408,15 @@ fn with_pagination_schema(mut schema: Value) -> Value {
 "
                         )
                     };
-                    let schema = ToolSchema { base: &schema_base, config, paginate };
+                    let sort = list_sort_keys(m, f, config);
+                    let schema = ToolSchema { base: &schema_base, config, paginate, sort: sort.as_deref() };
                     push_tool(&mut out, &tool_name, &desc, &schema, &format!("{extraction}{body}"));
                 }
 
                 OpKind::GetById => {
                     let await_str = if is_async { ".await" } else { "" };
                     let fn_name = &f.name;
-                    let schema = ToolSchema { base: "schema_for::<GetByIdInput>", config, paginate: false };
+                    let schema = ToolSchema { base: "schema_for::<GetByIdInput>", config, paginate: false, sort: None };
                     let body = format!(
                         "\
 {prefix}                    let id = required_str(ontogen_args, \"id\")?;
@@ -416,7 +431,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     let input_type = extract_input_type(&f.params[0].ty);
                     let await_str = if is_async { ".await" } else { "" };
                     let schema_base = format!("schema_for::<{input_type}>");
-                    let schema = ToolSchema { base: &schema_base, config, paginate: false };
+                    let schema = ToolSchema { base: &schema_base, config, paginate: false, sort: None };
                     let rest = struct_args(&scope_key(config).into_iter().collect::<Vec<_>>());
                     let body = format!(
                         "\
@@ -433,7 +448,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     let input_type = extract_input_type(&f.params[1].ty);
                     let await_str = if is_async { ".await" } else { "" };
                     let schema_base = format!("schema_for_with_str_id::<{input_type}>");
-                    let schema = ToolSchema { base: &schema_base, config, paginate: false };
+                    let schema = ToolSchema { base: &schema_base, config, paginate: false, sort: None };
                     let rest =
                         struct_args(&["id".to_string()].into_iter().chain(scope_key(config)).collect::<Vec<_>>());
                     let body = format!(
@@ -450,7 +465,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
 
                 OpKind::Delete => {
                     let await_str = if is_async { ".await" } else { "" };
-                    let schema = ToolSchema { base: "schema_for::<GetByIdInput>", config, paginate: false };
+                    let schema = ToolSchema { base: "schema_for::<GetByIdInput>", config, paginate: false, sort: None };
                     let body = format!(
                         "\
 {prefix}                    let id = required_str(ontogen_args, \"id\")?.to_string();
@@ -565,7 +580,7 @@ fn generate_generic_mcp_tool(out: &mut String, m: &ApiModule, f: &ApiFn, config:
         (None, false) => generic_input_schema_name(m, f),
     };
     let schema_base = format!("schema_for::<{schema_input}>");
-    let schema = ToolSchema { base: &schema_base, config, paginate: pagination.is_some() };
+    let schema = ToolSchema { base: &schema_base, config, paginate: pagination.is_some(), sort: None };
 
     let mut extraction = String::new();
     let mut call_args: Vec<String> = first_arg.map(str::to_string).into_iter().collect();
@@ -602,6 +617,45 @@ fn generate_generic_mcp_tool(out: &mut String, m: &ApiModule, f: &ApiFn, config:
     push_tool(out, &tool_name, &desc, &schema, &format!("{extraction}{hp}{result}"));
 }
 
+/// Emitted once when any list tool takes an order: its schema's `sort`
+/// property and the strict read of that argument.
+const SORT_HELPERS: &str = "\
+/// Inject the optional `sort` property, an array of `keys`, into a JSON schema.
+fn with_sort_schema(mut schema: Value, keys: &[&str]) -> Value {
+    if let Some(obj) = schema.as_object_mut() {
+        let props = obj.entry(\"properties\").or_insert_with(|| json!({}));
+        if let Some(props_obj) = props.as_object_mut() {
+            props_obj.insert(\"sort\".to_string(), json!({
+                \"type\": \"array\",
+                \"items\": { \"type\": \"string\", \"enum\": keys },
+                \"description\": \"Sort keys, applied in order: a field name sorts ascending, and `-` before it descending. The id is the final tie-break.\"
+            }));
+        }
+    }
+    schema
+}
+
+/// The keys of the `sort` argument: none when it is absent or `null`, and
+/// the tool's error for anything but an array of strings.
+fn sort_arg(args: &Value) -> Result<Vec<&str>, String> {
+    match args.get(\"sort\") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(keys)) => keys
+            .iter()
+            .map(|key| key.as_str().ok_or_else(|| format!(\"Invalid sort: expected a string, got {key}\")))
+            .collect(),
+        Some(other) => Err(format!(\"Invalid sort: expected an array of strings, got {other}\")),
+    }
+}
+
+";
+
+/// A sorted list tool's read of its `sort` argument into the order its list
+/// takes, with the parser HTTP and IPC use: a bad key is the parser's error
+/// text.
+const ORDER_FROM_SORT: &str = "                    let ontogen_order = ontogen_core::order::parse_sort(sort_arg(ontogen_args)?).map_err(|e| e.to_string())?;
+";
+
 /// The closing of a paginated list tool: the page and its total.
 const PAGE_RESULT: &str = "                    Ok(json!({
                         \"items\": serde_json::to_value(&ontogen_items).map_err(|e| format!(\"Serialize error: {e}\"))?,
@@ -624,12 +678,13 @@ fn in_memory_page(default_limit: u32, max_limit: u32) -> String {
 }
 
 /// A tool's input schema: `base` (a `schema_for::<T>` path), with the
-/// scope's argument when a route prefix is configured and the page's when
-/// `paginate`.
+/// scope's argument when a route prefix is configured, the page's when
+/// `paginate`, and `sort` when `sort` lists the keys it takes.
 struct ToolSchema<'a> {
     base: &'a str,
     config: &'a Config,
     paginate: bool,
+    sort: Option<&'a [String]>,
 }
 
 /// One entry of the tool registry. The handler's own bindings are
@@ -640,8 +695,8 @@ struct ToolSchema<'a> {
 /// first refuses an argument it does not name, which would otherwise be
 /// silently ignored, as HTTP refuses an unknown member.
 fn push_tool(out: &mut String, tool_name: &str, desc: &str, schema: &ToolSchema, body: &str) {
-    let schema_fn = tool_schema_fn(schema.base, schema.config, schema.paginate);
-    let schema_value = tool_schema_value(schema.base, schema.config, schema.paginate);
+    let schema_fn = tool_schema_fn(schema);
+    let schema_value = tool_schema_value(schema);
     out.push_str(&format!(
         "\
         McpToolDef {{
@@ -660,26 +715,62 @@ fn push_tool(out: &mut String, tool_name: &str, desc: &str, schema: &ToolSchema,
 
 /// The tool's input schema as an expression: `base` (a `schema_for::<T>`
 /// path) called, with the scope's argument when a route prefix is
-/// configured and the page's when the tool reads one.
-fn tool_schema_value(base: &str, config: &Config, paginate: bool) -> String {
-    let mut schema = format!("{base}()");
-    if config.route_prefix.is_some() {
-        schema = format!("with_project_id_schema({schema})");
+/// configured, the page's when the tool reads one, and `sort` when it reads
+/// that.
+fn tool_schema_value(schema: &ToolSchema<'_>) -> String {
+    let mut value = format!("{}()", schema.base);
+    if schema.config.route_prefix.is_some() {
+        value = format!("with_project_id_schema({value})");
     }
-    if paginate {
-        schema = format!("with_pagination_schema({schema})");
+    if schema.paginate {
+        value = format!("with_pagination_schema({value})");
     }
-    schema
+    if let Some(keys) = schema.sort {
+        let keys: Vec<String> = keys.iter().map(|k| format!("\"{k}\"")).collect();
+        value = format!("with_sort_schema({value}, &[{}])", keys.join(", "));
+    }
+    value
 }
 
 /// The registry's `schema_fn` for [`tool_schema_value`]: `base` itself when
 /// nothing is added to it, else a closure.
-fn tool_schema_fn(base: &str, config: &Config, paginate: bool) -> String {
-    if config.route_prefix.is_none() && !paginate {
-        base.to_string()
+fn tool_schema_fn(schema: &ToolSchema<'_>) -> String {
+    if schema.config.route_prefix.is_none() && !schema.paginate && schema.sort.is_none() {
+        schema.base.to_string()
     } else {
-        format!("|| {}", tool_schema_value(base, config, paginate))
+        format!("|| {}", tool_schema_value(schema))
     }
+}
+
+/// The sort keys a list tool's `sort` argument takes, from the entity its
+/// module serves, in the order the store's `{Entity}SortField` declares
+/// them (ADR 0006 §2). `None` for a list that takes no order.
+fn list_sort_keys(m: &ApiModule, f: &ApiFn, config: &Config) -> Option<Vec<String>> {
+    if !f.takes_order() {
+        return None;
+    }
+    let resource = config.resources.by_module(&m.name)?;
+    Some(sort_keys(&sort_fields(&resource.entity, &config.enums)))
+}
+
+/// Refuses a sorted list whose bare filter is named `sort`: the list tool
+/// reads its sort keys from the argument `sort`, so the two would share one
+/// key.
+pub(crate) fn check_sort_key(modules: &[ApiModule], config: &Config) -> Result<(), String> {
+    for m in modules {
+        for f in m.functions.iter().filter(|f| classify_op(m, f) == OpKind::List && f.takes_order()) {
+            if f.bare_filters().iter().any(|p| p.name == "sort") {
+                let tool = crate::servers::generators::ipc::command_name(&m.name, f, config);
+                return Err(format!(
+                    "ontogen: the MCP tool `{tool}` cannot be generated: `{}::{}` takes a filter named `sort`, \
+                     which is the argument the tool itself reads its sort keys from, so the two would share one \
+                     key. Rename the argument.",
+                    m.name, f.name
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Refuses, under a route prefix, a fn whose MCP tool would read an
@@ -687,7 +778,8 @@ fn tool_schema_fn(base: &str, config: &Config, paginate: bool) -> String {
 /// tool reads that argument itself to pick the store, so the op's own
 /// argument and the scope would share one key. The keys checked are the
 /// ones a tool reads by name: `id` for get, update and delete, each bare
-/// filter of a list, and each parameter of a custom op or junction tool
+/// filter of a list and `sort` when it takes an order, and each parameter
+/// of a custom op or junction tool
 /// (other than an `*Input` taken as the whole argument object). The fields
 /// of an `*Input` or `*Query` struct read flat are not known here.
 pub(crate) fn check_scope_key(modules: &[ApiModule], config: &Config) -> Result<(), String> {
@@ -699,7 +791,12 @@ pub(crate) fn check_scope_key(modules: &[ApiModule], config: &Config) -> Result<
             let keys: Vec<&str> = match classify_op(m, f) {
                 OpKind::GetById | OpKind::Update | OpKind::Delete => vec!["id"],
                 OpKind::Create | OpKind::EventStream => vec![],
-                OpKind::List => f.bare_filters().into_iter().map(|p| p.name.as_str()).collect(),
+                OpKind::List => f
+                    .bare_filters()
+                    .into_iter()
+                    .map(|p| p.name.as_str())
+                    .chain(f.takes_order().then_some("sort"))
+                    .collect(),
                 _ if sole_body_param(f).is_some() => vec![],
                 _ => f.params.iter().map(|p| p.name.as_str()).collect(),
             };
@@ -723,11 +820,15 @@ fn scope_key(config: &Config) -> Option<String> {
 }
 
 /// The keys a list tool reads itself, beside its `*Query` struct: each
-/// bare filter, the page when it reads one, and the scope. The struct is
-/// read from the other arguments, so one that refuses unknown fields
-/// accepts a call that sends them.
+/// bare filter, `sort` when it takes an order, the page when it reads one,
+/// and the scope. The struct is read from the other arguments, so one that
+/// refuses unknown fields accepts a call that sends them, and a struct
+/// field serialized as `sort` is never read from a sorted list's arguments.
 fn list_struct_skipped_keys(f: &ApiFn, config: &Config, paginate: bool) -> Vec<String> {
     let mut keys: Vec<String> = f.bare_filters().iter().map(|p| p.name.clone()).collect();
+    if f.takes_order() {
+        keys.push("sort".to_string());
+    }
     if paginate {
         keys.extend(["limit".to_string(), "offset".to_string()]);
     }
