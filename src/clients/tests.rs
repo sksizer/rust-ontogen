@@ -799,17 +799,25 @@ pub struct DigestQuery {
     pub since: Option<String>,
     pub done: Option<bool>,
 }
+
+#[derive(serde::Deserialize)]
+pub enum QueryMode {
+    Open,
+    Closed,
+}
 ";
 
 /// The filtered lists beside [`BOARD_MODULE`]: `tag`'s, served as its
-/// resource ([`filtered_tag_module`]), and two in modules with no entity,
+/// resource ([`filtered_tag_module`]), and three in modules with no entity,
 /// served as ops: `digest`'s takes only the `DigestQuery` struct, `inbox`'s
-/// only a bare `owner_id`.
-fn filtered_list_modules(paginated: bool) -> [(&'static str, String); 3] {
+/// only a bare `owner_id`, `queue`'s only a bare `mode` whose unit enum type
+/// has `Query` in its name but is no filter struct.
+fn filtered_list_modules(paginated: bool) -> [(&'static str, String); 4] {
     [
         ("tag.rs", filtered_tag_module(paginated)),
         ("digest.rs", filtered_op_list_module("DigestQuery, Task", "Task", "query: DigestQuery", paginated)),
         ("inbox.rs", filtered_op_list_module("Tag", "Tag", "owner_id: &str", paginated)),
+        ("queue.rs", filtered_op_list_module("QueryMode, Tag", "Tag", "mode: QueryMode", paginated)),
     ]
 }
 
@@ -836,8 +844,26 @@ fn jsonapi_stack(
     extra: &[(&str, &str)],
     adjust: impl FnOnce(&mut crate::ClientsConfig),
 ) -> (String, JsonApiClients) {
-    let (server, clients) = generate_jsonapi(paginated, extra, adjust, true);
-    (server.unwrap(), clients)
+    let (servers, clients) = generate_jsonapi(paginated, extra, adjust, true);
+    (servers.unwrap().http, clients)
+}
+
+/// [`jsonapi_stack`] with the Tauri IPC commands, generated beside the Axum
+/// server, in place of the server.
+fn ipc_stack(
+    paginated: bool,
+    extra: &[(&str, &str)],
+    adjust: impl FnOnce(&mut crate::ClientsConfig),
+) -> (String, JsonApiClients) {
+    let (servers, clients) = generate_jsonapi(paginated, extra, adjust, true);
+    (servers.unwrap().ipc, clients)
+}
+
+/// The servers [`generate_jsonapi`] generates: Axum's and the Tauri IPC
+/// commands.
+struct Servers {
+    http: String,
+    ipc: String,
 }
 
 /// [`jsonapi_stack`]'s clients alone, with no server generated beside them.
@@ -849,13 +875,13 @@ fn jsonapi_clients_with(
     generate_jsonapi(paginated, extra, adjust, false).1
 }
 
-/// [`jsonapi_stack`], generating the server only with `server`.
+/// [`jsonapi_stack`], generating the servers only with `server`.
 fn generate_jsonapi(
     paginated: bool,
     extra: &[(&str, &str)],
     adjust: impl FnOnce(&mut crate::ClientsConfig),
     server: bool,
-) -> (Option<String>, JsonApiClients) {
+) -> (Option<Servers>, JsonApiClients) {
     let tmp = tempfile::tempdir().unwrap();
     let entities =
         crate::schema::parse::parse_schema_source(JSONAPI_SCHEMA, std::path::Path::new("schema.rs")).unwrap();
@@ -916,6 +942,7 @@ fn generate_jsonapi(
     }
 
     let server_out = tmp.path().join("http.rs");
+    let ipc_out = tmp.path().join("ipc.rs");
     let servers = crate::ServersConfig {
         api_dir,
         state_type: config.state_type.clone(),
@@ -923,7 +950,10 @@ fn generate_jsonapi(
         types_import_path: config.types_import_path.clone(),
         state_import: config.state_import.clone(),
         naming: config.naming.clone(),
-        generators: vec![crate::servers::ServerGenerator::HttpAxum { output: server_out.clone() }],
+        generators: vec![
+            crate::servers::ServerGenerator::HttpAxum { output: server_out.clone() },
+            crate::servers::ServerGenerator::TauriIpc { output: ipc_out.clone() },
+        ],
         sse_route_overrides: config.sse_route_overrides.clone(),
         route_prefix: config.route_prefix.clone(),
         store_type: config.store_type.clone(),
@@ -933,7 +963,7 @@ fn generate_jsonapi(
         error_source_dir: None,
     };
     crate::gen_servers(&entities, Some(&api), &[], &servers).unwrap();
-    (Some(read(&server_out)), clients)
+    (Some(Servers { http: read(&server_out), ipc: read(&ipc_out) }), clients)
 }
 
 /// A `route_prefix` scoping every store-scoped op under `projects/{project_id}`.
@@ -1649,13 +1679,96 @@ fn every_call_of_every_op_kind_reaches_a_server_route() {
             (set(&[]), Some("DigestQuery".to_string()), false, page.clone())
         );
         let (inbox, _) = server_args(&server, &format!("inbox_list{suffix}"));
-        assert_eq!((inbox.filter, inbox.filter_struct, inbox.op_args), (set(&["owner_id"]), None, page));
+        assert_eq!((inbox.filter, inbox.filter_struct, inbox.op_args), (set(&["owner_id"]), None, page.clone()));
+        let (queue, _) = server_args(&server, &format!("queue_list{suffix}"));
+        assert_eq!((queue.filter, queue.filter_struct, queue.op_args), (set(&["mode"]), None, page));
         if scoped {
             assert_eq!(
                 ts_method(&clients.transport, "statusGetVersion"),
                 "async statusGetVersion(_projectId?: string): Promise<string> {\n      return callOp<string>('GET', \
                  '/statuses/version');\n    },\n"
             );
+        }
+    }
+}
+
+/// `(command, argument keys)` of every `invoke` the IPC transport in `ts`
+/// makes, by method name.
+fn ipc_invokes(ts: &str) -> BTreeMap<String, (String, BTreeSet<String>)> {
+    object_methods(ts, "export function createIpcTransport", "    ")
+        .into_iter()
+        .filter_map(|(name, body)| {
+            let (_, call) = body.split_once("invoke('")?;
+            let (command, rest) = call.split_once('\'').unwrap();
+            let args = &rest[..rest.find(");").unwrap()];
+            let keys = match args.strip_prefix(", {") {
+                Some(members) => literal_keys(members.strip_suffix('}').unwrap()),
+                None => BTreeSet::new(),
+            };
+            Some((name.to_string(), (command.to_string(), keys)))
+        })
+        .collect()
+}
+
+/// The arguments the generated Tauri command `command` in `ipc` takes from
+/// its caller, as the caller names them: camelCased, Tauri's default for a
+/// command's arguments. Its state and event channel come from Tauri.
+fn ipc_command_args(ipc: &str, command: &str) -> BTreeSet<String> {
+    let start = ipc
+        .find(&format!("pub async fn {command}("))
+        .or_else(|| ipc.find(&format!("pub fn {command}(")))
+        .unwrap_or_else(|| panic!("no command {command} in:\n{ipc}"));
+    let params = &ipc[start..];
+    let params = &params[params.find('(').unwrap() + 1..params.find(") ->").unwrap()];
+    // A parameter's type may hold commas (`State<'_, Arc<AppState>>`), so
+    // each name is the one that follows a comma outside any `<…>`.
+    let mut depth = 0usize;
+    let mut names = vec![String::new()];
+    for c in params.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => names.push(String::new()),
+            _ => {}
+        }
+        names.last_mut().unwrap().push(c);
+    }
+    names
+        .iter()
+        .filter_map(|param| param.trim_start_matches(',').split_once(':').map(|(name, _)| name.trim()))
+        .filter(|name| !name.is_empty() && !["state", "channel"].contains(name))
+        .map(crate::servers::types::snake_to_camel)
+        .collect()
+}
+
+/// Every `invoke` of the IPC transport, paged and not, scoped and not, names
+/// a generated Tauri command and sends exactly the arguments it takes: a
+/// list's bare filters under their own names and its `*Query` struct as
+/// `query`, whatever the filter's type is called.
+#[test]
+fn every_ipc_call_sends_its_commands_arguments() {
+    let configs = [(false, (|_| {}) as fn(&mut crate::ClientsConfig)), (true, scope_under_projects)];
+    for (paginated, (scoped, adjust)) in [false, true].into_iter().flat_map(|p| configs.map(|c| (p, c))) {
+        let filtered = filtered_list_modules(paginated);
+        let mut extra = vec![("status.rs", STATUS_MODULE)];
+        extra.extend(filtered.iter().map(|(file, source)| (*file, source.as_str())));
+        let (ipc, clients) = ipc_stack(paginated, &extra, adjust);
+        let invokes = ipc_invokes(&clients.transport);
+        for (name, (command, sent)) in &invokes {
+            assert_eq!(sent, &ipc_command_args(&ipc, command), "{name} invokes {command}");
+        }
+        let page = if paginated { ", limit: limit ?? null, offset: offset ?? null" } else { "" };
+        let prefix = if scoped { ", projectId: projectId ?? null" } else { "" };
+        let ipc_methods: BTreeMap<_, _> =
+            object_methods(&clients.transport, "export function createIpcTransport", "    ").into_iter().collect();
+        for (name, command, args) in [
+            ("queueList", "queue_list", format!("mode{page}")),
+            ("inboxList", "inbox_list", format!("ownerId{page}")),
+            ("digestList", "digest_list", format!("query: query ?? {{}}{page}")),
+            ("tagList", "tag_list", format!("titlePrefix, query: query ?? {{}}{page}")),
+        ] {
+            let invoke = format!("invoke('{command}', {{ {args}{prefix} }});");
+            assert!(ipc_methods[name].contains(&invoke), "{name} should {invoke}:\n{}", ipc_methods[name]);
         }
     }
 }
@@ -1944,6 +2057,7 @@ fn both_http_clients_send_a_list_filter_as_the_filter_family() {
         } else {
             ("Tag[]", "Task[]", "Tag[]")
         };
+        let queue_ret = inbox_ret;
         let document = if paginated {
             "{ data, meta } = await httpGet<JsonApiPageDocument>"
         } else {
@@ -1981,6 +2095,17 @@ fn both_http_clients_send_a_list_filter_as_the_filter_family() {
                      owner_id: ownerId }}{op_page} }})}}`));"
                 ),
             ),
+            (
+                "queueList",
+                format!("mode: QueryMode{paged}): Promise<{queue_ret}>"),
+                format!(
+                    "return callOp<{queue_ret}>('GET', `/queues${{toQueryString({{ filter: {{ mode }}{op_page} }})}}`);"
+                ),
+                format!(
+                    "return callOp<{queue_ret}>('GET', scopedPath(projectId, `/queues${{toQueryString({{ filter: {{ \
+                     mode }}{op_page} }})}}`));"
+                ),
+            ),
         ];
 
         let unscoped = jsonapi_clients_with(paginated, &extra, |_| {});
@@ -2002,6 +2127,22 @@ fn both_http_clients_send_a_list_filter_as_the_filter_family() {
             let ipc = &ts[ts.find("export function createIpcTransport").unwrap()..];
             assert!(!ipc.contains("filter:"), "IPC payloads stay flat:\n{ipc}");
         }
+    }
+}
+
+/// A list's filter struct is only ever sent, and serde reads each of its
+/// `Option` fields as `None` when absent, so the TS type lets a caller leave
+/// any of them out (`digestList({ done: true })`).
+#[test]
+fn a_list_filter_structs_option_fields_are_optional_in_ts() {
+    let filtered = filtered_list_modules(false);
+    let extra: Vec<(&str, &str)> = filtered.iter().map(|(file, source)| (*file, source.as_str())).collect();
+    let bindings = jsonapi_clients_with(false, &extra, |_| {}).bindings;
+    for expected in [
+        "export type DigestQuery = {\n  since?: string | null;\n  done?: boolean | null;\n};",
+        "export type ListTagsQuery = {\n  title?: string | null;\n};",
+    ] {
+        assert!(bindings.contains(expected), "no `{expected}` in:\n{bindings}");
     }
 }
 

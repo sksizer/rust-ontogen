@@ -674,7 +674,7 @@ fn object_members(members: &[(&str, String)]) -> String {
 
 /// True when `f` of `m` returns a page: pagination applies only to a list
 /// returning `Vec<T>`; any other result type passes through unchanged.
-fn is_paginated(m: &ApiModule, f: &ApiFn, config: &Config) -> bool {
+pub(crate) fn is_paginated(m: &ApiModule, f: &ApiFn, config: &Config) -> bool {
     config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<")
 }
 

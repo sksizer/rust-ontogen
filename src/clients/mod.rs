@@ -284,6 +284,8 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
             }
         }
 
+        let filter_structs = generators::ts_bindings::filter_struct_names(&modules, config);
+        let mut emit_config = ontogen_ts::EmitConfig::default();
         let mut roots: Vec<ontogen_ts::TypePath> = Vec::with_capacity(long_tail.len());
         let mut missing: Vec<String> = Vec::new();
         let mut ambiguous: Vec<(String, Vec<ontogen_ts::TypePath>)> = Vec::new();
@@ -294,7 +296,12 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         for name in &long_tail {
             let module: &[String] = name_module.get(name).map_or(&crate_root[..], Vec::as_slice);
             match ontogen_ts::resolve_reference(std::slice::from_ref(name), module, &pool, &imports) {
-                ontogen_ts::Resolution::Resolved(key) => roots.push(key),
+                ontogen_ts::Resolution::Resolved(key) => {
+                    if filter_structs.contains(name) {
+                        emit_config.deserialize_only.insert(key.clone());
+                    }
+                    roots.push(key);
+                }
                 ontogen_ts::Resolution::NotInPool => missing.push(name.clone()),
                 ontogen_ts::Resolution::Ambiguous(candidates) => ambiguous.push((name.clone(), candidates)),
             }
@@ -321,7 +328,6 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         //    the full punch-list, not just the first issue. Pass the
         //    per-module `use` tables so bare field-type references resolve
         //    through their actual imports (including re-export chains).
-        let emit_config = ontogen_ts::EmitConfig::default();
         let ts = match ontogen_ts::emit_with_imports(&roots, &pool, &imports, &emit_config) {
             Ok(ts) => ts,
             Err(errors) => {
