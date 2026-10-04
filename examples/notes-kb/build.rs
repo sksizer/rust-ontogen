@@ -18,7 +18,6 @@ fn main() {
         state_import: "crate::AppState".into(),
         naming: NamingConfig::default(),
         generators: vec![ServerGenerator::HttpAxum { output: "src/api/transport/http/generated.rs".into() }],
-        rustfmt_edition: "2024".into(),
         sse_route_overrides: Default::default(),
         route_prefix: None,
         store_type: Some("Store".into()),

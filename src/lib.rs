@@ -381,7 +381,6 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 ///         state_import: "crate::AppState".into(),
 ///         naming: Default::default(),
 ///         generators: vec![],
-///         rustfmt_edition: "2021".into(),
 ///         sse_route_overrides: HashMap::new(),
 ///         route_prefix: None,
 ///         store_type: Some("Store".into()),
@@ -670,8 +669,6 @@ pub struct ServersConfig {
     pub naming: servers::NamingConfig,
     /// Which server transport generators to run (Axum, Tauri IPC, MCP).
     pub generators: Vec<servers::ServerGeneratorConfig>,
-    /// Rustfmt edition for formatting generated Rust (e.g., `"2021"`).
-    pub rustfmt_edition: String,
     /// SSE route overrides keyed by entity name; values are full URL paths.
     pub sse_route_overrides: std::collections::HashMap<String, String>,
     /// Optional route prefix applied to every generated route

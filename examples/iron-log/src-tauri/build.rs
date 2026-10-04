@@ -26,7 +26,6 @@ fn main() {
                 output: "src/api/transport/ipc/generated.rs".into(),
             },
         ],
-        rustfmt_edition: "2024".into(),
         sse_route_overrides: Default::default(),
         route_prefix: None,
         store_type: Some("Store".into()),

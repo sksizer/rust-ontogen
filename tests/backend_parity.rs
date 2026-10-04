@@ -122,7 +122,6 @@ fn gen_stack_with(
             ServerGenerator::TauriIpc { output: above.join("servers/ipc.rs") },
             ServerGenerator::Mcp { output: above.join("servers/mcp.rs") },
         ],
-        rustfmt_edition: "2024".into(),
         sse_route_overrides: Default::default(),
         route_prefix: None,
         store_type: Some("Store".into()),

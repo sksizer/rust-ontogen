@@ -89,6 +89,24 @@ An entity-backed module must then be servable as a resource, or the stage fails 
 
 `ontogen::servers::Config` and `ontogen::servers::generate_transport` are no longer public API: a caller outside the crate cannot supply the resource model or the scanned `AppError` they now need. Call `gen_servers` with a `ServersConfig` instead.
 
+### `ServersConfig.rustfmt_edition` is removed
+
+```rust
+// before
+ServersConfig {
+    // ...
+    rustfmt_edition: "2024".into(),
+    // ...
+}
+
+// after
+ServersConfig {
+    // ...
+}
+```
+
+The servers stage never read it; delete the line.
+
 ### `ServersConfig` has `error_source_dir`
 
 `ServersConfig` has a new field, `error_source_dir: Option<PathBuf>`: the directory scanned for your `enum AppError`. Add it to every `ServersConfig` literal.

@@ -42,7 +42,6 @@ let servers_output = ontogen::gen_servers(
                 output: "src/api/transport/mcp/generated.rs".into(),
             },
         ],
-        rustfmt_edition: "2024".to_string(),
         sse_route_overrides: Default::default(),
         route_prefix: None,
         store_type: Some("Store".to_string()),
@@ -69,7 +68,6 @@ Let's walk through the important fields:
 | `state_import` | Full import path for the state type |
 | `naming` | Pluralization and URL naming overrides |
 | `generators` | Which server transports to generate |
-| `rustfmt_edition` | Rust edition used when formatting the generated Rust |
 | `store_type` | Store type name for entity-scoped functions |
 | `store_import` | Full import path for the Store type |
 | `route_prefix` | Optional scope prepended to every route -- see [Route prefix](#route-prefix-for-project-scoping) |

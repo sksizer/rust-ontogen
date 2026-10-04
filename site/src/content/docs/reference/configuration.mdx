@@ -250,7 +250,6 @@ Client-side TypeScript and admin-registry generation moved out of this struct in
 | `state_import` | `String` | Import path for the state type (e.g., `"crate::AppState"`). |
 | `naming` | `NamingConfig` | Naming overrides for pluralization, singularization, and labels. |
 | `generators` | `Vec<ServerGeneratorConfig>` | Which server generators to run and their output paths. |
-| `rustfmt_edition` | `String` | Rust edition for formatting generated Rust code (e.g., `"2021"`, `"2024"`). |
 | `sse_route_overrides` | `HashMap<String, String>` | Map from event function name to custom SSE route path. Values use colon-style params (`:id`); see [route parameter syntax](#route-parameter-syntax). |
 | `route_prefix` | `Option<RoutePrefix>` | Optional route prefix for project-scoped routes. |
 | `store_type` | `Option<String>` | Store type for entity-scoped functions. |
@@ -360,7 +359,7 @@ One directory of API modules with the import paths and store accessor its genera
 | Field | Type | Description |
 |-------|------|-------------|
 | `api_dir` | `PathBuf` | Directory containing this surface's API source files. |
-| `service_import_path` | `String` | Import path for this surface's service modules (e.g., `"determined_fitness::api"`). |
+| `service_import_path` | `String` | Import path for this surface's service modules (e.g., `"determined_fitness::api"`). A surface scanned from a sibling crate must name its service path by that crate's own name, not through a `crate::` re-export: `crate::` paths in its files resolve against the crate this path names. |
 | `types_import_path` | `String` | Import path for the types this surface's handlers reference (e.g., `"determined_fitness::schema"`). |
 | `store_accessor` | `Option<String>` | The state method store-scoped handlers call to obtain the store: `state.{store_accessor}().await`. `None` means `"store"`, which is what the primary surface always uses. |
 | `store_type` | `Option<String>` | Store type name for this surface's entity-scoped functions. Each surface is scanned with its own store type. |
