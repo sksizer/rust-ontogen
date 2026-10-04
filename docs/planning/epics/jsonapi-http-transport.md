@@ -335,6 +335,7 @@ Follow-ups, filed in the backlog:
 - [B-FMQT](../backlog/B-FMQT-markdown-rewrite-unquotes-string-dates.md) — a markdown rewrite unquotes string dates
 - [B-TSDO](../backlog/B-TSDO-ts-double-option-emits-one-null.md) — `Option<Option<T>>` as `T | null` in TS
 - [B-BNDR](../backlog/B-BNDR-create-a-missing-bindings-directory.md) — create a missing bindings directory instead of panicking
+- [B-DLFK](../backlog/B-DLFK-seaorm-delete-clears-junctions-and-refuses-referenced-rows.md) — a SeaORM delete clears junction rows and refuses a referenced row with a non-500 status (filed by phase 4)
 
 Filed when phase 0 closes; one task per phase, PR-sized.
 
