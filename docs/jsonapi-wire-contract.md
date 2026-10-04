@@ -265,8 +265,7 @@ Building a resource object needs the schema. The generator must know:
 - whether an event's item type is an entity;
 - the serde attributes that §5.3 restricts.
 
-The parsed schema is an explicit first argument of both stages, as it is
-for `gen_api`:
+The parsed schema is an explicit first argument of both stages:
 
 ```rust
 pub fn gen_servers(schema: &SchemaOutput, api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ServersConfig) -> Result<ServersOutput, CodegenError>;
@@ -281,8 +280,8 @@ pub fn gen_clients(schema: &SchemaOutput, api: Option<&ApiOutput>, scan_dirs: &[
   stages need its enums for sort keys (§7.4), and `gen_store` takes the
   schema for the same reason (ADR 0006).
 
-A module is a **resource module** when its name is the module name of an
-entity in `entities`. Its CRUD ops are served as resources (§7, §8). A
+A module is a **resource module** when its name is the module name of one
+of the schema's entities. Its CRUD ops are served as resources (§7, §8). A
 module with CRUD-classified ops (`list`, `get_by_id`, `create`, `update`,
 `delete`) but no entity behind it is served entirely as custom ops (§10.4).
 That module is what a scan-dirs-only consumer, or a standalone caller
@@ -858,8 +857,8 @@ Rules:
     dotted path (`sort=epic.title`);
   - a field named twice (`sort=title,-title`);
   - an empty item (`sort=title,,status`, `sort=`);
-  - any `sort` on a list that takes no `order` argument. The spec requires `400` from a server that
-    does not support the requested sort.
+  - any `sort` on a list that takes no `order` argument. The spec requires
+    `400` from a server that does not support the requested sort.
 - A repeated `sort` parameter is `400 invalid_query_parameter`, as for
   every other parameter.
 - The detail for a duplicate is "`title` is named twice in `sort`" and for

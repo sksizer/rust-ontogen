@@ -939,6 +939,27 @@ A hand-written list that declares no order still answers `sort` with `400 invali
 - on a list in a module that no schema entity backs;
 - another entity's (`&[OrderBy<EpicSortField>]` in the `task` module).
 
+### An entity without an id field is refused
+
+`gen_store` fails the build, with ``entity `Task` has no `#[ontology(id)]` field; the generated store needs one``, for any schema entity that has no id field. Every generated store method reads the record's id, and the id is the last key of every order. Before, `gen_store` did not check, and such an entity generated a store whose methods read an id the entity does not declare. After, the build stops at `gen_store`. Mark the entity's id field:
+
+```rust
+// Before: refused by gen_store
+#[ontology(entity, directory = "tasks")]
+pub struct Task {
+    pub id: String,
+    pub title: String,
+}
+
+// After
+#[ontology(entity, directory = "tasks")]
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,
+    pub title: String,
+}
+```
+
 ### Float NaN is refused on write
 
 A store `create_*` or `update_*` that sets a float field (`f32` or `f64`, optional or not) to NaN is an error on both backends. It fails after the `before_*` hook and before anything is stored, and it answers `500` over HTTP. Before, a hook or a direct caller could store a NaN. No transport can send one, since JSON cannot carry it, and the order has no place for it. An update checks only the fields it sets.
