@@ -12,7 +12,7 @@ pub mod ts_client;
 use std::path::PathBuf;
 
 use crate::clients::config::Config;
-use crate::servers::parse::ApiFn;
+use crate::servers::parse::{ApiFn, Param};
 use crate::servers::types::{extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 
 /// Derive the IPC/TS command name for any function.
@@ -33,6 +33,12 @@ pub(crate) fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
         let entity = config.naming.url_singular(module);
         format!("{}_{}", entity, f.name)
     })
+}
+
+/// `f`'s parameters whose Rust types the TypeScript surface names: every one
+/// but a `list`'s order, which a client sends as sort keys.
+pub(crate) fn typed_params(f: &ApiFn) -> impl Iterator<Item = &Param> {
+    f.params.iter().filter(|p| p.order_sort_field().is_none())
 }
 
 /// The TypeScript parameter list for a custom fn, in Rust declaration order.

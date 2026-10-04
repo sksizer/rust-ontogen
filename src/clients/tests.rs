@@ -1839,12 +1839,14 @@ fn server_routes(server: &str) -> BTreeMap<Call, String> {
 
 /// The argument names a request carries outside its path: its bare
 /// `filter[…]` members, the `*Query` struct whose fields are its other
-/// `filter[…]` members (named by its type's last segment), whether it pages
-/// with the `page` family, its `opArg[…]` members and its `meta.args` keys.
+/// `filter[…]` members (named by its type's last segment), whether it sends
+/// `sort`, whether it pages with the `page` family, its `opArg[…]` members
+/// and its `meta.args` keys.
 #[derive(Debug, Default, PartialEq)]
 struct ArgNames {
     filter: BTreeSet<String>,
     filter_struct: Option<String>,
+    sort: bool,
     page: bool,
     op_args: BTreeSet<String>,
     meta_args: BTreeSet<String>,
@@ -1852,8 +1854,9 @@ struct ArgNames {
 
 /// What the generated handler `handler` in `server` reads outside its path:
 /// the `filter`, `filter_fields`, `page` and `op_args` of its `RouteQuery`
-/// spec, and the `meta.args` keys it checks (`request::check_op_arg_names`),
-/// with those it requires.
+/// spec, whether it reads an order from `sort` (`sort_order`; a handler that
+/// refuses `sort` reads none), and the `meta.args` keys it checks
+/// (`request::check_op_arg_names`), with those it requires.
 fn server_args(server: &str, handler: &str) -> (ArgNames, BTreeSet<String>) {
     let flat = crate::servers::tests::compact(server);
     let code =
@@ -1863,7 +1866,7 @@ fn server_args(server: &str, handler: &str) -> (ArgNames, BTreeSet<String>) {
     let strings = |list: &str| -> BTreeSet<String> {
         list.split(',').filter(|s| !s.is_empty()).map(|s| s.trim_matches('"').to_string()).collect()
     };
-    let mut names = ArgNames::default();
+    let mut names = ArgNames { sort: body.contains(".sort_order"), ..ArgNames::default() };
     // A relationship GET parses its raw query per relationship; it reads the
     // `page` family when any relationship it serves pages.
     if body.contains("QueryParams::parse(") {
@@ -2039,6 +2042,7 @@ fn client_call_and_args(body: &str, prefix_given: bool) -> Option<(Call, ArgName
             }
         }
     }
+    names.sort = path.contains("sort: options?.sort");
     names.page = path.contains("page: {");
     if let Some((_, members)) = path.split_once("opArg: {") {
         names.op_args = literal_keys(&members[..members.find('}').unwrap()]);
@@ -2068,8 +2072,9 @@ fn object_methods<'a>(ts: &'a str, head: &str, indent: &str) -> Vec<(&'a str, &'
 /// `scoped` (under a `route_prefix` a store-scoped op is served scoped
 /// only), and, unscoped, the HTTP-only client's. Each such call sends the
 /// `filter[…]` members its handler's query spec declares (its bare
-/// members, and the struct whose fields the rest are), the `page` family
-/// when the spec reads it, and its `opArg[…]` members, no more and no
+/// members, and the struct whose fields the rest are), `sort` when the
+/// handler reads an order from it, the `page` family when the spec reads
+/// it, and its `opArg[…]` members, no more and no
 /// fewer, and `meta.args` keys the handler checks, each one it requires
 /// among them. Returns the transport's calls by method name, with the
 /// prefix argument given and not.
@@ -2095,6 +2100,7 @@ fn assert_calls_are_served(
             (&declared.filter, &declared.filter_struct),
             "{who} sends these filter members, {handler} reads those"
         );
+        assert_eq!(sent.sort, declared.sort, "{who} and {handler} disagree on `sort`");
         assert_eq!(sent.page, declared.page, "{who} and {handler} disagree on the page family");
         assert_eq!(sent.op_args, declared.op_args, "{who} sends these opArg members, {handler} reads those");
         assert!(
@@ -2740,5 +2746,388 @@ fn a_junction_add_or_remove_resolves_null_on_every_transport() {
         let method = ts_method(ipc, name);
         assert!(method.contains("): Promise<null> {"), "{method}");
         assert!(method.contains("return null;"), "{method}");
+    }
+}
+
+/// `Ticket`, sortable by an enum (by its stored strings), an integer
+/// primitive, an optional float and a bool; `Tag`, by an optional integer;
+/// `Note`, whose list does not sort. The schema is also the type pool's
+/// source of `Severity` and `ListTicketsQuery`.
+const SORT_SCHEMA: &str = r#"
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Severity {
+    Low,
+    High,
+    OnFire,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ListTicketsQuery {
+    pub done: Option<bool>,
+}
+
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Ticket {
+    #[ontology(id)]
+    pub key: String,
+    pub title: String,
+    pub severity: Severity,
+    pub rank: u16,
+    pub score: Option<f64>,
+    pub done: bool,
+    #[ontology(relation(belongs_to, target = "Ticket"))]
+    pub parent_id: Option<String>,
+    pub labels: Vec<String>,
+    #[ontology(body)]
+    pub body: String,
+}
+
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Tag {
+    #[ontology(id)]
+    pub slug: String,
+    pub uses: Option<i64>,
+}
+
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Note {
+    #[ontology(id)]
+    pub id: String,
+    pub text: String,
+}
+"#;
+
+/// `{entity}`'s get, create, update and delete over `crate::schema`.
+fn sort_crud_rest(entity: &str) -> String {
+    format!(
+        "pub async fn get_by_id(store: &Store, id: &str) -> Result<{entity}, anyhow::Error> {{ todo!() }}
+pub async fn create(store: &Store, input: Create{entity}Input) -> Result<{entity}, anyhow::Error> {{ todo!() }}
+pub async fn update(store: &Store, id: &str, input: Update{entity}Input) -> Result<{entity}, anyhow::Error> {{ todo!() }}
+pub async fn delete(store: &Store, id: &str) -> Result<(), anyhow::Error> {{ todo!() }}
+"
+    )
+}
+
+/// The API over [`SORT_SCHEMA`], paged when `paginated` and each `list`
+/// then beside a `count` taking its filter: `ticket`'s list takes a `*Query` struct, a
+/// bare filter and an order, beside a junction list that does not sort;
+/// `tag`'s takes only an order, its type path-qualified; `note`'s takes
+/// none; `digest`, a module with no entity, lists tickets unsorted.
+fn sort_modules(paginated: bool) -> Vec<(&'static str, String)> {
+    let page = if paginated { ", limit: Option<u64>, offset: Option<u64>" } else { "" };
+    let count = |filter: &str| {
+        if paginated {
+            format!("pub async fn count(store: &Store{filter}) -> Result<u64, anyhow::Error> {{ todo!() }}\n")
+        } else {
+            String::new()
+        }
+    };
+    vec![
+        (
+            "ticket.rs",
+            format!(
+                "use ontogen_core::order::OrderBy;
+use crate::schema::{{CreateTicketInput, ListTicketsQuery, Tag, Ticket, UpdateTicketInput}};
+use crate::store::Store;
+use crate::store::ticket::TicketSortField;
+
+pub async fn list(store: &Store, query: ListTicketsQuery, owner: &str, order: &[OrderBy<TicketSortField>]{page}) -> Result<Vec<Ticket>, anyhow::Error> {{ todo!() }}
+{}{}pub async fn list_tags(store: &Store, ticket_id: &str) -> Result<Vec<Tag>, anyhow::Error> {{ todo!() }}
+pub async fn add_tag(store: &Store, ticket_id: &str, tag_id: &str) -> Result<(), anyhow::Error> {{ todo!() }}
+pub async fn remove_tag(store: &Store, ticket_id: &str, tag_id: &str) -> Result<(), anyhow::Error> {{ todo!() }}
+",
+                count(", query: ListTicketsQuery, owner: &str"),
+                sort_crud_rest("Ticket")
+            ),
+        ),
+        (
+            "tag.rs",
+            format!(
+                "use crate::schema::{{CreateTagInput, Tag, UpdateTagInput}};
+use crate::store::Store;
+
+pub async fn list(store: &Store, sorted_by: &[ontogen_core::order::OrderBy<crate::store::tag::TagSortField>]{page}) -> Result<Vec<Tag>, anyhow::Error> {{ todo!() }}
+{}{}",
+                count(""),
+                sort_crud_rest("Tag")
+            ),
+        ),
+        (
+            "note.rs",
+            format!(
+                "use crate::schema::{{CreateNoteInput, Note, UpdateNoteInput}};
+use crate::store::Store;
+
+pub async fn list(store: &Store{page}) -> Result<Vec<Note>, anyhow::Error> {{ todo!() }}
+{}{}",
+                count(""),
+                sort_crud_rest("Note")
+            ),
+        ),
+        (
+            "digest.rs",
+            format!(
+                "use crate::schema::Ticket;
+use crate::store::Store;
+
+pub async fn list(store: &Store, owner_id: &str{page}) -> Result<Vec<Ticket>, anyhow::Error> {{ todo!() }}
+{}",
+                count(", owner_id: &str")
+            ),
+        ),
+    ]
+}
+
+/// The `HttpTauriIpcSplit` and `HttpTs` output for [`SORT_SCHEMA`] (its
+/// entities and its enums) and `modules`, through the public `gen_clients`.
+/// `adjust` edits the clients config before generation.
+fn try_sorted_clients(
+    modules: &[(&str, String)],
+    paginated: bool,
+    adjust: impl FnOnce(&mut crate::ClientsConfig),
+) -> Result<JsonApiClients, String> {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    fs::create_dir_all(&api_dir).unwrap();
+    for (file, source) in modules {
+        fs::write(api_dir.join(file), source).unwrap();
+    }
+    let ts = tmp.path().join("ts");
+    fs::create_dir_all(&ts).unwrap();
+    let bindings_path = ts.join("bindings.ts");
+    let mut config = crate::ClientsConfig {
+        generators: vec![
+            ClientGenerator::HttpTauriIpcSplit {
+                output: ts.join("transport.ts"),
+                bindings_path: bindings_path.clone(),
+            },
+            ClientGenerator::HttpTs { output: ts.join("http.ts"), bindings_path: bindings_path.clone() },
+        ],
+        store_type: Some("Store".into()),
+        store_import: Some("crate::store::Store".into()),
+        pagination: paginated.then_some(PaginationConfig { default_limit: 20, max_limit: 100 }),
+        ..crate::ClientsConfig::new(api_dir, "AppState", "crate::api", "crate::schema", "crate::AppState")
+    };
+    let types = tmp.path().join("types").join("src");
+    fs::create_dir_all(&types).unwrap();
+    fs::write(types.join("lib.rs"), SORT_SCHEMA).unwrap();
+    config.pool_extra_roots.push(types);
+    adjust(&mut config);
+    let path = std::path::Path::new("schema.rs");
+    let schema = crate::ir::SchemaOutput {
+        entities: crate::schema::parse::parse_schema_source(SORT_SCHEMA, path).unwrap(),
+        enums: crate::schema::parse::parse_schema_enums_source(SORT_SCHEMA, path).unwrap(),
+    };
+    crate::gen_clients(&schema, None, &[], &config).map_err(|e| e.to_string())?;
+    let read = |path: &std::path::Path| fs::read_to_string(path).unwrap();
+    Ok(JsonApiClients {
+        transport: read(&ts.join("transport.ts")),
+        http: read(&ts.join("http.ts")),
+        bindings: read(&bindings_path),
+    })
+}
+
+/// [`try_sorted_clients`] over [`sort_modules`].
+fn sorted_clients(paginated: bool, adjust: impl FnOnce(&mut crate::ClientsConfig)) -> JsonApiClients {
+    try_sorted_clients(&sort_modules(paginated), paginated, adjust).unwrap()
+}
+
+/// The `Transport` interface's declaration of `name`.
+fn interface_method<'a>(ts: &'a str, name: &str) -> &'a str {
+    let interface = &ts[ts.find("export interface Transport {").unwrap()..];
+    let start = interface.find(&format!("\n  {name}(")).unwrap_or_else(|| panic!("no `{name}` in:\n{ts}")) + 3;
+    &interface[start..start + interface[start..].find('\n').unwrap()]
+}
+
+/// The signature of every client's method `name`: the interface's, the
+/// HTTP and IPC transports' and the HTTP-only client's, each as
+/// `name(params): Promise<R>`.
+fn client_signatures(clients: &JsonApiClients, name: &str) -> [String; 4] {
+    let ts = &clients.transport;
+    let ipc = &ts[ts.find("export function createIpcTransport").unwrap()..];
+    let head = |method: &str| method[method.find(name).unwrap()..method.find(" {").unwrap()].to_string();
+    [
+        interface_method(ts, name).trim_end_matches(';').to_string(),
+        head(ts_method(ts, name)),
+        head(ts_method(ipc, name)),
+        head(ts_method(&clients.http, name)),
+    ]
+}
+
+/// Each list whose fn takes an order gains a trailing `options?:
+/// ListOptions<…SortKey>` on the interface and every client, after every
+/// other parameter, the route-prefix one included; any other list, a
+/// junction list among them, gains nothing.
+#[test]
+fn a_sorted_list_takes_trailing_list_options_on_every_client() {
+    for (paginated, scoped) in [(false, false), (false, true), (true, false), (true, true)] {
+        let clients = sorted_clients(paginated, |config| {
+            if scoped {
+                scope_under_projects(config);
+            }
+        });
+        let page: &[&str] = if paginated { &["limit?: number", "offset?: number"] } else { &[] };
+        let prefix: &[&str] = if scoped { &["projectId?: string"] } else { &[] };
+        let result =
+            |entity: &str| if paginated { format!("PaginatedResult<{entity}>") } else { format!("{entity}[]") };
+        let signature = |name: &str, params: &[&[&str]], ret: String| {
+            format!("{name}({}): Promise<{ret}>", params.concat().join(", "))
+        };
+        for (name, filter, entity) in
+            [("ticketList", &["owner: string", "query?: ListTicketsQuery"][..], "Ticket"), ("tagList", &[][..], "Tag")]
+        {
+            let options = format!("options?: ListOptions<{entity}SortKey>");
+            let options: &[&str] = &[&options];
+            let [declared, http, ipc, http_client] = client_signatures(&clients, name);
+            let expected = signature(name, &[filter, page, prefix, options], result(entity));
+            assert_eq!(declared, expected, "{name}");
+            assert_eq!(http, expected, "{name}");
+            assert_eq!(ipc, expected, "{name}");
+            // The HTTP-only client takes no route-prefix parameter.
+            assert_eq!(http_client, signature(name, &[filter, page, options], result(entity)), "{name}");
+        }
+        for (name, expected) in [
+            ("noteList", signature("noteList", &[page, prefix], result("Note"))),
+            ("digestList", signature("digestList", &[&["ownerId: string"], page, prefix], result("Ticket"))),
+            ("ticketListTags", signature("ticketListTags", &[&["ticketId: string"], page, prefix], result("Tag"))),
+        ] {
+            let [declared, http, ipc, _] = client_signatures(&clients, name);
+            assert_eq!([&declared, &http, &ipc], [&expected; 3], "{name}");
+        }
+    }
+}
+
+/// One `{Entity}SortKey` union per entity a list sorts, enumerating its sort
+/// keys ascending then descending: the id as `id` whatever the field is
+/// called, an enum, an integer primitive, a float and a bool, but no
+/// relationship, to-many or body field. `ListOptions` is declared once per
+/// file, and the order's Rust types are never named in TS.
+#[test]
+fn each_sorted_entity_gets_a_sort_key_union_and_list_options_once() {
+    let clients = sorted_clients(true, |_| {});
+    for ts in [&clients.transport, &clients.http] {
+        assert!(
+            ts.contains(
+                "export type TicketSortKey = 'id' | '-id' | 'title' | '-title' | 'severity' | '-severity' | 'rank' | \
+                 '-rank' | 'score' | '-score' | 'done' | '-done';\n"
+            ),
+            "{ts}"
+        );
+        assert!(ts.contains("export type TagSortKey = 'id' | '-id' | 'uses' | '-uses';\n"), "{ts}");
+        assert!(!ts.contains("NoteSortKey"), "{ts}");
+        assert_eq!(
+            ts.matches("export interface ListOptions<K extends string> {\n  sort?: K[];\n}\n").count(),
+            1,
+            "{ts}"
+        );
+        for rust in ["OrderBy", "SortField", "TODO: Type"] {
+            assert!(!ts.contains(rust), "{rust} in:\n{ts}");
+        }
+    }
+    assert!(!clients.bindings.contains("SortField"), "{}", clients.bindings);
+
+    // With no list that sorts, neither is declared.
+    let unsorted: Vec<_> =
+        sort_modules(false).into_iter().filter(|(file, _)| !["ticket.rs", "tag.rs"].contains(file)).collect();
+    let clients = try_sorted_clients(&unsorted, false, |_| {}).unwrap();
+    for ts in [&clients.transport, &clients.http] {
+        assert!(!ts.contains("ListOptions") && !ts.contains("SortKey"), "{ts}");
+    }
+}
+
+/// Over HTTP a sorted list sends `options.sort` as `sort`, between its
+/// `filter` and `page` families as the server's links order them, and
+/// `toQueryString` writes an array as one parameter, its items joined by
+/// `,`, or nothing when it is empty or absent.
+#[test]
+fn a_sorted_list_sends_sort_between_its_filter_and_its_page() {
+    for paginated in [false, true] {
+        let clients = sorted_clients(paginated, |_| {});
+        let page = if paginated { ", page: { offset, limit }" } else { "" };
+        for ts in [&clients.transport, &clients.http] {
+            assert!(
+                ts_method(ts, "ticketList").contains(&format!(
+                    "`/tickets${{toQueryString({{ filter: {{ ...query, owner }}, sort: options?.sort{page} }})}}`"
+                )),
+                "{ts}"
+            );
+            assert!(
+                ts_method(ts, "tagList")
+                    .contains(&format!("`/tags${{toQueryString({{ sort: options?.sort{page} }})}}`")),
+                "{ts}"
+            );
+            for name in ["noteList", "ticketListTags", "digestList"] {
+                assert!(!ts_method(ts, name).contains("sort"), "{ts}");
+            }
+            let to_query_string = ts_function(ts, "toQueryString");
+            assert!(
+                to_query_string.contains(
+                    "    if (value == null) return;\n    const values = Array.isArray(value) ? value : [value];\n    if \
+                     (values.length > 0) parts.push(`${key}=${values.map((v) => \
+                     encodeURIComponent(String(v))).join(',')}`);\n"
+                ),
+                "{to_query_string}"
+            );
+        }
+    }
+}
+
+/// Over IPC a sorted list passes `options.sort` as the command's `sort`
+/// argument, left out of the payload when absent; any other list sends no
+/// `sort`.
+#[test]
+fn a_sorted_list_sends_sort_to_its_ipc_command() {
+    let clients = sorted_clients(true, scope_under_projects);
+    let ipc: BTreeMap<_, _> =
+        object_methods(&clients.transport, "export function createIpcTransport", "    ").into_iter().collect();
+    let page = "limit: limit ?? null, offset: offset ?? null, projectId: projectId ?? null";
+    assert!(
+        ipc["ticketList"].contains(&format!(
+            "invoke('ticket_list', {{ owner, query: query ?? {{}}, sort: options?.sort, {page} }});"
+        )),
+        "{}",
+        ipc["ticketList"]
+    );
+    assert!(
+        ipc["tagList"].contains(&format!("invoke('tag_list', {{ sort: options?.sort, {page} }});")),
+        "{}",
+        ipc["tagList"]
+    );
+    for name in ["noteList", "ticketListTags", "digestList"] {
+        assert!(!ipc[name].contains("sort"), "{}", ipc[name]);
+    }
+    let invokes = ipc_invokes(&clients.transport);
+    assert!(invokes["ticketList"].1.contains("sort"), "{invokes:?}");
+}
+
+/// An order a client cannot send is the clients stage's error: one on a
+/// list with no resource behind it, one of another entity than its
+/// module's resource, and one on a fn that is not a `list`.
+#[test]
+fn an_order_no_client_can_send_is_an_error() {
+    let order = |entity: &str| format!("order: &[ontogen_core::order::OrderBy<{entity}SortField>]");
+    let modules = sort_modules(false);
+    let replace = |file: &str, from: &str, to: &str| {
+        let mut modules = modules.clone();
+        let (_, source) = modules.iter_mut().find(|(f, _)| *f == file).unwrap();
+        assert!(source.contains(from), "{source}");
+        *source = source.replace(from, to);
+        modules
+    };
+    for (bad, name) in [
+        (replace("digest.rs", "owner_id: &str", &format!("owner_id: &str, {}", order("Ticket"))), "digest::list"),
+        (replace("ticket.rs", "order: &[OrderBy<TicketSortField>]", &order("Tag")), "ticket::list"),
+        (
+            replace("note.rs", "id: &str) -> Result<Note", &format!("id: &str, {}) -> Result<Note", order("Note"))),
+            "note::get_by_id",
+        ),
+    ] {
+        let err = try_sorted_clients(&bad, false, |_| {}).err().unwrap_or_else(|| panic!("{name} should fail"));
+        let (module, f) = name.split_once("::").unwrap();
+        assert!(err.contains(module) && err.contains(f), "{name}: {err}");
     }
 }
