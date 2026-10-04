@@ -2548,12 +2548,10 @@ fn test_transport_returns_fallback_record_for_missing_type() {
     assert!(content.contains("type Workout = Record<string, unknown>"));
 }
 
-/// A POST whose parameters are all `Option<T>` must still send them.
-///
-/// An all-optional signature once produced no body fields at all, while the
-/// server read the arguments from elsewhere, so every argument arrived `None`
-/// and the call quietly did nothing. A custom POST now reads every argument,
-/// optional ones included, from `meta.args`, and takes no query string.
+/// A POST whose parameters are all `Option<T>` still sends them: the client
+/// puts every argument, optional ones included, in `meta.args`, where the
+/// server reads them, and sends no query string. If the two disagreed, every
+/// argument would arrive `None` and the call would quietly do nothing.
 #[test]
 fn test_transport_post_with_only_optional_params_sends_them_as_meta_args() {
     let tmp = tempfile::tempdir().unwrap();
@@ -6287,13 +6285,14 @@ fn scoped_ops_have_the_unscoped_wire() {
     assert!(flat.contains(&compact(
         "Path((ontogen_scope, id)): Path<(uuid::Uuid, String)>, ontogen_query: Query<WorkoutGetSummaryOpArgs>"
     )));
-    // Scoped junction ops stay action-style routes, as custom ops.
+    // Scoped junction ops are action-style routes, served as custom ops.
     assert!(flat.contains(&compact(
         ".route(\"/api/projects/{project_id}/tasks/list-tags/{task_id}\", get(task_list_tags_scoped)"
     )));
     assert!(flat.contains(&compact(".route(\"/api/projects/{project_id}/tasks/add-tag\", post(task_add_tag_scoped)")));
-    // Every handler name is unique: `tag::list` and `task::list_tags` both
-    // used to be `list_tags_scoped`.
+    // Every handler name is unique, including `tag::list` and
+    // `task::list_tags`, whose scoped names are derived from different
+    // command names.
     let names: Vec<&str> = http.lines().filter_map(|l| l.strip_prefix("async fn ")?.split('(').next()).collect();
     let mut unique = names.clone();
     unique.sort_unstable();
