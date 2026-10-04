@@ -95,6 +95,14 @@ impl ResourceModel {
         self.resources.iter().find(|r| r.module == module)
     }
 
+    /// The resource whose entity the Rust type `ty` names, by its last path
+    /// segment (`Task`, `crate::schema::Task`). An event op whose item is an
+    /// entity sends each item as that resource (§12).
+    pub fn by_type(&self, ty: &str) -> Option<&Resource> {
+        let name = ty.rsplit("::").next()?;
+        self.resources.iter().find(|r| r.entity.name == name)
+    }
+
     /// The resource op `f` of API module `module` is served as over HTTP, or
     /// `None` when the op keeps a route of its own.
     ///

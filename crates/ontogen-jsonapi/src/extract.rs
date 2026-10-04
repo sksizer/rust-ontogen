@@ -300,6 +300,39 @@ mod tests {
         response::no_content()
     }
 
+    struct SummaryArgs;
+    impl RouteQuery for SummaryArgs {
+        const SPEC: QuerySpec = QuerySpec { op_args: &["verbose"], ..QuerySpec::NONE };
+    }
+
+    // GET /api/workouts/summary/{id}: a custom op, `verbose` an `opArg`.
+    async fn workout_summary(
+        _: AcceptGuard,
+        Path(id): Path<String>,
+        query: Query<SummaryArgs>,
+    ) -> Result<Response, ErrorObject> {
+        let verbose = query.op_arg::<bool>("verbose")?;
+        let result = serde_json::json!({ "id": id, "verbose": verbose });
+        Ok(response::ok(&crate::Document::meta_only(crate::ResultMeta { result })))
+    }
+
+    // POST /api/workouts/start: a custom op reading `meta.args`.
+    async fn start_workout(
+        _: AcceptGuard,
+        query: Result<Query<NoParams>, ErrorObject>,
+        body: Body,
+    ) -> Result<Response, ErrorObject> {
+        query?;
+        let body = body.into_bytes()?;
+        let args = crate::request::op_args(&body, false)?;
+        crate::request::check_op_arg_names(&args, &["note"])?;
+        let note = crate::request::op_arg::<Option<String>>(&args, "note", false)?;
+        match note {
+            None => Ok(response::no_content()),
+            Some(note) => Ok(response::ok(&crate::Document::meta_only(crate::ResultMeta { result: note }))),
+        }
+    }
+
     fn app() -> Router {
         Router::new()
             .route(
@@ -313,6 +346,8 @@ mod tests {
             .route("/api/projects/{project_id}/tasks/{id}", get(get_scoped_task))
             .route("/api/small/tasks", post(create_task).layer(DefaultBodyLimit::max(16)))
             .route("/api/{prefix}/broken/{id}", get(mismatched_path))
+            .route("/api/workouts/summary/{id}", get(workout_summary))
+            .route("/api/workouts/start", post(start_workout))
             .method_not_allowed_fallback(method_not_allowed_fallback)
     }
 
@@ -348,6 +383,60 @@ mod tests {
         assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), MEDIA_TYPE);
         assert_eq!(headers.get(header::VARY).unwrap(), "Accept");
         assert_eq!(body, serde_json::json!({ "id": "a b", "limit": 5 }));
+    }
+
+    #[tokio::test]
+    async fn a_custom_get_reads_its_op_args() {
+        let get = |uri: &'static str| request("GET", uri).body(HttpBody::empty()).unwrap();
+        let (status, _, body) = send(get("/api/workouts/summary/w1?opArg%5Bverbose%5D=true")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            serde_json::json!({ "jsonapi": { "version": "1.1" }, "meta": { "result": { "id": "w1", "verbose": true } } })
+        );
+
+        for (uri, parameter) in [
+            ("/api/workouts/summary/w1?verbose=true", "verbose"),
+            ("/api/workouts/summary/w1?opArg[verbose]=yes", "opArg[verbose]"),
+            ("/api/workouts/summary/w1?opArg[other]=1", "opArg[other]"),
+        ] {
+            let (status, headers, body) = send(get(uri)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+            assert_error(&headers, &body, "invalid_query_parameter");
+            assert_eq!(body["errors"][0]["source"], serde_json::json!({ "parameter": parameter }));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_custom_post_reads_meta_args_and_needs_no_body() {
+        // No body, so no `Content-Type` to check.
+        let (status, headers, _) = send(request("POST", "/api/workouts/start").body(HttpBody::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(headers.get(header::CONTENT_TYPE).is_none());
+
+        let post = |body: &'static str| {
+            request("POST", "/api/workouts/start")
+                .header(header::CONTENT_TYPE, MEDIA_TYPE)
+                .body(HttpBody::from(body))
+                .unwrap()
+        };
+        let (status, _, body) = send(post(r#"{"meta":{"args":{"note":"legs"}}}"#)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["meta"], serde_json::json!({ "result": "legs" }));
+
+        let (status, headers, body) = send(post(r#"{"meta":{"args":{"note":"legs","extra":1}}}"#)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_error(&headers, &body, "invalid_document");
+        assert_eq!(body["errors"][0]["source"], serde_json::json!({ "pointer": "/meta/args/extra" }));
+
+        // A query parameter fails after the media type and before the body.
+        let req = request("POST", "/api/workouts/start?opArg[note]=x")
+            .header(header::CONTENT_TYPE, MEDIA_TYPE)
+            .body(HttpBody::from("{"))
+            .unwrap();
+        let (status, _, body) = send(req).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["errors"][0]["code"], "invalid_query_parameter");
     }
 
     #[tokio::test]

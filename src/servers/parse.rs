@@ -206,6 +206,9 @@ pub struct EventFn {
     /// Whether the receiver comes wrapped in a `Result`. A failed subscribe
     /// is an HTTP error response or a rejected IPC command.
     pub returns_result: bool,
+    /// The `E` of a `Result<Receiver<T>, E>`, resolved as
+    /// [`ApiFn::error_type`] is.
+    pub error_type: Option<String>,
     /// Index of the surface this event was scanned from; see [`ApiFn::surface`].
     pub surface: usize,
 }
@@ -220,6 +223,7 @@ impl Default for EventFn {
             item_type: "()".to_string(),
             item_type_ast: syn::parse_quote!(()),
             returns_result: false,
+            error_type: None,
             surface: 0,
         }
     }
@@ -708,15 +712,16 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
             // to drop.
             let skip_first = if is_stateless { 0 } else { 1 };
 
-            if let Some((item_type_ast, returns_result)) = receiver_item_type(&func.sig.output) {
+            if let Some(receiver) = receiver_item_type(&func.sig.output) {
                 events.push(EventFn {
                     name: func.sig.ident.to_string(),
                     doc,
                     is_async: func.sig.asyncness.is_some(),
                     params: parse_params(func, skip_first),
-                    item_type: norm_type(&item_type_ast),
-                    item_type_ast,
-                    returns_result,
+                    item_type: norm_type(&receiver.item),
+                    item_type_ast: receiver.item,
+                    returns_result: receiver.is_result,
+                    error_type: receiver.error.map(|e| resolve_through_uses(&e, &uses)),
                     surface: 0,
                 });
                 continue;
@@ -841,21 +846,39 @@ fn parse_params(func: &syn::ItemFn, skip_first: usize) -> Vec<Param> {
         .collect()
 }
 
-/// The `T` of a `Receiver<T>` or `Result<Receiver<T>, E>` return type, and
-/// whether it came wrapped in a `Result`.
-fn receiver_item_type(ret: &ReturnType) -> Option<(Type, bool)> {
+/// An event fn's return type: `Receiver<T>` or `Result<Receiver<T>, E>`.
+struct ReceiverReturn {
+    /// The `T`.
+    item: Type,
+    /// Whether the receiver comes wrapped in a `Result`.
+    is_result: bool,
+    /// The `E`, when the `Result` names one (`anyhow::Result<Receiver<T>>`
+    /// does not).
+    error: Option<Type>,
+}
+
+fn receiver_item_type(ret: &ReturnType) -> Option<ReceiverReturn> {
     let ReturnType::Type(_, ty) = ret else {
         return None;
     };
     if let Some(item) = receiver_item(ty) {
-        return Some((item, false));
+        return Some(ReceiverReturn { item, is_result: false, error: None });
     }
     let seg = last_segment(ty)?;
     if seg.ident != "Result" {
         return None;
     }
-    let first_arg = first_type_arg(seg)?;
-    receiver_item(first_arg).map(|item| (item, true))
+    let item = receiver_item(first_type_arg(seg)?)?;
+    let PathArguments::AngleBracketed(args) = &seg.arguments else { return None };
+    let error = args
+        .args
+        .iter()
+        .filter_map(|a| match a {
+            GenericArgument::Type(t) => Some(t.clone()),
+            _ => None,
+        })
+        .nth(1);
+    Some(ReceiverReturn { item, is_result: true, error })
 }
 
 /// The `T` of `Receiver<T>` (any path ending in `Receiver`).
@@ -1442,5 +1465,25 @@ mod tests {
         assert_eq!(error_of("summary").as_deref(), Some("String"));
         assert_eq!(error_of("ping"), None);
         assert_eq!(error_of("pong").as_deref(), Some("fitness::schema::AppError"));
+    }
+
+    #[test]
+    fn parsed_event_fns_carry_their_error_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("activity.rs");
+        fs::write(
+            &path,
+            "use crate::schema::{self as api};\n\
+             pub fn changed(state: &AppState) -> Receiver<Task> { todo!() }\n\
+             pub async fn for_kind(state: &AppState, kind: String) -> Result<Receiver<Activity>, api::AppError> { todo!() }\n\
+             pub fn plain(state: &AppState) -> anyhow::Result<Receiver<Activity>> { todo!() }\n",
+        )
+        .unwrap();
+        let module = parse_api_module(&path, "AppState", None).module.expect("module parses");
+        let event = |name: &str| module.events.iter().find(|e| e.name == name).expect("an event fn");
+        assert_eq!((event("changed").returns_result, event("changed").error_type.clone()), (false, None));
+        assert_eq!(event("for_kind").error_type.as_deref(), Some("crate::schema::AppError"));
+        assert!(event("for_kind").returns_result);
+        assert_eq!((event("plain").returns_result, event("plain").error_type.clone()), (true, None));
     }
 }

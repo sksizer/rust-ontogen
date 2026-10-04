@@ -4,7 +4,7 @@ use ontogen_core::ir::OpKind;
 use ontogen_core::naming::pluralize;
 use syn::{PathArguments, Type};
 
-use crate::servers::parse::{ApiFn, ForcedMethod, Param};
+use crate::servers::parse::{ApiFn, ApiModule, ForcedMethod, Param};
 
 /// Classify a function into an operation kind.
 ///
@@ -160,6 +160,55 @@ pub fn classify_by_name_and_params(name: &str, params: &[Param]) -> OpKind {
             OpKind::CustomPost
         }
     }
+}
+
+/// The rules every HTTP route sets on an op, checked for the server and the
+/// clients alike, so that neither generates a route the other refuses.
+///
+/// - A singleton module has no collection and no resource type, so an op in
+///   it that classifies as CRUD or junction is a mistake (wire contract
+///   §10.3): ops named for a collection belong in a module that is not a
+///   singleton.
+/// - A `GET` or `DELETE` carries no body, so an op served with either cannot
+///   take an `*Input` argument (§10.2).
+///
+/// # Errors
+///
+/// The first op that breaks a rule, named `module::fn`.
+pub(crate) fn check_http_ops(modules: &[ApiModule]) -> Result<(), String> {
+    for m in modules {
+        for f in &m.functions {
+            let op = classify_op(f);
+            let crud_or_junction = matches!(
+                op,
+                OpKind::List
+                    | OpKind::GetById
+                    | OpKind::Create
+                    | OpKind::Update
+                    | OpKind::Delete
+                    | OpKind::JunctionList { .. }
+                    | OpKind::JunctionAdd { .. }
+                    | OpKind::JunctionRemove { .. }
+            );
+            if m.is_singleton && crud_or_junction {
+                return Err(format!(
+                    "ontogen: `{}::{}` is a collection op in the singleton module `{}`, which has no collection; \
+                     rename it or move it to a module that is not a singleton",
+                    m.name, f.name, m.name
+                ));
+            }
+            let bodyless = matches!(op, OpKind::CustomGet | OpKind::GetById | OpKind::JunctionList { .. })
+                || matches!(op, OpKind::Delete | OpKind::JunctionRemove { .. });
+            if bodyless && let Some(input) = f.params.iter().find(|p| p.ty.contains("Input")) {
+                return Err(format!(
+                    "ontogen: `{}::{}` is served without a request body, so it cannot take `{}: {}`; serve it \
+                     as a POST (`#[ontogen::http::post]`) or pass the input's fields as arguments",
+                    m.name, f.name, input.name, input.ty
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Returns true if a classified op should use HTTP `GET`.

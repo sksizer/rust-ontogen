@@ -1,11 +1,11 @@
 //! Reading request documents: the schema-independent rows of step 7 of
-//! §13.2 (§8.2, §8.3, §9.2).
+//! §13.2 (§8.2, §8.3, §9.2, §10.2).
 //!
 //! The functions here check, in table order, every rule that does not need
 //! the schema, and hand the rest of the document to generated code, which
-//! checks attributes and relationships against the entity. Each function
-//! stops at the first failure, because a response carries one error
-//! (§13.1).
+//! checks attributes and relationships against the entity, or a custom op's
+//! arguments against its parameters. Each function stops at the first
+//! failure, because a response carries one error (§13.1).
 
 use std::{collections::HashSet, fmt::Display, hash::Hash};
 
@@ -337,6 +337,61 @@ pub fn check_relationship_names(
 pub fn missing_relationship(name: &str, relationships: Option<&Map<String, Value>>) -> ErrorObject {
     let at = if relationships.is_some() { "/data/relationships" } else { "/data" };
     ErrorObject::new(ErrorCode::MissingRelationship, format!("the relationship `{name}` is required")).with_pointer(at)
+}
+
+/// Reads a custom op's request body, `{"meta":{"args":{…}}}` (§10.2), and
+/// returns `meta.args` for [`check_op_arg_names`] and [`op_arg`].
+///
+/// An empty body is read as `{"meta":{"args":{}}}`. A missing `meta` is
+/// `400 invalid_document` at `""`, and a missing `meta.args` at `/meta`,
+/// unless `has_required` is false: an op with no required argument reads a
+/// missing member as `{}`. Either member present but not an object is
+/// `400 invalid_document` at itself. Other members are ignored.
+pub fn op_args(body: &[u8], has_required: bool) -> Result<Map<String, Value>, ErrorObject> {
+    if body.is_empty() {
+        return Ok(Map::new());
+    }
+    let mut meta = match parse_object(body)?.remove("meta") {
+        Some(Value::Object(meta)) => meta,
+        Some(_) => return Err(invalid_document("`meta` must be an object", "/meta")),
+        None if has_required => return Err(invalid_document("the document has no `meta` member", "")),
+        None => return Ok(Map::new()),
+    };
+    match meta.remove("args") {
+        Some(Value::Object(args)) => Ok(args),
+        Some(_) => Err(invalid_document("`meta.args` must be an object", "/meta/args")),
+        None if has_required => Err(invalid_document("`meta` has no `args` member", "/meta")),
+        None => Ok(Map::new()),
+    }
+}
+
+/// Step 7 for `meta.args`, unknown names first: the first member, in byte
+/// order, that is not one of `declared` is `400 invalid_document` at
+/// `/meta/args/{name}`.
+pub fn check_op_arg_names(args: &Map<String, Value>, declared: &[&str]) -> Result<(), ErrorObject> {
+    match first_unknown(Some(args), declared) {
+        None => Ok(()),
+        Some(name) => {
+            Err(invalid_document(format!("`{name}` is not an argument of this operation"), pointer("/meta/args", name)))
+        }
+    }
+}
+
+/// Step 7 for `meta.args`, one declared argument, read as `T`, the
+/// argument's owned Rust type. Call it for each argument in declaration
+/// order.
+///
+/// A value serde rejects is `400 invalid_document` at `/meta/args/{name}`.
+/// An absent `required` argument is `400 invalid_document` at `/meta/args`.
+/// An absent optional argument reads as `null`, so an `Option` is `None`.
+pub fn op_arg<T: DeserializeOwned>(args: &Map<String, Value>, name: &str, required: bool) -> Result<T, ErrorObject> {
+    let missing = || invalid_document(format!("the argument `{name}` is required"), "/meta/args");
+    match args.get(name) {
+        Some(value) => T::deserialize(value)
+            .map_err(|err| invalid_document(format!("`{name}` is invalid: {err}"), pointer("/meta/args", name))),
+        None if required => Err(missing()),
+        None => T::deserialize(&Value::Null).map_err(|_| missing()),
+    }
 }
 
 /// The first member name, in byte order, outside `declared`. Sorting here
@@ -769,5 +824,86 @@ mod tests {
     fn pointer_tokens_are_escaped() {
         assert_eq!(pointer("/data/attributes", "a/b~c"), "/data/attributes/a~1b~0c");
         assert_eq!(pointer("", "data"), "/data");
+    }
+
+    /// (status, code, pointer) of a failure with an optional pointer.
+    fn op_failure<T: std::fmt::Debug>(result: Result<T, ErrorObject>) -> (u16, String, Option<String>) {
+        let err = result.unwrap_err();
+        let pointer = match err.source() {
+            None => None,
+            Some(crate::ErrorSource::Pointer(p)) => Some(p.clone()),
+            Some(other) => panic!("unexpected source {other:?}"),
+        };
+        (err.status().as_u16(), err.code().to_owned(), pointer)
+    }
+
+    fn args_of(body: &str, has_required: bool) -> Result<Map<String, Value>, ErrorObject> {
+        op_args(body.as_bytes(), has_required)
+    }
+
+    #[test]
+    fn op_args_rows() {
+        // No body is `{"meta":{"args":{}}}`, required arguments or not.
+        assert_eq!(args_of("", true).unwrap(), Map::new());
+        assert_eq!(args_of("", false).unwrap(), Map::new());
+
+        let no_source = (400, "invalid_document".to_owned(), None);
+        for body in ["{", "[]", "null", r#""meta""#, " "] {
+            assert_eq!(op_failure(args_of(body, true)), no_source, "{body}");
+            assert_eq!(op_failure(args_of(body, false)), no_source, "{body}");
+        }
+
+        // A missing member names the nearest one that exists, unless the op
+        // has no required argument.
+        assert_eq!(op_failure(args_of("{}", true)), bad(""));
+        assert_eq!(op_failure(args_of(r#"{"meta":{}}"#, true)), bad("/meta"));
+        assert_eq!(args_of("{}", false).unwrap(), Map::new());
+        assert_eq!(args_of(r#"{"meta":{}}"#, false).unwrap(), Map::new());
+
+        // A member that is not an object is itself the error, either way.
+        for has_required in [true, false] {
+            assert_eq!(op_failure(args_of(r#"{"meta":[]}"#, has_required)), bad("/meta"));
+            assert_eq!(op_failure(args_of(r#"{"meta":null}"#, has_required)), bad("/meta"));
+            assert_eq!(op_failure(args_of(r#"{"meta":{"args":1}}"#, has_required)), bad("/meta/args"));
+            assert_eq!(op_failure(args_of(r#"{"meta":{"args":null}}"#, has_required)), bad("/meta/args"));
+        }
+
+        // Other members are ignored.
+        let args = args_of(r#"{"data":1,"meta":{"other":2,"args":{"input":{"a":1}}},"links":{}}"#, true).unwrap();
+        assert_eq!(Value::Object(args), json!({ "input": { "a": 1 } }));
+    }
+
+    #[test]
+    fn unknown_op_args_are_reported_in_byte_order_and_escaped() {
+        let args = attrs(json!({ "zeta": 1, "b/c": 2, "input": 3, "a~": 4 }));
+        assert!(check_op_arg_names(&args, &["zeta", "b/c", "input", "a~"]).is_ok());
+        assert_eq!(op_failure(check_op_arg_names(&args, &["input"])), bad("/meta/args/a~0"));
+        assert_eq!(op_failure(check_op_arg_names(&args, &["input", "a~"])), bad("/meta/args/b~1c"));
+        assert_eq!(op_failure(check_op_arg_names(&args, &["input", "a~", "b/c"])), bad("/meta/args/zeta"));
+        assert!(check_op_arg_names(&Map::new(), &[]).is_ok());
+    }
+
+    #[test]
+    fn a_declared_op_arg_is_read_as_its_type() {
+        #[derive(Debug, PartialEq, serde::Deserialize)]
+        struct StartInput {
+            template_id: String,
+        }
+        let args = attrs(json!({ "input": { "template_id": "push-day" }, "count": "x", "note": null }));
+
+        let input: StartInput = op_arg(&args, "input", true).unwrap();
+        assert_eq!(input, StartInput { template_id: "push-day".to_owned() });
+
+        // A missing required argument points at `args`; a rejected value at
+        // its member.
+        assert_eq!(op_failure(op_arg::<u32>(&args, "limit", true)), bad("/meta/args"));
+        assert_eq!(op_failure(op_arg::<u32>(&args, "count", true)), bad("/meta/args/count"));
+        assert_eq!(op_failure(op_arg::<Option<u32>>(&args, "count", false)), bad("/meta/args/count"));
+
+        // Absent or `null` is `None` for an `Option`.
+        assert_eq!(op_arg::<Option<String>>(&args, "absent", false).unwrap(), None);
+        assert_eq!(op_arg::<Option<String>>(&args, "note", false).unwrap(), None);
+        // `null` for a required argument is a value serde rejects.
+        assert_eq!(op_failure(op_arg::<String>(&args, "note", true)), bad("/meta/args/note"));
     }
 }
