@@ -16,7 +16,7 @@ When the markdown store rewrites a record, it re-emits the whole frontmatter blo
 
 ## Repro
 
-Against `examples/tasks-tracker` (verified on the phase 3a head). `data/vault/tasks/ship-the-emitter.md` starts with:
+Against `examples/tasks-tracker` (verified at https://github.com/sksizer/rust-ontogen/pull/203). `data/vault/tasks/ship-the-emitter.md` starts with:
 
 ```yaml
 ---
