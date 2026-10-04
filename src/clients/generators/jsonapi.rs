@@ -13,7 +13,7 @@ use crate::clients::config::Config;
 use crate::clients::generators::{command_name, ts_params_in_declaration_order};
 use crate::resource::{Arity, Resource, member_name};
 use crate::servers::classify::classify_op;
-use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param, is_page_param};
+use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 
 /// The exported JSON:API types and the error every HTTP call throws (§14.4).
@@ -68,8 +68,7 @@ export class JsonApiError extends Error {
 ";
 
 /// `BASE` and the fetch helpers. Every request asks for JSON:API, and every
-/// request with a body declares it: the only route that is neither a
-/// resource nor a custom op is a filtered list, a `GET` with no body.
+/// request with a body declares it.
 pub(crate) fn http_helpers() -> String {
     format!("{HTTP_HELPERS}{TO_QUERY_STRING}")
 }
@@ -139,8 +138,10 @@ async function callOp<T>(method: string, path: string, args?: Record<string, unk
 ";
 
 /// Builds `?a=1&b=x` from the defined values. An object value is a JSON:API
-/// parameter family: `{ page: { offset: 0 } }` gives `page%5Boffset%5D=0`.
-/// An array value repeats its key.
+/// parameter family (§14.2): `{ filter: query, page: { offset: 0 } }` gives
+/// `filter%5Bstatus%5D=…&page%5Boffset%5D=0`. A `null` or `undefined` member,
+/// and a family that is itself `null` or `undefined` (an omitted `query`), is
+/// skipped. An array value repeats its key; filters take none (§7.3).
 const TO_QUERY_STRING: &str = "\
 function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
@@ -328,24 +329,21 @@ fn is_emitted(module: &str, f: &ApiFn, config: &Config) -> bool {
 
 /// How an op is served over HTTP, which decides the call that reaches it.
 pub(crate) enum Served<'a> {
-    /// As its resource (§5–§8).
+    /// As its resource (§5–§8), a filtered `list` included (§7.3).
     Resource(&'a Resource),
-    /// A `list` taking a filter: its flat route, query and success shape.
-    FilteredList,
     /// As a custom op (§10): arguments in `meta.args`, the result in
     /// `meta.result`. Custom ops, junction ops, and CRUD ops with no
-    /// resource behind them (§10.4).
+    /// resource behind them (§10.4), a filtered `list` included.
     Op,
 }
 
-/// How `f` of `module` is served, by the predicates the server's routes
-/// follow ([`ResourceModel::serving`], [`list_takes_filter`]).
+/// How `f` of `module` is served, by the predicate the server's routes
+/// follow ([`ResourceModel::serving`]).
 ///
 /// [`ResourceModel::serving`]: crate::resource::ResourceModel::serving
 pub(crate) fn served<'a>(module: &ApiModule, f: &ApiFn, config: &'a Config) -> Served<'a> {
     match config.resources.serving(&module.name, f) {
         Some(resource) => Served::Resource(resource),
-        None if classify_op(f) == OpKind::List && f.takes_filter() => Served::FilteredList,
         None => Served::Op,
     }
 }
@@ -365,7 +363,7 @@ pub(crate) fn served_resources<'a>(modules: &[ApiModule], config: &'a Config, ev
         .filter_map(|m| {
             m.functions.iter().filter(|f| is_emitted(&m.name, f, config)).find_map(|f| match served(m, f, config) {
                 Served::Resource(r) => Some(r),
-                Served::FilteredList | Served::Op => None,
+                Served::Op => None,
             })
         })
         .collect();
@@ -423,8 +421,8 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&s
     let op = classify_op(f);
     let resource = match served(m, f, config) {
         Served::Resource(r) => r,
-        Served::FilteredList | Served::Op if op == OpKind::List => return Some(list_method(m, f, config, scope)),
-        Served::FilteredList | Served::Op => {
+        Served::Op if op == OpKind::List => return Some(list_method(m, f, config, scope)),
+        Served::Op => {
             let (params, return_type) = match op {
                 OpKind::EventStream => return None,
                 OpKind::GetById => (vec!["id: string".to_string()], ret),
@@ -512,12 +510,14 @@ fn fetch(path: &str, scope: Option<&str>) -> String {
 
 /// The call that reaches an op served as a custom op (§10), as the server's
 /// `op_shape` routes it: the HTTP method, the path (template-literal text
-/// under `/api`), the `opArg` members and the `meta.args` members, each
-/// member a `(Rust name, TS expression)` pair.
+/// under `/api`), a list's `filter` family ([`filter_family`]), the `opArg`
+/// members and the `meta.args` members, each member a
+/// `(Rust name, TS expression)` pair.
 #[derive(PartialEq, Eq)]
 struct OpRoute<'a> {
     method: &'static str,
     path: String,
+    filter: Option<String>,
     op_args: Vec<(&'a str, String)>,
     args: Vec<(&'a str, String)>,
 }
@@ -566,11 +566,16 @@ fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
             Vec::new()
         }
     };
+    let mut filter = None;
     let mut op_args = Vec::new();
     let mut args = Vec::new();
     match op {
-        // An unfiltered list's only parameters are its page.
-        OpKind::List | OpKind::JunctionList { .. } => op_args = page(),
+        // A list's parameters are its filter and its page (§10.4).
+        OpKind::List => {
+            filter = filter_family(f);
+            op_args = page();
+        }
+        OpKind::JunctionList { .. } => op_args = page(),
         OpKind::CustomGet if matches!(classified, OpKind::JunctionList { .. }) => {
             path.extend(rest.iter().map(segment));
             op_args = page();
@@ -586,7 +591,7 @@ fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
             }
         }
     }
-    OpRoute { method, path, op_args, args }
+    OpRoute { method, path, filter, op_args, args }
 }
 
 /// The statements of an op served as a custom op. A client with a `scope`
@@ -612,30 +617,59 @@ fn path_segment(value: &str) -> String {
     format!("/${{encodeURIComponent({value})}}")
 }
 
-/// `${toQueryString({ opArg: { verbose, include_done: includeDone } })}`, or
-/// nothing for no arguments. `toQueryString` drops the ones left undefined.
-fn op_args_query(args: &[(&str, String)]) -> String {
-    if args.is_empty() {
+/// `${toQueryString({ filter: query, opArg: { verbose } })}`: the query
+/// string of the parameter `families`, each a `(family, TS object
+/// expression)` pair, or nothing for none. `toQueryString` drops the members
+/// left undefined.
+fn query_string(families: &[(&str, String)]) -> String {
+    if families.is_empty() {
         return String::new();
     }
-    format!("${{toQueryString({{ opArg: {} }})}}", object_literal(args))
+    format!("${{toQueryString({})}}", object_literal(families))
+}
+
+/// The `filter` family a list sends (§7.3), as a TS object expression:
+/// `query`, its `*Query` struct; `{ skill_id: skillId }`, its bare filters
+/// keyed by their Rust names; or `{ ...query, skill_id: skillId }`, both.
+/// `None` for a list that takes no filter.
+fn filter_family(f: &ApiFn) -> Option<String> {
+    let bare: Vec<(&str, String)> =
+        f.bare_filters().into_iter().map(|p| (p.name.as_str(), snake_to_camel(&p.name))).collect();
+    match (f.filter_struct(), bare.is_empty()) {
+        (None, true) => None,
+        (Some(_), true) => Some("query".to_string()),
+        (None, false) => Some(object_literal(&bare)),
+        (Some(_), false) => Some(format!("{{ ...query, {} }}", object_members(&bare))),
+    }
 }
 
 /// `return callOp<R>('METHOD', path, { args });` for `route`, without the
 /// argument object when there are no arguments.
 fn op_call(return_type: &str, route: &OpRoute, scope: Option<&str>) -> String {
-    let path = fetch(&format!("{}{}", route.path, op_args_query(&route.op_args)), scope);
+    let mut families = Vec::new();
+    if let Some(filter) = &route.filter {
+        families.push(("filter", filter.clone()));
+    }
+    if !route.op_args.is_empty() {
+        families.push(("opArg", object_literal(&route.op_args)));
+    }
+    let path = fetch(&format!("{}{}", route.path, query_string(&families)), scope);
     let args = if route.args.is_empty() { String::new() } else { format!(", {}", object_literal(&route.args)) };
     format!("return callOp<{return_type}>('{}', {path}{args});", route.method)
 }
 
 /// `{ a, b: c }`, using the shorthand where a key and its value match.
 fn object_literal(members: &[(&str, String)]) -> String {
+    format!("{{ {} }}", object_members(members))
+}
+
+/// `a, b: c`: the members of [`object_literal`].
+fn object_members(members: &[(&str, String)]) -> String {
     let members: Vec<String> = members
         .iter()
         .map(|(key, value)| if key == value { (*key).to_string() } else { format!("{key}: {value}") })
         .collect();
-    format!("{{ {} }}", members.join(", "))
+    members.join(", ")
 }
 
 /// True when `f` of `m` returns a page: pagination applies only to a list
@@ -649,32 +683,26 @@ fn paginated_result(array: &str) -> String {
     format!("PaginatedResult<{}>", array.strip_suffix("[]").unwrap_or(array))
 }
 
-/// The `list` method for `f`, its collection at `/{base}`.
+/// The `list` method for `f`, its collection at `/{base}`: its bare
+/// filters first, then `query?` for its `*Query` struct, then `limit?` and
+/// `offset?` when paginated.
 ///
-/// A list served as a resource pages with the `page` family and reads a
-/// collection document; a filtered list sends its filter and flat
-/// `limit`/`offset` as plain query parameters and returns the body as sent;
-/// any other list is an op (§10.4), paging with the `opArg` family. Every
-/// paginated list returns `PaginatedResult`.
+/// A list served as a resource sends its filter as the `filter` family and
+/// pages with the `page` family, reading a collection document; any other
+/// list is an op (§10.4), sending the same `filter` family and paging with
+/// the `opArg` family. Every paginated list returns `PaginatedResult`.
 fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -> Method {
     let scope = scope_of(f, scope);
     let base = config.naming.url_for_module(m);
-    let path = |p: &str| fetch(p, scope);
-    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
     let paginated = is_paginated(m, f, config);
-    // A list that takes the page owns its limit/offset: they are never caller params.
-    let plain_params: Vec<&Param> = f
-        .params
-        .iter()
-        .filter(|p| !p.ty.contains("Query") && !p.is_input() && (!f.takes_page() || !is_page_param(p)))
-        .collect();
 
-    let mut params: Vec<String> = plain_params
-        .iter()
+    let mut params: Vec<String> = f
+        .bare_filters()
+        .into_iter()
         .map(|p| format!("{}: {}", snake_to_camel(&p.name), rust_type_to_ts(&strip_ref(&p.ty))))
         .collect();
-    if let Some(qp) = query_param {
-        params.push(format!("query?: {}", rust_type_to_ts(&extract_input_type(&qp.ty))));
+    if let Some(query) = f.filter_struct() {
+        params.push(format!("query?: {}", rust_type_to_ts(&extract_input_type(&query.ty))));
     }
     if paginated {
         params.push("limit?: number".to_string());
@@ -684,44 +712,31 @@ fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -
     let ret = rust_type_to_ts(&f.return_type);
     let return_type = if paginated { paginated_result(&ret) } else { ret };
 
-    let body = match served(m, f, config) {
-        Served::Resource(r) if paginated => vec![
-            format!(
-                "const {{ data, meta }} = await httpGet<JsonApiPageDocument>({});",
-                path(&format!("/{base}${{toQueryString({{ page: {{ offset, limit }} }})}}"))
-            ),
+    let resource = match served(m, f, config) {
+        Served::Resource(r) => r,
+        Served::Op => {
+            let body = op_body(m, f, config, &return_type, scope);
+            return Method { params, return_type, body };
+        }
+    };
+    let mut families: Vec<(&str, String)> = filter_family(f).map(|filter| ("filter", filter)).into_iter().collect();
+    if paginated {
+        families.push(("page", "{ offset, limit }".to_string()));
+    }
+    let path = fetch(&format!("/{base}{}", query_string(&families)), scope);
+    let body = if paginated {
+        vec![
+            format!("const {{ data, meta }} = await httpGet<JsonApiPageDocument>({path});"),
             format!(
                 "return {{ items: data.map({}), total: meta.total, limit: meta.limit, offset: meta.offset }};",
-                flatten_fn(r)
+                flatten_fn(resource)
             ),
-        ],
-        Served::Resource(r) => vec![
-            format!("const {{ data }} = await httpGet<JsonApiCollectionDocument>({});", path(&format!("/{base}"))),
-            format!("return data.map({});", flatten_fn(r)),
-        ],
-        Served::Op => op_body(m, f, config, &return_type, scope),
-        Served::FilteredList => {
-            let path_expr = if query_param.is_some() && plain_params.is_empty() {
-                let qs_arg = if paginated {
-                    "toQueryString({ ...query, limit, offset })".to_string()
-                } else {
-                    "toQueryString(query ?? {})".to_string()
-                };
-                path(&format!("/{base}${{{qs_arg}}}"))
-            } else {
-                let qs = plain_params
-                    .iter()
-                    .map(|p| format!("{}=${{encodeURIComponent({})}}", p.name, snake_to_camel(&p.name)))
-                    .collect::<Vec<_>>()
-                    .join("&");
-                if paginated {
-                    path(&format!("/{base}?{qs}&${{toQueryString({{ limit, offset }}).slice(1)}}"))
-                } else {
-                    path(&format!("/{base}?{qs}"))
-                }
-            };
-            vec![format!("return httpGet({path_expr});")]
-        }
+        ]
+    } else {
+        vec![
+            format!("const {{ data }} = await httpGet<JsonApiCollectionDocument>({path});"),
+            format!("return data.map({});", flatten_fn(resource)),
+        ]
     };
     Method { params, return_type, body }
 }
