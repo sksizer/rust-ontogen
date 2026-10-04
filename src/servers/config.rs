@@ -67,10 +67,17 @@ pub(crate) struct Config {
     /// Import path for the store type (e.g., `"crate::store::Store"`).
     pub store_import: Option<String>,
 
-    /// Optional pagination support for list operations.
+    /// Optional pagination for the list operations of the primary surface.
     ///
-    /// When set, all `OpKind::List` handlers add `limit`/`offset` query params
-    /// and wrap return values in `PaginatedResult<T>`.
+    /// When set, every list of the surface takes a page and its total comes
+    /// from the module's `count`. Over HTTP a resource list reads
+    /// `page[offset]` and `page[limit]` and answers `meta {total, limit,
+    /// offset}` with `self`, `first`, `prev`, `next` and `last` links; a list
+    /// served as a custom op reads `opArg[offset]` and `opArg[limit]` and
+    /// answers `{items, total, limit, offset}` as `meta.result`. IPC commands
+    /// and MCP tools take flat `limit`/`offset` arguments and return
+    /// `{items, total, limit, offset}`, which the TS clients type as
+    /// `PaginatedResult<T>`.
     pub pagination: Option<PaginationConfig>,
 
     /// API surfaces scanned in addition to the primary one described by the
@@ -137,9 +144,10 @@ pub(crate) fn pagination_for<'a>(
 /// Configuration for pagination support across all list endpoints.
 #[derive(Debug, Clone)]
 pub struct PaginationConfig {
-    /// Default page size when `limit` is not specified.
+    /// Page size when a request names none (`page[limit]` over HTTP,
+    /// `limit` over IPC and MCP).
     pub default_limit: u32,
-    /// Maximum allowed page size. Requests above this are clamped.
+    /// Maximum page size. A larger requested size is clamped to it.
     pub max_limit: u32,
 }
 
