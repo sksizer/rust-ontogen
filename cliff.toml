@@ -27,8 +27,13 @@ body = """
     ### ⚠ BREAKING CHANGES
     {% for commit in breaking %}
         - {{ commit.message | split(pat="\n") | first | trim }}\
-        {%- if commit.breaking_description and commit.breaking_description != commit.message %}
-          {{ commit.breaking_description | trim }}\
+        {%- set notes = commit.footers | filter(attribute="token", value="BREAKING CHANGE") | concat(with=commit.footers | filter(attribute="token", value="BREAKING-CHANGE")) %}
+        {%- if notes | length > 0 %}
+            {%- for note in notes %}
+          {{ "  " }}- {{ note.value | replace(from="\n", to=" ") | trim }}\
+            {%- endfor %}
+        {%- elif commit.breaking_description and commit.breaking_description != commit.message %}
+          {{ "  " }}- {{ commit.breaking_description | replace(from="\n", to=" ") | trim }}\
         {%- endif %}
     {% endfor %}
 {%- endif -%}
@@ -45,6 +50,13 @@ footer = ""
 
 [git]
 conventional_commits = true
+# The footer parser treats any line shaped like `word: ` or `word #` as a git
+# trailer, so a wrapped continuation line that opens with a backtick-quoted
+# token (`{"meta":…}` keyed by…) cuts the preceding BREAKING CHANGE footer
+# short. Joining such a line onto the previous one keeps the footer whole.
+commit_preprocessors = [
+    { pattern = '\n(`)', replace = " $1" },
+]
 filter_unconventional = true
 split_commits = false
 commit_parsers = [

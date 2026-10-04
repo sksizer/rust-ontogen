@@ -117,6 +117,10 @@ commit and can't be improved later without a hand-edit:
    to restore formatted output.
    ```
 
+   One `BREAKING CHANGE:` footer per break is fine; the changelog lists every
+   one. Never start a wrapped continuation line with a word followed by `: ` or
+   `#`, because git reads it as a new trailer and cuts the footer short.
+
 Note that release-plz scopes each commit to a crate by the paths it touched, so
 a change spanning `ontogen` and `ontogen-core` lands in both changelogs — check
 both when reviewing the release PR.
