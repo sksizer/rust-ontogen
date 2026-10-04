@@ -144,7 +144,7 @@ pub(crate) fn pagination_for<'a>(
 /// Configuration for pagination support across all list endpoints.
 #[derive(Debug, Clone)]
 pub struct PaginationConfig {
-    /// Page size when a request names none (`page[limit]` over HTTP,
+    /// Page limit when a request names none (`page[limit]` over HTTP,
     /// `limit` over IPC and MCP).
     pub default_limit: u32,
     /// Maximum page size. A larger requested size is clamped to it.
