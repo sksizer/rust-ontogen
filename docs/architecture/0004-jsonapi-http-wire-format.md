@@ -2,7 +2,16 @@
 
 ## Status
 
-**proposed** (2026-10-03).
+**accepted** (2026-10-04). Implemented by E0004 phases 1a–4:
+[#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198) and
+[#199](https://github.com/sksizer/rust-ontogen/pull/199) (phase 1a),
+[#200](https://github.com/sksizer/rust-ontogen/pull/200) (phase 1b),
+[#201](https://github.com/sksizer/rust-ontogen/pull/201) (phase 1c),
+[#202](https://github.com/sksizer/rust-ontogen/pull/202) (phase 2),
+[#203](https://github.com/sksizer/rust-ontogen/pull/203) (phase 3a),
+[#205](https://github.com/sksizer/rust-ontogen/pull/205) (phase 3b),
+[#206](https://github.com/sksizer/rust-ontogen/pull/206) (phase 3c) and
+[#207](https://github.com/sksizer/rust-ontogen/pull/207) (phase 4).
 
 Records the decisions of epic
 [E0004](../planning/epics/jsonapi-http-transport.md), settled with the
