@@ -2210,6 +2210,13 @@ generated output, so phase 1b regenerates it.
 
 Payloads stay flat. JSON:API exists only at the HTTP boundary.
 
+A Tauri command names each parameter after the function's argument, since
+that name is the `invoke` key, and prefixes its own bindings with
+`ontogen_`. An argument named after a key the command itself uses is a
+build error naming the argument: `query` beside a list's `*Query` struct,
+`limit` or `offset` on a paginated junction list's parent id, and
+`channel` on an event op.
+
 - **Tauri IPC**: same commands, same `invoke` argument objects, same flat
   entities, `PaginatedResult` for paginated lists, `String` errors, and the
   same `EventFrame` channel (`{kind:"event", id, data}` with a flat `data`,
