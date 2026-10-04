@@ -16,7 +16,7 @@ use crate::clients::config::Config;
 use crate::clients::generators::jsonapi;
 use crate::clients::generators::{FallbackRecord, command_name};
 use crate::servers::classify::classify_op;
-use crate::servers::parse::{ApiModule, EventFn, Param, is_page_param, is_resume_param};
+use crate::servers::parse::{ApiModule, EventFn, is_resume_param};
 use crate::servers::types::{
     collect_ts_import, event_name, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref,
 };
@@ -465,77 +465,39 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
 
             match op {
                 OpKind::List => {
-                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    // Pagination only applies when the list function returns Vec<T>;
-                    // custom result types are passed through unchanged.
-                    let paginated =
-                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
-                    // A list that takes the page owns its limit/offset: they are never caller params.
-                    let plain_params: Vec<&Param> = f
-                        .params
-                        .iter()
-                        .filter(|p| {
-                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p))
-                        })
-                        .collect();
-
-                    let mut params = Vec::new();
-                    for pp in &plain_params {
-                        let ts_ty = rust_type_to_ts(&strip_ref(&pp.ty));
-                        params.push(format!("{}: {}", snake_to_camel(&pp.name), ts_ty));
-                    }
-                    if let Some(qp) = query_param {
-                        let qt = rust_type_to_ts(&extract_input_type(&qp.ty));
-                        params.push(format!("query?: {}", qt));
-                    }
-                    if paginated {
-                        params.push("limit?: number".to_string());
-                        params.push("offset?: number".to_string());
-                    }
+                    // The interface's signature, so the IPC half cannot drift
+                    // from it. Its arguments are the Tauri command's (servers'
+                    // ipc.rs): the `*Query` struct as `query`, each bare
+                    // filter under its own name, which Tauri reads camelCased.
+                    let method = jsonapi::method(m, f, config, None).expect("a list is not an event op");
+                    let mut params = method.params;
                     if !pp_only.is_empty() {
                         params.push(pp_only.clone());
                     }
-                    let params_str = params.join(", ");
-
-                    let return_type = if paginated {
-                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str.as_str());
-                        format!("PaginatedResult<{}>", item_type)
-                    } else {
-                        ret_str.clone()
-                    };
-
-                    // Build invoke args
-                    let mut invoke_args = Vec::new();
-                    for pp in &plain_params {
-                        invoke_args.push(snake_to_camel(&pp.name));
-                    }
-                    if query_param.is_some() {
+                    let mut invoke_args: Vec<String> =
+                        f.bare_filters().into_iter().map(|p| snake_to_camel(&p.name)).collect();
+                    if f.filter_struct().is_some() {
                         invoke_args.push("query: query ?? {}".to_string());
                     }
-                    if paginated {
+                    if jsonapi::is_paginated(m, f, config) {
                         invoke_args.push("limit: limit ?? null".to_string());
                         invoke_args.push("offset: offset ?? null".to_string());
                     }
                     if !ipc_arg_only.is_empty() {
                         invoke_args.push(ipc_arg_only.clone());
                     }
-
-                    if invoke_args.is_empty() {
-                        out.push_str(&format!(
-                            "    async {}({}): Promise<{}> {{\n\
-                             \x20     return invoke('{invoke_name}');\n\
-                             \x20   }},\n",
-                            camel, params_str, return_type,
-                        ));
+                    let invoke = if invoke_args.is_empty() {
+                        format!("invoke('{invoke_name}')")
                     } else {
-                        let args_str = invoke_args.join(", ");
-                        out.push_str(&format!(
-                            "    async {}({}): Promise<{}> {{\n\
-                             \x20     return invoke('{invoke_name}', {{ {} }});\n\
-                             \x20   }},\n",
-                            camel, params_str, return_type, args_str,
-                        ));
-                    }
+                        format!("invoke('{invoke_name}', {{ {} }})", invoke_args.join(", "))
+                    };
+                    out.push_str(&format!(
+                        "    async {camel}({}): Promise<{}> {{\n\
+                         \x20     return {invoke};\n\
+                         \x20   }},\n",
+                        params.join(", "),
+                        method.return_type,
+                    ));
                 }
                 OpKind::GetById => {
                     out.push_str(&format!(

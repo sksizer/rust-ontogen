@@ -358,11 +358,6 @@ pub const PAGE_PARAMS: [&str; 2] = ["limit", "offset"];
 /// The type each page parameter must have.
 pub const PAGE_PARAM_TYPE: &str = "Option<u64>";
 
-/// True for the `limit`/`offset` parameter of a paginated `list`.
-pub fn is_page_param(p: &Param) -> bool {
-    PAGE_PARAMS.contains(&p.name.as_str())
-}
-
 /// The function names that make up a module's CRUD surface.
 pub const CRUD_FN_NAMES: [&str; 5] = ["list", "get_by_id", "create", "update", "delete"];
 
