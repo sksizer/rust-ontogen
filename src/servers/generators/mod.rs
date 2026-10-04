@@ -10,8 +10,44 @@ pub mod mcp;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::servers::config::Config;
-use crate::servers::parse::ApiModule;
-use crate::servers::types::collect_type_import;
+use crate::servers::parse::{ApiModule, Param};
+use crate::servers::types::{collect_type_import, forward_arg_expr, param_to_owned_type};
+
+/// The argument a list's filter parameter `p`, held as its owned type in
+/// `binding`, is passed as. With `counted`, `count` takes the same filter
+/// after `list`, so `list` gets a clone of a filter it would otherwise
+/// consume: one passed by value that is not a number, `bool` or `char`.
+/// Every transport decides this one way, so they hand `list` and `count`
+/// the same filter.
+pub(crate) fn filter_arg(p: &Param, binding: &str, counted: bool) -> String {
+    let arg = forward_arg_expr(binding, &p.ty_ast);
+    let consumed = arg == binding && !is_copy_primitive(&param_to_owned_type(&p.ty_ast));
+    if counted && consumed { format!("{arg}.clone()") } else { arg }
+}
+
+/// True for a number, `bool` or `char`, alone or in an `Option`.
+fn is_copy_primitive(ty: &str) -> bool {
+    let ty = ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')).unwrap_or(ty);
+    matches!(
+        ty,
+        "bool"
+            | "char"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+    )
+}
 
 /// The `use` lines for the service modules and the types the handlers
 /// reference: one `use {path}::{...};` block per distinct import path.

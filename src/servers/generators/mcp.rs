@@ -9,8 +9,8 @@ use ontogen_core::ir::OpKind;
 
 use crate::servers::classify::classify_op;
 use crate::servers::config::{Config, PaginationConfig};
-use crate::servers::generators::surface_use_stmts;
-use crate::servers::parse::{ApiFn, ApiModule, is_page_param};
+use crate::servers::generators::{filter_arg, surface_use_stmts};
+use crate::servers::parse::{ApiFn, ApiModule, Param};
 use crate::servers::types::{extract_input_type, param_to_owned_type, to_pascal_case};
 
 /// Wraps a schema_fn reference with project_id injection when route_prefix is set.
@@ -306,34 +306,34 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     // custom result types (e.g., CodingAgentListResult) are passed through unchanged.
                     let pagination = config.pagination_for(module, f.surface).filter(|_| ret_type.starts_with("Vec<"));
                     let paginate = pagination.is_some();
-                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
                     // A pushed-down list's own limit/offset are the page, taken
                     // from `args` below — not tool arguments to extract.
                     let pushes_page = paginate && f.takes_page();
-                    let plain_params: Vec<_> = f
-                        .params
-                        .iter()
-                        .filter(|p| {
-                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!pushes_page || !is_page_param(p))
-                        })
-                        .collect();
                     let schema_wrap = if paginate { wrap_schema_for_list } else { wrap_schema };
                     let mut schema_fn = schema_wrap("schema_for::<EmptyInput>", config);
                     let mut extraction = String::new();
-                    let mut extra_args = String::new();
-                    if let Some(qp) = query_param {
+                    if let Some(qp) = f.filter_struct() {
                         let qt = extract_input_type(&qp.ty);
                         schema_fn = schema_wrap(&format!("schema_for::<{qt}>"), config);
                         extraction.push_str(&format!("                    let query: {qt} = serde_json::from_value(args.clone()).unwrap_or_default();\n"));
-                        extra_args.push_str(", query");
                     }
-                    for pp in &plain_params {
-                        extraction.push_str(&format!(
-                            "                    let {} = required_str(args, \"{}\")?;\n",
-                            pp.name, pp.name
-                        ));
-                        extra_args.push_str(&format!(", {}", pp.name));
+                    for pp in f.bare_filters() {
+                        extraction.push_str(&bare_filter_extraction(pp));
                     }
+                    // A filtered page calls `count` with the same filter after
+                    // `list`, which gets a clone of whatever it would consume.
+                    let filter_args = |counted: bool| -> String {
+                        f.filter()
+                            .iter()
+                            .map(|p| match p.ty.as_str() {
+                                _ if p.is_filter_struct() => format!(", {}", filter_arg(p, "query", counted)),
+                                // `required_str` already lends a `&str`.
+                                "&str" => format!(", {}", p.name),
+                                _ => format!(", {}", filter_arg(p, &p.name, counted)),
+                            })
+                            .collect()
+                    };
+                    let extra_args = filter_args(false);
                     if let Some(pg) = pagination {
                         let default_limit = pg.default_limit;
                         let max_limit = pg.max_limit;
@@ -345,7 +345,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                         // A filtered page calls `count` with the same filter,
                         // after `list` has consumed it.
                         let count_args = extra_args.clone();
-                        let list_args = extra_args.replace(", query", ", query.clone()");
+                        let list_args = filter_args(true);
                         let body = if pushes_page {
                             format!(
                                 "\
@@ -392,6 +392,8 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                         // store-construction snippets read `args.get("project_id")`).
                         let args_param =
                             if extraction.is_empty() && config.route_prefix.is_none() { "_args" } else { "args" };
+                        // This surface does not paginate: a list that takes the page gets the whole table.
+                        let page_args = if f.takes_page() { ", None, None" } else { "" };
                         out.push_str(&format!(
                             "\
         McpToolDef {{
@@ -400,7 +402,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
             schema_fn: {schema_fn},
             handler: |state, {args_param}| {{
                 Box::pin(async move {{
-{prefix}{extraction}                    let items = {svc}::list({first_arg}{extra_args}){await_str}.map_err(|e| e.to_string())?;
+{prefix}{extraction}                    let items = {svc}::list({first_arg}{extra_args}{page_args}){await_str}.map_err(|e| e.to_string())?;
                     serde_json::to_value(items).map_err(|e| format!(\"Serialize error: {{e}}\"))
                 }})
             }},
@@ -818,5 +820,26 @@ fn generate_generic_mcp_tool(out: &mut String, m: &ApiModule, f: &ApiFn, config:
 "
             ));
         }
+    }
+}
+
+/// The lines reading a list's bare filter `p` from a tool's `args`, bound
+/// under its name: a `&str` borrowed with `required_str`, any other type
+/// deserialized as its owned type, optional when it is an `Option`. A
+/// missing required filter or a value of the wrong type is the tool's error.
+fn bare_filter_extraction(p: &Param) -> String {
+    let name = &p.name;
+    if p.ty == "&str" {
+        return format!("                    let {name} = required_str(args, \"{name}\")?;\n");
+    }
+    let owned = param_to_owned_type(&p.ty_ast);
+    let invalid = format!(".map_err(|e| format!(\"Invalid parameter {name}: {{e}}\"))?");
+    match owned.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')) {
+        Some(inner) => format!(
+            "                    let {name}: {owned} = args.get(\"{name}\").filter(|v| !v.is_null()).cloned().map(serde_json::from_value::<{inner}>).transpose(){invalid};\n"
+        ),
+        None => format!(
+            "                    let {name}: {owned} = serde_json::from_value(args.get(\"{name}\").cloned().ok_or(\"Missing required parameter: {name}\")?){invalid};\n"
+        ),
     }
 }

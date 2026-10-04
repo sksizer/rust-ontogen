@@ -9,8 +9,8 @@ use ontogen_core::ir::OpKind;
 
 use crate::servers::classify::classify_op;
 use crate::servers::config::Config;
-use crate::servers::generators::surface_use_stmts;
-use crate::servers::parse::{ApiFn, ApiModule, EventFn, is_page_param};
+use crate::servers::generators::{filter_arg, surface_use_stmts};
+use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{
     capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
 };
@@ -173,33 +173,27 @@ pub struct PaginatedResult<T: Serialize> {
                     let cmd_name = command_name(module, f, config);
                     let await_str = if is_async { ".await" } else { "" };
                     let paginated = pagination.is_some() && ret_type.starts_with("Vec<");
-                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    // A list that takes the page owns its limit/offset: they are never caller params.
-                    let plain_params: Vec<_> = f
-                        .params
-                        .iter()
-                        .filter(|p| {
-                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p))
-                        })
-                        .collect();
+                    // Each filter is a command argument: a `*Query` struct as
+                    // `query`, a bare filter under its own name, both as their
+                    // owned types. A list that takes the page owns its
+                    // limit/offset: they are never caller params.
+                    let filter_struct = f.filter_struct();
+                    let binding = |p: &Param| if p.is_filter_struct() { "query".to_string() } else { p.name.clone() };
                     let mut param_lines = String::new();
-                    let mut extra_args = String::new();
-                    if let Some(qp) = query_param {
-                        let qt = extract_input_type(&qp.ty);
-                        param_lines.push_str(&format!("    query: {},\n", qt));
-                        extra_args.push_str(", query");
+                    if let Some(qp) = filter_struct {
+                        param_lines.push_str(&format!("    query: {},\n", extract_input_type(&qp.ty)));
                     }
-                    for pp in &plain_params {
-                        let owned_ty = param_to_owned_type(&pp.ty_ast);
-                        param_lines.push_str(&format!("    {}: {},\n", pp.name, owned_ty));
-                        extra_args.push_str(&format!(", &{}", pp.name));
+                    for pp in f.bare_filters() {
+                        param_lines.push_str(&format!("    {}: {},\n", pp.name, param_to_owned_type(&pp.ty_ast)));
                     }
-                    // A filtered page calls `count` with the same filter, after
-                    // `list` has consumed it, so the by-value filter is cloned
-                    // into the list call and the original goes to count. With no
-                    // filter both are `extra_args` and the emission is unchanged.
+                    // A filtered page calls `count` with the same filter after
+                    // `list`, which gets a clone of whatever it would consume.
+                    let filter_args = |counted: bool| -> String {
+                        f.filter().iter().map(|p| format!(", {}", filter_arg(p, &binding(p), counted))).collect()
+                    };
+                    let extra_args = filter_args(false);
                     let count_args = extra_args.clone();
-                    let list_args = extra_args.replace(", query", ", query.clone()");
+                    let list_args = filter_args(true);
                     if let Some(pg) = pagination
                         && paginated
                     {

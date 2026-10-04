@@ -5160,6 +5160,94 @@ fn a_by_value_filter_is_cloned_into_the_list_and_counted_from_the_original() {
     }
 }
 
+/// IPC and MCP for a paginated `workout::list` taking `filter` before its
+/// page, with a `count` taking the same filter: each file as generated, and
+/// compacted.
+fn typed_filter_transports(filter: &str) -> [(&'static str, String, String); 2] {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store")
+            .replace("store: &Store, limit", &format!("store: &Store, {filter}, limit"))
+            .replace("count(store: &Store)", &format!("count(store: &Store, {filter})")),
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+    let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces).unwrap();
+    let emit = |name: &'static str, generate: fn(&std::path::Path, &[ApiModule], &Config)| {
+        let out = tmp.path().join(format!("{name}.rs"));
+        generate(&out, &modules, &config);
+        let code = std::fs::read_to_string(&out).unwrap();
+        syn::parse_file(&code).unwrap_or_else(|e| panic!("{name} does not parse: {e}\n{code}"));
+        (name, compact(&code), code)
+    };
+    [emit("ipc", crate::servers::generators::ipc::generate), emit("mcp", crate::servers::generators::mcp::generate)]
+}
+
+/// A bare filter of any one-value type reaches `list` and `count` on IPC
+/// and MCP as its fn declares it: the IPC command takes it as its owned
+/// type, and the MCP tool reads it from `args` as that type, optional when
+/// it is an `Option`. A `&str` keeps the `required_str` read.
+#[test]
+fn ipc_and_mcp_read_a_typed_bare_filter() {
+    let [(_, ipc, ipc_code), (_, mcp, mcp_code)] =
+        typed_filter_transports("title: Option<&str>, owner: &str, limit_to: Option<u32>");
+
+    for line in ["title: Option<String>,", "owner: String,", "limit_to: Option<u32>,"] {
+        assert!(ipc.contains(&compact(line)), "{line}:\n{ipc_code}");
+    }
+    assert!(
+        ipc.contains(&compact(
+            "workout::list(&store, title.as_deref(), &owner, limit_to, Some(u64::from(limit)), Some(u64::from(offset)))"
+        )),
+        "{ipc_code}"
+    );
+    assert!(ipc.contains(&compact("workout::count(&store, title.as_deref(), &owner, limit_to)")), "{ipc_code}");
+
+    for line in [
+        "let title: Option<String> = args.get(\"title\").filter(|v| !v.is_null()).cloned()\
+         .map(serde_json::from_value::<String>).transpose()\
+         .map_err(|e| format!(\"Invalid parameter title: {e}\"))?;",
+        "let owner = required_str(args, \"owner\")?;",
+        "let limit_to: Option<u32> = args.get(\"limit_to\").filter(|v| !v.is_null()).cloned()\
+         .map(serde_json::from_value::<u32>).transpose()\
+         .map_err(|e| format!(\"Invalid parameter limit_to: {e}\"))?;",
+        "workout::list(&store, title.as_deref(), owner, limit_to, Some(limit), Some(offset))",
+        "workout::count(&store, title.as_deref(), owner, limit_to)",
+    ] {
+        assert!(mcp.contains(&compact(line)), "{line}:\n{mcp_code}");
+    }
+}
+
+/// `count` takes the filter after `list`, so a filter `list` would consume
+/// (the `*Query` struct, an owned `String`) is cloned into `list`, and a
+/// copied one (`u32`) is not, as on HTTP. A required non-`&str` filter is
+/// read from `args` as its type, a missing one being the tool's error.
+#[test]
+fn ipc_and_mcp_clone_only_the_filters_list_consumes() {
+    let [(_, ipc, ipc_code), (_, mcp, mcp_code)] =
+        typed_filter_transports("query: ListWorkoutQuery, tag: Option<String>, n: u32");
+
+    assert!(ipc.contains(&compact("query: ListWorkoutQuery, tag: Option<String>, n: u32,")), "{ipc_code}");
+    for (name, flat, code, store) in [("ipc", &ipc, &ipc_code, "&store"), ("mcp", &mcp, &mcp_code, "&store")] {
+        assert!(
+            flat.contains(&compact(&format!("workout::list({store}, query.clone(), tag.clone(), n,"))),
+            "{name}:\n{code}"
+        );
+        assert!(flat.contains(&compact(&format!("workout::count({store}, query, tag, n)"))), "{name}:\n{code}");
+    }
+    assert!(
+        mcp.contains(&compact(
+            "let n: u32 = serde_json::from_value(args.get(\"n\").cloned().ok_or(\"Missing required parameter: n\")?)\
+             .map_err(|e| format!(\"Invalid parameter n: {e}\"))?;"
+        )),
+        "{mcp_code}"
+    );
+}
+
 /// A `count` that ignores the filter would report the whole table as the total
 /// of a filtered page, so the two parameter lists must agree.
 #[test]

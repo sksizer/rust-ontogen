@@ -20,7 +20,7 @@ use crate::resource::{Arity, Resource, member_name};
 use crate::servers::classify::classify_op;
 use crate::servers::config::{Config, RoutePrefix};
 use crate::servers::error_map::VariantShape;
-use crate::servers::generators::surface_use_stmts_where;
+use crate::servers::generators::{filter_arg, surface_use_stmts_where};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param, is_resume_param};
 use crate::servers::types::{
     capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type, to_pascal_case,
@@ -1210,44 +1210,10 @@ fn filter_reads(f: &ApiFn, query: &str) -> String {
     steps
 }
 
-/// The arguments a list's filter is passed as, in declaration order. With
-/// `counted`, `count` takes the same filter after `list`, so `list` gets a
-/// clone of each filter it would otherwise consume.
+/// The arguments a list's filter is passed as, in declaration order, each
+/// as [`filter_arg`] decides.
 fn filter_args(f: &ApiFn, counted: bool) -> Vec<String> {
-    f.filter()
-        .iter()
-        .map(|p| {
-            let binding = filter_binding(p);
-            let arg = forward_arg_expr(&binding, &p.ty_ast);
-            let consumed = arg == binding && !is_copy_primitive(&param_to_owned_type(&p.ty_ast));
-            if counted && consumed { format!("{arg}.clone()") } else { arg }
-        })
-        .collect()
-}
-
-/// True for a number, `bool` or `char`, alone or in an `Option`: a filter
-/// passed by value that `list` copies rather than consumes.
-fn is_copy_primitive(ty: &str) -> bool {
-    let ty = ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')).unwrap_or(ty);
-    matches!(
-        ty,
-        "bool"
-            | "char"
-            | "i8"
-            | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "isize"
-            | "u8"
-            | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "usize"
-            | "f32"
-            | "f64"
-    )
+    f.filter().iter().map(|p| filter_arg(p, &filter_binding(p), counted)).collect()
 }
 
 /// Emit the JSON:API handler of one CRUD op (§7, §8), served at
