@@ -113,7 +113,13 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
     let mut modules = scanned.modules;
     parse::apply_singleton_overlay(&mut modules, &config.naming);
     parse::apply_command_overrides(&mut modules, &config.naming);
-    crate::servers::classify::check_http_ops(&modules)?;
+    if config
+        .generators
+        .iter()
+        .any(|g| matches!(g, ClientGenerator::HttpTs { .. } | ClientGenerator::HttpTauriIpcSplit { .. }))
+    {
+        crate::servers::classify::check_http_ops(&modules, &config.resources)?;
+    }
     if modules.is_empty() {
         return Ok(modules);
     }

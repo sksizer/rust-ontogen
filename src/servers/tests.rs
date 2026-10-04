@@ -6204,12 +6204,40 @@ fn server_metadata_routes_every_op_where_the_generator_does() {
 }
 
 /// `module.rs` with `source`, in a fresh API dir, run through both
-/// `gen_servers` and `gen_clients`.
+/// `gen_servers` with an Axum server and `gen_clients` with an HTTP client,
+/// each of which must fail.
 fn both_pipelines(source: &str, module: &str) -> (String, String) {
     let tmp = tempfile::tempdir().unwrap();
-    let api_dir = tmp.path().join("api");
+    let (server, client) = pipelines(tmp.path(), source, module, true);
+    (server.unwrap_err(), client.unwrap_err())
+}
+
+/// `module.rs` with `source` under `root`, run through `gen_servers` and
+/// `gen_clients`: with an Axum server and an HTTP client when `http`, with
+/// only the IPC and MCP servers and no client otherwise.
+fn pipelines(
+    root: &std::path::Path,
+    source: &str,
+    module: &str,
+    http: bool,
+) -> (Result<(), String>, Result<(), String>) {
+    let api_dir = root.join("api");
     write_synthetic_api(&api_dir, &format!("{module}.rs"), source);
-    let server = crate::servers::generate_transport(&test_config(api_dir.clone())).unwrap_err();
+    let mut server_config = test_config(api_dir.clone());
+    server_config.generators = if http {
+        vec![ServerGenerator::HttpAxum { output: root.join("http.rs") }]
+    } else {
+        vec![
+            ServerGenerator::TauriIpc { output: root.join("ipc.rs") },
+            ServerGenerator::Mcp { output: root.join("mcp.rs") },
+        ]
+    };
+    let server = crate::servers::generate_transport(&server_config).map(|_| ());
+    let generators = if http {
+        vec![ClientGenerator::HttpTs { output: root.join("client.ts"), bindings_path: root.join("bindings.ts") }]
+    } else {
+        vec![]
+    };
     let clients = crate::ClientsConfig {
         api_dir,
         state_type: "AppState".to_string(),
@@ -6217,7 +6245,7 @@ fn both_pipelines(source: &str, module: &str) -> (String, String) {
         types_import_path: "crate::schema".to_string(),
         state_import: "crate::AppState".to_string(),
         naming: NamingConfig::default(),
-        generators: vec![],
+        generators,
         ts_formatter: crate::TsFormatter::None,
         sse_route_overrides: HashMap::new(),
         ts_skip_commands: vec![],
@@ -6231,7 +6259,7 @@ fn both_pipelines(source: &str, module: &str) -> (String, String) {
         pool_exclude_paths: Vec::new(),
         extra_surfaces: Vec::new(),
     };
-    let client = crate::clients::generate(&[], None, &[], &clients).unwrap_err().to_string();
+    let client = crate::clients::generate(&[], None, &[], &clients).map_err(|e| e.to_string());
     (server, client)
 }
 
@@ -6287,6 +6315,93 @@ fn an_input_on_a_route_with_no_body_is_a_codegen_error() {
             assert!(err.contains("without a request body"), "{err}");
         }
     }
+}
+
+/// The HTTP rules are HTTP's: IPC and MCP read every argument from one flat
+/// payload, so a build with neither an Axum server nor an HTTP client takes
+/// a collection op in a singleton module, and an input on an op HTTP would
+/// serve without a body.
+#[test]
+fn an_ipc_only_build_does_not_apply_the_http_rules() {
+    for source in [
+        "// ontogen:singleton\npub fn delete(state: &AppState, id: &str) -> Result<(), anyhow::Error> { todo!() }\n",
+        "#[ontogen::http::get]\npub fn get_report(state: &AppState, input: ReportInput) -> Result<String, anyhow::Error> { todo!() }\n",
+        "pub fn get_by_id(state: &AppState, id: &str, verbose: Option<bool>) -> Result<String, anyhow::Error> { todo!() }\n",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (server, client) = pipelines(tmp.path(), source, "settings", false);
+        assert_eq!(server, Ok(()), "{source}");
+        assert_eq!(client, Ok(()), "{source}");
+    }
+}
+
+/// A CRUD-named op in a module with no schema entity is served at its
+/// collection's route, which carries the route's own arguments only, and the
+/// TypeScript clients call it with exactly those: an op that takes others is
+/// a codegen error, not a route no client can call.
+#[test]
+fn an_entityless_crud_op_with_other_arguments_is_a_codegen_error() {
+    for (op, source, wants) in [
+        (
+            "get_by_id",
+            "pub fn get_by_id(state: &AppState, id: &str, verbose: Option<bool>) -> Result<String, anyhow::Error> { todo!() }\n",
+            "passes `id` after",
+        ),
+        (
+            "delete",
+            "pub fn delete(state: &AppState) -> Result<(), anyhow::Error> { todo!() }\n",
+            "the fn takes nothing",
+        ),
+        (
+            "create",
+            "pub fn create(state: &AppState, input: NewThing, note: String) -> Result<String, anyhow::Error> { todo!() }\n",
+            "passes its input after",
+        ),
+        (
+            "update",
+            "pub fn update(state: &AppState, input: ThingPatch) -> Result<String, anyhow::Error> { todo!() }\n",
+            "passes `id` and its input after",
+        ),
+    ] {
+        let (server, client) = both_pipelines(source, "settings");
+        for err in [&server, &client] {
+            assert!(err.contains(&format!("`settings::{op}`")), "{err}");
+            assert!(err.contains(wants), "{err}");
+            assert!(err.contains("no schema entity"), "{err}");
+        }
+    }
+    // The route's own arguments are fine, and a list may take a filter.
+    let tmp = tempfile::tempdir().unwrap();
+    let source = "pub fn get_by_id(state: &AppState, key: &str) -> Result<String, anyhow::Error> { todo!() }\n\
+                  pub fn create(state: &AppState, input: NewThing) -> Result<String, anyhow::Error> { todo!() }\n\
+                  pub fn update(state: &AppState, id: &str, patch: ThingPatch) -> Result<String, anyhow::Error> { todo!() }\n\
+                  pub fn delete(state: &AppState, id: &str) -> Result<(), anyhow::Error> { todo!() }\n\
+                  pub fn list(state: &AppState, kind: &str) -> Result<Vec<String>, anyhow::Error> { todo!() }\n";
+    let (server, _) = pipelines(tmp.path(), source, "settings", true);
+    assert_eq!(server, Ok(()));
+}
+
+/// An optional argument of a `GET` is one `opArg[…]` query-string value: a
+/// type that needs more than one (a `Vec`, a map) is a codegen error, not a
+/// route that refuses every request. A type that only contains the word
+/// `Input` is not an input.
+#[test]
+fn an_op_arg_that_one_value_cannot_carry_is_a_codegen_error() {
+    for ty in ["Vec<String>", "HashMap<String, String>", "(u32, u32)"] {
+        let source = format!(
+            "pub fn get_report(state: &AppState, tags: Option<{ty}>) -> Result<String, anyhow::Error> {{ todo!() }}\n"
+        );
+        let (server, client) = both_pipelines(&source, "stats");
+        for err in [&server, &client] {
+            assert!(err.contains("`stats::get_report`"), "{err}");
+            assert!(err.contains("opArg[tags]"), "{err}");
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let source = "pub fn get_report(state: &AppState, mode: Option<InputMode>, label: Option<&str>, n: Option<u32>) \
+                  -> Result<String, anyhow::Error> { todo!() }\n";
+    let (server, _) = pipelines(tmp.path(), source, "stats", true);
+    assert_eq!(server, Ok(()));
 }
 
 #[test]

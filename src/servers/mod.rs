@@ -206,12 +206,12 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     parse::qualify_shared_types(&mut modules, &surfaces);
     parse::apply_singleton_overlay(&mut modules, &config.naming);
     parse::apply_command_overrides(&mut modules, &config.naming);
-    classify::check_http_ops(&modules)?;
     parse::check_paginated_lists(&mut modules, config)?;
     if modules.is_empty() {
         return Ok(modules);
     }
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::HttpAxum { .. })) {
+        classify::check_http_ops(&modules, &config.resources)?;
         generators::http::check_resource_ops(&modules, config)?;
         for warning in generators::http::unplaced_app_error_warnings(&modules, config) {
             println!("{warning}");
