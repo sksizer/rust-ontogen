@@ -1471,10 +1471,10 @@ enum Paging {
 fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> OpShape<'a> {
     let classified = classify_op(f);
     let scoped_junction_list = scoped && matches!(classified, OpKind::JunctionList { .. });
-    let op = match classified {
+    let op = match &classified {
         OpKind::JunctionList { .. } if scoped => OpKind::CustomGet,
         OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } if scoped => OpKind::CustomPost,
-        op => op,
+        op => op.clone(),
     };
     let paging = config.pagination_for(&m.name, f.surface).filter(|_| f.return_type.starts_with("Vec<"));
     let (method, mut path, named) = match &op {
@@ -1503,8 +1503,10 @@ fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
         query_args: Vec::new(),
         body_args: None,
         page: None,
+        // From the op as classified: a scoped junction add or remove is
+        // served as a custom op but answers as its unscoped route does.
         no_content: f.return_type == "()"
-            || matches!(op, OpKind::Delete | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }),
+            || matches!(classified, OpKind::Delete | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }),
     };
     match op {
         // An unfiltered list's only parameters are its page.

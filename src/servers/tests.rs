@@ -6182,6 +6182,31 @@ fn scoped_ops_have_the_unscoped_wire() {
     assert!(flat.contains(&compact(".route(\"/api/workouts/version\", get(workout_get_version)")));
 }
 
+/// A junction add or remove answers `204` whatever its fn returns, under the
+/// route prefix as at its unscoped route.
+#[test]
+fn a_junction_add_or_remove_answers_204_scoped_or_not() {
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = resource_fixture(tmp.path(), true);
+        let api_dir = tmp.path().join("api");
+        let task = std::fs::read_to_string(api_dir.join("task.rs")).unwrap()
+            + "pub async fn add_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<bool, AppError> { todo!() }\n\
+               pub async fn remove_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<bool, AppError> { todo!() }\n";
+        write_synthetic_api(&api_dir, "task.rs", &task);
+        if scoped {
+            config.route_prefix = test_config_with_prefix(PathBuf::new()).route_prefix;
+        }
+        let http = generate_http(tmp.path(), config);
+        let suffix = if scoped { "_scoped" } else { "" };
+        for handler in ["task_add_tag", "task_remove_tag"] {
+            let body = handler_body(&http, &format!("{handler}{suffix}"));
+            assert!(body.contains("Ok(response::no_content())"), "{handler}{suffix}: {body}");
+            assert!(!body.contains("ResultMeta"), "{handler}{suffix}: {body}");
+        }
+    }
+}
+
 #[test]
 fn server_metadata_routes_every_op_where_the_generator_does() {
     for scoped in [false, true] {
