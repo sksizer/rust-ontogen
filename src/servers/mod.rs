@@ -236,7 +236,7 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     }
 
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::TauriIpc { .. })) {
-        generators::ipc::check_wire_keys(&modules, config)?;
+        generators::ipc::check_wire_keys(&modules, &generators::ipc::WireKeyScope::of(config))?;
     }
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::Mcp { .. })) {
         generators::mcp::check_scope_key(&modules, config)?;

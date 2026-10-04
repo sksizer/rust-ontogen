@@ -122,6 +122,24 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         crate::servers::classify::check_http_ops(&modules, &config.resources, config.route_prefix.as_ref())?;
     }
     crate::servers::classify::check_order_params(&modules, &config.resources)?;
+    // The commands and methods the clients emit are checked here, whether
+    // or not this build generates the servers that serve them.
+    let transport = config.generators.iter().any(|g| matches!(g, ClientGenerator::HttpTauriIpcSplit { .. }));
+    if transport {
+        crate::servers::generators::ipc::check_wire_keys(
+            &modules,
+            &crate::servers::generators::ipc::WireKeyScope {
+                naming: &config.naming,
+                pagination: &config.pagination,
+                extra_surfaces: &config.extra_surfaces,
+                route_prefix: config.route_prefix.as_ref(),
+                skip_commands: &config.ts_skip_commands,
+            },
+        )?;
+    }
+    if config.generators.iter().any(|g| matches!(g, ClientGenerator::HttpTs { .. })) || transport {
+        generators::jsonapi::check_list_params(&modules, config, transport)?;
+    }
     if modules.is_empty() {
         return Ok(modules);
     }
