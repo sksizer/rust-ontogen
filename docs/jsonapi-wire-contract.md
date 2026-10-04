@@ -137,8 +137,10 @@ section, not on every example.
 `Content-Type: application/vnd.api+json`. Bodies are carried by:
 - `POST` to a collection;
 - `PATCH` to a resource;
-- a custom `POST` with a body (one may also carry none, §10.2);
-- `POST`, `PATCH` and `DELETE` on a relationship endpoint.
+- a custom `POST`, or a `POST` or `PATCH` row of §10.4, with a body (one
+  may also carry none, §10.2);
+- `POST`, `PATCH` and `DELETE` on a relationship endpoint (§9, served from
+  phase 3a).
 
 The server responds:
 
@@ -150,8 +152,9 @@ The server responds:
 | `application/vnd.api+json` with any other parameter (e.g. `charset=utf-8`) | `415`, as the spec requires |
 | anything else, including `application/json`, or the header absent while a body is present | `415` |
 
-Every `415` carries `source.header: "Content-Type"`. A body on `GET` or on
-any generated `DELETE` is ignored, and its `Content-Type` is not checked.
+Every `415` carries `source.header: "Content-Type"`. A body on `GET`, or on
+a `DELETE` other than a relationship endpoint's (a resource `DELETE`, or a
+`DELETE` row of §10.4), is ignored, and its `Content-Type` is not checked.
 
 **Accept.** Media types, parameter names and the `q` parameter are
 compared case-insensitively. A range with `q=0` is "not acceptable", as
@@ -1605,9 +1608,11 @@ An op in a singleton module that classifies as `List`, `GetById`,
 singleton module is opted into explicitly, so a CRUD op there is a
 mistake. A module with no entity behind it is the case §10.4 serves.
 
-This check, and the `*Input` rule of §10.2 and §10.4, apply to builds that
-generate an HTTP server or an HTTP TypeScript client. IPC-only and MCP-only
-builds are unaffected.
+The build-time rules of §10.2–§10.4 apply to builds that generate an HTTP
+server or an HTTP TypeScript client: this singleton check, the `*Input` rule
+for ops served without a body, the exact arguments of a CRUD-named op in a
+module with no entity, and the types an `Option` argument read from `opArg`
+may have. IPC-only and MCP-only builds are unaffected.
 
 ### 10.4 Ops served as custom ops
 
@@ -1996,7 +2001,11 @@ and `Path` in generated handlers and produce the documents above.
 
 The generated HTTP transport keeps the flat `Transport` interface:
 
-- every method name, parameter and return type is unchanged;
+- every method name, parameter and return type is unchanged, with two
+  exceptions: a paginated module has no `xCount()` method, because no route
+  or IPC command serves its `count` (the page carries `total`); and a junction
+  `xAddY` or `xRemoveY` is declared `Promise<null>` whatever its Rust return
+  type, matching the `204` its route answers;
 - list methods gain one trailing optional argument (§14.2).
 
 JSON:API is applied and removed inside the transport. The admin layer needs
@@ -2119,7 +2128,9 @@ export class JsonApiError extends Error {
 
 ### 14.5 What stays identical for callers
 
-- Every existing method name, parameter and return type on `Transport`.
+- Every existing method name, parameter and return type on `Transport`,
+  except the two in §14's introduction: `xCount()` of a paginated module is
+  removed, and a junction add or remove is declared `Promise<null>`.
 - `PaginatedResult<T>`: same declaration, same fields, and same values.
   `limit` and `offset` are the effective values, as today.
 - Entities in and out are flat, with the same field names, `null` for
@@ -2147,7 +2158,7 @@ Payloads stay flat. JSON:API exists only at the HTTP boundary.
   arrays or `{items, total, limit, offset}` for lists. Event ops are still
   skipped.
 
-Three changes reach them, none of which changes a payload's shape:
+Five changes reach them, none of which changes a payload's shape:
 
 1. **`sort` on list** (decision 8). The IPC list command gains an optional
    `sort: Option<Vec<String>>` argument, and the TS IPC transport passes
@@ -2163,6 +2174,14 @@ Three changes reach them, none of which changes a payload's shape:
 3. **New typed store errors.** `{Entity}AlreadyExists`, `{Entity}IdRequired`
    and `{Child}ParentRequired` replace backend messages. On these
    transports they are still strings.
+4. **No `xCount()` for a paginated module.** The servers stage takes a
+   paginated module's `count` off its module list, since the list's page
+   reports `total`, so no IPC command or MCP tool serves it. The TS IPC
+   transport and the `Transport` interface no longer declare it (§14).
+5. **Junction add and remove resolve `null`.** The TS IPC transport declares
+   `xAddY` and `xRemoveY` as `Promise<null>` and resolves `null` whatever the
+   Rust fn returns, as the HTTP transport does (§14). The IPC command's own
+   return value is unchanged.
 
 ## 16. Decision index
 
