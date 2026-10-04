@@ -686,7 +686,7 @@ fn paginated_result(array: &str) -> String {
 /// Whether `f`'s `*Query` struct has a field a client must send, so the
 /// `query` parameter is required. A struct the clients stage could not
 /// resolve (no type pool, or not found in it) is not known to have one, and
-/// keeps today's optional `query?`.
+/// its `query?` parameter stays optional.
 pub(crate) fn query_required(f: &ApiFn, config: &Config) -> bool {
     f.filter_struct()
         .is_some_and(|q| config.required_query_structs.contains(&rust_type_to_ts(&extract_input_type(&q.ty))))

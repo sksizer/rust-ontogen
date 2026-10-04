@@ -2221,8 +2221,12 @@ Payloads stay flat. JSON:API exists only at the HTTP boundary.
   skipped.
 
 A filtered list's filter parameters are forwarded to `list` and `count` on
-both transports since https://github.com/sksizer/rust-ontogen/pull/172; the
-payloads are unchanged. A bare filter keeps its declared type on both (an
+both transports since https://github.com/sksizer/rust-ontogen/pull/172.
+Two things change for a filtered list. The TS IPC transport sends each bare
+filter under its own name, as the command takes it; before, a bare filter
+whose type name contained `Query` was sent as `query`. The MCP tools read
+their arguments strictly, as described here and in the upgrading guide's
+"MCP tools" section. A bare filter keeps its declared type on both (an
 `Option` one is optional). The MCP list tool's input schema lists the bare
 filters beside the `*Query` struct's fields and the page. The tool reads
 the struct from its arguments without the ones it reads itself (bare
