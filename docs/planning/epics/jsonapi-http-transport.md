@@ -11,7 +11,7 @@ tags: [servers, clients, http, jsonapi, wire-format]
 # Epic — JSON:API as the generated HTTP wire format
 
 **Milestone:** M4 — Standard formats ([roadmap](../../roadmap.md))
-**Status:** proposed — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)), completing the 0.9.0 wire; phase 2 done ([#202](https://github.com/sksizer/rust-ontogen/pull/202)); phase 3 is next
+**Status:** proposed — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)), completing the 0.9.0 wire; phase 2 done ([#202](https://github.com/sksizer/rust-ontogen/pull/202)); phase 3a done ([#203](https://github.com/sksizer/rust-ontogen/pull/203)); phase 3b is next
 **Spec:** [JSON:API 1.1](https://jsonapi.org/format/)
 **Wire contract:** [`docs/jsonapi-wire-contract.md`](../../jsonapi-wire-contract.md) — normative; every phase implements against it
 **Decision records:** [ADR 0004](../../architecture/0004-jsonapi-http-wire-format.md) (this epic's decisions),
@@ -195,7 +195,7 @@ each of its sections to a phase.
 
 **Phase 3 — relationships, inclusion and sorting.**
 
-- **3a.** `/relationships/{rel}` and related-resource endpoints:
+- **3a.** Done ([#203](https://github.com/sksizer/rust-ontogen/pull/203)). `/relationships/{rel}` and related-resource endpoints:
   - every relation field is served from the generated store, `has_many`
     writable (decision 9; self-referential only, cross-entity is backlog
     B-XEHM);
@@ -319,7 +319,7 @@ Filed when phase 0 closes; one task per phase, PR-sized.
 - [x] phase 1b — schema input, CRUD envelope, media type, errors, PATCH, TS flattener ([#200](https://github.com/sksizer/rust-ontogen/pull/200))
 - [x] phase 1c — custom ops, ops served as custom, event frames, scoped pagination ([#201](https://github.com/sksizer/rust-ontogen/pull/201))
 - [x] phase 2 — filter family, hand-written `list`/`count` precedence, TS filter family ([#202](https://github.com/sksizer/rust-ontogen/pull/202))
-- [ ] phase 3a — relationship endpoints, related links, junction re-route
+- [x] phase 3a — relationship endpoints, related links, junction re-route ([#203](https://github.com/sksizer/rust-ontogen/pull/203))
 - [ ] phase 3b — `include` compound documents
 - [ ] phase 3c — `order` argument on both backends (ADR 0006) + `sort` on every transport
 - [ ] phase 4 — docs and examples
