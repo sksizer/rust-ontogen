@@ -112,8 +112,17 @@ layer are unchanged by either. The JSON:API `errors[]` document replaces the
 `{"error"}` body that the M3 error-mapping epic assumed, so that epic's
 envelope section is superseded while its status-mapping mechanism stands.
 **Met** — the OKF epic closed 2026-10-03 ([#194](https://github.com/sksizer/rust-ontogen/pull/194),
-[#196](https://github.com/sksizer/rust-ontogen/pull/196)) and the JSON:API epic 2026-10-04 ([#195](https://github.com/sksizer/rust-ontogen/pull/195)
-to [#206](https://github.com/sksizer/rust-ontogen/pull/206), and [#207](https://github.com/sksizer/rust-ontogen/pull/207)).
+[#196](https://github.com/sksizer/rust-ontogen/pull/196)) and the JSON:API epic 2026-10-04 ([#195](https://github.com/sksizer/rust-ontogen/pull/195),
+[#197](https://github.com/sksizer/rust-ontogen/pull/197),
+[#198](https://github.com/sksizer/rust-ontogen/pull/198),
+[#199](https://github.com/sksizer/rust-ontogen/pull/199),
+[#200](https://github.com/sksizer/rust-ontogen/pull/200),
+[#201](https://github.com/sksizer/rust-ontogen/pull/201),
+[#202](https://github.com/sksizer/rust-ontogen/pull/202),
+[#203](https://github.com/sksizer/rust-ontogen/pull/203),
+[#205](https://github.com/sksizer/rust-ontogen/pull/205),
+[#206](https://github.com/sksizer/rust-ontogen/pull/206) and
+[#207](https://github.com/sksizer/rust-ontogen/pull/207)).
 
 - A third-party client, kitsu, drives `examples/tasks-tracker` through list,
   get, create, patch, delete and relationship fetches with only its
