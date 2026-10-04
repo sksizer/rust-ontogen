@@ -1837,10 +1837,14 @@ scoped route has the shape of its unscoped one under the prefix:
   whose `get_by_id` takes no store serves its relationship routes outside
   the prefix, where no store is open and only unscoped routes exist, so its
   junction ops and the `get_by_id` of every type it relates to take no store
-  either. The reverse is allowed: scoped relationship routes link a target
-  whose `get_by_id` takes no store at its unscoped collection and call
-  junction ops that take no store as they are. The generator refuses every
-  other combination at build time.
+  either. A `create` or `update` checks each id it links with the target
+  type's `get_by_id` in its own scope (§13.2), so one that takes no store
+  links no type whose `get_by_id` takes the store, whether or not its own
+  type serves `get_by_id`. The reverse is allowed: scoped relationship
+  routes link a target whose `get_by_id` takes no store at its unscoped
+  collection and call junction ops that take no store as they are, and a
+  scoped `create` or `update` checks such a target with the state. The
+  generator refuses every other combination at build time.
 - Junction ops outside a resource module are served at their §10.4 routes
   under the prefix:
   `GET`/`POST /api/projects/{project_id}/{m}/{parent_id}/{segment}` and

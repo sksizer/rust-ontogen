@@ -1688,6 +1688,87 @@ fn scoped_relationship_routes_reach_unscoped_targets_and_junction_ops() {
     assert!(post.contains("add_tag(&ontogen_state, "), "the junction op takes the state:\n{post}");
 }
 
+/// `workout_set` with a `get_by_id`, a `create` and an `update` taking the
+/// given first arguments, each left out when `None`.
+fn workout_set_module(get: Option<&str>, create: Option<&str>, update: Option<&str>) -> String {
+    let get = get
+        .map(|a| format!("pub async fn get_by_id({a}, id: &str) -> Result<WorkoutSet, anyhow::Error> {{ todo!() }}\n"));
+    let create = create.map(|a| {
+        format!("pub async fn create({a}, input: CreateWorkoutSetInput) -> Result<WorkoutSet, anyhow::Error> {{ todo!() }}\n")
+    });
+    let update = update.map(|a| {
+        format!(
+            "pub async fn update({a}, id: &str, input: UpdateWorkoutSetInput) -> Result<WorkoutSet, anyhow::Error> \
+             {{ todo!() }}\n"
+        )
+    });
+    format!(
+        "use crate::schema::{{CreateWorkoutSetInput, UpdateWorkoutSetInput, WorkoutSet}};\nuse \
+         crate::store::Store;\nuse crate::AppState;\n\n{}{}{}",
+        get.unwrap_or_default(),
+        create.unwrap_or_default(),
+        update.unwrap_or_default()
+    )
+}
+
+/// Under a route prefix, a create or update that takes no store is served
+/// outside the prefix, where it checks each id it links with its target's
+/// `get_by_id`: a target whose `get_by_id` takes a store is out of its
+/// reach, whether or not its own module serves `get_by_id`.
+#[test]
+fn under_a_route_prefix_an_unscoped_write_links_nothing_scoped() {
+    for (module, culprit) in [
+        (workout_set_module(None, Some(STATE), None), "create"),
+        (workout_set_module(None, None, Some(STATE)), "update"),
+        (workout_set_module(Some(STATE), Some(STATE), None), "create"),
+    ] {
+        for err in scoping_errors(&[("workout_set.rs", &module)]) {
+            assert!(
+                err.ends_with(&format!(
+                    "ontogen: `workout_set::{culprit}` takes no store, so it is served outside the route prefix \
+                     `projects/:project_id`, but it checks that the `tags` resources its relationship `tag` links \
+                     exist with `tag::get_by_id`, which takes a store that only a handler under the prefix opens; \
+                     take a store in `workout_set::{culprit}`, or the state in `tag::get_by_id`"
+                )),
+                "{culprit}: {err}"
+            );
+        }
+    }
+
+    let unscoped_tags = tag_module([STATE; 5]);
+    let (servers, clients) = try_generate_jsonapi(
+        false,
+        &[("workout_set.rs", &workout_set_module(Some(STATE), Some(STATE), Some(STATE))), ("tag.rs", &unscoped_tags)],
+        scope_under_projects,
+        true,
+    );
+    assert!(clients.is_ok(), "{:?}", clients.err());
+    let http = servers.unwrap().unwrap().http;
+    assert!(http.contains("tag::get_by_id(state, &linked.id)"), "an unscoped target is read with the state:\n{http}");
+    assert!(!http.contains("state.store()"), "no store is opened outside a scope:\n{http}");
+}
+
+/// The reverse is fine: a create or update under the prefix checks a target
+/// whose `get_by_id` takes no store with the state, as an unscoped one
+/// checks a target served outside the prefix.
+#[test]
+fn under_a_route_prefix_a_scoped_write_links_unscoped_targets() {
+    let unscoped_tags = tag_module([STATE; 5]);
+    let (servers, clients) = try_generate_jsonapi(
+        false,
+        &[("workout_set.rs", &workout_set_module(Some(STORE), Some(STORE), Some(STORE))), ("tag.rs", &unscoped_tags)],
+        scope_under_projects,
+        true,
+    );
+    assert!(clients.is_ok(), "{:?}", clients.err());
+    let http = servers.unwrap().unwrap().http;
+    let check = &http[http.find("async fn workout_set_check_linked_scoped(").expect(&http)..];
+    let check = &check[..check.find("\n}\n").unwrap()];
+    assert!(check.contains("tag::get_by_id(state, &linked.id)"), "{check}");
+    assert!(!check.contains("store_for"), "the state reaches an unscoped target:\n{check}");
+    assert!(!http.contains("async fn workout_set_check_linked("), "no write is unscoped:\n{http}");
+}
+
 /// A `list_X` with no add or remove beside it is a custom GET at its action
 /// route, unpaged and returning its plain array, on every transport (§15).
 #[test]
