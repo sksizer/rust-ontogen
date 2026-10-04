@@ -1903,10 +1903,11 @@ Decision 6 folds E0003 phases 0 and 1 into E0004:
 - the `AppError` scan over the schema directory;
 - the call-site routing predicate (below).
 
-**Routing predicate.** A call goes through `app_error` iff its error type
-is the primary surface's `{types_import_path}::AppError`; every other error
-type, another surface's `AppError` included, is `500 internal_error`. The
-error type is resolved in the function's own surface:
+**Routing predicate.** A call goes through `ontogen_app_error` iff its error
+type is the primary surface's `{types_import_path}::AppError`; every
+other error type, another surface's `AppError` included, is
+`500 internal_error`. The error type is resolved in the function's own
+surface:
 
 - through its file's `use` items: `use a::b::{AppError, X as Y}`,
   `use a::b::{self as c}`, and a leading segment one `use` binds

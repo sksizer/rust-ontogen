@@ -355,7 +355,7 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
 }
 ```
 
-Handlers are named `{module}_{op}` (`task_list`, `task_get_by_id`, `task_create`, `task_update`, `task_delete`). The file also holds two error helpers, `app_error` (an `AppError` to its status and `code`) and `internal_error` (every other failure, `500 internal_error`).
+Handlers are named `{module}_{op}` (`task_list`, `task_get_by_id`, `task_create`, `task_update`, `task_delete`). The file also holds two error helpers, `ontogen_app_error` (an `AppError` to its status and `code`) and `ontogen_internal_error` (every other failure, `500 internal_error`).
 
 ## Tauri IPC generation
 
