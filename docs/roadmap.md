@@ -113,7 +113,7 @@ layer are unchanged by either. The JSON:API `errors[]` document replaces the
 envelope section is superseded while its status-mapping mechanism stands.
 **Met** — the OKF epic closed 2026-10-03 ([#194](https://github.com/sksizer/rust-ontogen/pull/194),
 [#196](https://github.com/sksizer/rust-ontogen/pull/196)) and the JSON:API epic 2026-10-04 ([#195](https://github.com/sksizer/rust-ontogen/pull/195)
-to [#206](https://github.com/sksizer/rust-ontogen/pull/206), and PHASE4_PR_URL).
+to [#206](https://github.com/sksizer/rust-ontogen/pull/206), and [#207](https://github.com/sksizer/rust-ontogen/pull/207)).
 
 - A third-party client, kitsu, drives `examples/tasks-tracker` through list,
   get, create, patch, delete and relationship fetches with only its

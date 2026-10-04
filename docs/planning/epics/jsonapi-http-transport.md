@@ -3,7 +3,7 @@ type: epic
 schema_version: "1"
 id: E0004
 status: closed/done
-completion_note: "Phase 0 shipped in https://github.com/sksizer/rust-ontogen/pull/195; phase 1a in https://github.com/sksizer/rust-ontogen/pull/197 and https://github.com/sksizer/rust-ontogen/pull/198, with its follow-ups in https://github.com/sksizer/rust-ontogen/pull/199; phase 1b in https://github.com/sksizer/rust-ontogen/pull/200; phase 1c in https://github.com/sksizer/rust-ontogen/pull/201; phase 2 in https://github.com/sksizer/rust-ontogen/pull/202; phase 3a in https://github.com/sksizer/rust-ontogen/pull/203; phase 3b in https://github.com/sksizer/rust-ontogen/pull/205; phase 3c in https://github.com/sksizer/rust-ontogen/pull/206; phase 4 (docs and examples) in PHASE4_PR_URL."
+completion_note: "Phase 0 shipped in https://github.com/sksizer/rust-ontogen/pull/195; phase 1a in https://github.com/sksizer/rust-ontogen/pull/197 and https://github.com/sksizer/rust-ontogen/pull/198, with its follow-ups in https://github.com/sksizer/rust-ontogen/pull/199; phase 1b in https://github.com/sksizer/rust-ontogen/pull/200; phase 1c in https://github.com/sksizer/rust-ontogen/pull/201; phase 2 in https://github.com/sksizer/rust-ontogen/pull/202; phase 3a in https://github.com/sksizer/rust-ontogen/pull/203; phase 3b in https://github.com/sksizer/rust-ontogen/pull/205; phase 3c in https://github.com/sksizer/rust-ontogen/pull/206; phase 4 (docs and examples) in https://github.com/sksizer/rust-ontogen/pull/207."
 title: JSON:API as the generated HTTP wire format
 created: 2026-10-03
 last_reviewed: 2026-10-04
@@ -12,7 +12,7 @@ tags: [servers, clients, http, jsonapi, wire-format]
 # Epic — JSON:API as the generated HTTP wire format
 
 **Milestone:** M4 — Standard formats ([roadmap](../../roadmap.md))
-**Status:** done — phase 0 shipped in https://github.com/sksizer/rust-ontogen/pull/195; phase 1a in https://github.com/sksizer/rust-ontogen/pull/197 and https://github.com/sksizer/rust-ontogen/pull/198, with its follow-ups in https://github.com/sksizer/rust-ontogen/pull/199; phase 1b in https://github.com/sksizer/rust-ontogen/pull/200; phase 1c in https://github.com/sksizer/rust-ontogen/pull/201; phase 2 in https://github.com/sksizer/rust-ontogen/pull/202; phase 3a in https://github.com/sksizer/rust-ontogen/pull/203; phase 3b in https://github.com/sksizer/rust-ontogen/pull/205; phase 3c in https://github.com/sksizer/rust-ontogen/pull/206; phase 4 in PHASE4_PR_URL
+**Status:** done — phase 0 shipped in https://github.com/sksizer/rust-ontogen/pull/195; phase 1a in https://github.com/sksizer/rust-ontogen/pull/197 and https://github.com/sksizer/rust-ontogen/pull/198, with its follow-ups in https://github.com/sksizer/rust-ontogen/pull/199; phase 1b in https://github.com/sksizer/rust-ontogen/pull/200; phase 1c in https://github.com/sksizer/rust-ontogen/pull/201; phase 2 in https://github.com/sksizer/rust-ontogen/pull/202; phase 3a in https://github.com/sksizer/rust-ontogen/pull/203; phase 3b in https://github.com/sksizer/rust-ontogen/pull/205; phase 3c in https://github.com/sksizer/rust-ontogen/pull/206; phase 4 in https://github.com/sksizer/rust-ontogen/pull/207
 **Spec:** [JSON:API 1.1](https://jsonapi.org/format/)
 **Wire contract:** [`docs/jsonapi-wire-contract.md`](../../jsonapi-wire-contract.md) — normative; every phase implements against it
 **Decision records:** [ADR 0004](../../architecture/0004-jsonapi-http-wire-format.md) (this epic's decisions),
@@ -220,7 +220,7 @@ each of its sections to a phase.
   parity fixture. `sort` on HTTP, and on the TS `Transport`, IPC and MCP
   (decision 8). tasks-tracker's hand-written `list` gains `order`.
 
-**Phase 4 — docs and examples.** Done (PHASE4_PR_URL). Site pages above,
+**Phase 4 — docs and examples.** Done ([#207](https://github.com/sksizer/rust-ontogen/pull/207)). Site pages above,
 cookbook update, a "what the wire looks like" page per example, README.
 
 ## Acceptance criteria
@@ -347,4 +347,4 @@ Filed when phase 0 closes; one task per phase, PR-sized.
 - [x] phase 3a — relationship endpoints, related links, junction re-route ([#203](https://github.com/sksizer/rust-ontogen/pull/203))
 - [x] phase 3b — `include` compound documents, and no links to an unserved `get_by_id` ([#205](https://github.com/sksizer/rust-ontogen/pull/205))
 - [x] phase 3c — `order` argument on both backends (ADR 0006) + `sort` on every transport ([#206](https://github.com/sksizer/rust-ontogen/pull/206))
-- [x] phase 4 — docs and examples (PHASE4_PR_URL)
+- [x] phase 4 — docs and examples ([#207](https://github.com/sksizer/rust-ontogen/pull/207))
