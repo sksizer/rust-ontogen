@@ -15,7 +15,7 @@ On Postgres or MySQL, today's code would break in these places:
 
 - `set_{entity}_parent`, the `has_many` write, builds its raw `UPDATE` for `DatabaseBackend::Sqlite` with `?` placeholders. Postgres expects `$1`.
 - `load_junction_ids` reads `many_to_many` ids back `ORDER BY rowid`, a column only SQLite has, so a list would not keep its written order.
-- Lists and `has_many` child ids are ordered by id and must come back in byte order, as on markdown. SQLite's default `BINARY` collation does that; a Postgres locale collation or MySQL's case-insensitive default does not.
+- Lists and `has_many` child ids are ordered by id and must come back in byte order, as on markdown. The same holds for every string key of a list's `order`, which `order_{plural}_query` sorts in SQL. SQLite's default `BINARY` collation does that; a Postgres locale collation or MySQL's case-insensitive default does not.
 - A list with an offset and no limit sends `LIMIT i64::MAX`, because SQLite rejects `OFFSET` alone.
 - Integer primitives moved from `i32` to `i64` columns. SQLite reads an existing column as `i64` in place; other engines need the column widened (see [Upgrading](/reference/upgrading/#integer-columns-are-i64)).
 

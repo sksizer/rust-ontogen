@@ -175,7 +175,10 @@ pub use super::generated::task::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use ontogen_core::order::OrderBy;
+
 use crate::schema::{AppError, Task};
+use crate::store::task::TaskSortField;
 use crate::store::Store;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
@@ -193,10 +196,11 @@ fn matches(task: &Task, query: &ListTasksQuery) -> bool {
 pub async fn list(
     store: &Store,
     query: ListTasksQuery,
+    order: &[OrderBy<TaskSortField>],
     limit: Option<u64>,
     offset: Option<u64>,
 ) -> Result<Vec<Task>, AppError> {
-    let tasks = store.list_tasks(None, None).await?;
+    let tasks = store.list_tasks(order, None, None).await?;
     Ok(tasks
         .into_iter()
         .filter(|t| matches(t, &query))
@@ -207,7 +211,7 @@ pub async fn list(
 
 /// Count the tasks the same filter selects
 pub async fn count(store: &Store, query: ListTasksQuery) -> Result<u64, AppError> {
-    let tasks = store.list_tasks(None, None).await?;
+    let tasks = store.list_tasks(&[], None, None).await?;
     Ok(tasks.iter().filter(|t| matches(t, &query)).count() as u64)
 }
 ```
@@ -217,6 +221,7 @@ pub async fn count(store: &Store, query: ListTasksQuery) -> Result<u64, AppError
 - **A paginated module needs its own `count`.** A hand-written `list` drops the generated `count`, because the generated one counts the whole table, so the total would be wrong. Without a `count` that takes the same filter, the build fails.
 - **Re-export the query struct from `types_import_path`.** The generated handlers import every type an API function names from that path, so with `types_import_path: "crate::schema"` add `pub use crate::api::v1::task::ListTasksQuery;` to `src/schema/mod.rs` (or define the struct there).
 - **The query struct** is taken by value or borrowed (`query: &ListTasksQuery`), and at most one is allowed per list. It needs `Deserialize`; the MCP list tool publishes its schema, so it needs `JsonSchema`, and refuses arguments it cannot be read from. Taken by value, it is cloned into `list` so `count` can read it after, so it needs `Clone`; a borrowed struct is lent to both and needs neither. `Default` is not needed.
+- **`order` opts the list into `sort`.** It follows the filter and precedes the page. The store sorts before the filter runs, and a filter keeps the order, so the page comes out in the requested order. A list that filters in SQL passes its query through `order_tasks_query(query, order)` (SeaORM), and one that filters a list it already holds calls `sort_tasks(&mut items, order)` before the page is cut. `count` takes no order. Leave `order` out and `sort` on this list is `400 invalid_sort_field`. The build fails when `order` is misplaced, repeated, or another entity's. See [Sorting](/reference/upgrading/#sorting).
 - **Bare parameters** work too: `list(store, skill_id: &str, limit, offset)` is `filter[skill_id]`, required unless it is an `Option`. A bare parameter's type must be one a single value can carry (`&str`, `String`, numbers, `bool`, unit enums). An `*Input` parameter on a `list` is refused.
 - **Without an entity.** A `list` in a module with no entity behind it is a custom op at `GET /api/{module}`, with `filter[...]` and `opArg[limit]`/`opArg[offset]`, answering `meta.result`.
 
@@ -245,7 +250,7 @@ GET /api/tasks?filter[status]=closed/done&filter[epic_id]=markdown-backend
 
 In an unpaginated module the `list` takes no `limit` or `offset` and needs no `count`. It answers every matching task in `data`, with no `meta` and no pagination links; `links.self` carries the filter, e.g. `/api/tasks?filter%5Bstatus%5D=closed%2Fdone`.
 
-An unknown member (`filter[colour]`), a repeated one, or a value the struct rejects is `400 invalid_query_parameter`. The generated TypeScript client keeps its signature, `taskList(query?, limit?, offset?)`, and sends `filter[...]`. See the [upgrade notes](/reference/upgrading/#filtered-lists) for the full list of errors.
+An unknown member (`filter[colour]`), a repeated one, or a value the struct rejects is `400 invalid_query_parameter`. The generated TypeScript client takes `taskList(query?, limit?, offset?, options?)`, where `options.sort` holds the sort keys, and sends `filter[...]` and `sort`. See the [upgrade notes](/reference/upgrading/#filtered-lists) for the full list of errors.
 
 ## Organizing custom endpoints
 

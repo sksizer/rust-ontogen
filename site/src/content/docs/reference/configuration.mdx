@@ -386,7 +386,7 @@ ApiSurface {
 
 Used by [`gen_clients()`](/reference/public-api/#gen_clients). The sibling of `ServersConfig` for the **client-side** surface: TypeScript bindings, the HTTP and HTTP+IPC transport clients, and the admin registry.
 
-The two configs overlap on naming, state, and routing because those decisions drive both sides of the wire -- URL pluralization, pagination, route prefixes. Both stages also take the parsed schema entities as their first argument, which is where the admin-registry generator gets its per-field metadata; leaving it empty (`&[]`) ships `admin-registry.ts` with empty `fields: []` per entity. The shared types are re-exported from `ontogen::servers`.
+The two configs overlap on naming, state, and routing because those decisions drive both sides of the wire -- URL pluralization, pagination, route prefixes. Both stages also take the parsed schema as their first argument, which is where the admin-registry generator gets its per-field metadata and enum values and where the sort keys come from; an empty schema (`&SchemaOutput::default()`) ships `admin-registry.ts` with empty `fields: []` per entity. The shared types are re-exported from `ontogen::servers`.
 
 | Field | Type | Description |
 |-------|------|-------------|
