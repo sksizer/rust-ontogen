@@ -6135,6 +6135,17 @@ fn scoped_ops_have_the_unscoped_wire() {
     for list in ["report_list_scoped", "agent_list_scoped"] {
         assert!(!handler_body(&http, list).contains("skip("), "{list} slices nothing in memory");
     }
+    // A scoped junction list keeps its action-style route but pages like the
+    // unscoped one.
+    assert_in_order(
+        "task_list_tags_scoped",
+        &handler_body(&http, "task_list_tags_scoped"),
+        &[
+            "ontogen_query: Query<PageOpArgs>",
+            "let limit = ontogen_query.op_arg::<u32>(\"limit\")?.unwrap_or(20).min(100);",
+            "let result = PaginatedResult { items, total, limit, offset };",
+        ],
+    );
     // A custom op reads its arguments as the unscoped one does, after the
     // prefix.
     assert_in_order(

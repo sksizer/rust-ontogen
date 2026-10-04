@@ -483,7 +483,7 @@ A subscribe call that fails before the stream opens now answers an error documen
 
 ### Route prefix
 
-A scoped list (`route_prefix`) that is not served as a resource, meaning a list in a module with no entity behind it or a filtered list, used to fetch every record and slice the page in memory. It now passes the page to the store's `list` and calls `count`, like an unscoped one. A hand-written scoped `list` must therefore honour its `limit` and `offset`. Scoped custom ops and junction ops follow the rules above, under the prefix.
+A scoped list (`route_prefix`) that is not served as a resource, meaning a list in a module with no entity behind it or a filtered list, used to fetch every record and slice the page in memory. It now passes the page to the store's `list` and calls `count`, like an unscoped one. A hand-written scoped `list` must therefore honour its `limit` and `offset`. Scoped custom ops and junction ops follow the rules above, under the prefix. Scoped junction ops keep their action-style routes (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`, `…/remove-tag`), but a scoped junction list on a paginated surface now pages like an unscoped one: it takes `opArg[limit]` and `opArg[offset]` and answers the `{items, total, limit, offset}` object, where it used to return the whole list.
 
 ## TypeScript clients
 

@@ -1677,8 +1677,9 @@ scoped `list` must honour its page. The one remaining divergence:
 
 - Scoped junction ops are action-style custom-op routes
   (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`,
-  `…/remove-tag`) instead of the `{parent_id}/{child}` form. Phase 3a
-  removes this.
+  `…/remove-tag`) instead of the `{parent_id}/{child}` form. Only the route
+  differs: a scoped `JunctionList` pages with `opArg[limit]`/`opArg[offset]`
+  like the unscoped one. Phase 3a removes this.
 
 ### 11.2 Extra API surfaces
 

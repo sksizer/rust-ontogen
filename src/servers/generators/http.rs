@@ -1461,14 +1461,17 @@ enum Paging {
 /// The request and response shape of `f`, served as a custom op (§10.2):
 /// a `CustomGet` or `CustomPost` at `/{action}`, or a CRUD-named or junction
 /// op at its §10.4 route. A scoped junction op is served as the custom op
-/// its read-ness makes it, at `/{action}`.
+/// its read-ness makes it, at `/{action}`; only that route differs, so a
+/// scoped `JunctionList` pages like an unscoped one (§11.1).
 ///
 /// Past the arguments a route names, a route that reads a body reads every
 /// other argument from `meta.args`; one that does not reads an `Option`
 /// from `opArg[…]` and anything else from one more path segment, as a
 /// `CustomGet` does.
 fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> OpShape<'a> {
-    let op = match classify_op(f) {
+    let classified = classify_op(f);
+    let scoped_junction_list = scoped && matches!(classified, OpKind::JunctionList { .. });
+    let op = match classified {
         OpKind::JunctionList { .. } if scoped => OpKind::CustomGet,
         OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } if scoped => OpKind::CustomPost,
         op => op,
@@ -1509,6 +1512,11 @@ fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
             shape.page = paging.map(|pg| Paging::Store { default_limit: pg.default_limit, max_limit: pg.max_limit });
         }
         OpKind::JunctionList { .. } => {
+            shape.page = paging.map(|pg| Paging::InMemory { default_limit: pg.default_limit, max_limit: pg.max_limit });
+        }
+        OpKind::CustomGet if scoped_junction_list => {
+            shape.path_args.extend(rest);
+            path.extend(rest.iter().map(|p| format!("/{{{}}}", p.name)));
             shape.page = paging.map(|pg| Paging::InMemory { default_limit: pg.default_limit, max_limit: pg.max_limit });
         }
         _ if matches!(method, "post" | "patch") => shape.body_args = Some(rest.iter().collect()),

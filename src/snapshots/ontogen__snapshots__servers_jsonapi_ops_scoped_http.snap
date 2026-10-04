@@ -826,10 +826,15 @@ async fn task_list_tags_scoped(
     State(state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path((ontogen_scope, task_id)): Path<(uuid::Uuid, String)>,
-    _: Query<NoParams>,
+    ontogen_query: Query<PageOpArgs>,
 ) -> Result<Response, ErrorObject> {
+    let limit = ontogen_query.op_arg::<u32>("limit")?.unwrap_or(20).min(100);
+    let offset = ontogen_query.op_arg::<u32>("offset")?.unwrap_or(0);
     let store = state.store_for(&ontogen_scope).map_err(internal_error)?;
-    let result = task::list_tags(&store, &task_id).await.map_err(app_error)?;
+    let all = task::list_tags(&store, &task_id).await.map_err(app_error)?;
+    let total = all.len() as u64;
+    let items = all.into_iter().skip(offset as usize).take(limit as usize).collect();
+    let result = PaginatedResult { items, total, limit, offset };
     Ok(response::ok(&Document::meta_only(ResultMeta { result })))
 }
 
