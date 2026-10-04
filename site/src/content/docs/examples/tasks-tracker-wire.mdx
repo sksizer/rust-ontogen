@@ -16,6 +16,19 @@ Every pair below was captured from a real run against a scratch copy of `data/`,
 
 Tasks Tracker pages every list (`page[offset]`, `page[limit]`, default limit 20), filters and sorts the task list through a hand-written `ListTasksQuery`, and slugs ids from the title (`IdStrategy::SlugFromField("title")`). It has no custom or event ops; see [Iron Log: the wire](/examples/iron-log-wire/) for those.
 
+**Contents**
+
+- [Create a task and let the server pick the id](#create-a-task-and-let-the-server-pick-the-id)
+- [Create a task with a client id](#create-a-task-with-a-client-id)
+- [A filtered, sorted page](#a-filtered-sorted-page)
+- [One task with included resources](#one-task-with-included-resources)
+- [Update an attribute and a relationship](#update-an-attribute-and-a-relationship)
+- [Add to a relationship](#add-to-a-relationship)
+- [Read a relationship](#read-a-relationship)
+- [Read a related resource](#read-a-related-resource)
+- [Delete a task](#delete-a-task)
+- [Errors](#errors)
+
 ## Create a task and let the server pick the id
 
 The request has no `id`, so the store slugs one from `title`. The response is `201` with a `Location` header, and `epic` and `tags` come back under `relationships`, each with `links` to its relationship endpoint and its related resource. The record is written to `data/vault/tasks/review-the-stack.md`.
@@ -651,7 +664,7 @@ vary: Accept
 
 ## Delete a task
 
-`204`, no body. The file under `data/vault/tasks/` is removed.
+A `DELETE` removes the task and its file under `data/vault/tasks/`, and answers `204` with no body.
 
 ```http title="Request"
 DELETE /api/tasks/write-the-wire-pages HTTP/1.1

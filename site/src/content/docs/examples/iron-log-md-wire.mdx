@@ -16,6 +16,18 @@ Every pair below was captured from a real run against a scratch copy of `data/`,
 
 The four resource types are `exercises`, `tags`, `workouts` and `workout-sets`. Iron Log MD configures no pagination, so its lists are not paged; they sort and include. Its id strategy is `IdStrategy::Provided`: the client supplies every id. The generated server is the same as [Iron Log's](/examples/iron-log-wire/) on SQLite; only the store underneath differs, so the documents on the two pages have the same shape.
 
+**Contents**
+
+- [Create a workout](#create-a-workout)
+- [Create a set that belongs to it](#create-a-set-that-belongs-to-it)
+- [List workouts, newest first](#list-workouts-newest-first)
+- [One set with its workout and exercise](#one-set-with-its-workout-and-exercise)
+- [Update attributes](#update-attributes)
+- [Read a related resource](#read-a-related-resource)
+- [Remove from a relationship](#remove-from-a-relationship)
+- [Delete a set](#delete-a-set)
+- [Errors](#errors)
+
 ## Create a workout
 
 The client sends the `id`. The `tags` relationship links the seeded `strength` tag, and the response is `201` with a `Location` header. The record is written to `data/vault/workouts/w-2026-06-03.md`, with the tag as a `[[strength]]` wikilink.
@@ -181,60 +193,7 @@ location: /api/workout-sets/w-2026-06-03-squat-1
 }
 ```
 
-## Create without an id
-
-With `IdStrategy::Provided`, a create that carries no `id` is `400`, coded from the example's `WorkoutSetIdRequired` error variant.
-
-```http title="Request"
-POST /api/workout-sets HTTP/1.1
-Accept: application/vnd.api+json
-Content-Type: application/vnd.api+json
-
-{
-  "data": {
-    "type": "workout-sets",
-    "attributes": {
-      "set_number": 2,
-      "weight_grams": 100000,
-      "reps": 5
-    },
-    "relationships": {
-      "workout": {
-        "data": {
-          "type": "workouts",
-          "id": "w-2026-06-03"
-        }
-      },
-      "exercise": {
-        "data": {
-          "type": "exercises",
-          "id": "back-squat"
-        }
-      }
-    }
-  }
-}
-```
-
-```http title="Response"
-HTTP/1.1 400 Bad Request
-content-type: application/vnd.api+json
-vary: Accept
-
-{
-  "jsonapi": {
-    "version": "1.1"
-  },
-  "errors": [
-    {
-      "status": "400",
-      "code": "workout_set_id_required",
-      "title": "Bad Request",
-      "detail": "id required: this store requires the caller to supply an id"
-    }
-  ]
-}
-```
+A second set, `w-2026-06-03-squat-2`, was created the same way; that pair is omitted.
 
 ## List workouts, newest first
 
@@ -556,8 +515,10 @@ vary: Accept
 
 ## Delete a set
 
+A `DELETE` removes the second set and its file under `data/vault/workout_sets/`, and answers `204` with no body.
+
 ```http title="Request"
-DELETE /api/workout-sets/w-2026-06-03-squat-1 HTTP/1.1
+DELETE /api/workout-sets/w-2026-06-03-squat-2 HTTP/1.1
 Accept: application/vnd.api+json
 ```
 
@@ -567,6 +528,61 @@ vary: Accept
 ```
 
 ## Errors
+
+Every error is an `errors[]` document with `status`, `code`, `title` and `detail`, plus `source` when one part of the request is to blame.
+
+With `IdStrategy::Provided`, a create that carries no `id` is `400`, coded from the example's `WorkoutSetIdRequired` error variant:
+
+```http title="Request"
+POST /api/workout-sets HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "workout-sets",
+    "attributes": {
+      "set_number": 3,
+      "weight_grams": 100000,
+      "reps": 5
+    },
+    "relationships": {
+      "workout": {
+        "data": {
+          "type": "workouts",
+          "id": "w-2026-06-03"
+        }
+      },
+      "exercise": {
+        "data": {
+          "type": "exercises",
+          "id": "back-squat"
+        }
+      }
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 400 Bad Request
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "400",
+      "code": "workout_set_id_required",
+      "title": "Bad Request",
+      "detail": "id required: this store requires the caller to supply an id"
+    }
+  ]
+}
+```
 
 A client id that is already taken is `409`, and `source.pointer` points at `/data/id`:
 
