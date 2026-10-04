@@ -54,3 +54,14 @@ and Obsidian-navigable; the tracker is just one lens over it.
 The vault is an OKF 0.2 bundle (every record carries a `type`); the optional
 index files and `generated` stamps are left off here. See [the markdown backend
 guide](../../site/src/content/docs/guides/markdown-backend.mdx).
+
+## Conformance
+
+`conformance/` drives the HTTP API with [kitsu](https://www.npmjs.com/package/kitsu),
+a third-party JSON:API client, configured only through its documented options.
+It builds the example, serves a temporary copy of `data/` on port 39302
+(`PORT` overrides), and leaves the committed vault untouched. Needs Node and npm.
+
+```sh
+just conformance-tasks-tracker   # from the repo root
+```
