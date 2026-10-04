@@ -108,7 +108,7 @@ The scanner classifies each function into an `OpKind` that drives HTTP verb and 
 
 ### CRUD and junction vocabulary
 
-The CRUD rows are served as JSON:API resources when the module is backed by a schema entity; see [Server Transports](/guides/server-transports/#httpaxum-generation). Custom operations, junction operations and event streams keep their current request and response bodies for now, and change in a later phase of 0.9. A module with CRUD-named functions but no entity behind it is also served as it was, with `PUT` for `update`.
+The CRUD rows are served as JSON:API resources when the module is backed by a schema entity; see [Server Transports](/guides/server-transports/#httpaxum-generation). Custom operations, junction operations and the CRUD functions of a module with no entity behind it are served as custom ops: arguments go in `meta.args` (`POST`, `PATCH`) or `opArg[name]` (`GET`), and the result comes back under `meta.result`. In such a module `update` is a `PATCH` like everywhere else. See [Operations that are not CRUD](/guides/server-transports/#operations-that-are-not-crud).
 
 | Function name | `OpKind` | HTTP | Route example |
 |---------------|----------|------|---------------|
@@ -130,9 +130,9 @@ For names that don't match a vocabulary entry, the classifier looks at the funct
 | Zero user-facing parameters, name starts with a read prefix | `CustomGet` | `GET` | (no extraction) |
 | Zero user-facing parameters, any other name | `CustomPost` | `POST` | (no extraction) |
 | `get_{name}(state, id: &str)` (or `String`, integer, `Uuid`, …) | `CustomGet` | `GET` | First param → URL path segment (`/api/.../{id}`) |
-| `get_{name}(state, q: Option<…>)` | `CustomGet` | `GET` | `Option<…>` params → query string |
-| `get_{name}(state, body: &CustomStruct)` | `CustomPost` | `POST` | Body-carrying first param → JSON body |
-| Any other shape | `CustomPost` | `POST` | Non-`Option` non-`*Input` params → JSON body; `Option<…>` → query |
+| `get_{name}(state, q: Option<…>)` | `CustomGet` | `GET` | `Option<…>` params → `opArg[q]` query parameters |
+| `get_{name}(state, body: &CustomStruct)` | `CustomPost` | `POST` | Body-carrying first param → `meta.args.body` |
+| Any other shape | `CustomPost` | `POST` | Every param after the state, `*Input` and `Option<…>` included → `meta.args` in the body |
 | Returns `tokio::sync::broadcast::Receiver<T>` (or `Result<Receiver<T>, E>`) | `EventStream` | `GET` (SSE) | `/api/events/{event-name}`; required params → path segments, `Option<…>` → query, `resume` ← `Last-Event-ID` |
 
 <Aside type="caution" title="Zero-param functions default to POST">
@@ -228,10 +228,10 @@ pub async fn count(store: &Store) -> Result<i64, AppError> { ... }
 **Parameters after the state/store are extracted as route params or query params:**
 
 ```rust
-// `id` becomes a path parameter: GET /api/workouts/{id}/sets
+// `id` becomes a path parameter: GET /api/workouts/sets/{id}
 pub async fn get_sets(store: &Store, id: &str) -> Result<Vec<WorkoutSet>, AppError> { ... }
 
-// `input` becomes a JSON body: POST /api/workouts/import
+// `input` becomes `meta.args.input`: POST /api/workouts/import
 pub async fn import(store: &Store, input: ImportWorkoutsInput) -> Result<Vec<Workout>, AppError> { ... }
 ```
 

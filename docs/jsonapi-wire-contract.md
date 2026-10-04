@@ -660,8 +660,9 @@ the size of that write. The contract does not promise a snapshot.
 ### 7.3 Filter
 
 Phase 2. Filters are hand-written: the store takes none, and the generated
-CRUD `list` takes none. Until phase 2, a hand-written `list` with filter
-parameters in a resource module keeps its pre-JSON:API handler.
+CRUD `list` takes none. Until phase 2, a hand-written `list` with any
+parameter other than its page, in any module (with or without an entity
+behind it), keeps its pre-JSON:API handler.
 
 **A hand-written list replaces the generated one.** A `list` written in
 `api_dir/{module}.rs` replaces the generated `list` for that module, and
@@ -1560,9 +1561,12 @@ Rules for `POST` bodies, all within step 7 of §13.2:
 - A body that is not a JSON object is `400 invalid_document` with no
   `source`.
 - When `meta` or `meta.args` is missing or is not an object, the request is
-  `400 invalid_document`. The pointer names the nearest member that exists:
-  `""` when `meta` is missing, `/meta` when `args` is missing. If the fn has
-  no required arguments, a missing member is read as `{}` instead.
+  `400 invalid_document`. A missing member's pointer names the nearest member
+  that exists: `""` when `meta` is missing, `/meta` when `args` is missing. A
+  member that is present but not an object is named itself: `/meta` or
+  `/meta/args`. If the fn has no required arguments, a missing member is read
+  as `{}` instead.
+- Other top-level members of the request document are ignored.
 - Members are checked in §13.2 step 7's order.
 - An unknown member of `meta.args` is `400 invalid_document` at
   `/meta/args/{name}`.
@@ -1570,6 +1574,10 @@ Rules for `POST` bodies, all within step 7 of §13.2:
   - a missing required argument is `400 invalid_document` at `/meta/args`;
   - a value serde rejects is `400 invalid_document` at its member;
   - an absent or `null` member is `None` for an `Option` argument.
+
+An `*Input` parameter on an op served without a body (a custom `GET`,
+`get_by_id`, `delete`, `JunctionList`, `JunctionRemove`) is a
+`CodegenError`: there is no body to carry it.
 
 **`GET` optional arguments use the `opArg` family.** `Option` arguments of a
 `CustomGet` are `opArg[{name}]` query parameters. For illustration,
@@ -1621,6 +1629,22 @@ The §10.1 and §10.2 rules apply, with these routes:
 
 `update` uses `PATCH` here too, so that no generated route uses `PUT`.
 
+Parameters beyond the ones a row's route names follow §10.2:
+
+- On `POST` and `PATCH` rows they are members of `meta.args`.
+- On `GET` and `DELETE` rows, `Option` ones are `opArg[…]` query parameters
+  and required ones are appended as path segments, as for a custom `GET`.
+  The `*Input` rule of §10.2 applies, so such a parameter is a
+  `CodegenError`.
+
+On a paginated row, `opArg[limit]` and `opArg[offset]` are unsigned 32-bit
+integers. An absent `limit` is `default_limit` and an absent `offset` is
+`0`. `limit` is clamped to `max_limit`; `opArg[limit]=0` is not an error and
+yields a page of zero items (the handler computes
+`unwrap_or(default_limit).min(max_limit)`). A malformed value is
+`400 invalid_query_parameter` with `source.parameter` naming it. A list
+that is not paginated accepts no query parameters.
+
 ## 11. Route prefix and extra surfaces
 
 ### 11.1 `route_prefix`
@@ -1647,14 +1671,15 @@ relationship, related, custom and event routes alike.
   `500 internal_error`, as E0003 phase 1 keeps it. Mapping it to `404` waits
   on E0003's store-accessor contract.
 
-Scoped and unscoped routes MUST have identical wire behaviour. Today they
-diverge in two places:
+Scoped and unscoped routes MUST have identical wire behaviour. A scoped
+list that is not served as a resource passes the page to the store's
+page-taking `list` and calls `count`, like an unscoped one, so a hand-written
+scoped `list` must honour its page. The one remaining divergence:
 
-- A scoped list that is not served as a resource slices its page in memory
-  instead of calling the page-taking list. Phase 1c removes this. A scoped
-  resource list passes the page to the store from 1b, like an unscoped one.
-- Scoped junction ops become action-style routes instead of the
-  `{parent_id}/{child}` form. Phase 3a removes this.
+- Scoped junction ops are action-style custom-op routes
+  (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`,
+  `…/remove-tag`) instead of the `{parent_id}/{child}` form. Phase 3a
+  removes this.
 
 ### 11.2 Extra API surfaces
 
@@ -1718,7 +1743,10 @@ These are unchanged:
   every 15 s.
 
 A subscribe call that fails before the stream opens returns a JSON:API
-error document (§13) with the mapped status. `EventSource` cannot read that
+error document (§13) with the mapped status. The error is mapped by §13.4's
+routing on the event fn's own error type, which the parser records as it does
+for API fns: `AppError` gets its status and `code`, any other type
+`500 internal_error`. Scoped and unscoped subscribes alike. `EventSource` cannot read that
 body, but a `fetch`-based client and `curl` can.
 
 ## 13. Errors
@@ -1836,7 +1864,7 @@ consumer's `AppError`:
 | 409 | `id_mismatch` | a `PATCH` body id differs from the URL id (§8.3) |
 | 413 | `content_too_large` | the body is larger than the server's body-size limit (Axum's `DefaultBodyLimit`: 2 MB unless the consumer's router sets another) |
 | 415 | `unsupported_media_type` | §3.2 |
-| 500 | `internal_error` | a store-construction or scope-accessor failure; a custom op whose error type is not `AppError`; an `AppError`-typed site in a consumer with no `AppError` in its schema directory |
+| 500 | `internal_error` | a store-construction or scope-accessor failure; any op or event subscribe whose error type is not the primary surface's `AppError`; an `AppError`-typed site in a consumer with no `AppError` in its schema directory |
 
 The `detail` for `internal_error` is the error's `Display` text, as today.
 
@@ -1957,9 +1985,8 @@ no source change.
 - Every request sends `Accept: application/vnd.api+json`.
 - Every request with a body sends
   `Content-Type: application/vnd.api+json`.
-- The `httpPut` helper is removed, and `httpPatch` replaces it. Until phase 1c
-  it is still emitted when a module with no entity behind it has an `update`
-  op, since that module keeps its flat `PUT` route.
+- The `httpPut` helper is removed, and `httpPatch` replaces it. No generated
+  route uses `PUT`.
 
 ### 14.2 Per-operation mapping
 
@@ -1979,6 +2006,7 @@ no source change.
 | custom `POST` | body `{meta:{args:{<rust_param_name>: value, …}}}` | `meta.result`, or `null` on 204 |
 | op served as custom (§10.4) | its §10.4 route | `meta.result`, or `null` on 204 |
 | `subscribeX(args, handlers)` | unchanged URL, `?resume=` and lag | entity `T`: `flatten(JSON.parse(data))`; other `T`: `.meta.result` |
+| legacy `on{Event}(callback)` | as `subscribeX` | the same decoding; the callback gets the flat item |
 
 The junction rows describe phase 3a. Between phases 1c and 3a, junction
 methods call the §10.4 forms and read `meta.result`.
@@ -2160,6 +2188,7 @@ the section that states each and its reason.
 | Custom `POST` bodies are `{meta:{args:{…}}}` | 10.2 | Decision 7; one rule, and a valid JSON:API request document |
 | Custom `GET` optional args use the `opArg[…]` family | 10.2 | Decision 7; the spec reserves all-lowercase names |
 | CRUD ops in a singleton module are a `CodegenError` | 10.3 | A singleton is opted into, so a CRUD op there is a mistake |
+| An `*Input` parameter on an op served without a body is a `CodegenError` | 10.2, 10.4 | A custom `GET`, `get_by_id`, `delete`, `JunctionList` and `JunctionRemove` have no body to carry it |
 | Non-entity event payloads and custom results are `{meta:{result}}` | 10.1, 12 | One rule for every non-resource payload |
 | Event frames carry no links | 12 | A frame has no request URL, and links would double its size |
 | One error object per response, first failure in §13.2 order | 13.1, 13.2 | Every request has exactly one correct error |

@@ -161,7 +161,7 @@ A `belongs_to` field name that ends in `_id` loses the suffix; every other relat
 
 Writes use the same shape. A create or update body sets a to-one with `"data": {"type": "epics", "id": "…"}` (or `null` for an `Option` field, `403 relationship_required` for a required one) and a to-many with a `data` array that replaces the stored list. A `has_many` array goes through the children's foreign keys with the rules above, and a dropped child whose key is required is `403` with the `{child}_parent_required` code. Every linked id is checked first: a missing one is `404 related_resource_not_found`, and nothing is written. A relation field sent as an attribute (`epic_id`) is `400 unknown_attribute`.
 
-Relationship `links` and the relationship and related-resource endpoints (`/api/tasks/{id}/relationships/tags`) are not generated yet; they arrive in a later phase of 0.9. Junction ops keep their current routes until then.
+Relationship `links` and the relationship and related-resource endpoints (`/api/tasks/{id}/relationships/tags`) are not generated yet; they arrive in a later version of 0.9. Junction ops keep their current routes until then, and answer with the custom op wire: the list under `meta.result`, and the child id of `add_*` in `meta.args`.
 
 ## many_to_many
 
