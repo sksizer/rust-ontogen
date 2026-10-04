@@ -34,6 +34,13 @@ pub async fn capture(store: &Store, input: CreateTaskInput, status: Option<Strin
     store.create_task(task).await
 }
 
+// No `add_by_status` or `remove_by_status` partners it, so it is a plain
+// read served as a custom GET, not a relationship.
+/// The tasks in `status`, in id order.
+pub async fn list_by_status(store: &Store, status: &str) -> Result<Vec<Task>, AppError> {
+    Ok(store.list_tasks(None, None).await?.into_iter().filter(|t| t.status == status).collect())
+}
+
 /// Mark a task done.
 pub async fn complete(store: &Store, id: &str) -> Result<(), AppError> {
     let updates = TaskUpdate { status: Some("done".into()), ..TaskUpdate::default() };

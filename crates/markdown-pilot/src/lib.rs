@@ -8,16 +8,19 @@
 //! `generated/` trees are exactly what it produces; the smoke tests in
 //! `tests/` drive the generated CRUD over a real temp vault. The
 //! hand-written modules in `src/api` give the generated HTTP router one of
-//! every other route kind: custom ops, junction ops, CRUD in a module with
-//! no entity, filtered lists, and event streams. The same API is generated
-//! a second time under a route prefix (`api::transport::http_scoped`), and
-//! as an MCP tool registry (`api::transport::mcp`).
+//! every other route kind: custom ops (a lone `list_X` among them), junction
+//! relationships whose list answers entities or ids, junction ops and CRUD
+//! in modules with no entity, filtered lists, and event streams. The same
+//! API is generated a second time under a route prefix
+//! (`api::transport::http_scoped`), and as an MCP tool registry
+//! (`api::transport::mcp`).
 
 pub mod api;
 pub mod persistence;
 pub mod schema;
 pub mod store;
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use tokio::sync::broadcast;
@@ -29,6 +32,9 @@ pub struct AppState {
     pub store: Store,
     /// The `bookmark` API module's data: it has no entity, so no store.
     pub bookmarks: Mutex<Vec<schema::Bookmark>>,
+    /// The `note` API module's tags, by note id: the ids `api::note::list_tags`
+    /// answers.
+    pub note_tags: Mutex<HashMap<String, Vec<String>>>,
     /// What `api::task::task_feed` subscribers receive.
     pub task_feed: broadcast::Sender<schema::Task>,
     /// What `api::bookmark::bookmark_feed` subscribers receive.
@@ -40,6 +46,7 @@ impl AppState {
         AppState {
             store,
             bookmarks: Mutex::new(Vec::new()),
+            note_tags: Mutex::new(HashMap::new()),
             task_feed: broadcast::channel(16).0,
             bookmark_feed: broadcast::channel(16).0,
         }
