@@ -40,7 +40,6 @@ type EventFrame<T> = { kind: 'event'; id: string | null; data: T } | { kind: 'la
 
 export interface Transport {
   boardList(limit?: number, offset?: number): Promise<PaginatedResult<Task>>;
-  boardCount(): Promise<number>;
   boardGetById(id: string): Promise<Task>;
   boardCreate(input: CreateTaskInput): Promise<Task>;
   boardUpdate(id: string, input: UpdateTaskInput): Promise<Task>;
@@ -53,19 +52,16 @@ export interface Transport {
   boardImport(input: CreateTaskInput, dryRun: boolean | null): Promise<number>;
   boardReset(): Promise<null>;
   tagList(limit?: number, offset?: number): Promise<PaginatedResult<Tag>>;
-  tagCount(): Promise<number>;
   tagGetById(id: string): Promise<Tag>;
   tagCreate(input: CreateTagInput): Promise<Tag>;
   tagUpdate(id: string, input: UpdateTagInput): Promise<Tag>;
   tagDelete(id: string): Promise<null>;
   taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>>;
-  taskCount(): Promise<number>;
   taskGetById(id: string): Promise<Task>;
   taskCreate(input: CreateTaskInput): Promise<Task>;
   taskUpdate(id: string, input: UpdateTaskInput): Promise<Task>;
   taskDelete(id: string): Promise<null>;
   workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>>;
-  workoutSetCount(): Promise<number>;
   workoutSetGetById(id: string): Promise<WorkoutSet>;
   workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet>;
   workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet>;
@@ -411,9 +407,6 @@ export function createHttpTransport(): Transport {
     async boardList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {
       return callOp<PaginatedResult<Task>>('GET', `/boards${toQueryString({ opArg: { limit, offset } })}`);
     },
-    async boardCount(): Promise<number> {
-      return callOp<number>('POST', '/boards/count');
-    },
     async boardGetById(id: string): Promise<Task> {
       return callOp<Task>('GET', `/boards/${encodeURIComponent(id)}`);
     },
@@ -451,9 +444,6 @@ export function createHttpTransport(): Transport {
       const { data, meta } = await httpGet<JsonApiPageDocument>(`/tags${toQueryString({ page: { offset, limit } })}`);
       return { items: data.map(flattenTag), total: meta.total, limit: meta.limit, offset: meta.offset };
     },
-    async tagCount(): Promise<number> {
-      return callOp<number>('POST', '/tags/count');
-    },
     async tagGetById(id: string): Promise<Tag> {
       const { data } = await httpGet<JsonApiResourceDocument>(`/tags/${encodeURIComponent(id)}`);
       return flattenTag(data);
@@ -477,9 +467,6 @@ export function createHttpTransport(): Transport {
       const { data, meta } = await httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ page: { offset, limit } })}`);
       return { items: data.map(flattenTask), total: meta.total, limit: meta.limit, offset: meta.offset };
     },
-    async taskCount(): Promise<number> {
-      return callOp<number>('POST', '/tasks/count');
-    },
     async taskGetById(id: string): Promise<Task> {
       const { data } = await httpGet<JsonApiResourceDocument>(`/tasks/${encodeURIComponent(id)}`);
       return flattenTask(data);
@@ -502,9 +489,6 @@ export function createHttpTransport(): Transport {
     async workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>> {
       const { data, meta } = await httpGet<JsonApiPageDocument>(`/workout-sets${toQueryString({ page: { offset, limit } })}`);
       return { items: data.map(flattenWorkoutSet), total: meta.total, limit: meta.limit, offset: meta.offset };
-    },
-    async workoutSetCount(): Promise<number> {
-      return callOp<number>('POST', '/workout-sets/count');
     },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
       const { data } = await httpGet<JsonApiResourceDocument>(`/workout-sets/${encodeURIComponent(id)}`);
@@ -564,9 +548,6 @@ export function createIpcTransport(): Transport {
     async boardList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {
       return invoke('board_list', { limit: limit ?? null, offset: offset ?? null });
     },
-    async boardCount(): Promise<number> {
-      return invoke('board_count');
-    },
     async boardGetById(id: string): Promise<Task> {
       return invoke('board_get_by_id', { id });
     },
@@ -607,9 +588,6 @@ export function createIpcTransport(): Transport {
     async tagList(limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {
       return invoke('tag_list', { limit: limit ?? null, offset: offset ?? null });
     },
-    async tagCount(): Promise<number> {
-      return invoke('tag_count');
-    },
     async tagGetById(id: string): Promise<Tag> {
       return invoke('tag_get_by_id', { id });
     },
@@ -626,9 +604,6 @@ export function createIpcTransport(): Transport {
     async taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {
       return invoke('task_list', { limit: limit ?? null, offset: offset ?? null });
     },
-    async taskCount(): Promise<number> {
-      return invoke('task_count');
-    },
     async taskGetById(id: string): Promise<Task> {
       return invoke('task_get_by_id', { id });
     },
@@ -644,9 +619,6 @@ export function createIpcTransport(): Transport {
     },
     async workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>> {
       return invoke('workout_set_list', { limit: limit ?? null, offset: offset ?? null });
-    },
-    async workoutSetCount(): Promise<number> {
-      return invoke('workout_set_count');
     },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
       return invoke('workout_set_get_by_id', { id });

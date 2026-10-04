@@ -4930,7 +4930,7 @@ fn a_paginated_list_pushes_the_page_into_the_store() {
     let workout = modules.iter().find(|m| m.name == "workout").unwrap();
     assert!(workout.has_count, "`count` is recorded on the module");
     assert!(workout.functions.iter().any(|f| f.name == "count"), "`count` is parsed like any other fn");
-    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces).unwrap();
     let workout = modules.iter().find(|m| m.name == "workout").unwrap();
     assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation of a paginated module");
     assert!(workout.is_crud(), "the CRUD surface is intact without `count`");
@@ -4985,7 +4985,7 @@ fn a_state_scoped_count_paginates_the_same_way() {
     let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
     let workout = modules.iter().find(|m| m.name == "workout").unwrap();
     assert!(workout.has_count, "`count` is recorded on a state-scoped module too");
-    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces).unwrap();
     let workout = modules.iter().find(|m| m.name == "workout").unwrap();
     assert!(workout.functions.iter().all(|f| f.name != "count"), "`count` is not an operation once paginated");
 
@@ -5027,13 +5027,14 @@ fn a_paginated_list_without_the_page_or_a_count_is_refused() {
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
 
     let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces)
+        .unwrap_err();
     assert!(err.contains("module `workout` is paginated"), "{err}");
     assert!(err.contains("`workout::list` must take `limit: Option<u64>, offset: Option<u64>`"), "{err}");
 
     // Not paginated: the plain list is fine as it is.
     config.pagination = None;
-    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces).unwrap();
 }
 
 #[test]
@@ -5050,7 +5051,8 @@ fn a_paginated_list_whose_page_params_are_not_option_u64_is_refused() {
 
     let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
     assert!(!modules[0].functions.iter().find(|f| f.name == "list").unwrap().takes_page());
-    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces)
+        .unwrap_err();
     assert!(err.contains("`workout::list` must take `limit: Option<u64>, offset: Option<u64>`"), "{err}");
 }
 
@@ -5071,7 +5073,7 @@ fn a_paginated_list_may_filter_when_its_count_filters_alike() {
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
 
     let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces).unwrap();
 
     let http = tmp.path().join("http.rs");
     crate::servers::generators::http::generate(&http, &modules, &config);
@@ -5096,7 +5098,7 @@ fn a_by_value_filter_is_cloned_into_the_list_and_counted_from_the_original() {
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
 
     let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces).unwrap();
 
     for (name, emit) in [
         (
@@ -5131,7 +5133,8 @@ fn a_filtered_page_whose_count_does_not_filter_is_refused() {
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
 
     let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces)
+        .unwrap_err();
     assert!(err.contains("must take the same filter"), "{err}");
     assert!(err.contains("`list` filters by plan_id: &str, `count` by nothing"), "{err}");
 }
@@ -5144,7 +5147,7 @@ fn a_count_on_an_unpaginated_module_stays_an_operation() {
     let config = test_config(api_dir);
 
     let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces).unwrap();
     let workout = modules.iter().find(|m| m.name == "workout").unwrap();
     assert!(
         workout.functions.iter().any(|f| f.name == "count"),
@@ -5165,7 +5168,7 @@ fn an_unpaginated_surface_hands_a_page_taking_list_no_page() {
     let config = test_config(api_dir);
 
     let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
-    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces).unwrap();
 
     let http = tmp.path().join("http.rs");
     crate::servers::generators::http::generate(&http, &modules, &config);
@@ -5197,7 +5200,7 @@ fn a_count_beside_an_unpaged_list_stays_a_command() {
     let scanned = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap();
     assert!(scanned.skips.is_empty(), "nothing was dropped: {:?}", scanned.skips);
     let mut modules = scanned.modules;
-    crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap();
+    crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces).unwrap();
     let workout = modules.iter().find(|m| m.name == "workout").unwrap();
     assert!(workout.functions.iter().any(|f| f.name == "count"), "`count` is kept as an operation");
 }
@@ -5222,7 +5225,8 @@ pub async fn count() -> Result<u64, anyhow::Error> { todo!() }
     let workout = modules.iter().find(|m| m.name == "workout").unwrap();
     assert!(!workout.has_count, "a stateless `count()` is not recorded as the companion");
     assert!(workout.functions.iter().any(|f| f.name == "count" && f.is_stateless), "it stays an operation");
-    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config).unwrap_err();
+    let err = crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces)
+        .unwrap_err();
     assert!(err.contains("module `workout` is paginated"), "{err}");
 }
 
@@ -6402,6 +6406,72 @@ fn an_op_arg_that_one_value_cannot_carry_is_a_codegen_error() {
                   -> Result<String, anyhow::Error> { todo!() }\n";
     let (server, _) = pipelines(tmp.path(), source, "stats", true);
     assert_eq!(server, Ok(()));
+}
+
+/// A paginated module's `count` backs its list's total, so no server serves
+/// it on its own: no client may call it either. The client pipeline drops it
+/// with the same check the server pipeline does.
+#[test]
+fn a_paginated_count_is_neither_served_nor_called() {
+    let tmp = tempfile::tempdir().unwrap();
+    let schema = "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Tag {\n    #[ontology(id)]\n    \
+                  pub id: String,\n    pub name: String,\n}\n";
+    let entities = crate::schema::parse::parse_schema_source(schema, std::path::Path::new("schema.rs")).unwrap();
+    let api_dir = tmp.path().join("api");
+    let api = crate::gen_api(
+        &entities,
+        &crate::ApiConfig {
+            output_dir: api_dir.clone(),
+            exclude: Vec::new(),
+            scan_dirs: Vec::new(),
+            state_type: "AppState".into(),
+            store_type: Some("Store".into()),
+            schema_module_path: "crate::schema".into(),
+            paginated: vec!["tag".to_string()],
+        },
+    )
+    .unwrap();
+    assert!(std::fs::read_to_string(api_dir.join("tag.rs")).unwrap().contains("pub async fn count("));
+    let pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+
+    let out = tmp.path().join("out");
+    let mut server = test_config(api_dir.clone());
+    server.pagination = pagination.clone();
+    server.resources = crate::resource::ResourceModel::build(&entities, &server.naming).unwrap();
+    server.generators = vec![
+        ServerGenerator::HttpAxum { output: out.join("http.rs") },
+        ServerGenerator::TauriIpc { output: out.join("ipc.rs") },
+        ServerGenerator::Mcp { output: out.join("mcp.rs") },
+    ];
+    let modules = crate::servers::generate_transport(&server).unwrap();
+    let meta = crate::servers::extract_server_metadata(&modules, &server);
+    assert!(meta.ipc_commands.iter().all(|c| c.command_name != "tag_count"), "{:?}", meta.ipc_commands);
+    assert!(meta.mcp_tools.iter().all(|t| t.tool_name != "tag_count"));
+    assert!(meta.http_routes.iter().all(|r| !r.path.ends_with("/count")));
+    for file in ["http.rs", "ipc.rs", "mcp.rs"] {
+        let code = std::fs::read_to_string(out.join(file)).unwrap();
+        assert!(!code.contains("fn tag_count"), "{file}:\n{code}");
+    }
+
+    let clients = crate::ClientsConfig {
+        generators: vec![
+            ClientGenerator::HttpTauriIpcSplit {
+                output: out.join("transport.ts"),
+                bindings_path: out.join("bindings.ts"),
+            },
+            ClientGenerator::HttpTs { output: out.join("client.ts"), bindings_path: out.join("bindings.ts") },
+        ],
+        store_type: Some("Store".into()),
+        store_import: Some("crate::store::Store".into()),
+        pagination,
+        ..crate::ClientsConfig::new(api_dir, "AppState", "crate::api", "crate::schema", "crate::AppState")
+    };
+    crate::gen_clients(&entities, Some(&api), &[], &clients).unwrap();
+    for file in ["transport.ts", "client.ts"] {
+        let ts = std::fs::read_to_string(out.join(file)).unwrap();
+        assert!(ts.contains("tagList("), "{file}:\n{ts}");
+        assert!(!ts.contains("tagCount") && !ts.contains("tag_count") && !ts.contains("/count"), "{file}:\n{ts}");
+    }
 }
 
 #[test]

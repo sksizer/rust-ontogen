@@ -1359,14 +1359,23 @@ fn parse_ontogen_rename(attrs: &[syn::Attribute]) -> OntogenAttr {
 ///
 /// The `count` of a paginated module is what the page handlers call for the
 /// total, so it is taken off `functions` here; on a module no surface
-/// paginates it stays an operation of its own.
-pub fn check_paginated_lists(modules: &mut [ApiModule], config: &crate::servers::config::Config) -> Result<(), String> {
+/// paginates it stays an operation of its own. `gen_servers` and
+/// `gen_clients` both run this on the modules they generate from, so no
+/// client calls a `count` route, command or tool the servers do not serve.
+///
+/// `pagination` and `extra_surfaces` are the config's, as
+/// [`pagination_for`](crate::servers::config::pagination_for) reads them.
+pub fn check_paginated_lists(
+    modules: &mut [ApiModule],
+    pagination: &Option<crate::servers::config::PaginationConfig>,
+    extra_surfaces: &[crate::servers::config::ApiSurface],
+) -> Result<(), String> {
     for m in modules {
         let mut paginated = false;
         for f in &m.functions {
             if f.name != "list"
                 || !f.return_type.starts_with("Vec<")
-                || config.pagination_for(&m.name, f.surface).is_none()
+                || crate::servers::config::pagination_for(pagination, extra_surfaces, &m.name, f.surface).is_none()
             {
                 continue;
             }

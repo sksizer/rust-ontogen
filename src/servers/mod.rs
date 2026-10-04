@@ -206,7 +206,7 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     parse::qualify_shared_types(&mut modules, &surfaces);
     parse::apply_singleton_overlay(&mut modules, &config.naming);
     parse::apply_command_overrides(&mut modules, &config.naming);
-    parse::check_paginated_lists(&mut modules, config)?;
+    parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces)?;
     if modules.is_empty() {
         return Ok(modules);
     }
