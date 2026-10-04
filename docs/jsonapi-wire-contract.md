@@ -1640,8 +1640,7 @@ Parameters beyond the ones a row's route names follow §10.2:
 On a paginated row, `opArg[limit]` and `opArg[offset]` are unsigned 32-bit
 integers. An absent `limit` is `default_limit` and an absent `offset` is
 `0`. `limit` is clamped to `max_limit`; `opArg[limit]=0` is not an error and
-yields a page of zero items (the handler computes
-`unwrap_or(default_limit).min(max_limit)`). A malformed value is
+yields a page of zero items, as the pre-JSON:API `limit=0` did. A malformed value is
 `400 invalid_query_parameter` with `source.parameter` naming it. A list
 that is not paginated accepts no query parameters.
 
@@ -1743,11 +1742,11 @@ These are unchanged:
   every 15 s.
 
 A subscribe call that fails before the stream opens returns a JSON:API
-error document (§13) with the mapped status. The error is mapped by §13.4's
-routing on the event fn's own error type, which the parser records as it does
-for API fns: `AppError` gets its status and `code`, any other type
-`500 internal_error`. Scoped and unscoped subscribes alike. `EventSource` cannot read that
-body, but a `fetch`-based client and `curl` can.
+error document (§13) with the mapped status, scoped or not. It is mapped by
+§13.4's routing on the event fn's own error type, which the parser records
+as it does for API fns: `AppError` gets its status and `code`, any other
+type is `500 internal_error`. `EventSource` cannot read that body, but a
+`fetch`-based client and `curl` can.
 
 ## 13. Errors
 
