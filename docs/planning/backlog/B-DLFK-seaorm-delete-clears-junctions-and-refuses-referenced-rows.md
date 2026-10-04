@@ -25,7 +25,7 @@ The first is a SeaORM defect with no markdown counterpart: on markdown a record'
 
 ## Scope: SeaORM only
 
-This item is narrowed to the SeaORM store. The markdown backend deletes a record file whatever links to it and leaves those links dangling, deliberately: [ADR 0001](../../architecture/0001-markdown-as-store-backend.md) amendment 5 defers delete-time cascade link cleanup, and the wire contract (§7.5, §9.3) tolerates dangling linkage. A rule that made both backends handle a still-referenced record the same way (refuse it, or clear the references) would change markdown delete too, and so amend ADR 0001 amendment 5. That needs its own decision; this item does not take it. A SQLite row cannot hold a dangling foreign key, so on SeaORM the honest outcome is a typed refusal.
+This item is narrowed to the SeaORM store. The markdown backend deletes a record file whatever links to it and leaves those links dangling, deliberately: [ADR 0001](../../architecture/0001-markdown-as-store-backend.md) amendment 5 defers delete-time cascade link cleanup, and the wire contract (§7.5, §9.3) tolerates dangling linkage. A rule that made both backends handle a still-referenced record the same way (refuse it, or clear the references) would change markdown delete too, and so amend ADR 0001 amendment 5. That needs its own decision; this item does not take it. A SQLite table that carries foreign-key constraints cannot hold a dangling foreign key. The generator emits no schema or migrations; iron-log's headless bin creates its tables with SeaORM's `create_table_from_entity`, which declares the foreign keys from the generated `belongs_to` relations. So on such a SeaORM store the honest outcome is a typed refusal.
 
 ## What done looks like
 
@@ -33,5 +33,6 @@ This item is narrowed to the SeaORM store. The markdown backend deletes a record
 - A SeaORM delete of a row that is still referenced (a row whose `belongs_to` foreign key names it, `has_many` children included, or a junction row that targets it) is refused before anything is written with a new typed store error, for example `{Entity}InUse(id)`. The `AppError` scan maps it by suffix like the other typed errors (for example `409 {entity}_in_use`), and wire contract §13.4 lists it. Every example's `AppError` declares the variant the store generator constructs.
 - A runtime parity case in `crates/parity` deletes a record that has junction rows and asserts the same outcome on both backends. A SeaORM store test covers the refusal; the backends differ there by design, as above.
 - The wire contract (§8.4, §13.4) and the SeaORM guide describe the behaviour.
+- The upgrading guide (`site/src/content/docs/reference/upgrading.mdx`) lists the new `{Entity}InUse` variant as a break, for SeaORM stores only.
 
 Found while running iron-log's HTTP server on SeaORM/SQLite during E0004 phase 4.

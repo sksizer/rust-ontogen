@@ -99,15 +99,14 @@ regen-examples:
     cargo check --manifest-path examples/iron-log/src-tauri/Cargo.toml
 alias rex := regen-examples
 
-# Drive examples/tasks-tracker with a third-party JSON:API client (kitsu).
-#
 # Builds the example, serves a temp copy of its vault on PORT (default 39302)
 # and stops only the server it started, so the committed vault is never
 # written. The client covers list, pagination, sort, filter, include, create,
 # patch, relationship fetches and mutations, delete and the 404 after it,
 # using only kitsu's documented options. Needs Node and npm. The Examples
 # workflow runs it in the tasks-tracker job.
-[doc("Drive examples/tasks-tracker with a third-party JSON:API client (kitsu)")]
+#
+# Drive examples/tasks-tracker with a third-party JSON:API client (kitsu).
 conformance-tasks-tracker:
     examples/tasks-tracker/conformance/run.sh
 

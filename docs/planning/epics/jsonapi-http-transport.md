@@ -108,11 +108,11 @@ MCP payloads.
 
 ## Phases
 
-Each phase is one or two PRs and ships green on its own. Phases 1a, 1b and
-1c are released together as the breaking `0.9.0`. Later phases add to the
-wire, except 3c, whose store `list_*` signature change is a further break
-(ADR 0003). The [wire contract](../../jsonapi-wire-contract.md)'s §17 maps
-each of its sections to a phase.
+Each phase is one or two PRs and ships green on its own. Every phase ships
+in the unreleased `0.9.0`. Phases after 1c add to the wire, except 3c, whose
+store `list_*` signature change is a further break (ADR 0003). The
+[wire contract](../../jsonapi-wire-contract.md)'s §17 maps each of its
+sections to a phase.
 
 **Phase 0 — wire contract and decision records.** Done:
 

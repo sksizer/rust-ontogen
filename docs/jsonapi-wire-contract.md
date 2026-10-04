@@ -2593,7 +2593,7 @@ the section that states each and its reason.
 
 ## 17. Phase mapping
 
-Phases 1a, 1b and 1c ship together as `0.9.0`.
+Every phase ships in the unreleased `0.9.0`.
 
 | Phase | Sections |
 |---|---|
