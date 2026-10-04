@@ -660,18 +660,28 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
         },
         McpToolDef {
             name: "section_list",
-            description: "One page of the sections under `parent_id` that `query` selects.",
-            schema_fn: || with_pagination_schema(schema_for::<OntogenSectionListFilter>()),
+            description: "One page of the sections under `parent_id` that `query` selects, in `order`.",
+            schema_fn: || {
+                with_sort_schema(
+                    with_pagination_schema(schema_for::<OntogenSectionListFilter>()),
+                    &["id", "-id", "title", "-title"],
+                )
+            },
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
                     refuse_unknown_args(
                         ontogen_args,
-                        with_pagination_schema(schema_for::<OntogenSectionListFilter>()),
+                        with_sort_schema(
+                            with_pagination_schema(schema_for::<OntogenSectionListFilter>()),
+                            &["id", "-id", "title", "-title"],
+                        ),
                     )?;
                     let ontogen_filter: ListSectionsQuery =
-                        serde_json::from_value(args_without(ontogen_args, &["parent_id", "limit", "offset"]))
+                        serde_json::from_value(args_without(ontogen_args, &["parent_id", "sort", "limit", "offset"]))
                             .map_err(|e| format!("Invalid filter: {e}"))?;
                     let parent_id = required_str(ontogen_args, "parent_id")?;
+                    let ontogen_order =
+                        ontogen_core::order::parse_sort(sort_arg(ontogen_args)?).map_err(|e| e.to_string())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let ontogen_limit = ontogen_args.get("limit").and_then(|v| v.as_u64()).unwrap_or(2).min(3);
                     let ontogen_offset = ontogen_args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -679,6 +689,7 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
                         &ontogen_store,
                         ontogen_filter.clone(),
                         parent_id,
+                        &ontogen_order,
                         Some(ontogen_limit),
                         Some(ontogen_offset),
                     )

@@ -1326,7 +1326,7 @@ async fn section_list_scoped(
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: ListSectionsQuery = query.filter()?;
     let ontogen_filter_parent_id = query.required_filter_member::<String>("parent_id")?;
-    refuse_sort(&query, "sections")?;
+    let order = query.sort_order("sections")?;
     let include = query.include_paths("sections", &["parent", "children"], &[])?;
     let (offset, limit) = page(&query, 2, 3)?;
     let link_query = query.link_query(include.as_deref())?;
@@ -1335,6 +1335,7 @@ async fn section_list_scoped(
         &ontogen_store,
         ontogen_filter.clone(),
         &ontogen_filter_parent_id,
+        &order,
         Some(u64::from(limit)),
         Some(u64::from(offset)),
     )

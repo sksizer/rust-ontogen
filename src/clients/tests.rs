@@ -1112,8 +1112,9 @@ fn resource_crud_methods_speak_json_api() {
     let ts = &clients.transport;
     assert_eq!(
         ts_method(ts, "taskList"),
-        "async taskList(): Promise<Task[]> {\n      const { data } = await \
-         httpGet<JsonApiCollectionDocument>('/tasks');\n      return data.map(flattenTask);\n    },\n"
+        "async taskList(options?: ListOptions<TaskSortKey>): Promise<Task[]> {\n      const { data } = await \
+         httpGet<JsonApiCollectionDocument>(`/tasks${toQueryString({ sort: options?.sort })}`);\n      return \
+         data.map(flattenTask);\n    },\n"
     );
     assert!(ts_method(ts, "taskGetById").contains(
         "const { data } = await httpGet<JsonApiResourceDocument>(`/tasks/${encodeURIComponent(id)}`);\n      return \
@@ -1128,10 +1129,16 @@ fn resource_crud_methods_speak_json_api() {
          unflattenTask(input, id),\n      );\n      return flattenTask(data);"
     ));
     assert!(ts_method(ts, "taskDelete").contains("await httpDelete(`/tasks/${encodeURIComponent(id)}`);"));
-    assert!(ts_method(ts, "workoutSetList").contains("httpGet<JsonApiCollectionDocument>('/workout-sets')"));
+    assert!(
+        ts_method(ts, "workoutSetList")
+            .contains("httpGet<JsonApiCollectionDocument>(`/workout-sets${toQueryString({ sort: options?.sort })}`)")
+    );
 
     let http = &clients.http;
-    assert!(ts_method(http, "workoutSetList").contains("httpGet<JsonApiCollectionDocument>('/workout-sets')"));
+    assert!(
+        ts_method(http, "workoutSetList")
+            .contains("httpGet<JsonApiCollectionDocument>(`/workout-sets${toQueryString({ sort: options?.sort })}`)")
+    );
     assert!(ts_method(http, "workoutSetDelete").contains("await httpDelete(`/workout-sets/"), "{http}");
     assert!(ts_method(http, "taskUpdate").contains("httpPatch<JsonApiResourceDocument>"));
 
@@ -1150,9 +1157,11 @@ fn a_paginated_resource_list_pages_with_the_page_family_and_rebuilds_paginated_r
     let clients = jsonapi_clients(true, |_| {});
     assert_eq!(
         ts_method(&clients.transport, "taskList"),
-        "async taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {\n      const { data, meta } \
-         = await httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ page: { offset, limit } })}`);\n      return { \
-         items: data.map(flattenTask), total: meta.total, limit: meta.limit, offset: meta.offset };\n    },\n"
+        "async taskList(limit?: number, offset?: number, options?: ListOptions<TaskSortKey>): \
+         Promise<PaginatedResult<Task>> {\n      const { data, meta } = await \
+         httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ sort: options?.sort, page: { offset, limit } \
+         })}`);\n      return { items: data.map(flattenTask), total: meta.total, limit: meta.limit, offset: \
+         meta.offset };\n    },\n"
     );
     // The family form brackets percent-encoded member names.
     let qs = ts_function(&clients.transport, "toQueryString");
@@ -1160,9 +1169,11 @@ fn a_paginated_resource_list_pages_with_the_page_family_and_rebuilds_paginated_r
     // `HttpTs` pages the same way.
     assert_eq!(
         ts_method(&clients.http, "taskList"),
-        "async taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {\n    const { data, meta } = \
-         await httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ page: { offset, limit } })}`);\n    return { items: \
-         data.map(flattenTask), total: meta.total, limit: meta.limit, offset: meta.offset };\n  },\n"
+        "async taskList(limit?: number, offset?: number, options?: ListOptions<TaskSortKey>): \
+         Promise<PaginatedResult<Task>> {\n    const { data, meta } = await \
+         httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ sort: options?.sort, page: { offset, limit } \
+         })}`);\n    return { items: data.map(flattenTask), total: meta.total, limit: meta.limit, offset: \
+         meta.offset };\n  },\n"
     );
     assert!(clients.http.contains("export interface PaginatedResult<T> {"), "{}", clients.http);
     assert!(ts_function(&clients.http, "toQueryString").contains("%5B"));
@@ -1183,7 +1194,8 @@ fn a_scoped_resource_route_keeps_its_prefix() {
     })
     .transport;
     assert!(ts_method(&ts, "taskList").contains(
-        "httpGet<JsonApiPageDocument>(scopedPath(projectId, `/tasks${toQueryString({ page: { offset, limit } })}`))"
+        "httpGet<JsonApiPageDocument>(scopedPath(projectId, `/tasks${toQueryString({ sort: options?.sort, page: { \
+         offset, limit } })}`))"
     ));
     assert!(
         ts_method(&ts, "taskCreate")

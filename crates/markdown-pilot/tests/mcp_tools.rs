@@ -1,30 +1,45 @@
 //! Proof that the generated MCP tool registry compiles and behaves: each
 //! kind of tool the pilot's API has (CRUD, custom GET and POST, a lone
 //! `list_X`, junction ops listing entities or ids, in a resource module or
-//! not, CRUD in a module without an entity, and filtered lists) is called
-//! through its generated handler over a real temp vault.
+//! not, CRUD in a module without an entity, and filtered and sorted lists)
+//! is called through its generated handler over a real temp vault.
 //!
 //! The pilot paginates every module with `default_limit: 2, max_limit: 3`.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
+use axum::body::{Body, to_bytes};
+use axum::http::{Request, StatusCode, header};
+use markdown_pilot::api::transport::http::generated::entity_routes;
 use markdown_pilot::api::transport::mcp::generated::{generated_tool_registry, handle_tool_call, tool_definitions};
 use markdown_pilot::persistence::markdown::generated::open_vault;
 use markdown_pilot::schema::Section;
 use markdown_pilot::{AppState, Store};
 use serde_json::{Value, json};
+use tower::util::ServiceExt;
 
 /// A vault in a tempdir behind the state the tools run against.
 struct Server {
     _dir: tempfile::TempDir,
-    state: AppState,
+    state: Arc<AppState>,
 }
 
 impl Server {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::new(open_vault(dir.path()));
-        Server { _dir: dir, state: AppState::new(store) }
+        Server { _dir: dir, state: Arc::new(AppState::new(store)) }
+    }
+
+    /// The JSON:API document the generated HTTP router answers for `uri`,
+    /// over the same state.
+    async fn http_get(&self, uri: &str) -> Value {
+        let request = Request::get(uri).header(header::ACCEPT, "application/vnd.api+json").body(Body::empty()).unwrap();
+        let response = entity_routes().with_state(Arc::clone(&self.state)).oneshot(request).await.expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+        serde_json::from_slice(&bytes).expect("JSON body")
     }
 
     /// Calls the tool `name` with `args` through its generated handler.
@@ -140,7 +155,7 @@ async fn a_list_reports_a_missing_or_mistyped_filter() {
 fn a_list_advertises_every_argument_it_reads() {
     assert_eq!(
         properties("section_list"),
-        names(&["parent_id", "title_contains", "min_children", "max_children", "limit", "offset"])
+        names(&["parent_id", "title_contains", "min_children", "max_children", "sort", "limit", "offset"])
     );
     let definitions = tool_definitions();
     let section_list = definitions.iter().find(|t| t.name == "section_list").unwrap();
@@ -427,4 +442,153 @@ fn handle_tool_call_dispatches_by_name() {
     let summary = handle_tool_call(&server.state, "task_get_summary", &args(json!({ "status": "open" }))).unwrap();
     assert_eq!(summary["count"], 1);
     assert_eq!(handle_tool_call(&server.state, "nope", &args(json!({}))).unwrap_err(), "Unknown tool: nope");
+}
+
+// ── Sort ──
+//
+// The generated CRUD lists and the hand-written `section_list` take an
+// order; `tag_list` does not, so its schema has no `sort`.
+
+/// The `sort` property of a list tool's input schema.
+fn sort_property(tool: &str) -> Value {
+    let definitions = tool_definitions();
+    let tool = definitions.iter().find(|t| t.name == tool).unwrap_or_else(|| panic!("no tool {tool}"));
+    tool.input_schema["properties"]["sort"].clone()
+}
+
+#[test]
+fn a_sorted_list_tool_lists_its_sort_keys() {
+    for (tool, keys) in [
+        ("task_list", json!(["id", "-id", "title", "-title", "status", "-status"])),
+        ("note_list", json!(["id", "-id", "title", "-title"])),
+        ("section_list", json!(["id", "-id", "title", "-title"])),
+    ] {
+        let sort = sort_property(tool);
+        assert_eq!(sort["type"], "array", "{tool}: {sort}");
+        assert_eq!(sort["items"], json!({ "type": "string", "enum": keys }), "{tool}");
+        assert!(sort["description"].as_str().is_some_and(|d| !d.is_empty()), "{tool}");
+    }
+    // Optional.
+    let definitions = tool_definitions();
+    let section_list = definitions.iter().find(|t| t.name == "section_list").unwrap();
+    assert_eq!(section_list.input_schema["required"], json!(["parent_id"]));
+    let task_list = definitions.iter().find(|t| t.name == "task_list").unwrap();
+    assert!(task_list.input_schema.get("required").is_none_or(|r| !r.to_string().contains("sort")));
+    // A list that takes no order lists no `sort`, and refuses one.
+    assert!(!properties("tag_list").contains("sort"));
+}
+
+/// Every page of a list tool, walked with `limit`.
+async fn walk_tool(server: &Server, tool: &str, args: Value, limit: u64) -> Vec<String> {
+    let mut seen = Vec::new();
+    loop {
+        let mut page_args = args.clone();
+        page_args["limit"] = json!(limit);
+        page_args["offset"] = json!(seen.len());
+        let page = server.ok(tool, page_args).await;
+        seen.extend(ids(&page).into_iter().map(str::to_owned));
+        if seen.len() as u64 >= page["total"].as_u64().expect("total") {
+            return seen;
+        }
+    }
+}
+
+/// Every page of the HTTP list at `uri`, following `next`.
+async fn walk_http(server: &Server, uri: &str) -> Vec<String> {
+    let mut document = server.http_get(uri).await;
+    let mut seen = Vec::new();
+    loop {
+        let data = document["data"].as_array().expect("data");
+        seen.extend(data.iter().map(|r| r["id"].as_str().expect("id").to_owned()));
+        let Some(next) = document["links"]["next"].as_str() else { return seen };
+        document = server.http_get(next).await;
+    }
+}
+
+#[tokio::test]
+async fn a_list_tool_sorts_as_the_http_list_does() {
+    let server = Server::new();
+    for (title, status) in [
+        ("Alpha", "open"),
+        ("Bravo", "done"),
+        ("Charlie", "open"),
+        ("Delta", "blocked"),
+        ("Echo", "done"),
+        ("Foxtrot", "open"),
+        ("Golf", "blocked"),
+    ] {
+        server.ok("task_create", json!({ "title": title, "status": status, "body": "" })).await;
+    }
+
+    for (sort, expected) in [
+        (json!(null), ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"]),
+        (json!([]), ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"]),
+        (json!(["-title"]), ["golf", "foxtrot", "echo", "delta", "charlie", "bravo", "alpha"]),
+        (json!(["status"]), ["delta", "golf", "bravo", "echo", "alpha", "charlie", "foxtrot"]),
+        (json!(["-status"]), ["alpha", "charlie", "foxtrot", "bravo", "echo", "delta", "golf"]),
+        (json!(["-status", "-id"]), ["foxtrot", "charlie", "alpha", "echo", "bravo", "golf", "delta"]),
+        (json!(["status", "-title"]), ["golf", "delta", "echo", "bravo", "foxtrot", "charlie", "alpha"]),
+    ] {
+        for limit in [1, 2, 3] {
+            assert_eq!(walk_tool(&server, "task_list", json!({ "sort": sort }), limit).await, expected, "{sort}");
+        }
+        let keys: Vec<&str> =
+            sort.as_array().map(|k| k.iter().map(|k| k.as_str().unwrap()).collect()).unwrap_or_default();
+        let uri = if keys.is_empty() { "/api/tasks".to_owned() } else { format!("/api/tasks?sort={}", keys.join(",")) };
+        assert_eq!(walk_http(&server, &uri).await, expected, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn a_hand_written_list_tool_sorts_its_filtered_set() {
+    let server = Server::new();
+    server.seed_sections().await;
+    server.section("again", "Usage", "root").await;
+
+    let args = json!({ "parent_id": "root", "sort": ["-title"] });
+    let expected = ["again", "usage", "root", "intro"];
+    for limit in [1, 2, 3] {
+        assert_eq!(walk_tool(&server, "section_list", args.clone(), limit).await, expected);
+    }
+    assert_eq!(walk_http(&server, "/api/sections?filter[parent_id]=root&sort=-title").await, expected);
+
+    let page = server.ok("section_list", json!({ "parent_id": "root", "min_children": 1, "sort": ["-id"] })).await;
+    assert_eq!(page, json!({ "items": page["items"], "total": 2, "limit": 2, "offset": 0 }));
+    assert_eq!(ids(&page), ["usage", "root"]);
+    let args = json!({ "parent_id": "root", "sort": ["title", "-id"], "limit": 3, "offset": 1 });
+    assert_eq!(ids(&server.ok("section_list", args).await), ["root", "usage", "again"]);
+}
+
+#[tokio::test]
+async fn a_bad_sort_is_the_tool_error() {
+    let server = Server::new();
+    server.seed_sections().await;
+
+    // The parser's own error text, as IPC reports it.
+    for (sort, error) in [
+        (json!(["priority"]), "unknown sort field `priority`"),
+        (json!(["-parent"]), "unknown sort field `parent`"),
+        (json!(["parent.title"]), "unknown sort field `parent.title`"),
+        (json!(["title", "-title"]), "sort field `title` is named twice"),
+        (json!([""]), "empty sort key"),
+        (json!(["-"]), "empty sort key"),
+    ] {
+        assert_eq!(server.err("task_list", json!({ "sort": sort })).await, error, "{sort}");
+    }
+    let e = server.err("section_list", json!({ "parent_id": "root", "sort": ["children"] })).await;
+    assert_eq!(e, "unknown sort field `children`");
+
+    // `sort` is read strictly: an array of strings or nothing.
+    for (sort, error) in [
+        (json!("title"), r#"Invalid sort: expected an array of strings, got "title""#),
+        (json!("title,-id"), r#"Invalid sort: expected an array of strings, got "title,-id""#),
+        (json!({ "title": "asc" }), r#"Invalid sort: expected an array of strings, got {"title":"asc"}"#),
+        (json!(["title", 1]), "Invalid sort: expected a string, got 1"),
+        (json!([null]), "Invalid sort: expected a string, got null"),
+    ] {
+        assert_eq!(server.err("task_list", json!({ "sort": sort })).await, error, "{sort}");
+    }
+
+    // A list that takes no order refuses `sort` as any unread argument.
+    assert_eq!(server.err("tag_list", json!({ "sort": ["title"] })).await, "Unknown argument: sort");
 }

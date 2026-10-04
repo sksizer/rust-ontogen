@@ -1,13 +1,15 @@
-//! The section list filtered by a query struct and a required parent. It
-//! replaces the generated `list` and `count`; the rest of the module is the
-//! generated one.
+//! The section list filtered by a query struct and a required parent, and
+//! sorted. It replaces the generated `list` and `count`; the rest of the
+//! module is the generated one.
 
 pub use super::generated::section::*;
+use ontogen_core::order::OrderBy;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::schema::{AppError, Section};
 use crate::store::Store;
+use crate::store::section::SectionSortField;
 
 /// Which sections `list` and `count` select; an absent field matches every
 /// section. Declared out of byte order, so a reader that walked the fields
@@ -29,15 +31,19 @@ fn matches(section: &Section, query: &ListSectionsQuery, parent_id: &str) -> boo
         && query.max_children.is_none_or(|n| children <= n as usize)
 }
 
-/// One page of the sections under `parent_id` that `query` selects.
+/// One page of the sections under `parent_id` that `query` selects, in
+/// `order`.
 pub async fn list(
     store: &Store,
     query: ListSectionsQuery,
     parent_id: &str,
+    order: &[OrderBy<SectionSortField>],
     limit: Option<u64>,
     offset: Option<u64>,
 ) -> Result<Vec<Section>, AppError> {
-    let sections = store.list_sections(&[], None, None).await?;
+    // Filtering keeps the store's order (the sort keys, then id), so
+    // pages are cut from one stable order.
+    let sections = store.list_sections(order, None, None).await?;
     Ok(sections
         .into_iter()
         .filter(|s| matches(s, &query, parent_id))
