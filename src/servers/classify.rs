@@ -199,7 +199,7 @@ pub(crate) fn check_http_ops(modules: &[ApiModule]) -> Result<(), String> {
             }
             let bodyless = matches!(op, OpKind::CustomGet | OpKind::GetById | OpKind::JunctionList { .. })
                 || matches!(op, OpKind::Delete | OpKind::JunctionRemove { .. });
-            if bodyless && let Some(input) = f.params.iter().find(|p| p.ty.contains("Input")) {
+            if bodyless && let Some(input) = f.params.iter().find(|p| p.is_input()) {
                 return Err(format!(
                     "ontogen: `{}::{}` is served without a request body, so it cannot take `{}: {}`; serve it \
                      as a POST (`#[ontogen::http::post]`) or pass the input's fields as arguments",

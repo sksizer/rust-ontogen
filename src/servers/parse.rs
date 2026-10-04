@@ -182,6 +182,27 @@ impl Default for Param {
     }
 }
 
+impl Param {
+    /// True for an `Option<…>` argument, which a caller may leave out.
+    pub fn is_option(&self) -> bool {
+        self.ty.starts_with("Option<")
+    }
+
+    /// True for an `*Input` argument: the type it names, under any `&` and
+    /// one `Option`, is a single path whose last segment ends in `Input`
+    /// (`CreateTaskInput`, `&crate::schema::UpdateTaskInput`). A type that
+    /// only contains the word (`InputMode`, `Vec<TaskInput>`) is not one.
+    pub fn is_input(&self) -> bool {
+        let unref = |ty: &str| ty.trim_start_matches('&').trim_start_matches("mut ").to_string();
+        let mut ty = unref(&self.ty);
+        if let Some(inner) = ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')) {
+            ty = unref(inner);
+        }
+        let name = ty.rsplit("::").next().unwrap_or(&ty);
+        !name.contains(['<', '(', '[']) && name.ends_with("Input")
+    }
+}
+
 /// An event function: returns `broadcast::Receiver<T>` or
 /// `Result<broadcast::Receiver<T>, E>`, sync or async.
 ///

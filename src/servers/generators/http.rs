@@ -1352,7 +1352,7 @@ fn legacy_list_handler(
     let plain_params: Vec<_> = f
         .params
         .iter()
-        .filter(|p| !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p)))
+        .filter(|p| !p.ty.contains("Query") && !p.is_input() && (!f.takes_page() || !is_page_param(p)))
         .collect();
 
     let mut extractors = String::new();
@@ -1522,7 +1522,7 @@ fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
         _ if matches!(method, "post" | "patch") => shape.body_args = Some(rest.iter().collect()),
         _ => {
             for p in rest {
-                if is_option(p) {
+                if p.is_option() {
                     shape.query_args.push(p);
                 } else {
                     path.push_str(&format!("/{{{}}}", p.name));
@@ -1533,10 +1533,6 @@ fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
     }
     shape.path = path;
     shape
-}
-
-fn is_option(p: &Param) -> bool {
-    p.ty.starts_with("Option<")
 }
 
 /// Emit the handler of an op served as a custom op (§10): a meta-only
@@ -1610,7 +1606,7 @@ fn op_handler(
                 steps.push_str(&format!("    let Path({pattern}) = ontogen_path?;\n"));
             }
             extractors.push_str("    ontogen_query: Result<Query<NoParams>, ErrorObject>,\n    ontogen_body: Body,\n");
-            let has_required = args.iter().any(|p| !is_option(p));
+            let has_required = args.iter().any(|p| !p.is_option());
             let declared: Vec<String> = args.iter().map(|p| format!("\"{}\"", p.name)).collect();
             steps.push_str(&format!(
                 "    ontogen_query?;\n    let ontogen_body = ontogen_body.into_bytes()?;\n    let ontogen_args = \
@@ -1623,7 +1619,7 @@ fn op_handler(
                     "    let {name} = request::op_arg::<{ty}>(&ontogen_args, \"{name}\", {required})?;\n",
                     name = p.name,
                     ty = param_to_owned_type(&p.ty_ast),
-                    required = !is_option(p),
+                    required = !p.is_option(),
                 ));
             }
         }

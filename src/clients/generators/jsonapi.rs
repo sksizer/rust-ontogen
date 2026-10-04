@@ -534,17 +534,17 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, path: &dyn Fn(&s
             let args: Vec<(String, String)> = f
                 .params
                 .iter()
-                .map(|p| (p.name.clone(), if is_input(p) { "input".to_string() } else { snake_to_camel(&p.name) }))
+                .map(|p| (p.name.clone(), if p.is_input() { "input".to_string() } else { snake_to_camel(&p.name) }))
                 .collect();
             let call = if op == OpKind::CustomGet {
-                for p in f.params.iter().filter(|p| !is_option(p) && !is_input(p)) {
+                for p in f.params.iter().filter(|p| !p.is_option() && !p.is_input()) {
                     route.push_str(&format!("/{}", path_segment(p)));
                 }
                 let optional: Vec<(&str, &str)> = f
                     .params
                     .iter()
                     .zip(&args)
-                    .filter(|(p, _)| is_option(p))
+                    .filter(|(p, _)| p.is_option())
                     .map(|(_, (name, value))| (name.as_str(), value.as_str()))
                     .collect();
                 route.push_str(&op_args_query(&optional));
@@ -557,16 +557,6 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, path: &dyn Fn(&s
         }
     };
     Some(method)
-}
-
-/// True when `f`'s parameter `p` is an `Option`.
-fn is_option(p: &Param) -> bool {
-    p.ty.starts_with("Option<")
-}
-
-/// True when `p` is an `*Input` struct, which the TS parameter list names `input`.
-fn is_input(p: &Param) -> bool {
-    p.ty.contains("Input")
 }
 
 /// `${encodeURIComponent(parentId)}`: `p` as one path segment.
@@ -631,7 +621,7 @@ pub(crate) fn list_method(
     let plain_params: Vec<&Param> = f
         .params
         .iter()
-        .filter(|p| !p.ty.contains("Query") && !is_input(p) && (!f.takes_page() || !is_page_param(p)))
+        .filter(|p| !p.ty.contains("Query") && !p.is_input() && (!f.takes_page() || !is_page_param(p)))
         .collect();
 
     let mut params: Vec<String> = plain_params

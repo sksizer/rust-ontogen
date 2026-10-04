@@ -6288,3 +6288,22 @@ fn an_input_on_a_route_with_no_body_is_a_codegen_error() {
         }
     }
 }
+
+#[test]
+fn an_input_is_a_type_named_for_one() {
+    for (ty, input) in [
+        ("CreateTaskInput", true),
+        ("&UpdateTaskInput", true),
+        ("crate::schema::CreateTaskInput", true),
+        ("Option<CreateTaskInput>", true),
+        ("Option<&CreateTaskInput>", true),
+        ("InputMode", false),
+        ("Option<InputMode>", false),
+        ("Vec<TaskInput>", false),
+        ("String", false),
+    ] {
+        assert_eq!(param("p", ty).is_input(), input, "{ty}");
+    }
+    assert!(param("p", "Option<u32>").is_option());
+    assert!(!param("p", "u32").is_option());
+}
