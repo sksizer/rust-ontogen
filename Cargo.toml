@@ -57,6 +57,8 @@ sha2 = "0.10"
 
 [dev-dependencies]
 insta = { version = "1", features = ["yaml"] }
+# The binding-collision tests walk a generated handler's patterns.
+syn = { version = "2", features = ["visit"] }
 tempfile = "3"
 # Used by the markdown-backend golden/conformance tests to validate spec
 # artifacts against the real runtime crate.

@@ -1744,7 +1744,7 @@ fn ipc_command_args(ipc: &str, command: &str) -> BTreeSet<String> {
     names
         .iter()
         .filter_map(|param| param.trim_start_matches(',').split_once(':').map(|(name, _)| name.trim()))
-        .filter(|name| !name.is_empty() && !["state", "channel"].contains(name))
+        .filter(|name| !name.is_empty() && !["ontogen_state", "channel"].contains(name))
         .map(crate::servers::types::snake_to_camel)
         .collect()
 }

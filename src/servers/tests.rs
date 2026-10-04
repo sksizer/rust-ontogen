@@ -2247,9 +2247,12 @@ fn test_ipc_generator_event_subscriptions() {
 
     assert!(content.contains("pub async fn vault_note_changes_subscribe("));
     assert!(content.contains("channel: tauri::ipc::Channel<ontogen_core::events::EventFrame<LoggedChange>>"));
-    assert!(content.contains("vault_notes::vault_note_changes(&state, vault_id, classes, resume).await"));
-    assert!(content.contains(".spawn(ontogen_core::events::forward(rx, ontogen_core::events::seq_id"));
-    assert!(content.contains("channel.send(frame)"));
+    let flat = compact(&content);
+    assert!(
+        flat.contains(&compact("vault_notes::vault_note_changes(&ontogen_state, vault_id, classes, resume).await"))
+    );
+    assert!(flat.contains(&compact(".spawn(ontogen_core::events::forward(ontogen_rx, ontogen_core::events::seq_id")));
+    assert!(content.contains("channel.send(ontogen_frame)"));
     assert!(content.contains("pub fn vault_note_changes_unsubscribe(id: u64) -> bool"));
     assert!(content.contains("EVENT_SUBSCRIPTIONS.cancel(id)"));
     assert!(content.contains("generate_handler![vault_note_changes_subscribe, vault_note_changes_unsubscribe,]"));
@@ -3701,23 +3704,23 @@ pub async fn case_option_vec(store: &Store, tags: Option<Vec<String>>) -> Result
     // generated output get the entity prefix (`shape_`), so we match on the
     // bare service-fn portion: `shapes::case_..._args)`.
     let cases: &[(&str, &str)] = &[
-        ("case_ref_str", "shapes::case_ref_str(&store, &text)"),
-        ("case_owned_string", "shapes::case_owned_string(&store, id)"),
-        ("case_owned_bool", "shapes::case_owned_bool(&store, enabled)"),
-        ("case_owned_u8", "shapes::case_owned_u8(&store, count)"),
-        ("case_ref_struct", "shapes::case_ref_struct(&store, profile_id)"),
-        ("case_input_struct", "shapes::case_input_struct(&store, input)"),
-        ("case_owned_qualified", "shapes::case_owned_qualified(&store, prefs)"),
-        ("case_ref_qualified", "shapes::case_ref_qualified(&store, &prefs)"),
+        ("case_ref_str", "shapes::case_ref_str(&ontogen_store, &text)"),
+        ("case_owned_string", "shapes::case_owned_string(&ontogen_store, id)"),
+        ("case_owned_bool", "shapes::case_owned_bool(&ontogen_store, enabled)"),
+        ("case_owned_u8", "shapes::case_owned_u8(&ontogen_store, count)"),
+        ("case_ref_struct", "shapes::case_ref_struct(&ontogen_store, profile_id)"),
+        ("case_input_struct", "shapes::case_input_struct(&ontogen_store, input)"),
+        ("case_owned_qualified", "shapes::case_owned_qualified(&ontogen_store, prefs)"),
+        ("case_ref_qualified", "shapes::case_ref_qualified(&ontogen_store, &prefs)"),
         // The OF-011 regression: Option<u8> must pass `rating`, NOT
         // `rating.as_deref()`.
-        ("case_option_u8", "shapes::case_option_u8(&store, rating)"),
-        ("case_option_owned_string", "shapes::case_option_owned_string(&store, name)"),
-        ("case_option_ref_str", "shapes::case_option_ref_str(&store, name.as_deref())"),
-        ("case_option_ref_struct", "shapes::case_option_ref_struct(&store, profile.as_ref())"),
-        ("case_option_ref_slice", "shapes::case_option_ref_slice(&store, bytes.as_deref())"),
-        ("case_option_ref_path", "shapes::case_option_ref_path(&store, p.as_deref())"),
-        ("case_option_vec", "shapes::case_option_vec(&store, tags)"),
+        ("case_option_u8", "shapes::case_option_u8(&ontogen_store, rating)"),
+        ("case_option_owned_string", "shapes::case_option_owned_string(&ontogen_store, name)"),
+        ("case_option_ref_str", "shapes::case_option_ref_str(&ontogen_store, name.as_deref())"),
+        ("case_option_ref_struct", "shapes::case_option_ref_struct(&ontogen_store, profile.as_ref())"),
+        ("case_option_ref_slice", "shapes::case_option_ref_slice(&ontogen_store, bytes.as_deref())"),
+        ("case_option_ref_path", "shapes::case_option_ref_path(&ontogen_store, p.as_deref())"),
+        ("case_option_vec", "shapes::case_option_vec(&ontogen_store, tags)"),
     ];
 
     for (fn_name, expected_call) in cases {
@@ -3781,12 +3784,12 @@ pub async fn case_ref_bytes(store: &Store, payload: &[u8]) -> Result<(), anyhow:
     // declaration uses `param_to_owned_type`; the forwarding uses
     // `forward_arg_expr`. Both must agree.
     let cases: &[(&str, &str)] = &[
-        ("payload: Option<Vec<u8>>", "dst_shapes::case_opt_bytes(&store, payload.as_deref())"),
-        ("p: Option<PathBuf>", "dst_shapes::case_opt_path(&store, p.as_deref())"),
-        ("s: Option<CString>", "dst_shapes::case_opt_cstr(&store, s.as_deref())"),
-        ("s: Option<OsString>", "dst_shapes::case_opt_osstr(&store, s.as_deref())"),
-        ("s: Option<String>", "dst_shapes::case_opt_str(&store, s.as_deref())"),
-        ("payload: Vec<u8>", "dst_shapes::case_ref_bytes(&store, &payload)"),
+        ("payload: Option<Vec<u8>>", "dst_shapes::case_opt_bytes(&ontogen_store, payload.as_deref())"),
+        ("p: Option<PathBuf>", "dst_shapes::case_opt_path(&ontogen_store, p.as_deref())"),
+        ("s: Option<CString>", "dst_shapes::case_opt_cstr(&ontogen_store, s.as_deref())"),
+        ("s: Option<OsString>", "dst_shapes::case_opt_osstr(&ontogen_store, s.as_deref())"),
+        ("s: Option<String>", "dst_shapes::case_opt_str(&ontogen_store, s.as_deref())"),
+        ("payload: Vec<u8>", "dst_shapes::case_ref_bytes(&ontogen_store, &payload)"),
     ];
 
     for (decl, forward_call) in cases {
@@ -4344,8 +4347,111 @@ pub async fn file(store: &Store, input: CreateTaskInput) -> Result<Task, AppErro
     }
 }
 
+/// Every MCP tool refuses an argument its input schema does not name, as a
+/// list does and as HTTP refuses an unknown member: custom `GET` and `POST`
+/// (with plain arguments, a body alone, a body beside another argument, no
+/// argument, stateless), CRUD, junction ops (paged and not) and lists, unscoped and
+/// under a route prefix. The refusal reads the very schema the tool
+/// advertises, scope and page included.
+#[test]
+fn every_mcp_tool_refuses_an_argument_its_schema_does_not_name() {
+    let task = "\
+pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Task>, AppError> { todo!() }
+pub async fn count(store: &Store) -> Result<u64, AppError> { todo!() }
+pub async fn get_by_id(store: &Store, id: &str) -> Result<Task, AppError> { todo!() }
+pub async fn create(store: &Store, input: CreateTaskInput) -> Result<Task, AppError> { todo!() }
+pub async fn update(store: &Store, id: &str, input: UpdateTaskInput) -> Result<Task, AppError> { todo!() }
+pub async fn delete(store: &Store, id: &str) -> Result<(), AppError> { todo!() }
+pub async fn get_summary(store: &Store, status: &str, verbose: Option<bool>) -> Result<TaskSummary, AppError> { todo!() }
+pub async fn capture(store: &Store, input: CreateTaskInput, status: Option<String>) -> Result<Task, AppError> { todo!() }
+pub async fn file(store: &Store, input: CreateTaskInput) -> Result<Task, AppError> { todo!() }
+pub async fn purge_done(store: &Store) -> Result<u32, AppError> { todo!() }
+pub async fn list_tags(store: &Store, id: &str) -> Result<Vec<Tag>, AppError> { todo!() }
+pub async fn add_tag(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }
+pub async fn remove_tag(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }
+";
+    let gadget = "\
+pub async fn list(store: &Store, query: GadgetQuery, owner: &str, limit: Option<u64>, offset: Option<u64>) \
+  -> Result<Vec<Gadget>, AppError> { todo!() }
+pub async fn count(store: &Store, query: GadgetQuery, owner: &str) -> Result<u64, AppError> { todo!() }
+";
+    let util = "\
+#[ontogen::stateless]
+pub fn echo(text: &str) -> Result<String, anyhow::Error> { todo!() }
+";
+    let tools = [
+        "task_list",
+        "task_get_by_id",
+        "task_create",
+        "task_update",
+        "task_delete",
+        "task_get_summary",
+        "task_capture",
+        "task_file",
+        "task_purge_done",
+        "task_list_tags",
+        "task_add_tag",
+        "task_remove_tag",
+        "gadget_list",
+        "util_echo",
+    ];
+    for (scoped, paginated) in [(false, false), (false, true), (true, false), (true, true)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let api_dir = tmp.path().join("api");
+        for (file, source) in [("task.rs", task), ("gadget.rs", gadget), ("util.rs", util)] {
+            write_synthetic_api(&api_dir, file, source);
+        }
+        let mut config = if scoped { test_config_with_prefix(api_dir) } else { test_config(api_dir) };
+        if paginated {
+            config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+        }
+        let output = tmp.path().join("mcp.rs");
+        config.generators = vec![ServerGenerator::Mcp { output: output.clone() }];
+        crate::servers::generate_transport(&config).expect("generate_transport failed");
+        let code = std::fs::read_to_string(output).unwrap();
+        syn::parse_file(&code).unwrap_or_else(|e| panic!("does not parse: {e}\n{code}"));
+        let case = format!("scoped: {scoped}, paginated: {paginated}");
+
+        let flat = compact(&code);
+        let defs: Vec<&str> = flat.split("McpToolDef{name:\"").skip(1).collect();
+        let mut named: Vec<&str> = defs.iter().map(|def| &def[..def.find('"').unwrap()]).collect();
+        named.sort_unstable();
+        let mut expected = tools.to_vec();
+        if !paginated {
+            expected.extend(["task_count", "gadget_count"]);
+        }
+        expected.sort_unstable();
+        assert_eq!(named, expected, "{case}");
+        for def in defs {
+            let name = &def[..def.find('"').unwrap()];
+            let schema_fn =
+                &def[def.find(",schema_fn:").unwrap() + ",schema_fn:".len()..def.find(",handler:").unwrap()];
+            let schema = schema_fn.strip_prefix("||").map_or_else(|| format!("{schema_fn}()"), str::to_string);
+            let opening = format!(
+                ",handler:|ontogen_state,ontogen_args|{{Box::pin(asyncmove{{refuse_unknown_args(ontogen_args,{schema})?;"
+            );
+            assert!(def.contains(&opening), "{case}: {name} first refuses what {schema} does not name:\n{code}");
+        }
+        if scoped {
+            assert!(
+                flat.contains(
+                    "refuse_unknown_args(ontogen_args,with_project_id_schema(schema_for::<GetByIdInput>()))?;"
+                ),
+                "{case}: the scope is an argument the tool names:\n{code}"
+            );
+        }
+        if paginated {
+            assert!(
+                flat.contains("refuse_unknown_args(ontogen_args,with_pagination_schema("),
+                "{case}: the page is an argument the tool names:\n{code}"
+            );
+        }
+    }
+}
+
 /// `required_str` tells a missing string argument from one of another
-/// type, as every other argument read does.
+/// type, as every other argument read does, and words the second as a
+/// `String` read does: `expected a string`.
 #[test]
 fn mcp_required_str_reports_a_wrong_type_as_invalid() {
     let tmp = tempfile::tempdir().unwrap();
@@ -4359,10 +4465,17 @@ fn mcp_required_str_reports_a_wrong_type_as_invalid() {
     assert!(
         compact(&code).contains(&compact(
             "let value = args.get(key).ok_or_else(|| format!(\"Missing required parameter: {key}\"))?; \
-             <&str>::deserialize(value).map_err(|e| format!(\"Invalid parameter {key}: {e}\"))"
+             value.as_str().ok_or_else(|| { \
+                 let e = String::deserialize(value).expect_err(\"a value that is no string is no String\"); \
+                 format!(\"Invalid parameter {key}: {e}\") \
+             })"
         )),
         "{code}"
     );
+    assert!(!code.contains("<&str>::deserialize"), "a `&str` read words its error `expected a borrowed string`");
+    // The wording is serde's own for a `String`, which the read reports.
+    let e = <String as serde::Deserialize>::deserialize(&serde_json::json!(5)).unwrap_err();
+    assert_eq!(e.to_string(), "invalid type: integer `5`, expected a string");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -4834,7 +4947,7 @@ fn test_two_surfaces_merge_same_named_module() {
     {
         assert!(ipc.contains(&format!("        {cmd},\n")), "ipc_handler lists {cmd}:\n{ipc}");
     }
-    assert!(ipc.contains("workout_1::create(&store, input)"), "IPC CRUD calls through the alias:\n{ipc}");
+    assert!(ipc.contains("workout_1::create(&ontogen_store, input)"), "IPC CRUD calls through the alias:\n{ipc}");
     assert!(
         ipc.contains("fitness::schema::Workout") && ipc.contains("Result<Workout, String>"),
         "the shared type name is bare for the primary surface and qualified for the second:\n{ipc}"
@@ -5049,10 +5162,10 @@ fn a_paginated_list_pushes_the_page_into_the_store() {
     crate::servers::generators::ipc::generate(&ipc, &modules, &config);
     let ipc = std::fs::read_to_string(&ipc).unwrap();
     assert!(
-        ipc.contains("workout::list(&store, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        ipc.contains("workout::list(&ontogen_store, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))"),
         "the IPC page command passes the page down:\n{ipc}"
     );
-    assert!(ipc.contains("workout::count(&store)"), "the IPC page command asks for the total:\n{ipc}");
+    assert!(ipc.contains("workout::count(&ontogen_store)"), "the IPC page command asks for the total:\n{ipc}");
     assert_eq!(ipc.matches("limit: Option<u32>").count(), 1, "the page params appear once:\n{ipc}");
 
     let mcp = tmp.path().join("mcp.rs");
@@ -5101,10 +5214,10 @@ fn a_state_scoped_count_paginates_the_same_way() {
     crate::servers::generators::ipc::generate(&ipc, &modules, &config);
     let ipc = std::fs::read_to_string(&ipc).unwrap();
     assert!(
-        ipc.contains("workout::list(&state, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        ipc.contains("workout::list(&ontogen_state, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))"),
         "the IPC page command passes the page down:\n{ipc}"
     );
-    assert!(ipc.contains("workout::count(&state)"), "the total is asked of the state:\n{ipc}");
+    assert!(ipc.contains("workout::count(&ontogen_state)"), "the total is asked of the state:\n{ipc}");
 
     let mcp = tmp.path().join("mcp.rs");
     crate::servers::generators::mcp::generate(&mcp, &modules, &config);
@@ -5195,8 +5308,13 @@ fn a_paginated_list_may_filter_when_its_count_filters_alike() {
     let ipc = tmp.path().join("ipc.rs");
     crate::servers::generators::ipc::generate(&ipc, &modules, &config);
     let ipc = compact(&std::fs::read_to_string(&ipc).unwrap());
-    assert!(ipc.contains("workout::list(&store,&plan_id,Some(u64::from(limit)),Some(u64::from(offset)))"), "{ipc}");
-    assert!(ipc.contains("workout::count(&store,&plan_id)"), "{ipc}");
+    assert!(
+        ipc.contains(
+            "workout::list(&ontogen_store,&plan_id,Some(u64::from(ontogen_limit)),Some(u64::from(ontogen_offset)))"
+        ),
+        "{ipc}"
+    );
+    assert!(ipc.contains("workout::count(&ontogen_store,&plan_id)"), "{ipc}");
     let mcp = tmp.path().join("mcp.rs");
     crate::servers::generators::mcp::generate(&mcp, &modules, &config);
     let mcp = compact(&std::fs::read_to_string(&mcp).unwrap());
@@ -5235,8 +5353,11 @@ fn a_by_value_filter_is_cloned_into_the_list_and_counted_from_the_original() {
         let out = tmp.path().join(format!("{name}.rs"));
         emit(&out, &modules, &config);
         let out = std::fs::read_to_string(&out).unwrap();
-        let (store, filter) =
-            if name == "http" || name == "mcp" { ("ontogen_store", "ontogen_filter") } else { ("store", "query") };
+        let (store, filter) = if name == "http" || name == "mcp" {
+            ("ontogen_store", "ontogen_filter")
+        } else {
+            ("ontogen_store", "query")
+        };
         let flat = compact(&out);
         assert!(
             flat.contains(&format!("workout::list(&{store},{filter}.clone()")),
@@ -5295,11 +5416,12 @@ fn ipc_and_mcp_read_a_typed_bare_filter() {
     }
     assert!(
         ipc.contains(&compact(
-            "workout::list(&store, title.as_deref(), &owner, limit_to, Some(u64::from(limit)), Some(u64::from(offset)))"
+            "workout::list(&ontogen_store, title.as_deref(), &owner, limit_to, Some(u64::from(ontogen_limit)), \
+             Some(u64::from(ontogen_offset)))"
         )),
         "{ipc_code}"
     );
-    assert!(ipc.contains(&compact("workout::count(&store, title.as_deref(), &owner, limit_to)")), "{ipc_code}");
+    assert!(ipc.contains(&compact("workout::count(&ontogen_store, title.as_deref(), &owner, limit_to)")), "{ipc_code}");
 
     for line in [
         "let title: Option<String> = ontogen_args.get(\"title\").filter(|v| !v.is_null()).cloned()\
@@ -5326,9 +5448,10 @@ fn ipc_and_mcp_clone_only_the_filters_list_consumes() {
         typed_filter_transports("query: ListWorkoutQuery, tag: Option<String>, n: u32");
 
     assert!(ipc.contains(&compact("query: ListWorkoutQuery, tag: Option<String>, n: u32,")), "{ipc_code}");
-    for (name, flat, code, store, query) in
-        [("ipc", &ipc, &ipc_code, "&store", "query"), ("mcp", &mcp, &mcp_code, "&ontogen_store", "ontogen_filter")]
-    {
+    for (name, flat, code, store, query) in [
+        ("ipc", &ipc, &ipc_code, "&ontogen_store", "query"),
+        ("mcp", &mcp, &mcp_code, "&ontogen_store", "ontogen_filter"),
+    ] {
         assert!(
             flat.contains(&compact(&format!("workout::list({store}, {query}.clone(), tag.clone(), n,"))),
             "{name}:\n{code}"
@@ -5501,7 +5624,7 @@ fn an_unpaginated_surface_hands_a_page_taking_list_no_page() {
     let ipc = tmp.path().join("ipc.rs");
     crate::servers::generators::ipc::generate(&ipc, &modules, &config);
     let ipc = std::fs::read_to_string(&ipc).unwrap();
-    assert!(ipc.contains("workout::list(&store, None, None)"), "the whole table, as before:\n{ipc}");
+    assert!(ipc.contains("workout::list(&ontogen_store, None, None)"), "the whole table, as before:\n{ipc}");
     assert!(!ipc.contains("limit: Option<u64>"), "limit is not a command param:\n{ipc}");
 }
 
@@ -6282,6 +6405,250 @@ pub async fn thing_changes(state: &AppState, app_error: String, internal_error: 
         )),
         "{http}"
     );
+}
+
+/// Every Tauri command of `ipc`: its name, its parameters' names, and the
+/// names its body binds (each `let`, `if let` and closure pattern).
+fn ipc_command_bindings(ipc: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
+    struct Bindings(Vec<String>);
+    impl<'ast> syn::visit::Visit<'ast> for Bindings {
+        fn visit_pat_ident(&mut self, i: &'ast syn::PatIdent) {
+            self.0.push(i.ident.to_string());
+            syn::visit::visit_pat_ident(self, i);
+        }
+    }
+    syn::parse_file(ipc)
+        .unwrap_or_else(|e| panic!("the generated IPC does not parse: {e}\n{ipc}"))
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(f) if f.attrs.iter().any(|a| a.path().segments.iter().any(|s| s.ident == "command")) => {
+                let mut params = Vec::new();
+                for arg in &f.sig.inputs {
+                    if let syn::FnArg::Typed(t) = arg {
+                        pattern_idents(&t.pat, &mut params);
+                    }
+                }
+                let mut bindings = Bindings(Vec::new());
+                syn::visit::Visit::visit_block(&mut bindings, &f.block);
+                Some((f.sig.ident.to_string(), params, bindings.0))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A Tauri command names each parameter that carries a fn argument after
+/// it, as that name is the IPC wire key, and `ontogen_`-prefixes every
+/// binding of its own (`ontogen_state`, `ontogen_store`, `ontogen_pid`,
+/// `ontogen_uuid`, `ontogen_e`, `ontogen_limit`, `ontogen_offset`,
+/// `ontogen_items`, `ontogen_total`, `ontogen_all`, `ontogen_rx`,
+/// `ontogen_frame`). So an argument or a bare filter named like one of them,
+/// or like what one was once called (`state`, `store`, `pid`, `uuid`, `e`,
+/// `items`, `total`, `all_items`, `rx`, `frame`), takes no parameter name
+/// twice and is shadowed by no binding. Covers every command kind: custom
+/// `GET` and `POST` over the store and over the state, CRUD, junction ops
+/// (paged and not), a list with a `*Query` struct beside bare filters, a list
+/// with bare filters only, and event subscriptions, unscoped and under a
+/// route prefix, with pagination and without.
+#[test]
+fn an_ipc_argument_may_be_named_like_a_command_binding() {
+    let thing = "\
+pub async fn get_report(s: &Store, state: &str, store: Option<String>, query: Option<bool>, ctx: Option<u32>, \
+  e: Option<u32>) -> Result<String, AppError> { todo!() }
+pub async fn set_state(s: &Store, id: String, state: String, store: Option<String>, query: String, \
+  result: Option<u32>, items: Option<u32>, total: Option<u32>, all_items: Option<u32>, pid: Option<String>, \
+  uuid: Option<String>, rx: Option<u32>, frame: Option<u32>) -> Result<String, AppError> { todo!() }
+pub async fn list(s: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<String>, AppError> { todo!() }
+pub async fn count(s: &Store) -> Result<u64, AppError> { todo!() }
+pub async fn get_by_id(s: &Store, state: &str) -> Result<String, AppError> { todo!() }
+pub async fn create(s: &Store, store: NewThing) -> Result<String, AppError> { todo!() }
+pub async fn update(s: &Store, query: &str, state: ThingPatch) -> Result<String, AppError> { todo!() }
+pub async fn delete(s: &Store, store: &str) -> Result<(), AppError> { todo!() }
+pub async fn list_tags(s: &Store, state: &str) -> Result<Vec<String>, AppError> { todo!() }
+pub async fn add_tag(s: &Store, state: &str, store: &str) -> Result<(), AppError> { todo!() }
+pub async fn remove_tag(s: &Store, query: &str, e: &str) -> Result<(), AppError> { todo!() }
+";
+    // A state-based op, which a route prefix validates rather than scopes.
+    let report = "\
+pub async fn rename(app: &AppState, state: String, store: Option<String>, pid: Option<String>, uuid: Option<String>, \
+  e: Option<u32>) -> Result<String, AppError> { todo!() }
+";
+    // A `*Query` struct beside bare filters, the page pushed down.
+    let gadget = "\
+pub async fn list(s: &Store, query: GadgetQuery, state: Option<String>, store: Option<String>, items: Option<u32>, \
+  limit: Option<u64>, offset: Option<u64>) -> Result<Vec<String>, AppError> { todo!() }
+pub async fn count(s: &Store, query: GadgetQuery, state: Option<String>, store: Option<String>, items: Option<u32>) \
+  -> Result<u64, AppError> { todo!() }
+";
+    // Bare filters only, one of them named `query`.
+    let widget = "\
+pub async fn list(s: &Store, query: &str, state: Option<String>, store: Option<u32>, e: Option<u32>, \
+  total: Option<u32>, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<String>, AppError> { todo!() }
+pub async fn count(s: &Store, query: &str, state: Option<String>, store: Option<u32>, e: Option<u32>, \
+  total: Option<u32>) -> Result<u64, AppError> { todo!() }
+";
+    let feed = "\
+pub async fn thing_changes(app: &AppState, state: String, store: Option<String>, rx: Option<String>, \
+  frame: Option<String>, e: Option<u32>) -> Result<tokio::sync::broadcast::Receiver<String>, AppError> { todo!() }
+";
+    for (scoped, paginated) in [(false, false), (false, true), (true, false), (true, true)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let api_dir = tmp.path().join("api");
+        for (file, source) in [
+            ("thing.rs", thing),
+            ("report.rs", report),
+            ("gadget.rs", gadget),
+            ("widget.rs", widget),
+            ("feed.rs", feed),
+        ] {
+            write_synthetic_api(&api_dir, file, source);
+        }
+        let mut config = test_config(api_dir);
+        if paginated {
+            config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+        }
+        if scoped {
+            config.route_prefix = test_config_with_prefix(PathBuf::new()).route_prefix;
+        }
+        let output = tmp.path().join("ipc.rs");
+        config.generators = vec![ServerGenerator::TauriIpc { output: output.clone() }];
+        crate::servers::generate_transport(&config).expect("generate_transport failed");
+        let ipc = std::fs::read_to_string(output).unwrap();
+        let case = format!("scoped: {scoped}, paginated: {paginated}");
+
+        let commands = ipc_command_bindings(&ipc);
+        let mut seen: Vec<&str> = commands.iter().map(|(name, ..)| name.as_str()).collect();
+        seen.sort_unstable();
+        let mut expected = vec![
+            "thing_get_report",
+            "thing_set_state",
+            "thing_list",
+            "thing_get_by_id",
+            "thing_create",
+            "thing_update",
+            "thing_delete",
+            "thing_list_tags",
+            "thing_add_tag",
+            "thing_remove_tag",
+            "report_rename",
+            "gadget_list",
+            "widget_list",
+            "thing_changes_subscribe",
+            "thing_changes_unsubscribe",
+        ];
+        if !paginated {
+            // A paginated module's `count` is served by its list's page.
+            expected.extend(["thing_count", "gadget_count", "widget_count"]);
+        }
+        expected.sort_unstable();
+        assert_eq!(seen, expected, "{case}");
+
+        for (command, params, bindings) in &commands {
+            let mut unique = params.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(unique.len(), params.len(), "{case}: {command} takes a name twice: {params:?}");
+            for name in bindings {
+                assert!(
+                    name.starts_with("ontogen_"),
+                    "{case}: {command} binds `{name}`, which is not `ontogen_`-prefixed: {bindings:?}"
+                );
+                assert!(!params.contains(name), "{case}: {command} binds `{name}`, which shadows its parameter");
+            }
+        }
+
+        // Each argument keeps its own name, the IPC wire key, and reaches
+        // the fn under it.
+        let params_of = |command: &str| -> Vec<String> {
+            commands.iter().find(|(name, ..)| name == command).map(|(_, p, _)| p.clone()).unwrap()
+        };
+        let tail = |mut names: Vec<&str>| -> Vec<String> {
+            if paginated {
+                names.extend(["limit", "offset"]);
+            }
+            names.into_iter().map(String::from).collect()
+        };
+        let scope_and_state = |mut names: Vec<String>| -> Vec<String> {
+            if scoped {
+                names.push("project_id".to_string());
+            }
+            names.push("ontogen_state".to_string());
+            names
+        };
+        assert_eq!(
+            params_of("thing_set_state"),
+            scope_and_state(
+                [
+                    "id",
+                    "state",
+                    "store",
+                    "query",
+                    "result",
+                    "items",
+                    "total",
+                    "all_items",
+                    "pid",
+                    "uuid",
+                    "rx",
+                    "frame"
+                ]
+                .map(String::from)
+                .to_vec()
+            ),
+            "{case}"
+        );
+        assert_eq!(params_of("gadget_list"), scope_and_state(tail(vec!["query", "state", "store", "items"])), "{case}");
+        assert_eq!(
+            params_of("widget_list"),
+            scope_and_state(tail(vec!["query", "state", "store", "e", "total"])),
+            "{case}"
+        );
+        assert_eq!(params_of("thing_list_tags"), scope_and_state(tail(vec!["state"])), "{case}");
+        assert_eq!(
+            params_of("thing_changes_subscribe"),
+            ["state", "store", "rx", "frame", "e", "channel", "ontogen_state"].map(String::from).to_vec(),
+            "{case}: an IPC subscription is not scoped"
+        );
+
+        let flat = compact(&ipc);
+        for call in [
+            "thing::set_state(&ontogen_store,id,state,store,query,result,items,total,all_items,pid,uuid,rx,frame)",
+            "thing::get_report(&ontogen_store,&state,store,query,ctx,e)",
+            "thing::add_tag(&ontogen_store,&state,&store)",
+            "thing::remove_tag(&ontogen_store,&query,&e)",
+            "report::rename(&ontogen_state,state,store,pid,uuid,e)",
+            "feed::thing_changes(&ontogen_state,state,store,rx,frame,e)",
+        ] {
+            assert!(flat.contains(&compact(call)), "{case}: {call}\n{ipc}");
+        }
+        let (page, counted) = if paginated {
+            (",Some(u64::from(ontogen_limit)),Some(u64::from(ontogen_offset)))", true)
+        } else {
+            (",None,None)", false)
+        };
+        let gadget_list = if counted {
+            "gadget::list(&ontogen_store,query.clone(),state.clone(),store.clone(),items"
+        } else {
+            "gadget::list(&ontogen_store,query,state,store,items"
+        };
+        assert!(flat.contains(&format!("{gadget_list}{page}")), "{case}:\n{ipc}");
+        let widget_state = if counted { "state.clone()" } else { "state" };
+        assert!(
+            flat.contains(&format!("widget::list(&ontogen_store,&query,{widget_state},store,e,total{page}")),
+            "{case}:\n{ipc}"
+        );
+        if paginated {
+            assert!(flat.contains("gadget::count(&ontogen_store,query,state,store,items)"), "{case}:\n{ipc}");
+            assert!(
+                flat.contains(
+                    "Ok(PaginatedResult{items:ontogen_items,total:ontogen_total,limit:ontogen_limit,\
+                               offset:ontogen_offset})"
+                ),
+                "{case}:\n{ipc}"
+            );
+        }
+    }
 }
 
 #[test]
