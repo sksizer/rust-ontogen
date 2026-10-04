@@ -40,6 +40,14 @@ pub async fn complete(store: &Store, id: &str) -> Result<(), AppError> {
     store.update_task(id, updates).await.map(drop)
 }
 
+/// File a task under `state`, retitled `store` when given. The arguments
+/// are named like the bindings of a generated handler, which must still
+/// tell them apart.
+pub async fn set_state(ctx: &Store, id: &str, state: String, store: Option<String>) -> Result<Task, AppError> {
+    let updates = TaskUpdate { status: Some(state), title: store, ..TaskUpdate::default() };
+    ctx.update_task(id, updates).await
+}
+
 /// Delete every done task, answering how many went.
 pub async fn purge_done(store: &Store) -> Result<u64, AppError> {
     let mut purged = 0;

@@ -2115,7 +2115,7 @@ fn test_http_generator_state_module() {
     // State-based modules get unscoped routes (entity-first handler names)
     assert!(content.contains("project_list"));
     assert!(content.contains("/api/projects"));
-    assert!(content.contains("project::list(&state)"), "should pass &state directly");
+    assert!(content.contains("project::list(&ontogen_state)"), "should pass &state directly");
 }
 
 #[test]
@@ -2134,7 +2134,7 @@ fn test_http_generator_events() {
     assert!(content.contains("entity_changed_sse"));
     assert!(content.contains("Sse<impl futures::Stream"));
     // No entity is in the schema, so each item is sent as `meta.result`.
-    assert!(content.contains("sse_stream(\"graph-updated\", rx, ontogen_core::events::no_id, result_frame)"));
+    assert!(content.contains("sse_stream(\"graph-updated\", ontogen_rx, ontogen_core::events::no_id, result_frame)"));
     assert!(content.contains("event.json_data(ResultFrame::new(item))"));
     assert!(content.contains("/api/events/graph"), "should use SSE route override");
     assert!(!content.contains(".ok())"), "no generated path drops a lag error");
@@ -2206,9 +2206,13 @@ fn test_http_generator_parameterized_event() {
     )));
     assert!(content.contains("Path(vault_id): Path<String>"), "required param rides the path");
     assert!(content.contains("struct VaultNotesVaultNoteChangesEventQuery"), "optional params ride the query");
-    assert!(content.contains("headers.get(\"last-event-id\")"), "Last-Event-ID feeds resume");
-    assert!(content.contains(".or(q.resume)"), "resume query param is the fallback");
-    assert!(content.contains("vault_notes::vault_note_changes(&state, vault_id, q.classes, resume)"));
+    assert!(content.contains("ontogen_headers.get(\"last-event-id\")"), "Last-Event-ID feeds resume");
+    assert!(content.contains(".or(ontogen_query.resume)"), "resume query param is the fallback");
+    assert!(
+        content.contains(
+            "vault_notes::vault_note_changes(&ontogen_state, vault_id, ontogen_query.classes, ontogen_resume)"
+        )
+    );
     assert!(content.contains(".await"), "async event fn is awaited");
     assert!(content.contains("Result<Sse<"), "fallible subscribe returns an error response");
     assert!(content.contains("ontogen_core::events::seq_id"), "resumable op writes ids");
@@ -2224,7 +2228,9 @@ fn test_http_generator_scoped_parameterized_event() {
     let content = std::fs::read_to_string(&output).unwrap();
 
     assert!(content.contains("Path((ontogen_scope, vault_id)): Path<(uuid::Uuid, String)>"));
-    assert!(content.contains(".subscribe_vault_note_changes_for(&ontogen_scope, vault_id, q.classes, resume)"));
+    assert!(content.contains(
+        ".subscribe_vault_note_changes_for(&ontogen_scope, vault_id, ontogen_query.classes, ontogen_resume)"
+    ));
     assert!(content.contains("/api/projects/{project_id}/events/vault-note-changes/{vault_id}"));
 }
 
@@ -2298,11 +2304,11 @@ fn test_http_generator_store_module_no_prefix() {
 
     // Should borrow the constructed store (owned `Store`) to the `&Store`-taking
     // service functions.
-    assert!(content.contains("node::list(&store)"), "should pass &store to list");
-    assert!(content.contains("node::get_by_id(&store, &id)"), "should pass &store to get_by_id");
-    assert!(content.contains("node::create(&store, input)"), "should pass &store to create");
-    assert!(content.contains("node::update(&store, &id, input)"), "should pass &store to update");
-    assert!(content.contains("node::delete(&store, &id)"), "should pass &store to delete");
+    assert!(content.contains("node::list(&ontogen_store)"), "should pass &store to list");
+    assert!(content.contains("node::get_by_id(&ontogen_store, &id)"), "should pass &store to get_by_id");
+    assert!(content.contains("node::create(&ontogen_store, input)"), "should pass &store to create");
+    assert!(content.contains("node::update(&ontogen_store, &id, input)"), "should pass &store to update");
+    assert!(content.contains("node::delete(&ontogen_store, &id)"), "should pass &store to delete");
 
     // Should have CRUD routes
     assert!(content.contains("/api/nodes"), "should have list route");
@@ -2893,7 +2899,10 @@ fn test_http_generator_junction_module() {
         "remove takes both ids from the path and no body:\n{content}"
     );
     assert_eq!(content.matches("Ok(response::no_content())").count(), 2, "add and remove are 204s:\n{content}");
-    assert!(content.contains("Ok(response::ok(&Document::meta_only(ResultMeta { result })))"), "lists are meta.result");
+    assert!(
+        content.contains("Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))"),
+        "lists are meta.result"
+    );
     assert!(!content.contains("Json"), "no flat bodies remain:\n{content}");
 
     // Regression guards - no old-style custom URLs.
@@ -3956,7 +3965,9 @@ pub async fn get_count(store: &Store) -> Result<i64, anyhow::Error> { todo!() }
     // The handler names the original custom struct type by its real name --
     // this is what the import collector (OF-017) had to start emitting for
     // these to compile.
-    for call in &["export::get_filtered_sessions(&store, &filter)", "export::get_summary(&store, &request)"] {
+    for call in
+        &["export::get_filtered_sessions(&ontogen_store, &filter)", "export::get_summary(&ontogen_store, &request)"]
+    {
         assert!(content.contains(call), "OF-016: expected the call `{call}`, got:\n{content}");
     }
 
@@ -4667,14 +4678,14 @@ fn test_two_surfaces_emit_each_accessor() {
 
     let http = std::fs::read_to_string(&http_out).unwrap();
     assert!(
-        http.contains("let store = state.fitness_store().await.map_err(internal_error)?;"),
+        http.contains("let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;"),
         "second-surface handlers open the store through the surface accessor:\n{http}"
     );
     assert!(
-        http.contains("let store = state.store().await.map_err(internal_error)?;"),
+        http.contains("let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;"),
         "primary-surface handlers keep the default accessor:\n{http}"
     );
-    assert!(http.contains("athlete::list(&store)"), "primary store module calls through its own name:\n{http}");
+    assert!(http.contains("athlete::list(&ontogen_store)"), "primary store module calls through its own name:\n{http}");
 
     let ipc = std::fs::read_to_string(&ipc_out).unwrap();
     assert!(ipc.contains("state.fitness_store().await"), "IPC uses the surface accessor:\n{ipc}");
@@ -4718,8 +4729,8 @@ fn test_two_surfaces_merge_same_named_module() {
         assert!(compact(&http).contains(&compact(route)), "expected route {route} in:\n{http}");
     }
     assert!(http.contains("workout as workout_1"), "second surface's workout is aliased:\n{http}");
-    assert!(http.contains("workout_1::list(&store)"), "CRUD handlers call through the alias:\n{http}");
-    assert!(http.contains("workout::start(&state, input)"), "custom handlers call the primary module:\n{http}");
+    assert!(http.contains("workout_1::list(&ontogen_store)"), "CRUD handlers call through the alias:\n{http}");
+    assert!(http.contains("workout::start(&ontogen_state, input)"), "custom handlers call the primary module:\n{http}");
     // A meta-only document names no result type, so neither `Workout` is
     // imported into the HTTP handlers.
     assert!(!http.contains("Workout,") && !http.contains("fitness::schema::Workout"), "{http}");
@@ -4837,7 +4848,7 @@ fn test_mixed_module_routes_are_per_fn_and_order_independent() {
             http.contains(".route(\"/api/workouts/start\", post(workout_start).fallback(allow([Method::POST])))"),
             "state-scoped fn keeps its unscoped route:\n{http}"
         );
-        assert!(http.contains("workout::start(&state, input)"), "state-scoped fn takes &state:\n{http}");
+        assert!(http.contains("workout::start(&ontogen_state, input)"), "state-scoped fn takes &state:\n{http}");
         assert!(
             !http.contains(".route(\"/api/workouts\", ") && !http.contains(".route(\"/api/workouts/{id}\", "),
             "store-scoped CRUD gets no unscoped routes:\n{http}"
@@ -4939,10 +4950,10 @@ fn a_paginated_list_pushes_the_page_into_the_store() {
     crate::servers::generators::http::generate(&http, &modules, &config);
     let http = std::fs::read_to_string(&http).unwrap();
     assert!(
-        http.contains("workout::list(&store, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        http.contains("workout::list(&ontogen_store, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))"),
         "the HTTP page handler passes the page down:\n{http}"
     );
-    assert!(http.contains("workout::count(&store)"), "the HTTP page handler asks for the total:\n{http}");
+    assert!(http.contains("workout::count(&ontogen_store)"), "the HTTP page handler asks for the total:\n{http}");
     assert!(!http.contains(".len() as u64"), "nothing is materialised to be counted:\n{http}");
     assert!(!http.contains("Query(limit)"), "limit is the page, not a filter:\n{http}");
 
@@ -4993,10 +5004,10 @@ fn a_state_scoped_count_paginates_the_same_way() {
     crate::servers::generators::http::generate(&http, &modules, &config);
     let http = std::fs::read_to_string(&http).unwrap();
     assert!(
-        http.contains("workout::list(&state, Some(u64::from(limit)), Some(u64::from(offset)))"),
+        http.contains("workout::list(&ontogen_state, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))"),
         "the HTTP page handler passes the page down:\n{http}"
     );
-    assert!(http.contains("workout::count(&state)"), "the total is asked of the state:\n{http}");
+    assert!(http.contains("workout::count(&ontogen_state)"), "the total is asked of the state:\n{http}");
 
     let ipc = tmp.path().join("ipc.rs");
     crate::servers::generators::ipc::generate(&ipc, &modules, &config);
@@ -5078,7 +5089,7 @@ fn a_paginated_list_may_filter_when_its_count_filters_alike() {
     let http = tmp.path().join("http.rs");
     crate::servers::generators::http::generate(&http, &modules, &config);
     let http = std::fs::read_to_string(&http).unwrap();
-    assert!(http.contains("workout::count(&store, &plan_id)"), "the total carries the filter:\n{http}");
+    assert!(http.contains("workout::count(&ontogen_store, &plan_id)"), "the total carries the filter:\n{http}");
 }
 
 /// The filter is usually a by-value `Query` struct. `list` consumes it, so the
@@ -5112,8 +5123,16 @@ fn a_by_value_filter_is_cloned_into_the_list_and_counted_from_the_original() {
         let out = tmp.path().join(format!("{name}.rs"));
         emit(&out, &modules, &config);
         let out = std::fs::read_to_string(&out).unwrap();
-        assert!(out.contains("workout::list(&store, query.clone()"), "{name}: the list takes a clone:\n{out}");
-        assert!(out.contains("workout::count(&store, query)"), "{name}: the total takes the original:\n{out}");
+        let (store, filter) = if name == "http" { ("ontogen_store", "ontogen_filter") } else { ("store", "query") };
+        let flat = compact(&out);
+        assert!(
+            flat.contains(&format!("workout::list(&{store},{filter}.clone()")),
+            "{name}: the list takes a clone:\n{out}"
+        );
+        assert!(
+            flat.contains(&format!("workout::count(&{store},{filter})")),
+            "{name}: the total takes the original:\n{out}"
+        );
     }
 }
 
@@ -5157,7 +5176,7 @@ fn a_count_on_an_unpaginated_module_stays_an_operation() {
     let http = tmp.path().join("http.rs");
     crate::servers::generators::http::generate(&http, &modules, &config);
     let http = std::fs::read_to_string(&http).unwrap();
-    assert!(http.contains("workout::count(&store)"), "`count` gets a handler:\n{http}");
+    assert!(http.contains("workout::count(&ontogen_store)"), "`count` gets a handler:\n{http}");
 }
 
 #[test]
@@ -5173,7 +5192,7 @@ fn an_unpaginated_surface_hands_a_page_taking_list_no_page() {
     let http = tmp.path().join("http.rs");
     crate::servers::generators::http::generate(&http, &modules, &config);
     let http = std::fs::read_to_string(&http).unwrap();
-    assert!(http.contains("workout::list(&store, None, None)"), "the whole table, as before:\n{http}");
+    assert!(http.contains("workout::list(&ontogen_store, None, None)"), "the whole table, as before:\n{http}");
     assert!(!http.contains("Query(limit)"), "limit is not a filter:\n{http}");
 
     let ipc = tmp.path().join("ipc.rs");
@@ -5484,7 +5503,7 @@ fn a_resource_module_is_served_as_jsonapi() {
     );
     assert!(flat.contains(&compact("with_meta(PageMeta { total, limit, offset })")));
     assert!(flat.contains(&compact("let (offset, limit) = page(&query, 20, 100)?;")));
-    assert!(flat.contains(&compact("task::list(&store, Some(u64::from(limit)), Some(u64::from(offset)))")));
+    assert!(flat.contains(&compact("task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset)))")));
     assert!(flat.contains(&compact("Ok(response::created(&location, &Document::new(resource, links)))")));
     assert!(flat.contains(&compact("Ok(response::no_content())")));
     assert!(flat.contains(&compact("ontogen_core::id::validate_id(id).map_err(|e| e.reason)")));
@@ -5513,7 +5532,7 @@ fn a_resource_module_is_served_as_jsonapi() {
 
     // Step 8: each linked id is looked up with its target's `get_by_id`, in
     // one helper both writes call.
-    assert_eq!(http.matches("task_check_linked(&state, &linked).await?;").count(), 2, "{http}");
+    assert_eq!(http.matches("task_check_linked(&ontogen_state, &linked).await?;").count(), 2, "{http}");
     assert!(flat.contains(&compact(
         "if let Some(linked) = &linked.epic { match epic::get_by_id(&store, &linked.id).await { Ok(_) => {} \
          Err(crate::schema::AppError::EpicNotFound(..)) => return Err(linked.not_found(\"epics\")), \
@@ -5544,8 +5563,10 @@ fn the_app_error_scan_becomes_one_mapping_fn() {
     }
     assert!(http.contains("ErrorObject::app(status, code, e.to_string())"), "detail is the Display text");
     // AppError-typed calls map through it; store construction does not.
-    assert!(flat.contains(&compact("task::get_by_id(&store, task_lookup_key(&id)?).await.map_err(app_error)?;")));
-    assert!(http.contains("let store = state.store().await.map_err(internal_error)?;"));
+    assert!(
+        flat.contains(&compact("task::get_by_id(&ontogen_store, task_lookup_key(&id)?).await.map_err(app_error)?;"))
+    );
+    assert!(http.contains("let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;"));
     // An `{id}` that does not decode is the entity's own 404.
     assert!(flat.contains(&compact(
         "id.as_str().ok_or_else(|| app_error(crate::schema::AppError::TaskNotFound(id.to_string())))"
@@ -5590,12 +5611,12 @@ fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
     let list = handler("report_list");
     for step in [
         "_: AcceptGuard, ontogen_query: Query<PageOpArgs>",
-        "let limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
-        "let offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);",
-        "report::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;",
-        "let total = report::count(&store).await.map_err(app_error)?;",
-        "let result = PaginatedResult { items, total, limit, offset };",
-        "Ok(response::ok(&Document::meta_only(ResultMeta { result })))",
+        "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
+        "let ontogen_offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);",
+        "report::list(&ontogen_store, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset))).await.map_err(app_error)?;",
+        "let ontogen_total = report::count(&ontogen_store).await.map_err(app_error)?;",
+        "let ontogen_result = PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };",
+        "Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))",
     ] {
         assert!(list.contains(&compact(step)), "report_list: {step}\n{list}");
     }
@@ -5603,12 +5624,12 @@ fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
 
     // `create` and `update`: `meta.args.input`, `200` with `meta.result`.
     let create = handler("report_create");
-    assert!(create.contains(&compact("let ontogen_args = request::op_args(&ontogen_body, true)?;")), "{create}");
+    assert!(create.contains(&compact("let ontogen_args = request::op_args(&ontogen_bytes, true)?;")), "{create}");
     assert!(
         create.contains(&compact("let input = request::op_arg::<CreateReportInput>(&ontogen_args, \"input\", true)?;")),
         "{create}"
     );
-    assert!(create.contains(&compact("Ok(response::ok(&Document::meta_only(ResultMeta { result })))")));
+    assert!(create.contains(&compact("Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))")));
     assert!(!create.contains("created("), "never 201:\n{create}");
     let update = handler("report_update");
     for step in [
@@ -5616,7 +5637,7 @@ fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
          ontogen_body: Body",
         "let Path(id) = ontogen_path?; ontogen_query?;",
         "request::check_op_arg_names(&ontogen_args, &[\"input\"])?;",
-        "report::update(&store, &id, input).await.map_err(app_error)?;",
+        "report::update(&ontogen_store, &id, input).await.map_err(app_error)?;",
     ] {
         assert!(update.contains(&compact(step)), "report_update: {step}\n{update}");
     }
@@ -5624,9 +5645,9 @@ fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
     // `get_by_id` and `delete`: the id from the path, no body; delete is 204.
     assert!(handler("report_get_by_id").contains(&compact("Path(id): Path<String>, _: Query<NoParams>")));
     let delete = handler("report_delete");
-    assert!(
-        delete.contains(&compact("report::delete(&store, &id).await.map_err(app_error)?; Ok(response::no_content())"))
-    );
+    assert!(delete.contains(&compact(
+        "report::delete(&ontogen_store, &id).await.map_err(app_error)?; Ok(response::no_content())"
+    )));
     assert!(!delete.contains("Body"), "delete ignores a body:\n{delete}");
 
     assert!(!http.contains("report_as_resource"), "no resource helpers for it:\n{http}");
@@ -5658,14 +5679,18 @@ fn scoped_resource_routes_carry_the_prefix() {
         "async fn task_check_linked_scoped(state: &AppState, ontogen_scope: &uuid::Uuid, linked: &TaskLinkedIds) \
          -> Result<(), ErrorObject> { let store = state.store_for(ontogen_scope).map_err(internal_error)?;"
     )));
-    assert_eq!(http.matches("task_check_linked_scoped(&state, &ontogen_scope, &linked).await?;").count(), 2, "{http}");
+    assert_eq!(
+        http.matches("task_check_linked_scoped(&ontogen_state, &ontogen_scope, &linked).await?;").count(),
+        2,
+        "{http}"
+    );
     assert!(!http.contains("async fn task_check_linked("), "no unscoped handler links:\n{http}");
     assert!(flat.contains(&compact(
         "let collection = &format!(\"/api/projects/{}/tasks\", encode_path_segment(&ontogen_scope.to_string()));"
     )));
-    assert!(http.contains("let store = state.store_for(&ontogen_scope).map_err(internal_error)?;"));
+    assert!(http.contains("let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(internal_error)?;"));
     // The scoped list pages through the store like the unscoped one.
-    assert!(flat.contains(&compact("let total = task::count(&store).await.map_err(app_error)?;")));
+    assert!(flat.contains(&compact("let total = task::count(&ontogen_store).await.map_err(app_error)?;")));
     assert!(!flat.contains(&compact(".route(\"/api/tasks\"")), "store-scoped CRUD has no unscoped route:\n{http}");
 }
 
@@ -5729,7 +5754,10 @@ fn a_prefix_param_may_be_named_like_a_handler_binding() {
         }
         assert!(http.contains("let Path(ontogen_scope) = path_params?;"), "{http}");
         assert!(http.contains("let Path((ontogen_scope, id)) = path_params?;"), "{http}");
-        assert!(http.contains("let store = state.store_for(&ontogen_scope).map_err(internal_error)?;"), "{http}");
+        assert!(
+            http.contains("let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(internal_error)?;"),
+            "{http}"
+        );
         assert!(
             flat.contains(&compact(
                 "let collection = &format!(\"/api/projects/{}/tasks\", encode_path_segment(&ontogen_scope.to_string()));"
@@ -5741,6 +5769,91 @@ fn a_prefix_param_may_be_named_like_a_handler_binding() {
             flat.contains(&compact("Path(ontogen_scope): Path<uuid::Uuid>, query: Query<PagedListParams>")),
             "{http}"
         );
+    }
+}
+
+/// A fn's arguments are bound under their own names and every other binding
+/// of a handler carries the `ontogen_` prefix, so an argument named like a
+/// handler binding (`state`, `store`, `query`, `body`, `id`, …) neither
+/// shadows one nor is shadowed. Covers every custom-op handler kind: custom
+/// `GET` and `POST`, the CRUD-named ops of a module with no entity, and
+/// junction ops, unscoped and under a route prefix.
+#[test]
+fn an_op_argument_may_be_named_like_a_handler_binding() {
+    let source = "\
+pub async fn get_report(ctx: &Store, state: &str, store: Option<String>, query: Option<bool>, body: Option<u32>) \
+  -> Result<String, AppError> { todo!() }
+pub async fn set_state(ctx: &Store, id: String, state: String, store: Option<String>, body: Option<String>, \
+  query: String, args: Option<u32>, result: Option<u32>, bytes: Option<u32>) -> Result<String, AppError> { todo!() }
+pub async fn list(ctx: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<String>, AppError> { todo!() }
+pub async fn count(ctx: &Store) -> Result<u64, AppError> { todo!() }
+pub async fn get_by_id(ctx: &Store, state: &str) -> Result<String, AppError> { todo!() }
+pub async fn create(ctx: &Store, store: NewThing) -> Result<String, AppError> { todo!() }
+pub async fn update(ctx: &Store, query: &str, body: ThingPatch) -> Result<String, AppError> { todo!() }
+pub async fn delete(ctx: &Store, store: &str) -> Result<(), AppError> { todo!() }
+pub async fn list_tags(ctx: &Store, state: &str) -> Result<Vec<String>, AppError> { todo!() }
+pub async fn add_tag(ctx: &Store, state: &str, store: &str) -> Result<(), AppError> { todo!() }
+pub async fn remove_tag(ctx: &Store, query: &str, body: &str) -> Result<(), AppError> { todo!() }
+";
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let api_dir = tmp.path().join("api");
+        write_synthetic_api(&api_dir, "thing.rs", source);
+        let mut config = test_config(api_dir);
+        config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+        if scoped {
+            config.route_prefix = test_config_with_prefix(PathBuf::new()).route_prefix;
+        }
+        let http = generate_http(tmp.path(), config);
+        let suffix = if scoped { "_scoped" } else { "" };
+        for op in [
+            "get_report",
+            "set_state",
+            "list",
+            "get_by_id",
+            "create",
+            "update",
+            "delete",
+            "list_tags",
+            "add_tag",
+            "remove_tag",
+        ] {
+            let handler = format!("thing_{op}{suffix}");
+            let body =
+                &http[http.find(&format!("async fn {handler}(")).unwrap_or_else(|| panic!("{handler}:\n{http}"))..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            let handler_fn = syn::parse_str::<syn::ItemFn>(&format!("{body}\n}}")).expect("the handler parses");
+            let mut bound = Vec::new();
+            for arg in &handler_fn.sig.inputs {
+                if let syn::FnArg::Typed(t) = arg {
+                    pattern_idents(&t.pat, &mut bound);
+                }
+            }
+            for stmt in &handler_fn.block.stmts {
+                if let syn::Stmt::Local(local) = stmt {
+                    pattern_idents(&local.pat, &mut bound);
+                }
+            }
+            let mut unique = bound.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(unique.len(), bound.len(), "{handler} binds a name twice: {bound:?}\n{body}");
+            assert!(bound.contains(&"ontogen_state".to_string()), "{handler}: {bound:?}");
+            for own in bound.iter().filter(|name| !name.starts_with("ontogen_")) {
+                assert!(
+                    ["id", "state", "store", "query", "body", "args", "result", "bytes", "limit", "offset"]
+                        .contains(&own.as_str()),
+                    "{handler} binds `{own}`, which is no argument of the fn: {bound:?}"
+                );
+            }
+        }
+        // Each argument reaches the fn under its own name.
+        let flat = compact(&http);
+        assert!(
+            flat.contains("thing::set_state(&ontogen_store,id,state,store,body,query,args,result,bytes)"),
+            "{http}"
+        );
+        assert!(flat.contains("thing::add_tag(&ontogen_store,&state,&store)"), "{http}");
     }
 }
 
@@ -5790,7 +5903,7 @@ fn a_filtered_list_in_a_resource_module_keeps_its_handler() {
     );
     let http = generate_http(tmp.path(), config);
     assert!(
-        http.contains("query: Result<axum::extract::Query<ListTagsQuery>, QueryRejection>"),
+        http.contains("ontogen_filter: Result<axum::extract::Query<ListTagsQuery>, QueryRejection>"),
         "no filter is read from the wire, so the list keeps its query struct:\n{http}"
     );
     assert!(http.contains("Result<Json<Vec<Tag>>, ErrorObject>"));
@@ -5953,9 +6066,9 @@ fn a_custom_get_reads_its_options_as_op_args_in_byte_order() {
             // `label` sorts before `verbose`.
             "let label = ontogen_query.op_arg::<String>(\"label\")?;",
             "let verbose = ontogen_query.op_arg::<bool>(\"verbose\")?;",
-            "let store = state.store().await.map_err(internal_error)?;",
-            "let result = workout::get_summary(&store, &id, verbose, label.as_deref()).await.map_err(app_error)?;",
-            "Ok(response::ok(&Document::meta_only(ResultMeta { result })))",
+            "let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;",
+            "let ontogen_result = workout::get_summary(&ontogen_store, &id, verbose, label.as_deref()).await.map_err(app_error)?;",
+            "Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))",
         ],
     );
     // A stateless GET takes no state and still checks `Accept` and its query.
@@ -5981,16 +6094,16 @@ fn a_custom_post_reads_every_argument_from_meta_args() {
             "ontogen_query: Result<Query<NoParams>, ErrorObject>,",
             "ontogen_body: Body",
             "ontogen_query?;",
-            "let ontogen_body = ontogen_body.into_bytes()?;",
-            "let ontogen_args = request::op_args(&ontogen_body, true)?;",
+            "let ontogen_bytes = ontogen_body.into_bytes()?;",
+            "let ontogen_args = request::op_args(&ontogen_bytes, true)?;",
             "request::check_op_arg_names(&ontogen_args, &[\"input\", \"note\"])?;",
             // Declaration order; the `*Input` and the `Option` are members too.
             "let input = request::op_arg::<StartWorkoutInput>(&ontogen_args, \"input\", true)?;",
             "let note = request::op_arg::<Option<String>>(&ontogen_args, \"note\", false)?;",
-            "let store = state.store().await.map_err(internal_error)?;",
+            "let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;",
             // Not an `AppError`: a 500.
-            "let result = workout::start(&store, input, note).await.map_err(internal_error)?;",
-            "Ok(response::ok(&Document::meta_only(ResultMeta { result })))",
+            "let ontogen_result = workout::start(&ontogen_store, input, note).await.map_err(internal_error)?;",
+            "Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))",
         ],
     );
     // A POST has no path parameters: a required argument is a member too.
@@ -5998,12 +6111,12 @@ fn a_custom_post_reads_every_argument_from_meta_args() {
     assert!(!rename.contains("Path"), "{rename}");
     assert!(rename.contains(&compact("let id = request::op_arg::<String>(&ontogen_args, \"id\", true)?;")));
     assert!(rename.contains(&compact(
-        "workout::rename(&store, &id, name).await.map_err(app_error)?; Ok(response::no_content())"
+        "workout::rename(&ontogen_store, &id, name).await.map_err(app_error)?; Ok(response::no_content())"
     )));
     // With no required argument, a missing `meta` or `args` is `{}`; a `()`
     // result is a 204.
     let pause = handler_body(&http, "workout_pause");
-    assert!(pause.contains(&compact("request::op_args(&ontogen_body, false)?;")), "{pause}");
+    assert!(pause.contains(&compact("request::op_args(&ontogen_bytes, false)?;")), "{pause}");
     assert!(pause.contains(&compact("request::check_op_arg_names(&ontogen_args, &[])?;")), "{pause}");
     assert!(pause.contains(&compact("Ok(response::no_content())")), "{pause}");
     assert!(!handler_body(&http, "workout_start").contains("created("), "a custom op is never a 201");
@@ -6028,12 +6141,12 @@ fn junction_ops_are_served_as_custom_ops_at_their_routes() {
         &handler_body(&http, "task_list_tags"),
         &[
             "Path(task_id): Path<String>, ontogen_query: Query<PageOpArgs>",
-            "let limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
-            "let offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);",
-            "let all = task::list_tags(&store, &task_id).await.map_err(app_error)?;",
-            "let total = all.len() as u64;",
-            "let items = all.into_iter().skip(offset as usize).take(limit as usize).collect();",
-            "let result = PaginatedResult { items, total, limit, offset };",
+            "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
+            "let ontogen_offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);",
+            "let ontogen_all = task::list_tags(&ontogen_store, &task_id).await.map_err(app_error)?;",
+            "let ontogen_total = ontogen_all.len() as u64;",
+            "let ontogen_items = ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();",
+            "let ontogen_result = PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };",
         ],
     );
     assert_in_order(
@@ -6043,7 +6156,7 @@ fn junction_ops_are_served_as_custom_ops_at_their_routes() {
             "ontogen_path: Result<Path<String>, ErrorObject>,",
             "let Path(task_id) = ontogen_path?;",
             "request::check_op_arg_names(&ontogen_args, &[\"tag_id\"])?;",
-            "task::add_tag(&store, &task_id, &tag_id).await.map_err(app_error)?;",
+            "task::add_tag(&ontogen_store, &task_id, &tag_id).await.map_err(app_error)?;",
             "Ok(response::no_content())",
         ],
     );
@@ -6060,10 +6173,12 @@ fn event_frames_send_entities_as_unlinked_resources_and_other_items_as_meta_resu
         "fn task_frame_data(event: Event, entity: &Task) -> Result<Event, axum::Error> { \
          event.json_data(task_as_resource(entity, \"/api/tasks\").into_unlinked()) }"
     )));
-    assert!(http.contains("sse_stream(\"task-changed\", rx, ontogen_core::events::no_id, task_frame_data)"));
+    assert!(http.contains("sse_stream(\"task-changed\", ontogen_rx, ontogen_core::events::no_id, task_frame_data)"));
     // `Activity` and `String` are not: `{"meta":{"result":…}}`.
-    assert!(http.contains("sse_stream(\"activity-for-kind\", rx, ontogen_core::events::seq_id, result_frame))"));
-    assert!(http.contains("sse_stream(\"log-lines\", rx, ontogen_core::events::no_id, result_frame))"));
+    assert!(
+        http.contains("sse_stream(\"activity-for-kind\", ontogen_rx, ontogen_core::events::seq_id, result_frame))")
+    );
+    assert!(http.contains("sse_stream(\"log-lines\", ontogen_rx, ontogen_core::events::no_id, result_frame))"));
     assert!(http.contains("event.json_data(ResultFrame::new(item))"));
     // A lag frame keeps its bare shape.
     assert!(http.contains("event(\"lag\").data(format!(\"{{\\\"skipped\\\":{skipped}}}\"))"));
@@ -6098,13 +6213,19 @@ fn a_failed_subscribe_maps_its_error_like_any_op() {
         let tmp = tempfile::tempdir().unwrap();
         let http = generate_http(tmp.path(), ops_fixture(tmp.path(), scoped));
         // `AppError` gets its status; any other error is a 500.
-        assert!(http.contains("activity::activity_for_kind(&state, kind, resume).await.map_err(app_error)?;"));
-        assert!(http.contains("activity::log_lines(&state, q.level).map_err(internal_error)?;"));
+        assert!(
+            http.contains(
+                "activity::activity_for_kind(&ontogen_state, kind, ontogen_resume).await.map_err(app_error)?;"
+            )
+        );
+        assert!(http.contains("activity::log_lines(&ontogen_state, ontogen_query.level).map_err(internal_error)?;"));
         if scoped {
             assert!(http.contains(
-                "state.subscribe_activity_for_kind_for(&ontogen_scope, kind, resume).await.map_err(app_error)?;"
+                "ontogen_state.subscribe_activity_for_kind_for(&ontogen_scope, kind, ontogen_resume).await.map_err(app_error)?;"
             ));
-            assert!(http.contains("state.subscribe_log_lines_for(&ontogen_scope, q.level).map_err(internal_error)?;"));
+            assert!(http.contains(
+                "ontogen_state.subscribe_log_lines_for(&ontogen_scope, ontogen_query.level).map_err(internal_error)?;"
+            ));
         }
     }
 }
@@ -6122,9 +6243,9 @@ fn scoped_ops_have_the_unscoped_wire() {
         &handler_body(&http, "report_list_scoped"),
         &[
             "Path(ontogen_scope): Path<uuid::Uuid>, ontogen_query: Query<PageOpArgs>",
-            "let store = state.store_for(&ontogen_scope).map_err(internal_error)?;",
-            "report::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;",
-            "let total = report::count(&store).await.map_err(app_error)?;",
+            "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(internal_error)?;",
+            "report::list(&ontogen_store, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset))).await.map_err(app_error)?;",
+            "let ontogen_total = report::count(&ontogen_store).await.map_err(app_error)?;",
         ],
     );
     assert_in_order(
@@ -6132,8 +6253,8 @@ fn scoped_ops_have_the_unscoped_wire() {
         &handler_body(&http, "agent_list_scoped"),
         &[
             "Path(ontogen_scope): Path<uuid::Uuid>,",
-            "agent::list(&store, query.clone(), Some(u64::from(limit)), Some(u64::from(offset)))",
-            "let total = agent::count(&store, query).await.map_err(app_error)?;",
+            "agent::list(&ontogen_store, ontogen_filter.clone(), Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))",
+            "let ontogen_total = agent::count(&ontogen_store, ontogen_filter).await.map_err(app_error)?;",
         ],
     );
     for list in ["report_list_scoped", "agent_list_scoped"] {
@@ -6146,8 +6267,8 @@ fn scoped_ops_have_the_unscoped_wire() {
         &handler_body(&http, "task_list_tags_scoped"),
         &[
             "ontogen_query: Query<PageOpArgs>",
-            "let limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
-            "let result = PaginatedResult { items, total, limit, offset };",
+            "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
+            "let ontogen_result = PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };",
         ],
     );
     // A custom op reads its arguments as the unscoped one does, after the
@@ -6160,7 +6281,7 @@ fn scoped_ops_have_the_unscoped_wire() {
             "let Path(ontogen_scope) = ontogen_path?;",
             "ontogen_query?;",
             "request::check_op_arg_names(&ontogen_args, &[\"input\", \"note\"])?;",
-            "let store = state.store_for(&ontogen_scope).map_err(internal_error)?;",
+            "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(internal_error)?;",
         ],
     );
     assert!(flat.contains(&compact(

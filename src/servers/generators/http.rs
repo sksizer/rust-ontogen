@@ -157,6 +157,11 @@ impl Routes {
 }
 
 /// How a handler reaches its fn's first argument.
+///
+/// Every binding a generated handler makes of its own is `ontogen_`-prefixed
+/// (`ontogen_state`, `ontogen_store`, `ontogen_query`, …), and a fn's
+/// arguments are bound under their own names: an argument may be named
+/// anything, `state` and `store` included, without shadowing the handler's.
 struct Access {
     /// Lines opening the store, if the fn takes one.
     open: String,
@@ -169,11 +174,14 @@ struct Access {
 fn unscoped_access(f: &ApiFn) -> Access {
     if f.first_param_is_store {
         Access {
-            open: format!("    let store = state.{}().await.map_err(internal_error)?;\n", f.store_accessor),
-            arg: "&store",
+            open: format!(
+                "    let ontogen_store = ontogen_state.{}().await.map_err(internal_error)?;\n",
+                f.store_accessor
+            ),
+            arg: "&ontogen_store",
         }
     } else {
-        Access { open: String::new(), arg: "&state" }
+        Access { open: String::new(), arg: "&ontogen_state" }
     }
 }
 
@@ -188,8 +196,11 @@ const SCOPE: &str = "ontogen_scope";
 /// (§11.1).
 fn scoped_access(prefix: &RoutePrefix) -> Access {
     Access {
-        open: format!("    let store = state.{}(&{SCOPE}).map_err(internal_error)?;\n", prefix.state_accessor),
-        arg: "&store",
+        open: format!(
+            "    let ontogen_store = ontogen_state.{}(&{SCOPE}).map_err(internal_error)?;\n",
+            prefix.state_accessor
+        ),
+        arg: "&ontogen_store",
     }
 }
 
@@ -1148,7 +1159,7 @@ fn write_steps(op: &ResourceOp<'_>) -> (String, String) {
     let scope_arg = if op.config.route_prefix.is_some() && scoped { format!("&{SCOPE}, ") } else { String::new() };
     (
         format!("    let (fields, linked) = {fields_fn}(&data, {create})?;\n"),
-        format!("    {}(&state, {scope_arg}&linked).await?;\n", check_linked_fn(&op.m.name, scoped)),
+        format!("    {}(&ontogen_state, {scope_arg}&linked).await?;\n", check_linked_fn(&op.m.name, scoped)),
     )
 }
 
@@ -1225,7 +1236,8 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
     };
     let collection_extract = collection_path.as_ref().map(extract).unwrap_or_default();
     let item_extract = extract(&item_path);
-    let head = format!("async fn {handler_name}(\n    State(state): State<Arc<{state_type}>>,\n    _: AcceptGuard,\n");
+    let head =
+        format!("async fn {handler_name}(\n    State(ontogen_state): State<Arc<{state_type}>>,\n    _: AcceptGuard,\n");
     let tail = ") -> Result<Response, ErrorObject> {\n";
     let single_response = format!(
         "    let resource = {as_resource}(&entity, collection);\n    let links = \
@@ -1357,7 +1369,7 @@ fn legacy_list_handler(
 
     let mut extractors = String::new();
     if !f.is_stateless {
-        extractors.push_str(&format!("\n    State(state): State<Arc<{state_type}>>,"));
+        extractors.push_str(&format!("\n    State(ontogen_state): State<Arc<{state_type}>>,"));
     }
     if let Some(prefix) = scope {
         extractors.push_str(&format!("\n    Path({SCOPE}): Path<{}>,", prefix.params[0].rust_type));
@@ -1366,9 +1378,9 @@ fn legacy_list_handler(
     let mut filter_args: Vec<String> = Vec::new();
     if let Some(qp) = query_param {
         let qt = extract_input_type(&qp.ty);
-        extractors.push_str(&format!("\n    query: Result<axum::extract::Query<{qt}>, QueryRejection>,"));
-        unwraps.push_str("    let axum::extract::Query(query) = query.map_err(query_rejection)?;\n");
-        filter_args.push("query".to_string());
+        extractors.push_str(&format!("\n    ontogen_filter: Result<axum::extract::Query<{qt}>, QueryRejection>,"));
+        unwraps.push_str("    let axum::extract::Query(ontogen_filter) = ontogen_filter.map_err(query_rejection)?;\n");
+        filter_args.push("ontogen_filter".to_string());
     }
     for pp in &plain_params {
         let name = &pp.name;
@@ -1388,22 +1400,27 @@ fn legacy_list_handler(
         let count_args = [first_arg.clone(), filter_args.clone()].concat().join(", ");
         let mut list_args: Vec<String> = first_arg.clone();
         list_args
-            .extend(filter_args.iter().map(|a| if a == "query" { "query.clone()".to_string() } else { a.clone() }));
-        list_args.extend(["Some(u64::from(limit))".to_string(), "Some(u64::from(offset))".to_string()]);
+            .extend(filter_args.iter().map(|a| if a == "ontogen_filter" { format!("{a}.clone()") } else { a.clone() }));
+        list_args.extend(["Some(u64::from(ontogen_limit))".to_string(), "Some(u64::from(ontogen_offset))".to_string()]);
         let list_args = list_args.join(", ");
-        extractors.push_str("\n    pagination: Result<axum::extract::Query<PaginationParams>, QueryRejection>,");
-        unwraps.push_str("    let axum::extract::Query(pagination) = pagination.map_err(query_rejection)?;\n");
+        extractors.push_str("\n    ontogen_page: Result<axum::extract::Query<PaginationParams>, QueryRejection>,");
+        unwraps.push_str("    let axum::extract::Query(ontogen_page) = ontogen_page.map_err(query_rejection)?;\n");
         out.push_str(&format!(
             "\
 async fn {handler_name}({extractors}
 ) -> Result<Json<PaginatedResult<{item_type}>>, ErrorObject> {{
-{unwraps}{store_let}    let limit = pagination.limit.unwrap_or({default_limit}).min({max_limit});
-    let offset = pagination.offset.unwrap_or(0);
-    let items = {svc}::list({list_args}){await_str}
+{unwraps}{store_let}    let ontogen_limit = ontogen_page.limit.unwrap_or({default_limit}).min({max_limit});
+    let ontogen_offset = ontogen_page.offset.unwrap_or(0);
+    let ontogen_items = {svc}::list({list_args}){await_str}
         {err_map}?;
-    let total = {svc}::count({count_args}){await_str}
+    let ontogen_total = {svc}::count({count_args}){await_str}
         {err_map}?;
-    Ok(Json(PaginatedResult {{ items, total, limit, offset }}))
+    Ok(Json(PaginatedResult {{
+        items: ontogen_items,
+        total: ontogen_total,
+        limit: ontogen_limit,
+        offset: ontogen_offset,
+    }}))
 }}
 
 "
@@ -1545,9 +1562,10 @@ fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
 /// last, so a handler reading one takes the path and the query as `Result`s
 /// and answers them after it.
 ///
-/// The handler's own bindings carry an `ontogen_` prefix: the fn's
-/// arguments are bound under their own names, which could be any of
-/// `query`, `body` or `args`.
+/// The fn's arguments are bound under their own names and every other
+/// binding carries the `ontogen_` prefix (see [`Access`]), so an argument
+/// may be named `state`, `store`, `query`, `body`, `args`, `result`, `limit`
+/// or anything else a handler needs.
 #[allow(clippy::too_many_arguments)]
 fn op_handler(
     out: &mut String,
@@ -1597,7 +1615,7 @@ fn op_handler(
 
     let mut extractors = String::new();
     if access.is_some() {
-        extractors.push_str(&format!("    State(state): State<Arc<{state_type}>>,\n"));
+        extractors.push_str(&format!("    State(ontogen_state): State<Arc<{state_type}>>,\n"));
     }
     extractors.push_str("    _: AcceptGuard,\n");
     let mut steps = String::new();
@@ -1611,8 +1629,8 @@ fn op_handler(
             let has_required = args.iter().any(|p| !p.is_option());
             let declared: Vec<String> = args.iter().map(|p| format!("\"{}\"", p.name)).collect();
             steps.push_str(&format!(
-                "    ontogen_query?;\n    let ontogen_body = ontogen_body.into_bytes()?;\n    let ontogen_args = \
-                 request::op_args(&ontogen_body, {has_required})?;\n    \
+                "    ontogen_query?;\n    let ontogen_bytes = ontogen_body.into_bytes()?;\n    let ontogen_args = \
+                 request::op_args(&ontogen_bytes, {has_required})?;\n    \
                  request::check_op_arg_names(&ontogen_args, &[{}])?;\n",
                 declared.join(", ")
             ));
@@ -1638,8 +1656,9 @@ fn op_handler(
                 shape.page
             {
                 steps.push_str(&format!(
-                    "    let limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or({default_limit}).min({max_limit});\n    \
-                     let offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);\n"
+                    "    let ontogen_limit = \
+                     ontogen_query.page_op_arg(\"limit\")?.unwrap_or({default_limit}).min({max_limit});\n    \
+                     let ontogen_offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);\n"
                 ));
             }
             let mut by_name = shape.query_args.clone();
@@ -1663,7 +1682,7 @@ fn op_handler(
         .map(str::to_string)
         .into_iter()
         .chain(f.params.iter().map(|p| match shape.page {
-            Some(Paging::Store { .. }) => format!("Some(u64::from({}))", p.name),
+            Some(Paging::Store { .. }) => format!("Some(u64::from(ontogen_{}))", p.name),
             None if classify_op(f) == OpKind::List => "None".to_string(),
             _ => forward_arg_expr(&p.name, &p.ty_ast),
         }))
@@ -1674,16 +1693,16 @@ fn op_handler(
         Some(Paging::Store { .. }) => {
             let count_arg = first_arg.unwrap_or_default();
             format!(
-                "    let items = {call};\n    let total = {svc}::count({count_arg}){aw}{map_err}?;\n    let result = \
-                 PaginatedResult {{ items, total, limit, offset }};\n{OK_RESULT}"
+                "    let ontogen_items = {call};\n    let ontogen_total = {svc}::count({count_arg}){aw}{map_err}?;\n\
+                 {PAGE_RESULT}{OK_RESULT}"
             )
         }
         Some(Paging::InMemory { .. }) => format!(
-            "    let all = {call};\n    let total = all.len() as u64;\n    let items = \
-             all.into_iter().skip(offset as usize).take(limit as usize).collect();\n    let result = PaginatedResult \
-             {{ items, total, limit, offset }};\n{OK_RESULT}"
+            "    let ontogen_all = {call};\n    let ontogen_total = ontogen_all.len() as u64;\n    let ontogen_items = \
+             ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();\n\
+             {PAGE_RESULT}{OK_RESULT}"
         ),
-        None => format!("    let result = {call};\n{OK_RESULT}"),
+        None => format!("    let ontogen_result = {call};\n{OK_RESULT}"),
     };
     out.push_str(&format!(
         "async fn {handler_name}(\n{extractors}) -> Result<Response, ErrorObject> {{\n{steps}{open}{respond}}}\n\n"
@@ -1691,7 +1710,11 @@ fn op_handler(
 }
 
 /// A custom op's success: its `Ok` value as `meta.result` (§10.1).
-const OK_RESULT: &str = "    Ok(response::ok(&Document::meta_only(ResultMeta { result })))\n";
+const OK_RESULT: &str = "    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))\n";
+
+/// A list's page as `meta.result`.
+const PAGE_RESULT: &str = "    let ontogen_result = PaginatedResult {\n        items: ontogen_items,\n        total: \
+                           ontogen_total,\n        limit: ontogen_limit,\n        offset: ontogen_offset,\n    };\n";
 
 /// Shared SSE plumbing, emitted once when any module has events.
 ///
@@ -1785,7 +1808,7 @@ fn generate_sse_handler(
         }
     }
 
-    out.push_str(&format!("async fn {handler_name}(\n    State(state): State<Arc<{state_type}>>,\n"));
+    out.push_str(&format!("async fn {handler_name}(\n    State(ontogen_state): State<Arc<{state_type}>>,\n"));
     let mut path_names: Vec<String> = Vec::new();
     let mut path_types: Vec<String> = Vec::new();
     if let Some(prefix) = scoped {
@@ -1802,10 +1825,10 @@ fn generate_sse_handler(
         _ => out.push_str(&format!("    Path(({})): Path<({})>,\n", path_names.join(", "), path_types.join(", "))),
     }
     if !query_params.is_empty() {
-        out.push_str(&format!("    q: Result<axum::extract::Query<{query_struct}>, QueryRejection>,\n"));
+        out.push_str(&format!("    ontogen_query: Result<axum::extract::Query<{query_struct}>, QueryRejection>,\n"));
     }
     if resumable {
-        out.push_str("    headers: axum::http::HeaderMap,\n");
+        out.push_str("    ontogen_headers: axum::http::HeaderMap,\n");
     }
     let sse_type = "Sse<impl futures::Stream<Item = Result<Event, Infallible>>>";
     let fallible = ev.returns_result || !query_params.is_empty();
@@ -1815,7 +1838,7 @@ fn generate_sse_handler(
         out.push_str(&format!(") -> {sse_type} {{\n"));
     }
     if !query_params.is_empty() {
-        out.push_str("    let axum::extract::Query(q) = q.map_err(query_rejection)?;\n");
+        out.push_str("    let axum::extract::Query(ontogen_query) = ontogen_query.map_err(query_rejection)?;\n");
     }
 
     let mut args: Vec<String> = Vec::new();
@@ -1825,23 +1848,23 @@ fn generate_sse_handler(
     for qp in &query_params {
         if is_resume_param(qp) {
             out.push_str(
-                "    let resume = ontogen_core::events::last_event_id(\n        \
-                 headers.get(\"last-event-id\").map(|v| v.as_bytes()),\n    )\n    .or(q.resume);\n",
+                "    let ontogen_resume = ontogen_core::events::last_event_id(\n        \
+                 ontogen_headers.get(\"last-event-id\").map(|v| v.as_bytes()),\n    )\n    .or(ontogen_query.resume);\n",
             );
-            args.push("resume".to_string());
+            args.push("ontogen_resume".to_string());
         } else {
-            args.push(forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast));
+            args.push(forward_arg_expr(&format!("ontogen_query.{}", qp.name), &qp.ty_ast));
         }
     }
     let call = match scoped {
         Some(_) => {
             let mut all = vec![format!("&{SCOPE}")];
             all.extend(args);
-            format!("state.subscribe_{fn_name}_for({})", all.join(", "))
+            format!("ontogen_state.subscribe_{fn_name}_for({})", all.join(", "))
         }
         None => {
             let svc = m.service_ident(ev.surface);
-            let mut all = vec!["&state".to_string()];
+            let mut all = vec!["&ontogen_state".to_string()];
             all.extend(args);
             format!("{svc}::{fn_name}({})", all.join(", "))
         }
@@ -1854,11 +1877,11 @@ fn generate_sse_handler(
     };
     if ev.returns_result {
         let map_err = if event_returns_app_error(ev, config) { "app_error" } else { "internal_error" };
-        out.push_str(&format!("    let rx = {call}{await_str}.map_err({map_err})?;\n"));
+        out.push_str(&format!("    let ontogen_rx = {call}{await_str}.map_err({map_err})?;\n"));
     } else {
-        out.push_str(&format!("    let rx = {call}{await_str};\n"));
+        out.push_str(&format!("    let ontogen_rx = {call}{await_str};\n"));
     }
-    let stream = format!("sse_stream(\"{ev_name}\", rx, {id_fn}, {data_fn})");
+    let stream = format!("sse_stream(\"{ev_name}\", ontogen_rx, {id_fn}, {data_fn})");
     if fallible {
         out.push_str(&format!("    Ok({stream})\n}}\n\n"));
     } else {

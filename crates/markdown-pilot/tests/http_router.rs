@@ -565,6 +565,22 @@ async fn a_custom_post_reads_its_arguments_from_meta_args() {
     assert_eq!(server.store().get_task("gamma").await.expect("captured").status, "open");
 }
 
+/// Arguments named `state` and `store` reach the fn as its own, beside the
+/// handler's state and store.
+#[tokio::test]
+async fn an_argument_may_share_a_name_with_a_handler_binding() {
+    let server = Server::new();
+    server.task("Alpha", "open").await;
+    let reply = server
+        .op("POST", "/api/tasks/set-state", &args(json!({ "id": "alpha", "state": "blocked", "store": "Renamed" })))
+        .await;
+    assert_eq!(reply.body["meta"]["result"]["status"], "blocked");
+    assert_eq!(reply.body["meta"]["result"]["title"], "Renamed");
+    let reply = server.op("POST", "/api/tasks/set-state", &args(json!({ "id": "alpha", "state": "open" }))).await;
+    assert_eq!(reply.body["meta"]["result"]["status"], "open");
+    assert_eq!(reply.body["meta"]["result"]["title"], "Renamed");
+}
+
 #[tokio::test]
 async fn a_custom_post_returning_unit_answers_204() {
     let server = Server::new();

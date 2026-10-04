@@ -72,96 +72,96 @@ impl RouteQuery for PageOpArgs {
 // ── Athlete Handlers ──
 
 async fn athlete_list(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.store().await.map_err(internal_error)?;
-    let result = athlete::list(&store).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_store = ontogen_state.store().await.map_err(internal_error)?;
+    let ontogen_result = athlete::list(&ontogen_store).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 // ── Workout Handlers ──
 
 async fn workout_start(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     ontogen_query: Result<Query<NoParams>, ErrorObject>,
     ontogen_body: Body,
 ) -> Result<Response, ErrorObject> {
     ontogen_query?;
-    let ontogen_body = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
     request::check_op_arg_names(&ontogen_args, &["input"])?;
     let input = request::op_arg::<StartWorkoutInput>(&ontogen_args, "input", true)?;
-    let result = workout::start(&state, input).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_result = workout::start(&ontogen_state, input).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_get_summary(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<String>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let result = workout::get_summary(&state, &id).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_result = workout::get_summary(&ontogen_state, &id).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_finish(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     ontogen_query: Result<Query<NoParams>, ErrorObject>,
     ontogen_body: Body,
 ) -> Result<Response, ErrorObject> {
     ontogen_query?;
-    let ontogen_body = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
     request::check_op_arg_names(&ontogen_args, &["id"])?;
     let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
-    let result = workout::finish(&state, &id).await.map_err(app_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_result = workout::finish(&ontogen_state, &id).await.map_err(app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_list(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    let result = workout_1::list(&store).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    let ontogen_result = workout_1::list(&ontogen_store).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_get_by_id(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<String>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    let result = workout_1::get_by_id(&store, &id).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    let ontogen_result = workout_1::get_by_id(&ontogen_store, &id).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_create(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     ontogen_query: Result<Query<NoParams>, ErrorObject>,
     ontogen_body: Body,
 ) -> Result<Response, ErrorObject> {
     ontogen_query?;
-    let ontogen_body = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
     request::check_op_arg_names(&ontogen_args, &["input"])?;
     let input = request::op_arg::<CreateWorkoutInput>(&ontogen_args, "input", true)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    let result = workout_1::create(&store, input).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    let ontogen_result = workout_1::create(&ontogen_store, input).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_update(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     ontogen_path: Result<Path<String>, ErrorObject>,
     ontogen_query: Result<Query<NoParams>, ErrorObject>,
@@ -169,88 +169,90 @@ async fn workout_update(
 ) -> Result<Response, ErrorObject> {
     let Path(id) = ontogen_path?;
     ontogen_query?;
-    let ontogen_body = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
     request::check_op_arg_names(&ontogen_args, &["input"])?;
     let input = request::op_arg::<UpdateWorkoutInput>(&ontogen_args, "input", true)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    let result = workout_1::update(&store, &id, input).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    let ontogen_result = workout_1::update(&ontogen_store, &id, input).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_delete(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<String>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    workout_1::delete(&store, &id).await.map_err(internal_error)?;
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    workout_1::delete(&ontogen_store, &id).await.map_err(internal_error)?;
     Ok(response::no_content())
 }
 
 async fn workout_archive(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     ontogen_query: Result<Query<NoParams>, ErrorObject>,
     ontogen_body: Body,
 ) -> Result<Response, ErrorObject> {
     ontogen_query?;
-    let ontogen_body = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
     request::check_op_arg_names(&ontogen_args, &["id"])?;
     let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    let result = workout_1::archive(&store, &id).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    let ontogen_result = workout_1::archive(&ontogen_store, &id).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 // ── Exercise Handlers ──
 
 async fn exercise_list(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     ontogen_query: Query<PageOpArgs>,
 ) -> Result<Response, ErrorObject> {
-    let limit = ontogen_query.page_op_arg("limit")?.unwrap_or(20).min(100);
-    let offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    let items =
-        exercise::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(internal_error)?;
-    let total = exercise::count(&store).await.map_err(internal_error)?;
-    let result = PaginatedResult { items, total, limit, offset };
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(20).min(100);
+    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    let ontogen_items = exercise::list(&ontogen_store, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))
+        .await
+        .map_err(internal_error)?;
+    let ontogen_total = exercise::count(&ontogen_store).await.map_err(internal_error)?;
+    let ontogen_result =
+        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn exercise_get_by_id(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<String>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    let result = exercise::get_by_id(&store, &id).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    let ontogen_result = exercise::get_by_id(&ontogen_store, &id).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn exercise_create(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     ontogen_query: Result<Query<NoParams>, ErrorObject>,
     ontogen_body: Body,
 ) -> Result<Response, ErrorObject> {
     ontogen_query?;
-    let ontogen_body = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
     request::check_op_arg_names(&ontogen_args, &["input"])?;
     let input = request::op_arg::<CreateExerciseInput>(&ontogen_args, "input", true)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    let result = exercise::create(&store, input).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    let ontogen_result = exercise::create(&ontogen_store, input).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn exercise_update(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     ontogen_path: Result<Path<String>, ErrorObject>,
     ontogen_query: Result<Query<NoParams>, ErrorObject>,
@@ -258,23 +260,23 @@ async fn exercise_update(
 ) -> Result<Response, ErrorObject> {
     let Path(id) = ontogen_path?;
     ontogen_query?;
-    let ontogen_body = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_body, true)?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
     request::check_op_arg_names(&ontogen_args, &["input"])?;
     let input = request::op_arg::<UpdateExerciseInput>(&ontogen_args, "input", true)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    let result = exercise::update(&store, &id, input).await.map_err(internal_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    let ontogen_result = exercise::update(&ontogen_store, &id, input).await.map_err(internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn exercise_delete(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<String>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    exercise::delete(&store, &id).await.map_err(internal_error)?;
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(internal_error)?;
+    exercise::delete(&ontogen_store, &id).await.map_err(internal_error)?;
     Ok(response::no_content())
 }
 

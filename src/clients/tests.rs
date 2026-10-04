@@ -1357,7 +1357,7 @@ fn a_filtered_resource_list_keeps_its_flat_shape_on_server_and_clients() {
     let list = &list[..list.find("\n}\n").unwrap()];
     assert!(list.contains("title: Result<axum::extract::Query<String>, QueryRejection>,"), "{list}");
     assert!(list.contains("-> Result<Json<Vec<Tag>>, ErrorObject>"), "a bare array, no document:\n{list}");
-    assert!(crate::servers::tests::compact(list).contains("tag::list(&store,&title)"), "{list}");
+    assert!(crate::servers::tests::compact(list).contains("tag::list(&ontogen_store,&title)"), "{list}");
 
     assert_eq!(
         ts_method(&clients.transport, "tagList"),
@@ -1378,9 +1378,9 @@ fn a_filtered_paginated_resource_list_keeps_its_flat_page_on_server_and_clients(
 
     let list = &http[http.find("async fn tag_list(").unwrap()..];
     let list = &list[..list.find("\n}\n").unwrap()];
-    assert!(list.contains("pagination: Result<axum::extract::Query<PaginationParams>, QueryRejection>,"), "{list}");
+    assert!(list.contains("ontogen_page: Result<axum::extract::Query<PaginationParams>, QueryRejection>,"), "{list}");
     assert!(list.contains("-> Result<Json<PaginatedResult<Tag>>, ErrorObject>"), "{list}");
-    assert!(list.contains("Ok(Json(PaginatedResult { items, total, limit, offset }))"), "{list}");
+    assert!(list.contains("items: ontogen_items,"), "{list}");
     assert!(http.contains("pub struct PaginatedResult<T: Serialize> {"), "{http}");
 
     let call = "httpGet(`/tags?title=${encodeURIComponent(title)}&${toQueryString({ limit, offset }).slice(1)}`);";
