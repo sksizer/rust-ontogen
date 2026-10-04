@@ -55,19 +55,15 @@ pub fn generate(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput,
 
     // The servers and clients stages scan the same directories and print the
     // skip records, so printing them here too would repeat every warning.
-    let scanned: Vec<(PathBuf, parse::ApiModule)> = config
-        .scan_dirs
-        .iter()
-        .flat_map(|scan_dir| {
-            let result = parse::scan_api_dir_excluding(
-                scan_dir,
-                &config.state_type,
-                config.store_type.as_deref(),
-                Some(output_dir),
-            );
-            result.modules.into_iter().map(move |m| (scan_dir.clone(), m))
-        })
-        .collect();
+    let mut scanned: Vec<(PathBuf, parse::ApiModule)> = Vec::new();
+    for scan_dir in &config.scan_dirs {
+        if !scan_dir.is_dir() {
+            return Err(CodegenError::Api(format!("API scan directory does not exist: {}", scan_dir.display())));
+        }
+        let result =
+            parse::scan_api_dir_excluding(scan_dir, &config.state_type, config.store_type.as_deref(), Some(output_dir));
+        scanned.extend(result.modules.into_iter().map(|m| (scan_dir.clone(), m)));
+    }
 
     let mut modules: Vec<ApiModule> = Vec::new();
     let mut mod_names: Vec<String> = Vec::new();
