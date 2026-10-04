@@ -2450,7 +2450,19 @@ fn test_mcp_generator_crud_module() {
     assert!(content.contains("with_project_id_schema"));
 
     // Store construction
-    assert!(content.contains("state.store_for("));
+    assert!(content.contains("ontogen_state.store_for("));
+
+    // An input struct is read from the arguments the tool does not read
+    // itself, so one that refuses unknown fields still reads.
+    let flat = compact(&content);
+    assert!(
+        flat.contains(&compact(r#"serde_json::from_value(args_without(ontogen_args, &["project_id"]))"#)),
+        "{content}"
+    );
+    assert!(
+        flat.contains(&compact(r#"serde_json::from_value(args_without(ontogen_args, &["id", "project_id"]))"#)),
+        "{content}"
+    );
 
     // Struct definitions
     assert!(content.contains("pub struct McpToolDef"));
@@ -4272,8 +4284,82 @@ pub fn echo(text: &str) -> Result<String, anyhow::Error> { todo!() }
         "stateless MCP tool must call util::echo(text) — no state prefix:\n{content}"
     );
     assert!(
-        !content.contains("util::echo(state, text") && !content.contains("util::echo(&store, text"),
+        !content.contains("util::echo(ontogen_state, text") && !content.contains("util::echo(&ontogen_store, text"),
         "stateless MCP tool must not forward state or store:\n{content}"
+    );
+}
+
+/// A custom op's MCP tool reads each argument as its fn declares it, bound
+/// under its own name: the handler's bindings are `ontogen_`-prefixed, so
+/// arguments named `state` and `store` reach the op, and an `Option<bool>`
+/// is read as a `bool`. A body struct beside other arguments is one of them,
+/// named as its parameter (as on IPC), so its fields cannot collide with
+/// theirs; a body alone is the arguments, less the scope's.
+#[test]
+fn an_mcp_custom_tool_reads_each_argument_as_its_type_under_its_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "task.rs",
+        r#"
+pub async fn set_state(ctx: &Store, id: &str, state: String, store: Option<String>) -> Result<Task, AppError> { todo!() }
+pub async fn get_summary(store: &Store, status: &str, verbose: Option<bool>, limit: Option<u32>) -> Result<TaskSummary, AppError> { todo!() }
+pub async fn capture(store: &Store, input: CreateTaskInput, status: Option<String>) -> Result<Task, AppError> { todo!() }
+pub async fn file(store: &Store, input: CreateTaskInput) -> Result<Task, AppError> { todo!() }
+"#,
+    );
+    let config = test_config_with_prefix(api_dir.clone());
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    let out = tmp.path().join("mcp.rs");
+    crate::servers::generators::mcp::generate(&out, &modules, &config);
+    let code = std::fs::read_to_string(&out).unwrap();
+    syn::parse_file(&code).unwrap_or_else(|e| panic!("does not parse: {e}\n{code}"));
+    let flat = compact(&code);
+
+    for line in [
+        "let state: String = serde_json::from_value(ontogen_args.get(\"state\").cloned()\
+         .ok_or(\"Missing required parameter: state\")?).map_err(|e| format!(\"Invalid parameter state: {e}\"))?;",
+        "let store: Option<String> = ontogen_args.get(\"store\")",
+        "task::set_state(&ontogen_store, id, state, store)",
+        "let verbose: Option<bool> = ontogen_args.get(\"verbose\").filter(|v| !v.is_null()).cloned()\
+         .map(serde_json::from_value::<bool>)",
+        "task::get_summary(&ontogen_store, status, verbose, limit)",
+        "let input: CreateTaskInput = serde_json::from_value(ontogen_args.get(\"input\").cloned()\
+         .ok_or(\"Missing required parameter: input\")?).map_err(|e| format!(\"Invalid parameter input: {e}\"))?;",
+        "task::capture(&ontogen_store, input, status)",
+        "#[derive(JsonSchema)] pub struct OntogenTaskCaptureInput { pub input: CreateTaskInput, pub status: \
+         Option<String>, }",
+        // A body alone is the arguments, less the scope's.
+        "let ontogen_input: CreateTaskInput = serde_json::from_value(args_without(ontogen_args, &[\"project_id\"]))\
+         .map_err(|e| format!(\"Invalid input: {e}\"))?;",
+        "task::file(&ontogen_store, ontogen_input)",
+        "schema_fn: || with_project_id_schema(schema_for::<OntogenTaskCaptureInput>()),",
+        "#[derive(JsonSchema)] pub struct OntogenTaskSetStateInput { pub id: String, pub state: String, pub \
+         store: Option<String>, }",
+    ] {
+        assert!(flat.contains(&compact(line)), "{line}:\n{code}");
+    }
+}
+
+/// `required_str` tells a missing string argument from one of another
+/// type, as every other argument read does.
+#[test]
+fn mcp_required_str_reports_a_wrong_type_as_invalid() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "workout.rs", &paged_crud_module_source("workout", "Store"));
+    let config = test_config(api_dir.clone());
+    let modules = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store")).modules;
+    let out = tmp.path().join("mcp.rs");
+    crate::servers::generators::mcp::generate(&out, &modules, &config);
+    let code = std::fs::read_to_string(&out).unwrap();
+    assert!(
+        compact(&code).contains(&compact(
+            "let value = args.get(key).ok_or_else(|| format!(\"Missing required parameter: {key}\"))?; \
+             <&str>::deserialize(value).map_err(|e| format!(\"Invalid parameter {key}: {e}\"))"
+        )),
+        "{code}"
     );
 }
 
@@ -4971,13 +5057,13 @@ fn a_paginated_list_pushes_the_page_into_the_store() {
     crate::servers::generators::mcp::generate(&mcp, &modules, &config);
     let mcp = std::fs::read_to_string(&mcp).unwrap();
     assert!(
-        mcp.contains("workout::list(&store, Some(limit), Some(offset))"),
+        mcp.contains("workout::list(&ontogen_store, Some(ontogen_limit), Some(ontogen_offset))"),
         "the MCP tool passes the page down:\n{mcp}"
     );
-    assert!(mcp.contains("workout::count(&store)"), "the MCP tool asks for the total:\n{mcp}");
-    assert!(!mcp.contains("all_items"), "nothing is materialised to be sliced:\n{mcp}");
+    assert!(mcp.contains("workout::count(&ontogen_store)"), "the MCP tool asks for the total:\n{mcp}");
+    assert!(!mcp.contains("ontogen_all"), "nothing is materialised to be sliced:\n{mcp}");
     assert!(
-        !mcp.contains(r#"required_str(args, "limit")"#),
+        !mcp.contains(r#"required_str(ontogen_args, "limit")"#),
         "the page is read from args, not demanded as a tool argument:\n{mcp}"
     );
 }
@@ -5022,11 +5108,11 @@ fn a_state_scoped_count_paginates_the_same_way() {
     crate::servers::generators::mcp::generate(&mcp, &modules, &config);
     let mcp = std::fs::read_to_string(&mcp).unwrap();
     assert!(
-        mcp.contains("workout::list(state, Some(limit), Some(offset))"),
+        mcp.contains("workout::list(ontogen_state, Some(ontogen_limit), Some(ontogen_offset))"),
         "the MCP tool passes the page down:\n{mcp}"
     );
-    assert!(mcp.contains("workout::count(state)"), "the MCP tool asks the state for the total:\n{mcp}");
-    assert!(!mcp.contains("all_items"), "nothing is materialised to be sliced:\n{mcp}");
+    assert!(mcp.contains("workout::count(ontogen_state)"), "the MCP tool asks the state for the total:\n{mcp}");
+    assert!(!mcp.contains("ontogen_all"), "nothing is materialised to be sliced:\n{mcp}");
 }
 
 #[test]
@@ -5112,8 +5198,8 @@ fn a_paginated_list_may_filter_when_its_count_filters_alike() {
     let mcp = tmp.path().join("mcp.rs");
     crate::servers::generators::mcp::generate(&mcp, &modules, &config);
     let mcp = compact(&std::fs::read_to_string(&mcp).unwrap());
-    assert!(mcp.contains("workout::list(&store,plan_id,Some(limit),Some(offset))"), "{mcp}");
-    assert!(mcp.contains("workout::count(&store,plan_id)"), "{mcp}");
+    assert!(mcp.contains("workout::list(&ontogen_store,plan_id,Some(ontogen_limit),Some(ontogen_offset))"), "{mcp}");
+    assert!(mcp.contains("workout::count(&ontogen_store,plan_id)"), "{mcp}");
 }
 
 /// The filter is usually a by-value `Query` struct. `list` consumes it, so the
@@ -5147,7 +5233,8 @@ fn a_by_value_filter_is_cloned_into_the_list_and_counted_from_the_original() {
         let out = tmp.path().join(format!("{name}.rs"));
         emit(&out, &modules, &config);
         let out = std::fs::read_to_string(&out).unwrap();
-        let (store, filter) = if name == "http" { ("ontogen_store", "ontogen_filter") } else { ("store", "query") };
+        let (store, filter) =
+            if name == "http" || name == "mcp" { ("ontogen_store", "ontogen_filter") } else { ("store", "query") };
         let flat = compact(&out);
         assert!(
             flat.contains(&format!("workout::list(&{store},{filter}.clone()")),
@@ -5164,6 +5251,11 @@ fn a_by_value_filter_is_cloned_into_the_list_and_counted_from_the_original() {
 /// page, with a `count` taking the same filter: each file as generated, and
 /// compacted.
 fn typed_filter_transports(filter: &str) -> [(&'static str, String, String); 2] {
+    filter_transports(filter, test_config)
+}
+
+/// [`typed_filter_transports`] under the config `config` makes.
+fn filter_transports(filter: &str, config: fn(PathBuf) -> Config) -> [(&'static str, String, String); 2] {
     let tmp = tempfile::tempdir().unwrap();
     let api_dir = tmp.path().join("api");
     write_synthetic_api(
@@ -5173,7 +5265,7 @@ fn typed_filter_transports(filter: &str) -> [(&'static str, String, String); 2] 
             .replace("store: &Store, limit", &format!("store: &Store, {filter}, limit"))
             .replace("count(store: &Store)", &format!("count(store: &Store, {filter})")),
     );
-    let mut config = test_config(api_dir);
+    let mut config = config(api_dir);
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
     let mut modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
     crate::servers::parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces).unwrap();
@@ -5208,15 +5300,15 @@ fn ipc_and_mcp_read_a_typed_bare_filter() {
     assert!(ipc.contains(&compact("workout::count(&store, title.as_deref(), &owner, limit_to)")), "{ipc_code}");
 
     for line in [
-        "let title: Option<String> = args.get(\"title\").filter(|v| !v.is_null()).cloned()\
+        "let title: Option<String> = ontogen_args.get(\"title\").filter(|v| !v.is_null()).cloned()\
          .map(serde_json::from_value::<String>).transpose()\
          .map_err(|e| format!(\"Invalid parameter title: {e}\"))?;",
-        "let owner = required_str(args, \"owner\")?;",
-        "let limit_to: Option<u32> = args.get(\"limit_to\").filter(|v| !v.is_null()).cloned()\
+        "let owner = required_str(ontogen_args, \"owner\")?;",
+        "let limit_to: Option<u32> = ontogen_args.get(\"limit_to\").filter(|v| !v.is_null()).cloned()\
          .map(serde_json::from_value::<u32>).transpose()\
          .map_err(|e| format!(\"Invalid parameter limit_to: {e}\"))?;",
-        "workout::list(&store, title.as_deref(), owner, limit_to, Some(limit), Some(offset))",
-        "workout::count(&store, title.as_deref(), owner, limit_to)",
+        "workout::list(&ontogen_store, title.as_deref(), owner, limit_to, Some(ontogen_limit), Some(ontogen_offset))",
+        "workout::count(&ontogen_store, title.as_deref(), owner, limit_to)",
     ] {
         assert!(mcp.contains(&compact(line)), "{line}:\n{mcp_code}");
     }
@@ -5232,16 +5324,19 @@ fn ipc_and_mcp_clone_only_the_filters_list_consumes() {
         typed_filter_transports("query: ListWorkoutQuery, tag: Option<String>, n: u32");
 
     assert!(ipc.contains(&compact("query: ListWorkoutQuery, tag: Option<String>, n: u32,")), "{ipc_code}");
-    for (name, flat, code, store) in [("ipc", &ipc, &ipc_code, "&store"), ("mcp", &mcp, &mcp_code, "&store")] {
+    for (name, flat, code, store, query) in
+        [("ipc", &ipc, &ipc_code, "&store", "query"), ("mcp", &mcp, &mcp_code, "&ontogen_store", "ontogen_filter")]
+    {
         assert!(
-            flat.contains(&compact(&format!("workout::list({store}, query.clone(), tag.clone(), n,"))),
+            flat.contains(&compact(&format!("workout::list({store}, {query}.clone(), tag.clone(), n,"))),
             "{name}:\n{code}"
         );
-        assert!(flat.contains(&compact(&format!("workout::count({store}, query, tag, n)"))), "{name}:\n{code}");
+        assert!(flat.contains(&compact(&format!("workout::count({store}, {query}, tag, n)"))), "{name}:\n{code}");
     }
     assert!(
         mcp.contains(&compact(
-            "let n: u32 = serde_json::from_value(args.get(\"n\").cloned().ok_or(\"Missing required parameter: n\")?)\
+            "let n: u32 = serde_json::from_value(ontogen_args.get(\"n\").cloned()\
+             .ok_or(\"Missing required parameter: n\")?)\
              .map_err(|e| format!(\"Invalid parameter n: {e}\"))?;"
         )),
         "{mcp_code}"
@@ -5250,31 +5345,34 @@ fn ipc_and_mcp_clone_only_the_filters_list_consumes() {
 
 /// The MCP list tool's input schema names every argument it reads: its bare
 /// filters as their owned types, required unless `Option`, beside the
-/// `*Query` struct's fields and the page. A filter struct `args` cannot
-/// deserialize into is the tool's error, not an empty filter.
+/// `*Query` struct's fields and the page. A filter struct the remaining
+/// arguments cannot deserialize into is the tool's error, not an empty
+/// filter, and an argument the schema does not name is refused.
 #[test]
 fn the_mcp_list_tool_advertises_its_bare_filters_and_refuses_a_malformed_filter() {
     let [_, (_, mcp, mcp_code)] = typed_filter_transports("query: &ListWorkoutQuery, title: Option<&str>, owner: &str");
     assert!(
         mcp.contains(&compact(
-            "#[derive(JsonSchema)] pub struct WorkoutListFilter { pub title: Option<String>, pub owner: String, \
-             #[serde(flatten)] pub ontogen_query: ListWorkoutQuery, }"
+            "#[derive(JsonSchema)] pub struct OntogenWorkoutListFilter { pub title: Option<String>, pub owner: \
+             String, #[serde(flatten)] pub ontogen_query: ListWorkoutQuery, }"
         )),
         "{mcp_code}"
     );
     assert!(
-        mcp.contains(&compact("schema_fn: || with_pagination_schema(schema_for::<WorkoutListFilter>()),")),
+        mcp.contains(&compact("schema_fn: || with_pagination_schema(schema_for::<OntogenWorkoutListFilter>()),")),
         "{mcp_code}"
     );
     assert!(
         mcp.contains(&compact(
-            "let query: ListWorkoutQuery = serde_json::from_value(args.clone()).map_err(|e| format!(\"Invalid filter: \
-             {e}\"))?;"
+            "refuse_unknown_args(ontogen_args, with_pagination_schema(schema_for::<OntogenWorkoutListFilter>()))?;"
         )),
         "{mcp_code}"
     );
     assert!(!mcp.contains("unwrap_or_default"), "{mcp_code}");
-    assert!(mcp.contains(&compact("workout::count(&store, &query, title.as_deref(), owner)")), "{mcp_code}");
+    assert!(
+        mcp.contains(&compact("workout::count(&ontogen_store, &ontogen_filter, title.as_deref(), owner)")),
+        "{mcp_code}"
+    );
 
     // A struct alone is its own schema; a list with no filter takes none.
     let [_, (_, mcp, mcp_code)] = typed_filter_transports("query: ListWorkoutQuery");
@@ -5283,6 +5381,60 @@ fn the_mcp_list_tool_advertises_its_bare_filters_and_refuses_a_malformed_filter(
         mcp.contains(&compact("schema_fn: || with_pagination_schema(schema_for::<ListWorkoutQuery>()),")),
         "{mcp_code}"
     );
+}
+
+/// The `*Query` struct of an MCP list tool is read from the tool's
+/// arguments without the ones the tool reads itself, so a struct that
+/// refuses unknown fields reads beside them: each bare filter, the page
+/// when the tool reads one, and the scope's argument when scoped.
+#[test]
+fn the_mcp_list_tool_reads_its_filter_struct_without_its_own_arguments() {
+    let read = |keys: &str| {
+        compact(&format!(
+            "let ontogen_filter: ListWorkoutQuery = serde_json::from_value({keys})\
+             .map_err(|e| format!(\"Invalid filter: {{e}}\"))?;"
+        ))
+    };
+
+    // Paged: the page.
+    let [_, (_, mcp, code)] = typed_filter_transports("query: ListWorkoutQuery");
+    assert!(mcp.contains(&read(r#"args_without(ontogen_args, &["limit", "offset"])"#)), "{code}");
+
+    // Paged, beside bare filters: the bare filters too, in declaration order.
+    let [_, (_, mcp, code)] = typed_filter_transports("owner: &str, query: ListWorkoutQuery, tag: Option<u32>");
+    assert!(mcp.contains(&read(r#"args_without(ontogen_args, &["owner", "tag", "limit", "offset"])"#)), "{code}");
+
+    // Paged and scoped, beside a bare filter: the scope's argument too.
+    let [_, (_, mcp, code)] = filter_transports("query: ListWorkoutQuery, owner: &str", test_config_with_prefix);
+    assert!(
+        mcp.contains(&read(r#"args_without(ontogen_args, &["owner", "limit", "offset", "project_id"])"#)),
+        "{code}"
+    );
+    assert!(
+        mcp.contains(&compact(
+            "refuse_unknown_args(ontogen_args, \
+             with_pagination_schema(with_project_id_schema(schema_for::<OntogenWorkoutListFilter>())))?;"
+        )),
+        "{code}"
+    );
+
+    // Neither page nor scope nor bare filter: the arguments as they are.
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        &paged_crud_module_source("workout", "Store")
+            .replace("store: &Store, limit: Option<u64>, offset: Option<u64>", "store: &Store, query: ListWorkoutQuery")
+            .replace("count(store: &Store)", "count(store: &Store, query: ListWorkoutQuery)"),
+    );
+    let config = test_config(api_dir);
+    let modules = crate::servers::parse::scan_surfaces(&config.surfaces(), &config.state_type).unwrap().modules;
+    let out = tmp.path().join("mcp.rs");
+    crate::servers::generators::mcp::generate(&out, &modules, &config);
+    let code = std::fs::read_to_string(&out).unwrap();
+    assert!(compact(&code).contains(&read("ontogen_args.clone()")), "{code}");
+    assert!(compact(&code).contains(&compact("schema_fn: schema_for::<ListWorkoutQuery>,")), "{code}");
 }
 
 /// A `count` that ignores the filter would report the whole table as the total
