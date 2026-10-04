@@ -702,3 +702,43 @@ costs no client anything. Rejected.
 - Implemented by E0004 phases 1a (default order), 2 (hand-written `list`
   precedence) and 3c (the `order` argument), per §6. Until 3c, `list_*`
   keeps its current signature.
+
+## Amendment (2026-10-04): implementation of the order runtime
+
+Phase 3c landed with these differences from §1. The decision is unchanged.
+
+1. **`SortField` has a `const ID`, and `from_name` has a default.** The trait
+   is `const ALL`, `const ID: Self` and `fn name(self)`. `ID` is the
+   `#[ontology(id)]` field, the final tie-break of §3. `from_name` is a
+   provided method that searches `ALL` by `name`, so the generated impl
+   states `ALL`, `ID` and `name` only.
+2. **`effective` and `cmp_f64` are shared helpers.** `ontogen_core::order`
+   also exports `effective(order)`, which keeps each field's first
+   occurrence and appends `OrderBy::asc(F::ID)` unless the order names the
+   id, and `cmp_f64(a, b)`, which compares `-0.0` equal to `0.0` and then
+   by `f64::total_cmp`. `sort_{plural}` and `order_{plural}_query` both
+   start from `effective`, and every generated float comparator calls
+   `cmp_f64`, so the two backends agree on the key list and on floats by
+   construction. An `f32` field widens with `f64::from`, which is exact and
+   keeps the order.
+3. **`parse_sort` reports the first bad key.** Each key is checked in
+   turn: an empty key or a lone `-` is `EmptyKey`; the name after one
+   leading `-` must be a sort field, else `UnknownField`; a field already
+   seen is `DuplicateField`. The name in an error has no `-`, so `--x`
+   reads as `UnknownField("-x")`.
+4. **The stage entry points take the whole schema.** `gen_store`,
+   `gen_servers` and `gen_clients` take `&SchemaOutput`, not
+   `&schema.entities`. The store's comparator, the MCP `sort` schema and
+   the TS `{Entity}SortKey` all need the schema's enums (§2 sorts an enum
+   by its stored string), and one argument avoids a config field that a
+   caller can forget. `ClientsConfig::schema_enums` is removed.
+   `SchemaOutput` implements `Default`, so a caller with no schema passes
+   `&SchemaOutput::default()`.
+5. **Sort fields come from one function.** The store, servers and clients
+   stages each derive an entity's sort fields, and the MCP and TS key
+   lists, from `schema::sort::sort_fields`, so they cannot disagree.
+6. **A sorted list's rules are checked at build time.** The servers stage
+   refuses an `order` parameter that is not on a module's `list`, is not
+   immediately before the page (or last when there is no page), is
+   repeated, or names another entity's sort field. The clients stage
+   refuses one on a fn it cannot send (wire contract §7.3).

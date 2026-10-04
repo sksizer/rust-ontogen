@@ -74,7 +74,7 @@ Let's walk through the important fields:
 | `pagination` | Optional pagination for list operations |
 | `error_source_dir` | Directory scanned for your `enum AppError`, which decides the status and `code` of each HTTP error -- see [Errors](#errors) |
 
-The first argument is the parsed schema (`schema.entities` from `parse_schema`, or `&[]` when you have none). A module is served as a JSON:API resource when its name is the module name of one of those entities. [`Pipeline`](/concepts/pipeline/) passes the entities it parsed and sets `error_source_dir` to its schema directory when you leave it unset.
+The first argument is the parsed schema (`parse_schema`'s output, or `&SchemaOutput::default()` when you have none). A module is served as a JSON:API resource when its name is the module name of one of its entities. [`Pipeline`](/concepts/pipeline/) passes the schema it parsed and sets `error_source_dir` to its schema directory when you leave it unset.
 
 The full field list is in the [`ServersConfig` reference](/reference/configuration/#serversconfig).
 
@@ -264,9 +264,21 @@ GET /api/tasks?page[offset]=20&page[limit]=10
 
 A list that is not paginated rejects `page[...]` with `400 invalid_query_parameter`.
 
+### Sort
+
+`sort` is honoured on a list that takes an `order: &[OrderBy<{Entity}SortField>]` argument: every generated list, and a hand-written one that declares it (see [Filtered lists](/cookbook/custom-api-endpoints/#recipe-filtered-lists)). The value is a comma-separated list of sort fields, applied in order. A bare name sorts ascending and a leading `-` descending. The id is the last key unless the request names it.
+
+```http
+GET /api/tasks?sort=-created,title&page[limit]=10
+```
+
+The page holds the tasks ordered by `created` descending, then `title`, then id. The links repeat `sort` between the filter and the page, so `next` keeps the order. The sort fields are the id and every scalar field of the entity: strings, numbers, bools, schema enums and optional forms of these. A body, a relationship and a dotted path are not sort fields. See [Ordering](/guides/store-layer/#ordering) for how nulls, strings and floats compare.
+
+These are each `400 invalid_sort_field` with `source.parameter: "sort"`: an unknown field, a field named twice, an empty item (`sort=` or `sort=title,,id`), and any `sort` on a list that takes no `order`. The `detail` of an unknown field lists the sort fields (``"`priority` is not a sort field of `tasks`; sort fields are: id, title, status, created"``). A repeated `sort` parameter is `400 invalid_query_parameter`.
+
 ### Query parameters
 
-A generated route accepts a fixed set of query parameters. Anything else is `400 invalid_query_parameter` with `source.parameter` naming it: an unknown name, a repeated name, a malformed name, `fields[...]`, and `page[...]` on a route that is not paginated. `[` and `]` are accepted raw or percent-encoded. `filter[...]` is accepted on a list that takes filter parameters and refused on any other route. Relationship and related routes take no query parameters, except `page[offset]` and `page[limit]` for a junction op's relationship on a paginated surface. `include` is honoured on a list and a get (see [Compound documents](#compound-documents)); a bad value is `400 invalid_include_path` with `source.parameter: "include"`. `sort` is recognised on a list but no list takes an `order` argument, so any value is `400 invalid_sort_field`. A bad value of either is the code named above, not `invalid_query_parameter`.
+A generated route accepts a fixed set of query parameters. Anything else is `400 invalid_query_parameter` with `source.parameter` naming it: an unknown name, a repeated name, a malformed name, `fields[...]`, and `page[...]` on a route that is not paginated. `[` and `]` are accepted raw or percent-encoded. `filter[...]` is accepted on a list that takes filter parameters and refused on any other route. Relationship and related routes take no query parameters, except `page[offset]` and `page[limit]` for a junction op's relationship on a paginated surface. `include` is honoured on a list and a get (see [Compound documents](#compound-documents)); a bad value is `400 invalid_include_path` with `source.parameter: "include"`. `sort` is honoured on a list that takes an `order` argument (see [Sort](#sort)) and is `400 invalid_sort_field` on any other list. A bad value of either is the code named above, not `invalid_query_parameter`.
 
 ### Errors
 
@@ -305,7 +317,7 @@ A variant whose snake_case name equals one of ontogen's own codes (for example a
 | Status | `code` | Raised when |
 |--------|--------|-------------|
 | 400 | `invalid_query_parameter` | an unknown, repeated or malformed query parameter, a bad `page[...]` or `opArg[...]` value, or any query parameter on a custom `POST` |
-| 400 | `invalid_sort_field` | a `sort` parameter on a list (no list takes an order) |
+| 400 | `invalid_sort_field` | a bad `sort`: an unknown field, a field named twice or an empty item, or any `sort` on a list that takes no order |
 | 400 | `invalid_include_path` | a bad `include` on a list or a get: an unknown, dotted, empty or non-includable relationship name |
 | 400 | `invalid_path_parameter` | a typed route-prefix parameter fails to parse |
 | 400 | `invalid_document` | the body is not JSON or not a valid resource document, or a custom op body whose `meta.args` is missing, unknown or ill-typed |
@@ -363,7 +375,7 @@ An `*Input` parameter on an op served without a body is a build error (`CodegenE
 
 **Singletons.** A singleton module (`// ontogen:singleton`) has no resource type, and every op in it is a custom op on `/api/{singular}/{action}`. An op there that classifies as `list`, `get_by_id`, `create`, `update`, `delete` or a junction op is a build error.
 
-**Modules with no entity behind them** (for instance when `gen_servers` is called with `&[]`) serve their CRUD functions at the usual routes, under the custom op rules:
+**Modules with no entity behind them** (for instance when `gen_servers` is called with an empty schema) serve their CRUD functions at the usual routes, under the custom op rules:
 
 | Op | Route | Request | Response |
 |----|-------|---------|----------|
@@ -429,12 +441,16 @@ The IPC generator produces `#[tauri::command]` handlers for desktop applications
 #[tauri::command]
 pub async fn task_list(
     state: State<'_, Arc<AppState>>,
+    sort: Option<Vec<String>>,
 ) -> Result<Vec<Task>, String> {
+    let order = parse_sort(sort.unwrap_or_default()).map_err(|e| e.to_string())?;
     let store = state.store().await.map_err(|e| e.to_string())?;
-    task::list(store).await
+    task::list(store, &order).await
         .map_err(|e| e.to_string())
 }
 ```
+
+A list that takes an order gains the optional `sort` argument, an array of the keys `sort` takes over HTTP (`['-created', 'title']`). It is read with `ontogen_core::order::parse_sort`, so a bad key is the string error ``unknown sort field `priority` ``, and it is read before the store opens. The command's own filter and page arguments are unchanged, and the payload stays flat. A bare filter named `sort` on such a list is a build error.
 
 The generator also produces an `ipc_handler()` function that wraps all commands into a `tauri::generate_handler!` macro call:
 
@@ -506,6 +522,14 @@ The generated registry provides three entry points:
 - `handle_tool_call(state, tool_name, args)` -- dispatches a tool call by name. Creates a minimal tokio runtime for sync MCP servers.
 
 MCP tool names follow the same entity-first convention as IPC commands: `task_list`, `task_create`, `agent_add_role`.
+
+A list tool whose list takes an order has an optional `sort` property in its input schema, an array whose items are the sort keys (`id`, `-id`, `title`, `-title`, and so on, enumerated from the entity's fields):
+
+```json
+{ "sort": ["-created", "title"] }
+```
+
+`sort` is read strictly: absent or `null` is the default order, and anything other than an array of strings is the tool error `Invalid sort: …`. A bad key gives the same text as IPC, and the tool reads `sort` before it opens the store. The `*Query` struct is read from the other arguments, so a field serialized as `sort` cannot be set over MCP, and a bare filter named `sort` is a build error.
 
 <Aside type="note">
   Event streams are not exposed as MCP tools. MCP is request-response only, so there's no equivalent to SSE or Tauri events.

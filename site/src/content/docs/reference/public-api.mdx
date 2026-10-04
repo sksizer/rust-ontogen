@@ -398,7 +398,7 @@ Sensible defaults are applied automatically:
 
 - `schema_module_path` defaults to [`DEFAULT_SCHEMA_MODULE_PATH`](#default_schema_module_path) (`"crate::schema"`) and propagates to both `StoreConfig` and `ApiConfig`.
 - When the `store` stage is enabled and the API stage hasn't overridden it, `store_type` defaults to `Some("Store")`.
-- The `servers` and `clients` stages are given the `schema.entities` the schema stage parsed. When `ServersConfig.error_source_dir` is `None`, the builder sets it to the schema directory.
+- The `servers` and `clients` stages are given the schema the schema stage parsed. When `ServersConfig.error_source_dir` is `None`, the builder sets it to the schema directory.
 - `ClientsConfig.pool_exclude_paths` is populated from the `seaorm()` stage's `entity_output`, so the per-entity `Relation` enums SeaORM emits can't make the long-tail resolver ambiguous.
 - `store_id_strategy` sets `StoreConfig::id_strategy` for either backend. It has no default: with the `store` stage enabled, `build()` returns a `CodegenError::Store` until it is called, even when every entity sets its own `#[ontology(entity, id = "...")]`.
 - The store backend is **inferred** when exactly one persistence stage is configured. Enable both `seaorm(...)` and `markdown_io(...)` and you must disambiguate with `.store_backend(StoreBackendChoice::Seaorm)` or `.store_backend(StoreBackendChoice::Markdown)`.

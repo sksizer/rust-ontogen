@@ -465,9 +465,11 @@ let state = AppState::new(open_vault(VAULT_ROOT));
 - **Hand edits survive.** The runtime's `Document` round-trip preserves
   unknown keys, key order, and the body; untouched files re-render
   byte-for-byte, and a no-op update doesn't even touch the file.
-- **Stable order, loud ceiling.** `list` returns records in id byte order
-  (`a-2` before `a2`, and a hand-named `B` before `a`, whatever the layout
-  or filesystem) and
+- **Stable order, loud ceiling.** `list` returns records in the order
+  asked for, then in id byte order (`a-2` before `a2`, and a hand-named `B`
+  before `a`, whatever the layout or filesystem); with no order, in id byte
+  order. It reads every record, sorts with the generated `sort_{plural}`, then
+  cuts the page (see [Ordering](/guides/store-layer/#ordering)). It
   errors past `list_cap` — the deliberate "wrong backend for this N" signal.
 - **Single-record atomicity only** (same-dir tempfile + fsync + rename).
   Need batch transactions? That's the other backend.
