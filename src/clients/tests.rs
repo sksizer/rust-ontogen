@@ -2566,11 +2566,10 @@ fn a_filtered_paginated_resource_list_sends_its_filter_and_page_families_on_serv
     let page = "return { items: data.map(flattenTag), total: meta.total, limit: meta.limit, offset: meta.offset };";
     assert_eq!(ts_method(&clients.transport, "tagList"), format!("{signature}\n      {call}\n      {page}\n    }},\n"));
     assert_eq!(ts_method(&clients.http, "tagList"), format!("{signature}\n    {call}\n    {page}\n  }},\n"));
-    // The unfiltered `tasks` list beside it pages as it always has.
-    assert!(
-        ts_method(&clients.transport, "taskList")
-            .contains("httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ page: { offset, limit } })}`);")
-    );
+    // The unfiltered `tasks` list beside it sends its sort before its page.
+    assert!(ts_method(&clients.transport, "taskList").contains(
+        "httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ sort: options?.sort, page: { offset, limit } })}`);"
+    ));
 }
 
 /// Both HTTP clients send a list's filter as the `filter` family (§14.2):
