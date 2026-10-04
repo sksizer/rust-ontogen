@@ -67,9 +67,9 @@ fn allow<const N: usize>(
     move |method| std::future::ready(method_not_allowed(&method, &allowed))
 }
 
-/// The error document for a rejection of Axum's own `Query`. A list that
-/// takes a filter and an event stream read their query parameters with it,
-/// not with the JSON:API `Query`.
+/// The error document for a rejection of Axum's own `Query`. An event
+/// stream is no JSON:API route, so it reads its plain query parameters with
+/// it.
 fn ontogen_query_rejection(e: QueryRejection) -> ErrorObject {
     ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
 }
