@@ -174,7 +174,7 @@ each of its sections to a phase.
 - Custom ops as meta-only documents, with `meta.args` request bodies and
   `opArg[…]` (decisions 1 and 7), and the singleton CRUD check.
 - Ops served as custom ops (contract §10.4): CRUD ops with no entity
-  behind them, and junction ops until 3a.
+  behind them.
 - Event frames as resource objects (decision 2); non-entity items are
   `{"meta":{"result":…}}`.
 - Scoped pagination made identical to unscoped.
@@ -196,13 +196,13 @@ each of its sections to a phase.
 **Phase 3 — relationships, inclusion and sorting.**
 
 - **3a.** Done ([#203](https://github.com/sksizer/rust-ontogen/pull/203)). `/relationships/{rel}` and related-resource endpoints:
-  - every relation field is served from the generated store, `has_many`
-    writable (decision 9; self-referential only, cross-entity is backlog
+  - every relation field is served through the module's `get_by_id` and
+    `update`, `has_many` writable (decision 9; self-referential only, cross-entity is backlog
     B-XEHM);
   - junction ops in resource modules are re-routed onto the same endpoints;
     a lone `list_X` stops classifying as a junction op;
   - `links.self`/`links.related` go on every relationship;
-  - scoped junction routes are fixed, and TS junction methods move;
+  - scoped junction ops take their unscoped shape, and TS junction methods move;
   - tasks-tracker gains `parent_id`/`subtasks` and a `release` tag.
 - **3b.** `include`: one level, to-one and to-many, with full linkage.
 - **3c.** The `order` argument per ADR 0006 on both store backends, with

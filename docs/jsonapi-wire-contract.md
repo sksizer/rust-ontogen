@@ -96,17 +96,16 @@ say the example is illustrative.
 `parent_id`. The vault holds task `ship-the-emitter`, which has no parent
 and no subtasks, epic `markdown-backend`, and tags `codegen` and `release`.
 
-The example does not yet exercise every feature, so some sections show it
-with additions that the named phase makes to tasks-tracker. That keeps every
-example in this document live once its phase lands:
+Some sections show tasks-tracker with these additions, which keep every
+example in this document live:
 
-| Addition | Lands in | Used by |
-|---|---|---|
-| `pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 })`, `paginated: ["task", "epic", "tag"]` | 1b | §7.2 |
-| A hand-written `task::list(store, query: ListTasksQuery, limit, offset)` with `ListTasksQuery { status: Option<String>, epic_id: Option<String> }` and a matching `count`, replacing the generated `list` (§7.3) | 2 | §7.3 |
-| `order: &[OrderBy<TaskSortField>]` added to that hand-written `list` | 3c | §7.4 |
-| `Task.parent_id: Option<String>` (`belongs_to Task`) and `Task.subtasks: Vec<String>` (`has_many Task`, `foreign_key = "parent_id"`), as in `crates/markdown-pilot` | 3a | §5.4, §9 |
-| A second tag, `release` | 3a | §9.2 |
+| Addition | Used by |
+|---|---|
+| `pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 })`, `paginated: ["task", "epic", "tag"]` | §7.2 |
+| A hand-written `task::list(store, query: ListTasksQuery, limit, offset)` with `ListTasksQuery { status: Option<String>, epic_id: Option<String> }` and a matching `count`, replacing the generated `list` (§7.3) | §7.3 |
+| `order: &[OrderBy<TaskSortField>]` added to that hand-written `list` | §7.4 |
+| `Task.parent_id: Option<String>` (`belongs_to Task`) and `Task.subtasks: Vec<String>` (`has_many Task`, `foreign_key = "parent_id"`), as in `crates/markdown-pilot` | §5.4, §9 |
+| A second tag, `release` | §9.2 |
 
 `epic` and `tag` are paginated too because pagination belongs to a surface,
 not a module: the primary surface's `pagination` covers every module on it,
@@ -266,12 +265,8 @@ Building a resource object needs the schema. The generator must know:
 - whether an event's item type is an entity;
 - the serde attributes that §5.3 restricts.
 
-Today neither stage sees it: `gen_servers` ignores its `ApiOutput` argument
-and rescans `api_dir`, and only `ClientsConfig` carries a
-`schema_entities` copy.
-
-From phase 1b the parsed schema is an explicit first argument of both
-stages, as it already is for `gen_api`:
+The parsed schema is an explicit first argument of both stages, as it is
+for `gen_api`:
 
 ```rust
 pub fn gen_servers(entities: &[EntityDef], api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ServersConfig) -> Result<ServersOutput, CodegenError>;
@@ -280,15 +275,13 @@ pub fn gen_clients(entities: &[EntityDef], api: Option<&ApiOutput>, scan_dirs: &
 
 - `Pipeline` passes the entities it parsed.
 - Standalone callers pass `parse_schema`'s output, or `&[]`.
-- `ClientsConfig::schema_entities` is removed. It was the only partial
-  route by which the schema reached a stage.
+- `ClientsConfig` has no `schema_entities` field; the argument is the only
+  route by which the schema reaches a stage.
 
 A module is a **resource module** when its name is the module name of an
 entity in `entities`. Its CRUD ops are served as resources (§7, §8). A
 module with CRUD-classified ops (`list`, `get_by_id`, `create`, `update`,
-`delete`) but no entity behind it is served entirely as custom ops (§10.4),
-from phase 1c. Phase 1b gives it no new shape, and both phases ship in the
-same release.
+`delete`) but no entity behind it is served entirely as custom ops (§10.4).
 That module is what a scan-dirs-only consumer, or a standalone caller
 passing `&[]`, has. The alternative, a `CodegenError`, would break the
 scan-dirs-only use case the servers stage supports today, and those ops
@@ -702,7 +695,7 @@ of the same name. The hand-written list's parameters are, in this order:
 
 1. the store;
 2. its filter parameters;
-3. `order: &[OrderBy<XSortField>]`, from phase 3c, if it supports `sort`;
+3. `order: &[OrderBy<XSortField>]`, if it supports `sort`;
 4. `limit`, `offset`, if paginated.
 
 The matching `count` takes the same filter parameters and no `order`
@@ -799,7 +792,7 @@ Rules:
 
 ### 7.4 Sort
 
-Phase 3c. `sort` is honoured on a list whose API fn takes an
+`sort` is honoured on a list whose API fn takes an
 `order: &[OrderBy<{Entity}SortField>]` argument (ADR 0006 §1):
 
 - The generated CRUD `list` always takes one.
@@ -807,7 +800,7 @@ Phase 3c. `sort` is honoured on a list whose API fn takes an
   with the store's `sort_{plural}` or `order_{plural}_query` helpers so the
   order rules hold.
 
-tasks-tracker's hand-written list gains it in phase 3c.
+tasks-tracker's hand-written list takes one.
 
 Sort fields are `id` plus every scalar attribute (ADR 0006 §2). `id` names
 the `#[ontology(id)]` field whatever it is called. Relationship names and
@@ -843,9 +836,8 @@ Rules:
     dotted path (`sort=epic.title`);
   - a field named twice (`sort=title,-title`);
   - an empty item (`sort=title,,status`, `sort=`);
-  - any `sort` on a list that takes no `order` argument, including every
-    list before phase 3c. The spec requires `400` from a server that does
-    not support the requested sort.
+  - any `sort` on a list that takes no `order` argument. The spec requires `400` from a server that
+    does not support the requested sort.
 
 ```json
 {
@@ -859,7 +851,7 @@ Rules:
 
 ### 7.5 Include
 
-Phase 3b. `include` is honoured on the two routes that accept it (§6):
+`include` is honoured on the two routes that accept it (§6):
 `GET /api/{type}` and `GET /api/{type}/{id}`. Every relationship of the
 primary type except a junction-op relationship can be included, to-one and
 to-many alike, one level deep.
@@ -906,8 +898,7 @@ Rules:
   - a name that is not an includable relationship of the primary type
     (`include=owner`, or a junction-op relationship);
   - a dotted path (`include=epic.tasks`), since nested inclusion is out of
-    scope;
-  - any `include` before phase 3b.
+    scope.
 - On every other route, `include` is not an accepted parameter, and is
   `400 invalid_query_parameter` (§6).
 
