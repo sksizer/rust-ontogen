@@ -162,6 +162,9 @@ impl Routes {
 /// (`ontogen_state`, `ontogen_store`, `ontogen_query`, …), and a fn's
 /// arguments are bound under their own names: an argument may be named
 /// anything, `state` and `store` included, without shadowing the handler's.
+/// So is every helper fn a handler calls once its arguments are bound
+/// (`ontogen_app_error`, `ontogen_query_rejection`, `ontogen_sse_stream`, …),
+/// which an argument of the same name would otherwise shadow.
 struct Access {
     /// Lines opening the store, if the fn takes one.
     open: String,
@@ -175,7 +178,7 @@ fn unscoped_access(f: &ApiFn) -> Access {
     if f.first_param_is_store {
         Access {
             open: format!(
-                "    let ontogen_store = ontogen_state.{}().await.map_err(internal_error)?;\n",
+                "    let ontogen_store = ontogen_state.{}().await.map_err(ontogen_internal_error)?;\n",
                 f.store_accessor
             ),
             arg: "&ontogen_store",
@@ -197,22 +200,22 @@ const SCOPE: &str = "ontogen_scope";
 fn scoped_access(prefix: &RoutePrefix) -> Access {
     Access {
         open: format!(
-            "    let ontogen_store = ontogen_state.{}(&{SCOPE}).map_err(internal_error)?;\n",
+            "    let ontogen_store = ontogen_state.{}(&{SCOPE}).map_err(ontogen_internal_error)?;\n",
             prefix.state_accessor
         ),
         arg: "&ontogen_store",
     }
 }
 
-/// `.map_err(…)` for a call returning `f`'s error: `app_error` for the
-/// consumer's `AppError`, `internal_error` for anything else (§13.4).
+/// `.map_err(…)` for a call returning `f`'s error: `ontogen_app_error` for the
+/// consumer's `AppError`, `ontogen_internal_error` for anything else (§13.4).
 fn err_map(f: &ApiFn, config: &Config) -> &'static str {
-    if returns_app_error(f, config) { ".map_err(app_error)" } else { ".map_err(internal_error)" }
+    if returns_app_error(f, config) { ".map_err(ontogen_app_error)" } else { ".map_err(ontogen_internal_error)" }
 }
 
-/// True when `f` fails with the `AppError` that `app_error` takes: the one
+/// True when `f` fails with the `AppError` that `ontogen_app_error` takes: the one
 /// in the primary surface's types module (§13.4). Anything else maps
-/// through `internal_error`, which takes any `Display` error, so a type
+/// through `ontogen_internal_error`, which takes any `Display` error, so a type
 /// this cannot place is a `500` rather than a build failure.
 pub(crate) fn returns_app_error(f: &ApiFn, config: &Config) -> bool {
     is_app_error(f.error_type.as_deref(), f.surface, config)
@@ -602,7 +605,7 @@ fn runtime_imports(body: &str, routes: &Routes) -> String {
     out
 }
 
-/// `app_error` maps the consumer's `AppError` (§13.4); `internal_error`
+/// `ontogen_app_error` maps the consumer's `AppError` (§13.4); `ontogen_internal_error`
 /// takes every failure no `AppError` describes.
 fn emit_error_helpers(out: &mut String, config: &Config) {
     match &config.error_map {
@@ -610,7 +613,7 @@ fn emit_error_helpers(out: &mut String, config: &Config) {
             let path = app_error_path(config);
             out.push_str(&format!(
                 "/// An `AppError` as an error object: the status its variant's name gives,\n/// and the name in \
-                 snake_case as the code.\nfn app_error(e: {path}) -> ErrorObject {{\n    let (status, code) \
+                 snake_case as the code.\nfn ontogen_app_error(e: {path}) -> ErrorObject {{\n    let (status, code) \
                  = match &e {{\n"
             ));
             for v in &map.variants {
@@ -627,7 +630,7 @@ fn emit_error_helpers(out: &mut String, config: &Config) {
             "\
 /// No `AppError` was found in the schema directory, so no error carries a
 /// status of its own: every one is a `500`.
-fn app_error(e: impl std::fmt::Display) -> ErrorObject {
+fn ontogen_app_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
 
@@ -638,7 +641,7 @@ fn app_error(e: impl std::fmt::Display) -> ErrorObject {
         "\
 /// A failure no `AppError` describes: opening the store, a scope accessor,
 /// or an op with another error type.
-fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
+fn ontogen_internal_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
 
@@ -671,12 +674,12 @@ fn allow<const N: usize>(
 /// Helpers emitted only when a handler names them, each with its name.
 const ON_DEMAND_HELPERS: &[(&str, &str)] = &[
     (
-        "query_rejection",
+        "ontogen_query_rejection",
         "\
 /// The error document for a rejection of Axum's own `Query`. A list that
 /// takes a filter and an event stream read their query parameters with it,
 /// not with the JSON:API `Query`.
-fn query_rejection(e: QueryRejection) -> ErrorObject {
+fn ontogen_query_rejection(e: QueryRejection) -> ErrorObject {
     ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
 }
 
@@ -709,10 +712,10 @@ pub struct PaginationParams {
 ",
     ),
     (
-        "result_frame",
+        "ontogen_result_frame",
         "\
 /// Writes an event item that is not an entity as `{\"meta\":{\"result\":…}}`.
-fn result_frame<T: Serialize>(event: Event, item: &T) -> Result<Event, axum::Error> {
+fn ontogen_result_frame<T: Serialize>(event: Event, item: &T) -> Result<Event, axum::Error> {
     event.json_data(ResultFrame::new(item))
 }
 
@@ -798,7 +801,7 @@ fn set_field(fields: &mut serde_json::Map<String, serde_json::Value>, name: &str
 fn from_fields<T: serde::de::DeserializeOwned>(
     fields: serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, ErrorObject> {
-    serde_json::from_value(serde_json::Value::Object(fields)).map_err(internal_error)
+    serde_json::from_value(serde_json::Value::Object(fields)).map_err(ontogen_internal_error)
 }
 
 ";
@@ -831,7 +834,7 @@ fn resource_names(module: &str) -> ResourceNames {
         resource: format!("{module}_as_resource"),
         fields: format!("{module}_request_fields"),
         key: format!("{module}_lookup_key"),
-        frame: format!("{module}_frame_data"),
+        frame: format!("ontogen_{module}_frame_data"),
     }
 }
 
@@ -937,7 +940,7 @@ fn emit_resource_helpers(
     let not_found = format!("{entity}NotFound");
     let missing = match config.error_map.as_ref().and_then(|map| map.variants.iter().find(|v| v.name == not_found)) {
         Some(v) if v.shape == VariantShape::Tuple(1) => {
-            format!("app_error({}::{not_found}(id.to_string()))", app_error_path(config))
+            format!("ontogen_app_error({}::{not_found}(id.to_string()))", app_error_path(config))
         }
         _ => format!("ErrorObject::internal(format!(\"`{{id}}` names no `{type_name}`\"))"),
     };
@@ -1098,8 +1101,10 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
             let arg = match (tf.first_param_is_store, prefix) {
                 (false, _) => "state".to_string(),
                 (true, Some(prefix)) => {
-                    let open =
-                        format!("    let store = state.{}({SCOPE}).map_err(internal_error)?;\n", prefix.state_accessor);
+                    let open = format!(
+                        "    let store = state.{}({SCOPE}).map_err(ontogen_internal_error)?;\n",
+                        prefix.state_accessor
+                    );
                     if !opens.contains(&open) {
                         opens.push(open);
                     }
@@ -1107,7 +1112,8 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
                 }
                 (true, None) => {
                     let accessor = &tf.store_accessor;
-                    let open = format!("    let {accessor} = state.{accessor}().await.map_err(internal_error)?;\n");
+                    let open =
+                        format!("    let {accessor} = state.{accessor}().await.map_err(ontogen_internal_error)?;\n");
                     if !opens.contains(&open) {
                         opens.push(open);
                     }
@@ -1128,7 +1134,7 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
                     )
                 })
                 .unwrap_or_default();
-            let fallback = if returns_app_error(tf, config) { "app_error" } else { "internal_error" };
+            let fallback = if returns_app_error(tf, config) { "ontogen_app_error" } else { "ontogen_internal_error" };
             let each = if rel.is_to_many() { "for linked in" } else { "if let Some(linked) =" };
             checks.push_str(&format!(
                 "    {each} &linked.{} {{\n        match {svc}::get_by_id({arg}, &linked.id){} {{\n            \
@@ -1298,7 +1304,7 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
             let create_err = match variant {
                 Some(v) => format!(
                     ".map_err(|e| match e {{\n            e @ {} if data.id.is_some() => \
-                     app_error(e).with_pointer(\"/data/id\"),\n            e => app_error(e),\n        }})",
+                     ontogen_app_error(e).with_pointer(\"/data/id\"),\n            e => ontogen_app_error(e),\n        }})",
                     v.pattern(&app_error_path(config))
                 ),
                 None => map_err.to_string(),
@@ -1380,13 +1386,16 @@ fn legacy_list_handler(
     if let Some(qp) = query_param {
         let qt = extract_input_type(&qp.ty);
         extractors.push_str(&format!("\n    ontogen_filter: Result<axum::extract::Query<{qt}>, QueryRejection>,"));
-        unwraps.push_str("    let axum::extract::Query(ontogen_filter) = ontogen_filter.map_err(query_rejection)?;\n");
+        unwraps.push_str(
+            "    let axum::extract::Query(ontogen_filter) = ontogen_filter.map_err(ontogen_query_rejection)?;\n",
+        );
         filter_args.push("ontogen_filter".to_string());
     }
     for pp in &plain_params {
         let name = &pp.name;
         extractors.push_str(&format!("\n    {name}: Result<axum::extract::Query<String>, QueryRejection>,"));
-        unwraps.push_str(&format!("    let axum::extract::Query({name}) = {name}.map_err(query_rejection)?;\n"));
+        unwraps
+            .push_str(&format!("    let axum::extract::Query({name}) = {name}.map_err(ontogen_query_rejection)?;\n"));
         filter_args.push(format!("&{name}"));
     }
 
@@ -1405,7 +1414,8 @@ fn legacy_list_handler(
         list_args.extend(["Some(u64::from(ontogen_limit))".to_string(), "Some(u64::from(ontogen_offset))".to_string()]);
         let list_args = list_args.join(", ");
         extractors.push_str("\n    ontogen_page: Result<axum::extract::Query<PaginationParams>, QueryRejection>,");
-        unwraps.push_str("    let axum::extract::Query(ontogen_page) = ontogen_page.map_err(query_rejection)?;\n");
+        unwraps
+            .push_str("    let axum::extract::Query(ontogen_page) = ontogen_page.map_err(ontogen_query_rejection)?;\n");
         out.push_str(&format!(
             "\
 async fn {handler_name}({extractors}
@@ -1719,16 +1729,16 @@ const PAGE_RESULT: &str = "    let ontogen_result = PaginatedResult {\n        i
 
 /// Shared SSE plumbing, emitted once when any module has events.
 ///
-/// `sse_stream` turns an event fn's receiver into frames with
+/// `ontogen_sse_stream` turns an event fn's receiver into frames with
 /// `ontogen_core::events::next_frame`: a lagged receiver becomes an
 /// `event: lag` frame carrying `{"skipped":n}` and the stream stays open;
 /// closed senders end it. Keep-alive comments let a dead client's stream (and
 /// its receiver) drop before the next event. Each item's `data:` is written
-/// by the handler's `FrameData` (§12): `result_frame`, or the entity's own
-/// `{module}_frame_data`.
+/// by the handler's `FrameData` (§12): `ontogen_result_frame`, or the entity's own
+/// `ontogen_{module}_frame_data`.
 const SSE_HELPERS: &str = "\
 /// How an event op's items are written into their frames' `data:`:
-/// `result_frame`, or the item entity's own `…_frame_data`.
+/// `ontogen_result_frame`, or the item entity's own `ontogen_…_frame_data`.
 type FrameData<T> = fn(Event, &T) -> Result<Event, axum::Error>;
 
 /// One frame as an SSE event: an item as event `name`, its `data:` written
@@ -1749,7 +1759,7 @@ fn sse_event<T>(name: &'static str, frame: EventFrame<T>, data: FrameData<T>) ->
 }
 
 /// An event op's receiver as an SSE stream of frames, kept alive while idle.
-fn sse_stream<T>(
+fn ontogen_sse_stream<T>(
     name: &'static str,
     rx: tokio::sync::broadcast::Receiver<T>,
     id: ontogen_core::events::IdFn<T>,
@@ -1844,7 +1854,9 @@ fn generate_sse_handler(
         out.push_str(&format!(") -> {sse_type} {{\n"));
     }
     if !query_params.is_empty() {
-        out.push_str("    let axum::extract::Query(ontogen_query) = ontogen_query.map_err(query_rejection)?;\n");
+        out.push_str(
+            "    let axum::extract::Query(ontogen_query) = ontogen_query.map_err(ontogen_query_rejection)?;\n",
+        );
     }
 
     let mut args: Vec<String> = Vec::new();
@@ -1879,15 +1891,15 @@ fn generate_sse_handler(
     let id_fn = if resumable { "ontogen_core::events::seq_id" } else { "ontogen_core::events::no_id" };
     let data_fn = match config.resources.by_item_type(&ev.item_type_ast) {
         Some(resource) => resource_names(&resource.module).frame,
-        None => "result_frame".to_string(),
+        None => "ontogen_result_frame".to_string(),
     };
     if ev.returns_result {
-        let map_err = if event_returns_app_error(ev, config) { "app_error" } else { "internal_error" };
+        let map_err = if event_returns_app_error(ev, config) { "ontogen_app_error" } else { "ontogen_internal_error" };
         out.push_str(&format!("    let ontogen_rx = {call}{await_str}.map_err({map_err})?;\n"));
     } else {
         out.push_str(&format!("    let ontogen_rx = {call}{await_str};\n"));
     }
-    let stream = format!("sse_stream(\"{ev_name}\", ontogen_rx, {id_fn}, {data_fn})");
+    let stream = format!("ontogen_sse_stream(\"{ev_name}\", ontogen_rx, {id_fn}, {data_fn})");
     if fallible {
         out.push_str(&format!("    Ok({stream})\n}}\n\n"));
     } else {
