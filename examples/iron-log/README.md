@@ -51,6 +51,15 @@ IRON_LOG_DB=iron-log.sqlite cargo run --bin iron-log-http   # keep the data in a
 curl -s localhost:3004/api/workouts | jq
 ```
 
+Every create, update and delete is published on the activity event routes,
+`/api/events/activity-feed` (all kinds) and
+`/api/events/activity-for-kind/{kind}` (`exercise`, `workout`,
+`workout_set` or `tag`):
+
+```bash
+curl -sN localhost:3004/api/events/activity-for-kind/workout
+```
+
 `cargo run` on its own still starts the Tauri app.
 
 ## Project Structure
@@ -79,9 +88,6 @@ iron-log/
 - The Tauri app does not initialize its database and no migrations are
   included. Only the headless HTTP server creates its tables, from the
   generated entities.
-- Nothing publishes an `Activity` yet, so the event routes
-  (`/api/events/activity-feed`, `/api/events/activity-for-kind/{kind}`)
-  accept a subscription that carries only keep-alive comments.
 
 ## See also
 
