@@ -3253,8 +3253,8 @@ fn assert_refused<T>(result: Result<T, String>, parts: &[&str]) {
 fn a_sorted_list_filter_named_sort_is_refused_where_the_ipc_transport_is_emitted() {
     let modules = list_filtered("tag.rs", "sort: &str");
     let message = "ontogen: the IPC command `tag_list` cannot be generated: `tag::list` takes an argument named \
-                   `sort`, which is the IPC wire key the command itself uses for the list's sort keys, so the two \
-                   would collide. Rename the argument.";
+                   `sort`, which the command takes under the IPC wire key `sort`, the key it uses for the list's sort \
+                   keys, so the two would collide. Rename the argument.";
     assert_refused(try_sorted_clients(&modules, false, |_| {}), &[message]);
     assert_refused(try_sorted_clients(&modules, false, clients_only(is_transport)), &[message]);
     let (server, clients) = try_sorted_stack(&modules, false, clients_only(is_transport), true);
@@ -3332,6 +3332,104 @@ pub async fn tag_changes(state: &AppState, channel: Option<String>) -> Result<to
             scope_under("project_id")(config);
         }),
         &["the IPC command `tag_list`", "`tag::list` takes an argument named `project_id`", "route prefix parameter"],
+    );
+}
+
+/// The IPC transport invokes each command with its arguments camelCased,
+/// which is how Tauri reads them, so a bare filter `sort_` on a sorted list
+/// is a second `sort` key in the invoke payload (`{ sort, sort: options?.sort
+/// }`), which TypeScript rejects. iron-log-md's shape — a sorted list with a
+/// filter `sort_`, its client beside an Axum server alone — fails the build
+/// as a client codegen error, naming the argument and the key it travels
+/// under.
+#[test]
+fn a_sorted_list_filter_named_sort_underscore_is_refused_where_the_ipc_transport_is_emitted() {
+    let modules = list_filtered("tag.rs", "sort_: &str");
+    let message = "client codegen error: ontogen: the IPC command `tag_list` cannot be generated: `tag::list` takes \
+                   an argument named `sort_`, which the command takes under the IPC wire key `sort`, the key it uses \
+                   for the list's sort keys, so the two would collide. Rename the argument.";
+    let (server, clients) = try_sorted_stack(&modules, false, clients_only(is_transport), true);
+    assert!(server.unwrap().is_ok(), "the Axum server takes `filter[sort_]`");
+    assert_eq!(clients.err().as_deref(), Some(message));
+    assert_refused(try_sorted_clients(&modules, false, |_| {}), &[message]);
+
+    // The HTTP-only client sends it as `filter[sort_]` beside `sort`.
+    let http = try_sorted_clients(&modules, false, clients_only(is_http_ts));
+    assert!(http.is_ok(), "{:?}", http.err());
+}
+
+/// Every IPC wire-key rule compares the keys arguments travel under, the
+/// camelCased names: `query_` beside a `*Query` struct, a paginated
+/// junction list's `limit_`, an event's `channel_`, an argument
+/// `project_id_` under the `project_id` route prefix, and a route prefix
+/// parameter `sort_` on a sorted list are each refused on the clients
+/// stage.
+#[test]
+fn the_ipc_transport_refuses_every_wire_key_its_commands_take_camelcased() {
+    let replace = |modules: Vec<(&'static str, String)>, file: &str, from: &str, to: &str| {
+        let mut modules = modules;
+        let (_, source) = modules.iter_mut().find(|(f, _)| *f == file).unwrap();
+        assert!(source.contains(from), "{source}");
+        *source = source.replace(from, to);
+        modules
+    };
+    let query = replace(
+        sort_modules(false),
+        "ticket.rs",
+        "query: ListTicketsQuery, owner: &str",
+        "filter: ListTicketsQuery, query_: &str",
+    );
+    assert_refused(
+        try_sorted_clients(&query, false, clients_only(is_transport)),
+        &["`ticket::list` takes an argument named `query_`", "IPC wire key `query`", "`*Query` filter struct"],
+    );
+
+    let limit = replace(
+        sort_modules(true),
+        "ticket.rs",
+        "list_tags(store: &Store, ticket_id",
+        "list_tags(store: &Store, limit_",
+    );
+    assert_refused(
+        try_sorted_clients(&limit, true, clients_only(is_transport)),
+        &["`ticket::list_tags` takes an argument named `limit_`", "IPC wire key `limit`"],
+    );
+
+    let mut channel = sort_modules(false);
+    channel.push((
+        "feed.rs",
+        "use crate::schema::Tag;
+use crate::AppState;
+
+pub async fn tag_changes(state: &AppState, channel_: Option<String>) -> Result<tokio::sync::broadcast::Receiver<Tag>, anyhow::Error> { todo!() }
+"
+        .to_string(),
+    ));
+    assert_refused(
+        try_sorted_clients(&channel, false, clients_only(is_transport)),
+        &["`feed::tag_changes` takes an argument named `channel_`", "IPC wire key `channel`"],
+    );
+
+    let scoped = list_filtered("tag.rs", "project_id_: &str");
+    assert_refused(
+        try_sorted_clients(&scoped, false, |config| {
+            config.generators.retain(is_transport);
+            scope_under("project_id")(config);
+        }),
+        &["`tag::list` takes an argument named `project_id_`", "IPC wire key `projectId`", "route prefix parameter"],
+    );
+
+    assert_refused(
+        try_sorted_clients(&sort_modules(false), false, |config| {
+            config.generators.retain(is_transport);
+            scope_under("sort_")(config);
+        }),
+        &[
+            "is called with the route prefix parameter `sort_`",
+            "IPC wire key `sort`",
+            "the list's sort keys",
+            "Rename the route prefix parameter.",
+        ],
     );
 }
 

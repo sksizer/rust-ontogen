@@ -58,9 +58,8 @@ use crate::servers::parse;
 /// # Errors
 ///
 /// Returns [`CodegenError::Client`] when an entity cannot be served as a
-/// JSON:API resource, and [`CodegenError::Server`] for parse, I/O, or
-/// formatting failure. (That variant predates the split and remains shared
-/// with the server pipeline.)
+/// JSON:API resource, when an API fn cannot be served as a client method,
+/// and for parse, I/O, or formatting failure.
 pub fn generate(
     schema: &SchemaOutput,
     _api: Option<&ApiOutput>,
@@ -94,7 +93,7 @@ pub fn generate(
         extra_surfaces: config.extra_surfaces.clone(),
     };
 
-    generate_clients(&internal).map(|_| ()).map_err(CodegenError::Server)
+    generate_clients(&internal).map(|_| ()).map_err(CodegenError::Client)
 }
 
 /// Run the client-side generation pipeline.

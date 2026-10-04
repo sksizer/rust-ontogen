@@ -6762,8 +6762,8 @@ pub async fn list(store: &Store, filter: GadgetQuery, query: Option<String>) -> 
     assert_eq!(
         ipc_generation_error(&[("gadget.rs", gadget)], false),
         "ontogen: the IPC command `gadget_list` cannot be generated: `gadget::list` takes an argument named `query`, \
-         which is the IPC wire key the command itself uses for the list's `*Query` filter struct, so the two would \
-         collide. Rename the argument."
+         which the command takes under the IPC wire key `query`, the key it uses for the list's `*Query` filter \
+         struct, so the two would collide. Rename the argument."
     );
 }
 
@@ -6780,8 +6780,8 @@ pub async fn add_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<(), A
     assert_eq!(
         ipc_generation_error(&[("task.rs", task)], true),
         "ontogen: the IPC command `task_list_tags` cannot be generated: `task::list_tags` takes an argument named \
-         `limit`, which is the IPC wire key the command itself uses for the page's `limit` and `offset`, so the two \
-         would collide. Rename the argument."
+         `limit`, which the command takes under the IPC wire key `limit`, the key it uses for the page's `limit` and \
+         `offset`, so the two would collide. Rename the argument."
     );
     let offset = task.replace("limit: &str", "offset: &str");
     assert!(ipc_generation_error(&[("task.rs", &offset)], true).contains("takes an argument named `offset`"));
@@ -6804,8 +6804,8 @@ pub fn thing_changes(state: &AppState, channel: String) -> tokio::sync::broadcas
     assert_eq!(
         ipc_generation_error(&[("feed.rs", feed)], false),
         "ontogen: the IPC command `thing_changes_subscribe` cannot be generated: `feed::thing_changes` takes an \
-         argument named `channel`, which is the IPC wire key the command itself uses for the subscription's event \
-         channel, so the two would collide. Rename the argument."
+         argument named `channel`, which the command takes under the IPC wire key `channel`, the key it uses for the \
+         subscription's event channel, so the two would collide. Rename the argument."
     );
 }
 
@@ -6834,8 +6834,8 @@ pub async fn archive(store: &Store, project_id: &str) -> Result<(), AppError> { 
     assert_eq!(
         scoped_generation_error(&[("gadget.rs", archive)], ipc),
         "ontogen: the IPC command `gadget_archive` cannot be generated: `gadget::archive` takes an argument named \
-         `project_id`, which is the IPC wire key the command itself uses for the route prefix parameter, so the two \
-         would collide. Rename the argument."
+         `project_id`, which the command takes under the IPC wire key `projectId`, the key it uses for the route \
+         prefix parameter, so the two would collide. Rename the argument."
     );
     let list = "\
 pub async fn list(store: &Store, project_id: Option<String>) -> Result<Vec<Gadget>, AppError> { todo!() }
@@ -6853,6 +6853,77 @@ pub async fn list(store: &Store, project_id: Option<String>) -> Result<Vec<Gadge
         config.generators = vec![ServerGenerator::TauriIpc { output: tmp.path().join("ipc.rs") }];
         crate::servers::generate_transport(&config).unwrap_or_else(|e| panic!("unscoped: {e}"));
     }
+}
+
+/// Tauri reads each command parameter under its name camelCased, so an
+/// argument whose name camelCases to one of the command's own keys, or to
+/// another argument's, collides with it although the Rust names differ:
+/// `query_` with a `*Query` struct's `query`, `limit_` with a paginated
+/// junction list's page, `channel_` with a subscription's channel, and
+/// `tag_` with an argument `tag`.
+#[test]
+fn an_ipc_command_refuses_arguments_that_camelcase_to_one_key() {
+    let collision = |command: &str, function: &str, arg: &str, key: &str, use_: &str| {
+        format!(
+            "ontogen: the IPC command `{command}` cannot be generated: `{function}` takes an argument named `{arg}`, \
+             which the command takes under the IPC wire key `{key}`, the key it uses for {use_}, so the two would \
+             collide. Rename the argument."
+        )
+    };
+    let gadget = "\
+pub async fn list(store: &Store, filter: GadgetQuery, query_: Option<String>) -> Result<Vec<Gadget>, AppError> \
+  { todo!() }
+";
+    assert_eq!(
+        ipc_generation_error(&[("gadget.rs", gadget)], false),
+        collision("gadget_list", "gadget::list", "query_", "query", "the list's `*Query` filter struct")
+    );
+
+    let task = "\
+pub async fn list_tags(store: &Store, limit_: &str) -> Result<Vec<Tag>, AppError> { todo!() }
+pub async fn add_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }
+";
+    assert_eq!(
+        ipc_generation_error(&[("task.rs", task)], true),
+        collision("task_list_tags", "task::list_tags", "limit_", "limit", "the page's `limit` and `offset`")
+    );
+
+    let feed = "\
+pub fn thing_changes(state: &AppState, channel_: String) -> tokio::sync::broadcast::Receiver<String> { todo!() }
+";
+    assert_eq!(
+        ipc_generation_error(&[("feed.rs", feed)], false),
+        collision(
+            "thing_changes_subscribe",
+            "feed::thing_changes",
+            "channel_",
+            "channel",
+            "the subscription's event channel"
+        )
+    );
+
+    let archive = "\
+pub async fn archive(store: &Store, tag: &str, tag_: &str) -> Result<(), AppError> { todo!() }
+";
+    assert_eq!(
+        ipc_generation_error(&[("gadget.rs", archive)], false),
+        collision("gadget_archive", "gadget::archive", "tag_", "tag", "the argument `tag`")
+    );
+}
+
+/// The route prefix parameter travels camelCased too: an argument
+/// `project_id_` takes its key, `projectId`.
+#[test]
+fn a_scoped_ipc_command_refuses_an_argument_that_camelcases_to_the_route_prefix() {
+    let archive = "\
+pub async fn archive(store: &Store, project_id_: &str) -> Result<(), AppError> { todo!() }
+";
+    assert_eq!(
+        scoped_generation_error(&[("gadget.rs", archive)], |output| ServerGenerator::TauriIpc { output }),
+        "ontogen: the IPC command `gadget_archive` cannot be generated: `gadget::archive` takes an argument named \
+         `project_id_`, which the command takes under the IPC wire key `projectId`, the key it uses for the route \
+         prefix parameter, so the two would collide. Rename the argument."
+    );
 }
 
 /// A scoped MCP tool reads the route prefix parameter from its arguments
@@ -9249,8 +9320,8 @@ fn an_ipc_sorted_list_refuses_a_filter_named_sort() {
     assert_eq!(
         crate::servers::generate_transport(&config).unwrap_err(),
         "ontogen: the IPC command `task_list` cannot be generated: `task::list` takes an argument named `sort`, which \
-         is the IPC wire key the command itself uses for the list's sort keys, so the two would collide. Rename the \
-         argument."
+         the command takes under the IPC wire key `sort`, the key it uses for the list's sort keys, so the two would \
+         collide. Rename the argument."
     );
     // HTTP reads it from `filter[sort]`, which `sort` cannot collide with.
     config.generators = vec![http_gen(tmp.path().join("http.rs"))];
@@ -9260,6 +9331,60 @@ fn an_ipc_sorted_list_refuses_a_filter_named_sort() {
     write_synthetic_api(&config.api_dir, "task.rs", &unsorted);
     let ipc = generate_one(tmp.path(), config, ipc_gen);
     assert!(compact(&ipc).contains(&compact("pub async fn task_list( sort: Option<String>,")), "{ipc}");
+}
+
+/// A sorted list's own keys are taken by what Tauri reads them under, the
+/// parameter's name camelCased: a filter `sort_` takes the sort keys'
+/// `sort` and a filter `limit_` the page's `limit`, and so does a route
+/// prefix parameter named `sort_`. Unsorted, a filter `sort_` is a filter
+/// like any other.
+#[test]
+fn an_ipc_sorted_list_refuses_a_filter_or_prefix_that_camelcases_to_its_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = resource_fixture(tmp.path(), true);
+    config.generators = vec![ipc_gen(tmp.path().join("ipc.rs"))];
+    let refused = |config: &Config, filter: &str| {
+        let task =
+            task_with_list(&format!("{filter}, order: &[OrderBy<TaskSortField>], {PAGE}"), &format!(", {filter}"));
+        write_synthetic_api(&config.api_dir, "task.rs", &task);
+        crate::servers::generate_transport(config).unwrap_err()
+    };
+    assert_eq!(
+        refused(&config, "sort_: &str"),
+        "ontogen: the IPC command `task_list` cannot be generated: `task::list` takes an argument named `sort_`, \
+         which the command takes under the IPC wire key `sort`, the key it uses for the list's sort keys, so the two \
+         would collide. Rename the argument."
+    );
+    assert_eq!(
+        refused(&config, "limit_: &str"),
+        "ontogen: the IPC command `task_list` cannot be generated: `task::list` takes an argument named `limit_`, \
+         which the command takes under the IPC wire key `limit`, the key it uses for the page's `limit` and `offset`, \
+         so the two would collide. Rename the argument."
+    );
+
+    // Every sorted list collides with it; `epic`'s is the first.
+    write_synthetic_api(&config.api_dir, "task.rs", &sorted_crud_source("task"));
+    config.route_prefix = Some(RoutePrefix {
+        segments: "projects/:sort_".to_string(),
+        state_accessor: "store_for".to_string(),
+        params: vec![PrefixParam {
+            name: "sort_".to_string(),
+            rust_type: "uuid::Uuid".to_string(),
+            ts_type: "string".to_string(),
+        }],
+    });
+    assert_eq!(
+        crate::servers::generate_transport(&config).unwrap_err(),
+        "ontogen: the IPC command `epic_list` cannot be generated: `epic::list` is called with the route prefix \
+         parameter `sort_`, which the command takes under the IPC wire key `sort`, the key it uses for the list's \
+         sort keys, so the two would collide. Rename the route prefix parameter."
+    );
+    config.route_prefix = None;
+
+    let unsorted = task_with_list(&format!("sort_: &str, {PAGE}"), ", sort_: &str");
+    write_synthetic_api(&config.api_dir, "task.rs", &unsorted);
+    let ipc = generate_one(tmp.path(), config, ipc_gen);
+    assert!(compact(&ipc).contains(&compact("pub async fn task_list( sort_: String,")), "{ipc}");
 }
 
 /// The MCP list tool advertises `sort` as an array of the entity's sort

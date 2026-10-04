@@ -13,6 +13,7 @@ use crate::servers::generators::{filter_arg, surface_use_stmts};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{
     NamingConfig, capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
+    snake_to_camel,
 };
 
 /// Returns the generated prefix param line for IPC commands (e.g., `project_id: Option<String>,`).
@@ -124,116 +125,132 @@ impl WireKeyScope<'_> {
     }
 }
 
-/// Refuses a fn whose IPC command would take an argument under a name the
-/// command itself takes another parameter under. A command's parameter
-/// names are the IPC wire keys the TS transport invokes it with, so neither
-/// side can be renamed in the generated code:
+/// Refuses a fn whose IPC command would take two arguments under one invoke
+/// key. Tauri reads each command parameter from the invoke payload under
+/// its name camelCased, and the TS transport invokes with the same keys, so
+/// two parameters whose names camelCase alike (`sort` and `sort_`,
+/// `project_id` and `project_id_`) would share one key. The command's own
+/// parameters cannot be renamed in the generated code:
 ///
-/// - a list that takes a `*Query` struct takes it as `query`, so no other
-///   argument of it may be named `query`;
-/// - a list that takes an order takes its sort keys as `sort`, so no filter
-///   of it may be named `sort`;
-/// - a paginated junction list takes the page as `limit` and `offset`, so
-///   its one argument, the parent's id, may be named neither (a paginated
-///   list's own page is its last two parameters, which
-///   `parse::check_paginated_lists` holds it to, so it has no other `limit`
-///   or `offset`);
-/// - an event subscription takes its channel as `channel`, so no argument of
-///   the event fn may be named `channel`;
-/// - under a route prefix, every fn's command takes the prefix parameter
-///   (`project_id`) under its name, so no other parameter of the command may
-///   be named like it.
+/// - `id` and `input` for a CRUD op's record id and input;
+/// - `query` for a list's `*Query` struct, `sort` for the sort keys of a
+///   list that takes an order, and `limit` and `offset` for the page of a
+///   paginated list or junction list;
+/// - `channel` for an event subscription's channel;
+/// - under a route prefix, the prefix parameter (`project_id`) for every
+///   fn's command but an event subscription, which is not project-scoped.
+///
+/// Every other parameter carries a fn argument under the argument's own
+/// name, so an argument may collide with one of these or with another
+/// argument, and the prefix parameter with one of the command's own.
 pub(crate) fn check_wire_keys(modules: &[ApiModule], scope: &WireKeyScope<'_>) -> Result<(), String> {
-    let refuse = |m: &ApiModule, fn_name: &str, command: &str, arg: &str, use_: &str| {
-        Err(format!(
-            "ontogen: the IPC command `{command}` cannot be generated: `{}::{fn_name}` takes an argument named \
-             `{arg}`, which is the IPC wire key the command itself uses for {use_}, so the two would collide. \
-             Rename the argument.",
-            m.name
-        ))
-    };
     for m in modules {
         for f in &m.functions {
             let command = command_name_in(scope.naming, &m.name, f);
             if command.is_empty() || scope.skip_commands.contains(&command) {
                 continue;
             }
-            match classify_op(m, f) {
-                OpKind::List => {
-                    let bare = f.bare_filters();
-                    if f.filter_struct().is_some()
-                        && let Some(p) = bare.iter().find(|p| p.name == "query")
-                    {
-                        return refuse(m, &f.name, &command, &p.name, "the list's `*Query` filter struct");
-                    }
-                    if f.takes_order()
-                        && let Some(p) = bare.iter().find(|p| p.name == "sort")
-                    {
-                        return refuse(m, &f.name, &command, &p.name, "the list's sort keys");
-                    }
-                }
-                OpKind::JunctionList { .. } if scope.paginated(m, f) && f.return_type.starts_with("Vec<") => {
-                    if let Some(p) = f.params.iter().find(|p| p.name == "limit" || p.name == "offset") {
-                        return refuse(m, &f.name, &command, &p.name, "the page's `limit` and `offset`");
-                    }
-                }
-                _ => {}
-            }
-            if let Some(prefix) = scope.route_prefix {
-                let param = &prefix.params[0].name;
-                if command_arg_names(m, f, scope.paginated(m, f)).contains(&param.as_str()) {
-                    return refuse(m, &f.name, &command, param, "the route prefix parameter");
-                }
-            }
+            let (own, args) = command_wire_keys(m, f, scope.paginated(m, f));
+            let prefix = scope.route_prefix.map(|prefix| prefix.params[0].name.as_str());
+            check_command_keys(m, &f.name, &command, own, prefix, &args)?;
         }
         for ev in &m.events {
-            if let Some(p) = ev.params.iter().find(|p| p.name == "channel") {
-                let command = format!("{}_subscribe", ev.name);
-                return refuse(m, &ev.name, &command, &p.name, "the subscription's event channel");
-            }
+            let command = format!("{}_subscribe", ev.name);
+            let args: Vec<&str> = ev.params.iter().map(|p| p.name.as_str()).collect();
+            check_command_keys(
+                m,
+                &ev.name,
+                &command,
+                vec![("channel", "the subscription's event channel")],
+                None,
+                &args,
+            )?;
         }
     }
     Ok(())
 }
 
-/// The names of the parameters a fn's command takes for its arguments, as
-/// the generator emits them: `id` and `input` for CRUD ops, `query` for a
-/// list's `*Query` struct, `sort` for a list's order, `limit` and `offset`
-/// for a paginated junction list's page, and each other argument under its
-/// own name.
-fn command_arg_names<'a>(m: &ApiModule, f: &'a ApiFn, paginated: bool) -> Vec<&'a str> {
-    match classify_op(m, f) {
-        OpKind::GetById | OpKind::Delete => vec!["id"],
-        OpKind::Create => vec!["input"],
-        OpKind::Update => vec!["id", "input"],
-        OpKind::List => f
-            .params
-            .iter()
-            .map(|p| {
-                if p.is_filter_struct() {
-                    "query"
-                } else if p.order_sort_field().is_some() {
-                    "sort"
-                } else {
-                    p.name.as_str()
-                }
-            })
-            .collect(),
-        OpKind::JunctionList { .. } if paginated && f.return_type.starts_with("Vec<") => {
-            f.params.iter().map(|p| p.name.as_str()).chain(["limit", "offset"]).collect()
+/// Refuses the first parameter of a command whose invoke key one before it
+/// already took: `own` (key, what the command takes under it), then the
+/// route prefix parameter, then the fn's arguments, in order.
+fn check_command_keys(
+    m: &ApiModule,
+    fn_name: &str,
+    command: &str,
+    own: Vec<(&str, &str)>,
+    prefix: Option<&str>,
+    args: &[&str],
+) -> Result<(), String> {
+    let collide = |named: &str, key: &str, use_: &str, rename: &str| {
+        Err(format!(
+            "ontogen: the IPC command `{command}` cannot be generated: `{}::{fn_name}` {named}, which the command \
+             takes under the IPC wire key `{key}`, the key it uses for {use_}, so the two would collide. Rename the \
+             {rename}.",
+            m.name
+        ))
+    };
+    let mut taken: Vec<(String, String)> =
+        own.into_iter().map(|(key, use_)| (key.to_string(), use_.to_string())).collect();
+    if let Some(param) = prefix {
+        let key = snake_to_camel(param);
+        if let Some((_, use_)) = taken.iter().find(|(taken, _)| *taken == key) {
+            let named = format!("is called with the route prefix parameter `{param}`");
+            return collide(&named, &key, use_, "route prefix parameter");
         }
-        _ => f.params.iter().map(|p| p.name.as_str()).collect(),
+        taken.push((key, "the route prefix parameter".into()));
+    }
+    for arg in args {
+        let key = snake_to_camel(arg);
+        if let Some((_, use_)) = taken.iter().find(|(taken, _)| *taken == key) {
+            return collide(&format!("takes an argument named `{arg}`"), &key, use_, "argument");
+        }
+        taken.push((key, format!("the argument `{arg}`")));
+    }
+    Ok(())
+}
+
+/// The invoke keys of a fn's command, as the generator emits its
+/// parameters: the ones the command takes of its own, as (key, what it
+/// takes under it), and the names of the fn arguments it takes each under
+/// its own name. A CRUD op's arguments travel only as `id` and `input`.
+fn command_wire_keys<'a>(
+    m: &ApiModule,
+    f: &'a ApiFn,
+    paginated: bool,
+) -> (Vec<(&'static str, &'static str)>, Vec<&'a str>) {
+    const PAGE: [(&str, &str); 2] =
+        [("limit", "the page's `limit` and `offset`"), ("offset", "the page's `limit` and `offset`")];
+    let args = || f.params.iter().map(|p| p.name.as_str()).collect();
+    match classify_op(m, f) {
+        OpKind::GetById | OpKind::Delete => (vec![("id", "the record's id")], vec![]),
+        OpKind::Create => (vec![("input", "the record's input")], vec![]),
+        OpKind::Update => (vec![("id", "the record's id"), ("input", "the record's input")], vec![]),
+        OpKind::List => {
+            let mut own = Vec::new();
+            if f.filter_struct().is_some() {
+                own.push(("query", "the list's `*Query` filter struct"));
+            }
+            if f.takes_order() {
+                own.push(("sort", "the list's sort keys"));
+            }
+            if paginated && f.return_type.starts_with("Vec<") {
+                own.extend(PAGE);
+            }
+            (own, f.bare_filters().into_iter().map(|p| p.name.as_str()).collect())
+        }
+        OpKind::JunctionList { .. } if paginated && f.return_type.starts_with("Vec<") => (PAGE.to_vec(), args()),
+        _ => (vec![], args()),
     }
 }
 
 /// Generate IPC command handlers and write to the output file.
 ///
 /// Each command parameter that carries a fn argument is named after it, as
-/// that name is the IPC wire key the TS transport invokes with. Every other
-/// binding a command makes of its own is `ontogen_`-prefixed
-/// (`ontogen_state`, `ontogen_store`, `ontogen_limit`, …), so an argument
-/// named `state`, `store` or `limit` neither collides with one nor is
-/// shadowed by one. Tauri's `State` extractor is matched by type, not by
+/// that name, camelCased, is the IPC wire key the TS transport invokes
+/// with. Every other binding a command makes of its own is
+/// `ontogen_`-prefixed (`ontogen_state`, `ontogen_store`, `ontogen_limit`,
+/// …), so an argument named `state`, `store` or `limit` neither collides
+/// with one nor is shadowed by one. Tauri's `State` extractor is matched by type, not by
 /// name, so its parameter is not a wire key.
 pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
     let mut out = String::new();
