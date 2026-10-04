@@ -11,7 +11,7 @@ use ontogen_core::naming::to_snake_case;
 
 use crate::servers::NamingConfig;
 use crate::servers::classify::classify_op;
-use crate::servers::parse::{ApiFn, is_page_param};
+use crate::servers::parse::ApiFn;
 
 /// Every entity of the schema as a JSON:API resource, in schema order.
 #[derive(Debug, Clone, Default)]
@@ -99,15 +99,14 @@ impl ResourceModel {
     /// `None` when the op keeps a route of its own.
     ///
     /// Every CRUD op of a resource module is served as its resource (§5.1),
-    /// except a `list` that takes a filter: no filter is read from the wire
-    /// (§7.3), so that list keeps its flat route and its flat success shape.
-    /// The server and both TypeScript HTTP clients decide with this one
-    /// predicate, so a route and the call that reaches it always agree.
+    /// a `list` that takes a filter included: its filter is read from the
+    /// `filter[…]` family (§7.3). The server and both TypeScript HTTP clients
+    /// decide with this one predicate, so a route and the call that reaches
+    /// it always agree.
     pub fn serving(&self, module: &str, f: &ApiFn) -> Option<&Resource> {
         let resource = self.by_module(module)?;
         match classify_op(f) {
-            OpKind::GetById | OpKind::Create | OpKind::Update | OpKind::Delete => Some(resource),
-            OpKind::List => (!list_takes_filter(f)).then_some(resource),
+            OpKind::List | OpKind::GetById | OpKind::Create | OpKind::Update | OpKind::Delete => Some(resource),
             _ => None,
         }
     }
@@ -121,13 +120,6 @@ impl ResourceModel {
         let last = tp.path.segments.last().filter(|seg| tp.qself.is_none() && seg.arguments.is_none())?;
         self.resources.iter().find(|r| last.ident == r.entity.name)
     }
-}
-
-/// True when `f`, a `list`, takes a filter: any parameter but its page. No
-/// filter is read from the JSON:API wire (§7.3), so such a list keeps its flat
-/// route, with or without a resource behind its module.
-pub(crate) fn list_takes_filter(f: &ApiFn) -> bool {
-    !f.params.iter().all(|p| f.takes_page() && is_page_param(p))
 }
 
 impl Relationship {
@@ -517,13 +509,17 @@ mod tests {
     }
 
     #[test]
-    fn every_crud_op_of_a_resource_module_is_served_but_a_filtered_list() {
+    fn every_crud_op_of_a_resource_module_is_served_as_its_resource() {
         let model = model(TASKS).unwrap();
         let page = [("limit", "Option<u64>"), ("offset", "Option<u64>")];
         let id = [("id", "&str")];
+        let filtered = [("title", "&str")];
+        let filtered_page = [("title", "&str"), ("limit", "Option<u64>"), ("offset", "Option<u64>")];
         for f in [
             op("list", &[]),
             op("list", &page),
+            op("list", &filtered),
+            op("list", &filtered_page),
             op("get_by_id", &id),
             op("create", &[("input", "CreateEpicInput")]),
             op("update", &[("id", "&str"), ("input", "UpdateEpicInput")]),
@@ -531,14 +527,10 @@ mod tests {
         ] {
             assert_eq!(model.serving("epic", &f).map(|r| r.resource_type.as_str()), Some("epics"), "{}", f.name);
         }
-        let filtered = [("title", "&str")];
-        let filtered_page = [("title", "&str"), ("limit", "Option<u64>"), ("offset", "Option<u64>")];
-        for f in [op("list", &filtered), op("list", &filtered_page), op("archive", &id)] {
-            assert!(model.serving("epic", &f).is_none(), "{} {:?}", f.name, f.params.len());
-        }
+        assert!(model.serving("epic", &op("archive", &id)).is_none(), "a custom op is not");
         assert!(model.serving("stats", &op("list", &[])).is_none(), "no entity, no resource");
-        assert!(list_takes_filter(&op("list", &filtered_page)));
-        assert!(!list_takes_filter(&op("list", &page)) && !list_takes_filter(&op("list", &[])));
+        assert!(op("list", &filtered_page).takes_filter());
+        assert!(!op("list", &page).takes_filter() && !op("list", &[]).takes_filter());
     }
 
     #[test]

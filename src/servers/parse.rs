@@ -201,6 +201,20 @@ impl Param {
         let name = ty.rsplit("::").next().unwrap_or(&ty);
         !name.contains(['<', '(', '[']) && name.ends_with("Input")
     }
+
+    /// True for a list's `*Query` filter struct: the type it names, under any
+    /// `&` and one `Option`, is a single path whose last segment ends in
+    /// `Query` (`ListTasksQuery`, `crate::api::TaskQuery`). Each of its fields
+    /// is one `filter[…]` member on HTTP (wire contract §7.3).
+    pub fn is_filter_struct(&self) -> bool {
+        let unref = |ty: &str| ty.trim_start_matches('&').trim_start_matches("mut ").to_string();
+        let mut ty = unref(&self.ty);
+        if let Some(inner) = ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')) {
+            ty = unref(inner);
+        }
+        let name = ty.rsplit("::").next().unwrap_or(&ty);
+        !name.contains(['<', '(', '[']) && name.ends_with("Query")
+    }
 }
 
 /// An event function: returns `broadcast::Receiver<T>` or
@@ -371,9 +385,34 @@ impl ApiFn {
     /// This function's parameters other than the page, as `name: type` — the
     /// filter a paginated `list` applies and its `count` must apply too.
     pub fn filter_params(&self) -> Vec<String> {
+        self.filter().iter().map(|p| format!("{}: {}", p.name, p.ty)).collect()
+    }
+
+    /// This function's parameters other than the page: the filter of a
+    /// `list` (wire contract §7.3), in declaration order.
+    pub fn filter(&self) -> &[Param] {
         let n = self.params.len();
         let end = if self.takes_page() { n - PAGE_PARAMS.len() } else { n };
-        self.params[..end].iter().map(|p| format!("{}: {}", p.name, p.ty)).collect()
+        &self.params[..end]
+    }
+
+    /// True when this function, a `list`, takes a filter: any parameter but
+    /// its page.
+    pub fn takes_filter(&self) -> bool {
+        !self.filter().is_empty()
+    }
+
+    /// The list's `*Query` filter struct ([`Param::is_filter_struct`]), if it
+    /// takes one.
+    pub fn filter_struct(&self) -> Option<&Param> {
+        self.filter().iter().find(|p| p.is_filter_struct())
+    }
+
+    /// The list's bare filter parameters (`skill_id: &str`): every filter
+    /// parameter that is not a `*Query` struct, each one `filter[{name}]` on
+    /// HTTP.
+    pub fn bare_filters(&self) -> Vec<&Param> {
+        self.filter().iter().filter(|p| !p.is_filter_struct()).collect()
     }
 }
 

@@ -17,7 +17,7 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::persistence::dto::{create_field_required, field_to_create_type};
-use crate::resource::{Arity, Resource, list_takes_filter, member_name};
+use crate::resource::{Arity, Resource, member_name};
 use crate::servers::classify::classify_op;
 use crate::servers::config::{Config, RoutePrefix};
 use crate::servers::error_map::VariantShape;
@@ -512,7 +512,7 @@ fn is_junction(f: &ApiFn) -> bool {
 /// A `list` that takes anything but its page: a filter. No filter is read
 /// from the wire as JSON:API (§7.3), so this list keeps its flat handler.
 fn is_filtered_list(f: &ApiFn) -> bool {
-    classify_op(f) == OpKind::List && list_takes_filter(f)
+    classify_op(f) == OpKind::List && f.takes_filter()
 }
 
 /// Every resource an event op's item type names, with the item type as the

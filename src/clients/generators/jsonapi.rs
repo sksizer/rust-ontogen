@@ -11,7 +11,7 @@ use ontogen_core::naming::to_snake_case;
 
 use crate::clients::config::Config;
 use crate::clients::generators::{command_name, ts_params_in_declaration_order};
-use crate::resource::{Arity, Resource, list_takes_filter, member_name};
+use crate::resource::{Arity, Resource, member_name};
 use crate::servers::classify::classify_op;
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param, is_page_param};
 use crate::servers::types::{extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
@@ -345,7 +345,7 @@ pub(crate) enum Served<'a> {
 pub(crate) fn served<'a>(module: &ApiModule, f: &ApiFn, config: &'a Config) -> Served<'a> {
     match config.resources.serving(&module.name, f) {
         Some(resource) => Served::Resource(resource),
-        None if classify_op(f) == OpKind::List && list_takes_filter(f) => Served::FilteredList,
+        None if classify_op(f) == OpKind::List && f.takes_filter() => Served::FilteredList,
         None => Served::Op,
     }
 }
