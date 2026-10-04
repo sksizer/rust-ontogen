@@ -497,12 +497,13 @@ only on custom ops (§10.2).
 | Route | Accepted parameters |
 |---|---|
 | `GET /api/{type}` | `filter[…]` when the list takes a filter (§7.3); `sort` (§7.4); `include` (§7.5); `page[offset]`, `page[limit]` when paginated (§7.2) |
+| `GET /api/{m}`, a filtered list with no entity behind it (§10.4) | `filter[…]` (§7.3); `opArg[limit]`, `opArg[offset]` when paginated |
 | `GET /api/{type}/{id}` | `include` (§7.5) |
 | `POST /api/{type}`; `PATCH` and `DELETE /api/{type}/{id}` | none |
 | `GET /api/{type}/{id}/{rel}` (related link) | `page[offset]`, `page[limit]` for a junction-op relationship in a paginated module (§9.1); otherwise none |
 | `GET /api/{type}/{id}/relationships/{rel}` | as for the related link |
 | `PATCH`, `POST`, `DELETE /api/{type}/{id}/relationships/{rel}` | none |
-| custom op, `GET` | `opArg[…]` (§10.2) |
+| custom op, `GET` | `opArg[…]` only (§10.2) |
 | custom op, `POST` | none |
 | event stream | outside these rules (§12) |
 
@@ -662,18 +663,18 @@ the size of that write. The contract does not promise a snapshot.
 
 ### 7.3 Filter
 
-Phase 2. Filters are hand-written: the store takes none, and the generated
-CRUD `list` takes none. Until phase 2, a hand-written `list` with any
-parameter other than its page, in any module (with or without an entity
-behind it), keeps its pre-JSON:API handler.
+Filters are hand-written: the store takes none, and the generated CRUD
+`list` takes none.
 
 **A hand-written list replaces the generated one.** A `list` written in
 `api_dir/{module}.rs` replaces the generated `list` for that module, and
-`gen_api` stops emitting it. When the module is paginated, the generated
-`count` is replaced the same way. Today the API stage keeps the generated fn
-over a scanned fn of the same name (the merge in `src/api/mod.rs`), and
-phase 2 reverses that precedence for `list` and `count`. The hand-written
-list's parameters are, in this order:
+`gen_api` does not emit it. When the module is paginated, the generated
+`count` goes too, so the module must define a `count` that takes the same
+filter parameters; a paginated module whose hand-written `list` has no
+`count` beside it is a build error. A hand-written `count` replaces the
+generated one in any module. The API stage scans the hand-written fns before
+it emits, and the merge keeps a scanned `list` or `count` over a generated one
+of the same name. The hand-written list's parameters are, in this order:
 
 1. the store;
 2. its filter parameters;
@@ -681,20 +682,55 @@ list's parameters are, in this order:
 4. `limit`, `offset`, if paginated.
 
 The matching `count` takes the same filter parameters and no `order`
-(ADR 0006 §1).
+(ADR 0006 §1). The store has no filter, so `gen_api` cannot write a
+filter-aware `count`: it is hand-written beside the hand-written `list`, and
+`meta.total` is its result. IPC and MCP forward the same filter to `list`
+and `count` (§15).
 
-**Filter parameters on the wire.** A filter parameter that is a
-user-authored `*Query` struct is read from the `filter` family. Each
-`filter[name]` parameter becomes the struct field `name`, deserialized by
-serde from the string value, exactly as `axum::extract::Query` does today.
-A bare filter parameter (e.g. `skill_id: &str`) becomes `filter[skill_id]`.
+**Filter parameters.** The filter of a `list` is every parameter after the
+store except the trailing `limit` and `offset`. Each is one of:
 
-That also fixes a defect. Today a bare parameter is extracted as
+- at most one `*Query` struct, taken by value (`ListTasksQuery`, not
+  `&ListTasksQuery` or `Option<ListTasksQuery>`). Each serde field of the
+  struct is a member `filter[field]`. A second struct, or one not taken by
+  value, is a `CodegenError`;
+- a bare parameter, which is the member `filter[{param name}]`. Its type,
+  under `&` and at most one `Option`, must be one a single value can carry:
+  `&str`, `String`, numbers, `bool`, unit enums. `Vec<_>`, tuples and schema
+  entities are a `CodegenError`. `Option<T>` is optional, and any other
+  bare parameter is required.
+
+An `*Input` parameter on a `list` is a `CodegenError`, since a list has no
+body. These errors come from the HTTP generator only: IPC and MCP accept the
+same list.
+
+**Reading the filter.** A value is deserialized as `axum::extract::Query`
+reads one field: `true` is a `bool`, `5` a number, and anything is a string.
+An `Option` that is present is `Some(value)`, so an empty value is
+`Some("")` for a string. An `Option` that is absent is `None`.
+
+Unknown members are detected from the struct's serde field names (the names
+serde derive declares, renames and aliases as serde reports them), read at
+runtime by `ontogen_jsonapi::filter_fields::<T>()`. The generated code does
+not rely on serde ignoring unknown fields, and does not use `serde_ignored`.
+An unknown member is refused in request order together with every other name
+the route does not accept (§13.2 step 5). A struct whose fields serde does
+not report (for example one with `#[serde(flatten)]`) accepts no members.
+
+The read order, after the unaccepted names, is:
+
+1. the struct's members in byte order of member name, where a repeat or a
+   value serde rejects is `400` for that member;
+2. then the struct's first missing required field, in declaration order;
+3. then the bare filters in byte order of name: a repeat, a bad value or a
+   missing required filter is `400`.
+
+Bare parameters fix a defect: before, a bare parameter was extracted as
 `Query<String>`, which cannot deserialize from a query map, so every such
-request fails: `?skill_id=abc` returns `400 invalid type: map, expected a
-string`.
+request failed (`?skill_id=abc` returned `400 invalid type: map, expected a
+string`). A bare parameter is now `filter[skill_id]`.
 
-With tasks-tracker's phase-2 `ListTasksQuery { status: Option<String>, epic_id: Option<String> }`:
+With tasks-tracker's hand-written `ListTasksQuery { status: Option<String>, epic_id: Option<String> }`:
 
 ```http
 GET /api/tasks?filter[status]=closed/done&filter[epic_id]=markdown-backend HTTP/1.1
@@ -724,13 +760,14 @@ Rules:
   names. The filter above is `filter[epic_id]`, not `filter[epic]`,
   because the struct is user-authored and ontogen does not rewrite it.
 - Each of these is `400 invalid_query_parameter` naming the parameter:
-  - a `filter[x]` that the struct does not deserialize. Serde ignores
-    unknown fields by default, so the generated code detects them (for
-    example with `serde_ignored`) instead of trusting the struct;
+  - a `filter[x]` that is not a field of the struct or a bare parameter,
+    detected from the struct's serde field names as above;
   - a value serde rejects;
   - a missing required filter (a non-`Option` field or bare parameter);
   - a nested or array form (`filter[x][]`, `filter[x][y]`, `filter[x.y]`);
   - any `filter[…]` on a list that takes no filter.
+- Links carry every filter member as sent, in canonical order (§4.3). A
+  repeated member is `400`.
 - The generated CRUD `list` takes no filter. Generic field filters are not
   part of this epic.
 
@@ -744,7 +781,7 @@ Phase 3c. `sort` is honoured on a list whose API fn takes an
   with the store's `sort_{plural}` or `order_{plural}_query` helpers so the
   order rules hold.
 
-tasks-tracker's phase-2 list gains it in phase 3c.
+tasks-tracker's hand-written list gains it in phase 3c.
 
 Sort fields are `id` plus every scalar attribute (ADR 0006 §2). `id` names
 the `#[ontology(id)]` field whatever it is called. Relationship names and
@@ -1627,7 +1664,7 @@ The §10.1 and §10.2 rules apply, with these routes:
 
 | Op | Route | Request | Response |
 |---|---|---|---|
-| `list` | `GET /api/{m}` | paginated: `opArg[limit]`, `opArg[offset]` | `meta.result`: the list, or `{items, total, limit, offset}` when paginated |
+| `list` | `GET /api/{m}` | filtered: `filter[…]` (§7.3); paginated: `opArg[limit]`, `opArg[offset]` | `meta.result`: the list, or `{items, total, limit, offset}` when paginated |
 | `get_by_id` | `GET /api/{m}/{id}` | — | `meta.result` |
 | `create` | `POST /api/{m}` | `meta.args.input` | `200`, `meta.result` |
 | `update` | `PATCH /api/{m}/{id}` | `meta.args.input` | `meta.result` |
@@ -1642,9 +1679,11 @@ A CRUD-named op in a module with no entity takes exactly its row's
 arguments: `get_by_id(id)`, `delete(id)`, `create(input)`,
 `update(id, input)`, and `list()` or `list(limit, offset)`. Any other
 parameter is a `CodegenError`, because the generated clients call these ops
-with those arguments only. The exception is `list`, where an extra parameter
-makes the list a filtered list (§7.3). Junction rows keep their fixed
-arguments.
+with those arguments only. The exception is `list`, where the extra
+parameters are its filter (§7.3): the list is `GET /api/{m}` with
+`filter[…]` and, when paginated, the `opArg` page, and it answers
+`meta.result`. The store gets the page, and `count` gets the same filter.
+Junction rows keep their fixed arguments.
 
 A body on a `DELETE` row (`delete`, `JunctionRemove`), and its
 `Content-Type`, is ignored, as for a resource `DELETE` (§3.2).
@@ -1694,6 +1733,8 @@ relationship, related, custom and event routes alike.
   on E0003's store-accessor contract.
 
 Scoped and unscoped routes MUST have identical wire behaviour. A scoped
+filtered list behaves as an unscoped one, whether it is served as a resource
+or, with no entity behind it, as a custom op (§10.4). A scoped
 list that is not served as a resource passes the page to the store's
 page-taking `list` and calls `count`, like an unscoped one, so a hand-written
 scoped `list` must honour its page. The one remaining divergence:
@@ -1837,7 +1878,11 @@ is the response:
      request order.
    - Then the accepted parameters, in canonical order (§4.3): `filter[…]`,
      `sort`, `include`, `page[offset]`, `page[limit]`, then `opArg[…]` in
-     byte order of member name.
+     byte order of member name. Within `filter[…]` (§7.3): the struct's
+     members in byte order (a repeat or a bad value, per member), then its
+     first missing required field in declaration order, then the bare
+     filters in byte order of name (a repeat, a bad value or a missing
+     required filter).
 6. **Route-level refusals** decidable without the body: the `403`s of §9's
    table.
 7. **The request body**, in the order of the operation's table. A body
@@ -2071,6 +2116,20 @@ taskList(query?: ListTasksQuery, limit?: number, offset?: number, options?: List
 `filter%5Bstatus%5D=…` and so on, skipping `null` and `undefined`. Arrays
 are not supported in filters, matching §7.3.
 
+**Filtered lists.** Method signatures are unchanged: bare parameters first
+(camelCase, typed), then `query?`, then `limit?` and `offset?` when
+paginated. The filter sent is `query` when the list takes only a struct,
+`{ skill_id: skillId }` when it takes only bare parameters, and
+`{ ...query, skill_id: skillId }` when it takes both:
+
+```ts
+httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ filter: query, page: { offset, limit } })}`)
+```
+
+A filtered list with no entity behind it is the §10.4 custom op:
+`callOp('GET', `/m${toQueryString({ filter: query, opArg: { limit, offset } })}`)`,
+and reads `meta.result`.
+
 ### 14.3 Flatten and unflatten
 
 The generator emits one pair of functions per entity, from the same
@@ -2159,6 +2218,10 @@ Payloads stay flat. JSON:API exists only at the HTTP boundary.
   arrays or `{items, total, limit, offset}` for lists. Event ops are still
   skipped.
 
+A filtered list's filter parameters are forwarded to `list` and `count` on
+both transports since https://github.com/sksizer/rust-ontogen/pull/172; the
+payloads are unchanged.
+
 Five changes reach them, none of which changes a payload's shape:
 
 1. **`sort` on list** (decision 8). The IPC list command gains an optional
@@ -2213,6 +2276,9 @@ the section that states each and its reason.
 | `prev` at or past the end points at the last page | 7.2 | An overshooting client steps back to data |
 | A hand-written `list` replaces the generated one; `order` goes after filters, before page params | 7.3 | Filter and sort must combine, and the store has no filter |
 | Filter names are the `*Query` struct's field names | 7.3 | The struct is user-authored, and ontogen does not rename it |
+| Unknown filter members are detected from the struct's serde field names | 7.3 | Serde ignores unknown fields, and a probe of the declared names refuses them in request order with every other unaccepted name |
+| The struct's members are read before the bare filters | 7.3, 13.2 | One fixed order, so the first error a client sees is deterministic |
+| A hand-written paginated `list` brings its own `count` | 7.3 | The store has no filter, so the generated count would count the table, not the filtered set |
 | `id` is the implicit last sort key | 7.4 | A total order makes pages stable (ADR 0006) |
 | Dangling linkage is skipped in `included` and related links, not an error | 7.5 | Markdown tolerates dangling wikilinks by design |
 | One id-validity rule on both backends, applied to ids being created: lowercase `[a-z0-9._~-]`, at most 200 bytes, not `index`/`log`, not a Windows device name (`con`, `nul.x`, …); an invalid one is `400` | 8.2 | A malformed id is a bad request, not a store `500`; the backends agree, and every id is a filename on Linux, macOS and Windows and a URL segment |
@@ -2253,9 +2319,9 @@ Phases 1a, 1b and 1c ship together as `0.9.0`.
 | Phase | Sections |
 |---|---|
 | 1a | Store and runtime prerequisites. The `ontogen-jsonapi` crate (documents, link building, error document, extractors). The id-validity rule and slug function shared by both backends. `IdStrategy` on SeaORM, with one build-time source of truth and derived-id retry. `{Entity}AlreadyExists` and `{Entity}IdRequired` (§13.4). The `has_many` fix and `{Child}ParentRequired` (§5.4). The markdown id-ascending default order, many_to_many order and the parity fixture's default cases (ADR 0006 §6). The SeaORM `i64` field for integer primitives under `OptionEnum`/`Other` (ADR 0006 §4). Markdown lookups of an uncreatable id answer `{Entity}NotFound` (§8.2) |
-| 1b | CRUD over JSON:API. Schema input (§5.1). §3 media type, §4 documents, §5 resource objects (relationship `data` only), §6 query rules, §7.1–§7.2 list and pagination, §8 get, create, update and delete, §13 errors with the E0003 phase 0-1 scan, §13.5 `405`. §14 for CRUD methods, `JsonApiError`. Scoped CRUD routes, including their pagination (the page goes to the store). Modules with no entity behind them are left unchanged until 1c, and a `list` that takes filter parameters keeps its pre-JSON:API handler until phase 2 |
+| 1b | CRUD over JSON:API. Schema input (§5.1). §3 media type, §4 documents, §5 resource objects (relationship `data` only), §6 query rules, §7.1–§7.2 list and pagination, §8 get, create, update and delete, §13 errors with the E0003 phase 0-1 scan, §13.5 `405`. §14 for CRUD methods, `JsonApiError`. Scoped CRUD routes, including their pagination (the page goes to the store). Modules with no entity behind them are left unchanged until 1c |
 | 1c | Everything else on the 0.9.0 wire. §10 custom ops (`meta.args`, `opArg`, singleton check, §10.4 ops served as custom, junction ops included). §12 event frames. §11.1 scoped pagination of what 1b leaves, the lists not served as resources. §14 for custom, junction and subscription methods |
-| 2 | §7.3 filter, including the hand-written-list precedence and the bare-parameter fix |
+| 2 | §7.3 filter, including the hand-written-list precedence (the API stage scans before it emits, and the transports' api dirs when `api_scan_dirs` is unset) and the bare-parameter fix. Filtered lists as resources and as custom ops (§10.4, §11.1). The TS filter family (§14.2) |
 | 3a | §9 relationship endpoints, related links and relationship `links`. The junction classification change. Scoped junction routes. TS junction methods |
 | 3b | §7.5 include |
 | 3c | §7.4 sort, the `order` argument (ADR 0006), and `sort` on TS, IPC and MCP (§14.2, §15) |

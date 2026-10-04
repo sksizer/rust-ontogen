@@ -84,7 +84,7 @@ Client-side fields (`client_generators`, `ts_skip_commands`) used to live on thi
 
 ## HTTP/Axum generation
 
-The HTTP generator produces Axum route handlers and an `entity_routes()` function. Every generated route speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/). CRUD routes for every module backed by a schema entity carry resource documents. Custom ops, junction ops and the CRUD ops of a module with no entity behind it carry meta-only documents, described under [Operations that are not CRUD](#operations-that-are-not-crud). The one exception is a hand-written `list` with filter parameters, which keeps its own query extraction and body until filters arrive in a later release.
+The HTTP generator produces Axum route handlers and an `entity_routes()` function. Every generated route speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/). CRUD routes for every module backed by a schema entity carry resource documents. Custom ops, junction ops and the CRUD ops of a module with no entity behind it carry meta-only documents, described under [Operations that are not CRUD](#operations-that-are-not-crud).
 
 The generated server depends on the `ontogen-jsonapi` runtime crate, which holds the document types, link building, error documents and request extractors. It also calls `ontogen_core::id::validate_id` to check a client-supplied id, and builds request fields with `serde_json`. Add all three to the crate that contains the generated HTTP file, the way you add `markdown-store` (the examples use path dependencies):
 
@@ -213,7 +213,7 @@ A list that is not paginated rejects `page[...]` with `400 invalid_query_paramet
 
 ### Query parameters
 
-A generated route accepts a fixed set of query parameters. Anything else is `400 invalid_query_parameter` with `source.parameter` naming it: an unknown name, a repeated name, a malformed name, `fields[...]`, and `page[...]` on a route that is not paginated. `[` and `]` are accepted raw or percent-encoded. `filter` is not accepted yet and arrives in a later release. `sort` and `include` are recognised on a list (`include` also on a get) but nothing can be sorted or included yet, so they are `400 invalid_sort_field` and `400 invalid_include_path` with `source.parameter` naming the parameter; they are not `invalid_query_parameter`.
+A generated route accepts a fixed set of query parameters. Anything else is `400 invalid_query_parameter` with `source.parameter` naming it: an unknown name, a repeated name, a malformed name, `fields[...]`, and `page[...]` on a route that is not paginated. `[` and `]` are accepted raw or percent-encoded. `filter[...]` is accepted on a list that takes filter parameters and refused on any other route. `sort` and `include` are recognised on a list (`include` also on a get) but nothing can be sorted or included yet, so they are `400 invalid_sort_field` and `400 invalid_include_path` with `source.parameter` naming the parameter; they are not `invalid_query_parameter`.
 
 ### Errors
 
@@ -331,7 +331,7 @@ A paginated junction list slices the full list in memory.
 
 **Event streams** are `text/event-stream` routes, and only the `data:` payload is JSON:API shaped. When the item type is a schema entity, `data:` is its resource object without `links`: `type`, `id`, `attributes` and `relationships` (`data` only, and left out when the entity has none). Any other item is `{"meta": {"result": …}}`. A `lag` frame stays `{"skipped": n}`. See [Event subscriptions](#event-subscriptions).
 
-**Filtered lists.** A hand-written `list` that takes filter parameters (anything besides the page), in any module, keeps its own handler with its old query extraction and body until filters arrive in a later release. Its scoped variant behaves like its unscoped one.
+**Filtered lists.** A hand-written `list` that takes filter parameters (anything besides the page) is served like any list. In a module named after an entity it is `GET /api/{type}` with `filter[...]` and `page[...]`, and `meta.total` comes from the module's hand-written `count`, which takes the same filter. In a module with no entity behind it it is a custom op at `GET /api/{module}` with `filter[...]` and `opArg[limit]`/`opArg[offset]`, answering `meta.result`. A filter is at most one `*Query` struct taken by value (each serde field is `filter[field]`) plus bare parameters (`filter[name]`, optional when an `Option`). Its scoped variant behaves like its unscoped one. See the [Filtered lists recipe](/cookbook/custom-api-endpoints/#recipe-filtered-lists).
 
 Every error from these routes is the error document described under [Errors](#errors).
 

@@ -270,7 +270,7 @@ Each transport reads the same `ApiOutput` and produces handlers appropriate for 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entities` | `&[EntityDef]` | The parsed schema (`schema.entities`). A module is served as a JSON:API resource when its name is the module name of one of these entities. Pass `&[]` when you have no schema; every module is then served with the pre-JSON:API shapes. |
+| `entities` | `&[EntityDef]` | The parsed schema (`schema.entities`). A module is served as a JSON:API resource when its name is the module name of one of these entities. Pass `&[]` when you have no schema; every module is then served as a custom op, as a module with no entity behind it is. |
 | `api` | `Option<&ApiOutput>` | Structured API metadata. When `None`, falls back to scanning source files with `syn`. Reserved for future enrichment; currently ignored. |
 | `scan_dirs` | `&[PathBuf]` | Additional directories to scan. Reserved for future enrichment; currently ignored -- `config.api_dir` is always scanned. |
 | `config` | `&ServersConfig` | Server transport configuration -- which server generators to run, import paths, naming, route prefixes, pagination, etc. |

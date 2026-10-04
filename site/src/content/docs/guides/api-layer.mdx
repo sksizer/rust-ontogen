@@ -125,7 +125,7 @@ The scanner picks up both functions, classifies `get_overdue` as a `CustomGet` (
 
 ### Merge rules
 
-When a scanned module has the same name as a generated module (like `task`), the scanned functions are *folded into* the existing module. If a scanned function has the same name as a generated one, the generated version wins -- you can't override `list` or `create` through scanning.
+When a scanned module has the same name as a generated module (like `task`), the scanned functions are *folded into* the existing module. If a scanned function has the same name as a generated one, the generated version wins, with two exceptions: a hand-written `list` and a hand-written `count` replace the generated ones. `gen_api` scans before it emits, so it does not write the replaced fns. In a paginated module a hand-written `list` also replaces the generated `count`, so you write a `count` that takes the same filter (see [Filtered lists](/cookbook/custom-api-endpoints/#recipe-filtered-lists)).
 
 When a scanned module has no generated counterpart (a purely custom module), it's added as a new entry in `ApiOutput`.
 

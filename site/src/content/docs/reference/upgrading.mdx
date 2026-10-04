@@ -5,7 +5,7 @@ description: Every breaking change in 0.9 and how to migrate, grouped by area.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Version 0.9 is still in progress. This page lists the breaking changes that have landed so far: the store and runtime changes, and the HTTP wire change, where CRUD routes, custom ops, junction ops, event frames and every error move to JSON:API. Filtering, sorting and relationship endpoints arrive in later releases, and their sections will be added here. Work through the sections that apply to your project.
+Version 0.9 is still in progress. This page lists the breaking changes that have landed so far: the store and runtime changes, and the HTTP wire change, where CRUD routes, custom ops, junction ops, event frames and every error move to JSON:API. Filtered lists have landed too. Sorting and relationship endpoints arrive in later releases, and their sections will be added here. Work through the sections that apply to your project.
 
 ## Build configuration
 
@@ -77,7 +77,7 @@ ontogen::gen_servers(&schema.entities, Some(&api), &scan_dirs, &servers_config)?
 ontogen::gen_clients(&schema.entities, Some(&api), &scan_dirs, &clients_config)?;
 ```
 
-`Pipeline` users change nothing. A direct caller with no schema passes `&[]`; every module is then served with the pre-JSON:API shapes, and the admin registry has no field metadata.
+`Pipeline` users change nothing. A direct caller with no schema passes `&[]`; every module is then served as a custom op, as a module with no entity behind it is, and the admin registry has no field metadata.
 
 The same argument is the first parameter of `ontogen::servers::generate` and `ontogen::clients::generate`, which `gen_servers` and `gen_clients` call.
 
@@ -134,6 +134,18 @@ These shapes fail `gen_servers` and `gen_clients` with a `CodegenError` that nam
 - **A parameter whose type name ends in `Input` on an op served without a body.** An `#[ontogen::http::get]` op, `get_by_id`, `delete`, `list_X` and `remove_Y` carry no request body, so such a parameter has nowhere to arrive. Change the op to a `POST`, or pass the fields as separate parameters.
 - **A CRUD-named op in a module with no entity that takes arguments beyond its route's.** Such an op takes exactly `get_by_id(id)`, `delete(id)`, `create(input)` or `update(id, input)`. Rename it, or drop the extra parameters. A `list` with extra arguments is a filtered list instead, not an error.
 - **An `Option` argument of a bodyless op that one query value cannot carry.** On a custom `GET`, an entity-less `get_by_id` or `delete`, or a junction list or remove, an `Option` whose inner type has generic arguments (`Option<Vec<String>>`), is a tuple, or is a schema entity cannot be read from one `opArg` value. Take it in a `POST` body instead.
+
+### A hand-written `list` or `count` replaces the generated one
+
+In a module named after an entity, a hand-written `list` now replaces the generated `list`, and a hand-written `count` replaces the generated `count`. Before, the generated fn was kept and the hand-written one was silently dropped, so a filtered list could not be the module's list. The API stage scans your hand-written modules before it emits, so the replaced fns are not generated at all.
+
+- When the module is paginated, a hand-written `list` also drops the generated `count`, because the generated one counts the whole table. The module must define a `count` that takes the same filter parameters as the `list` (and no page). Without one the build fails with a message saying the hand-written `list` replaces the generated `count`.
+- Any other name still keeps the generated fn over a hand-written fn of the same name.
+- `Pipeline` now scans the servers stage's `api_dir`, every extra surface's `api_dir` and the clients stage's `api_dir` for the api stage, when `api_scan_dirs` is not set. Set `api_scan_dirs` to scan something else. A direct `gen_api` caller still lists its `scan_dirs`.
+- `gen_api` no longer prints warnings about scan records it skips; the servers and clients stages print the same ones.
+- The HTTP generator refuses, as a build error, a list whose filter it cannot serve: a second `*Query` struct, a `*Query` struct that is not taken by value (`&ListTasksQuery`, `Option<ListTasksQuery>`), a bare filter whose type one value cannot carry (`Vec<_>`, a tuple, a schema entity), and an `*Input` parameter on a `list`, which has no body. IPC and MCP generation does not apply these checks.
+
+If you call the runtime crate directly, `ontogen-jsonapi` changed: `QuerySpec` has a new field `filter_fields`, so a struct literal must set it or end with `..QuerySpec::NONE`; `QuerySpec` no longer implements `PartialEq` or `Eq`; and the crate no longer depends on `serde_urlencoded`. `QueryParams` gained `filter`, `filter_member`, `required_filter_member` and `link_query`, and the crate exports `filter_fields::<T>()`.
 
 ### Depend on `ontogen-jsonapi`, `ontogen-core` and `serde_json`
 
@@ -192,7 +204,7 @@ A variant whose snake_case name equals one of ontogen's own error codes fails th
 
 ## HTTP wire
 
-Every generated HTTP route speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/), with one exception: a hand-written `list` that takes filter parameters (a `*Query` struct or bare parameters besides the page) keeps its pre-JSON:API query extraction and body until filters arrive in a later release. CRUD routes of a module backed by a schema entity carry resource documents. Custom ops, junction ops and the CRUD ops of a module with no entity behind it carry meta-only documents, described under [Custom op responses](#custom-op-responses) and the sections after it. The examples use the tasks-tracker example and iron-log.
+Every generated HTTP route speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/). CRUD routes of a module backed by a schema entity carry resource documents. Custom ops, junction ops and the CRUD ops of a module with no entity behind it carry meta-only documents, described under [Custom op responses](#custom-op-responses) and the sections after it. The examples use the tasks-tracker example and iron-log.
 
 ### Media type
 
@@ -319,9 +331,80 @@ After, `GET /api/tasks?page[offset]=20&page[limit]=10`:
 
 `meta` holds exactly the old fields (`limit` and `offset` are the effective values). `pagination` belongs to an API surface and its primary surface's value covers every module on it, so setting it pages every entity module of that surface. The tasks-tracker example now sets `.api_paginated(..)` for `task`, `epic` and `tag`, so its three lists page, over HTTP and as MCP tools. A scoped list (`route_prefix`) pages like an unscoped one: the page goes to the store. `prev` is `null` on the first page and `next` on the last. `page[limit]=0`, a non-integer, and any other `page[…]` member (`page[number]`, `page[size]`) are `400`.
 
+### Filtered lists
+
+A hand-written `list` that takes filter parameters is a JSON:API list like any other. Each filter parameter is a `filter[…]` member, and `meta.total` is the result of the module's hand-written `count`, which takes the same filter. See [Filtered lists](/cookbook/custom-api-endpoints/#recipe-filtered-lists) for how to write the pair.
+
+**A `*Query` struct.** Before, `GET /api/tasks?status=closed/done&limit=20&offset=0`:
+
+```json
+{ "items": [ … ], "total": 1, "limit": 20, "offset": 0 }
+```
+
+After, `GET /api/tasks?filter[status]=closed/done`, which answers the same document as any paginated list, with the filter carried in every link:
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "links": {
+    "self":  "/api/tasks?filter%5Bstatus%5D=closed%2Fdone&page%5Boffset%5D=0&page%5Blimit%5D=20",
+    "first": "/api/tasks?filter%5Bstatus%5D=closed%2Fdone&page%5Boffset%5D=0&page%5Blimit%5D=20",
+    "prev":  null,
+    "next":  null,
+    "last":  "/api/tasks?filter%5Bstatus%5D=closed%2Fdone&page%5Boffset%5D=0&page%5Blimit%5D=20"
+  },
+  "meta": { "total": 1, "limit": 20, "offset": 0 },
+  "data": [ … ]
+}
+```
+
+Each serde field of the struct is a member, so a `ListTasksQuery { status, epic_id }` takes `filter[status]` and `filter[epic_id]`. The member names are the field names (as serde reports them, renames included), not relationship names. Values are read as `axum::extract::Query` reads one field: `true` is a `bool`, `5` a number, anything a string, and an `Option` that is present is `Some`, so `filter[status]=` is `Some("")`.
+
+**Bare parameters.** Before, every request to a list such as `list(store, skill_id: &str)` failed with `400 invalid type: map, expected a string`, because the parameter was extracted as `Query<String>`. After, `GET /api/notes?filter[skill_id]=abc` works. A bare parameter is `filter[{parameter name}]`, optional when it is an `Option` and required otherwise. Its type, under `&` and one `Option`, must be one that a single value can carry: `&str`, `String`, numbers, `bool` or a unit enum.
+
+**A list with no entity behind it.** Before, `GET /api/reports?status=open&limit=20&offset=0` answered the flat `{items, total, limit, offset}`. After, the list is a custom op at `GET /api/reports`: the filter is `filter[…]` and the page is `opArg[limit]` and `opArg[offset]`, and the answer is a meta-only document.
+
+```http
+GET /api/reports?filter[status]=open&opArg[limit]=20&opArg[offset]=0
+```
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "meta": { "result": { "items": [ … ], "total": 3, "limit": 20, "offset": 0 } }
+}
+```
+
+An unpaginated list answers the bare array as `meta.result`. The page goes to the store, and `count` gets the same filter. A scoped list (`route_prefix`) behaves the same under its prefix.
+
+**Errors.** Each of these is `400 invalid_query_parameter` with `source.parameter` naming the parameter:
+
+- a `filter[x]` that is not a member of the list's filter, and any `filter[…]` on a list that takes none;
+- the nested and array forms `filter[x][]`, `filter[x][y]` and `filter[x.y]`;
+- a member given more than once;
+- a value serde rejects, for example `filter[done]=maybe` for a `bool`;
+- a required filter that is missing.
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "errors": [ {
+    "status": "400",
+    "code": "invalid_query_parameter",
+    "title": "Bad Request",
+    "detail": "`filter[colour]` is not a query parameter of this route",
+    "source": { "parameter": "filter[colour]" }
+  } ]
+}
+```
+
+A struct whose fields serde does not report, for example one with `#[serde(flatten)]`, accepts no members. When several things are wrong the first error wins, in a fixed order: names the route does not accept, in request order, then the struct's members in byte order, then its first missing required field, then the bare filters in byte order of name, then the page.
+
+**Links carry the filter.** Every pagination link repeats the request's `filter[…]` members in canonical order (sorted by member name, percent-encoded), so following `next` keeps the filter.
+
 ### Unknown query parameters are refused
 
-A query parameter a route does not accept is `400 invalid_query_parameter`, with `source.parameter` naming it. That includes `limit` and `offset` (use `page[…]`), `page[…]` on a list that is not paginated, `fields[…]` and `filter[…]`. A request that sends stray parameters and used to work now fails. `sort` on a list and `include` on a list or a get are recognised but cannot be honoured yet: they are `400 invalid_sort_field` and `400 invalid_include_path`.
+A query parameter a route does not accept is `400 invalid_query_parameter`, with `source.parameter` naming it. That includes `limit` and `offset` (use `page[…]`), `page[…]` on a list that is not paginated, `fields[…]`, and `filter[…]` on a list that takes no filter. A request that sends stray parameters and used to work now fails. `sort` on a list and `include` on a list or a get are recognised but cannot be honoured yet: they are `400 invalid_sort_field` and `400 invalid_include_path`.
 
 ### Related resources must exist
 
@@ -485,11 +568,11 @@ A subscribe call that fails before the stream opens now answers an error documen
 
 ### Route prefix
 
-A scoped list (`route_prefix`) that is not served as a resource, meaning a list in a module with no entity behind it or a filtered list, used to fetch every record and slice the page in memory. It now passes the page to the store's `list` and calls `count`, like an unscoped one. A hand-written scoped `list` must therefore honour its `limit` and `offset`. Scoped custom ops and junction ops follow the rules above, under the prefix. The split transport now calls the action-style scoped junction routes when a `projectId` is given (`POST …/add-tag` with `{"meta":{"args":{"task_id":…,"tag_id":…}}}`, and likewise for list and remove); before, it called nested routes that the server does not serve under a prefix. An op whose first parameter is the state rather than a store, or that takes neither, is not scoped on the server, and the split transport now calls its unscoped route even when given a `projectId`; its prefix parameter is named `_projectId`. Scoped junction ops keep their action-style routes (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`, `…/remove-tag`), but a scoped junction list on a paginated surface now pages like an unscoped one: it takes `opArg[limit]` and `opArg[offset]` and answers the `{items, total, limit, offset}` object, where it used to return the whole list.
+A scoped list (`route_prefix`) that is not served as a resource, meaning a list in a module with no entity behind it, used to fetch every record and slice the page in memory. It now passes the page to the store's `list` and calls `count`, like an unscoped one. A hand-written scoped `list` must therefore honour its `limit` and `offset`. Scoped custom ops and junction ops follow the rules above, under the prefix. The split transport now calls the action-style scoped junction routes when a `projectId` is given (`POST …/add-tag` with `{"meta":{"args":{"task_id":…,"tag_id":…}}}`, and likewise for list and remove); before, it called nested routes that the server does not serve under a prefix. An op whose first parameter is the state rather than a store, or that takes neither, is not scoped on the server, and the split transport now calls its unscoped route even when given a `projectId`; its prefix parameter is named `_projectId`. Scoped junction ops keep their action-style routes (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`, `…/remove-tag`), but a scoped junction list on a paginated surface now pages like an unscoped one: it takes `opArg[limit]` and `opArg[offset]` and answers the `{items, total, limit, offset}` object, where it used to return the whole list.
 
 ## TypeScript clients
 
-The generated `Transport` interface is unchanged, with the two exceptions below (a paginated module has no `xCount()`, and a junction add or remove is declared `Promise<null>`): the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A list that takes a query struct still sends its fields flat until filters arrive in a later release. The changes to the client's custom, junction and subscription methods follow below.
+The generated `Transport` interface is unchanged, with the two exceptions below (a paginated module has no `xCount()`, and a junction add or remove is declared `Promise<null>`): the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A filtered list sends `filter[…]`: the query struct's fields and the bare parameters, for example `toQueryString({ filter: { ...query, skill_id: skillId }, page: { offset, limit } })`, and a filtered list with no entity behind it sends `filter[…]` with `opArg[limit]` and `opArg[offset]`. Method signatures do not change. The changes to the client's custom, junction and subscription methods follow below.
 
 One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone, because no generated route uses `PUT` any more; updates use `httpPatch`. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript; the IPC transport and MCP payloads are unchanged.
 
@@ -523,7 +606,7 @@ If you call the generated HTTP routes from something other than the generated Ty
 - A create whose client `data.id` breaks the [id rule](/guides/store-layer/#creating-records) is `400 invalid_document` with `source.pointer: "/data/id"`, and the rule's message is the `detail`. An id that no strategy can supply is `400 {entity}_id_required`, whose `detail` is the store's reason.
 - Custom ops, junction ops and the CRUD ops of a module with no entity behind it: send arguments as `meta.args` (a `POST` or `PATCH` body) or `opArg[name]` (a `GET`), and read the result from `meta.result`.
 - Event streams: an entity item is a resource object, any other item is `{"meta": {"result": …}}`.
-- A filtered `list` is the one route with no change, except that its errors are `errors` documents.
+- A filtered `list`: send `filter[name]` for each query-struct field and bare parameter, and read `meta.total` as for any list. A filtered list with no entity behind it takes `filter[…]` plus `opArg[limit]` and `opArg[offset]`, and answers `meta.result`.
 
 ## SeaORM data and code
 
