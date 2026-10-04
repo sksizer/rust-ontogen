@@ -11,7 +11,7 @@ last_reviewed: '2026-10-04'
 
 # Support filtered + paginated lists with a filter-aware count
 
-> **Closed (done).** Lifted by https://github.com/sksizer/rust-ontogen/pull/172 (a paginated list may take filter parameters, and `count` takes the same filter) and by E0004 phase 2 (PR_URL_PLACEHOLDER): a hand-written `list` or `count` replaces the generated one in a module named after an entity, and a filtered list is served as JSON:API with `meta.total` from that count.
+> **Closed (done).** Lifted by https://github.com/sksizer/rust-ontogen/pull/172 (a paginated list may take filter parameters, and `count` takes the same filter) and by E0004 phase 2 (https://github.com/sksizer/rust-ontogen/pull/202): a hand-written `list` or `count` replaces the generated one in a module named after an entity, and a filtered list is served as JSON:API with `meta.total` from that count.
 >
 > What differs from the bullets below:
 >

@@ -5,13 +5,13 @@ id: E0004
 status: proposed
 title: JSON:API as the generated HTTP wire format
 created: 2026-10-03
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-04
 tags: [servers, clients, http, jsonapi, wire-format]
 ---
 # Epic — JSON:API as the generated HTTP wire format
 
 **Milestone:** M4 — Standard formats ([roadmap](../../roadmap.md))
-**Status:** proposed — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)), completing the 0.9.0 wire; phase 2 is next
+**Status:** proposed — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)), completing the 0.9.0 wire; phase 2 done ([#202](https://github.com/sksizer/rust-ontogen/pull/202)); phase 3 is next
 **Spec:** [JSON:API 1.1](https://jsonapi.org/format/)
 **Wire contract:** [`docs/jsonapi-wire-contract.md`](../../jsonapi-wire-contract.md) — normative; every phase implements against it
 **Decision records:** [ADR 0004](../../architecture/0004-jsonapi-http-wire-format.md) (this epic's decisions),
@@ -180,7 +180,7 @@ each of its sections to a phase.
 - Scoped pagination made identical to unscoped.
 - TS custom, junction and subscription methods.
 
-**Phase 2 — filter family.**
+**Phase 2 — filter family.** Done ([#202](https://github.com/sksizer/rust-ontogen/pull/202)):
 
 - `*Query` struct fields become `filter[field]`, and bare list params
   likewise. This fixes the bare-param `Query<String>` defect.
@@ -318,7 +318,7 @@ Filed when phase 0 closes; one task per phase, PR-sized.
 - [x] phase 1a — `ontogen-jsonapi` runtime crate, `IdStrategy` on SeaORM with one source of truth, `{Entity}AlreadyExists`/`IdRequired`, `has_many` fix, markdown default id order ([#197](https://github.com/sksizer/rust-ontogen/pull/197) runtime crate, [#198](https://github.com/sksizer/rust-ontogen/pull/198) store)
 - [x] phase 1b — schema input, CRUD envelope, media type, errors, PATCH, TS flattener ([#200](https://github.com/sksizer/rust-ontogen/pull/200))
 - [x] phase 1c — custom ops, ops served as custom, event frames, scoped pagination ([#201](https://github.com/sksizer/rust-ontogen/pull/201))
-- [ ] phase 2 — filter family
+- [x] phase 2 — filter family, hand-written `list`/`count` precedence, TS filter family ([#202](https://github.com/sksizer/rust-ontogen/pull/202))
 - [ ] phase 3a — relationship endpoints, related links, junction re-route
 - [ ] phase 3b — `include` compound documents
 - [ ] phase 3c — `order` argument on both backends (ADR 0006) + `sort` on every transport
