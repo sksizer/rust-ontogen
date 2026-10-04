@@ -524,8 +524,8 @@ async fn bookmark_list(
     _: AcceptGuard,
     ontogen_query: Query<PageOpArgs>,
 ) -> Result<Response, ErrorObject> {
-    let limit = ontogen_query.op_arg::<u32>("limit")?.unwrap_or(2).min(3);
-    let offset = ontogen_query.op_arg::<u32>("offset")?.unwrap_or(0);
+    let limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
+    let offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
     let items = bookmark::list(&state, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
     let total = bookmark::count(&state).await.map_err(app_error)?;
     let result = PaginatedResult { items, total, limit, offset };
@@ -1035,8 +1035,8 @@ async fn task_list_tags(
     Path(id): Path<String>,
     ontogen_query: Query<PageOpArgs>,
 ) -> Result<Response, ErrorObject> {
-    let limit = ontogen_query.op_arg::<u32>("limit")?.unwrap_or(2).min(3);
-    let offset = ontogen_query.op_arg::<u32>("offset")?.unwrap_or(0);
+    let limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
+    let offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
     let store = state.store().await.map_err(internal_error)?;
     let all = task::list_tags(&store, &id).await.map_err(app_error)?;
     let total = all.len() as u64;

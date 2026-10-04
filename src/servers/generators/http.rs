@@ -1638,8 +1638,8 @@ fn op_handler(
                 shape.page
             {
                 steps.push_str(&format!(
-                    "    let limit = ontogen_query.op_arg::<u32>(\"limit\")?.unwrap_or({default_limit}).min({max_limit});\n    \
-                     let offset = ontogen_query.op_arg::<u32>(\"offset\")?.unwrap_or(0);\n"
+                    "    let limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or({default_limit}).min({max_limit});\n    \
+                     let offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);\n"
                 ));
             }
             let mut by_name = shape.query_args.clone();

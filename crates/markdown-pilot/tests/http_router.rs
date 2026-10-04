@@ -720,8 +720,13 @@ async fn junction_ops_are_served_as_custom_ops() {
     // The page is an `opArg`, not `page[…]`.
     let reply = server.get("/api/tasks/alpha/tags?page[limit]=1").await;
     assert_eq!(reply.parameter("invalid_query_parameter"), "page[limit]");
-    let reply = server.get("/api/tasks/alpha/tags?opArg[limit]=two").await;
-    assert_eq!(reply.parameter("invalid_query_parameter"), "opArg[limit]");
+    // Its values are page values: digits only, as `page[…]` reads them.
+    for bad in ["two", "%2B5", "-1", "", "1.5"] {
+        let reply = server.get(&format!("/api/tasks/alpha/tags?opArg[limit]={bad}")).await;
+        assert_eq!(reply.parameter("invalid_query_parameter"), "opArg[limit]", "opArg[limit]={bad}");
+    }
+    let reply = server.get("/api/tasks/alpha/tags?opArg[offset]=%2B1").await;
+    assert_eq!(reply.parameter("invalid_query_parameter"), "opArg[offset]");
 
     server.send(Request::delete("/api/tasks/alpha/tags/b").body(Body::empty()).unwrap()).await.no_content();
     assert_eq!(server.store().get_task("alpha").await.expect("task").tags, ["a", "c"]);

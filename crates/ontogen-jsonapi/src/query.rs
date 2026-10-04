@@ -173,6 +173,17 @@ impl QueryParams {
         from_form_value(value).map(Some).map_err(|err| invalid(&parameter, format!("`{parameter}` is invalid: {err}")))
     }
 
+    /// `opArg[{name}]` read as a page value, or `None` when absent: the
+    /// digits `page[offset]` takes (§7.2), `0` included. A paginated list
+    /// that is not served as a resource takes its page as `opArg[limit]` and
+    /// `opArg[offset]`, and reads them as strictly as a resource list reads
+    /// `page[…]`, which [`op_arg`](Self::op_arg) would not (`%2B5` is `5` to
+    /// it). Anything else is `400 invalid_query_parameter`, with
+    /// `source.parameter` the name.
+    pub fn page_op_arg(&self, name: &str) -> Result<Option<u32>, ErrorObject> {
+        page(self.op_args.get(name), &format!("opArg[{name}]"), 0)
+    }
+
     /// Every check of the accessors, in canonical order (§13.2 step 5):
     /// `filter[…]`, `sort`, `include`, `page[offset]`, `page[limit]`,
     /// `opArg[…]`.
@@ -498,6 +509,29 @@ mod tests {
         assert_eq!(op_arg_failure::<u32>(&q, "limit"), "opArg[limit]");
         let q = QueryParams::parse(Some("opArg[limit]="), &GET_OP).unwrap();
         assert_eq!(op_arg_failure::<u32>(&q, "limit"), "opArg[limit]");
+    }
+
+    #[test]
+    fn page_op_args_read_as_page_values() {
+        const SPEC: QuerySpec = QuerySpec { op_args: &["limit", "offset"], ..QuerySpec::NONE };
+        let read =
+            |v: &str| QueryParams::parse(Some(&format!("opArg[limit]={v}")), &SPEC).unwrap().page_op_arg("limit");
+        assert_eq!(read("5").unwrap(), Some(5));
+        assert_eq!(read("020").unwrap(), Some(20));
+        assert_eq!(read("0").unwrap(), Some(0));
+        assert_eq!(read("4294967295").unwrap(), Some(u32::MAX));
+        assert_eq!(QueryParams::parse(None, &SPEC).unwrap().page_op_arg("limit").unwrap(), None);
+        for bad in ["+5", "%2B5", "-1", "", "1.5", " 5", "ten", "4294967296", "1e3"] {
+            let err = read(bad).unwrap_err();
+            assert_eq!((err.status(), err.code()), (StatusCode::BAD_REQUEST, "invalid_query_parameter"), "{bad}");
+            assert_eq!(err.source(), Some(&crate::ErrorSource::Parameter("opArg[limit]".to_owned())), "{bad}");
+            assert_eq!(err.detail(), "opArg[limit] must be an integer between 0 and 4294967295");
+        }
+        let q = QueryParams::parse(Some("opArg[offset]=1&opArg[offset]=2"), &SPEC).unwrap();
+        assert_eq!(
+            q.page_op_arg("offset").unwrap_err().source(),
+            Some(&crate::ErrorSource::Parameter("opArg[offset]".to_owned()))
+        );
     }
 
     #[test]

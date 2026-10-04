@@ -5590,8 +5590,8 @@ fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
     let list = handler("report_list");
     for step in [
         "_: AcceptGuard, ontogen_query: Query<PageOpArgs>",
-        "let limit = ontogen_query.op_arg::<u32>(\"limit\")?.unwrap_or(20).min(100);",
-        "let offset = ontogen_query.op_arg::<u32>(\"offset\")?.unwrap_or(0);",
+        "let limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
+        "let offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);",
         "report::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;",
         "let total = report::count(&store).await.map_err(app_error)?;",
         "let result = PaginatedResult { items, total, limit, offset };",
@@ -6028,8 +6028,8 @@ fn junction_ops_are_served_as_custom_ops_at_their_routes() {
         &handler_body(&http, "task_list_tags"),
         &[
             "Path(task_id): Path<String>, ontogen_query: Query<PageOpArgs>",
-            "let limit = ontogen_query.op_arg::<u32>(\"limit\")?.unwrap_or(20).min(100);",
-            "let offset = ontogen_query.op_arg::<u32>(\"offset\")?.unwrap_or(0);",
+            "let limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
+            "let offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);",
             "let all = task::list_tags(&store, &task_id).await.map_err(app_error)?;",
             "let total = all.len() as u64;",
             "let items = all.into_iter().skip(offset as usize).take(limit as usize).collect();",
@@ -6146,7 +6146,7 @@ fn scoped_ops_have_the_unscoped_wire() {
         &handler_body(&http, "task_list_tags_scoped"),
         &[
             "ontogen_query: Query<PageOpArgs>",
-            "let limit = ontogen_query.op_arg::<u32>(\"limit\")?.unwrap_or(20).min(100);",
+            "let limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
             "let result = PaginatedResult { items, total, limit, offset };",
         ],
     );

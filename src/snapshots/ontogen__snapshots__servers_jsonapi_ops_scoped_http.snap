@@ -568,8 +568,8 @@ async fn report_list_scoped(
     Path(ontogen_scope): Path<uuid::Uuid>,
     ontogen_query: Query<PageOpArgs>,
 ) -> Result<Response, ErrorObject> {
-    let limit = ontogen_query.op_arg::<u32>("limit")?.unwrap_or(20).min(100);
-    let offset = ontogen_query.op_arg::<u32>("offset")?.unwrap_or(0);
+    let limit = ontogen_query.page_op_arg("limit")?.unwrap_or(20).min(100);
+    let offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
     let store = state.store_for(&ontogen_scope).map_err(internal_error)?;
     let items = report::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
     let total = report::count(&store).await.map_err(app_error)?;
@@ -828,8 +828,8 @@ async fn task_list_tags_scoped(
     Path((ontogen_scope, task_id)): Path<(uuid::Uuid, String)>,
     ontogen_query: Query<PageOpArgs>,
 ) -> Result<Response, ErrorObject> {
-    let limit = ontogen_query.op_arg::<u32>("limit")?.unwrap_or(20).min(100);
-    let offset = ontogen_query.op_arg::<u32>("offset")?.unwrap_or(0);
+    let limit = ontogen_query.page_op_arg("limit")?.unwrap_or(20).min(100);
+    let offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
     let store = state.store_for(&ontogen_scope).map_err(internal_error)?;
     let all = task::list_tags(&store, &task_id).await.map_err(app_error)?;
     let total = all.len() as u64;
