@@ -1,0 +1,676 @@
+---
+title: "Iron Log MD: the wire"
+description: Real JSON:API requests and responses captured from the iron-log-md HTTP server.
+---
+
+This page shows what [Iron Log MD](/examples/iron-log-md/) sends and receives over HTTP. The generated Axum server speaks JSON:API 1.1: every request and response body is `application/vnd.api+json`. The [wire contract](https://github.com/sksizer/rust-ontogen/blob/main/docs/jsonapi-wire-contract.md) is the full specification, the [server transports guide](/guides/server-transports/) explains how the routes are generated, and [Upgrading](/reference/upgrading/) lists what changed for existing clients.
+
+To run the server yourself:
+
+```sh
+cd examples/iron-log-md
+PORT=39101 cargo run    # without PORT it serves on 3001
+```
+
+Every pair below was captured from a real run against a scratch copy of `data/`, with `curl -sg -i`. The requests ran in the order shown, so each one sees the writes before it. Response bodies are formatted with `jq`. Of the response headers, only the status line, `Content-Type`, `Location`, `Allow` and `Vary` are shown.
+
+The four resource types are `exercises`, `tags`, `workouts` and `workout-sets`. Iron Log MD configures no pagination, so its lists are not paged; they sort and include. Its id strategy is `IdStrategy::Provided`: the client supplies every id. The generated server is the same as [Iron Log's](/examples/iron-log-wire/) on SQLite; only the store underneath differs, so the documents on the two pages have the same shape.
+
+## Create a workout
+
+The client sends the `id`. The `tags` relationship links the seeded `strength` tag, and the response is `201` with a `Location` header. The record is written to `data/vault/workouts/w-2026-06-03.md`, with the tag as a `[[strength]]` wikilink.
+
+```http title="Request"
+POST /api/workouts HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "workouts",
+    "id": "w-2026-06-03",
+    "attributes": {
+      "name": "Squat volume",
+      "date": "2026-06-03",
+      "duration_minutes": 50,
+      "created_at": "2026-06-03T07:15:00Z"
+    },
+    "relationships": {
+      "tags": {
+        "data": [
+          {
+            "type": "tags",
+            "id": "strength"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 201 Created
+content-type: application/vnd.api+json
+vary: Accept
+location: /api/workouts/w-2026-06-03
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/workouts/w-2026-06-03"
+  },
+  "data": {
+    "type": "workouts",
+    "id": "w-2026-06-03",
+    "attributes": {
+      "name": "Squat volume",
+      "date": "2026-06-03",
+      "duration_minutes": 50,
+      "notes": null,
+      "created_at": "2026-06-03T07:15:00Z"
+    },
+    "relationships": {
+      "tags": {
+        "links": {
+          "self": "/api/workouts/w-2026-06-03/relationships/tags",
+          "related": "/api/workouts/w-2026-06-03/tags"
+        },
+        "data": [
+          {
+            "type": "tags",
+            "id": "strength"
+          }
+        ]
+      }
+    },
+    "links": {
+      "self": "/api/workouts/w-2026-06-03"
+    }
+  }
+}
+```
+
+## Create a set that belongs to it
+
+A workout set has two to-one relationships, `workout` and `exercise`. Both targets are checked to exist before the write.
+
+```http title="Request"
+POST /api/workout-sets HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "workout-sets",
+    "id": "w-2026-06-03-squat-1",
+    "attributes": {
+      "set_number": 1,
+      "weight_grams": 100000,
+      "reps": 5
+    },
+    "relationships": {
+      "workout": {
+        "data": {
+          "type": "workouts",
+          "id": "w-2026-06-03"
+        }
+      },
+      "exercise": {
+        "data": {
+          "type": "exercises",
+          "id": "back-squat"
+        }
+      }
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 201 Created
+content-type: application/vnd.api+json
+vary: Accept
+location: /api/workout-sets/w-2026-06-03-squat-1
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/workout-sets/w-2026-06-03-squat-1"
+  },
+  "data": {
+    "type": "workout-sets",
+    "id": "w-2026-06-03-squat-1",
+    "attributes": {
+      "set_number": 1,
+      "weight_grams": 100000,
+      "reps": 5,
+      "rpe": null,
+      "notes": null
+    },
+    "relationships": {
+      "workout": {
+        "links": {
+          "self": "/api/workout-sets/w-2026-06-03-squat-1/relationships/workout",
+          "related": "/api/workout-sets/w-2026-06-03-squat-1/workout"
+        },
+        "data": {
+          "type": "workouts",
+          "id": "w-2026-06-03"
+        }
+      },
+      "exercise": {
+        "links": {
+          "self": "/api/workout-sets/w-2026-06-03-squat-1/relationships/exercise",
+          "related": "/api/workout-sets/w-2026-06-03-squat-1/exercise"
+        },
+        "data": {
+          "type": "exercises",
+          "id": "back-squat"
+        }
+      }
+    },
+    "links": {
+      "self": "/api/workout-sets/w-2026-06-03-squat-1"
+    }
+  }
+}
+```
+
+## Create without an id
+
+With `IdStrategy::Provided`, a create that carries no `id` is `400`, coded from the example's `WorkoutSetIdRequired` error variant.
+
+```http title="Request"
+POST /api/workout-sets HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "workout-sets",
+    "attributes": {
+      "set_number": 2,
+      "weight_grams": 100000,
+      "reps": 5
+    },
+    "relationships": {
+      "workout": {
+        "data": {
+          "type": "workouts",
+          "id": "w-2026-06-03"
+        }
+      },
+      "exercise": {
+        "data": {
+          "type": "exercises",
+          "id": "back-squat"
+        }
+      }
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 400 Bad Request
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "400",
+      "code": "workout_set_id_required",
+      "title": "Bad Request",
+      "detail": "id required: this store requires the caller to supply an id"
+    }
+  ]
+}
+```
+
+## List workouts, newest first
+
+`sort=-date` sorts descending. The list is not paginated, so the document has no `meta` and no pagination links, only `self`.
+
+```http title="Request"
+GET /api/workouts?sort=-date HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/workouts?sort=-date"
+  },
+  "data": [
+    {
+      "type": "workouts",
+      "id": "w-2026-06-03",
+      "attributes": {
+        "name": "Squat volume",
+        "date": "2026-06-03",
+        "duration_minutes": 50,
+        "notes": null,
+        "created_at": "2026-06-03T07:15:00Z"
+      },
+      "relationships": {
+        "tags": {
+          "links": {
+            "self": "/api/workouts/w-2026-06-03/relationships/tags",
+            "related": "/api/workouts/w-2026-06-03/tags"
+          },
+          "data": [
+            {
+              "type": "tags",
+              "id": "strength"
+            }
+          ]
+        }
+      },
+      "links": {
+        "self": "/api/workouts/w-2026-06-03"
+      }
+    },
+    {
+      "type": "workouts",
+      "id": "w-2026-06-01",
+      "attributes": {
+        "name": "Leg day",
+        "date": "2026-06-01",
+        "duration_minutes": 45,
+        "notes": null,
+        "created_at": "2026-06-01T07:30:00Z"
+      },
+      "relationships": {
+        "tags": {
+          "links": {
+            "self": "/api/workouts/w-2026-06-01/relationships/tags",
+            "related": "/api/workouts/w-2026-06-01/tags"
+          },
+          "data": [
+            {
+              "type": "tags",
+              "id": "strength"
+            }
+          ]
+        }
+      },
+      "links": {
+        "self": "/api/workouts/w-2026-06-01"
+      }
+    }
+  ]
+}
+```
+
+## One set with its workout and exercise
+
+`include=workout,exercise` adds both to-one targets to `included`.
+
+```http title="Request"
+GET /api/workout-sets/w-2026-06-03-squat-1?include=workout,exercise HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/workout-sets/w-2026-06-03-squat-1?include=workout,exercise"
+  },
+  "data": {
+    "type": "workout-sets",
+    "id": "w-2026-06-03-squat-1",
+    "attributes": {
+      "set_number": 1,
+      "weight_grams": 100000,
+      "reps": 5,
+      "rpe": null,
+      "notes": null
+    },
+    "relationships": {
+      "workout": {
+        "links": {
+          "self": "/api/workout-sets/w-2026-06-03-squat-1/relationships/workout",
+          "related": "/api/workout-sets/w-2026-06-03-squat-1/workout"
+        },
+        "data": {
+          "type": "workouts",
+          "id": "w-2026-06-03"
+        }
+      },
+      "exercise": {
+        "links": {
+          "self": "/api/workout-sets/w-2026-06-03-squat-1/relationships/exercise",
+          "related": "/api/workout-sets/w-2026-06-03-squat-1/exercise"
+        },
+        "data": {
+          "type": "exercises",
+          "id": "back-squat"
+        }
+      }
+    },
+    "links": {
+      "self": "/api/workout-sets/w-2026-06-03-squat-1"
+    }
+  },
+  "included": [
+    {
+      "type": "workouts",
+      "id": "w-2026-06-03",
+      "attributes": {
+        "name": "Squat volume",
+        "date": "2026-06-03",
+        "duration_minutes": 50,
+        "notes": null,
+        "created_at": "2026-06-03T07:15:00Z"
+      },
+      "relationships": {
+        "tags": {
+          "links": {
+            "self": "/api/workouts/w-2026-06-03/relationships/tags",
+            "related": "/api/workouts/w-2026-06-03/tags"
+          },
+          "data": [
+            {
+              "type": "tags",
+              "id": "strength"
+            }
+          ]
+        }
+      },
+      "links": {
+        "self": "/api/workouts/w-2026-06-03"
+      }
+    },
+    {
+      "type": "exercises",
+      "id": "back-squat",
+      "attributes": {
+        "name": "Back squat",
+        "muscle_group": "legs",
+        "equipment": "barbell",
+        "notes": null
+      },
+      "links": {
+        "self": "/api/exercises/back-squat"
+      }
+    }
+  ]
+}
+```
+
+## Update attributes
+
+A `PATCH` sets only the members it names; `rpe` goes from `null` to `8`.
+
+```http title="Request"
+PATCH /api/workout-sets/w-2026-06-03-squat-1 HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "workout-sets",
+    "id": "w-2026-06-03-squat-1",
+    "attributes": {
+      "reps": 6,
+      "rpe": 8
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/workout-sets/w-2026-06-03-squat-1"
+  },
+  "data": {
+    "type": "workout-sets",
+    "id": "w-2026-06-03-squat-1",
+    "attributes": {
+      "set_number": 1,
+      "weight_grams": 100000,
+      "reps": 6,
+      "rpe": 8,
+      "notes": null
+    },
+    "relationships": {
+      "workout": {
+        "links": {
+          "self": "/api/workout-sets/w-2026-06-03-squat-1/relationships/workout",
+          "related": "/api/workout-sets/w-2026-06-03-squat-1/workout"
+        },
+        "data": {
+          "type": "workouts",
+          "id": "w-2026-06-03"
+        }
+      },
+      "exercise": {
+        "links": {
+          "self": "/api/workout-sets/w-2026-06-03-squat-1/relationships/exercise",
+          "related": "/api/workout-sets/w-2026-06-03-squat-1/exercise"
+        },
+        "data": {
+          "type": "exercises",
+          "id": "back-squat"
+        }
+      }
+    },
+    "links": {
+      "self": "/api/workout-sets/w-2026-06-03-squat-1"
+    }
+  }
+}
+```
+
+## Read a related resource
+
+The related endpoint for a to-one relationship answers with the target resource itself.
+
+```http title="Request"
+GET /api/workout-sets/w-2026-06-03-squat-1/exercise HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/workout-sets/w-2026-06-03-squat-1/exercise"
+  },
+  "data": {
+    "type": "exercises",
+    "id": "back-squat",
+    "attributes": {
+      "name": "Back squat",
+      "muscle_group": "legs",
+      "equipment": "barbell",
+      "notes": null
+    },
+    "links": {
+      "self": "/api/exercises/back-squat"
+    }
+  }
+}
+```
+
+## Remove from a relationship
+
+`DELETE` on a to-many relationship endpoint removes the identifiers it lists and answers `204`. The seeded workout's file loses its `[[strength]]` wikilink.
+
+```http title="Request"
+DELETE /api/workouts/w-2026-06-01/relationships/tags HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": [
+    {
+      "type": "tags",
+      "id": "strength"
+    }
+  ]
+}
+```
+
+```http title="Response"
+HTTP/1.1 204 No Content
+vary: Accept
+```
+
+## Delete a set
+
+```http title="Request"
+DELETE /api/workout-sets/w-2026-06-03-squat-1 HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 204 No Content
+vary: Accept
+```
+
+## Errors
+
+A client id that is already taken is `409`, and `source.pointer` points at `/data/id`:
+
+```http title="Request"
+POST /api/workouts HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "workouts",
+    "id": "w-2026-06-01",
+    "attributes": {
+      "date": "2026-06-01",
+      "created_at": "2026-06-01T07:30:00Z"
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 409 Conflict
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "409",
+      "code": "workout_already_exists",
+      "title": "Conflict",
+      "detail": "already exists: w-2026-06-01",
+      "source": {
+        "pointer": "/data/id"
+      }
+    }
+  ]
+}
+```
+
+A set's `workout` is a `String`, not an `Option`, so the relationship cannot be emptied. That is `403`, as JSON:API requires for an update the server refuses:
+
+```http title="Request"
+PATCH /api/workout-sets/w-2026-06-03-squat-1/relationships/workout HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": null
+}
+```
+
+```http title="Response"
+HTTP/1.1 403 Forbidden
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "403",
+      "code": "relationship_required",
+      "title": "Forbidden",
+      "detail": "this relationship cannot be emptied",
+      "source": {
+        "pointer": "/data"
+      }
+    }
+  ]
+}
+```
+
+The lists are not paginated, so `page[…]` is an unknown query parameter here and the request is `400`:
+
+```http title="Request"
+GET /api/workouts?page[limit]=1 HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 400 Bad Request
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "400",
+      "code": "invalid_query_parameter",
+      "title": "Bad Request",
+      "detail": "`page[limit]` is not a query parameter of this route",
+      "source": {
+        "parameter": "page[limit]"
+      }
+    }
+  ]
+}
+```

@@ -12,10 +12,11 @@ The source lives at `examples/notes-kb/`.
 ## Try it
 
 ```sh
-cargo run    # http://127.0.0.1:3003 -- the graph IS the index page
+cargo run              # http://127.0.0.1:3003 -- the graph IS the index page
+PORT=39103 cargo run   # the same, on another port
 ```
 
-The index page is a deliberately framework-free SVG graph fed by the generated HTTP API. Click a node to read the note body.
+The index page is a deliberately framework-free SVG graph fed by the generated HTTP API. Click a node to read the note body. [Notes KB: the wire](/examples/notes-kb-wire/) shows that API's real requests and responses, captured from a running server.
 
 ## One entity, self-referential
 
@@ -57,7 +58,7 @@ links:
 ```
 
 <Aside type="note">
-The generated code strips the brackets at its typed boundary, so your JSON API returns `["the-vault-is-the-database", "markdown-as-store"]` and never leaks wikilink syntax to HTTP clients. The `[[...]]` form only exists on disk, where Obsidian wants it. See [`WikilinkPolicy`](/reference/configuration/#wikilinkpolicy) if you need the stripping behaviour on a SQL-backed store too.
+The generated code strips the brackets at its typed boundary, so the HTTP API answers the relationship as resource identifiers, `"links": {"data": [{"type": "notes", "id": "the-vault-is-the-database"}, …]}`, and never leaks wikilink syntax to HTTP clients. The `[[...]]` form only exists on disk, where Obsidian wants it. See [`WikilinkPolicy`](/reference/configuration/#wikilinkpolicy) if you need the stripping behaviour on a SQL-backed store too.
 </Aside>
 
 ## No junction table, no second source of truth
@@ -74,5 +75,5 @@ The generated TypeScript client lives in `generated-ts/` for a real frontend to 
 
 1. **`src/schema/note.rs`** -- eighteen lines, one self-referential relation.
 2. **`data/vault/notes/`** -- three notes that link to each other. Open the folder in Obsidian and you get the same graph the example renders.
-3. **`src/main.rs`** -- how the graph page consumes the generated API.
+3. **`web/index.html`** -- how the graph page consumes the generated API; `src/main.rs` serves it beside the API routes.
 4. **`generated-ts/types.ts`** -- the emitted bindings, including the `Note` type and its DTOs.

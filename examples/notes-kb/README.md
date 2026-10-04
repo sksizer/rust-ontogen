@@ -10,7 +10,10 @@ PORT=39103 cargo run # the same, on another port
 ```
 
 The index page is a deliberately framework-free SVG graph fed by the
-generated HTTP API (click a node for the note body). The generated TypeScript
+generated HTTP API (click a node for the note body). The API speaks JSON:API
+([wire contract](../../docs/jsonapi-wire-contract.md));
+[the wire page](../../site/src/content/docs/examples/notes-kb-wire.mdx) shows
+real requests and responses captured from this server. The generated TypeScript
 client lives in `generated-ts/` for a real frontend to consume — a full Nuxt
 app over it is left as the natural next step, shaped by your own component
 conventions rather than generated boilerplate.

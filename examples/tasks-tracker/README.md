@@ -7,7 +7,9 @@ two ways from one generated pipeline.
 
 ## HTTP
 
-The HTTP API speaks JSON:API ([wire contract](../../docs/jsonapi-wire-contract.md)).
+The HTTP API speaks JSON:API ([wire contract](../../docs/jsonapi-wire-contract.md));
+[the wire page](../../site/src/content/docs/examples/tasks-tracker-wire.mdx)
+shows real requests and responses captured from this server.
 Lists page 20 at a time. The task list is hand-written in
 `src/api/v1/task.rs`: it takes a `ListTasksQuery { status, epic_id }`, so it
 answers `filter[status]` and `filter[epic_id]`, and its own `count` gives the

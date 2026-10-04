@@ -1,0 +1,687 @@
+---
+title: "Notes KB: the wire"
+description: Real JSON:API requests and responses captured from the notes-kb HTTP server.
+---
+
+This page shows what [Notes KB](/examples/notes-kb/) sends and receives over HTTP; the graph page at `/` reads the same `/api/notes` collection. The generated Axum server speaks JSON:API 1.1: every request and response body is `application/vnd.api+json`. The [wire contract](https://github.com/sksizer/rust-ontogen/blob/main/docs/jsonapi-wire-contract.md) is the full specification, the [server transports guide](/guides/server-transports/) explains how the routes are generated, and [Upgrading](/reference/upgrading/) lists what changed for existing clients.
+
+To run the server yourself:
+
+```sh
+cd examples/notes-kb
+PORT=39103 cargo run    # without PORT it serves on 3003
+```
+
+Every pair below was captured from a real run against a scratch copy of `data/` and `web/`, with `curl -sg -i`. The requests ran in the order shown, so each one sees the writes before it. Response bodies are formatted with `jq`. Of the response headers, only the status line, `Content-Type`, `Location`, `Allow` and `Vary` are shown.
+
+Notes KB has one resource type, `notes`, with one to-many relationship, `links`, whose targets are other notes. Its list is not paginated. Ids are slugged from the title (`IdStrategy::SlugFromField("title")`) when the client sends none. On disk a link is a `[[wikilink]]`; on the wire it is a resource identifier.
+
+## List the notes
+
+`sort=title` orders by title. The list is not paginated, so the document carries only a `self` link and no `meta`.
+
+```http title="Request"
+GET /api/notes?sort=title HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/notes?sort=title"
+  },
+  "data": [
+    {
+      "type": "notes",
+      "id": "markdown-as-store",
+      "attributes": {
+        "title": "Markdown as a store",
+        "body": "ADR 0001's idea: for small, human-editable, read-heavy data, the files ARE\nthe database. #architecture\n"
+      },
+      "relationships": {
+        "links": {
+          "links": {
+            "self": "/api/notes/markdown-as-store/relationships/links",
+            "related": "/api/notes/markdown-as-store/links"
+          },
+          "data": [
+            {
+              "type": "notes",
+              "id": "wikilinks-are-edges"
+            },
+            {
+              "type": "notes",
+              "id": "the-vault-is-the-database"
+            }
+          ]
+        }
+      },
+      "links": {
+        "self": "/api/notes/markdown-as-store"
+      }
+    },
+    {
+      "type": "notes",
+      "id": "the-vault-is-the-database",
+      "attributes": {
+        "title": "The vault is the database",
+        "body": "Grep is the query planner. Git is the WAL. Your editor is the admin UI.\n#architecture #ops\n"
+      },
+      "relationships": {
+        "links": {
+          "links": {
+            "self": "/api/notes/the-vault-is-the-database/relationships/links",
+            "related": "/api/notes/the-vault-is-the-database/links"
+          },
+          "data": []
+        }
+      },
+      "links": {
+        "self": "/api/notes/the-vault-is-the-database"
+      }
+    },
+    {
+      "type": "notes",
+      "id": "wikilinks-are-edges",
+      "attributes": {
+        "title": "Wikilinks are edges",
+        "body": "A `[[reference]]` in frontmatter is a foreign key, a graph edge, and an\nObsidian link — one syntax, three readings. #graphs\n"
+      },
+      "relationships": {
+        "links": {
+          "links": {
+            "self": "/api/notes/wikilinks-are-edges/relationships/links",
+            "related": "/api/notes/wikilinks-are-edges/links"
+          },
+          "data": [
+            {
+              "type": "notes",
+              "id": "the-vault-is-the-database"
+            }
+          ]
+        }
+      },
+      "links": {
+        "self": "/api/notes/wikilinks-are-edges"
+      }
+    }
+  ]
+}
+```
+
+## One note with the notes it links to
+
+`include=links` adds each linked note to `included` as a full resource object.
+
+```http title="Request"
+GET /api/notes/markdown-as-store?include=links HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/notes/markdown-as-store?include=links"
+  },
+  "data": {
+    "type": "notes",
+    "id": "markdown-as-store",
+    "attributes": {
+      "title": "Markdown as a store",
+      "body": "ADR 0001's idea: for small, human-editable, read-heavy data, the files ARE\nthe database. #architecture\n"
+    },
+    "relationships": {
+      "links": {
+        "links": {
+          "self": "/api/notes/markdown-as-store/relationships/links",
+          "related": "/api/notes/markdown-as-store/links"
+        },
+        "data": [
+          {
+            "type": "notes",
+            "id": "wikilinks-are-edges"
+          },
+          {
+            "type": "notes",
+            "id": "the-vault-is-the-database"
+          }
+        ]
+      }
+    },
+    "links": {
+      "self": "/api/notes/markdown-as-store"
+    }
+  },
+  "included": [
+    {
+      "type": "notes",
+      "id": "wikilinks-are-edges",
+      "attributes": {
+        "title": "Wikilinks are edges",
+        "body": "A `[[reference]]` in frontmatter is a foreign key, a graph edge, and an\nObsidian link — one syntax, three readings. #graphs\n"
+      },
+      "relationships": {
+        "links": {
+          "links": {
+            "self": "/api/notes/wikilinks-are-edges/relationships/links",
+            "related": "/api/notes/wikilinks-are-edges/links"
+          },
+          "data": [
+            {
+              "type": "notes",
+              "id": "the-vault-is-the-database"
+            }
+          ]
+        }
+      },
+      "links": {
+        "self": "/api/notes/wikilinks-are-edges"
+      }
+    },
+    {
+      "type": "notes",
+      "id": "the-vault-is-the-database",
+      "attributes": {
+        "title": "The vault is the database",
+        "body": "Grep is the query planner. Git is the WAL. Your editor is the admin UI.\n#architecture #ops\n"
+      },
+      "relationships": {
+        "links": {
+          "links": {
+            "self": "/api/notes/the-vault-is-the-database/relationships/links",
+            "related": "/api/notes/the-vault-is-the-database/links"
+          },
+          "data": []
+        }
+      },
+      "links": {
+        "self": "/api/notes/the-vault-is-the-database"
+      }
+    }
+  ]
+}
+```
+
+## Create a note and let the server pick the id
+
+No `id` in the request, so the store slugs `title`. The new file is `data/vault/notes/backlinks-are-a-query.md`, and the vault's `notes/index.md` gains a line for it.
+
+```http title="Request"
+POST /api/notes HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "notes",
+    "attributes": {
+      "title": "Backlinks are a query",
+      "body": "Nothing stores a backlink; walking `links` answers it.\n"
+    },
+    "relationships": {
+      "links": {
+        "data": [
+          {
+            "type": "notes",
+            "id": "wikilinks-are-edges"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 201 Created
+content-type: application/vnd.api+json
+vary: Accept
+location: /api/notes/backlinks-are-a-query
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/notes/backlinks-are-a-query"
+  },
+  "data": {
+    "type": "notes",
+    "id": "backlinks-are-a-query",
+    "attributes": {
+      "title": "Backlinks are a query",
+      "body": "Nothing stores a backlink; walking `links` answers it.\n"
+    },
+    "relationships": {
+      "links": {
+        "links": {
+          "self": "/api/notes/backlinks-are-a-query/relationships/links",
+          "related": "/api/notes/backlinks-are-a-query/links"
+        },
+        "data": [
+          {
+            "type": "notes",
+            "id": "wikilinks-are-edges"
+          }
+        ]
+      }
+    },
+    "links": {
+      "self": "/api/notes/backlinks-are-a-query"
+    }
+  }
+}
+```
+
+## Create another note with the same title
+
+The slug is taken, so the store appends `-2`. The suffix is chosen as part of the write, so two concurrent creates cannot claim the same id.
+
+```http title="Request"
+POST /api/notes HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "notes",
+    "attributes": {
+      "title": "Backlinks are a query",
+      "body": ""
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 201 Created
+content-type: application/vnd.api+json
+vary: Accept
+location: /api/notes/backlinks-are-a-query-2
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/notes/backlinks-are-a-query-2"
+  },
+  "data": {
+    "type": "notes",
+    "id": "backlinks-are-a-query-2",
+    "attributes": {
+      "title": "Backlinks are a query",
+      "body": ""
+    },
+    "relationships": {
+      "links": {
+        "links": {
+          "self": "/api/notes/backlinks-are-a-query-2/relationships/links",
+          "related": "/api/notes/backlinks-are-a-query-2/links"
+        },
+        "data": []
+      }
+    },
+    "links": {
+      "self": "/api/notes/backlinks-are-a-query-2"
+    }
+  }
+}
+```
+
+## Create a note with a client id
+
+A client may send its own `id` instead of a title-derived one.
+
+```http title="Request"
+POST /api/notes HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "notes",
+    "id": "graphs",
+    "attributes": {
+      "title": "Graphs",
+      "body": "Hub note.\n"
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 201 Created
+content-type: application/vnd.api+json
+vary: Accept
+location: /api/notes/graphs
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/notes/graphs"
+  },
+  "data": {
+    "type": "notes",
+    "id": "graphs",
+    "attributes": {
+      "title": "Graphs",
+      "body": "Hub note.\n"
+    },
+    "relationships": {
+      "links": {
+        "links": {
+          "self": "/api/notes/graphs/relationships/links",
+          "related": "/api/notes/graphs/links"
+        },
+        "data": []
+      }
+    },
+    "links": {
+      "self": "/api/notes/graphs"
+    }
+  }
+}
+```
+
+## Rename a note and replace its links
+
+A `PATCH` sets only the members it names: the new `title`, and the whole `links` list. The id stays `backlinks-are-a-query`; ids do not follow a title.
+
+```http title="Request"
+PATCH /api/notes/backlinks-are-a-query HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": {
+    "type": "notes",
+    "id": "backlinks-are-a-query",
+    "attributes": {
+      "title": "Backlinks are a derived query"
+    },
+    "relationships": {
+      "links": {
+        "data": [
+          {
+            "type": "notes",
+            "id": "wikilinks-are-edges"
+          },
+          {
+            "type": "notes",
+            "id": "markdown-as-store"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/notes/backlinks-are-a-query"
+  },
+  "data": {
+    "type": "notes",
+    "id": "backlinks-are-a-query",
+    "attributes": {
+      "title": "Backlinks are a derived query",
+      "body": "Nothing stores a backlink; walking `links` answers it.\n"
+    },
+    "relationships": {
+      "links": {
+        "links": {
+          "self": "/api/notes/backlinks-are-a-query/relationships/links",
+          "related": "/api/notes/backlinks-are-a-query/links"
+        },
+        "data": [
+          {
+            "type": "notes",
+            "id": "wikilinks-are-edges"
+          },
+          {
+            "type": "notes",
+            "id": "markdown-as-store"
+          }
+        ]
+      }
+    },
+    "links": {
+      "self": "/api/notes/backlinks-are-a-query"
+    }
+  }
+}
+```
+
+## Add a link
+
+`POST` to the relationship endpoint adds one identifier and answers `204`.
+
+```http title="Request"
+POST /api/notes/graphs/relationships/links HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": [
+    {
+      "type": "notes",
+      "id": "backlinks-are-a-query"
+    }
+  ]
+}
+```
+
+```http title="Response"
+HTTP/1.1 204 No Content
+vary: Accept
+```
+
+## Read the linked notes
+
+The related endpoint for a to-many relationship answers with a collection of the target resources.
+
+```http title="Request"
+GET /api/notes/graphs/links HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 200 OK
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "links": {
+    "self": "/api/notes/graphs/links"
+  },
+  "data": [
+    {
+      "type": "notes",
+      "id": "backlinks-are-a-query",
+      "attributes": {
+        "title": "Backlinks are a derived query",
+        "body": "Nothing stores a backlink; walking `links` answers it.\n"
+      },
+      "relationships": {
+        "links": {
+          "links": {
+            "self": "/api/notes/backlinks-are-a-query/relationships/links",
+            "related": "/api/notes/backlinks-are-a-query/links"
+          },
+          "data": [
+            {
+              "type": "notes",
+              "id": "wikilinks-are-edges"
+            },
+            {
+              "type": "notes",
+              "id": "markdown-as-store"
+            }
+          ]
+        }
+      },
+      "links": {
+        "self": "/api/notes/backlinks-are-a-query"
+      }
+    }
+  ]
+}
+```
+
+## Delete a note
+
+```http title="Request"
+DELETE /api/notes/backlinks-are-a-query-2 HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 204 No Content
+vary: Accept
+```
+
+## Errors
+
+Only direct relationships can be included; a nested path is `400`, and `detail` lists what can be:
+
+```http title="Request"
+GET /api/notes/markdown-as-store?include=links.links HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 400 Bad Request
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "400",
+      "code": "invalid_include_path",
+      "title": "Bad Request",
+      "detail": "`links.links` is a nested path, which cannot be included; it can include: links",
+      "source": {
+        "parameter": "include"
+      }
+    }
+  ]
+}
+```
+
+A relationship `POST` or `DELETE` takes at most one identifier. More than one is `403`:
+
+```http title="Request"
+POST /api/notes/graphs/relationships/links HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+
+{
+  "data": [
+    {
+      "type": "notes",
+      "id": "wikilinks-are-edges"
+    },
+    {
+      "type": "notes",
+      "id": "markdown-as-store"
+    }
+  ]
+}
+```
+
+```http title="Response"
+HTTP/1.1 403 Forbidden
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "403",
+      "code": "relationship_batch_unsupported",
+      "title": "Forbidden",
+      "detail": "this request takes at most 1 identifier(s); 2 were sent",
+      "source": {
+        "pointer": "/data"
+      }
+    }
+  ]
+}
+```
+
+A request body must be sent as `application/vnd.api+json`. Plain `application/json` is `415`, and `source.header` names the header:
+
+```http title="Request"
+POST /api/notes HTTP/1.1
+Accept: application/vnd.api+json
+Content-Type: application/json
+
+{
+  "data": {
+    "type": "notes",
+    "attributes": {
+      "title": "Plain JSON",
+      "body": ""
+    }
+  }
+}
+```
+
+```http title="Response"
+HTTP/1.1 415 Unsupported Media Type
+content-type: application/vnd.api+json
+vary: Accept
+
+{
+  "jsonapi": {
+    "version": "1.1"
+  },
+  "errors": [
+    {
+      "status": "415",
+      "code": "unsupported_media_type",
+      "title": "Unsupported Media Type",
+      "detail": "a request body must be sent as application/vnd.api+json, not application/json",
+      "source": {
+        "header": "Content-Type"
+      }
+    }
+  ]
+}
+```

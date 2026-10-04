@@ -18,6 +18,10 @@ curl -s -X PATCH localhost:3001/api/workouts/w-1 -H 'content-type: application/v
 cat data/vault/workouts/w-1.md      # …your edits survived the generated update
 ```
 
+The HTTP API speaks JSON:API ([wire contract](../../docs/jsonapi-wire-contract.md));
+[the wire page](../../site/src/content/docs/examples/iron-log-md-wire.mdx)
+shows real requests and responses captured from this server.
+
 ## The byte-identical demo
 
 ADR 0001's load-bearing invariant: everything above the store is identical
