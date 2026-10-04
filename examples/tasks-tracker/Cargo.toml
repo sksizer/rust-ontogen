@@ -12,6 +12,10 @@ publish = false
 
 [dependencies]
 markdown-store = { path = "../../crates/markdown-store" }
+# The generated JSON:API HTTP server's runtime, and the shared id rule it
+# checks client ids against.
+ontogen-core = { path = "../../crates/ontogen-core" }
+ontogen-jsonapi = { path = "../../crates/ontogen-jsonapi" }
 ontogen-macros = { path = "../../crates/ontogen-macros" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

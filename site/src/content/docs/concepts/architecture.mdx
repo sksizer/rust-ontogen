@@ -144,7 +144,7 @@ The `generated/` directories are cleaned on each build -- stale files from renam
 
 **`gen_api()`** generates forwarding functions that bridge the store layer to transport handlers. Scans hand-written API directories and merges custom endpoints with generated CRUD into a unified `ApiOutput`.
 
-**`gen_servers()`** generates server-side transport handlers: Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions. Each transport reads the same `ApiOutput` and produces output appropriate for its protocol.
+**`gen_servers()`** generates server-side transport handlers: Axum HTTP route handlers, Tauri IPC commands, and MCP tool definitions. Each transport reads the same `ApiOutput` and produces output appropriate for its protocol. It also takes the parsed schema entities: the HTTP transport serves entity-backed CRUD routes as JSON:API resources and reports errors as JSON:API `errors` documents.
 
 **`gen_clients()`** is `gen_servers`'s sibling for the client-side surface: TypeScript bindings, the HTTP-only and HTTP+IPC unified transport clients, and the admin-UI registry. It consumes the same `ApiOutput` but emits TypeScript instead of Rust.
 

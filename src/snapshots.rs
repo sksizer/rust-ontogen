@@ -469,12 +469,14 @@ fn markdown_open_vault_with_okf_options() {
 fn generate_two_surface_file(
     generator: impl FnOnce(std::path::PathBuf) -> crate::servers::ServerGenerator,
     pagination: Option<crate::servers::PaginationConfig>,
+    adjust: impl FnOnce(&std::path::Path, &mut crate::servers::config::Config),
 ) -> String {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut surfaces = crate::servers::tests::two_surface_fixture(tmp.path());
     surfaces[1].pagination = pagination;
     surfaces[1].paginated_modules = vec!["exercise".to_string()];
     let mut config = crate::servers::tests::two_surface_config(surfaces);
+    adjust(tmp.path(), &mut config);
     let output = tmp.path().join("generated.rs");
     config.generators = vec![generator(output.clone())];
     crate::servers::generate_transport(&config).expect("generate_transport failed");
@@ -486,16 +488,51 @@ fn servers_two_surfaces_http() {
     // `workout` merges custom fns from the primary surface with the CRUD five
     // from the fitness surface; the fitness handlers open `fitness_store()`,
     // call through the `workout_1` alias, and qualify the shared `Workout`.
+    // Each surface has a fn failing with its own bare `AppError`: only the
+    // primary one maps through `app_error`, which takes `crate::schema`'s.
     let code = generate_two_surface_file(
         |output| crate::servers::ServerGenerator::HttpAxum { output },
         Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 }),
+        |root, config| {
+            let append = |file: std::path::PathBuf, fn_source: &str| {
+                let source = std::fs::read_to_string(&file).expect("fixture module");
+                std::fs::write(&file, source + fn_source).expect("write fixture module");
+            };
+            append(
+                root.join("primary/workout.rs"),
+                "pub async fn finish(state: &AppState, id: &str) -> Result<Workout, AppError> { todo!() }\n",
+            );
+            append(
+                root.join("fitness/workout.rs"),
+                "pub async fn archive(store: &FitnessStore, id: &str) -> Result<Workout, AppError> { todo!() }\n",
+            );
+            let schema = root.join("schema");
+            std::fs::create_dir_all(&schema).expect("schema dir");
+            std::fs::write(schema.join("mod.rs"), "pub enum AppError { WorkoutNotFound(String) }\n")
+                .expect("write AppError");
+            config.error_map = crate::servers::error_map::scan(&schema).expect("AppError scans");
+        },
     );
     insta::assert_snapshot!(code);
 }
 
 #[test]
+fn servers_jsonapi_resources_http() {
+    // `task` links `epic` (to-one) and `tag` (to-many), and is served as a
+    // paginated JSON:API resource with an `AppError` map; `report` has
+    // CRUD-named fns and no entity, so it keeps its own handlers.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut config = crate::servers::tests::resource_fixture(tmp.path(), true);
+    let output = tmp.path().join("generated.rs");
+    config.generators = vec![crate::servers::ServerGenerator::HttpAxum { output: output.clone() }];
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+    insta::assert_snapshot!(read_file(&output));
+}
+
+#[test]
 fn servers_two_surfaces_ipc() {
-    let code = generate_two_surface_file(|output| crate::servers::ServerGenerator::TauriIpc { output }, None);
+    let code =
+        generate_two_surface_file(|output| crate::servers::ServerGenerator::TauriIpc { output }, None, |_, _| {});
     insta::assert_snapshot!(code);
 }
 

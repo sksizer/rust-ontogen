@@ -1,10 +1,13 @@
 //! Axum extractors whose rejections are JSON:API error documents (§13.5).
 //!
-//! Generated handlers list them in the order of §13.2, because Axum runs
-//! extractors in argument order and answers with the first rejection:
-//! [`AcceptGuard`], [`ContentTypeGuard`], [`Path`], [`Query`], and last
-//! [`Body`], the only one that reads the body. The guards and [`Query`]
-//! wrap plain functions in this crate.
+//! Axum runs extractors in argument order and answers with the first
+//! rejection, so generated handlers list them in the order of §13.2:
+//! [`AcceptGuard`], [`Path`], [`Query`], and last [`Body`], the only one
+//! that reads the body. A handler that reads a body still has to answer the
+//! media type (step 3) before the path and the query (steps 4 and 5), so it
+//! takes those two as `Result<_, ErrorObject>` and answers their rejections
+//! after [`Body`] has run. The guards and [`Query`] wrap plain functions in
+//! this crate.
 
 mod path_params;
 
@@ -40,25 +43,8 @@ impl<S: Send + Sync> FromRequestParts<S> for AcceptGuard {
     }
 }
 
-/// Step 3: rejects with `415 unsupported_media_type` when the request
-/// carries a body that is not declared `application/vnd.api+json`.
-///
-/// The body is not read yet at this step, so its presence is taken from the
-/// headers: a non-zero `Content-Length`, or any `Transfer-Encoding`. [`Body`]
-/// repeats the check once the body is read, which catches a body sent with
-/// neither header (possible on HTTP/2), at the cost of reporting it after
-/// path and query errors.
-#[derive(Debug, Clone, Copy)]
-pub struct ContentTypeGuard;
-
-impl<S: Send + Sync> FromRequestParts<S> for ContentTypeGuard {
-    type Rejection = ErrorObject;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        check_content_type_headers(&parts.headers, announces_body(&parts.headers)).map(|()| ContentTypeGuard)
-    }
-}
-
+/// True when the headers say a body follows: a non-zero `Content-Length`, or
+/// any `Transfer-Encoding`.
 fn announces_body(headers: &HeaderMap) -> bool {
     let content_length = headers
         .get(header::CONTENT_LENGTH)
@@ -170,16 +156,33 @@ impl<R: RouteQuery, S: Send + Sync> FromRequestParts<S> for Query<R> {
     }
 }
 
-/// The request body, in place of `axum::Json`: its bytes, with the media
-/// type checked. Read the document from it with [`crate::request`].
+/// Step 3, and the body step 7 reads, in place of `axum::Json`: rejects with
+/// `415 unsupported_media_type` when the request carries a body that is not
+/// declared `application/vnd.api+json`. Read the document from
+/// [`Body::into_bytes`] with [`crate::request`].
 ///
-/// The size is bounded by Axum's `DefaultBodyLimit` (2 MB unless the router
-/// sets another), and a body over it is `413 content_too_large` (§13.3).
-/// A body that cannot be read otherwise (a broken connection) is `400
-/// invalid_document`, since no document can be read from it. JSON nesting is
-/// bounded by `serde_json`'s recursion limit.
+/// It reads the body rather than trusting the headers, since a request can
+/// carry one with neither `Content-Length` nor `Transfer-Encoding` (HTTP/2).
+/// A body that cannot be read belongs to step 7, after the path and the
+/// query, so [`Body::into_bytes`] returns that error and the extractor does
+/// not: a body over Axum's `DefaultBodyLimit` (2 MB unless the router sets
+/// another) is `413 content_too_large` (§13.3), and one that fails otherwise
+/// (a broken connection) is `400 invalid_document`. JSON nesting is bounded
+/// by `serde_json`'s recursion limit.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Body(pub Bytes);
+pub struct Body(Result<Bytes, ErrorObject>);
+
+impl Body {
+    /// The body's bytes, or the step-7 error reading them failed with.
+    ///
+    /// # Errors
+    ///
+    /// `413 content_too_large` for a body over the router's limit, and
+    /// `400 invalid_document` for one that could not be read otherwise.
+    pub fn into_bytes(self) -> Result<Bytes, ErrorObject> {
+        self.0
+    }
+}
 
 impl<S: Send + Sync> FromRequest<S> for Body {
     type Rejection = ErrorObject;
@@ -188,13 +191,14 @@ impl<S: Send + Sync> FromRequest<S> for Body {
         let announced = announces_body(req.headers());
         check_content_type_headers(req.headers(), announced)?;
         // Headers that announce no body passed without a look at
-        // `Content-Type`; it is checked again once the body is read.
+        // `Content-Type`; it is checked again once the body is read. A read
+        // that failed had a body to fail on.
         let unchecked = (!announced).then(|| content_type_only(req.headers()));
-        let bytes = Bytes::from_request(req, state).await.map_err(unreadable)?;
+        let read = Bytes::from_request(req, state).await.map_err(unreadable);
         if let Some(headers) = unchecked {
-            check_content_type_headers(&headers, !bytes.is_empty())?;
+            check_content_type_headers(&headers, !matches!(&read, Ok(bytes) if bytes.is_empty()))?;
         }
-        Ok(Body(bytes))
+        Ok(Body(read))
     }
 }
 
@@ -266,14 +270,26 @@ mod tests {
 
     async fn create_task(
         _: AcceptGuard,
-        _: ContentTypeGuard,
-        _: Query<NoParams>,
+        query: Result<Query<NoParams>, ErrorObject>,
         body: Body,
     ) -> Result<Response, ErrorObject> {
-        let data =
-            parse_create(&body.0, Endpoint { type_name: "tasks", path: "/api/tasks" }, |_| Ok::<(), String>(()))?;
+        query?;
+        let body = body.into_bytes()?;
+        let data = parse_create(&body, Endpoint { type_name: "tasks", path: "/api/tasks" }, |_| Ok::<(), String>(()))?;
         let id = data.id.unwrap_or_else(|| "derived".to_owned());
         Ok(response::created(&format!("/api/tasks/{id}"), &serde_json::json!({ "id": id })))
+    }
+
+    async fn create_scoped_task(
+        _: AcceptGuard,
+        path: Result<Path<u32>, ErrorObject>,
+        query: Result<Query<NoParams>, ErrorObject>,
+        body: Body,
+    ) -> Result<Response, ErrorObject> {
+        let Path(project_id) = path?;
+        query?;
+        body.into_bytes()?;
+        Ok(response::ok(&serde_json::json!({ "project_id": project_id })))
     }
 
     async fn delete_task(_: AcceptGuard, Path(_id): Path<u32>) -> Response {
@@ -293,6 +309,7 @@ mod tests {
                 }),
             )
             .route("/api/tasks", post(create_task))
+            .route("/api/projects/{project_id}/tasks", post(create_scoped_task))
             .route("/api/projects/{project_id}/tasks/{id}", get(get_scoped_task))
             .route("/api/small/tasks", post(create_task).layer(DefaultBodyLimit::max(16)))
             .route("/api/{prefix}/broken/{id}", get(mismatched_path))
@@ -479,9 +496,31 @@ mod tests {
 
     #[tokio::test]
     async fn a_body_without_length_headers_is_still_checked() {
-        // No Content-Length: the guard sees no body, Body sees one.
+        // No Content-Length: the headers announce no body, but one is read.
         let req = request("POST", "/api/tasks").body(HttpBody::from(r#"{"data":{"type":"tasks"}}"#)).unwrap();
         assert_eq!(send(req).await.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        // And still before the query and the path (§13.2 step 3).
+        for uri in ["/api/tasks?x=1", "/api/projects/x/tasks?x=1"] {
+            let req = request("POST", uri)
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(HttpBody::from(r#"{"data":{"type":"tasks"}}"#))
+                .unwrap();
+            let (status, headers, body) = send(req).await;
+            assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{uri}");
+            assert_error(&headers, &body, "unsupported_media_type");
+            assert_eq!(body["errors"][0]["source"], serde_json::json!({ "header": "Content-Type" }));
+        }
+    }
+
+    #[tokio::test]
+    async fn without_a_body_the_path_and_query_are_checked_in_order() {
+        let post = |uri: &'static str| request("POST", uri).header(header::CONTENT_TYPE, "text/plain");
+        let (status, _, body) = send(post("/api/projects/x/tasks?x=1").body(HttpBody::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["errors"][0]["code"], "invalid_path_parameter");
+        let (status, _, body) = send(post("/api/projects/7/tasks?x=1").body(HttpBody::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["errors"][0]["code"], "invalid_query_parameter");
     }
 
     #[tokio::test]
@@ -509,6 +548,20 @@ mod tests {
             .body(HttpBody::from(body))
             .unwrap();
         assert_eq!(send(req).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+        // Reading the body is step 7, after the query.
+        let req = request("POST", "/api/small/tasks?x=1")
+            .header(header::CONTENT_TYPE, MEDIA_TYPE)
+            .body(HttpBody::from(body))
+            .unwrap();
+        let (status, _, json) = send(req).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["errors"][0]["code"], "invalid_query_parameter");
+        // A body over the limit has a media type to check, step 3.
+        let req = request("POST", "/api/small/tasks")
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(HttpBody::from(body))
+            .unwrap();
+        assert_eq!(send(req).await.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
         // Within the limit the route works.
         let req = request("POST", "/api/small/tasks")
             .header(header::CONTENT_TYPE, MEDIA_TYPE)

@@ -64,64 +64,111 @@ export interface Transport {
   onActivityFeed(callback: (payload: unknown) => void): Promise<() => void>;
 }
 
+// ── JSON:API ──
+
+export interface JsonApiResourceIdentifier {
+  type: string;
+  id: string;
+}
+
+export interface JsonApiRelationship {
+  data?: JsonApiResourceIdentifier | JsonApiResourceIdentifier[] | null;
+  links?: Record<string, string | null>;
+}
+
+export interface JsonApiResource {
+  type: string;
+  id: string;
+  attributes?: Record<string, unknown>;
+  relationships?: Record<string, JsonApiRelationship>;
+  links?: Record<string, string | null>;
+}
+
+export interface JsonApiErrorObject {
+  id?: string;
+  status?: string;
+  code?: string;
+  title?: string;
+  detail?: string;
+  source?: { pointer?: string; parameter?: string; header?: string };
+  meta?: Record<string, unknown>;
+}
+
+/** A non-2xx response. `errors` is empty when the body was not a JSON:API error document. */
+export class JsonApiError extends Error {
+  override readonly name = 'JsonApiError';
+  readonly status: number;
+  readonly errors: JsonApiErrorObject[];
+
+  constructor(status: number, errors: JsonApiErrorObject[], message: string) {
+    super(message);
+    this.status = status;
+    this.errors = errors;
+  }
+}
+
 // ── HTTP Helpers ──
 
 const BASE = '/api';
+const JSON_API_MEDIA_TYPE = 'application/vnd.api+json';
+
+async function httpRequest(method: string, path: string, body?: unknown): Promise<Response> {
+  const headers: Record<string, string> = { Accept: JSON_API_MEDIA_TYPE };
+  if (body != null) headers['Content-Type'] = JSON_API_MEDIA_TYPE;
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers,
+    body: body != null ? JSON.stringify(body) : null,
+  });
+  if (!res.ok) throw await toJsonApiError(res);
+  return res;
+}
+
+async function toJsonApiError(res: Response): Promise<JsonApiError> {
+  const body: unknown = await res.json().catch(() => null);
+  const errors =
+    typeof body === 'object' && body !== null && Array.isArray((body as { errors?: unknown }).errors)
+      ? (body as { errors: JsonApiErrorObject[] }).errors
+      : [];
+  const first = errors[0];
+  return new JsonApiError(res.status, errors, first?.detail ?? first?.title ?? res.statusText);
+}
 
 async function httpGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error ?? res.statusText);
-  }
+  const res = await httpRequest('GET', path);
   return res.json();
 }
 
 async function httpPost<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body != null ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    const errBody = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(errBody.error ?? res.statusText);
-  }
+  const res = await httpRequest('POST', path, body);
   if (res.status === 204) return null as T;
   return res.json();
 }
 
-async function httpPut<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const errBody = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(errBody.error ?? res.statusText);
-  }
+async function httpPatch<T>(path: string, body: unknown): Promise<T> {
+  const res = await httpRequest('PATCH', path, body);
   return res.json();
 }
 
 async function httpDelete(path: string): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, { method: 'DELETE' });
-  if (!res.ok) {
-    const errBody = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(errBody.error ?? res.statusText);
-  }
+  await httpRequest('DELETE', path);
 }
 
 function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
+  const push = (key: string, value: unknown) => {
+    if (value == null) return;
+    for (const v of Array.isArray(value) ? value : [value]) {
+      parts.push(`${key}=${encodeURIComponent(String(v))}`);
+    }
+  };
   for (const [key, value] of Object.entries(params)) {
-    if (value == null) continue;
-    if (Array.isArray(value)) {
-      for (const v of value) {
-        parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(v))}`);
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      for (const [member, v] of Object.entries(value)) {
+        push(`${encodeURIComponent(key)}%5B${encodeURIComponent(member)}%5D`, v);
       }
     } else {
-      parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
+      push(encodeURIComponent(key), value);
     }
   }
   return parts.length > 0 ? `?${parts.join('&')}` : '';
@@ -187,69 +234,255 @@ function subscribeSse<T>(
   };
 }
 
+// ── JSON:API Resources ──
+
+interface JsonApiResourceDef {
+  type: string;
+  idField: string;
+  /** Keyed by relationship name. */
+  relationships: Record<string, { field: string; type: string; many: boolean }>;
+}
+
+interface JsonApiResourceDocument {
+  data: JsonApiResource;
+}
+
+interface JsonApiCollectionDocument {
+  data: JsonApiResource[];
+}
+
+interface JsonApiPageDocument {
+  data: JsonApiResource[];
+  meta: { total: number; limit: number; offset: number };
+}
+
+interface JsonApiWriteDocument {
+  data: {
+    type: string;
+    id?: string;
+    attributes: Record<string, unknown>;
+    relationships?: Record<string, JsonApiRelationship>;
+  };
+}
+
+function toOneId(rel: JsonApiRelationship | undefined): string | null {
+  const data = rel?.data;
+  return data != null && !Array.isArray(data) ? data.id : null;
+}
+
+function toManyIds(rel: JsonApiRelationship | undefined): string[] {
+  const data = rel?.data;
+  return Array.isArray(data) ? data.map((i) => i.id) : [];
+}
+
+/**
+ * A flat create or update input as a resource document. `undefined` keys are
+ * left out, which an update reads as unchanged; `null` is kept and clears.
+ * A to-many `null` is left out too: `{ data: null }` is not valid linkage for
+ * it, and the flat update input reads `null` there as unchanged.
+ */
+function unflattenResource(def: JsonApiResourceDef, input: object, id?: string): JsonApiWriteDocument {
+  let resourceId = id;
+  const attributes: Record<string, unknown> = {};
+  const relationships: Record<string, JsonApiRelationship> = {};
+  const relByField = new Map(
+    Object.entries(def.relationships).map(([name, rel]) => [rel.field, { name, ...rel }] as const),
+  );
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined) continue;
+    if (key === def.idField) {
+      // An empty create id asks the server to derive one.
+      if (id === undefined && typeof value === 'string' && value !== '') resourceId = value;
+      continue;
+    }
+    const rel = relByField.get(key);
+    if (rel === undefined) {
+      attributes[key] = value;
+    } else if (rel.many) {
+      if (Array.isArray(value)) {
+        relationships[rel.name] = { data: value.map((v) => ({ type: rel.type, id: String(v) })) };
+      }
+    } else {
+      relationships[rel.name] = { data: value === null ? null : { type: rel.type, id: String(value) } };
+    }
+  }
+  return {
+    data: {
+      type: def.type,
+      ...(resourceId !== undefined ? { id: resourceId } : {}),
+      attributes,
+      ...(Object.keys(relationships).length > 0 ? { relationships } : {}),
+    },
+  };
+}
+
+const EXERCISE_RESOURCE: JsonApiResourceDef = {
+  type: 'exercises',
+  idField: 'id',
+  relationships: {},
+};
+
+function flattenExercise(r: JsonApiResource): Exercise {
+  return {
+    id: r.id,
+    ...r.attributes,
+  } as Exercise;
+}
+
+function unflattenExercise(input: object, id?: string): JsonApiWriteDocument {
+  return unflattenResource(EXERCISE_RESOURCE, input, id);
+}
+
+const TAG_RESOURCE: JsonApiResourceDef = {
+  type: 'tags',
+  idField: 'id',
+  relationships: {},
+};
+
+function flattenTag(r: JsonApiResource): Tag {
+  return {
+    id: r.id,
+    ...r.attributes,
+  } as Tag;
+}
+
+function unflattenTag(input: object, id?: string): JsonApiWriteDocument {
+  return unflattenResource(TAG_RESOURCE, input, id);
+}
+
+const WORKOUT_RESOURCE: JsonApiResourceDef = {
+  type: 'workouts',
+  idField: 'id',
+  relationships: {
+    tags: { field: 'tags', type: 'tags', many: true },
+  },
+};
+
+function flattenWorkout(r: JsonApiResource): Workout {
+  return {
+    id: r.id,
+    ...r.attributes,
+    tags: toManyIds(r.relationships?.['tags']),
+  } as Workout;
+}
+
+function unflattenWorkout(input: object, id?: string): JsonApiWriteDocument {
+  return unflattenResource(WORKOUT_RESOURCE, input, id);
+}
+
+const WORKOUT_SET_RESOURCE: JsonApiResourceDef = {
+  type: 'workout-sets',
+  idField: 'id',
+  relationships: {
+    workout: { field: 'workout_id', type: 'workouts', many: false },
+    exercise: { field: 'exercise_id', type: 'exercises', many: false },
+  },
+};
+
+function flattenWorkoutSet(r: JsonApiResource): WorkoutSet {
+  return {
+    id: r.id,
+    ...r.attributes,
+    workout_id: toOneId(r.relationships?.['workout']),
+    exercise_id: toOneId(r.relationships?.['exercise']),
+  } as WorkoutSet;
+}
+
+function unflattenWorkoutSet(input: object, id?: string): JsonApiWriteDocument {
+  return unflattenResource(WORKOUT_SET_RESOURCE, input, id);
+}
+
 // ── HTTP Transport ──
 
 export function createHttpTransport(): Transport {
   return {
     async exerciseList(): Promise<Exercise[]> {
-      return httpGet('/exercises');
+      const { data } = await httpGet<JsonApiCollectionDocument>('/exercises');
+      return data.map(flattenExercise);
     },
     async exerciseGetById(id: string): Promise<Exercise> {
-      return httpGet(`/exercises/${encodeURIComponent(id)}`);
+      const { data } = await httpGet<JsonApiResourceDocument>(`/exercises/${encodeURIComponent(id)}`);
+      return flattenExercise(data);
     },
     async exerciseCreate(input: CreateExerciseInput): Promise<Exercise> {
-      return httpPost<Exercise>('/exercises', input);
+      const { data } = await httpPost<JsonApiResourceDocument>('/exercises', unflattenExercise(input));
+      return flattenExercise(data);
     },
     async exerciseUpdate(id: string, input: UpdateExerciseInput): Promise<Exercise> {
-      return httpPut<Exercise>(`/exercises/${encodeURIComponent(id)}`, input);
+      const { data } = await httpPatch<JsonApiResourceDocument>(
+        `/exercises/${encodeURIComponent(id)}`,
+        unflattenExercise(input, id),
+      );
+      return flattenExercise(data);
     },
     async exerciseDelete(id: string): Promise<null> {
       await httpDelete(`/exercises/${encodeURIComponent(id)}`);
       return null;
     },
     async tagList(): Promise<Tag[]> {
-      return httpGet('/tags');
+      const { data } = await httpGet<JsonApiCollectionDocument>('/tags');
+      return data.map(flattenTag);
     },
     async tagGetById(id: string): Promise<Tag> {
-      return httpGet(`/tags/${encodeURIComponent(id)}`);
+      const { data } = await httpGet<JsonApiResourceDocument>(`/tags/${encodeURIComponent(id)}`);
+      return flattenTag(data);
     },
     async tagCreate(input: CreateTagInput): Promise<Tag> {
-      return httpPost<Tag>('/tags', input);
+      const { data } = await httpPost<JsonApiResourceDocument>('/tags', unflattenTag(input));
+      return flattenTag(data);
     },
     async tagUpdate(id: string, input: UpdateTagInput): Promise<Tag> {
-      return httpPut<Tag>(`/tags/${encodeURIComponent(id)}`, input);
+      const { data } = await httpPatch<JsonApiResourceDocument>(
+        `/tags/${encodeURIComponent(id)}`,
+        unflattenTag(input, id),
+      );
+      return flattenTag(data);
     },
     async tagDelete(id: string): Promise<null> {
       await httpDelete(`/tags/${encodeURIComponent(id)}`);
       return null;
     },
     async workoutList(): Promise<Workout[]> {
-      return httpGet('/workouts');
+      const { data } = await httpGet<JsonApiCollectionDocument>('/workouts');
+      return data.map(flattenWorkout);
     },
     async workoutGetById(id: string): Promise<Workout> {
-      return httpGet(`/workouts/${encodeURIComponent(id)}`);
+      const { data } = await httpGet<JsonApiResourceDocument>(`/workouts/${encodeURIComponent(id)}`);
+      return flattenWorkout(data);
     },
     async workoutCreate(input: CreateWorkoutInput): Promise<Workout> {
-      return httpPost<Workout>('/workouts', input);
+      const { data } = await httpPost<JsonApiResourceDocument>('/workouts', unflattenWorkout(input));
+      return flattenWorkout(data);
     },
     async workoutUpdate(id: string, input: UpdateWorkoutInput): Promise<Workout> {
-      return httpPut<Workout>(`/workouts/${encodeURIComponent(id)}`, input);
+      const { data } = await httpPatch<JsonApiResourceDocument>(
+        `/workouts/${encodeURIComponent(id)}`,
+        unflattenWorkout(input, id),
+      );
+      return flattenWorkout(data);
     },
     async workoutDelete(id: string): Promise<null> {
       await httpDelete(`/workouts/${encodeURIComponent(id)}`);
       return null;
     },
     async workoutSetList(): Promise<WorkoutSet[]> {
-      return httpGet('/workout-sets');
+      const { data } = await httpGet<JsonApiCollectionDocument>('/workout-sets');
+      return data.map(flattenWorkoutSet);
     },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
-      return httpGet(`/workout-sets/${encodeURIComponent(id)}`);
+      const { data } = await httpGet<JsonApiResourceDocument>(`/workout-sets/${encodeURIComponent(id)}`);
+      return flattenWorkoutSet(data);
     },
     async workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet> {
-      return httpPost<WorkoutSet>('/workout-sets', input);
+      const { data } = await httpPost<JsonApiResourceDocument>('/workout-sets', unflattenWorkoutSet(input));
+      return flattenWorkoutSet(data);
     },
     async workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet> {
-      return httpPut<WorkoutSet>(`/workout-sets/${encodeURIComponent(id)}`, input);
+      const { data } = await httpPatch<JsonApiResourceDocument>(
+        `/workout-sets/${encodeURIComponent(id)}`,
+        unflattenWorkoutSet(input, id),
+      );
+      return flattenWorkoutSet(data);
     },
     async workoutSetDelete(id: string): Promise<null> {
       await httpDelete(`/workout-sets/${encodeURIComponent(id)}`);

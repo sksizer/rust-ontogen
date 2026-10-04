@@ -13,6 +13,7 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::clients::config::Config;
+use crate::clients::generators::jsonapi::{self, served_resource};
 use crate::clients::generators::{FallbackRecord, command_name, ts_params_in_declaration_order};
 use crate::servers::classify::{classify_op, is_read_op};
 use crate::servers::parse::{ApiModule, EventFn, Param, is_page_param, is_resume_param};
@@ -128,6 +129,12 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         }
     }
 
+    // Each flattener returns its entity type, whichever CRUD methods are emitted.
+    let resources = jsonapi::served_resources(modules, config);
+    for r in &resources {
+        collect_ts_import(&r.entity.name, &mut import_types);
+    }
+
     import_types.sort();
     import_types.dedup();
 
@@ -183,14 +190,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
     // ── PaginatedResult<T> (when pagination is enabled) ──
     if config.any_pagination() {
-        out.push_str(
-            "export interface PaginatedResult<T> {\n\
-             \x20 items: T[];\n\
-             \x20 total: number;\n\
-             \x20 limit: number;\n\
-             \x20 offset: number;\n\
-             }\n\n",
-        );
+        out.push_str(jsonapi::PAGINATED_RESULT);
     }
 
     if has_events {
@@ -201,9 +201,16 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     generate_transport_interface(&mut out, modules, config);
 
     // ── HTTP Helpers ──
-    generate_http_helpers(&mut out, config);
+    out.push_str(jsonapi::JSON_API_TYPES);
+    generate_http_helpers(&mut out, modules, config);
     if has_events {
         out.push_str(SSE_SUBSCRIBE_HELPER);
+    }
+    if !resources.is_empty() {
+        out.push_str(jsonapi::RESOURCE_HELPERS);
+        for r in &resources {
+            out.push_str(&jsonapi::resource_codec(r));
+        }
     }
 
     // ── createHttpTransport ──
@@ -250,48 +257,12 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
 
             match op {
                 OpKind::List => {
-                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    // Pagination only applies when the list function returns Vec<T>;
-                    // custom result types are passed through unchanged.
-                    let paginated =
-                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
-                    // A list that takes the page owns its limit/offset: they are never caller params.
-                    let plain_params: Vec<&Param> = f
-                        .params
-                        .iter()
-                        .filter(|p| {
-                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p))
-                        })
-                        .collect();
-
-                    let mut params = Vec::new();
-                    // Plain params first (e.g., workflowId: string)
-                    for pp in &plain_params {
-                        let ts_ty = rust_type_to_ts(&strip_ref(&pp.ty));
-                        params.push(format!("{}: {}", snake_to_camel(&pp.name), ts_ty));
-                    }
-                    // Typed query struct (optional)
-                    if let Some(qp) = query_param {
-                        let qt = rust_type_to_ts(&extract_input_type(&qp.ty));
-                        params.push(format!("query?: {}", qt));
-                    }
-                    // Pagination params
-                    if paginated {
-                        params.push("limit?: number".to_string());
-                        params.push("offset?: number".to_string());
-                    }
-                    // Route prefix param
+                    let list = jsonapi::list_method(m, f, config, "", &|p, _| p.to_string());
+                    let mut params = list.params;
                     if !pp_only.is_empty() {
                         params.push(pp_only.clone());
                     }
-                    let params_str = params.join(", ");
-                    let return_type = if paginated {
-                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str);
-                        format!("PaginatedResult<{}>", item_type)
-                    } else {
-                        ret_str.to_string()
-                    };
-                    out.push_str(&format!("  {}({}): Promise<{}>;\n", camel, params_str, return_type));
+                    out.push_str(&format!("  {camel}({}): Promise<{}>;\n", params.join(", "), list.return_type));
                 }
                 OpKind::GetById => {
                     out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<{}>;\n", camel, ret_str));
@@ -370,65 +341,8 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
 }
 
 /// Generate HTTP helper functions.
-fn generate_http_helpers(out: &mut String, config: &Config) {
-    out.push_str(
-        "// ── HTTP Helpers ──\n\n\
-         const BASE = '/api';\n\n\
-         async function httpGet<T>(path: string): Promise<T> {\n\
-         \x20 const res = await fetch(`${BASE}${path}`);\n\
-         \x20 if (!res.ok) {\n\
-         \x20   const body = await res.json().catch(() => ({ error: res.statusText }));\n\
-         \x20   throw new Error(body.error ?? res.statusText);\n\
-         \x20 }\n\
-         \x20 return res.json();\n\
-         }\n\n\
-         async function httpPost<T>(path: string, body?: unknown): Promise<T> {\n\
-         \x20 const res = await fetch(`${BASE}${path}`, {\n\
-         \x20   method: 'POST',\n\
-         \x20   headers: { 'Content-Type': 'application/json' },\n\
-         \x20   body: body != null ? JSON.stringify(body) : undefined,\n\
-         \x20 });\n\
-         \x20 if (!res.ok) {\n\
-         \x20   const errBody = await res.json().catch(() => ({ error: res.statusText }));\n\
-         \x20   throw new Error(errBody.error ?? res.statusText);\n\
-         \x20 }\n\
-         \x20 if (res.status === 204) return null as T;\n\
-         \x20 return res.json();\n\
-         }\n\n\
-         async function httpPut<T>(path: string, body: unknown): Promise<T> {\n\
-         \x20 const res = await fetch(`${BASE}${path}`, {\n\
-         \x20   method: 'PUT',\n\
-         \x20   headers: { 'Content-Type': 'application/json' },\n\
-         \x20   body: JSON.stringify(body),\n\
-         \x20 });\n\
-         \x20 if (!res.ok) {\n\
-         \x20   const errBody = await res.json().catch(() => ({ error: res.statusText }));\n\
-         \x20   throw new Error(errBody.error ?? res.statusText);\n\
-         \x20 }\n\
-         \x20 return res.json();\n\
-         }\n\n\
-         async function httpDelete(path: string): Promise<void> {\n\
-         \x20 const res = await fetch(`${BASE}${path}`, { method: 'DELETE' });\n\
-         \x20 if (!res.ok) {\n\
-         \x20   const errBody = await res.json().catch(() => ({ error: res.statusText }));\n\
-         \x20   throw new Error(errBody.error ?? res.statusText);\n\
-         \x20 }\n\
-         }\n\n\
-         function toQueryString(params: Record<string, unknown>): string {\n\
-         \x20 const parts: string[] = [];\n\
-         \x20 for (const [key, value] of Object.entries(params)) {\n\
-         \x20   if (value == null) continue;\n\
-         \x20   if (Array.isArray(value)) {\n\
-         \x20     for (const v of value) {\n\
-         \x20       parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(v))}`);\n\
-         \x20     }\n\
-         \x20   } else {\n\
-         \x20     parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);\n\
-         \x20   }\n\
-         \x20 }\n\
-         \x20 return parts.length > 0 ? `?${parts.join('&')}` : '';\n\
-         }\n\n",
-    );
+fn generate_http_helpers(out: &mut String, modules: &[ApiModule], config: &Config) {
+    out.push_str(&jsonapi::http_helpers(jsonapi::needs_put(modules, config)));
 
     // Add scopedPath helper when route_prefix is configured
     if let Some(prefix) = &config.route_prefix {
@@ -490,6 +404,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                 continue;
             }
 
+            let resource = served_resource(m, f, config);
             let camel = snake_to_camel(&cmd_name);
             let ts_ret = rust_type_to_ts(&f.return_type);
             let returns_unit = f.return_type == "()";
@@ -497,126 +412,74 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
 
             match op {
                 OpKind::List => {
-                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    // Pagination only applies when the list function returns Vec<T>;
-                    // custom result types are passed through unchanged.
-                    let paginated =
-                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
-                    // A list that takes the page owns its limit/offset: they are never caller params.
-                    let plain_params: Vec<&Param> = f
-                        .params
-                        .iter()
-                        .filter(|p| {
-                            !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p))
-                        })
-                        .collect();
-
-                    let mut params = Vec::new();
-                    for pp in &plain_params {
-                        let ts_ty = rust_type_to_ts(&strip_ref(&pp.ty));
-                        params.push(format!("{}: {}", snake_to_camel(&pp.name), ts_ty));
-                    }
-                    if let Some(qp) = query_param {
-                        let qt = rust_type_to_ts(&extract_input_type(&qp.ty));
-                        params.push(format!("query?: {}", qt));
-                    }
-                    if paginated {
-                        params.push("limit?: number".to_string());
-                        params.push("offset?: number".to_string());
-                    }
+                    let path = |p: &str, template: bool| if template { sp_template(p) } else { sp(p) };
+                    let list = jsonapi::list_method(m, f, config, &plural, &path);
+                    let mut params = list.params;
                     if !pp_only.is_empty() {
                         params.push(pp_only.clone());
                     }
-                    let params_str = params.join(", ");
-
-                    let return_type = if paginated {
-                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str.as_str());
-                        format!("PaginatedResult<{}>", item_type)
-                    } else {
-                        ret_str.clone()
-                    };
-
-                    if query_param.is_some() && plain_params.is_empty() {
-                        // Typed query struct: serialize as query string
-                        let qs_arg = if paginated {
-                            "toQueryString({ ...query, limit, offset })"
-                        } else {
-                            "toQueryString(query ?? {})"
-                        };
-                        let path_expr = sp_template(&format!("/{plural}${{{qs_arg}}}"));
-                        out.push_str(&format!(
-                            "    async {}({}): Promise<{}> {{\n\
-                             \x20     return httpGet({path_expr});\n\
-                             \x20   }},\n",
-                            camel, params_str, return_type,
-                        ));
-                    } else if !plain_params.is_empty() {
-                        // Scoped params as query string (e.g., ?workflow_id=xxx)
-                        let mut query_parts = Vec::new();
-                        for pp in &plain_params {
-                            let camel_name = snake_to_camel(&pp.name);
-                            query_parts.push(format!("{}=${{encodeURIComponent({})}}", pp.name, camel_name));
-                        }
-                        let qs = query_parts.join("&");
-                        let path_expr = if paginated {
-                            sp_template(&format!("/{plural}?{qs}&${{toQueryString({{ limit, offset }}).slice(1)}}"))
-                        } else {
-                            sp_template(&format!("/{plural}?{qs}"))
-                        };
-                        out.push_str(&format!(
-                            "    async {}({}): Promise<{}> {{\n\
-                             \x20     return httpGet({path_expr});\n\
-                             \x20   }},\n",
-                            camel, params_str, return_type,
-                        ));
-                    } else {
-                        // No params (or pagination-only params)
-                        if paginated {
-                            let path_expr = sp_template(&format!("/{plural}${{toQueryString({{ limit, offset }})}}"));
-                            out.push_str(&format!(
-                                "    async {}({}): Promise<{}> {{\n\
-                                 \x20     return httpGet({path_expr});\n\
-                                 \x20   }},\n",
-                                camel, params_str, return_type,
-                            ));
-                        } else {
-                            let path_expr = sp(&format!("/{plural}"));
-                            out.push_str(&format!(
-                                "    async {}({}): Promise<{}> {{\n\
-                                 \x20     return httpGet({path_expr});\n\
-                                 \x20   }},\n",
-                                camel, params_str, return_type,
-                            ));
-                        }
-                    }
+                    out.push_str(&format!(
+                        "    async {camel}({}): Promise<{}> {{\n\
+                         \x20     {}\n\
+                         \x20   }},\n",
+                        params.join(", "),
+                        list.return_type,
+                        list.body.join("\n      "),
+                    ));
                 }
                 OpKind::GetById => {
                     let path_expr = sp_template(&format!("/{plural}/${{encodeURIComponent(id)}}"));
+                    let body = match resource {
+                        Some(r) => format!(
+                            "const {{ data }} = await httpGet<JsonApiResourceDocument>({path_expr});\n\
+                             \x20     return {}(data);",
+                            jsonapi::flatten_fn(r)
+                        ),
+                        None => format!("return httpGet({path_expr});"),
+                    };
                     out.push_str(&format!(
-                        "    async {}(id: string{pp_trailing}): Promise<{}> {{\n\
-                         \x20     return httpGet({path_expr});\n\
+                        "    async {camel}(id: string{pp_trailing}): Promise<{ret_str}> {{\n\
+                         \x20     {body}\n\
                          \x20   }},\n",
-                        camel, ret_str,
                     ));
                 }
                 OpKind::Create => {
                     let input_type = rust_type_to_ts(&extract_input_type(&f.params[0].ty));
                     let path_expr = sp(&format!("/{plural}"));
+                    let body = match resource {
+                        Some(r) => format!(
+                            "const {{ data }} = await httpPost<JsonApiResourceDocument>({path_expr}, {}(input));\n\
+                             \x20     return {}(data);",
+                            jsonapi::unflatten_fn(r),
+                            jsonapi::flatten_fn(r)
+                        ),
+                        None => format!("return httpPost<{ret_str}>({path_expr}, input);"),
+                    };
                     out.push_str(&format!(
-                        "    async {}(input: {}{pp_trailing}): Promise<{}> {{\n\
-                         \x20     return httpPost<{}>({path_expr}, input);\n\
+                        "    async {camel}(input: {input_type}{pp_trailing}): Promise<{ret_str}> {{\n\
+                         \x20     {body}\n\
                          \x20   }},\n",
-                        camel, input_type, ret_str, ret_str,
                     ));
                 }
                 OpKind::Update => {
                     let input_type = rust_type_to_ts(&extract_input_type(&f.params[1].ty));
                     let path_expr = sp_template(&format!("/{plural}/${{encodeURIComponent(id)}}"));
+                    let body = match resource {
+                        Some(r) => format!(
+                            "const {{ data }} = await httpPatch<JsonApiResourceDocument>(\n\
+                             \x20       {path_expr},\n\
+                             \x20       {}(input, id),\n\
+                             \x20     );\n\
+                             \x20     return {}(data);",
+                            jsonapi::unflatten_fn(r),
+                            jsonapi::flatten_fn(r)
+                        ),
+                        None => format!("return httpPut<{ret_str}>({path_expr}, input);"),
+                    };
                     out.push_str(&format!(
-                        "    async {}(id: string, input: {}{pp_trailing}): Promise<{}> {{\n\
-                         \x20     return httpPut<{}>({path_expr}, input);\n\
+                        "    async {camel}(id: string, input: {input_type}{pp_trailing}): Promise<{ret_str}> {{\n\
+                         \x20     {body}\n\
                          \x20   }},\n",
-                        camel, input_type, ret_str, ret_str,
                     ));
                 }
                 OpKind::Delete => {

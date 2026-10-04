@@ -527,6 +527,8 @@ dependencies = [
  "axum",
  "markdown-store",
  "ontogen",
+ "ontogen-core",
+ "ontogen-jsonapi",
  "ontogen-macros",
  "schemars",
  "serde",
@@ -548,6 +550,7 @@ version = "0.8.0"
 dependencies = [
  "cruet",
  "ontogen-core",
+ "ontogen-jsonapi",
  "ontogen-macros",
  "ontogen-ts",
  "quote",
@@ -560,6 +563,16 @@ dependencies = [
 [[package]]
 name = "ontogen-core"
 version = "0.6.1"
+
+[[package]]
+name = "ontogen-jsonapi"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "ontogen-macros"

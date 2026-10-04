@@ -9,6 +9,7 @@
 
 use std::{collections::HashSet, fmt::Display, hash::Hash};
 
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 use crate::{
@@ -200,6 +201,18 @@ pub fn to_many(
     target_type: &str,
     max_identifiers: Option<usize>,
 ) -> Result<Vec<String>, ErrorObject> {
+    to_many_linked(relationship, pointer, target_type, max_identifiers)
+        .map(|linked| linked.into_iter().map(|l| l.id).collect())
+}
+
+/// [`to_many`], keeping with each id the pointer of the identifier that
+/// named it: its first occurrence, since duplicates collapse to it.
+pub fn to_many_linked(
+    relationship: &Value,
+    pointer: &str,
+    target_type: &str,
+    max_identifiers: Option<usize>,
+) -> Result<Vec<LinkedId>, ErrorObject> {
     let data_pointer = format!("{pointer}/data");
     let Value::Array(items) = linkage(relationship, pointer)? else {
         return Err(invalid_document("a to-many relationship's `data` must be an array", data_pointer));
@@ -219,7 +232,119 @@ pub fn to_many(
     for (i, (type_name, _)) in identifiers.iter().enumerate() {
         check_type(type_name, target_type, &format!("{data_pointer}/{i}"))?;
     }
-    Ok(collapse_duplicates(identifiers.into_iter().map(|(_, id)| id.to_owned()).collect()))
+    let mut seen = HashSet::with_capacity(identifiers.len());
+    Ok(identifiers
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (_, id))| seen.insert(*id))
+        .map(|(i, (_, id))| LinkedId { id: id.to_owned(), pointer: format!("{data_pointer}/{i}") })
+        .collect())
+}
+
+/// A linked id read from a request document, with the pointer of the
+/// identifier that named it.
+///
+/// Before a create or update, the handler looks up each linked resource
+/// (§13.2 step 8), and a missing one is reported at this pointer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedId {
+    /// The linked resource's id.
+    pub id: String,
+    /// The identifier's RFC 6901 pointer in the request body
+    /// (`/data/relationships/tags/data/1`).
+    pub pointer: String,
+}
+
+impl LinkedId {
+    /// `404 related_resource_not_found` at this identifier: no resource of
+    /// `target_type` has this id.
+    pub fn not_found(&self, target_type: &str) -> ErrorObject {
+        ErrorObject::new(ErrorCode::RelatedResourceNotFound, format!("`{target_type}` `{}` does not exist", self.id))
+            .with_pointer(self.pointer.clone())
+    }
+}
+
+/// Step 7, first member family: the first attribute name, in byte order,
+/// that is not one of `declared` is `400 unknown_attribute` (§8.2).
+///
+/// `relationships` pairs each relationship's Rust field with its name
+/// (`("epic_id", "epic")`). A client still sending the flat shape writes
+/// one of those as an attribute, and the detail names the relationship to
+/// use instead.
+pub fn check_attribute_names(
+    attributes: Option<&Map<String, Value>>,
+    type_name: &str,
+    declared: &[&str],
+    relationships: &[(&str, &str)],
+) -> Result<(), ErrorObject> {
+    let Some(name) = first_unknown(attributes, declared) else { return Ok(()) };
+    let mut detail = format!("`{name}` is not an attribute of `{type_name}`");
+    if let Some((_, relationship)) = relationships.iter().find(|(field, rel)| *field == name || *rel == name) {
+        detail.push_str(&format!("; it is the `{relationship}` relationship"));
+    }
+    Err(ErrorObject::new(ErrorCode::UnknownAttribute, detail).with_pointer(pointer("/data/attributes", name)))
+}
+
+/// Step 7, second member family, for one declared attribute: its value when
+/// present.
+///
+/// The value is checked by deserializing it as `T`, the attribute's Rust
+/// type, and one serde rejects is `400 invalid_attribute`, including `null`
+/// for a type that is not an `Option`. An absent `required` attribute is
+/// `400 missing_attribute`, pointing at `attributes`, or at `data` when the
+/// document has none.
+pub fn attribute<'a, T: DeserializeOwned>(
+    attributes: Option<&'a Map<String, Value>>,
+    name: &str,
+    required: bool,
+) -> Result<Option<&'a Value>, ErrorObject> {
+    match attributes.and_then(|a| a.get(name)) {
+        Some(value) => match T::deserialize(value) {
+            Ok(_) => Ok(Some(value)),
+            Err(err) => Err(ErrorObject::new(ErrorCode::InvalidAttribute, format!("`{name}` is invalid: {err}"))
+                .with_pointer(pointer("/data/attributes", name))),
+        },
+        None if required => {
+            let at = if attributes.is_some() { "/data/attributes" } else { "/data" };
+            Err(ErrorObject::new(ErrorCode::MissingAttribute, format!("the attribute `{name}` is required"))
+                .with_pointer(at))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Step 7, third member family: the first relationship name, in byte
+/// order, that is not one of `declared` is `400 unknown_relationship`
+/// (§8.2).
+pub fn check_relationship_names(
+    relationships: Option<&Map<String, Value>>,
+    type_name: &str,
+    declared: &[&str],
+) -> Result<(), ErrorObject> {
+    match first_unknown(relationships, declared) {
+        None => Ok(()),
+        Some(name) => Err(ErrorObject::new(
+            ErrorCode::UnknownRelationship,
+            format!("`{name}` is not a relationship of `{type_name}`"),
+        )
+        .with_pointer(pointer("/data/relationships", name))),
+    }
+}
+
+/// `400 missing_relationship`: a create document leaves out a to-one that
+/// is not an `Option` (§8.2). The pointer names `relationships`, or `data`
+/// when the document has none.
+pub fn missing_relationship(name: &str, relationships: Option<&Map<String, Value>>) -> ErrorObject {
+    let at = if relationships.is_some() { "/data/relationships" } else { "/data" };
+    ErrorObject::new(ErrorCode::MissingRelationship, format!("the relationship `{name}` is required")).with_pointer(at)
+}
+
+/// The first member name, in byte order, outside `declared`. Sorting here
+/// keeps the order independent of how `serde_json` orders a map.
+fn first_unknown<'a>(members: Option<&'a Map<String, Value>>, declared: &[&str]) -> Option<&'a str> {
+    let mut names: Vec<&str> = members?.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    names.into_iter().find(|name| !declared.contains(name))
 }
 
 /// Keeps the first occurrence of each item, in order (§5.4).
@@ -553,6 +678,91 @@ mod tests {
     fn duplicates_collapse_to_their_first_occurrence() {
         assert_eq!(collapse_duplicates(vec![3, 1, 3, 2, 1]), vec![3, 1, 2]);
         assert_eq!(collapse_duplicates(Vec::<u8>::new()), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn to_many_linked_points_at_each_first_occurrence() {
+        let linked = to_many_linked(
+            &json!({"data": [{"type": "tags", "id": "b"}, {"type": "tags", "id": "a"}, {"type": "tags", "id": "b"}]}),
+            TAGS,
+            "tags",
+            None,
+        )
+        .unwrap();
+        let pairs: Vec<(&str, &str)> = linked.iter().map(|l| (l.id.as_str(), l.pointer.as_str())).collect();
+        assert_eq!(pairs, vec![("b", "/data/relationships/tags/data/0"), ("a", "/data/relationships/tags/data/1")]);
+        let missing = linked[1].not_found("tags");
+        assert_eq!(
+            serde_json::to_value(&missing).unwrap(),
+            json!({
+                "status": "404",
+                "code": "related_resource_not_found",
+                "title": "Not Found",
+                "detail": "`tags` `a` does not exist",
+                "source": { "pointer": "/data/relationships/tags/data/1" }
+            })
+        );
+    }
+
+    fn attrs(value: Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn unknown_attributes_are_reported_in_byte_order() {
+        let declared = ["title", "status"];
+        let relationships = [("epic_id", "epic"), ("tags", "tags")];
+        let check = |v: Value| check_attribute_names(Some(&attrs(v)), "tasks", &declared, &relationships);
+        assert!(check(json!({"title": "x", "status": "y"})).is_ok());
+        assert!(check_attribute_names(None, "tasks", &declared, &relationships).is_ok());
+        assert_eq!(
+            rel_failure(check(json!({"zeta": 1, "beta": 2, "title": "x"}))),
+            (400, "unknown_attribute".to_owned(), "/data/attributes/beta".to_owned())
+        );
+        let err = check(json!({"epic_id": "markdown-backend"})).unwrap_err();
+        assert_eq!(err.detail(), "`epic_id` is not an attribute of `tasks`; it is the `epic` relationship");
+        let err = check(json!({"tags": []})).unwrap_err();
+        assert_eq!(err.detail(), "`tags` is not an attribute of `tasks`; it is the `tags` relationship");
+        assert_eq!(rel_failure(check(json!({"a/b": 1}))).2, "/data/attributes/a~1b");
+    }
+
+    #[test]
+    fn a_declared_attribute_is_checked_against_its_type() {
+        let a = attrs(json!({"title": "x", "count": "seven", "notes": null, "done": null}));
+        assert_eq!(attribute::<String>(Some(&a), "title", true).unwrap(), Some(&json!("x")));
+        assert_eq!(attribute::<Option<String>>(Some(&a), "notes", false).unwrap(), Some(&Value::Null));
+        assert_eq!(
+            rel_failure(attribute::<i32>(Some(&a), "count", false)),
+            (400, "invalid_attribute".to_owned(), "/data/attributes/count".to_owned())
+        );
+        // `null` is a value, and only an `Option` takes it.
+        assert_eq!(rel_failure(attribute::<bool>(Some(&a), "done", false)).1, "invalid_attribute");
+        assert_eq!(attribute::<String>(Some(&a), "status", false).unwrap(), None);
+        assert_eq!(
+            rel_failure(attribute::<String>(Some(&a), "status", true)),
+            (400, "missing_attribute".to_owned(), "/data/attributes".to_owned())
+        );
+        assert_eq!(
+            rel_failure(attribute::<String>(None, "status", true)),
+            (400, "missing_attribute".to_owned(), "/data".to_owned())
+        );
+    }
+
+    #[test]
+    fn unknown_and_missing_relationships() {
+        let rels = attrs(json!({"tags": {"data": []}, "owner": {}, "author": {}}));
+        assert!(check_relationship_names(Some(&rels), "tasks", &["tags", "owner", "author"]).is_ok());
+        assert_eq!(
+            rel_failure(check_relationship_names(Some(&rels), "tasks", &["tags"])),
+            (400, "unknown_relationship".to_owned(), "/data/relationships/author".to_owned())
+        );
+        let missing = missing_relationship("workout", Some(&rels));
+        assert_eq!((missing.status().as_u16(), missing.code()), (400, "missing_relationship"));
+        assert_eq!(missing.source(), Some(&crate::ErrorSource::Pointer("/data/relationships".to_owned())));
+        assert_eq!(
+            missing_relationship("workout", None).source(),
+            Some(&crate::ErrorSource::Pointer("/data".to_owned()))
+        );
     }
 
     #[test]

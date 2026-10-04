@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::resource::ResourceModel;
+use crate::servers::error_map::ErrorMap;
 use crate::servers::types::NamingConfig;
 
 /// Top-level configuration for the server transport codegen pipeline.
@@ -11,7 +13,7 @@ use crate::servers::types::NamingConfig;
 /// reached publicly as [`crate::ClientsConfig`]; the two pipelines no longer
 /// share a config.
 #[derive(Debug, Clone)]
-pub struct Config {
+pub(crate) struct Config {
     /// Directory containing API source files (e.g., `src/api/v1`).
     pub api_dir: PathBuf,
 
@@ -34,9 +36,6 @@ pub struct Config {
 
     /// Which server-side generators to run and their output paths.
     pub generators: Vec<ServerGenerator>,
-
-    /// Rust edition for `rustfmt` (e.g., `"2021"`).
-    pub rustfmt_edition: String,
 
     /// SSE route overrides: map from event function name to custom route path
     /// (e.g., `"graph_updated"` → `"/api/events/graph"`).
@@ -76,6 +75,13 @@ pub struct Config {
     /// API surfaces scanned in addition to the primary one described by the
     /// fields above. See [`ApiSurface`].
     pub extra_surfaces: Vec<ApiSurface>,
+
+    /// The schema's entities as JSON:API resources. A module is served as a
+    /// resource exactly when this has a resource for its name.
+    pub(crate) resources: ResourceModel,
+
+    /// The `AppError` found under `ServersConfig::error_source_dir`, if any.
+    pub(crate) error_map: Option<ErrorMap>,
 }
 
 impl Config {
@@ -205,13 +211,14 @@ impl Default for Config {
             state_import: "crate::AppState".to_string(),
             naming: NamingConfig::default(),
             generators: Vec::new(),
-            rustfmt_edition: "2021".to_string(),
             sse_route_overrides: HashMap::new(),
             route_prefix: None,
             store_type: None,
             store_import: None,
             pagination: None,
             extra_surfaces: Vec::new(),
+            resources: ResourceModel::default(),
+            error_map: None,
         }
     }
 }
@@ -228,7 +235,8 @@ pub struct RoutePrefix {
     /// form when routes are emitted.
     pub segments: String,
     /// The state accessor method to call for validation
-    /// (e.g., `"store_for"` → `state.store_for(&project_id)?`).
+    /// (e.g., `"store_for"` → `state.store_for(&ontogen_scope)?` in an HTTP
+    /// handler, which binds the prefix param's value as `ontogen_scope`).
     pub state_accessor: String,
     /// Parameters extracted from the prefix segments.
     pub params: Vec<PrefixParam>,

@@ -44,6 +44,9 @@ exclude = [
 [dependencies]
 ontogen-core = { path = "crates/ontogen-core", version = "=0.6.1" }
 ontogen-macros = { path = "crates/ontogen-macros", version = "=0.1.1" }
+# Only the codes ontogen authors, so a consumer `AppError` variant cannot
+# reuse one (wire contract §13.4).
+ontogen-jsonapi = { path = "crates/ontogen-jsonapi", version = "=0.1.0", default-features = false }
 ontogen-ts = { path = "crates/ontogen-ts", version = "=0.1.6" }
 cruet = "1.0"
 syn = { version = "2", features = ["full", "parsing", "extra-traits"] }

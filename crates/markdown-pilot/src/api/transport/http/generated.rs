@@ -7,12 +7,23 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::Json,
-    routing::{delete, get, post, put},
+    extract::{
+        State,
+        rejection::{JsonRejection, QueryRejection},
+    },
+    http::{Method, StatusCode},
+    response::{Json, Response},
+    routing::{delete, get, patch, post, put},
 };
-
+use ontogen_jsonapi::{
+    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
+    ResourceIdentifier, ResourceObject,
+    error::method_not_allowed,
+    extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
+    links::{CanonicalQuery, encode_path_segment, pagination_links},
+    request::{self, Endpoint, LinkedId, ResourceData},
+    response,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -23,168 +34,858 @@ use crate::schema::{
 };
 use crate::store::Store;
 
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
+/// An `AppError` as an error object: the status its variant's name gives,
+/// and the name in snake_case as the code.
+fn app_error(e: crate::schema::AppError) -> ErrorObject {
+    let (status, code) = match &e {
+        crate::schema::AppError::NoteNotFound(..) => (StatusCode::NOT_FOUND, "note_not_found"),
+        crate::schema::AppError::NoteIdRequired(..) => (StatusCode::BAD_REQUEST, "note_id_required"),
+        crate::schema::AppError::NoteAlreadyExists(..) => (StatusCode::CONFLICT, "note_already_exists"),
+        crate::schema::AppError::SectionNotFound(..) => (StatusCode::NOT_FOUND, "section_not_found"),
+        crate::schema::AppError::SectionIdRequired(..) => (StatusCode::BAD_REQUEST, "section_id_required"),
+        crate::schema::AppError::SectionAlreadyExists(..) => (StatusCode::CONFLICT, "section_already_exists"),
+        crate::schema::AppError::SectionParentRequired(..) => (StatusCode::FORBIDDEN, "section_parent_required"),
+        crate::schema::AppError::TaskNotFound(..) => (StatusCode::NOT_FOUND, "task_not_found"),
+        crate::schema::AppError::TaskIdRequired(..) => (StatusCode::BAD_REQUEST, "task_id_required"),
+        crate::schema::AppError::TaskAlreadyExists(..) => (StatusCode::CONFLICT, "task_already_exists"),
+        crate::schema::AppError::TagNotFound(..) => (StatusCode::NOT_FOUND, "tag_not_found"),
+        crate::schema::AppError::TagIdRequired(..) => (StatusCode::BAD_REQUEST, "tag_id_required"),
+        crate::schema::AppError::TagAlreadyExists(..) => (StatusCode::CONFLICT, "tag_already_exists"),
+        crate::schema::AppError::Md(..) => (StatusCode::INTERNAL_SERVER_ERROR, "md"),
+    };
+    ErrorObject::app(status, code, e.to_string())
 }
 
-type ApiError = (StatusCode, Json<ErrorResponse>);
+/// A failure no `AppError` describes: opening the store, a scope accessor,
+/// or an op with another error type.
+fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
+    ErrorObject::internal(e.to_string())
+}
 
-fn err(msg: String) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: msg }))
+/// The method fallback of a route serving `allowed`: `405` with `Allow`.
+fn allow<const N: usize>(
+    allowed: [Method; N],
+) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
+    move |method| std::future::ready(method_not_allowed(&method, &allowed))
+}
+
+fn json_rejection(e: JsonRejection) -> ErrorObject {
+    match e.status() {
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => {
+            ErrorObject::new(ErrorCode::UnsupportedMediaType, e.body_text()).with_header("Content-Type")
+        }
+        StatusCode::PAYLOAD_TOO_LARGE => ErrorObject::new(ErrorCode::ContentTooLarge, e.body_text()),
+        _ => ErrorObject::new(ErrorCode::InvalidDocument, e.body_text()),
+    }
+}
+
+fn query_rejection(e: QueryRejection) -> ErrorObject {
+    ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
+}
+
+// ── JSON:API resources ──
+
+struct ListParams;
+
+impl RouteQuery for ListParams {
+    const SPEC: QuerySpec = QuerySpec { sort: true, include: true, ..QuerySpec::NONE };
+}
+
+struct PagedListParams;
+
+impl RouteQuery for PagedListParams {
+    const SPEC: QuerySpec = QuerySpec { sort: true, include: true, page: true, ..QuerySpec::NONE };
+}
+
+struct GetParams;
+
+impl RouteQuery for GetParams {
+    const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
+}
+
+/// No list takes an `order` argument, so every `sort` asks for an order the
+/// server does not support.
+fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
+    match query.sort()? {
+        None => Ok(()),
+        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
+            .with_parameter("sort")),
+    }
+}
+
+/// No route includes related resources, so every `include` names a path the
+/// server cannot include.
+fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
+    match query.include()? {
+        None => Ok(()),
+        Some(_) => Err(ErrorObject::new(
+            ErrorCode::InvalidIncludePath,
+            format!("`{type_name}` has no relationship that can be included"),
+        )
+        .with_parameter("include")),
+    }
+}
+
+/// The effective `(offset, limit)` of a paginated list.
+fn page(query: &QueryParams, default_limit: u32, max_limit: u32) -> Result<(u32, u32), ErrorObject> {
+    let offset = query.page_offset()?.unwrap_or(0);
+    let limit = query.page_limit()?.unwrap_or(default_limit).min(max_limit);
+    Ok((offset, limit))
+}
+
+/// Sets `name` when the request document carried it.
+fn set_field(fields: &mut serde_json::Map<String, serde_json::Value>, name: &str, value: Option<&serde_json::Value>) {
+    if let Some(value) = value {
+        fields.insert(name.to_owned(), value.clone());
+    }
+}
+
+/// A create or update input from the fields its request document set. Each
+/// field was checked against its type, so a failure here is the server's.
+fn from_fields<T: serde::de::DeserializeOwned>(
+    fields: serde_json::Map<String, serde_json::Value>,
+) -> Result<T, ErrorObject> {
+    serde_json::from_value(serde_json::Value::Object(fields)).map_err(internal_error)
+}
+
+// ── `notes` ──
+
+/// `Note`'s attributes: every field but the id and the relations, in
+/// declaration order.
+struct NoteResourceAttributes<'a>(&'a Note);
+
+impl Serialize for NoteResourceAttributes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut attributes = serializer.serialize_struct("NoteResourceAttributes", 2)?;
+        attributes.serialize_field("title", &self.0.title)?;
+        attributes.serialize_field("body", &self.0.body)?;
+        attributes.end()
+    }
+}
+
+/// `entity` as a resource object of type `notes`, its `links.self`
+/// under `collection`.
+fn note_as_resource<'a>(entity: &'a Note, collection: &str) -> ResourceObject<NoteResourceAttributes<'a>> {
+    let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
+    ResourceObject::new("notes", entity.id.clone(), NoteResourceAttributes(entity), self_link)
+}
+
+/// The id an `{id}` path segment names.
+fn note_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
+    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::NoteNotFound(id.to_string())))
+}
+
+/// The fields a create or update document for `notes` sets, named as
+/// the input's fields, each member checked against the schema.
+fn note_request_fields(
+    data: &ResourceData,
+    create: bool,
+) -> Result<serde_json::Map<String, serde_json::Value>, ErrorObject> {
+    let attributes = data.attributes.as_ref();
+    request::check_attribute_names(attributes, "notes", &["title", "body"], &[])?;
+    let mut fields = serde_json::Map::new();
+    if create {
+        fields.insert("id".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));
+    }
+    set_field(&mut fields, "title", request::attribute::<String>(attributes, "title", create)?);
+    set_field(&mut fields, "body", request::attribute::<String>(attributes, "body", create)?);
+    request::check_relationship_names(data.relationships()?, "notes", &[])?;
+    Ok(fields)
+}
+
+// ── `sections` ──
+
+/// `Section`'s attributes: every field but the id and the relations, in
+/// declaration order.
+struct SectionResourceAttributes<'a>(&'a Section);
+
+impl Serialize for SectionResourceAttributes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut attributes = serializer.serialize_struct("SectionResourceAttributes", 1)?;
+        attributes.serialize_field("title", &self.0.title)?;
+        attributes.end()
+    }
+}
+
+/// `entity` as a resource object of type `sections`, its `links.self`
+/// under `collection`.
+fn section_as_resource<'a>(entity: &'a Section, collection: &str) -> ResourceObject<SectionResourceAttributes<'a>> {
+    let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
+    ResourceObject::new("sections", entity.id.clone(), SectionResourceAttributes(entity), self_link)
+        .with_relationship(
+            "parent",
+            Relationship::from_data(Linkage::ToOne(Some(ResourceIdentifier::new(
+                "sections",
+                entity.parent_id.as_str(),
+            )))),
+        )
+        .with_relationship(
+            "children",
+            Relationship::from_data(Linkage::ToMany(
+                entity.children.iter().map(|id| ResourceIdentifier::new("sections", id.as_str())).collect(),
+            )),
+        )
+}
+
+/// The id an `{id}` path segment names.
+fn section_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
+    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::SectionNotFound(id.to_string())))
+}
+
+/// The ids a request document for `sections` links, by relationship, to
+/// be checked to name resources that exist.
+#[derive(Default)]
+struct SectionLinkedIds {
+    parent: Option<LinkedId>,
+    children: Vec<LinkedId>,
+}
+
+/// The fields a create or update document for `sections` sets, named as
+/// the input's fields, each member checked against the schema.
+fn section_request_fields(
+    data: &ResourceData,
+    create: bool,
+) -> Result<(serde_json::Map<String, serde_json::Value>, SectionLinkedIds), ErrorObject> {
+    let attributes = data.attributes.as_ref();
+    request::check_attribute_names(
+        attributes,
+        "sections",
+        &["title"],
+        &[("parent_id", "parent"), ("children", "children")],
+    )?;
+    let mut fields = serde_json::Map::new();
+    if create {
+        fields.insert("id".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));
+    }
+    set_field(&mut fields, "title", request::attribute::<String>(attributes, "title", create)?);
+    let relationships = data.relationships()?;
+    request::check_relationship_names(relationships, "sections", &["parent", "children"])?;
+    let mut linked = SectionLinkedIds::default();
+    match relationships.and_then(|r| r.get("parent")) {
+        Some(rel) => {
+            let id = request::to_one(rel, "/data/relationships/parent", "sections", false)?;
+            fields
+                .insert("parent_id".to_owned(), id.clone().map_or(serde_json::Value::Null, serde_json::Value::String));
+            linked.parent = id.map(|id| LinkedId { id, pointer: "/data/relationships/parent/data".to_owned() });
+        }
+        None if create => return Err(request::missing_relationship("parent", relationships)),
+        None => {}
+    }
+    if let Some(rel) = relationships.and_then(|r| r.get("children")) {
+        let ids = request::to_many_linked(rel, "/data/relationships/children", "sections", None)?;
+        fields.insert("children".to_owned(), ids.iter().map(|l| serde_json::Value::String(l.id.clone())).collect());
+        linked.children = ids;
+    }
+    Ok((fields, linked))
+}
+
+/// Checks that each id a create or update document for `sections` links
+/// names a resource that exists, in the order the document was read.
+async fn section_check_linked(state: &AppState, linked: &SectionLinkedIds) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    if let Some(linked) = &linked.parent {
+        match section::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::SectionNotFound(..)) => return Err(linked.not_found("sections")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    for linked in &linked.children {
+        match section::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::SectionNotFound(..)) => return Err(linked.not_found("sections")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    Ok(())
+}
+
+// ── `tags` ──
+
+/// `Tag`'s attributes: every field but the id and the relations, in
+/// declaration order.
+struct TagResourceAttributes<'a>(&'a Tag);
+
+impl Serialize for TagResourceAttributes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut attributes = serializer.serialize_struct("TagResourceAttributes", 1)?;
+        attributes.serialize_field("title", &self.0.title)?;
+        attributes.end()
+    }
+}
+
+/// `entity` as a resource object of type `tags`, its `links.self`
+/// under `collection`.
+fn tag_as_resource<'a>(entity: &'a Tag, collection: &str) -> ResourceObject<TagResourceAttributes<'a>> {
+    let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
+    ResourceObject::new("tags", entity.id.clone(), TagResourceAttributes(entity), self_link)
+}
+
+/// The id an `{id}` path segment names.
+fn tag_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
+    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::TagNotFound(id.to_string())))
+}
+
+/// The fields a create or update document for `tags` sets, named as
+/// the input's fields, each member checked against the schema.
+fn tag_request_fields(
+    data: &ResourceData,
+    create: bool,
+) -> Result<serde_json::Map<String, serde_json::Value>, ErrorObject> {
+    let attributes = data.attributes.as_ref();
+    request::check_attribute_names(attributes, "tags", &["title"], &[])?;
+    let mut fields = serde_json::Map::new();
+    if create {
+        fields.insert("id".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));
+    }
+    set_field(&mut fields, "title", request::attribute::<String>(attributes, "title", create)?);
+    request::check_relationship_names(data.relationships()?, "tags", &[])?;
+    Ok(fields)
+}
+
+// ── `tasks` ──
+
+/// `Task`'s attributes: every field but the id and the relations, in
+/// declaration order.
+struct TaskResourceAttributes<'a>(&'a Task);
+
+impl Serialize for TaskResourceAttributes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut attributes = serializer.serialize_struct("TaskResourceAttributes", 3)?;
+        attributes.serialize_field("title", &self.0.title)?;
+        attributes.serialize_field("status", &self.0.status)?;
+        attributes.serialize_field("body", &self.0.body)?;
+        attributes.end()
+    }
+}
+
+/// `entity` as a resource object of type `tasks`, its `links.self`
+/// under `collection`.
+fn task_as_resource<'a>(entity: &'a Task, collection: &str) -> ResourceObject<TaskResourceAttributes<'a>> {
+    let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
+    ResourceObject::new("tasks", entity.id.clone(), TaskResourceAttributes(entity), self_link)
+        .with_relationship(
+            "parent",
+            Relationship::from_data(Linkage::ToOne(
+                entity.parent_id.as_ref().map(|id| ResourceIdentifier::new("tasks", id.as_str())),
+            )),
+        )
+        .with_relationship(
+            "subtasks",
+            Relationship::from_data(Linkage::ToMany(
+                entity.subtasks.iter().map(|id| ResourceIdentifier::new("tasks", id.as_str())).collect(),
+            )),
+        )
+        .with_relationship(
+            "tags",
+            Relationship::from_data(Linkage::ToMany(
+                entity.tags.iter().map(|id| ResourceIdentifier::new("tags", id.as_str())).collect(),
+            )),
+        )
+}
+
+/// The id an `{id}` path segment names.
+fn task_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
+    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::TaskNotFound(id.to_string())))
+}
+
+/// The ids a request document for `tasks` links, by relationship, to
+/// be checked to name resources that exist.
+#[derive(Default)]
+struct TaskLinkedIds {
+    parent: Option<LinkedId>,
+    subtasks: Vec<LinkedId>,
+    tags: Vec<LinkedId>,
+}
+
+/// The fields a create or update document for `tasks` sets, named as
+/// the input's fields, each member checked against the schema.
+fn task_request_fields(
+    data: &ResourceData,
+    create: bool,
+) -> Result<(serde_json::Map<String, serde_json::Value>, TaskLinkedIds), ErrorObject> {
+    let attributes = data.attributes.as_ref();
+    request::check_attribute_names(
+        attributes,
+        "tasks",
+        &["title", "status", "body"],
+        &[("parent_id", "parent"), ("subtasks", "subtasks"), ("tags", "tags")],
+    )?;
+    let mut fields = serde_json::Map::new();
+    if create {
+        fields.insert("id".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));
+    }
+    set_field(&mut fields, "title", request::attribute::<String>(attributes, "title", create)?);
+    set_field(&mut fields, "status", request::attribute::<String>(attributes, "status", create)?);
+    set_field(&mut fields, "body", request::attribute::<String>(attributes, "body", create)?);
+    let relationships = data.relationships()?;
+    request::check_relationship_names(relationships, "tasks", &["parent", "subtasks", "tags"])?;
+    let mut linked = TaskLinkedIds::default();
+    if let Some(rel) = relationships.and_then(|r| r.get("parent")) {
+        let id = request::to_one(rel, "/data/relationships/parent", "tasks", true)?;
+        fields.insert("parent_id".to_owned(), id.clone().map_or(serde_json::Value::Null, serde_json::Value::String));
+        linked.parent = id.map(|id| LinkedId { id, pointer: "/data/relationships/parent/data".to_owned() });
+    }
+    if let Some(rel) = relationships.and_then(|r| r.get("subtasks")) {
+        let ids = request::to_many_linked(rel, "/data/relationships/subtasks", "tasks", None)?;
+        fields.insert("subtasks".to_owned(), ids.iter().map(|l| serde_json::Value::String(l.id.clone())).collect());
+        linked.subtasks = ids;
+    }
+    if let Some(rel) = relationships.and_then(|r| r.get("tags")) {
+        let ids = request::to_many_linked(rel, "/data/relationships/tags", "tags", None)?;
+        fields.insert("tags".to_owned(), ids.iter().map(|l| serde_json::Value::String(l.id.clone())).collect());
+        linked.tags = ids;
+    }
+    Ok((fields, linked))
+}
+
+/// Checks that each id a create or update document for `tasks` links
+/// names a resource that exists, in the order the document was read.
+async fn task_check_linked(state: &AppState, linked: &TaskLinkedIds) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    if let Some(linked) = &linked.parent {
+        match task::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    for linked in &linked.subtasks {
+        match task::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    for linked in &linked.tags {
+        match tag::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
+            Err(e) => return Err(app_error(e)),
+        }
+    }
+    Ok(())
 }
 
 // ── Note Handlers ──
 
-async fn note_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Note>>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    note::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+async fn note_list(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    query: Query<PagedListParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_sort(&query, "notes")?;
+    refuse_include(&query, "notes")?;
+    let (offset, limit) = page(&query, 2, 3)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let items = note::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
+    let total = note::count(&store).await.map_err(app_error)?;
+    let collection = "/api/notes";
+    let data: Vec<_> = items.iter().map(|entity| note_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
+    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
 }
 
-async fn note_get_by_id(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Note>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    note::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+async fn note_get_by_id(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "notes")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = note::get_by_id(&store, note_lookup_key(&id)?).await.map_err(app_error)?;
+    let collection = "/api/notes";
+    let resource = note_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn note_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateNoteInput>,
-) -> Result<(StatusCode, Json<Note>), ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    note::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
+    let collection = "/api/notes";
+    let endpoint = Endpoint { type_name: "notes", path: collection };
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let fields = note_request_fields(&data, true)?;
+    let input: CreateNoteInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = note::create(&store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::NoteAlreadyExists(..) if data.id.is_some() => {
+            app_error(e).with_pointer("/data/id")
+        }
+        e => app_error(e),
+    })?;
+    let resource = note_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
 }
 
 async fn note_update(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(input): Json<UpdateNoteInput>,
-) -> Result<Json<Note>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    note::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = "/api/notes";
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "notes", path: &path };
+    let data = request::parse_update(&body, endpoint, &id)?;
+    let fields = note_request_fields(&data, false)?;
+    let input: UpdateNoteInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = note::update(&store, note_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let resource = note_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
-async fn note_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    note::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+async fn note_delete(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    note::delete(&store, note_lookup_key(&id)?).await.map_err(app_error)?;
+    Ok(response::no_content())
 }
 
 // ── Section Handlers ──
 
-async fn section_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Section>>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    section::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+async fn section_list(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    query: Query<PagedListParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_sort(&query, "sections")?;
+    refuse_include(&query, "sections")?;
+    let (offset, limit) = page(&query, 2, 3)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let items = section::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
+    let total = section::count(&store).await.map_err(app_error)?;
+    let collection = "/api/sections";
+    let data: Vec<_> = items.iter().map(|entity| section_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
+    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
 }
 
 async fn section_get_by_id(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Json<Section>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    section::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "sections")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = section::get_by_id(&store, section_lookup_key(&id)?).await.map_err(app_error)?;
+    let collection = "/api/sections";
+    let resource = section_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn section_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateSectionInput>,
-) -> Result<(StatusCode, Json<Section>), ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    section::create(&store, input)
-        .await
-        .map(|entity| (StatusCode::CREATED, Json(entity)))
-        .map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
+    let collection = "/api/sections";
+    let endpoint = Endpoint { type_name: "sections", path: collection };
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let (fields, linked) = section_request_fields(&data, true)?;
+    let input: CreateSectionInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    section_check_linked(&state, &linked).await?;
+    let entity = section::create(&store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::SectionAlreadyExists(..) if data.id.is_some() => {
+            app_error(e).with_pointer("/data/id")
+        }
+        e => app_error(e),
+    })?;
+    let resource = section_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
 }
 
 async fn section_update(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(input): Json<UpdateSectionInput>,
-) -> Result<Json<Section>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    section::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = "/api/sections";
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "sections", path: &path };
+    let data = request::parse_update(&body, endpoint, &id)?;
+    let (fields, linked) = section_request_fields(&data, false)?;
+    let input: UpdateSectionInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    section_check_linked(&state, &linked).await?;
+    let entity = section::update(&store, section_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let resource = section_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
-async fn section_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    section::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+async fn section_delete(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    section::delete(&store, section_lookup_key(&id)?).await.map_err(app_error)?;
+    Ok(response::no_content())
 }
 
 // ── Tag Handlers ──
 
-async fn tag_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Tag>>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+async fn tag_list(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    query: Query<PagedListParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_sort(&query, "tags")?;
+    refuse_include(&query, "tags")?;
+    let (offset, limit) = page(&query, 2, 3)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let items = tag::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
+    let total = tag::count(&store).await.map_err(app_error)?;
+    let collection = "/api/tags";
+    let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
+    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
 }
 
-async fn tag_get_by_id(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Tag>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+async fn tag_get_by_id(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "tags")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = tag::get_by_id(&store, tag_lookup_key(&id)?).await.map_err(app_error)?;
+    let collection = "/api/tags";
+    let resource = tag_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn tag_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateTagInput>,
-) -> Result<(StatusCode, Json<Tag>), ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
+    let collection = "/api/tags";
+    let endpoint = Endpoint { type_name: "tags", path: collection };
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let fields = tag_request_fields(&data, true)?;
+    let input: CreateTagInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = tag::create(&store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::TagAlreadyExists(..) if data.id.is_some() => app_error(e).with_pointer("/data/id"),
+        e => app_error(e),
+    })?;
+    let resource = tag_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
 }
 
 async fn tag_update(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(input): Json<UpdateTagInput>,
-) -> Result<Json<Tag>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = "/api/tags";
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "tags", path: &path };
+    let data = request::parse_update(&body, endpoint, &id)?;
+    let fields = tag_request_fields(&data, false)?;
+    let input: UpdateTagInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = tag::update(&store, tag_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let resource = tag_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
-async fn tag_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    tag::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+async fn tag_delete(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    tag::delete(&store, tag_lookup_key(&id)?).await.map_err(app_error)?;
+    Ok(response::no_content())
 }
 
 // ── Task Handlers ──
 
-async fn task_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Task>>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    task::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+async fn task_list(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    query: Query<PagedListParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_sort(&query, "tasks")?;
+    refuse_include(&query, "tasks")?;
+    let (offset, limit) = page(&query, 2, 3)?;
+    let store = state.store().await.map_err(internal_error)?;
+    let items = task::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;
+    let total = task::count(&store).await.map_err(app_error)?;
+    let collection = "/api/tasks";
+    let data: Vec<_> = items.iter().map(|entity| task_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
+    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
 }
 
-async fn task_get_by_id(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Task>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    task::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+async fn task_get_by_id(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "tasks")?;
+    let store = state.store().await.map_err(internal_error)?;
+    let entity = task::get_by_id(&store, task_lookup_key(&id)?).await.map_err(app_error)?;
+    let collection = "/api/tasks";
+    let resource = task_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn task_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateTaskInput>,
-) -> Result<(StatusCode, Json<Task>), ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    task::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
+    let collection = "/api/tasks";
+    let endpoint = Endpoint { type_name: "tasks", path: collection };
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let (fields, linked) = task_request_fields(&data, true)?;
+    let input: CreateTaskInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    task_check_linked(&state, &linked).await?;
+    let entity = task::create(&store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::TaskAlreadyExists(..) if data.id.is_some() => {
+            app_error(e).with_pointer("/data/id")
+        }
+        e => app_error(e),
+    })?;
+    let resource = task_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
 }
 
 async fn task_update(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(input): Json<UpdateTaskInput>,
-) -> Result<Json<Task>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    task::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    _: AcceptGuard,
+    path_params: Result<Path<LookupKey>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = "/api/tasks";
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "tasks", path: &path };
+    let data = request::parse_update(&body, endpoint, &id)?;
+    let (fields, linked) = task_request_fields(&data, false)?;
+    let input: UpdateTaskInput = from_fields(fields)?;
+    let store = state.store().await.map_err(internal_error)?;
+    task_check_linked(&state, &linked).await?;
+    let entity = task::update(&store, task_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let resource = task_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
 }
 
-async fn task_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    task::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+async fn task_delete(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<LookupKey>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    task::delete(&store, task_lookup_key(&id)?).await.map_err(app_error)?;
+    Ok(response::no_content())
 }
 
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/notes", get(note_list).post(note_create))
-        .route("/api/notes/{id}", get(note_get_by_id).put(note_update).delete(note_delete))
-        .route("/api/sections", get(section_list).post(section_create))
-        .route("/api/sections/{id}", get(section_get_by_id).put(section_update).delete(section_delete))
-        .route("/api/tags", get(tag_list).post(tag_create))
-        .route("/api/tags/{id}", get(tag_get_by_id).put(tag_update).delete(tag_delete))
-        .route("/api/tasks", get(task_list).post(task_create))
-        .route("/api/tasks/{id}", get(task_get_by_id).put(task_update).delete(task_delete))
+        .route("/api/notes", get(note_list).post(note_create).fallback(allow([Method::GET, Method::POST])))
+        .route(
+            "/api/notes/{id}",
+            get(note_get_by_id).patch(note_update).delete(note_delete).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
+        .route("/api/sections", get(section_list).post(section_create).fallback(allow([Method::GET, Method::POST])))
+        .route(
+            "/api/sections/{id}",
+            get(section_get_by_id).patch(section_update).delete(section_delete).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
+        .route("/api/tags", get(tag_list).post(tag_create).fallback(allow([Method::GET, Method::POST])))
+        .route(
+            "/api/tags/{id}",
+            get(tag_get_by_id).patch(tag_update).delete(tag_delete).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
+        .route("/api/tasks", get(task_list).post(task_create).fallback(allow([Method::GET, Method::POST])))
+        .route(
+            "/api/tasks/{id}",
+            get(task_get_by_id).patch(task_update).delete(task_delete).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
 }

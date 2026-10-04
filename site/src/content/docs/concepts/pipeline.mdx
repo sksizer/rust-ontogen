@@ -204,7 +204,7 @@ pub enum OpKind {
     List,                                      // GET /tasks
     GetById,                                   // GET /tasks/{id}
     Create,                                    // POST /tasks
-    Update,                                    // PUT /tasks/{id}
+    Update,                                    // PATCH /tasks/{id}
     Delete,                                    // DELETE /tasks/{id}
     JunctionList   { child_segment: String },  // GET /agents/{id}/roles
     JunctionAdd    { child_segment: String },  // POST /agents/{id}/roles
@@ -336,11 +336,11 @@ Notice the `assign` function at the end -- that came from a hand-written `src/ap
 **Step 6: ServersOutput** -- `gen_servers` reads the ApiOutput and generates:
 
 ```text
-HttpRouteMeta { method: "GET",    path: "/api/tasks",     handler: "list_tasks" }
-HttpRouteMeta { method: "GET",    path: "/api/tasks/{id}", handler: "get_task_by_id" }
-HttpRouteMeta { method: "POST",   path: "/api/tasks",     handler: "create_task" }
-HttpRouteMeta { method: "PUT",    path: "/api/tasks/{id}", handler: "update_task" }
-HttpRouteMeta { method: "DELETE", path: "/api/tasks/{id}", handler: "delete_task" }
+HttpRouteMeta { method: "GET",    path: "/api/tasks",     handler: "task_list" }
+HttpRouteMeta { method: "GET",    path: "/api/tasks/{id}", handler: "task_get_by_id" }
+HttpRouteMeta { method: "POST",   path: "/api/tasks",     handler: "task_create" }
+HttpRouteMeta { method: "PATCH",  path: "/api/tasks/{id}", handler: "task_update" }
+HttpRouteMeta { method: "DELETE", path: "/api/tasks/{id}", handler: "task_delete" }
 HttpRouteMeta { method: "POST",   path: "/api/tasks/assign", handler: "assign_task" }
 IpcCommandMeta { command_name: "list_tasks", ... }
 IpcCommandMeta { command_name: "assign_task", ... }
@@ -363,7 +363,7 @@ pub fn gen_store(
 
 That `Option<&SeaOrmOutput>` is the optional chaining pattern. If you ran `gen_seaorm` first, pass its output. If you didn't, pass `None`. The store generator adapts.
 
-Similarly, `gen_servers` takes `Option<&ApiOutput>`. When it's `Some`, the server generator uses the structured metadata. When it's `None`, it falls back to scanning source files with `syn` to discover API functions directly.
+Similarly, `gen_servers` takes `Option<&ApiOutput>` (after the schema entities it also needs, which tell it which modules are JSON:API resources). When it's `Some`, the server generator uses the structured metadata. When it's `None`, it falls back to scanning source files with `syn` to discover API functions directly.
 
 This means the pipeline is a directed acyclic graph, not a rigid sequence. You can enter at any point and skip stages you don't need.
 

@@ -36,7 +36,7 @@ let clients_config = ClientsConfig {
 ```
 
 <Aside type="note">
-  `gen_clients` is a sibling of `gen_servers`. Server-side transport generation (Axum / Tauri IPC / MCP) and client-side TypeScript generation no longer share a config struct; each has its own dedicated entry point and config type.
+  `gen_clients` is a sibling of `gen_servers`, and like it takes the parsed schema entities as its first argument. Server-side transport generation (Axum / Tauri IPC / MCP) and client-side TypeScript generation no longer share a config struct; each has its own dedicated entry point and config type.
 </Aside>
 
 `ClientGenerator` lives at `ontogen::clients::ClientGenerator` (re-exported at the module level). The internal path `ontogen::clients::config::ClientGenerator` is `pub(crate)` and no longer accessible to downstream crates.
@@ -72,6 +72,8 @@ Whatever formatter you configure runs **in memory, before** the write-if-changed
 
 The `HttpTs` generator produces a typed, fetch-based HTTP client. For each API function, it generates a TypeScript function that makes the appropriate HTTP request.
 
+The server speaks JSON:API for CRUD routes (see [Server Transports](/guides/server-transports/#httpaxum-generation)), and the client hides that. The functions keep their flat signatures: entities go in and come out as plain objects with the schema's field names, `null` for cleared optionals and id arrays for relations. The client turns each resource object into a flat entity (`flattenTask`: the id under the entity's own id field name, then `attributes`, then relationships as `epic_id` or a `tags` id array) and turns flat inputs back into `{ data: { type, id?, attributes, relationships } }` request bodies (`unflattenTask`). Each entity's resource type, id field and relationships come from a generated per-entity resource table.
+
 ```typescript
 // Auto-generated HTTP client. DO NOT EDIT.
 
@@ -81,54 +83,55 @@ import type {
   UpdateTaskInput,
 } from './bindings';
 
-const BASE = '/api';
-
-async function httpGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-async function httpPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-// ... httpPut, httpDelete helpers
-
 export async function taskList(): Promise<Task[]> {
-  return httpGet('/tasks');
+  // GET /api/tasks, then data.map(flattenTask)
 }
 
 export async function taskGetById(id: string): Promise<Task> {
-  return httpGet(`/tasks/${id}`);
+  // GET /api/tasks/{id}, then flattenTask(data)
 }
 
 export async function taskCreate(input: CreateTaskInput): Promise<Task> {
-  return httpPost('/tasks', input);
+  // POST /api/tasks with unflattenTask(input), then flattenTask(data)
 }
 
 export async function taskUpdate(id: string, input: UpdateTaskInput): Promise<Task> {
-  return httpPut(`/tasks/${id}`, input);
+  // PATCH /api/tasks/{id} with unflattenTask(input, id), then flattenTask(data)
 }
 
 export async function taskDelete(id: string): Promise<null> {
-  return httpDelete(`/tasks/${id}`);
+  // DELETE /api/tasks/{id}, resolves null on 204
 }
 ```
 
 Function names follow the same entity-first convention as the server transports: `taskList`, `taskGetById`, `taskCreate`. The naming is camelCase for TypeScript conventions.
 
-Custom endpoints discovered through API scanning get client functions too:
+On the wire:
+
+- Every request sends `Accept: application/vnd.api+json`. Requests with a body send `Content-Type: application/vnd.api+json`.
+- Updates use `PATCH` (`httpPatch`). `httpPut` is generated only when a module with no schema entity behind it has an `update` op, because that module keeps its flat `PUT` route.
+- A key whose value is `undefined` is left out of an update body, which means "unchanged". `null` is sent and clears the field. A relation field moves into `relationships`; every other key goes in `attributes`. The id goes in `data.id`, never in `attributes`.
+- A paginated list in the `HttpTauriIpcSplit` HTTP transport sends `page[offset]` and `page[limit]` and still returns `PaginatedResult<T>` (`items`, `total`, `limit`, `offset`), built from `data` and `meta`. `limit` and `offset` are the effective values the server used. The HTTP-only client (`HttpTs`) takes no page arguments: its list methods send no `page` parameters and return the flat entities of the server's default first page.
+- A list that takes a query struct still sends the struct's fields flat in the query string; the `filter[...]` family arrives in a later phase of 0.9.
+
+### Errors
+
+Any non-2xx response, from a CRUD route or any other generated route, throws a `JsonApiError` (the file also exports `JsonApiErrorObject` and `JsonApiResource`):
+
+```typescript
+class JsonApiError extends Error {
+  readonly status: number;
+  readonly errors: JsonApiErrorObject[]; // [] when the body was not a JSON:API error document
+}
+```
+
+`message` is the first error's `detail` (or its `title`, or the status text), the same text the server sent before. `String(e)` now reads `JsonApiError: Task not found: nope` where it used to read `Error: Task not found: nope`. Read `e.status` and `e.errors[0]?.code` when you need to branch on the failure. A non-JSON body, such as a proxy's HTML `502`, still throws a `JsonApiError` with an empty `errors`.
+
+Custom endpoints discovered through API scanning get client functions too. Their request and response bodies are unchanged for now:
 
 ```typescript
 export async function taskGetOverdue(): Promise<Task[]> {
-  return httpGet('/tasks/overdue');
+  // GET /api/tasks/overdue
 }
 ```
 
@@ -165,9 +168,9 @@ interface Transport {
 
 function createHttpTransport(): Transport {
   return {
-    taskList: () => httpGet('/tasks'),
-    taskGetById: (id) => httpGet(`/tasks/${id}`),
-    taskCreate: (input) => httpPost('/tasks', input),
+    taskList: () => /* GET /api/tasks, flattened */,
+    taskGetById: (id) => /* GET /api/tasks/{id}, flattened */,
+    taskCreate: (input) => /* POST /api/tasks, flattened */,
     // ...
   };
 }
@@ -190,7 +193,7 @@ const transport = window.__TAURI__
   : createHttpTransport();
 ```
 
-Both implementations have identical signatures. Code that uses the transport doesn't know or care whether it's talking to a local server over HTTP or to the Tauri backend over IPC.
+Both implementations have identical signatures, and the IPC payloads are flat as before; JSON:API applies to the HTTP transport only. Code that uses the transport doesn't know or care whether it's talking to a local server over HTTP or to the Tauri backend over IPC.
 
 ### Event subscriptions
 
@@ -223,7 +226,7 @@ When `route_prefix` is configured, the generated client functions accept an opti
 ```typescript
 export async function taskList(projectId?: string): Promise<Task[]> {
   const prefix = projectId ? `/projects/${projectId}` : '';
-  return httpGet(`${prefix}/tasks`);
+  // GET /api/projects/{projectId}/tasks, flattened
 }
 ```
 
@@ -275,7 +278,7 @@ The registry only includes modules that have all five CRUD functions (`list`, `g
 
 ### Per-field metadata
 
-When `schema_entities` is populated on `ClientsConfig` (the `Pipeline` builder forwards this automatically from the schema stage), the admin generator emits detailed field information:
+When `gen_clients` is given the schema entities (the `Pipeline` builder passes them from the schema stage), the admin generator emits detailed field information:
 
 - **type** -- the TypeScript type (`string`, `number`, `boolean`, arrays)
 - **role** -- the field's purpose (`id`, `plain`, `enum`, `relation`, `body`)
@@ -297,7 +300,7 @@ When `pagination` is configured, each entity config includes pagination details:
 }
 ```
 
-Admin UIs can use this to render pagination controls with sensible defaults.
+Admin UIs can use this to render pagination controls with sensible defaults. The registry flags are unchanged; the HTTP transport maps them to `page[offset]` and `page[limit]`.
 
 ## ts_skip_commands
 

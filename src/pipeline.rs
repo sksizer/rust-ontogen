@@ -381,7 +381,9 @@ impl Pipeline {
     /// (transport choice, naming overrides, route prefixes, pagination),
     /// so the builder accepts it as-is rather than re-modelling each knob.
     /// Use [`Pipeline::servers_scan_dirs`] to set the scan dirs passed to
-    /// `gen_servers`; defaults to `[]`.
+    /// `gen_servers`; defaults to `[]`. A `None`
+    /// [`ServersConfig::error_source_dir`] is filled with the schema
+    /// directory, where the consumer's `AppError` lives.
     #[must_use]
     pub fn servers(mut self, config: ServersConfig) -> Self {
         self.servers = Some(ServersStage { config, scan_dirs: Vec::new() });
@@ -424,9 +426,8 @@ impl Pipeline {
     /// [`Pipeline::clients_scan_dirs`] to set the scan dirs passed to
     /// `gen_clients`; defaults to `[]`.
     ///
-    /// The builder auto-forwards parsed schema entities into
-    /// [`ClientsConfig::schema_entities`] when empty, mirroring the existing
-    /// auto-forward for [`ServersConfig`] in pre-split builds.
+    /// The builder passes the parsed schema entities to `gen_clients` and
+    /// forwards `schema.enums` into [`ClientsConfig::schema_enums`] when empty.
     #[must_use]
     pub fn clients(mut self, config: ClientsConfig) -> Self {
         self.clients = Some(ClientsStage { config, scan_dirs: Vec::new() });
@@ -604,18 +605,16 @@ impl Pipeline {
 
         // Stage 5: servers (Rust transports only)
         if let Some(stage) = self.servers {
-            gen_servers(api_out.as_ref(), &stage.scan_dirs, &stage.config)?;
+            let mut servers_config = stage.config;
+            if servers_config.error_source_dir.is_none() {
+                servers_config.error_source_dir = Some(self.schema_dir.clone());
+            }
+            gen_servers(&schema.entities, api_out.as_ref(), &stage.scan_dirs, &servers_config)?;
         }
 
         // Stage 6: clients (TypeScript bindings + admin registry)
         if let Some(stage) = self.clients {
-            // Auto-forward parsed entities to the admin-registry generator,
-            // unless the caller has already set them explicitly. Without this,
-            // admin-registry.ts ships with empty `fields: []` for every entity.
             let mut clients_config = stage.config;
-            if clients_config.schema_entities.is_empty() {
-                clients_config.schema_entities = schema.entities.clone();
-            }
             if clients_config.schema_enums.is_empty() {
                 clients_config.schema_enums = schema.enums.clone();
             }
@@ -627,7 +626,7 @@ impl Pipeline {
             {
                 clients_config.pool_exclude_paths.push(entity_output.clone());
             }
-            gen_clients(api_out.as_ref(), &stage.scan_dirs, &clients_config)?;
+            gen_clients(&schema.entities, api_out.as_ref(), &stage.scan_dirs, &clients_config)?;
         }
 
         Ok(())

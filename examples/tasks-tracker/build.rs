@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use ontogen::servers::{NamingConfig, ServerGenerator};
+use ontogen::servers::{NamingConfig, PaginationConfig, ServerGenerator};
 use ontogen::{IdStrategy, MarkdownIoOptions, MarkdownLayout, OkfOptions, Pipeline, ServersConfig};
 
 fn main() {
@@ -25,8 +25,12 @@ fn main() {
         route_prefix: None,
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
-        pagination: None,
+        // A primary surface's pagination covers every one of its modules, so
+        // all three lists page, and the api stage gives each a paged list.
+        pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 }),
         extra_surfaces: vec![],
+        // The pipeline scans its schema directory for `AppError`.
+        error_source_dir: None,
     };
 
     Pipeline::new("src/schema")
@@ -46,6 +50,7 @@ fn main() {
         .dtos("src/schema/dto")
         .store("src/store/generated", Some::<PathBuf>("src/store/hooks".into()))
         .api("src/api/v1/generated", "AppState")
+        .api_paginated(vec!["task".into(), "epic".into(), "tag".into()])
         .servers(servers_config)
         .build()
         .unwrap_or_else(|e| panic!("ontogen pipeline failed: {e}"));

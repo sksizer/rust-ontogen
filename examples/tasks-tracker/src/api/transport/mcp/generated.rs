@@ -84,18 +84,50 @@ pub struct ByIntIdInput {
 #[derive(Deserialize, JsonSchema)]
 pub struct EmptyInput {}
 
+/// Inject `limit` and `offset` pagination properties into a JSON schema.
+fn with_pagination_schema(mut schema: Value) -> Value {
+    if let Some(obj) = schema.as_object_mut() {
+        let props = obj.entry("properties").or_insert_with(|| json!({}));
+        if let Some(props_obj) = props.as_object_mut() {
+            props_obj.insert(
+                "limit".to_string(),
+                json!({
+                    "type": "integer",
+                    "description": "Maximum number of items to return"
+                }),
+            );
+            props_obj.insert(
+                "offset".to_string(),
+                json!({
+                    "type": "integer",
+                    "description": "Number of items to skip"
+                }),
+            );
+        }
+    }
+    schema
+}
+
 /// Generated MCP tool definitions.
 pub fn generated_tool_registry() -> Vec<McpToolDef> {
     vec![
         McpToolDef {
             name: "epic_list",
-            description: "List all epics",
-            schema_fn: schema_for::<EmptyInput>,
-            handler: |state, _args| {
+            description: "One page of epics",
+            schema_fn: || with_pagination_schema(schema_for::<EmptyInput>()),
+            handler: |state, args| {
                 Box::pin(async move {
                     let store = state.store().await.map_err(|e| e.to_string())?;
-                    let items = epic::list(&store).await.map_err(|e| e.to_string())?;
-                    serde_json::to_value(items).map_err(|e| format!("Serialize error: {e}"))
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100);
+                    let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let items = epic::list(&store, Some(limit), Some(offset)).await.map_err(|e| e.to_string())?;
+                    let total = epic::count(&store).await.map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "items": serde_json::to_value(&items).map_err(|e| format!("Serialize error: {e}"))?,
+                        "total": total,
+                        "limit": limit,
+                        "offset": offset
+                    }))
                 })
             },
         },
@@ -156,13 +188,21 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
         },
         McpToolDef {
             name: "tag_list",
-            description: "List all tags",
-            schema_fn: schema_for::<EmptyInput>,
-            handler: |state, _args| {
+            description: "One page of tags",
+            schema_fn: || with_pagination_schema(schema_for::<EmptyInput>()),
+            handler: |state, args| {
                 Box::pin(async move {
                     let store = state.store().await.map_err(|e| e.to_string())?;
-                    let items = tag::list(&store).await.map_err(|e| e.to_string())?;
-                    serde_json::to_value(items).map_err(|e| format!("Serialize error: {e}"))
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100);
+                    let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let items = tag::list(&store, Some(limit), Some(offset)).await.map_err(|e| e.to_string())?;
+                    let total = tag::count(&store).await.map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "items": serde_json::to_value(&items).map_err(|e| format!("Serialize error: {e}"))?,
+                        "total": total,
+                        "limit": limit,
+                        "offset": offset
+                    }))
                 })
             },
         },
@@ -223,13 +263,21 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
         },
         McpToolDef {
             name: "task_list",
-            description: "List all tasks",
-            schema_fn: schema_for::<EmptyInput>,
-            handler: |state, _args| {
+            description: "One page of tasks",
+            schema_fn: || with_pagination_schema(schema_for::<EmptyInput>()),
+            handler: |state, args| {
                 Box::pin(async move {
                     let store = state.store().await.map_err(|e| e.to_string())?;
-                    let items = task::list(&store).await.map_err(|e| e.to_string())?;
-                    serde_json::to_value(items).map_err(|e| format!("Serialize error: {e}"))
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100);
+                    let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let items = task::list(&store, Some(limit), Some(offset)).await.map_err(|e| e.to_string())?;
+                    let total = task::count(&store).await.map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "items": serde_json::to_value(&items).map_err(|e| format!("Serialize error: {e}"))?,
+                        "total": total,
+                        "limit": limit,
+                        "offset": offset
+                    }))
                 })
             },
         },

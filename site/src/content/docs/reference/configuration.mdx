@@ -235,10 +235,10 @@ If a function genuinely doesn't need state — a pure data transformation, a clo
 
 ## `ServersConfig`
 
-Used by [`gen_servers()`](/reference/public-api/#gen_servers). Controls **Rust server transports only** -- Axum, Tauri IPC, MCP.
+Used by [`gen_servers()`](/reference/public-api/#gen_servers). Controls **Rust server transports only** -- Axum, Tauri IPC, MCP. The HTTP transport serves CRUD routes as JSON:API; see [Server Transports](/guides/server-transports/#httpaxum-generation). The parsed schema is the first argument of `gen_servers`, not a config field.
 
 <Aside type="note">
-Client-side TypeScript and admin-registry generation moved out of this struct into its own [`ClientsConfig`](#clientsconfig), paired with [`gen_clients`](/reference/public-api/#gen_clients). If you're carrying a build script that sets `client_generators`, `ts_skip_commands`, or `schema_entities` on `ServersConfig`, those three fields now live on `ClientsConfig`.
+Client-side TypeScript and admin-registry generation moved out of this struct into its own [`ClientsConfig`](#clientsconfig), paired with [`gen_clients`](/reference/public-api/#gen_clients). If you're carrying a build script that sets `client_generators` or `ts_skip_commands` on `ServersConfig`, those fields now live on `ClientsConfig`. `schema_entities` is gone from both configs: `gen_servers` and `gen_clients` take the schema entities as their first argument.
 </Aside>
 
 | Field | Type | Description |
@@ -255,7 +255,8 @@ Client-side TypeScript and admin-registry generation moved out of this struct in
 | `route_prefix` | `Option<RoutePrefix>` | Optional route prefix for project-scoped routes. |
 | `store_type` | `Option<String>` | Store type for entity-scoped functions. |
 | `store_import` | `Option<String>` | Import path for the Store type. |
-| `pagination` | `Option<PaginationConfig>` | Pagination support for list operations. |
+| `pagination` | `Option<PaginationConfig>` | Pagination for list operations. A paginated list takes `page[offset]` and `page[limit]` and answers with `meta` and pagination links. |
+| `error_source_dir` | `Option<PathBuf>` | Directory scanned for the consumer's `enum AppError`. Each variant's name decides its HTTP status and `code` (`*NotFound` 404, `*IdRequired` 400, `*AlreadyExists` 409, `*ParentRequired` 403, otherwise 500). `None` means no scan, and every `AppError`-typed site answers `500 internal_error`. The [`Pipeline`](/reference/public-api/#pipeline) builder sets it to its schema directory when it is `None`. |
 | `extra_surfaces` | `Vec<ApiSurface>` | API surfaces scanned in addition to the primary one the fields above describe. Their modules merge into the same router, IPC handler, MCP registry and TypeScript transport. Empty for a single-surface crate. See [`ApiSurface`](#apisurface). |
 
 <Aside type="note">
@@ -328,7 +329,7 @@ Optional prefix for project-scoped routes (e.g., `/api/projects/{project_id}/nod
 | Field | Type | Description |
 |-------|------|-------------|
 | `segments` | `String` | Path segments to insert (e.g., `"projects/:project_id"`). |
-| `state_accessor` | `String` | State method for validation (e.g., `"store_for"` produces `state.store_for(&project_id)?`). |
+| `state_accessor` | `String` | State method for validation (e.g., `"store_for"` produces `state.store_for(&ontogen_scope)?`, where `ontogen_scope` is the prefix param's value). |
 | `params` | `Vec<PrefixParam>` | Parameters extracted from segments. |
 
 #### Route parameter syntax
@@ -341,7 +342,7 @@ That asymmetry is deliberate: `axum_path()` normalizes every route string at emi
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | `String` | Parameter name (e.g., `"project_id"`). |
+| `name` | `String` | Parameter name (e.g., `"project_id"`). In HTTP it names the route segment only: generated handlers bind the value as `ontogen_scope`, so any name works, including one a handler uses itself (`query`, `id`). IPC and MCP commands take it under this name. |
 | `rust_type` | `String` | Rust type (e.g., `"uuid::Uuid"`). |
 | `ts_type` | `String` | TypeScript type (e.g., `"string"`). |
 
@@ -349,8 +350,8 @@ That asymmetry is deliberate: `axum_path()` normalizes every route string at emi
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `default_limit` | `u32` | Default page size when `limit` is not specified in the request. |
-| `max_limit` | `u32` | Maximum allowed page size. Requests above this are clamped. |
+| `default_limit` | `u32` | Default page size when `page[limit]` is not specified in the request. |
+| `max_limit` | `u32` | Maximum allowed page size. A `page[limit]` above this is clamped to it. |
 
 ### `ApiSurface`
 
@@ -386,7 +387,7 @@ ApiSurface {
 
 Used by [`gen_clients()`](/reference/public-api/#gen_clients). The sibling of `ServersConfig` for the **client-side** surface: TypeScript bindings, the HTTP and HTTP+IPC transport clients, and the admin registry.
 
-The two configs overlap on naming, state, and routing because those decisions drive both sides of the wire -- URL pluralization, pagination wrappers, route prefixes. The shared types are re-exported from `ontogen::servers`.
+The two configs overlap on naming, state, and routing because those decisions drive both sides of the wire -- URL pluralization, pagination, route prefixes. Both stages also take the parsed schema entities as their first argument, which is where the admin-registry generator gets its per-field metadata; leaving it empty (`&[]`) ships `admin-registry.ts` with empty `fields: []` per entity. The shared types are re-exported from `ontogen::servers`.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -404,7 +405,6 @@ The two configs overlap on naming, state, and routing because those decisions dr
 | `store_type` | `Option<String>` | Store type for entity-scoped functions. |
 | `store_import` | `Option<String>` | Import path for the Store type. |
 | `pagination` | `Option<PaginationConfig>` | Pagination for list operations. Same type as on [`ServersConfig`](#paginationconfig). |
-| `schema_entities` | `Vec<EntityDef>` | Parsed schema entities, used by the admin-registry generator for per-field UI metadata. Pass `schema.entities.clone()` from the [`SchemaOutput`](/reference/intermediate-representations/#schemaoutput). Leaving it empty ships `admin-registry.ts` with empty `fields: []` per entity. The [`Pipeline`](/reference/public-api/#pipeline) builder fills it in automatically. |
 | `pool_extra_roots` | `Vec<PathBuf>` | Extra source roots for the ontogen-ts type pool, beyond `CARGO_MANIFEST_DIR/src`. See [`pool_extra_roots`](#pool_extra_roots) below. |
 | `pool_exclude_paths` | `Vec<PathBuf>` | Source paths to drop from the pool after scanning. See [`pool_exclude_paths`](#pool_exclude_paths) below. |
 | `extra_surfaces` | `Vec<ApiSurface>` | API surfaces scanned in addition to the primary one. Same type and rules as on [`ServersConfig`](#apisurface); register a surface on both stages with [`Pipeline::api_surface`](/reference/public-api/#pipeline). |
@@ -433,8 +433,6 @@ ClientsConfig {
     store_type: Some("Store".into()),
     store_import: Some("crate::store::Store".into()),
     pagination: None,
-    // Pipeline auto-fills this from the parsed schema.
-    schema_entities: Vec::new(),
     pool_extra_roots: Vec::new(),
     pool_exclude_paths: Vec::new(),
     extra_surfaces: vec![],

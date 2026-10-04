@@ -29,8 +29,12 @@ fn main() {
         route_prefix: None,
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),
-        pagination: None,
+        // Every module paginates (a primary surface's pagination covers all
+        // of its modules), so the router test drives the page links live.
+        pagination: Some(ontogen::servers::PaginationConfig { default_limit: 2, max_limit: 3 }),
         extra_surfaces: vec![],
+        // The pipeline scans its schema directory for `AppError`.
+        error_source_dir: None,
     };
 
     ontogen::Pipeline::new("src/schema")
@@ -48,6 +52,7 @@ fn main() {
         .store("src/store/generated", Some::<std::path::PathBuf>("src/store/hooks".into()))
         .store_id_strategy(ontogen::IdStrategy::SlugFromField("title".into()))
         .api("src/api/generated", "AppState")
+        .api_paginated(vec!["note".into(), "section".into(), "tag".into(), "task".into()])
         .servers(servers_config)
         .build()
         .unwrap_or_else(|e| panic!("ontogen pipeline failed: {e}"));

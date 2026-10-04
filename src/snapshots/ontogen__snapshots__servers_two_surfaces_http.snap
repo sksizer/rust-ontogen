@@ -11,12 +11,23 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::Json,
-    routing::{delete, get, post, put},
+    extract::{
+        State,
+        rejection::{JsonRejection, QueryRejection},
+    },
+    http::{Method, StatusCode},
+    response::{Json, Response},
+    routing::{delete, get, patch, post, put},
 };
-
+use ontogen_jsonapi::{
+    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
+    ResourceIdentifier, ResourceObject,
+    error::method_not_allowed,
+    extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
+    links::{CanonicalQuery, encode_path_segment, pagination_links},
+    request::{self, Endpoint, LinkedId, ResourceData},
+    response,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -26,15 +37,40 @@ use crate::store::Store;
 use fitness::api::{exercise, workout as workout_1};
 use fitness::schema::{CreateExerciseInput, CreateWorkoutInput, Exercise, UpdateExerciseInput, UpdateWorkoutInput};
 
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
+/// An `AppError` as an error object: the status its variant's name gives,
+/// and the name in snake_case as the code.
+fn app_error(e: crate::schema::AppError) -> ErrorObject {
+    let (status, code) = match &e {
+        crate::schema::AppError::WorkoutNotFound(..) => (StatusCode::NOT_FOUND, "workout_not_found"),
+    };
+    ErrorObject::app(status, code, e.to_string())
 }
 
-type ApiError = (StatusCode, Json<ErrorResponse>);
+/// A failure no `AppError` describes: opening the store, a scope accessor,
+/// or an op with another error type.
+fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
+    ErrorObject::internal(e.to_string())
+}
 
-fn err(msg: String) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: msg }))
+/// The method fallback of a route serving `allowed`: `405` with `Allow`.
+fn allow<const N: usize>(
+    allowed: [Method; N],
+) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
+    move |method| std::future::ready(method_not_allowed(&method, &allowed))
+}
+
+fn json_rejection(e: JsonRejection) -> ErrorObject {
+    match e.status() {
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => {
+            ErrorObject::new(ErrorCode::UnsupportedMediaType, e.body_text()).with_header("Content-Type")
+        }
+        StatusCode::PAYLOAD_TOO_LARGE => ErrorObject::new(ErrorCode::ContentTooLarge, e.body_text()),
+        _ => ErrorObject::new(ErrorCode::InvalidDocument, e.body_text()),
+    }
+}
+
+fn query_rejection(e: QueryRejection) -> ErrorObject {
+    ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
 }
 
 #[derive(Serialize)]
@@ -53,122 +89,167 @@ pub struct PaginationParams {
 
 // ── Athlete Handlers ──
 
-async fn athlete_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Athlete>>, ApiError> {
-    let store = state.store().await.map_err(|e| err(e.to_string()))?;
-    athlete::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+async fn athlete_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Athlete>>, ErrorObject> {
+    let store = state.store().await.map_err(internal_error)?;
+    athlete::list(&store).await.map(Json).map_err(internal_error)
 }
 
 // ── Workout Handlers ──
 
 async fn workout_start(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<StartWorkoutInput>,
-) -> Result<Json<Workout>, ApiError> {
-    workout::start(&state, input).await.map(Json).map_err(|e| err(e.to_string()))
+    input: Result<Json<StartWorkoutInput>, JsonRejection>,
+) -> Result<Json<Workout>, ErrorObject> {
+    let Json(input) = input.map_err(json_rejection)?;
+    workout::start(&state, input).await.map(Json).map_err(internal_error)
 }
 
 async fn workout_get_summary(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<WorkoutSummary>, ApiError> {
-    workout::get_summary(&state, &id).await.map(Json).map_err(|e| err(e.to_string()))
+) -> Result<Json<WorkoutSummary>, ErrorObject> {
+    workout::get_summary(&state, &id).await.map(Json).map_err(internal_error)
 }
 
-async fn workout_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<fitness::schema::Workout>>, ApiError> {
-    let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
-    workout_1::list(&store).await.map(Json).map_err(|e| err(e.to_string()))
+#[derive(Deserialize)]
+struct WorkoutFinishBody {
+    id: String,
+}
+
+async fn workout_finish(
+    State(state): State<Arc<AppState>>,
+    body: Result<Json<WorkoutFinishBody>, JsonRejection>,
+) -> Result<Json<Workout>, ErrorObject> {
+    let Json(body) = body.map_err(json_rejection)?;
+    workout::finish(&state, &body.id).await.map(Json).map_err(app_error)
+}
+
+async fn workout_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<fitness::schema::Workout>>, ErrorObject> {
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    workout_1::list(&store).await.map(Json).map_err(internal_error)
 }
 
 async fn workout_get_by_id(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<fitness::schema::Workout>, ApiError> {
-    let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
-    workout_1::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+) -> Result<Json<fitness::schema::Workout>, ErrorObject> {
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    workout_1::get_by_id(&store, &id).await.map(Json).map_err(internal_error)
 }
 
 async fn workout_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateWorkoutInput>,
-) -> Result<(StatusCode, Json<fitness::schema::Workout>), ApiError> {
-    let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
-    workout_1::create(&store, input)
-        .await
-        .map(|entity| (StatusCode::CREATED, Json(entity)))
-        .map_err(|e| err(e.to_string()))
+    input: Result<Json<CreateWorkoutInput>, JsonRejection>,
+) -> Result<(StatusCode, Json<fitness::schema::Workout>), ErrorObject> {
+    let Json(input) = input.map_err(json_rejection)?;
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    workout_1::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(internal_error)
 }
 
 async fn workout_update(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(input): Json<UpdateWorkoutInput>,
-) -> Result<Json<fitness::schema::Workout>, ApiError> {
-    let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
-    workout_1::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    input: Result<Json<UpdateWorkoutInput>, JsonRejection>,
+) -> Result<Json<fitness::schema::Workout>, ErrorObject> {
+    let Json(input) = input.map_err(json_rejection)?;
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    workout_1::update(&store, &id, input).await.map(Json).map_err(internal_error)
 }
 
-async fn workout_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
-    workout_1::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+async fn workout_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ErrorObject> {
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    workout_1::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(internal_error)
+}
+
+#[derive(Deserialize)]
+struct WorkoutArchiveBody {
+    id: String,
+}
+
+async fn workout_archive(
+    State(state): State<Arc<AppState>>,
+    body: Result<Json<WorkoutArchiveBody>, JsonRejection>,
+) -> Result<Json<fitness::schema::Workout>, ErrorObject> {
+    let Json(body) = body.map_err(json_rejection)?;
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    workout_1::archive(&store, &body.id).await.map(Json).map_err(internal_error)
 }
 
 // ── Exercise Handlers ──
 
 async fn exercise_list(
     State(state): State<Arc<AppState>>,
-    Query(pagination): Query<PaginationParams>,
-) -> Result<Json<PaginatedResult<Exercise>>, ApiError> {
-    let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
+    pagination: Result<axum::extract::Query<PaginationParams>, QueryRejection>,
+) -> Result<Json<PaginatedResult<Exercise>>, ErrorObject> {
+    let axum::extract::Query(pagination) = pagination.map_err(query_rejection)?;
+    let store = state.fitness_store().await.map_err(internal_error)?;
     let limit = pagination.limit.unwrap_or(20).min(100);
     let offset = pagination.offset.unwrap_or(0);
-    let items = exercise::list(&store, Some(u64::from(limit)), Some(u64::from(offset)))
-        .await
-        .map_err(|e| err(e.to_string()))?;
-    let total = exercise::count(&store).await.map_err(|e| err(e.to_string()))?;
+    let items =
+        exercise::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(internal_error)?;
+    let total = exercise::count(&store).await.map_err(internal_error)?;
     Ok(Json(PaginatedResult { items, total, limit, offset }))
 }
 
 async fn exercise_get_by_id(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<Exercise>, ApiError> {
-    let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
-    exercise::get_by_id(&store, &id).await.map(Json).map_err(|e| err(e.to_string()))
+) -> Result<Json<Exercise>, ErrorObject> {
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    exercise::get_by_id(&store, &id).await.map(Json).map_err(internal_error)
 }
 
 async fn exercise_create(
     State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateExerciseInput>,
-) -> Result<(StatusCode, Json<Exercise>), ApiError> {
-    let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
-    exercise::create(&store, input)
-        .await
-        .map(|entity| (StatusCode::CREATED, Json(entity)))
-        .map_err(|e| err(e.to_string()))
+    input: Result<Json<CreateExerciseInput>, JsonRejection>,
+) -> Result<(StatusCode, Json<Exercise>), ErrorObject> {
+    let Json(input) = input.map_err(json_rejection)?;
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    exercise::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(internal_error)
 }
 
 async fn exercise_update(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(input): Json<UpdateExerciseInput>,
-) -> Result<Json<Exercise>, ApiError> {
-    let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
-    exercise::update(&store, &id, input).await.map(Json).map_err(|e| err(e.to_string()))
+    input: Result<Json<UpdateExerciseInput>, JsonRejection>,
+) -> Result<Json<Exercise>, ErrorObject> {
+    let Json(input) = input.map_err(json_rejection)?;
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    exercise::update(&store, &id, input).await.map(Json).map_err(internal_error)
 }
 
-async fn exercise_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let store = state.fitness_store().await.map_err(|e| err(e.to_string()))?;
-    exercise::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| err(e.to_string()))
+async fn exercise_delete(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ErrorObject> {
+    let store = state.fitness_store().await.map_err(internal_error)?;
+    exercise::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(internal_error)
 }
 
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/athletes", get(athlete_list))
-        .route("/api/workouts/start", post(workout_start))
-        .route("/api/workouts/summary/{id}", get(workout_get_summary))
-        .route("/api/workouts", get(workout_list).post(workout_create))
-        .route("/api/workouts/{id}", get(workout_get_by_id).put(workout_update).delete(workout_delete))
-        .route("/api/exercises", get(exercise_list).post(exercise_create))
-        .route("/api/exercises/{id}", get(exercise_get_by_id).put(exercise_update).delete(exercise_delete))
+        .route("/api/athletes", get(athlete_list).fallback(allow([Method::GET])))
+        .route("/api/workouts/start", post(workout_start).fallback(allow([Method::POST])))
+        .route("/api/workouts/summary/{id}", get(workout_get_summary).fallback(allow([Method::GET])))
+        .route("/api/workouts/finish", post(workout_finish).fallback(allow([Method::POST])))
+        .route("/api/workouts", get(workout_list).post(workout_create).fallback(allow([Method::GET, Method::POST])))
+        .route(
+            "/api/workouts/{id}",
+            get(workout_get_by_id).put(workout_update).delete(workout_delete).fallback(allow([
+                Method::GET,
+                Method::PUT,
+                Method::DELETE,
+            ])),
+        )
+        .route("/api/workouts/archive", post(workout_archive).fallback(allow([Method::POST])))
+        .route("/api/exercises", get(exercise_list).post(exercise_create).fallback(allow([Method::GET, Method::POST])))
+        .route(
+            "/api/exercises/{id}",
+            get(exercise_get_by_id).put(exercise_update).delete(exercise_delete).fallback(allow([
+                Method::GET,
+                Method::PUT,
+                Method::DELETE,
+            ])),
+        )
 }

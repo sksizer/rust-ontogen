@@ -6,6 +6,7 @@
 // `lib.rs`), not via the longer `ontogen::servers::config::Foo` path.
 pub(crate) mod classify;
 pub(crate) mod config;
+pub(crate) mod error_map;
 pub(crate) mod generators;
 pub(crate) mod parse;
 #[cfg(test)]
@@ -13,9 +14,7 @@ pub(crate) mod tests;
 pub(crate) mod types;
 
 // Re-export key types at the servers module level
-pub use config::{
-    ApiSurface, Config, DEFAULT_STORE_ACCESSOR, PaginationConfig, PrefixParam, RoutePrefix, ServerGenerator,
-};
+pub use config::{ApiSurface, DEFAULT_STORE_ACCESSOR, PaginationConfig, PrefixParam, RoutePrefix, ServerGenerator};
 pub use parse::{ApiFn, ApiModule, EventFn, Param};
 pub use types::NamingConfig;
 
@@ -28,6 +27,8 @@ use ontogen_core::ir::OpKind;
 
 use crate::CodegenError;
 use crate::ir::{ApiOutput, HttpRouteMeta, IpcCommandMeta, McpToolMeta, ParamMeta, ServersOutput};
+use crate::model::EntityDef;
+use crate::resource::ResourceModel;
 
 /// Generate server transports (Axum / Tauri IPC / MCP).
 ///
@@ -38,10 +39,17 @@ use crate::ir::{ApiOutput, HttpRouteMeta, IpcCommandMeta, McpToolMeta, ParamMeta
 /// [`crate::gen_clients`] entry point; this function no longer touches
 /// the TS surface.
 pub fn generate(
+    entities: &[EntityDef],
     _api: Option<&ApiOutput>,
     _scan_dirs: &[PathBuf],
     config: &crate::ServersConfig,
 ) -> Result<ServersOutput, CodegenError> {
+    let resources = ResourceModel::build(entities, &config.naming).map_err(CodegenError::Server)?;
+    let error_map = match &config.error_source_dir {
+        Some(dir) => error_map::scan(dir).map_err(CodegenError::Server)?,
+        None => None,
+    };
+
     // Convert unified ServersConfig → internal Config
     let legacy_config = config::Config {
         api_dir: config.api_dir.clone(),
@@ -51,17 +59,33 @@ pub fn generate(
         state_import: config.state_import.clone(),
         naming: config.naming.clone(),
         generators: config.generators.clone(),
-        rustfmt_edition: config.rustfmt_edition.clone(),
         sse_route_overrides: config.sse_route_overrides.clone(),
         route_prefix: config.route_prefix.clone(),
         store_type: config.store_type.clone(),
         store_import: config.store_import.clone(),
         pagination: config.pagination.clone(),
         extra_surfaces: config.extra_surfaces.clone(),
+        resources,
+        error_map,
     };
 
     // Run the transport generation pipeline
     let modules = generate_transport(&legacy_config).map_err(CodegenError::Server)?;
+
+    if let (Some(dir), None) = (&config.error_source_dir, &legacy_config.error_map) {
+        let affected: Vec<String> = modules
+            .iter()
+            .flat_map(|m| {
+                m.functions
+                    .iter()
+                    .filter(|f| generators::http::returns_app_error(f, &legacy_config))
+                    .map(move |f| format!("{}::{}", m.name, f.name))
+            })
+            .collect();
+        if let Some(warning) = error_map::missing_enum_warning(dir, &affected) {
+            println!("{warning}");
+        }
+    }
 
     Ok(extract_server_metadata(&modules, &legacy_config))
 }
@@ -93,7 +117,7 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
             let params: Vec<ParamMeta> =
                 f.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
 
-            if let Some((method, path)) = http_route_for(&op, &http_base, &url_plural, &m.name, f, config) {
+            if let Some((method, path)) = http_route_for(&op, &http_base, &url_plural, m, f, config) {
                 http_routes.push(HttpRouteMeta {
                     method,
                     path,
@@ -161,7 +185,7 @@ fn http_route_for(
     op: &OpKind,
     base: &str,
     plural: &str,
-    module: &str,
+    m: &parse::ApiModule,
     f: &parse::ApiFn,
     config: &config::Config,
 ) -> Option<(String, String)> {
@@ -169,6 +193,9 @@ fn http_route_for(
         OpKind::List => ("GET", format!("{base}/{plural}")),
         OpKind::Create => ("POST", format!("{base}/{plural}")),
         OpKind::GetById => ("GET", format!("{base}/{plural}/{{id}}")),
+        OpKind::Update if generators::http::served_resource(m, f, config).is_some() => {
+            ("PATCH", format!("{base}/{plural}/{{id}}"))
+        }
         OpKind::Update => ("PUT", format!("{base}/{plural}/{{id}}")),
         OpKind::Delete => ("DELETE", format!("{base}/{plural}/{{id}}")),
         OpKind::JunctionList { child_segment } => ("GET", format!("{base}/{plural}/{{parent_id}}/{child_segment}")),
@@ -178,7 +205,7 @@ fn http_route_for(
         }
         OpKind::CustomGet | OpKind::CustomPost => {
             let is_get = classify::is_read_op(op);
-            let action = config.naming.derive_action(module, &f.name);
+            let action = config.naming.derive_action(&m.name, &f.name);
             let mut path = format!("{base}/{plural}");
             if !action.is_empty() {
                 path.push('/');
@@ -205,7 +232,7 @@ fn http_route_for(
 /// Parses API modules and generates server code for each configured
 /// [`ServerGenerator`]. Returns the parsed `ApiModule` list so callers can
 /// use it for test generation or other downstream tasks.
-pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModule>, String> {
+pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModule>, String> {
     // Project-scoped handlers open the store through the one
     // `route_prefix.state_accessor`, which yields the primary surface's store
     // type; an extra surface's store-scoped fns expect their own store, so
@@ -237,6 +264,12 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
     parse::check_paginated_lists(&mut modules, config)?;
     if modules.is_empty() {
         return Ok(modules);
+    }
+    if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::HttpAxum { .. })) {
+        generators::http::check_resource_ops(&modules, config)?;
+        for warning in generators::http::unplaced_app_error_warnings(&modules, config) {
+            println!("{warning}");
+        }
     }
 
     for generator in &config.generators {

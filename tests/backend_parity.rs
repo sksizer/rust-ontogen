@@ -129,8 +129,9 @@ fn gen_stack_with(
         store_import: Some("crate::store::Store".into()),
         pagination: Some(ontogen::servers::PaginationConfig { default_limit: 20, max_limit: 100 }),
         extra_surfaces: vec![],
+        error_source_dir: None,
     };
-    ontogen::gen_servers(Some(&api), &[], &servers).expect("gen_servers failed");
+    ontogen::gen_servers(entities, Some(&api), &[], &servers).expect("gen_servers failed");
     if !clients {
         return store;
     }
@@ -147,8 +148,7 @@ fn gen_stack_with(
     ];
     clients.store_type = Some("Store".into());
     clients.store_import = Some("crate::store::Store".into());
-    clients.schema_entities = entities.to_vec();
-    ontogen::gen_clients(Some(&api), &[], &clients).expect("gen_clients failed");
+    ontogen::gen_clients(entities, Some(&api), &[], &clients).expect("gen_clients failed");
 
     store
 }

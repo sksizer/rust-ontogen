@@ -18,17 +18,19 @@ cargo run
 ```
 
 ```sh
-curl -s localhost:3002/api/tasks | jq
+curl -s localhost:3002/api/tasks -H 'accept: application/vnd.api+json' | jq
 
 # POST without an id -- the slug derives from the title
 curl -s -X POST localhost:3002/api/tasks \
-  -H 'content-type: application/json' \
-  -d '{"title":"Review the stack","status":"open/ready","created":"2026-06-06","epic_id":"markdown-backend","tags":["codegen"],"body":"## Goal\n\nReview.\n"}'
+  -H 'content-type: application/vnd.api+json' \
+  -d '{"data":{"type":"tasks","attributes":{"title":"Review the stack","status":"open/ready","created":"2026-06-06","body":"## Goal\n\nReview.\n"},"relationships":{"epic":{"data":{"type":"epics","id":"markdown-backend"}},"tags":{"data":[{"type":"tags","id":"codegen"}]}}}}'
 
 cat data/vault/tasks/review-the-stack.md
 ```
 
-The filename came from the title. The store's `IdStrategy::SlugFromField("title")` (set with `.store_id_strategy(..)` in `build.rs`) slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
+Lists page 20 at a time (`GET /api/tasks?page[offset]=0&page[limit]=5` answers with `meta.total` and `links.next`), because `build.rs` sets `pagination` and `.api_paginated(..)` for `task`, `epic` and `tag`. The MCP list tools take `limit` and `offset` and return `{items, total, limit, offset}`.
+
+The response is `201` with a `Location: /api/tasks/review-the-stack` header and the new task as a JSON:API resource: the fields are under `attributes`, and `epic` and `tags` are under `relationships`. The filename came from the title. The store's `IdStrategy::SlugFromField("title")` (set with `.store_id_strategy(..)` in `build.rs`) slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
 
 ## Over MCP
 

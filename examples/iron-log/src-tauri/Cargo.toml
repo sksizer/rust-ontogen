@@ -24,8 +24,11 @@ axum = "0.8"
 specta = { version = "=2.0.0-rc.23", features = ["derive", "function"] }
 schemars = "0.8"
 ontogen-macros = { path = "../../../crates/ontogen-macros" }
-# Runtime support for the generated event ops (SSE and IPC subscriptions).
+# Runtime support for the generated event ops (SSE and IPC subscriptions),
+# and the shared id rule the generated HTTP server checks client ids against.
 ontogen-core = { path = "../../../crates/ontogen-core", features = ["events"] }
+# The generated JSON:API HTTP server's runtime.
+ontogen-jsonapi = { path = "../../../crates/ontogen-jsonapi" }
 futures = "0.3"
 log = "0.4"
 thiserror = "2"

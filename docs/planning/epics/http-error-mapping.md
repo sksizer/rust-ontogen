@@ -13,7 +13,7 @@ tags: [servers, http, errors, dx]
 **Milestone:** M3 — Observability & extensibility ("First-class error-type
 specification … the wire error shape is consumer-controlled rather than
 ontogen-imposed", [roadmap](../../roadmap.md))
-**Status:** proposed — design pass complete, no implementation started.
+**Status:** proposed — design pass complete; phases 0–1 done inside E0004 phase 1b ([#200](https://github.com/sksizer/rust-ontogen/pull/200)), with the `errors[]` document in place of the `{"error"}` body.
 **Superseded in part by** [E0004 — JSON:API as the generated HTTP wire format](./jsonapi-http-transport.md):
 the `{"error": string}` body this epic keeps as a wire contract becomes the
 JSON:API `errors[]` document there; the `AppError` scan, status mapping and
@@ -310,7 +310,8 @@ Call-site routing:
 - Generated CRUD handlers (`E` is `AppError` by construction —
   `src/api/gen_crud.rs` hard-codes it): `.map_err(app_error)`.
 - Hand-written handlers whose parsed `E`'s last path segment is `AppError`:
-  `.map_err(app_error)`.
+  `.map_err(app_error)`. (E0004 replaced this predicate; see
+  `docs/jsonapi-wire-contract.md` §13.4.)
 - Hand-written handlers with any other / unparseable `E`: today's
   `.map_err(|e| err(e.to_string()))` — behavior identical, nothing breaks.
 - The `JunctionAdd` missing-param check: `bad_request(...)`.
@@ -460,8 +461,8 @@ Surfaced during the analysis; none block this epic:
 To be split into `tasks/` files when the epic is accepted; the intended
 PR-sized cuts are the phases above:
 
-- [ ] Phase 0 — consolidate error-map emission (refactor, zero snapshot drift)
-- [ ] Phase 1 — error-enum scan + 404/400 defaults + pilot wire tests + example regen
+- [x] Phase 0 — consolidate error-map emission (refactor, zero snapshot drift) — done in E0004 phase 1b ([#200](https://github.com/sksizer/rust-ontogen/pull/200))
+- [x] Phase 1 — error-enum scan + 404/400 defaults + pilot wire tests + example regen — done in E0004 phase 1b ([#200](https://github.com/sksizer/rust-ontogen/pull/200)). Its "missing junction param → 400" lands in JSON:API form with E0004 phase 3a (contract §9.2: a junction add without its child id is a relationship body with no `data`); until then the junction op's current route answers `400 invalid_document`
 - [ ] Phase 2 — `HttpError` derive + `#[http(status)]` + docs pass
 - [ ] Phase 3 — `error_handler` full-override hook (+ optional scaffold)
 - [ ] Phase 4 — follow-up tickets filed (typed codes / TS client, IPC & MCP parity, store-contract formalization)

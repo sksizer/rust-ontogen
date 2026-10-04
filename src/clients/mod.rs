@@ -38,12 +38,14 @@ use std::path::PathBuf;
 
 use crate::CodegenError;
 use crate::ir::{ApiOutput, SchemaOutput};
+use crate::model::EntityDef;
+use crate::resource::ResourceModel;
 use crate::servers::ApiModule;
 use crate::servers::parse;
 
 /// Generate TypeScript client and admin-registry artefacts.
 ///
-/// Mirrors the shape of [`crate::gen_servers`] - takes the parsed
+/// Mirrors the shape of [`crate::gen_servers`] - takes the schema entities, the parsed
 /// [`ApiOutput`] (or scans the configured surfaces itself, as a fallback), the additional
 /// scan dirs (reserved for future enrichment), and a [`crate::ClientsConfig`].
 ///
@@ -56,14 +58,17 @@ use crate::servers::parse;
 ///
 /// # Errors
 ///
-/// Returns [`CodegenError::Server`] for parse, I/O, or formatting failure.
-/// (The error variant predates the split and remains shared with the
-/// server pipeline; renaming it is out of scope for this refactor.)
+/// Returns [`CodegenError::Client`] when an entity cannot be served as a
+/// JSON:API resource, and [`CodegenError::Server`] for parse, I/O, or
+/// formatting failure. (That variant predates the split and remains shared
+/// with the server pipeline.)
 pub fn generate(
+    entities: &[EntityDef],
     _api: Option<&ApiOutput>,
     _scan_dirs: &[PathBuf],
     config: &crate::ClientsConfig,
 ) -> Result<(), CodegenError> {
+    let resources = ResourceModel::build(entities, &config.naming).map_err(CodegenError::Client)?;
     // Convert public ClientsConfig → internal Config
     let internal = config::Config {
         api_dir: config.api_dir.clone(),
@@ -79,7 +84,8 @@ pub fn generate(
         route_prefix: config.route_prefix.clone(),
         store_type: config.store_type.clone(),
         store_import: config.store_import.clone(),
-        schema_entities: config.schema_entities.clone(),
+        entities: entities.to_vec(),
+        resources,
         schema_enums: config.schema_enums.clone(),
         label_overrides: config.label_overrides.clone(),
         pagination: config.pagination.clone(),
@@ -125,7 +131,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         if let Some(path) = bp
             && written_bindings.insert(path.clone())
         {
-            let body = generators::ts_bindings::emit(&config.schema_entities);
+            let body = generators::ts_bindings::emit(&config.entities);
             crate::write_and_format_ts(&path, body, &config.ts_formatter)
                 .expect("Failed to write schema-known bindings");
         }
@@ -138,7 +144,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
     // Append the result to every bindings.ts. The walker reads `syn::Item`
     // directly — no cargo invocation, no side-car binary, no target-dir
     // contention, no recursion guard.
-    let long_tail = generators::ts_bindings::long_tail(&modules, config, &config.schema_entities);
+    let long_tail = generators::ts_bindings::long_tail(&modules, config, &config.entities);
     if !long_tail.is_empty() && !written_bindings.is_empty() {
         let manifest_dir = std::path::PathBuf::from(
             std::env::var("CARGO_MANIFEST_DIR")
@@ -349,7 +355,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
                 // are keyed by bare name in the registry and the TS
                 // bindings, so a name two surfaces both define would
                 // collapse into one; refuse it.
-                let mut entities = config.schema_entities.clone();
+                let mut entities = config.entities.clone();
                 let mut enums = config.schema_enums.clone();
                 let surfaces = surface_schema(&config.extra_surfaces)?;
                 for entity in surfaces.entities {

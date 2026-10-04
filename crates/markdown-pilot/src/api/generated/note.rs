@@ -6,9 +6,14 @@ use crate::schema::{CreateNoteInput, UpdateNoteInput};
 use crate::store::Store;
 use crate::store::note::NoteUpdate;
 
-/// List all notes
-pub async fn list(store: &Store) -> Result<Vec<Note>, AppError> {
-    store.list_notes(None, None).await
+/// One page of notes
+pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Note>, AppError> {
+    store.list_notes(limit, offset).await
+}
+
+/// How many notes there are — the total behind a page of `list`
+pub async fn count(store: &Store) -> Result<u64, AppError> {
+    store.count_notes().await
 }
 
 /// Get a single note by ID
