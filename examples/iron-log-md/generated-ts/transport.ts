@@ -133,6 +133,18 @@ async function httpDelete(path: string): Promise<void> {
   await httpRequest('DELETE', path);
 }
 
+/**
+ * Calls an op that is not served as a resource. `args` travel as the body's
+ * `meta.args`, keyed by the op's parameter names; without them no body is
+ * sent. Resolves to the reply's `meta.result`, or `null` for a 204.
+ */
+async function callOp<T>(method: string, path: string, args?: Record<string, unknown>): Promise<T> {
+  const res = await httpRequest(method, path, args === undefined ? undefined : { meta: { args } });
+  if (res.status === 204) return null as T;
+  const doc = (await res.json()) as { meta: { result: T } };
+  return doc.meta.result;
+}
+
 function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
   const push = (key: string, value: unknown) => {

@@ -154,6 +154,18 @@ async function httpDelete(path: string): Promise<void> {
   await httpRequest('DELETE', path);
 }
 
+/**
+ * Calls an op that is not served as a resource. `args` travel as the body's
+ * `meta.args`, keyed by the op's parameter names; without them no body is
+ * sent. Resolves to the reply's `meta.result`, or `null` for a 204.
+ */
+async function callOp<T>(method: string, path: string, args?: Record<string, unknown>): Promise<T> {
+  const res = await httpRequest(method, path, args === undefined ? undefined : { meta: { args } });
+  if (res.status === 204) return null as T;
+  const doc = (await res.json()) as { meta: { result: T } };
+  return doc.meta.result;
+}
+
 function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
   const push = (key: string, value: unknown) => {
@@ -181,6 +193,7 @@ function subscribeSse<T>(
   url: (resume: string | null) => string,
   eventName: string,
   initialResume: string | null,
+  decode: (frame: unknown) => T,
   handlers: SubscriptionHandlers<T>,
 ): () => void {
   let source: EventSource | null = null;
@@ -201,7 +214,7 @@ function subscribeSse<T>(
       if (id) lastId = id;
       let data: T;
       try {
-        data = JSON.parse(event.data);
+        data = decode(JSON.parse(event.data));
       } catch (err) {
         handlers.onError?.(err);
         return;
@@ -232,6 +245,11 @@ function subscribeSse<T>(
     source?.close();
     source = null;
   };
+}
+
+/** An event frame whose item is not a resource carries it as `meta.result`. */
+function metaResult<T>(frame: unknown): T {
+  return (frame as { meta: { result: T } }).meta.result;
 }
 
 // ── JSON:API Resources ──
@@ -489,13 +507,14 @@ export function createHttpTransport(): Transport {
       return null;
     },
     async statGetWorkout(): Promise<WorkoutStats> {
-      return httpGet('/stats/workout');
+      return callOp<WorkoutStats>('GET', '/stats/workout');
     },
     async subscribeActivityFeed(args: Record<string, never>, handlers: SubscriptionHandlers<Activity>): Promise<() => void> {
       return subscribeSse(
         (_resume) => `${BASE}${`/events/activity-feed`}`,
         'activity-feed',
         null,
+        (frame) => metaResult<Activity>(frame),
         handlers,
       );
     },
@@ -504,6 +523,7 @@ export function createHttpTransport(): Transport {
         (resume) => `${BASE}${`/events/activity-for-kind/${encodeURIComponent(String(args.kind))}`}` + toQueryString({ resume: resume }),
         'activity-for-kind',
         args.resume ?? null,
+        (frame) => metaResult<Activity>(frame),
         handlers,
       );
     },
@@ -513,7 +533,7 @@ export function createHttpTransport(): Transport {
       function connect() {
         es = new EventSource('/api/events/activity-feed');
         es.addEventListener('activity-feed', (event: MessageEvent) => {
-          try { callback(JSON.parse(event.data)); }
+          try { callback(metaResult<Activity>(JSON.parse(event.data))); }
           catch { callback({}); }
         });
         es.onerror = () => {

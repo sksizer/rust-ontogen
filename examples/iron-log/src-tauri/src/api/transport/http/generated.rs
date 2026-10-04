@@ -7,20 +7,17 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{
-        State,
-        rejection::{JsonRejection, QueryRejection},
-    },
+    extract::{State, rejection::QueryRejection},
     http::{Method, StatusCode},
-    response::{Json, Response},
-    routing::{delete, get, patch, post, put},
+    response::Response,
+    routing::get,
 };
 use ontogen_jsonapi::{
-    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
-    ResourceIdentifier, ResourceObject,
+    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, QueryParams, QuerySpec, Relationship,
+    ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
     error::method_not_allowed,
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
-    links::{CanonicalQuery, encode_path_segment, pagination_links},
+    links::encode_path_segment,
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
 };
@@ -29,10 +26,9 @@ use serde::{Deserialize, Serialize};
 use crate::AppState;
 use crate::api::v1::{activity, exercise, stats, tag, workout, workout_set};
 use crate::schema::{
-    Activity, CreateExerciseInput, CreateTagInput, CreateWorkoutInput, CreateWorkoutSetInput, Exercise, Tag,
-    UpdateExerciseInput, UpdateTagInput, UpdateWorkoutInput, UpdateWorkoutSetInput, Workout, WorkoutSet, WorkoutStats,
+    CreateExerciseInput, CreateTagInput, CreateWorkoutInput, CreateWorkoutSetInput, Exercise, Tag, UpdateExerciseInput,
+    UpdateTagInput, UpdateWorkoutInput, UpdateWorkoutSetInput, Workout, WorkoutSet,
 };
-use crate::store::Store;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use ontogen_core::events::EventFrame;
 use std::convert::Infallible;
@@ -71,26 +67,24 @@ fn allow<const N: usize>(
     move |method| std::future::ready(method_not_allowed(&method, &allowed))
 }
 
-fn json_rejection(e: JsonRejection) -> ErrorObject {
-    match e.status() {
-        StatusCode::UNSUPPORTED_MEDIA_TYPE => {
-            ErrorObject::new(ErrorCode::UnsupportedMediaType, e.body_text()).with_header("Content-Type")
-        }
-        StatusCode::PAYLOAD_TOO_LARGE => ErrorObject::new(ErrorCode::ContentTooLarge, e.body_text()),
-        _ => ErrorObject::new(ErrorCode::InvalidDocument, e.body_text()),
-    }
-}
-
+/// The error document for a rejection of Axum's own `Query`, which a list
+/// that takes a filter and an event stream still read their parameters with.
 fn query_rejection(e: QueryRejection) -> ErrorObject {
     ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
 }
 
-fn sse_event<T: Serialize>(name: &'static str, frame: EventFrame<T>) -> Event {
+/// Writes an event item that is not an entity as `{"meta":{"result":…}}`.
+fn result_frame<T: Serialize>(event: Event, item: &T) -> Result<Event, axum::Error> {
+    event.json_data(ResultFrame::new(item))
+}
+
+/// Writes an event item into its frame's `data:`.
+type FrameData<T> = fn(Event, &T) -> Result<Event, axum::Error>;
+
+fn sse_event<T>(name: &'static str, frame: EventFrame<T>, data: FrameData<T>) -> Event {
     match frame {
-        EventFrame::Event { id, data } => {
-            let event = Event::default()
-                .event(name)
-                .json_data(&data)
+        EventFrame::Event { id, data: item } => {
+            let event = data(Event::default().event(name), &item)
                 .unwrap_or_else(|e| Event::default().event("error").data(e.to_string()));
             match id {
                 Some(id) if !id.contains(['\n', '\r', '\0']) => event.id(id),
@@ -105,12 +99,13 @@ fn sse_stream<T>(
     name: &'static str,
     rx: tokio::sync::broadcast::Receiver<T>,
     id: ontogen_core::events::IdFn<T>,
+    data: FrameData<T>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>>
 where
-    T: Clone + Serialize + Send + 'static,
+    T: Clone + Send + 'static,
 {
     let stream = futures::stream::unfold(rx, move |mut rx| async move {
-        ontogen_core::events::next_frame(&mut rx, id).await.map(|frame| (Ok(sse_event(name, frame)), rx))
+        ontogen_core::events::next_frame(&mut rx, id).await.map(|frame| (Ok(sse_event(name, frame, data)), rx))
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -863,9 +858,14 @@ async fn workout_set_delete(
 
 // ── Stats Handlers ──
 
-async fn stat_get_workout(State(state): State<Arc<AppState>>) -> Result<Json<WorkoutStats>, ErrorObject> {
+async fn stat_get_workout(
+    State(state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
     let store = state.store().await.map_err(internal_error)?;
-    stats::get_workout(&store).await.map(Json).map_err(app_error)
+    let result = stats::get_workout(&store).await.map_err(app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result })))
 }
 
 // ── activity_feed SSE Handler ──
@@ -874,7 +874,7 @@ async fn activity_feed_sse(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
     let rx = activity::activity_feed(&state);
-    sse_stream("activity-feed", rx, ontogen_core::events::no_id)
+    sse_stream("activity-feed", rx, ontogen_core::events::no_id, result_frame)
 }
 
 // ── activity_for_kind SSE Handler ──
@@ -892,8 +892,8 @@ async fn activity_for_kind_sse(
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ErrorObject> {
     let axum::extract::Query(q) = q.map_err(query_rejection)?;
     let resume = ontogen_core::events::last_event_id(headers.get("last-event-id").map(|v| v.as_bytes())).or(q.resume);
-    let rx = activity::activity_for_kind(&state, kind, resume).await.map_err(internal_error)?;
-    Ok(sse_stream("activity-for-kind", rx, ontogen_core::events::seq_id))
+    let rx = activity::activity_for_kind(&state, kind, resume).await.map_err(app_error)?;
+    Ok(sse_stream("activity-for-kind", rx, ontogen_core::events::seq_id, result_frame))
 }
 
 /// Generated routes. Call this from your main router.
