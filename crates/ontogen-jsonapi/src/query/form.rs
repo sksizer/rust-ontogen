@@ -246,3 +246,179 @@ impl<'de> de::Deserializer<'de> for Probe {
         unit_struct newtype_struct seq tuple tuple_struct map enum identifier ignored_any
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Mode {
+        Fast,
+        Slow,
+    }
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct Newtype(u8);
+
+    /// The old reader: `serde_urlencoded` reading one pair into a field.
+    fn urlencoded<T: DeserializeOwned>(value: &str) -> Result<T, String> {
+        #[derive(Deserialize)]
+        struct One<T> {
+            v: T,
+        }
+        let pair = format!("v={}", encode(value));
+        serde_urlencoded::from_str::<One<T>>(&pair).map(|one| one.v).map_err(|err| err.to_string())
+    }
+
+    fn encode(value: &str) -> String {
+        let mut out = String::new();
+        for byte in value.bytes() {
+            match byte {
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+                _ => out.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        out
+    }
+
+    fn ours<T: DeserializeOwned>(value: &str) -> Result<T, String> {
+        T::deserialize(Value(value)).map_err(|err| err.to_string())
+    }
+
+    fn agree<T: DeserializeOwned + Debug>(value: &str) {
+        let (a, b) = (urlencoded::<T>(value), ours::<T>(value));
+        match (&a, &b) {
+            // Compared as text so that NaN agrees with itself.
+            (Ok(x), Ok(y)) => {
+                assert_eq!(format!("{x:?}"), format!("{y:?}"), "{value:?} as {}", std::any::type_name::<T>())
+            }
+            (Err(_), Err(_)) => {}
+            _ => panic!("{value:?} as {}: urlencoded {a:?}, ours {b:?}", std::any::type_name::<T>()),
+        }
+    }
+
+    const VALUES: &[&str] = &[
+        "",
+        "0",
+        "1",
+        "-1",
+        "+1",
+        "+",
+        "-",
+        "--1",
+        "007",
+        "255",
+        "256",
+        "-129",
+        "128",
+        "65536",
+        "4294967296",
+        "9223372036854775807",
+        "9223372036854775808",
+        "-9223372036854775808",
+        "-9223372036854775809",
+        "18446744073709551615",
+        "18446744073709551616",
+        "true",
+        "false",
+        "True",
+        "TRUE",
+        "1.5",
+        "-1.5",
+        "+1.5",
+        ".5",
+        "5.",
+        "1e3",
+        "1E-3",
+        "inf",
+        "-inf",
+        "NaN",
+        "nan",
+        "infinity",
+        "1.7976931348623157e309",
+        "fast",
+        "slow",
+        "Fast",
+        "other",
+        "a b",
+        "a+b",
+        "a%2Bb",
+        "a%20b",
+        "%",
+        "%zz",
+        "caf\u{e9}",
+        "x",
+        " 1",
+        "1 ",
+    ];
+
+    #[test]
+    fn the_value_reader_agrees_with_serde_urlencoded() {
+        for value in VALUES {
+            agree::<bool>(value);
+            agree::<u8>(value);
+            agree::<u16>(value);
+            agree::<u32>(value);
+            agree::<u64>(value);
+            agree::<i8>(value);
+            agree::<i16>(value);
+            agree::<i32>(value);
+            agree::<i64>(value);
+            agree::<f32>(value);
+            agree::<f64>(value);
+            agree::<String>(value);
+            agree::<Mode>(value);
+            agree::<Option<String>>(value);
+            agree::<Option<u32>>(value);
+            agree::<Option<bool>>(value);
+            agree::<Option<Mode>>(value);
+            agree::<Newtype>(value);
+        }
+    }
+
+    #[test]
+    fn an_empty_value_is_some_for_a_string_and_an_error_for_a_number() {
+        assert_eq!(ours::<Option<String>>(""), Ok(Some(String::new())));
+        assert!(ours::<Option<u32>>("").is_err());
+        assert!(ours::<u32>("").is_err());
+        assert_eq!(ours::<Option<String>>(""), urlencoded::<Option<String>>(""));
+    }
+
+    #[test]
+    fn plus_and_percent_encoding_decode_before_the_reader_sees_them() {
+        // The reader takes decoded text: `a+b` arrives as `a b`.
+        let decoded: Vec<(String, String)> = serde_urlencoded::from_str("v=a+b%2Bc%20d").unwrap();
+        assert_eq!(decoded[0].1, "a b+c d");
+        assert_eq!(ours::<String>(&decoded[0].1), Ok("a b+c d".to_owned()));
+        assert_eq!(urlencoded::<String>("a b+c d"), Ok("a b+c d".to_owned()));
+    }
+
+    #[test]
+    fn leading_signs_and_overflow_are_parsed_as_from_str_does() {
+        assert_eq!(ours::<i32>("+7"), Ok(7));
+        assert_eq!(ours::<i32>("-7"), Ok(-7));
+        assert!(ours::<u8>("-1").is_err());
+        assert!(ours::<u8>("256").is_err());
+        assert!(ours::<i8>("-129").is_err());
+    }
+
+    // Intentional differences: serde_urlencoded's value deserializer has no
+    // 128-bit or `char` support, so those fields cannot be read from a
+    // query at all there. They read here through `FromStr`, which accepts
+    // a superset and breaks nothing.
+    #[test]
+    fn the_reader_also_reads_128_bit_integers_and_chars() {
+        assert!(urlencoded::<u128>("5").is_err());
+        assert!(urlencoded::<i128>("-5").is_err());
+        assert_eq!(ours::<u128>("5"), Ok(5));
+        assert_eq!(ours::<i128>("-5"), Ok(-5));
+        assert!(ours::<u128>("-5").is_err());
+        assert_eq!(ours::<char>("x"), Ok('x'));
+        assert!(ours::<char>("xy").is_err());
+    }
+}
