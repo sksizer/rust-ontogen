@@ -199,7 +199,7 @@ Returned by `gen_servers()`. Describes all transport endpoints that were generat
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `command_name` | `String` | Tauri command name (e.g., `"get_workouts"`, `"create_workout"`). |
+| `command_name` | `String` | Tauri command name, `{module}_{fn}` (e.g., `"workout_list"`, `"workout_create"`). |
 | `params` | `Vec<ParamMeta>` | Command parameters. |
 | `return_type` | `String` | Return type. |
 
@@ -207,7 +207,7 @@ Returned by `gen_servers()`. Describes all transport endpoints that were generat
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `tool_name` | `String` | MCP tool name (e.g., `"list_workouts"`). |
+| `tool_name` | `String` | MCP tool name, the same as the IPC command name (e.g., `"workout_list"`). |
 | `description` | `String` | Tool description from the API function's doc comment. |
 | `params` | `Vec<ParamMeta>` | Parameters the tool accepts. The MCP transport generator turns these into a JSON Schema at codegen time. |
 
