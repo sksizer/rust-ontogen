@@ -76,7 +76,7 @@ errors at the wire boundary.
 
 | Epic                                                                            | Status   |
 |---------------------------------------------------------------------------------|----------|
-| [Consumer-controlled HTTP error responses](planning/epics/http-error-mapping.md) | proposed (envelope superseded by M4 JSON:API; mapping mechanism stands) |
+| [Consumer-controlled HTTP error responses](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/epics/http-error-mapping.md) | proposed (envelope superseded by M4 JSON:API; mapping mechanism stands) |
 
 **Exit criteria:** a consumer can register hooks at any CRUD entry point
 without subclassing or wrapping the store; the wire error shape is
@@ -91,19 +91,19 @@ and resumable, parameterized event ops on server and client (#184, #185).
 
 ---
 
-## M4 — Standard formats · *planned*
+## M4 — Standard formats · *shipped*
 
 Replace the two home-grown formats ontogen exposes to the outside world
 with the open specifications that already cover them. On the wire, the
-generated HTTP transport becomes a JSON:API 1.1 server and the TS transport
-its client; on disk, the markdown backend writes an OKF 0.2 bundle by
+generated HTTP transport is a JSON:API 1.1 server and the TS transport its
+client; on disk, the markdown backend writes an OKF 0.2 bundle by
 default. Both are licensed by [ADR 0003](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0003-api-design-over-backwards-compatibility.md):
 the break is taken once, without compatibility modes.
 
 | Epic                                                                                       | Status   |
 |--------------------------------------------------------------------------------------------|----------|
-| [JSON:API as the generated HTTP wire format](planning/epics/jsonapi-http-transport.md)     | proposed |
-| [OKF-conformant markdown vaults by default](planning/epics/okf-markdown-vault.md)          | proposed |
+| [JSON:API as the generated HTTP wire format](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/epics/jsonapi-http-transport.md) ([ADR 0004](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0004-jsonapi-http-wire-format.md)) | shipped |
+| [OKF-conformant markdown vaults by default](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/epics/okf-markdown-vault.md) ([ADR 0005](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0005-okf-markdown-vaults.md)) | shipped |
 
 **Exit criteria:** a third-party JSON:API client performs CRUD and a
 relationship fetch against an example server with no custom code; every
@@ -111,6 +111,19 @@ example vault passes an OKF conformance check in CI; IPC, MCP and the admin
 layer are unchanged by either. The JSON:API `errors[]` document replaces the
 `{"error"}` body that the M3 error-mapping epic assumed, so that epic's
 envelope section is superseded while its status-mapping mechanism stands.
+**Met** — the OKF epic closed 2026-10-03 ([#194](https://github.com/sksizer/rust-ontogen/pull/194),
+[#196](https://github.com/sksizer/rust-ontogen/pull/196)) and the JSON:API epic 2026-10-04 ([#195](https://github.com/sksizer/rust-ontogen/pull/195)
+to [#206](https://github.com/sksizer/rust-ontogen/pull/206), and PHASE4_PR_URL).
+
+- A third-party client, kitsu, drives `examples/tasks-tracker` through list,
+  get, create, patch, delete and relationship fetches with only its
+  documented options. The examples CI job runs it, and
+  `just conformance-tasks-tracker` runs it locally.
+- `tests/okf_conformance.rs` checks every example's seed vault on each CI
+  run.
+- IPC and MCP payloads stay flat, and the admin layer needed no source
+  change. IPC and MCP list calls take an optional `sort`, and both get the
+  store fixes the [wire contract](https://github.com/sksizer/rust-ontogen/blob/main/docs/jsonapi-wire-contract.md) lists in §15.
 
 ---
 

@@ -2,7 +2,8 @@
 type: epic
 schema_version: "1"
 id: E0004
-status: in-progress
+status: closed/done
+completion_note: "Phase 0 shipped in https://github.com/sksizer/rust-ontogen/pull/195; phase 1a in https://github.com/sksizer/rust-ontogen/pull/197 and https://github.com/sksizer/rust-ontogen/pull/198, with its follow-ups in https://github.com/sksizer/rust-ontogen/pull/199; phase 1b in https://github.com/sksizer/rust-ontogen/pull/200; phase 1c in https://github.com/sksizer/rust-ontogen/pull/201; phase 2 in https://github.com/sksizer/rust-ontogen/pull/202; phase 3a in https://github.com/sksizer/rust-ontogen/pull/203; phase 3b in https://github.com/sksizer/rust-ontogen/pull/205; phase 3c in https://github.com/sksizer/rust-ontogen/pull/206; phase 4 (docs and examples) in PHASE4_PR_URL."
 title: JSON:API as the generated HTTP wire format
 created: 2026-10-03
 last_reviewed: 2026-10-04
@@ -11,7 +12,7 @@ tags: [servers, clients, http, jsonapi, wire-format]
 # Epic — JSON:API as the generated HTTP wire format
 
 **Milestone:** M4 — Standard formats ([roadmap](../../roadmap.md))
-**Status:** in-progress — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)), completing the 0.9.0 wire; phase 2 done ([#202](https://github.com/sksizer/rust-ontogen/pull/202)); phase 3a done ([#203](https://github.com/sksizer/rust-ontogen/pull/203)); phase 3b done ([#205](https://github.com/sksizer/rust-ontogen/pull/205)); phase 3c done ([#206](https://github.com/sksizer/rust-ontogen/pull/206)); phase 4 is next
+**Status:** done — phase 0 shipped in https://github.com/sksizer/rust-ontogen/pull/195; phase 1a in https://github.com/sksizer/rust-ontogen/pull/197 and https://github.com/sksizer/rust-ontogen/pull/198, with its follow-ups in https://github.com/sksizer/rust-ontogen/pull/199; phase 1b in https://github.com/sksizer/rust-ontogen/pull/200; phase 1c in https://github.com/sksizer/rust-ontogen/pull/201; phase 2 in https://github.com/sksizer/rust-ontogen/pull/202; phase 3a in https://github.com/sksizer/rust-ontogen/pull/203; phase 3b in https://github.com/sksizer/rust-ontogen/pull/205; phase 3c in https://github.com/sksizer/rust-ontogen/pull/206; phase 4 in PHASE4_PR_URL
 **Spec:** [JSON:API 1.1](https://jsonapi.org/format/)
 **Wire contract:** [`docs/jsonapi-wire-contract.md`](../../jsonapi-wire-contract.md) — normative; every phase implements against it
 **Decision records:** [ADR 0004](../../architecture/0004-jsonapi-http-wire-format.md) (this epic's decisions),
@@ -122,7 +123,7 @@ each of its sections to a phase.
 - [ADR 0006](../../architecture/0006-ordering-on-both-store-backends.md),
   designing `OrderBy`, with ADR 0001 amendment 9 pointing to it.
 
-**Phase 1a — store and runtime prerequisites.**
+**Phase 1a — store and runtime prerequisites.** Done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198); decisions 10-12 in [#199](https://github.com/sksizer/rust-ontogen/pull/199)):
 
 - The `ontogen-jsonapi` crate: document types, link building with the
   canonical query (contract §4.3), the error document, and the media-type,
@@ -153,7 +154,7 @@ each of its sections to a phase.
 - Markdown lookups of an id that could never be created answer
   `{Entity}NotFound` instead of a `500` (contract §8.2).
 
-**Phase 1b — CRUD over JSON:API.**
+**Phase 1b — CRUD over JSON:API.** Done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)):
 
 - The parsed schema as an explicit input of `gen_servers` and
   `gen_clients` (contract §5.1). Modules with no entity behind them were
@@ -219,8 +220,8 @@ each of its sections to a phase.
   parity fixture. `sort` on HTTP, and on the TS `Transport`, IPC and MCP
   (decision 8). tasks-tracker's hand-written `list` gains `order`.
 
-**Phase 4 — docs and examples.** Site pages above, cookbook update, a
-"what the wire looks like" page per example, README.
+**Phase 4 — docs and examples.** Done (PHASE4_PR_URL). Site pages above,
+cookbook update, a "what the wire looks like" page per example, README.
 
 ## Acceptance criteria
 
@@ -321,14 +322,28 @@ follow-ups:
 
 ## Tasks
 
+Follow-ups, filed in the backlog:
+
+- [B-FQRS](../backlog/B-FQRS-resolve-a-list-filter-struct-from-its-module.md) — resolve a list's filter struct from the module that declares it
+- [B-FQNC](../backlog/B-FQNC-classify-a-filter-struct-by-its-type-not-its-name.md) — classify a filter struct by its type, not its name
+- [B-HTRP](../backlog/B-HTRP-httpts-route-prefix.md) — `route_prefix` in the `HttpTs` client
+- [B-SMPT](../backlog/B-SMPT-scoped-mcp-and-ipc-honour-the-route-prefix-type.md) — scoped MCP and IPC honour the route prefix type
+- [B-BGMN](../backlog/B-BGMN-batched-related-resource-fetch.md) — batched related-resource fetch
+- [B-XEHM](../backlog/B-XEHM-cross-entity-has-many-on-both-backends.md) — cross-entity `has_many` on both backends
+- [B-SQLT](../backlog/B-SQLT-seaorm-multi-engine-support.md) — Postgres and MySQL on SeaORM
+- [B-MDRV](../backlog/B-MDRV-markdown-store-refused-value-error-variant.md) — a `markdown_store::Error` variant for a refused value
+- [B-FMQT](../backlog/B-FMQT-markdown-rewrite-unquotes-string-dates.md) — a markdown rewrite unquotes string dates
+- [B-TSDO](../backlog/B-TSDO-ts-double-option-emits-one-null.md) — `Option<Option<T>>` as `T | null` in TS
+- [B-BNDR](../backlog/B-BNDR-create-a-missing-bindings-directory.md) — create a missing bindings directory instead of panicking
+
 Filed when phase 0 closes; one task per phase, PR-sized.
 
-- [x] phase 0 — wire contract doc + ADR 0004 + ADR 0006
-- [x] phase 1a — `ontogen-jsonapi` runtime crate, `IdStrategy` on SeaORM with one source of truth, `{Entity}AlreadyExists`/`IdRequired`, `has_many` fix, markdown default id order ([#197](https://github.com/sksizer/rust-ontogen/pull/197) runtime crate, [#198](https://github.com/sksizer/rust-ontogen/pull/198) store)
+- [x] phase 0 — wire contract doc + ADR 0004 + ADR 0006 ([#195](https://github.com/sksizer/rust-ontogen/pull/195))
+- [x] phase 1a — `ontogen-jsonapi` runtime crate, `IdStrategy` on SeaORM with one source of truth, `{Entity}AlreadyExists`/`IdRequired`, `has_many` fix, markdown default id order ([#197](https://github.com/sksizer/rust-ontogen/pull/197) runtime crate, [#198](https://github.com/sksizer/rust-ontogen/pull/198) store, [#199](https://github.com/sksizer/rust-ontogen/pull/199) decisions 10-12)
 - [x] phase 1b — schema input, CRUD envelope, media type, errors, PATCH, TS flattener ([#200](https://github.com/sksizer/rust-ontogen/pull/200))
 - [x] phase 1c — custom ops, ops served as custom, event frames, scoped pagination ([#201](https://github.com/sksizer/rust-ontogen/pull/201))
 - [x] phase 2 — filter family, hand-written `list`/`count` precedence, TS filter family ([#202](https://github.com/sksizer/rust-ontogen/pull/202))
 - [x] phase 3a — relationship endpoints, related links, junction re-route ([#203](https://github.com/sksizer/rust-ontogen/pull/203))
 - [x] phase 3b — `include` compound documents, and no links to an unserved `get_by_id` ([#205](https://github.com/sksizer/rust-ontogen/pull/205))
 - [x] phase 3c — `order` argument on both backends (ADR 0006) + `sort` on every transport ([#206](https://github.com/sksizer/rust-ontogen/pull/206))
-- [ ] phase 4 — docs and examples
+- [x] phase 4 — docs and examples (PHASE4_PR_URL)
