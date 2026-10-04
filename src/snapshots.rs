@@ -529,6 +529,26 @@ fn servers_jsonapi_resources_http() {
     insta::assert_snapshot!(read_file(&output));
 }
 
+/// Every kind of op served as a custom op (§10, §10.4): custom GET with
+/// `opArg`s, custom POSTs reading `meta.args`, junction ops, a module with
+/// no entity, a filtered list, and event ops with an entity item and with
+/// other items (§12).
+#[test]
+fn servers_jsonapi_ops_http() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = crate::servers::tests::ops_fixture(tmp.path(), false);
+    insta::assert_snapshot!(crate::servers::tests::generate_http(tmp.path(), config));
+}
+
+/// [`servers_jsonapi_ops_http`] under a `route_prefix` (§11.1): every
+/// store-scoped op moves under the prefix with the same wire behaviour.
+#[test]
+fn servers_jsonapi_ops_scoped_http() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = crate::servers::tests::ops_fixture(tmp.path(), true);
+    insta::assert_snapshot!(crate::servers::tests::generate_http(tmp.path(), config));
+}
+
 #[test]
 fn servers_two_surfaces_ipc() {
     let code =

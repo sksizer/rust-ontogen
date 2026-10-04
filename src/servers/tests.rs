@@ -2107,12 +2107,12 @@ fn test_http_generator_crud_module() {
 
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // Store-based modules should generate scoped handlers only
-    assert!(content.contains("list_nodes_scoped"), "should generate scoped list handler");
-    assert!(content.contains("get_node_by_id_scoped"), "should generate scoped get handler");
-    assert!(content.contains("create_node_handler_scoped"), "should generate scoped create handler");
-    assert!(content.contains("update_node_handler_scoped"), "should generate scoped update handler");
-    assert!(content.contains("delete_node_handler_scoped"), "should generate scoped delete handler");
+    // Store-based modules generate scoped handlers only, named for their
+    // IPC command.
+    for handler in ["node_list", "node_get_by_id", "node_create", "node_update", "node_delete"] {
+        assert!(content.contains(&format!("async fn {handler}_scoped(")), "a scoped {handler}:\n{content}");
+        assert!(!content.contains(&format!("async fn {handler}(")), "no unscoped {handler}:\n{content}");
+    }
 
     // Should have entity_routes function
     assert!(content.contains("pub fn entity_routes()"));
@@ -2124,10 +2124,11 @@ fn test_http_generator_crud_module() {
     // Should have store construction
     assert!(content.contains("state.store_for(&ontogen_scope)"));
 
-    // Standard Axum imports
+    // Standard Axum imports. A handler opens the store through the state and
+    // never names its type, so the store type is not imported.
     assert!(content.contains("use axum::"));
     assert!(content.contains("use crate::AppState"));
-    assert!(content.contains("use crate::store::Store"));
+    assert!(!content.contains("use crate::store::Store"), "{content}");
 }
 
 #[test]
@@ -2162,7 +2163,9 @@ fn test_http_generator_events() {
     assert!(content.contains("graph_updated_sse"), "should generate SSE handler");
     assert!(content.contains("entity_changed_sse"));
     assert!(content.contains("Sse<impl futures::Stream"));
-    assert!(content.contains("sse_stream(\"graph-updated\", rx, ontogen_core::events::no_id)"));
+    // No entity is in the schema, so each item is sent as `meta.result`.
+    assert!(content.contains("sse_stream(\"graph-updated\", rx, ontogen_core::events::no_id, result_frame)"));
+    assert!(content.contains("event.json_data(ResultFrame::new(item))"));
     assert!(content.contains("/api/events/graph"), "should use SSE route override");
     assert!(!content.contains(".ok())"), "no generated path drops a lag error");
 }
@@ -2908,15 +2911,21 @@ fn test_http_generator_junction_module() {
     assert!(content.contains("async fn destination_skill_add_skill("));
     assert!(content.contains("async fn destination_skill_list_skills("));
 
-    // A body without the child id is the client's mistake: a 400 error
-    // document, not a 500.
+    // Served as custom ops (§10.4): the child id is `meta.args.{child param}`,
+    // and add and remove answer 204.
+    let flat = compact(&content);
     assert!(
-        compact(&content).contains(&compact(
-            ".ok_or_else(|| ErrorObject::new(ErrorCode::InvalidDocument, \"`skill_id` is required\"))?;"
-        )),
-        "a missing child id is a 400:\n{content}"
+        flat.contains(&compact("let skill_id = request::op_arg::<String>(&ontogen_args, \"skill_id\", true)?;")),
+        "the child id is read from meta.args:\n{content}"
     );
-    assert!(!content.contains("ErrorResponse"), "no `{{error}}` bodies remain:\n{content}");
+    assert!(flat.contains(&compact("request::check_op_arg_names(&ontogen_args, &[\"skill_id\"])?;")));
+    assert!(
+        flat.contains(&compact("Path((destination_id, skill_id)): Path<(String, String)>, _: Query<NoParams>")),
+        "remove takes both ids from the path and no body:\n{content}"
+    );
+    assert_eq!(content.matches("Ok(response::no_content())").count(), 2, "add and remove are 204s:\n{content}");
+    assert!(content.contains("Ok(response::ok(&Document::meta_only(ResultMeta { result })))"), "lists are meta.result");
+    assert!(!content.contains("Json"), "no flat bodies remain:\n{content}");
 
     // Regression guards - no old-style custom URLs.
     assert!(
@@ -3248,7 +3257,11 @@ fn test_custom_get_mixed_path_and_query_cross_transport() {
     // Server side: path param after the action segment, query param extracted
     // as the Option's inner type.
     assert!(http.contains("\"/api/jobs/log/{app}\""), "http.rs should register the path param after the action");
-    assert!(http.contains("lines: Option<u64>"), "http.rs query struct should keep the numeric inner type");
+    assert!(
+        http.contains("let lines = ontogen_query.op_arg::<u64>(\"lines\")?;"),
+        "http.rs reads the opArg as the Option's numeric inner type:\n{http}"
+    );
+    assert!(http.contains("op_args: &[\"lines\"]"), "and accepts only that opArg:\n{http}");
 
     // Both TS emitters must keep the path segment ahead of the query string.
     for (name, content) in [("transport.ts", &transport), ("ts_client.ts", &client)] {
@@ -3510,7 +3523,7 @@ fn test_extract_metadata_crud_routes() {
     let by_method = |m: &str| nodes.iter().find(|r| r.method == m).expect(m);
     assert_eq!(by_method("GET").path, "/api/nodes");
     assert_eq!(by_method("POST").path, "/api/nodes");
-    assert_eq!(by_method("PUT").path, "/api/nodes/{id}");
+    assert_eq!(by_method("PATCH").path, "/api/nodes/{id}", "no route is PUT");
     assert_eq!(by_method("DELETE").path, "/api/nodes/{id}");
     let gets: Vec<_> = nodes.iter().filter(|r| r.method == "GET").collect();
     assert!(gets.iter().any(|r| r.path == "/api/nodes/{id}"), "Expected get_by_id route");
@@ -3888,11 +3901,14 @@ pub async fn already_matched(store: &Store, opts: &ExportOptionsInput) -> Result
     let ipc = std::fs::read_to_string(&ipc_out).unwrap();
     assert_imports("IPC", &ipc, &expected_in_imports, &forbidden_in_imports);
 
-    // HTTP
+    // HTTP: a handler names the types its arguments are read as, and no
+    // result type (`meta.result` is serialized from the fn's own value), so
+    // it imports exactly the param types.
     let http_out = tmp.path().join("http_generated.rs");
     crate::servers::generators::http::generate(&http_out, &modules, &config);
     let http = std::fs::read_to_string(&http_out).unwrap();
-    assert_imports("HTTP", &http, &expected_in_imports, &forbidden_in_imports);
+    let (params, results) = expected_in_imports.split_at(4);
+    assert_imports("HTTP", &http, params, &[&forbidden_in_imports[..], results].concat());
 
     // MCP — covers both the param-side gate drop AND the new return-type walk
     // (mcp.rs previously skipped `f.return_type_ast` entirely).
@@ -3945,14 +3961,17 @@ pub async fn get_count(store: &Store) -> Result<i64, anyhow::Error> { todo!() }
 
     let content = std::fs::read_to_string(&output_path).unwrap();
 
-    // Body-carrying get_* functions must route as POST with Json body
-    // extraction. Today the HTTP generator wraps a non-`*Input`-named
-    // single-param body in a generated `{Module}{Fn}Body` struct -- not
-    // ideal but separate from OF-016. The OF-016 contract is "route is
-    // POST + body extraction" and "no Path<String> stuffing of the struct".
+    // Body-carrying get_* functions must route as POST with body extraction:
+    // the struct is a `meta.args` member, not a path segment.
     for (route_post, body_extraction) in &[
-        ("post(export_get_filtered_sessions)", "body: Result<Json<ExportGetFilteredSessionsBody>, JsonRejection>"),
-        ("post(export_get_summary)", "body: Result<Json<ExportGetSummaryBody>, JsonRejection>"),
+        (
+            "post(export_get_filtered_sessions)",
+            "let filter = request::op_arg::<ExportFilterRequest>(&ontogen_args, \"filter\", true)?;",
+        ),
+        (
+            "post(export_get_summary)",
+            "let request = request::op_arg::<ExportRequest>(&ontogen_args, \"request\", true)?;",
+        ),
     ] {
         assert!(
             content.contains(route_post),
@@ -3964,11 +3983,11 @@ pub async fn get_count(store: &Store) -> Result<i64, anyhow::Error> { todo!() }
         );
     }
 
-    // The generated wrapper body struct must reference the original custom
-    // struct type by its real name -- this is what the import collector
-    // (OF-017) had to start emitting for these to compile.
-    for body_field in &["    filter: ExportFilterRequest,", "    request: ExportRequest,"] {
-        assert!(content.contains(body_field), "OF-016: expected wrapper body field `{body_field}`, got:\n{content}");
+    // The handler names the original custom struct type by its real name --
+    // this is what the import collector (OF-017) had to start emitting for
+    // these to compile.
+    for call in &["export::get_filtered_sessions(&store, &filter)", "export::get_summary(&store, &request)"] {
+        assert!(content.contains(call), "OF-016: expected the call `{call}`, got:\n{content}");
     }
 
     // Negative: the body-carrying handlers must NOT extract the struct as
@@ -3999,14 +4018,14 @@ pub async fn get_count(store: &Store) -> Result<i64, anyhow::Error> { todo!() }
     );
 
     // Positive: Option<String> first param stays GET with query
-    // extraction (current behavior preserved).
+    // extraction, as an `opArg`.
     assert!(
         content.contains("get(export_get_recent)"),
         "OF-016: `get_recent(since: Option<String>)` should stay GET, got:\n{content}"
     );
     assert!(
-        content.contains("q: Result<axum::extract::Query<ExportGetRecentQuery>, QueryRejection>"),
-        "OF-016: `get_recent` should keep Query extraction, got:\n{content}"
+        content.contains("let since = ontogen_query.op_arg::<String>(\"since\")?;"),
+        "OF-016: `get_recent` should read `opArg[since]`, got:\n{content}"
     );
 
     // Positive: zero-param get_* stays GET (no body to carry).
@@ -4720,8 +4739,8 @@ fn test_two_surfaces_merge_same_named_module() {
     let http = std::fs::read_to_string(&http_out).unwrap();
     for route in [
         ".route(\"/api/workouts\", get(workout_list).post(workout_create).fallback(allow([Method::GET, Method::POST])))",
-        ".route(\"/api/workouts/{id}\", get(workout_get_by_id).put(workout_update).delete(workout_delete)\
-         .fallback(allow([Method::GET, Method::PUT, Method::DELETE])))",
+        ".route(\"/api/workouts/{id}\", get(workout_get_by_id).patch(workout_update).delete(workout_delete)\
+         .fallback(allow([Method::GET, Method::PATCH, Method::DELETE])))",
         ".route(\"/api/workouts/start\", post(workout_start).fallback(allow([Method::POST])))",
         ".route(\"/api/workouts/summary/{id}\", get(workout_get_summary).fallback(allow([Method::GET])))",
         ".route(\"/api/exercises\", get(exercise_list).post(exercise_create).fallback(allow([Method::GET, Method::POST])))",
@@ -4731,10 +4750,9 @@ fn test_two_surfaces_merge_same_named_module() {
     assert!(http.contains("workout as workout_1"), "second surface's workout is aliased:\n{http}");
     assert!(http.contains("workout_1::list(&store)"), "CRUD handlers call through the alias:\n{http}");
     assert!(http.contains("workout::start(&state, input)"), "custom handlers call the primary module:\n{http}");
-    assert!(
-        http.contains("fitness::schema::Workout") && http.contains("Json<Workout>"),
-        "the shared type name is bare for the primary surface and qualified for the second:\n{http}"
-    );
+    // A meta-only document names no result type, so neither `Workout` is
+    // imported into the HTTP handlers.
+    assert!(!http.contains("Workout,") && !http.contains("fitness::schema::Workout"), "{http}");
     let mut names = imported_names(&http);
     let count = names.len();
     names.sort();
@@ -4748,6 +4766,10 @@ fn test_two_surfaces_merge_same_named_module() {
         assert!(ipc.contains(&format!("        {cmd},\n")), "ipc_handler lists {cmd}:\n{ipc}");
     }
     assert!(ipc.contains("workout_1::create(&store, input)"), "IPC CRUD calls through the alias:\n{ipc}");
+    assert!(
+        ipc.contains("fitness::schema::Workout") && ipc.contains("Result<Workout, String>"),
+        "the shared type name is bare for the primary surface and qualified for the second:\n{ipc}"
+    );
 }
 
 #[test]
@@ -4852,7 +4874,7 @@ fn test_mixed_module_routes_are_per_fn_and_order_independent() {
         );
         assert!(
             compact(&http)
-                .contains(&compact(".route(\"/api/projects/{project_id}/workouts\", get(list_workouts_scoped)")),
+                .contains(&compact(".route(\"/api/projects/{project_id}/workouts\", get(workout_list_scoped)")),
             "store-scoped CRUD gets scoped routes:\n{http}"
         );
         assert!(!http.contains("start_scoped"), "state-scoped fn gets no scoped route:\n{http}");
@@ -5371,6 +5393,54 @@ pub(crate) fn resource_fixture(root: &std::path::Path, app_error: bool) -> Confi
     config
 }
 
+/// Custom ops, a module with no entity, junction ops, a filtered list and
+/// event ops beside the resources of [`resource_fixture`]: every kind of op
+/// served as a custom op (§10), and both event frame shapes (§12).
+///
+/// `task` gains junction ops over `tag`; `agent` has a list that takes a
+/// filter; `workout` has a custom GET with path and `opArg` arguments, custom
+/// POSTs with and without arguments, and a stateless GET; `activity` has an
+/// event yielding the `Task` entity, a fallible resumable one yielding
+/// `Activity`, and one failing with a `String`. With `scoped`, a
+/// `route_prefix` serves every store-scoped op under `projects/{project_id}`.
+pub(crate) fn ops_fixture(root: &std::path::Path, scoped: bool) -> Config {
+    let mut config = resource_fixture(root, true);
+    let api_dir = root.join("api");
+    let task = std::fs::read_to_string(api_dir.join("task.rs")).unwrap()
+        + "pub async fn list_tags(store: &Store, task_id: &str) -> Result<Vec<Tag>, AppError> { todo!() }\n\
+           pub async fn add_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n\
+           pub async fn remove_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n";
+    write_synthetic_api(&api_dir, "task.rs", &task);
+    write_synthetic_api(
+        &api_dir,
+        "agent.rs",
+        "pub async fn list(store: &Store, query: AgentQuery, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Agent>, AppError> { todo!() }\n\
+         pub async fn count(store: &Store, query: AgentQuery) -> Result<u64, AppError> { todo!() }\n",
+    );
+    write_synthetic_api(
+        &api_dir,
+        "workout.rs",
+        "/// A workout's summary.\n\
+         pub async fn get_summary(store: &Store, id: &str, verbose: Option<bool>, label: Option<&str>) -> Result<WorkoutSummary, AppError> { todo!() }\n\
+         pub async fn start(store: &Store, input: StartWorkoutInput, note: Option<String>) -> Result<WorkoutSummary, anyhow::Error> { todo!() }\n\
+         pub async fn rename(store: &Store, id: &str, name: String) -> Result<(), AppError> { todo!() }\n\
+         pub async fn pause(store: &Store) -> Result<(), AppError> { todo!() }\n\
+         #[ontogen::stateless]\n\
+         pub fn get_version() -> Result<String, anyhow::Error> { todo!() }\n",
+    );
+    write_synthetic_api(
+        &api_dir,
+        "activity.rs",
+        "pub fn task_changed(state: &AppState) -> tokio::sync::broadcast::Receiver<Task> { todo!() }\n\
+         pub async fn activity_for_kind(state: &AppState, kind: String, resume: Option<String>) -> Result<tokio::sync::broadcast::Receiver<Activity>, AppError> { todo!() }\n\
+         pub fn log_lines(state: &AppState, level: Option<u32>) -> Result<tokio::sync::broadcast::Receiver<String>, String> { todo!() }\n",
+    );
+    if scoped {
+        config.route_prefix = test_config_with_prefix(PathBuf::new()).route_prefix;
+    }
+    config
+}
+
 /// Run `generate_transport` with only the HTTP generator and read its output.
 pub(crate) fn generate_http(root: &std::path::Path, mut config: Config) -> String {
     let output = root.join("http.rs");
@@ -5520,26 +5590,73 @@ fn without_an_app_error_every_app_error_site_is_a_500() {
     assert!(!http.contains(".not_found(\"epics\")"), "a missing link cannot be told from a failure:\n{http}");
 }
 
+/// A module with no entity serves its CRUD-named ops as custom ops (§10.4):
+/// meta-only documents, `meta.args` bodies, `opArg` pages and no `PUT`.
 #[test]
-fn a_module_with_no_entity_keeps_its_handlers() {
+fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
     let tmp = tempfile::tempdir().unwrap();
     let http = generate_http(tmp.path(), resource_fixture(tmp.path(), true));
     let flat = compact(&http);
 
     assert!(
         flat.contains(&compact(
-            ".route(\"/api/reports/{id}\", get(report_get_by_id).put(report_update).delete(report_delete)\
-             .fallback(allow([Method::GET, Method::PUT, Method::DELETE])))"
+            ".route(\"/api/reports/{id}\", get(report_get_by_id).patch(report_update).delete(report_delete)\
+             .fallback(allow([Method::GET, Method::PATCH, Method::DELETE])))"
         )),
-        "an entity-less module keeps PUT:\n{http}"
+        "update is PATCH:\n{http}"
     );
-    assert!(http.contains("Result<Json<PaginatedResult<Report>>, ErrorObject>"), "and its success shape:\n{http}");
-    assert!(http.contains("input: Result<Json<UpdateReportInput>, JsonRejection>"), "its body stays flat JSON");
+    assert!(!http.contains("put("), "no route is PUT:\n{http}");
+    let handler = |name: &str| {
+        let code = &http[http.find(&format!("async fn {name}(")).unwrap_or_else(|| panic!("{name}:\n{http}"))..];
+        compact(&code[..code.find("\n}\n").unwrap()])
+    };
+
+    // `list`: the page from `opArg[limit]` then `opArg[offset]`, into the
+    // store's page-taking list and `count`, answered as `meta.result`.
+    let list = handler("report_list");
+    for step in [
+        "_: AcceptGuard, ontogen_query: Query<PageOpArgs>",
+        "let limit = ontogen_query.op_arg::<u32>(\"limit\")?.unwrap_or(20).min(100);",
+        "let offset = ontogen_query.op_arg::<u32>(\"offset\")?.unwrap_or(0);",
+        "report::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;",
+        "let total = report::count(&store).await.map_err(app_error)?;",
+        "let result = PaginatedResult { items, total, limit, offset };",
+        "Ok(response::ok(&Document::meta_only(ResultMeta { result })))",
+    ] {
+        assert!(list.contains(&compact(step)), "report_list: {step}\n{list}");
+    }
+    assert!(http.contains("op_args: &[\"limit\", \"offset\"]"), "only the page is accepted:\n{http}");
+
+    // `create` and `update`: `meta.args.input`, `200` with `meta.result`.
+    let create = handler("report_create");
+    assert!(create.contains(&compact("let ontogen_args = request::op_args(&ontogen_body, true)?;")), "{create}");
     assert!(
-        flat.contains(&compact("report::update(&store, &id, input).await.map(Json).map_err(app_error)")),
-        "its errors are error documents:\n{http}"
+        create.contains(&compact("let input = request::op_arg::<CreateReportInput>(&ontogen_args, \"input\", true)?;")),
+        "{create}"
     );
+    assert!(create.contains(&compact("Ok(response::ok(&Document::meta_only(ResultMeta { result })))")));
+    assert!(!create.contains("created("), "never 201:\n{create}");
+    let update = handler("report_update");
+    for step in [
+        "ontogen_path: Result<Path<String>, ErrorObject>, ontogen_query: Result<Query<NoParams>, ErrorObject>, \
+         ontogen_body: Body",
+        "let Path(id) = ontogen_path?; ontogen_query?;",
+        "request::check_op_arg_names(&ontogen_args, &[\"input\"])?;",
+        "report::update(&store, &id, input).await.map_err(app_error)?;",
+    ] {
+        assert!(update.contains(&compact(step)), "report_update: {step}\n{update}");
+    }
+
+    // `get_by_id` and `delete`: the id from the path, no body; delete is 204.
+    assert!(handler("report_get_by_id").contains(&compact("Path(id): Path<String>, _: Query<NoParams>")));
+    let delete = handler("report_delete");
+    assert!(
+        delete.contains(&compact("report::delete(&store, &id).await.map_err(app_error)?; Ok(response::no_content())"))
+    );
+    assert!(!delete.contains("Body"), "delete ignores a body:\n{delete}");
+
     assert!(!http.contains("report_as_resource"), "no resource helpers for it:\n{http}");
+    assert!(!http.contains("Json"), "no flat bodies remain:\n{http}");
 }
 
 #[test]
@@ -5551,8 +5668,8 @@ fn scoped_resource_routes_carry_the_prefix() {
     let flat = compact(&http);
 
     assert!(flat.contains(&compact(
-        ".route(\"/api/projects/{project_id}/tasks/{id}\", get(get_task_by_id_scoped)\
-         .patch(update_task_handler_scoped).delete(delete_task_handler_scoped)\
+        ".route(\"/api/projects/{project_id}/tasks/{id}\", get(task_get_by_id_scoped)\
+         .patch(task_update_scoped).delete(task_delete_scoped)\
          .fallback(allow([Method::GET, Method::PATCH, Method::DELETE])))"
     )));
     assert!(http.contains("Path((ontogen_scope, id)): Path<(uuid::Uuid, LookupKey)>,"));
@@ -5611,7 +5728,7 @@ fn a_prefix_param_may_be_named_like_a_handler_binding() {
         let flat = compact(&http);
 
         assert!(flat.contains(&compact(&format!(".route(\"/api/projects/{{{name}}}/tasks/{{id}}\""))), "{http}");
-        for handler in ["create_task_handler_scoped", "update_task_handler_scoped"] {
+        for handler in ["task_create_scoped", "task_update_scoped"] {
             let body =
                 &http[http.find(&format!("async fn {handler}(")).unwrap_or_else(|| panic!("{handler}:\n{http}"))..];
             let body = &body[..body.find("\n}\n").unwrap()];
@@ -5664,7 +5781,7 @@ fn server_metadata_routes_a_resource_update_as_patch() {
         (r.method.clone(), r.path.clone())
     };
     assert_eq!(route("task_update"), ("PATCH".to_string(), "/api/tasks/{id}".to_string()));
-    assert_eq!(route("report_update"), ("PUT".to_string(), "/api/reports/{id}".to_string()));
+    assert_eq!(route("report_update"), ("PATCH".to_string(), "/api/reports/{id}".to_string()), "no route is PUT");
 }
 
 #[test]
@@ -5818,4 +5935,375 @@ fn only_the_primary_surfaces_app_error_maps_through_app_error() {
             && w.contains("500 internal_error")),
         "{warnings:#?}"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JSON:API custom ops, ops served as custom ops, and event frames
+// (wire contract §10, §11.1, §12)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The body of handler `name` in `http`, compacted.
+fn handler_body(http: &str, name: &str) -> String {
+    let code = &http[http.find(&format!("async fn {name}(")).unwrap_or_else(|| panic!("no {name} in:\n{http}"))..];
+    compact(&code[..code.find("\n}\n").unwrap()])
+}
+
+/// Each of `steps` appears in `body`, in order.
+fn assert_in_order(name: &str, body: &str, steps: &[&str]) {
+    let mut from = 0;
+    for step in steps {
+        let step = compact(step);
+        let at = body[from..].find(&step).unwrap_or_else(|| panic!("{name}: `{step}` after byte {from} in:\n{body}"));
+        from += at + step.len();
+    }
+}
+
+#[test]
+fn a_custom_get_reads_its_options_as_op_args_in_byte_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
+
+    // Only the declared `opArg`s are accepted (§10.2); everything else,
+    // `?verbose=` included, is a 400 from the `Query` extractor.
+    assert!(http.contains("op_args: &[\"verbose\", \"label\"]"), "{http}");
+    assert!(compact(&http).contains(&compact(
+        ".route(\"/api/workouts/summary/{id}\", get(workout_get_summary).fallback(allow([Method::GET])))"
+    )));
+    assert_in_order(
+        "workout_get_summary",
+        &handler_body(&http, "workout_get_summary"),
+        &[
+            "_: AcceptGuard,",
+            "Path(id): Path<String>,",
+            "ontogen_query: Query<WorkoutGetSummaryOpArgs>",
+            // `label` sorts before `verbose`.
+            "let label = ontogen_query.op_arg::<String>(\"label\")?;",
+            "let verbose = ontogen_query.op_arg::<bool>(\"verbose\")?;",
+            "let store = state.store().await.map_err(internal_error)?;",
+            "let result = workout::get_summary(&store, &id, verbose, label.as_deref()).await.map_err(app_error)?;",
+            "Ok(response::ok(&Document::meta_only(ResultMeta { result })))",
+        ],
+    );
+    // A stateless GET takes no state and still checks `Accept` and its query.
+    assert!(
+        http.contains(
+            "async fn workout_get_version(_: AcceptGuard, _: Query<NoParams>) -> Result<Response, ErrorObject>"
+        ),
+        "{http}"
+    );
+}
+
+#[test]
+fn a_custom_post_reads_every_argument_from_meta_args() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
+
+    // The media type, then the query (none accepted), then the body.
+    assert_in_order(
+        "workout_start",
+        &handler_body(&http, "workout_start"),
+        &[
+            "_: AcceptGuard,",
+            "ontogen_query: Result<Query<NoParams>, ErrorObject>,",
+            "ontogen_body: Body",
+            "ontogen_query?;",
+            "let ontogen_body = ontogen_body.into_bytes()?;",
+            "let ontogen_args = request::op_args(&ontogen_body, true)?;",
+            "request::check_op_arg_names(&ontogen_args, &[\"input\", \"note\"])?;",
+            // Declaration order; the `*Input` and the `Option` are members too.
+            "let input = request::op_arg::<StartWorkoutInput>(&ontogen_args, \"input\", true)?;",
+            "let note = request::op_arg::<Option<String>>(&ontogen_args, \"note\", false)?;",
+            "let store = state.store().await.map_err(internal_error)?;",
+            // Not an `AppError`: a 500.
+            "let result = workout::start(&store, input, note).await.map_err(internal_error)?;",
+            "Ok(response::ok(&Document::meta_only(ResultMeta { result })))",
+        ],
+    );
+    // A POST has no path parameters: a required argument is a member too.
+    let rename = handler_body(&http, "workout_rename");
+    assert!(!rename.contains("Path"), "{rename}");
+    assert!(rename.contains(&compact("let id = request::op_arg::<String>(&ontogen_args, \"id\", true)?;")));
+    assert!(rename.contains(&compact(
+        "workout::rename(&store, &id, name).await.map_err(app_error)?; Ok(response::no_content())"
+    )));
+    // With no required argument, a missing `meta` or `args` is `{}`; a `()`
+    // result is a 204.
+    let pause = handler_body(&http, "workout_pause");
+    assert!(pause.contains(&compact("request::op_args(&ontogen_body, false)?;")), "{pause}");
+    assert!(pause.contains(&compact("request::check_op_arg_names(&ontogen_args, &[])?;")), "{pause}");
+    assert!(pause.contains(&compact("Ok(response::no_content())")), "{pause}");
+    assert!(!handler_body(&http, "workout_start").contains("created("), "a custom op is never a 201");
+}
+
+#[test]
+fn junction_ops_are_served_as_custom_ops_at_their_routes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
+    let flat = compact(&http);
+
+    assert!(flat.contains(&compact(
+        ".route(\"/api/tasks/{parent_id}/tags\", get(task_list_tags).post(task_add_tag)\
+         .fallback(allow([Method::GET, Method::POST])))"
+    )));
+    assert!(flat.contains(&compact(
+        ".route(\"/api/tasks/{parent_id}/tags/{child_id}\", delete(task_remove_tag).fallback(allow([Method::DELETE])))"
+    )));
+    // A paginated junction list slices the fn's whole result.
+    assert_in_order(
+        "task_list_tags",
+        &handler_body(&http, "task_list_tags"),
+        &[
+            "Path(task_id): Path<String>, ontogen_query: Query<PageOpArgs>",
+            "let limit = ontogen_query.op_arg::<u32>(\"limit\")?.unwrap_or(20).min(100);",
+            "let offset = ontogen_query.op_arg::<u32>(\"offset\")?.unwrap_or(0);",
+            "let all = task::list_tags(&store, &task_id).await.map_err(app_error)?;",
+            "let total = all.len() as u64;",
+            "let items = all.into_iter().skip(offset as usize).take(limit as usize).collect();",
+            "let result = PaginatedResult { items, total, limit, offset };",
+        ],
+    );
+    assert_in_order(
+        "task_add_tag",
+        &handler_body(&http, "task_add_tag"),
+        &[
+            "ontogen_path: Result<Path<String>, ErrorObject>,",
+            "let Path(task_id) = ontogen_path?;",
+            "request::check_op_arg_names(&ontogen_args, &[\"tag_id\"])?;",
+            "task::add_tag(&store, &task_id, &tag_id).await.map_err(app_error)?;",
+            "Ok(response::no_content())",
+        ],
+    );
+}
+
+#[test]
+fn event_frames_send_entities_as_unlinked_resources_and_other_items_as_meta_result() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
+    let flat = compact(&http);
+
+    // `Task` is an entity: its resource object, with every link left out.
+    assert!(flat.contains(&compact(
+        "fn task_frame_data(event: Event, entity: &Task) -> Result<Event, axum::Error> { \
+         event.json_data(task_as_resource(entity, \"/api/tasks\").into_unlinked()) }"
+    )));
+    assert!(http.contains("sse_stream(\"task-changed\", rx, ontogen_core::events::no_id, task_frame_data)"));
+    // `Activity` and `String` are not: `{"meta":{"result":…}}`.
+    assert!(http.contains("sse_stream(\"activity-for-kind\", rx, ontogen_core::events::seq_id, result_frame))"));
+    assert!(http.contains("sse_stream(\"log-lines\", rx, ontogen_core::events::no_id, result_frame))"));
+    assert!(http.contains("event.json_data(ResultFrame::new(item))"));
+    // A lag frame keeps its bare shape.
+    assert!(http.contains("event(\"lag\").data(format!(\"{{\\\"skipped\\\":{skipped}}}\"))"));
+}
+
+#[test]
+fn an_entity_only_events_carry_still_gets_its_resource_builder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = resource_fixture(tmp.path(), true);
+    // Only `report` is left with ops; `Task` reaches the file as an event item.
+    for module in ["task", "epic", "tag"] {
+        std::fs::remove_file(config.api_dir.join(format!("{module}.rs"))).unwrap();
+    }
+    write_synthetic_api(
+        &config.api_dir,
+        "activity.rs",
+        "pub fn task_changed(state: &AppState) -> tokio::sync::broadcast::Receiver<Task> { todo!() }\n",
+    );
+    config.pagination = None;
+    let http = generate_http(tmp.path(), config);
+
+    assert!(http.contains("struct TaskResourceAttributes<'a>(&'a Task);"), "{http}");
+    assert!(http.contains("fn task_as_resource<'a>(entity: &'a Task, collection: &str)"), "{http}");
+    assert!(http.contains("fn task_frame_data(event: Event, entity: &Task)"), "{http}");
+    assert!(!http.contains("task_lookup_key"), "no handler serves `tasks`:\n{http}");
+    assert!(!http.contains("ListParams"), "no resource route, no resource query specs:\n{http}");
+}
+
+#[test]
+fn a_failed_subscribe_maps_its_error_like_any_op() {
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let http = generate_http(tmp.path(), ops_fixture(tmp.path(), scoped));
+        // `AppError` gets its status; any other error is a 500.
+        assert!(http.contains("activity::activity_for_kind(&state, kind, resume).await.map_err(app_error)?;"));
+        assert!(http.contains("activity::log_lines(&state, q.level).map_err(internal_error)?;"));
+        if scoped {
+            assert!(http.contains(
+                "state.subscribe_activity_for_kind_for(&ontogen_scope, kind, resume).await.map_err(app_error)?;"
+            ));
+            assert!(http.contains("state.subscribe_log_lines_for(&ontogen_scope, q.level).map_err(internal_error)?;"));
+        }
+    }
+}
+
+#[test]
+fn scoped_ops_have_the_unscoped_wire() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), true));
+    let flat = compact(&http);
+
+    // A list that is not served as a resource pages through the store under
+    // the prefix too: no in-memory slicing.
+    assert_in_order(
+        "report_list_scoped",
+        &handler_body(&http, "report_list_scoped"),
+        &[
+            "Path(ontogen_scope): Path<uuid::Uuid>, ontogen_query: Query<PageOpArgs>",
+            "let store = state.store_for(&ontogen_scope).map_err(internal_error)?;",
+            "report::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(app_error)?;",
+            "let total = report::count(&store).await.map_err(app_error)?;",
+        ],
+    );
+    assert_in_order(
+        "agent_list_scoped",
+        &handler_body(&http, "agent_list_scoped"),
+        &[
+            "Path(ontogen_scope): Path<uuid::Uuid>,",
+            "agent::list(&store, query.clone(), Some(u64::from(limit)), Some(u64::from(offset)))",
+            "let total = agent::count(&store, query).await.map_err(app_error)?;",
+        ],
+    );
+    for list in ["report_list_scoped", "agent_list_scoped"] {
+        assert!(!handler_body(&http, list).contains("skip("), "{list} slices nothing in memory");
+    }
+    // A custom op reads its arguments as the unscoped one does, after the
+    // prefix.
+    assert_in_order(
+        "workout_start_scoped",
+        &handler_body(&http, "workout_start_scoped"),
+        &[
+            "ontogen_path: Result<Path<uuid::Uuid>, ErrorObject>,",
+            "let Path(ontogen_scope) = ontogen_path?;",
+            "ontogen_query?;",
+            "request::check_op_arg_names(&ontogen_args, &[\"input\", \"note\"])?;",
+            "let store = state.store_for(&ontogen_scope).map_err(internal_error)?;",
+        ],
+    );
+    assert!(flat.contains(&compact(
+        "Path((ontogen_scope, id)): Path<(uuid::Uuid, String)>, ontogen_query: Query<WorkoutGetSummaryOpArgs>"
+    )));
+    // Scoped junction ops stay action-style routes, as custom ops.
+    assert!(flat.contains(&compact(
+        ".route(\"/api/projects/{project_id}/tasks/list-tags/{task_id}\", get(task_list_tags_scoped)"
+    )));
+    assert!(flat.contains(&compact(".route(\"/api/projects/{project_id}/tasks/add-tag\", post(task_add_tag_scoped)")));
+    // Every handler name is unique: `tag::list` and `task::list_tags` both
+    // used to be `list_tags_scoped`.
+    let names: Vec<&str> = http.lines().filter_map(|l| l.strip_prefix("async fn ")?.split('(').next()).collect();
+    let mut unique = names.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), names.len(), "{names:?}");
+    // The stateless op has no store to scope: it keeps its unscoped route.
+    assert!(flat.contains(&compact(".route(\"/api/workouts/version\", get(workout_get_version)")));
+}
+
+#[test]
+fn server_metadata_routes_every_op_where_the_generator_does() {
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ops_fixture(tmp.path(), scoped);
+        let http = generate_http(tmp.path(), config.clone());
+        let modules = crate::servers::generate_transport(&config).unwrap();
+        let meta = crate::servers::extract_server_metadata(&modules, &config);
+        let flat = compact(&http);
+        for route in meta.http_routes.iter() {
+            let handler = if route.path.starts_with("/api/projects/") && !route.handler_name.ends_with("_scoped") {
+                format!("{}_scoped", route.handler_name)
+            } else {
+                route.handler_name.clone()
+            };
+            let method = route.method.to_ascii_lowercase();
+            let needle = format!("{method}({handler})");
+            let registered =
+                flat.split(".route(").any(|r| r.starts_with(&format!("\"{}\"", route.path)) && r.contains(&needle));
+            assert!(registered, "{} {} ({handler}) is not a generated route:\n{http}", route.method, route.path);
+            assert_ne!(route.method, "PUT", "no route is PUT");
+        }
+    }
+}
+
+/// `module.rs` with `source`, in a fresh API dir, run through both
+/// `gen_servers` and `gen_clients`.
+fn both_pipelines(source: &str, module: &str) -> (String, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, &format!("{module}.rs"), source);
+    let server = crate::servers::generate_transport(&test_config(api_dir.clone())).unwrap_err();
+    let clients = crate::ClientsConfig {
+        api_dir,
+        state_type: "AppState".to_string(),
+        service_import_path: "crate::api::v1".to_string(),
+        types_import_path: "crate::schema".to_string(),
+        state_import: "crate::AppState".to_string(),
+        naming: NamingConfig::default(),
+        generators: vec![],
+        ts_formatter: crate::TsFormatter::None,
+        sse_route_overrides: HashMap::new(),
+        ts_skip_commands: vec![],
+        route_prefix: None,
+        store_type: Some("Store".to_string()),
+        store_import: Some("crate::store::Store".to_string()),
+        pagination: None,
+        schema_enums: Vec::new(),
+        label_overrides: HashMap::new(),
+        pool_extra_roots: Vec::new(),
+        pool_exclude_paths: Vec::new(),
+        extra_surfaces: Vec::new(),
+    };
+    let client = crate::clients::generate(&[], None, &[], &clients).unwrap_err().to_string();
+    (server, client)
+}
+
+#[test]
+fn a_collection_op_in_a_singleton_module_is_a_codegen_error() {
+    for (op, source) in [
+        ("list", "pub fn list(state: &AppState) -> Result<Vec<Setting>, anyhow::Error> { todo!() }\n"),
+        ("delete", "pub fn delete(state: &AppState, id: &str) -> Result<(), anyhow::Error> { todo!() }\n"),
+        (
+            "add_tag",
+            "pub fn add_tag(state: &AppState, id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }\n",
+        ),
+    ] {
+        let (server, client) = both_pipelines(
+            &format!(
+                "// ontogen:singleton\npub fn get_path(state: &AppState) -> Result<String, anyhow::Error> {{ todo!() }}\n{source}"
+            ),
+            "settings",
+        );
+        for err in [&server, &client] {
+            assert!(err.contains(&format!("`settings::{op}`")), "{err}");
+            assert!(err.contains("singleton"), "{err}");
+        }
+    }
+    // A singleton's custom ops are fine.
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "settings.rs",
+        "// ontogen:singleton\npub fn get_path(state: &AppState) -> Result<String, anyhow::Error> { todo!() }\n",
+    );
+    assert!(crate::servers::generate_transport(&test_config(api_dir)).is_ok());
+}
+
+#[test]
+fn an_input_on_a_route_with_no_body_is_a_codegen_error() {
+    for (op, source) in [
+        // Forced GET.
+        (
+            "get_report",
+            "#[ontogen::http::get]\npub fn get_report(state: &AppState, input: ReportInput) -> Result<String, anyhow::Error> { todo!() }\n",
+        ),
+        // `get_*` whose first argument fits the path.
+        (
+            "get_summary",
+            "pub fn get_summary(state: &AppState, id: &str, input: SummaryInput) -> Result<String, anyhow::Error> { todo!() }\n",
+        ),
+    ] {
+        let (server, client) = both_pipelines(source, "stats");
+        for err in [&server, &client] {
+            assert!(err.contains(&format!("`stats::{op}`")), "{err}");
+            assert!(err.contains("without a request body"), "{err}");
+        }
+    }
 }

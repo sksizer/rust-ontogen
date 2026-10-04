@@ -23,6 +23,17 @@ use crate::servers::types::collect_type_import;
 /// Same-named types were already qualified in place by
 /// `parse::qualify_shared_types`, so each name reaches one block only.
 pub(crate) fn surface_use_stmts(modules: &[ApiModule], config: &Config) -> Vec<String> {
+    surface_use_stmts_where(modules, config, &|_| true)
+}
+
+/// [`surface_use_stmts`], importing only the type names `keep` accepts: a
+/// generator whose handlers name few of the types its fns mention imports
+/// just those.
+pub(crate) fn surface_use_stmts_where(
+    modules: &[ApiModule],
+    config: &Config,
+    keep: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
     let surfaces = config.surfaces();
     let mut services: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
     let mut types: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
@@ -54,6 +65,9 @@ pub(crate) fn surface_use_stmts(modules: &[ApiModule], config: &Config) -> Vec<S
         }
     }
 
+    for names in types.values_mut() {
+        names.retain(|name| keep(name));
+    }
     let render = |path: &str, items: &BTreeSet<String>| {
         format!("use {}::{{\n{}}};\n", path, items.iter().map(|i| format!("    {i},\n")).collect::<String>())
     };
