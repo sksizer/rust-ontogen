@@ -303,10 +303,12 @@ export const adminEntities: AdminEntityConfig[] = [
     fields: [
       { key: 'id', label: 'Id', type: 'string', required: true, showInTable: true, showInDetail: true, showInForm: true, isId: true },
       { key: 'workout_id', label: 'Workout Id', type: 'relation', required: true, relationTo: 'workout', showInTable: true, showInDetail: true, showInForm: true },
+      { key: 'exercise_id', label: 'Exercise Id', type: 'relation', required: true, relationTo: 'exercise', showInTable: true, showInDetail: true, showInForm: true },
+      { key: 'set_number', label: 'Set Number', type: 'number', required: true, showInDetail: true, showInForm: true },
+      { key: 'weight_grams', label: 'Weight Grams', type: 'number', required: true, showInDetail: true, showInForm: true },
       { key: 'reps', label: 'Reps', type: 'number', required: true, showInDetail: true, showInForm: true },
       { key: 'rpe', label: 'Rpe', type: 'number', showInDetail: true, showInForm: true },
-      // ...
-    ],
+      { key: 'notes', label: 'Notes', type: 'string', showInDetail: true, showInForm: true }],
   },
   // ... more entities
 ];

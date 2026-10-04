@@ -432,12 +432,12 @@ Every error from these routes is the error document described under [Errors](#er
 
 ### Handler and router shape
 
-The generator also produces an `entity_routes()` function that wires all handlers to their routes. Each route installs a method fallback that answers `405` with `Allow`:
+The generator also produces an `entity_routes()` function that wires all handlers to their routes. Each route installs a method fallback that answers `405` with `Allow`. The `task` routes of tasks-tracker's router:
 
 ```rust
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/tasks", get(task_list).post(task_create).fallback(allow([Method::GET, Method::POST])))
+        // ... routes of the other modules
         .route(
             "/api/tasks/{id}",
             get(task_get_by_id).patch(task_update).delete(task_delete).fallback(allow([
@@ -446,7 +446,16 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
-        // ... more routes
+        .route("/api/tasks", post(task_create).get(task_list).fallback(allow([Method::POST, Method::GET])))
+        .route(
+            "/api/tasks/{id}/relationships/{rel}",
+            get(ontogen_task_relationship_get)
+                .patch(ontogen_task_relationship_patch)
+                .post(ontogen_task_relationship_post)
+                .delete(ontogen_task_relationship_delete)
+                .fallback(allow([Method::GET, Method::PATCH, Method::POST, Method::DELETE])),
+        )
+        .route("/api/tasks/{id}/{rel}", get(ontogen_task_related_get).fallback(allow([Method::GET])))
 }
 ```
 
