@@ -4,6 +4,9 @@
 
 pub mod bookmark;
 pub mod generated;
+pub mod outline;
+pub mod section;
+pub mod tag;
 pub mod task;
 pub mod transport;
 pub use generated::*;

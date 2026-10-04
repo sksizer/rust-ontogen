@@ -10,7 +10,7 @@ use axum::{
     extract::State,
     http::{Method, StatusCode},
     response::Response,
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use ontogen_jsonapi::{
     Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
@@ -330,8 +330,12 @@ fn section_request_fields(
 
 /// Checks that each id a create or update document for `sections` links
 /// names a resource that exists, in the order the document was read.
-async fn section_check_linked(state: &AppState, linked: &SectionLinkedIds) -> Result<(), ErrorObject> {
-    let store = state.store().await.map_err(ontogen_internal_error)?;
+async fn section_check_linked_scoped(
+    state: &AppState,
+    ontogen_scope: &String,
+    linked: &SectionLinkedIds,
+) -> Result<(), ErrorObject> {
+    let store = state.store_for(ontogen_scope).map_err(ontogen_internal_error)?;
     if let Some(linked) = &linked.parent {
         match section::get_by_id(&store, &linked.id).await {
             Ok(_) => {}
@@ -492,8 +496,12 @@ fn task_request_fields(
 
 /// Checks that each id a create or update document for `tasks` links
 /// names a resource that exists, in the order the document was read.
-async fn task_check_linked(state: &AppState, linked: &TaskLinkedIds) -> Result<(), ErrorObject> {
-    let store = state.store().await.map_err(ontogen_internal_error)?;
+async fn task_check_linked_scoped(
+    state: &AppState,
+    ontogen_scope: &String,
+    linked: &TaskLinkedIds,
+) -> Result<(), ErrorObject> {
+    let store = state.store_for(ontogen_scope).map_err(ontogen_internal_error)?;
     if let Some(linked) = &linked.parent {
         match task::get_by_id(&store, &linked.id).await {
             Ok(_) => {}
@@ -611,601 +619,6 @@ async fn bookmark_delete(
     Ok(response::no_content())
 }
 
-// ── Note Handlers ──
-
-async fn note_list(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    query: Query<PagedListParams>,
-) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "notes")?;
-    refuse_include(&query, "notes")?;
-    let (offset, limit) = page(&query, 2, 3)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items =
-        note::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
-    let total = note::count(&ontogen_store).await.map_err(ontogen_app_error)?;
-    let collection = "/api/notes";
-    let data: Vec<_> = items.iter().map(|entity| note_as_resource(entity, collection)).collect();
-    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
-    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
-}
-
-async fn note_get_by_id(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path(id): Path<LookupKey>,
-    query: Query<GetParams>,
-) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "notes")?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let entity = note::get_by_id(&ontogen_store, note_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
-    let collection = "/api/notes";
-    let resource = note_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
-}
-
-async fn note_create(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    query: Result<Query<NoParams>, ErrorObject>,
-    body: Body,
-) -> Result<Response, ErrorObject> {
-    query?;
-    let body = body.into_bytes()?;
-    let collection = "/api/notes";
-    let endpoint = Endpoint { type_name: "notes", path: collection };
-    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
-    let fields = note_request_fields(&data, true)?;
-    let input: CreateNoteInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let entity = note::create(&ontogen_store, input).await.map_err(|e| match e {
-        e @ crate::schema::AppError::NoteAlreadyExists(..) if data.id.is_some() => {
-            ontogen_app_error(e).with_pointer("/data/id")
-        }
-        e => ontogen_app_error(e),
-    })?;
-    let resource = note_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
-}
-
-async fn note_update(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    path_params: Result<Path<LookupKey>, ErrorObject>,
-    query: Result<Query<NoParams>, ErrorObject>,
-    body: Body,
-) -> Result<Response, ErrorObject> {
-    let Path(id) = path_params?;
-    query?;
-    let body = body.into_bytes()?;
-    let collection = "/api/notes";
-    let path = format!("{collection}/{id}");
-    let endpoint = Endpoint { type_name: "notes", path: &path };
-    let data = request::parse_update(&body, endpoint, &id)?;
-    let fields = note_request_fields(&data, false)?;
-    let input: UpdateNoteInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let entity = note::update(&ontogen_store, note_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = note_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
-}
-
-async fn note_delete(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
-) -> Result<Response, ErrorObject> {
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    note::delete(&ontogen_store, note_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
-    Ok(response::no_content())
-}
-
-// ── Section Handlers ──
-
-async fn section_get_by_id(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path(id): Path<LookupKey>,
-    query: Query<GetParams>,
-) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "sections")?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let entity = section::get_by_id(&ontogen_store, section_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
-    let collection = "/api/sections";
-    let resource = section_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
-}
-
-async fn section_create(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    query: Result<Query<NoParams>, ErrorObject>,
-    body: Body,
-) -> Result<Response, ErrorObject> {
-    query?;
-    let body = body.into_bytes()?;
-    let collection = "/api/sections";
-    let endpoint = Endpoint { type_name: "sections", path: collection };
-    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
-    let (fields, linked) = section_request_fields(&data, true)?;
-    let input: CreateSectionInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    section_check_linked(&ontogen_state, &linked).await?;
-    let entity = section::create(&ontogen_store, input).await.map_err(|e| match e {
-        e @ crate::schema::AppError::SectionAlreadyExists(..) if data.id.is_some() => {
-            ontogen_app_error(e).with_pointer("/data/id")
-        }
-        e => ontogen_app_error(e),
-    })?;
-    let resource = section_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
-}
-
-async fn section_update(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    path_params: Result<Path<LookupKey>, ErrorObject>,
-    query: Result<Query<NoParams>, ErrorObject>,
-    body: Body,
-) -> Result<Response, ErrorObject> {
-    let Path(id) = path_params?;
-    query?;
-    let body = body.into_bytes()?;
-    let collection = "/api/sections";
-    let path = format!("{collection}/{id}");
-    let endpoint = Endpoint { type_name: "sections", path: &path };
-    let data = request::parse_update(&body, endpoint, &id)?;
-    let (fields, linked) = section_request_fields(&data, false)?;
-    let input: UpdateSectionInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    section_check_linked(&ontogen_state, &linked).await?;
-    let entity = section::update(&ontogen_store, section_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = section_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
-}
-
-async fn section_delete(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
-) -> Result<Response, ErrorObject> {
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    section::delete(&ontogen_store, section_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
-    Ok(response::no_content())
-}
-
-struct SectionListFilterParams;
-
-impl RouteQuery for SectionListFilterParams {
-    const SPEC: QuerySpec = QuerySpec {
-        filter: &["parent_id"],
-        filter_fields: Some(filter_fields::<ListSectionsQuery>),
-        sort: true,
-        include: true,
-        page: true,
-        ..QuerySpec::NONE
-    };
-}
-
-async fn section_list(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    query: Query<SectionListFilterParams>,
-) -> Result<Response, ErrorObject> {
-    let ontogen_filter: ListSectionsQuery = query.filter()?;
-    let ontogen_filter_parent_id = query.required_filter_member::<String>("parent_id")?;
-    refuse_sort(&query, "sections")?;
-    refuse_include(&query, "sections")?;
-    let (offset, limit) = page(&query, 2, 3)?;
-    let link_query = query.link_query()?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items = section::list(
-        &ontogen_store,
-        ontogen_filter.clone(),
-        &ontogen_filter_parent_id,
-        Some(u64::from(limit)),
-        Some(u64::from(offset)),
-    )
-    .await
-    .map_err(ontogen_app_error)?;
-    let total =
-        section::count(&ontogen_store, ontogen_filter, &ontogen_filter_parent_id).await.map_err(ontogen_app_error)?;
-    let collection = "/api/sections";
-    let data: Vec<_> = items.iter().map(|entity| section_as_resource(entity, collection)).collect();
-    let links = pagination_links(collection, &link_query, offset, limit, total);
-    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
-}
-
-// ── Tag Handlers ──
-
-async fn tag_get_by_id(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path(id): Path<LookupKey>,
-    query: Query<GetParams>,
-) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "tags")?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let entity = tag::get_by_id(&ontogen_store, tag_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
-    let collection = "/api/tags";
-    let resource = tag_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
-}
-
-async fn tag_create(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    query: Result<Query<NoParams>, ErrorObject>,
-    body: Body,
-) -> Result<Response, ErrorObject> {
-    query?;
-    let body = body.into_bytes()?;
-    let collection = "/api/tags";
-    let endpoint = Endpoint { type_name: "tags", path: collection };
-    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
-    let fields = tag_request_fields(&data, true)?;
-    let input: CreateTagInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let entity = tag::create(&ontogen_store, input).await.map_err(|e| match e {
-        e @ crate::schema::AppError::TagAlreadyExists(..) if data.id.is_some() => {
-            ontogen_app_error(e).with_pointer("/data/id")
-        }
-        e => ontogen_app_error(e),
-    })?;
-    let resource = tag_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
-}
-
-async fn tag_update(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    path_params: Result<Path<LookupKey>, ErrorObject>,
-    query: Result<Query<NoParams>, ErrorObject>,
-    body: Body,
-) -> Result<Response, ErrorObject> {
-    let Path(id) = path_params?;
-    query?;
-    let body = body.into_bytes()?;
-    let collection = "/api/tags";
-    let path = format!("{collection}/{id}");
-    let endpoint = Endpoint { type_name: "tags", path: &path };
-    let data = request::parse_update(&body, endpoint, &id)?;
-    let fields = tag_request_fields(&data, false)?;
-    let input: UpdateTagInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let entity = tag::update(&ontogen_store, tag_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = tag_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
-}
-
-async fn tag_delete(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
-) -> Result<Response, ErrorObject> {
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    tag::delete(&ontogen_store, tag_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
-    Ok(response::no_content())
-}
-
-struct TagListFilterParams;
-
-impl RouteQuery for TagListFilterParams {
-    const SPEC: QuerySpec = QuerySpec {
-        filter: &["min_title_len", "title_prefix"],
-        sort: true,
-        include: true,
-        page: true,
-        ..QuerySpec::NONE
-    };
-}
-
-async fn tag_list(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    query: Query<TagListFilterParams>,
-) -> Result<Response, ErrorObject> {
-    let ontogen_filter_min_title_len = query.filter_member::<u32>("min_title_len")?;
-    let ontogen_filter_title_prefix = query.filter_member::<String>("title_prefix")?;
-    refuse_sort(&query, "tags")?;
-    refuse_include(&query, "tags")?;
-    let (offset, limit) = page(&query, 2, 3)?;
-    let link_query = query.link_query()?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items = tag::list(
-        &ontogen_store,
-        ontogen_filter_title_prefix.as_deref(),
-        ontogen_filter_min_title_len,
-        Some(u64::from(limit)),
-        Some(u64::from(offset)),
-    )
-    .await
-    .map_err(ontogen_app_error)?;
-    let total = tag::count(&ontogen_store, ontogen_filter_title_prefix.as_deref(), ontogen_filter_min_title_len)
-        .await
-        .map_err(ontogen_app_error)?;
-    let collection = "/api/tags";
-    let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
-    let links = pagination_links(collection, &link_query, offset, limit, total);
-    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
-}
-
-// ── Task Handlers ──
-
-async fn task_list(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    query: Query<PagedListParams>,
-) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "tasks")?;
-    refuse_include(&query, "tasks")?;
-    let (offset, limit) = page(&query, 2, 3)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items =
-        task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
-    let total = task::count(&ontogen_store).await.map_err(ontogen_app_error)?;
-    let collection = "/api/tasks";
-    let data: Vec<_> = items.iter().map(|entity| task_as_resource(entity, collection)).collect();
-    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
-    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
-}
-
-async fn task_get_by_id(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path(id): Path<LookupKey>,
-    query: Query<GetParams>,
-) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "tasks")?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let entity = task::get_by_id(&ontogen_store, task_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
-    let collection = "/api/tasks";
-    let resource = task_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
-}
-
-async fn task_create(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    query: Result<Query<NoParams>, ErrorObject>,
-    body: Body,
-) -> Result<Response, ErrorObject> {
-    query?;
-    let body = body.into_bytes()?;
-    let collection = "/api/tasks";
-    let endpoint = Endpoint { type_name: "tasks", path: collection };
-    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
-    let (fields, linked) = task_request_fields(&data, true)?;
-    let input: CreateTaskInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    task_check_linked(&ontogen_state, &linked).await?;
-    let entity = task::create(&ontogen_store, input).await.map_err(|e| match e {
-        e @ crate::schema::AppError::TaskAlreadyExists(..) if data.id.is_some() => {
-            ontogen_app_error(e).with_pointer("/data/id")
-        }
-        e => ontogen_app_error(e),
-    })?;
-    let resource = task_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
-}
-
-async fn task_update(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    path_params: Result<Path<LookupKey>, ErrorObject>,
-    query: Result<Query<NoParams>, ErrorObject>,
-    body: Body,
-) -> Result<Response, ErrorObject> {
-    let Path(id) = path_params?;
-    query?;
-    let body = body.into_bytes()?;
-    let collection = "/api/tasks";
-    let path = format!("{collection}/{id}");
-    let endpoint = Endpoint { type_name: "tasks", path: &path };
-    let data = request::parse_update(&body, endpoint, &id)?;
-    let (fields, linked) = task_request_fields(&data, false)?;
-    let input: UpdateTaskInput = from_fields(fields)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    task_check_linked(&ontogen_state, &linked).await?;
-    let entity = task::update(&ontogen_store, task_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = task_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
-}
-
-async fn task_delete(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path(id): Path<LookupKey>,
-    _: Query<NoParams>,
-) -> Result<Response, ErrorObject> {
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    task::delete(&ontogen_store, task_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
-    Ok(response::no_content())
-}
-
-struct TaskGetSummaryOpArgs;
-
-impl RouteQuery for TaskGetSummaryOpArgs {
-    const SPEC: QuerySpec = QuerySpec { op_args: &["verbose", "limit"], ..QuerySpec::NONE };
-}
-
-async fn task_get_summary(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path(status): Path<String>,
-    ontogen_query: Query<TaskGetSummaryOpArgs>,
-) -> Result<Response, ErrorObject> {
-    let limit = ontogen_query.op_arg::<u32>("limit")?;
-    let verbose = ontogen_query.op_arg::<bool>("verbose")?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let ontogen_result = task::get_summary(&ontogen_store, &status, verbose, limit).await.map_err(ontogen_app_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
-}
-
-async fn task_capture(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    ontogen_query: Result<Query<NoParams>, ErrorObject>,
-    ontogen_body: Body,
-) -> Result<Response, ErrorObject> {
-    ontogen_query?;
-    let ontogen_bytes = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
-    request::check_op_arg_names(&ontogen_args, &["input", "status"])?;
-    let input = request::op_arg::<CreateTaskInput>(&ontogen_args, "input", true)?;
-    let status = request::op_arg::<Option<String>>(&ontogen_args, "status", false)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let ontogen_result = task::capture(&ontogen_store, input, status).await.map_err(ontogen_app_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
-}
-
-async fn task_complete(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    ontogen_query: Result<Query<NoParams>, ErrorObject>,
-    ontogen_body: Body,
-) -> Result<Response, ErrorObject> {
-    ontogen_query?;
-    let ontogen_bytes = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
-    request::check_op_arg_names(&ontogen_args, &["id"])?;
-    let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    task::complete(&ontogen_store, &id).await.map_err(ontogen_app_error)?;
-    Ok(response::no_content())
-}
-
-async fn task_set_state(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    ontogen_query: Result<Query<NoParams>, ErrorObject>,
-    ontogen_body: Body,
-) -> Result<Response, ErrorObject> {
-    ontogen_query?;
-    let ontogen_bytes = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
-    request::check_op_arg_names(&ontogen_args, &["id", "state", "store"])?;
-    let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
-    let state = request::op_arg::<String>(&ontogen_args, "state", true)?;
-    let store = request::op_arg::<Option<String>>(&ontogen_args, "store", false)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let ontogen_result = task::set_state(&ontogen_store, &id, state, store).await.map_err(ontogen_app_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
-}
-
-async fn task_purge_done(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    ontogen_query: Result<Query<NoParams>, ErrorObject>,
-    ontogen_body: Body,
-) -> Result<Response, ErrorObject> {
-    ontogen_query?;
-    let ontogen_bytes = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_bytes, false)?;
-    request::check_op_arg_names(&ontogen_args, &[])?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let ontogen_result = task::purge_done(&ontogen_store).await.map_err(ontogen_app_error)?;
-    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
-}
-
-async fn task_list_tags(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path(id): Path<String>,
-    ontogen_query: Query<PageOpArgs>,
-) -> Result<Response, ErrorObject> {
-    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
-    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let ontogen_all = task::list_tags(&ontogen_store, &id).await.map_err(ontogen_app_error)?;
-    let ontogen_total = ontogen_all.len() as u64;
-    let ontogen_items = ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();
-    let ontogen_result =
-        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
-    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
-}
-
-async fn task_add_tag(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    ontogen_path: Result<Path<String>, ErrorObject>,
-    ontogen_query: Result<Query<NoParams>, ErrorObject>,
-    ontogen_body: Body,
-) -> Result<Response, ErrorObject> {
-    let Path(id) = ontogen_path?;
-    ontogen_query?;
-    let ontogen_bytes = ontogen_body.into_bytes()?;
-    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
-    request::check_op_arg_names(&ontogen_args, &["tag_id"])?;
-    let tag_id = request::op_arg::<String>(&ontogen_args, "tag_id", true)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    task::add_tag(&ontogen_store, &id, &tag_id).await.map_err(ontogen_app_error)?;
-    Ok(response::no_content())
-}
-
-async fn task_remove_tag(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    Path((id, tag_id)): Path<(String, String)>,
-    _: Query<NoParams>,
-) -> Result<Response, ErrorObject> {
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    task::remove_tag(&ontogen_store, &id, &tag_id).await.map_err(ontogen_app_error)?;
-    Ok(response::no_content())
-}
-
-// ── Outline Handlers ──
-
-struct OutlineListFilterParams;
-
-impl RouteQuery for OutlineListFilterParams {
-    const SPEC: QuerySpec = QuerySpec { filter: &["title_contains"], op_args: &["limit", "offset"], ..QuerySpec::NONE };
-}
-
-async fn outline_list(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    ontogen_query: Query<OutlineListFilterParams>,
-) -> Result<Response, ErrorObject> {
-    let ontogen_filter_title_contains = ontogen_query.filter_member::<String>("title_contains")?;
-    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
-    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let ontogen_items = outline::list(
-        &ontogen_store,
-        ontogen_filter_title_contains.clone(),
-        Some(u64::from(ontogen_limit)),
-        Some(u64::from(ontogen_offset)),
-    )
-    .await
-    .map_err(ontogen_app_error)?;
-    let ontogen_total =
-        outline::count(&ontogen_store, ontogen_filter_title_contains).await.map_err(ontogen_app_error)?;
-    let ontogen_result =
-        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
-    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
-}
-
 // ── bookmark_feed SSE Handler ──
 
 async fn bookmark_feed_sse(
@@ -1234,6 +647,647 @@ async fn watch_task_sse(
     Ok(ontogen_sse_stream("watch-task", ontogen_rx, ontogen_core::events::no_id, ontogen_task_frame_data))
 }
 
+// ── Project-Scoped Handlers ──
+
+async fn note_list_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(ontogen_scope): Path<String>,
+    query: Query<PagedListParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_sort(&query, "notes")?;
+    refuse_include(&query, "notes")?;
+    let (offset, limit) = page(&query, 2, 3)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let items =
+        note::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
+    let total = note::count(&ontogen_store).await.map_err(ontogen_app_error)?;
+    let collection = &format!("/api/projects/{}/notes", encode_path_segment(&ontogen_scope.to_string()));
+    let data: Vec<_> = items.iter().map(|entity| note_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
+    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
+}
+
+async fn note_get_by_id_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((ontogen_scope, id)): Path<(String, LookupKey)>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "notes")?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let entity = note::get_by_id(&ontogen_store, note_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
+    let collection = &format!("/api/projects/{}/notes", encode_path_segment(&ontogen_scope.to_string()));
+    let resource = note_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
+}
+
+async fn note_create_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    path_params: Result<Path<String>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(ontogen_scope) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = &format!("/api/projects/{}/notes", encode_path_segment(&ontogen_scope.to_string()));
+    let endpoint = Endpoint { type_name: "notes", path: collection };
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let fields = note_request_fields(&data, true)?;
+    let input: CreateNoteInput = from_fields(fields)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let entity = note::create(&ontogen_store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::NoteAlreadyExists(..) if data.id.is_some() => {
+            ontogen_app_error(e).with_pointer("/data/id")
+        }
+        e => ontogen_app_error(e),
+    })?;
+    let resource = note_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
+}
+
+async fn note_update_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    path_params: Result<Path<(String, LookupKey)>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((ontogen_scope, id)) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = &format!("/api/projects/{}/notes", encode_path_segment(&ontogen_scope.to_string()));
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "notes", path: &path };
+    let data = request::parse_update(&body, endpoint, &id)?;
+    let fields = note_request_fields(&data, false)?;
+    let input: UpdateNoteInput = from_fields(fields)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let entity = note::update(&ontogen_store, note_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
+    let resource = note_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
+}
+
+async fn note_delete_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((ontogen_scope, id)): Path<(String, LookupKey)>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    note::delete(&ontogen_store, note_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+async fn section_get_by_id_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((ontogen_scope, id)): Path<(String, LookupKey)>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "sections")?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let entity = section::get_by_id(&ontogen_store, section_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
+    let collection = &format!("/api/projects/{}/sections", encode_path_segment(&ontogen_scope.to_string()));
+    let resource = section_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
+}
+
+async fn section_create_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    path_params: Result<Path<String>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(ontogen_scope) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = &format!("/api/projects/{}/sections", encode_path_segment(&ontogen_scope.to_string()));
+    let endpoint = Endpoint { type_name: "sections", path: collection };
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let (fields, linked) = section_request_fields(&data, true)?;
+    let input: CreateSectionInput = from_fields(fields)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    section_check_linked_scoped(&ontogen_state, &ontogen_scope, &linked).await?;
+    let entity = section::create(&ontogen_store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::SectionAlreadyExists(..) if data.id.is_some() => {
+            ontogen_app_error(e).with_pointer("/data/id")
+        }
+        e => ontogen_app_error(e),
+    })?;
+    let resource = section_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
+}
+
+async fn section_update_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    path_params: Result<Path<(String, LookupKey)>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((ontogen_scope, id)) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = &format!("/api/projects/{}/sections", encode_path_segment(&ontogen_scope.to_string()));
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "sections", path: &path };
+    let data = request::parse_update(&body, endpoint, &id)?;
+    let (fields, linked) = section_request_fields(&data, false)?;
+    let input: UpdateSectionInput = from_fields(fields)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    section_check_linked_scoped(&ontogen_state, &ontogen_scope, &linked).await?;
+    let entity = section::update(&ontogen_store, section_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
+    let resource = section_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
+}
+
+async fn section_delete_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((ontogen_scope, id)): Path<(String, LookupKey)>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    section::delete(&ontogen_store, section_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+struct SectionListScopedFilterParams;
+
+impl RouteQuery for SectionListScopedFilterParams {
+    const SPEC: QuerySpec = QuerySpec {
+        filter: &["parent_id"],
+        filter_fields: Some(filter_fields::<ListSectionsQuery>),
+        sort: true,
+        include: true,
+        page: true,
+        ..QuerySpec::NONE
+    };
+}
+
+async fn section_list_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(ontogen_scope): Path<String>,
+    query: Query<SectionListScopedFilterParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_filter: ListSectionsQuery = query.filter()?;
+    let ontogen_filter_parent_id = query.required_filter_member::<String>("parent_id")?;
+    refuse_sort(&query, "sections")?;
+    refuse_include(&query, "sections")?;
+    let (offset, limit) = page(&query, 2, 3)?;
+    let link_query = query.link_query()?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let items = section::list(
+        &ontogen_store,
+        ontogen_filter.clone(),
+        &ontogen_filter_parent_id,
+        Some(u64::from(limit)),
+        Some(u64::from(offset)),
+    )
+    .await
+    .map_err(ontogen_app_error)?;
+    let total =
+        section::count(&ontogen_store, ontogen_filter, &ontogen_filter_parent_id).await.map_err(ontogen_app_error)?;
+    let collection = &format!("/api/projects/{}/sections", encode_path_segment(&ontogen_scope.to_string()));
+    let data: Vec<_> = items.iter().map(|entity| section_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &link_query, offset, limit, total);
+    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
+}
+
+async fn tag_get_by_id_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((ontogen_scope, id)): Path<(String, LookupKey)>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "tags")?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let entity = tag::get_by_id(&ontogen_store, tag_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
+    let collection = &format!("/api/projects/{}/tags", encode_path_segment(&ontogen_scope.to_string()));
+    let resource = tag_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
+}
+
+async fn tag_create_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    path_params: Result<Path<String>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(ontogen_scope) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = &format!("/api/projects/{}/tags", encode_path_segment(&ontogen_scope.to_string()));
+    let endpoint = Endpoint { type_name: "tags", path: collection };
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let fields = tag_request_fields(&data, true)?;
+    let input: CreateTagInput = from_fields(fields)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let entity = tag::create(&ontogen_store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::TagAlreadyExists(..) if data.id.is_some() => {
+            ontogen_app_error(e).with_pointer("/data/id")
+        }
+        e => ontogen_app_error(e),
+    })?;
+    let resource = tag_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
+}
+
+async fn tag_update_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    path_params: Result<Path<(String, LookupKey)>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((ontogen_scope, id)) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = &format!("/api/projects/{}/tags", encode_path_segment(&ontogen_scope.to_string()));
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "tags", path: &path };
+    let data = request::parse_update(&body, endpoint, &id)?;
+    let fields = tag_request_fields(&data, false)?;
+    let input: UpdateTagInput = from_fields(fields)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let entity = tag::update(&ontogen_store, tag_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
+    let resource = tag_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
+}
+
+async fn tag_delete_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((ontogen_scope, id)): Path<(String, LookupKey)>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    tag::delete(&ontogen_store, tag_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+struct TagListScopedFilterParams;
+
+impl RouteQuery for TagListScopedFilterParams {
+    const SPEC: QuerySpec = QuerySpec {
+        filter: &["min_title_len", "title_prefix"],
+        sort: true,
+        include: true,
+        page: true,
+        ..QuerySpec::NONE
+    };
+}
+
+async fn tag_list_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(ontogen_scope): Path<String>,
+    query: Query<TagListScopedFilterParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_filter_min_title_len = query.filter_member::<u32>("min_title_len")?;
+    let ontogen_filter_title_prefix = query.filter_member::<String>("title_prefix")?;
+    refuse_sort(&query, "tags")?;
+    refuse_include(&query, "tags")?;
+    let (offset, limit) = page(&query, 2, 3)?;
+    let link_query = query.link_query()?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let items = tag::list(
+        &ontogen_store,
+        ontogen_filter_title_prefix.as_deref(),
+        ontogen_filter_min_title_len,
+        Some(u64::from(limit)),
+        Some(u64::from(offset)),
+    )
+    .await
+    .map_err(ontogen_app_error)?;
+    let total = tag::count(&ontogen_store, ontogen_filter_title_prefix.as_deref(), ontogen_filter_min_title_len)
+        .await
+        .map_err(ontogen_app_error)?;
+    let collection = &format!("/api/projects/{}/tags", encode_path_segment(&ontogen_scope.to_string()));
+    let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &link_query, offset, limit, total);
+    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
+}
+
+async fn task_list_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(ontogen_scope): Path<String>,
+    query: Query<PagedListParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_sort(&query, "tasks")?;
+    refuse_include(&query, "tasks")?;
+    let (offset, limit) = page(&query, 2, 3)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let items =
+        task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
+    let total = task::count(&ontogen_store).await.map_err(ontogen_app_error)?;
+    let collection = &format!("/api/projects/{}/tasks", encode_path_segment(&ontogen_scope.to_string()));
+    let data: Vec<_> = items.iter().map(|entity| task_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
+    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
+}
+
+async fn task_get_by_id_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((ontogen_scope, id)): Path<(String, LookupKey)>,
+    query: Query<GetParams>,
+) -> Result<Response, ErrorObject> {
+    refuse_include(&query, "tasks")?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let entity = task::get_by_id(&ontogen_store, task_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
+    let collection = &format!("/api/projects/{}/tasks", encode_path_segment(&ontogen_scope.to_string()));
+    let resource = task_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
+}
+
+async fn task_create_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    path_params: Result<Path<String>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(ontogen_scope) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = &format!("/api/projects/{}/tasks", encode_path_segment(&ontogen_scope.to_string()));
+    let endpoint = Endpoint { type_name: "tasks", path: collection };
+    let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
+    let (fields, linked) = task_request_fields(&data, true)?;
+    let input: CreateTaskInput = from_fields(fields)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    task_check_linked_scoped(&ontogen_state, &ontogen_scope, &linked).await?;
+    let entity = task::create(&ontogen_store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::TaskAlreadyExists(..) if data.id.is_some() => {
+            ontogen_app_error(e).with_pointer("/data/id")
+        }
+        e => ontogen_app_error(e),
+    })?;
+    let resource = task_as_resource(&entity, collection);
+    let location = resource.links().self_link().to_owned();
+    let links = Links::new(location.as_str());
+    Ok(response::created(&location, &Document::new(resource, links)))
+}
+
+async fn task_update_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    path_params: Result<Path<(String, LookupKey)>, ErrorObject>,
+    query: Result<Query<NoParams>, ErrorObject>,
+    body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((ontogen_scope, id)) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = &format!("/api/projects/{}/tasks", encode_path_segment(&ontogen_scope.to_string()));
+    let path = format!("{collection}/{id}");
+    let endpoint = Endpoint { type_name: "tasks", path: &path };
+    let data = request::parse_update(&body, endpoint, &id)?;
+    let (fields, linked) = task_request_fields(&data, false)?;
+    let input: UpdateTaskInput = from_fields(fields)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    task_check_linked_scoped(&ontogen_state, &ontogen_scope, &linked).await?;
+    let entity = task::update(&ontogen_store, task_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
+    let resource = task_as_resource(&entity, collection);
+    let links = Links::new(resource.links().self_link());
+    Ok(response::ok(&Document::new(resource, links)))
+}
+
+async fn task_delete_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((ontogen_scope, id)): Path<(String, LookupKey)>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    task::delete(&ontogen_store, task_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+struct TaskGetSummaryOpArgs;
+
+impl RouteQuery for TaskGetSummaryOpArgs {
+    const SPEC: QuerySpec = QuerySpec { op_args: &["verbose", "limit"], ..QuerySpec::NONE };
+}
+
+async fn task_get_summary_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((ontogen_scope, status)): Path<(String, String)>,
+    ontogen_query: Query<TaskGetSummaryOpArgs>,
+) -> Result<Response, ErrorObject> {
+    let limit = ontogen_query.op_arg::<u32>("limit")?;
+    let verbose = ontogen_query.op_arg::<bool>("verbose")?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let ontogen_result = task::get_summary(&ontogen_store, &status, verbose, limit).await.map_err(ontogen_app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn task_capture_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(ontogen_scope) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["input", "status"])?;
+    let input = request::op_arg::<CreateTaskInput>(&ontogen_args, "input", true)?;
+    let status = request::op_arg::<Option<String>>(&ontogen_args, "status", false)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let ontogen_result = task::capture(&ontogen_store, input, status).await.map_err(ontogen_app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn task_complete_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(ontogen_scope) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["id"])?;
+    let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    task::complete(&ontogen_store, &id).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+async fn task_set_state_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(ontogen_scope) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["id", "state", "store"])?;
+    let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
+    let state = request::op_arg::<String>(&ontogen_args, "state", true)?;
+    let store = request::op_arg::<Option<String>>(&ontogen_args, "store", false)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let ontogen_result = task::set_state(&ontogen_store, &id, state, store).await.map_err(ontogen_app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn task_purge_done_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(ontogen_scope) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, false)?;
+    request::check_op_arg_names(&ontogen_args, &[])?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let ontogen_result = task::purge_done(&ontogen_store).await.map_err(ontogen_app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn task_list_tags_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((ontogen_scope, id)): Path<(String, String)>,
+    ontogen_query: Query<PageOpArgs>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
+    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let ontogen_all = task::list_tags(&ontogen_store, &id).await.map_err(ontogen_app_error)?;
+    let ontogen_total = ontogen_all.len() as u64;
+    let ontogen_items = ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();
+    let ontogen_result =
+        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn task_add_tag_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(ontogen_scope) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["id", "tag_id"])?;
+    let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
+    let tag_id = request::op_arg::<String>(&ontogen_args, "tag_id", true)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    task::add_tag(&ontogen_store, &id, &tag_id).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+async fn task_remove_tag_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(ontogen_scope) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["id", "tag_id"])?;
+    let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
+    let tag_id = request::op_arg::<String>(&ontogen_args, "tag_id", true)?;
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    task::remove_tag(&ontogen_store, &id, &tag_id).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+struct OutlineListScopedFilterParams;
+
+impl RouteQuery for OutlineListScopedFilterParams {
+    const SPEC: QuerySpec = QuerySpec { filter: &["title_contains"], op_args: &["limit", "offset"], ..QuerySpec::NONE };
+}
+
+async fn outline_list_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(ontogen_scope): Path<String>,
+    ontogen_query: Query<OutlineListScopedFilterParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_filter_title_contains = ontogen_query.filter_member::<String>("title_contains")?;
+    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
+    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
+    let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
+    let ontogen_items = outline::list(
+        &ontogen_store,
+        ontogen_filter_title_contains.clone(),
+        Some(u64::from(ontogen_limit)),
+        Some(u64::from(ontogen_offset)),
+    )
+    .await
+    .map_err(ontogen_app_error)?;
+    let ontogen_total =
+        outline::count(&ontogen_store, ontogen_filter_title_contains).await.map_err(ontogen_app_error)?;
+    let ontogen_result =
+        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn bookmark_feed_sse_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    Path(ontogen_scope): Path<String>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let ontogen_rx = ontogen_state.subscribe_bookmark_feed_for(&ontogen_scope);
+    ontogen_sse_stream("bookmark-feed", ontogen_rx, ontogen_core::events::no_id, ontogen_result_frame)
+}
+
+async fn task_feed_sse_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    Path(ontogen_scope): Path<String>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let ontogen_rx = ontogen_state.subscribe_task_feed_for(&ontogen_scope);
+    ontogen_sse_stream("task-feed", ontogen_rx, ontogen_core::events::no_id, ontogen_task_frame_data)
+}
+
+async fn watch_task_sse_scoped(
+    State(ontogen_state): State<Arc<AppState>>,
+    Path((ontogen_scope, id)): Path<(String, String)>,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ErrorObject> {
+    let ontogen_rx = ontogen_state.subscribe_watch_task_for(&ontogen_scope, id).await.map_err(ontogen_app_error)?;
+    Ok(ontogen_sse_stream("watch-task", ontogen_rx, ontogen_core::events::no_id, ontogen_task_frame_data))
+}
+
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -1246,54 +1300,88 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
-        .route("/api/notes", get(note_list).post(note_create).fallback(allow([Method::GET, Method::POST])))
-        .route(
-            "/api/notes/{id}",
-            get(note_get_by_id).patch(note_update).delete(note_delete).fallback(allow([
-                Method::GET,
-                Method::PATCH,
-                Method::DELETE,
-            ])),
-        )
-        .route(
-            "/api/sections/{id}",
-            get(section_get_by_id).patch(section_update).delete(section_delete).fallback(allow([
-                Method::GET,
-                Method::PATCH,
-                Method::DELETE,
-            ])),
-        )
-        .route("/api/sections", post(section_create).get(section_list).fallback(allow([Method::POST, Method::GET])))
-        .route(
-            "/api/tags/{id}",
-            get(tag_get_by_id).patch(tag_update).delete(tag_delete).fallback(allow([
-                Method::GET,
-                Method::PATCH,
-                Method::DELETE,
-            ])),
-        )
-        .route("/api/tags", post(tag_create).get(tag_list).fallback(allow([Method::POST, Method::GET])))
-        .route("/api/tasks", get(task_list).post(task_create).fallback(allow([Method::GET, Method::POST])))
-        .route(
-            "/api/tasks/{id}",
-            get(task_get_by_id).patch(task_update).delete(task_delete).fallback(allow([
-                Method::GET,
-                Method::PATCH,
-                Method::DELETE,
-            ])),
-        )
-        .route("/api/tasks/summary/{status}", get(task_get_summary).fallback(allow([Method::GET])))
-        .route("/api/tasks/capture", post(task_capture).fallback(allow([Method::POST])))
-        .route("/api/tasks/complete", post(task_complete).fallback(allow([Method::POST])))
-        .route("/api/tasks/set-state", post(task_set_state).fallback(allow([Method::POST])))
-        .route("/api/tasks/purge-done", post(task_purge_done).fallback(allow([Method::POST])))
-        .route("/api/outlines", get(outline_list).fallback(allow([Method::GET])))
-        .route(
-            "/api/tasks/{parent_id}/tags",
-            get(task_list_tags).post(task_add_tag).fallback(allow([Method::GET, Method::POST])),
-        )
-        .route("/api/tasks/{parent_id}/tags/{child_id}", delete(task_remove_tag).fallback(allow([Method::DELETE])))
         .route("/api/events/bookmark-feed", get(bookmark_feed_sse).fallback(allow([Method::GET])))
         .route("/api/events/task-feed", get(task_feed_sse).fallback(allow([Method::GET])))
         .route("/api/events/watch-task/{id}", get(watch_task_sse).fallback(allow([Method::GET])))
+        .route(
+            "/api/projects/{project_id}/notes",
+            get(note_list_scoped).post(note_create_scoped).fallback(allow([Method::GET, Method::POST])),
+        )
+        .route(
+            "/api/projects/{project_id}/notes/{id}",
+            get(note_get_by_id_scoped).patch(note_update_scoped).delete(note_delete_scoped).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
+        .route(
+            "/api/projects/{project_id}/sections/{id}",
+            get(section_get_by_id_scoped).patch(section_update_scoped).delete(section_delete_scoped).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
+        .route(
+            "/api/projects/{project_id}/sections",
+            post(section_create_scoped).get(section_list_scoped).fallback(allow([Method::POST, Method::GET])),
+        )
+        .route(
+            "/api/projects/{project_id}/tags/{id}",
+            get(tag_get_by_id_scoped).patch(tag_update_scoped).delete(tag_delete_scoped).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
+        .route(
+            "/api/projects/{project_id}/tags",
+            post(tag_create_scoped).get(tag_list_scoped).fallback(allow([Method::POST, Method::GET])),
+        )
+        .route(
+            "/api/projects/{project_id}/tasks",
+            get(task_list_scoped).post(task_create_scoped).fallback(allow([Method::GET, Method::POST])),
+        )
+        .route(
+            "/api/projects/{project_id}/tasks/{id}",
+            get(task_get_by_id_scoped).patch(task_update_scoped).delete(task_delete_scoped).fallback(allow([
+                Method::GET,
+                Method::PATCH,
+                Method::DELETE,
+            ])),
+        )
+        .route(
+            "/api/projects/{project_id}/tasks/summary/{status}",
+            get(task_get_summary_scoped).fallback(allow([Method::GET])),
+        )
+        .route("/api/projects/{project_id}/tasks/capture", post(task_capture_scoped).fallback(allow([Method::POST])))
+        .route("/api/projects/{project_id}/tasks/complete", post(task_complete_scoped).fallback(allow([Method::POST])))
+        .route(
+            "/api/projects/{project_id}/tasks/set-state",
+            post(task_set_state_scoped).fallback(allow([Method::POST])),
+        )
+        .route(
+            "/api/projects/{project_id}/tasks/purge-done",
+            post(task_purge_done_scoped).fallback(allow([Method::POST])),
+        )
+        .route(
+            "/api/projects/{project_id}/tasks/list-tags/{id}",
+            get(task_list_tags_scoped).fallback(allow([Method::GET])),
+        )
+        .route("/api/projects/{project_id}/tasks/add-tag", post(task_add_tag_scoped).fallback(allow([Method::POST])))
+        .route(
+            "/api/projects/{project_id}/tasks/remove-tag",
+            post(task_remove_tag_scoped).fallback(allow([Method::POST])),
+        )
+        .route("/api/projects/{project_id}/outlines", get(outline_list_scoped).fallback(allow([Method::GET])))
+        .route(
+            "/api/projects/{project_id}/events/bookmark-feed",
+            get(bookmark_feed_sse_scoped).fallback(allow([Method::GET])),
+        )
+        .route("/api/projects/{project_id}/events/task-feed", get(task_feed_sse_scoped).fallback(allow([Method::GET])))
+        .route(
+            "/api/projects/{project_id}/events/watch-task/{id}",
+            get(watch_task_sse_scoped).fallback(allow([Method::GET])),
+        )
 }

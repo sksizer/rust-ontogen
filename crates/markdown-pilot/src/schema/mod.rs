@@ -7,12 +7,15 @@ mod task_summary;
 
 pub mod dto;
 
-pub use bookmark::{Bookmark, CreateBookmarkInput, UpdateBookmarkInput};
+pub use bookmark::{Bookmark, BookmarkQuery, CreateBookmarkInput, UpdateBookmarkInput};
 pub use note::Note;
 pub use section::Section;
 pub use tag::Tag;
 pub use task::Task;
 pub use task_summary::TaskSummary;
+// The generated handlers import every type an api fn names from here, the
+// section list's filter included.
+pub use crate::api::section::ListSectionsQuery;
 
 // Re-export DTOs at the schema level (generated code imports from crate::schema::)
 pub use dto::note::{CreateNoteInput, UpdateNoteInput};
