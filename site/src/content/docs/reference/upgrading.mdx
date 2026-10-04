@@ -944,7 +944,7 @@ A hand-written list that declares no order still answers `sort` with `400 invali
 `gen_store` fails the build, with ``entity `Task` has no `#[ontology(id)]` field; the generated store needs one``, for any schema entity that has no id field. Every generated store method reads the record's id, and the id is the last key of every order. Before, `gen_store` did not check, and such an entity generated a store whose methods read an id the entity does not declare. After, the build stops at `gen_store`. Mark the entity's id field:
 
 ```rust
-// Before: refused by gen_store
+// Refused by gen_store: no #[ontology(id)] field
 #[ontology(entity, directory = "tasks")]
 pub struct Task {
     pub id: String,
@@ -1013,7 +1013,11 @@ await transport.taskList(undefined, 20, 0, { sort: ['-created', 'title'] });
 
 A sorted list's TS method takes `options` as its last parameter, so a bare filter on that list that camelCases to `options` (`options`, `options_`) fails the build on every TS client; rename it. A route prefix parameter named `options` is refused on the `Transport` of a sorted list. More generally, a bare filter whose TS name equals `query`, `limit`, `offset`, the route prefix parameter or an earlier filter is refused, where it used to emit a method with a duplicate parameter that `tsc` rejects.
 
-With an `HttpTauriIpcSplit` client, the clients stage applies the IPC wire-key rules itself, even when the build generates only an HTTP server: a bare filter named `sort` on a sorted list, `query` beside a `*Query` struct, `limit` or `offset` on a paginated junction list, `channel` on an event op, or an argument named like the route prefix parameter fails the build instead of generating TypeScript that does not compile. An unsorted list may still take filters named `sort` or `options`.
+With an `HttpTauriIpcSplit` client, the clients stage applies the IPC wire-key rules itself, even when the build generates only an HTTP server: a bare filter named `sort` on a sorted list, `query` beside a `*Query` struct, `limit` or `offset` on a paginated junction list, `channel` on an event op, or an argument named like the route prefix parameter fails the build instead of generating TypeScript that does not compile. Names are compared by the invoke key they travel under, which is the camelCased name, so `sort_` collides with `sort` and `project_id_` with the prefix parameter `project_id`; this applies to the IPC server's own check too. An unsorted list may still take filters named `sort` or `options`.
+
+### Clients-stage errors are `CodegenError::Client`
+
+`gen_clients` and the pipeline's clients stage report every failure as `CodegenError::Client`, where they reported `CodegenError::Server`. The message prefix changes from `server codegen error:` to `client codegen error:`. Code that matches the variant, or text that quotes the prefix, follows the change.
 
 ## Calling the HTTP API directly
 

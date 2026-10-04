@@ -745,8 +745,8 @@ Phase 3c landed with these differences from §1. The decision is unchanged.
    refuses an `order` parameter that is not on a module's `list`, is not
    immediately before the page (or last when there is no page), is
    repeated, names another entity's sort field, or sits in a module with no
-   entity. The clients stage
-   refuses one on a fn it cannot send (wire contract §7.3).
+   entity. The clients stage refuses one on a fn it cannot send (wire
+   contract §7.3).
 7. **The markdown NaN error goes through the catch-all.** §5 names
    `AppError::Md`, but `AppError` is the consumer's type, so the generated
    store cannot name a variant of it. The NaN refusal is
