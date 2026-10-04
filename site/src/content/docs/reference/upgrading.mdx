@@ -941,7 +941,24 @@ A hand-written list that declares no order still answers `sort` with `400 invali
 
 ### An entity without an id field is refused
 
-`gen_store` fails the build, with ``entity `Task` has no `#[ontology(id)]` field; the generated store needs one``, for any schema entity that has no id field. Every generated store method reads the record's id, and the id is the last key of every order. Before, `gen_store` did not check, so such an entity generated a store that did not work (the SeaORM backend guessed a column named `Id`). After, the build stops at `gen_store`. Mark the entity's id field `#[ontology(id)]`.
+`gen_store` fails the build, with ``entity `Task` has no `#[ontology(id)]` field; the generated store needs one``, for any schema entity that has no id field. Every generated store method reads the record's id, and the id is the last key of every order. Before, `gen_store` did not check, and such an entity generated a store whose methods read an id the entity does not declare. After, the build stops at `gen_store`. Mark the entity's id field:
+
+```rust
+// Before: refused by gen_store
+#[ontology(entity, directory = "tasks")]
+pub struct Task {
+    pub id: String,
+    pub title: String,
+}
+
+// After
+#[ontology(entity, directory = "tasks")]
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,
+    pub title: String,
+}
+```
 
 ### Float NaN is refused on write
 
