@@ -22,7 +22,9 @@ pub enum Source {
 
 // ── Schema output ───────────────────────────────────────────────────
 
-/// Output from `parse_schema`. The starting point for the pipeline.
+/// Output from `parse_schema`. The starting point for the pipeline. A
+/// caller with no schema passes `SchemaOutput::default()`.
+#[derive(Debug, Clone, Default)]
 pub struct SchemaOutput {
     pub entities: Vec<EntityDef>,
     /// The string enums declared beside the entities.
@@ -248,10 +250,12 @@ pub enum StoreMethodKind {
     Custom,
 }
 
-/// The five standard CRUD operations.
+/// The standard store operations: the five CRUD operations and `count`,
+/// the total behind a page of `list`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrudOp {
     List,
+    Count,
     Get,
     Create,
     Update,

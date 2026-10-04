@@ -12,13 +12,14 @@
 //! ([`QueryParams::filter`]) and its bare filter parameters
 //! ([`QueryParams::filter_member`]); what a filter means is the handler's
 //! business. `include` is checked against the relationships the handler
-//! names ([`QueryParams::include_paths`]). The semantics of `sort` are not
-//! decided here.
+//! names ([`QueryParams::include_paths`]), and `sort` against an entity's
+//! sort fields ([`QueryParams::sort_order`]).
 
 mod form;
 
 use std::collections::BTreeMap;
 
+use ontogen_core::order::{OrderBy, SortError, SortField, parse_sort};
 use serde::de::DeserializeOwned;
 
 use crate::{
@@ -242,13 +243,22 @@ impl QueryParams {
     }
 
     /// The query the links repeat (§4.3): every `filter[…]` member with its
-    /// value as the request gave it (decoded), and `include` as
+    /// value as the request gave it (decoded), `sort` item by item as the
+    /// request gave it, and `include` as
     /// [`include_paths`](Self::include_paths) read it. Fails on the first
-    /// repeated member in ascending byte order of name.
+    /// repeated member in ascending byte order of name, then on a repeated
+    /// `sort`.
+    ///
+    /// `sort` is not checked here: a handler calls this after
+    /// [`sort_order`](Self::sort_order) has accepted it, or after refusing
+    /// any `sort` on a list that cannot be sorted.
     pub fn link_query(&self, include: Option<&[&str]>) -> Result<CanonicalQuery, ErrorObject> {
         let mut query = CanonicalQuery::new();
         for (member, value) in self.filters()? {
             query.set_filter(member, value);
+        }
+        if let Some(value) = self.sort()? {
+            query.set_sort(value.split(','));
         }
         if let Some(paths) = include {
             query.set_include(paths.iter().copied());
@@ -259,6 +269,31 @@ impl QueryParams {
     /// The raw `sort` value. Fails when `sort` is repeated.
     pub fn sort(&self) -> Result<Option<&str>, ErrorObject> {
         single(self.sort.as_ref(), "sort")
+    }
+
+    /// `sort` read as an order over `F`'s fields (§7.4), or no keys when the
+    /// request has no `sort`. The value is split on `,` and read by
+    /// [`parse_sort`], the parser the IPC and MCP transports use, so every
+    /// transport accepts the same keys.
+    ///
+    /// A repeated `sort` is `400 invalid_query_parameter`. An empty item
+    /// (`sort=`, `sort=title,,status`), a name that is not a sort field of
+    /// `F`, or a field named twice is `400 invalid_sort_field` with
+    /// `source.parameter` `sort`; `type_name` is the collection the detail
+    /// names.
+    pub fn sort_order<F: SortField>(&self, type_name: &str) -> Result<Vec<OrderBy<F>>, ErrorObject> {
+        let Some(value) = self.sort()? else { return Ok(Vec::new()) };
+        parse_sort(value.split(',')).map_err(|err| {
+            let detail = match err {
+                SortError::UnknownField(name) => {
+                    let fields: Vec<&str> = F::ALL.iter().map(|f| f.name()).collect();
+                    format!("`{name}` is not a sort field of `{type_name}`; sort fields are: {}", fields.join(", "))
+                }
+                SortError::DuplicateField(name) => format!("`{name}` is named twice in `sort`"),
+                SortError::EmptyKey => "`sort` has an empty item".to_owned(),
+            };
+            ErrorObject::new(ErrorCode::InvalidSortField, detail).with_parameter("sort")
+        })
     }
 
     /// The raw `include` value. Fails when `include` is repeated.
@@ -639,6 +674,101 @@ mod tests {
         );
         assert_eq!(q.link_query(Some(&[])).unwrap().href("/api/tasks/x"), "/api/tasks/x?filter%5Bstatus%5D=a&include=");
         assert_eq!(q.link_query(None).unwrap().href("/api/tasks"), "/api/tasks?filter%5Bstatus%5D=a");
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TaskField {
+        Id,
+        Title,
+        Status,
+        Created,
+    }
+
+    impl SortField for TaskField {
+        const ALL: &'static [Self] = &[Self::Id, Self::Title, Self::Status, Self::Created];
+        const ID: Self = Self::Id;
+
+        fn name(self) -> &'static str {
+            match self {
+                Self::Id => "id",
+                Self::Title => "title",
+                Self::Status => "status",
+                Self::Created => "created",
+            }
+        }
+    }
+
+    fn sort_order(raw: &str) -> Result<Vec<OrderBy<TaskField>>, ErrorObject> {
+        QueryParams::parse(Some(raw), &LIST).unwrap().sort_order("tasks")
+    }
+
+    fn sort_failure(raw: &str) -> (String, String, String) {
+        let err = sort_order(raw).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        let parameter = match err.source() {
+            Some(crate::ErrorSource::Parameter(p)) => p.clone(),
+            other => panic!("expected a parameter source, got {other:?}"),
+        };
+        (err.code().to_owned(), parameter, err.detail().to_owned())
+    }
+
+    #[test]
+    fn sort_reads_keys_in_request_order() {
+        assert_eq!(sort_order("").unwrap(), []);
+        assert_eq!(
+            sort_order("sort=-created,title").unwrap(),
+            [OrderBy::desc(TaskField::Created), OrderBy::asc(TaskField::Title)]
+        );
+        assert_eq!(sort_order("sort=-id").unwrap(), [OrderBy::desc(TaskField::Id)]);
+        assert_eq!(
+            sort_order("sort=%2Dstatus%2Cid").unwrap(),
+            [OrderBy::desc(TaskField::Status), OrderBy::asc(TaskField::Id)]
+        );
+    }
+
+    #[test]
+    fn a_bad_sort_key_is_invalid_sort_field() {
+        let unknown = "`priority` is not a sort field of `tasks`; sort fields are: id, title, status, created";
+        for (raw, detail) in [
+            ("sort=priority", unknown),
+            ("sort=title,-priority", unknown),
+            (
+                "sort=epic.title",
+                "`epic.title` is not a sort field of `tasks`; sort fields are: id, title, status, created",
+            ),
+            ("sort=--title", "`-title` is not a sort field of `tasks`; sort fields are: id, title, status, created"),
+            ("sort=title,-title", "`title` is named twice in `sort`"),
+            ("sort=", "`sort` has an empty item"),
+            ("sort=title,,status", "`sort` has an empty item"),
+            ("sort=title,", "`sort` has an empty item"),
+            ("sort=-", "`sort` has an empty item"),
+        ] {
+            assert_eq!(
+                sort_failure(raw),
+                ("invalid_sort_field".to_owned(), "sort".to_owned(), detail.to_owned()),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_repeated_sort_is_an_invalid_query_parameter() {
+        let (code, parameter, _) = sort_failure("sort=title&sort=id");
+        assert_eq!((code.as_str(), parameter.as_str()), ("invalid_query_parameter", "sort"));
+    }
+
+    #[test]
+    fn the_link_query_carries_sort_as_sent_in_canonical_position() {
+        let q = QueryParams::parse(Some("page[limit]=5&include=epic&sort=-created,title&filter[status]=a b"), &LIST)
+            .unwrap();
+        assert_eq!(q.sort_order::<TaskField>("tasks").unwrap().len(), 2);
+        let mut link_query = q.link_query(Some(&["epic"])).unwrap();
+        assert_eq!(
+            link_query.set_page(0, 5).href("/api/tasks"),
+            "/api/tasks?filter%5Bstatus%5D=a%20b&sort=-created,title&include=epic&page%5Boffset%5D=0&page%5Blimit%5D=5"
+        );
+        let unsorted = QueryParams::parse(Some("include=epic"), &LIST).unwrap();
+        assert_eq!(unsorted.link_query(None).unwrap().href("/api/tasks"), "/api/tasks");
     }
 
     #[test]

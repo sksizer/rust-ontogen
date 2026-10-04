@@ -12,6 +12,7 @@ publish = false
 
 [dependencies]
 markdown-store = { path = "../../markdown-store" }
+ontogen-core = { path = "../../ontogen-core" }
 ontogen-macros = { path = "../../ontogen-macros" }
 serde = { version = "1", features = ["derive"] }
 schemars = "0.8"

@@ -93,7 +93,7 @@ fn main() {
     let schema = ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: "src/schema".into() })
         .unwrap_or_else(|e| panic!("ontogen schema parse failed: {e}"));
     ontogen::gen_servers(
-        &schema.entities,
+        &schema,
         None,
         &[],
         &servers_config(

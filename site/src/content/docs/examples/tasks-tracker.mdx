@@ -31,6 +31,10 @@ cat data/vault/tasks/review-the-stack.md
 curl -sg 'localhost:3002/api/tasks?filter[status]=closed/done&filter[epic_id]=markdown-backend' \
   -H 'accept: application/vnd.api+json' | jq
 
+# Sort it: newest first, then by title (the id is always the last key)
+curl -sg 'localhost:3002/api/tasks?filter[status]=closed/done&sort=-created,title' \
+  -H 'accept: application/vnd.api+json' | jq '.data[].id'
+
 # Add a tag through the relationship endpoint, then read the related tags
 curl -si -X POST localhost:3002/api/tasks/ship-the-emitter/relationships/tags \
   -H 'content-type: application/vnd.api+json' \
@@ -47,13 +51,13 @@ curl -s localhost:3002/api/tasks/ship-the-emitter/relationships/subtasks \
 
 Lists page 20 at a time (`GET /api/tasks?page[offset]=0&page[limit]=5` answers with `meta.total` and `links.next`), because `build.rs` sets `pagination` and `.api_paginated(..)` for `task`, `epic` and `tag`. The MCP list tools take `limit` and `offset` and return `{items, total, limit, offset}`; `task_list` also takes the filter's fields as arguments.
 
-The task list is hand-written. `src/api/v1/task.rs` re-exports the generated task module and defines its own `list` and `count`, which take a `ListTasksQuery { status, epic_id }`. The generated `list` and `count` are then left out, the HTTP route reads `filter[status]` and `filter[epic_id]`, and `meta.total` is the hand-written `count` of the filtered set. The links repeat the filter in canonical order:
+The task list is hand-written. `src/api/v1/task.rs` re-exports the generated task module and defines its own `list` and `count`, which take a `ListTasksQuery { status, epic_id }` and an `order: &[OrderBy<TaskSortField>]`. The generated `list` and `count` are then left out, the HTTP route reads `filter[status]` and `filter[epic_id]`, `sort` reads into the `order`, and `meta.total` is the hand-written `count` of the filtered set. The sort fields are `id`, `title`, `status` and `created`. The links repeat the filter and the sort in canonical order:
 
 ```json
-"self": "/api/tasks?filter%5Bepic_id%5D=markdown-backend&filter%5Bstatus%5D=closed%2Fdone&page%5Boffset%5D=0&page%5Blimit%5D=20"
+"self": "/api/tasks?filter%5Bepic_id%5D=markdown-backend&filter%5Bstatus%5D=closed%2Fdone&sort=-created,title&page%5Boffset%5D=0&page%5Blimit%5D=20"
 ```
 
-An unknown member such as `filter[colour]` is `400 invalid_query_parameter`. The generated handlers import the struct from `types_import_path`, so `src/schema/mod.rs` re-exports it. See the [filtered lists recipe](/cookbook/custom-api-endpoints/#recipe-filtered-lists).
+An unknown member such as `filter[colour]` is `400 invalid_query_parameter`, and an unknown sort field such as `sort=priority` is `400 invalid_sort_field`. The generated handlers import the struct from `types_import_path`, so `src/schema/mod.rs` re-exports it. See the [filtered lists recipe](/cookbook/custom-api-endpoints/#recipe-filtered-lists).
 
 The `POST` response is `201` with a `Location: /api/tasks/review-the-stack` header and the new task as a JSON:API resource: the fields are under `attributes`, and `epic`, `tags`, `parent` and `subtasks` are under `relationships`, each with `links` to its relationship endpoint (`/api/tasks/review-the-stack/relationships/epic`) and its related resource (`/api/tasks/review-the-stack/epic`). The relationship endpoints change one relationship at a time and answer `204`; `parent` and `subtasks` are two views of one foreign key, so setting a task's `parent` adds it to the parent's `subtasks`. The filename came from the title. The store's `IdStrategy::SlugFromField("title")` (set with `.store_id_strategy(..)` in `build.rs`) slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
 
@@ -65,6 +69,7 @@ The same pipeline emits an MCP tool registry:
 cargo run -- mcp-tools                 # every entity op as a tool, with JSON schemas
 cargo run -- mcp-call task_list '{}'   # agent-shaped reads over the vault
 cargo run -- mcp-call task_list '{"status":"closed/done"}'   # the list's filter, as tool arguments
+cargo run -- mcp-call task_list '{"sort":["-created","title"]}'   # newest first, then by title
 cargo run -- mcp-call task_create '{"title":"From an agent","status":"open","created":"2026-06-06","body":"…"}'
 ```
 

@@ -157,7 +157,7 @@ gen_dtos(&schema.entities, &DtoConfig {
 
 ```rust
 pub fn gen_store(
-    entities: &[EntityDef],
+    schema: &SchemaOutput,
     config: &StoreConfig,
 ) -> Result<StoreOutput, CodegenError>
 ```
@@ -175,14 +175,14 @@ Generates the CRUD store layer:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entities` | `&[EntityDef]` | Entity definitions from `parse_schema`. |
+| `schema` | `&SchemaOutput` | The parsed schema from `parse_schema`: its entities, and the string enums their fields use. |
 | `config` | `&StoreConfig` | Output directory, optional hooks directory, the [`Backend`](/reference/configuration/#backend) the CRUD bodies are wired to, and the default [`IdStrategy`](/reference/configuration/#idstrategy). |
 
 **Returns:** `StoreOutput` with metadata about generated methods, scaffolded hooks, and change channels.
 
 ```rust
 // SeaORM-backed
-let store = gen_store(&schema.entities, &StoreConfig {
+let store = gen_store(&schema, &StoreConfig {
     output_dir: "src/store/generated".into(),
     hooks_dir: Some("src/store/hooks".into()),
     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
@@ -192,7 +192,7 @@ let store = gen_store(&schema.entities, &StoreConfig {
 })?;
 
 // Markdown-backed -- same call, one field different
-let store = gen_store(&schema.entities, &StoreConfig {
+let store = gen_store(&schema, &StoreConfig {
     output_dir: "src/store/generated".into(),
     hooks_dir: Some("src/store/hooks".into()),
     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
@@ -251,7 +251,7 @@ let api = gen_api(&schema.entities, &ApiConfig {
 
 ```rust
 pub fn gen_servers(
-    entities: &[EntityDef],
+    schema: &SchemaOutput,
     api: Option<&ApiOutput>,
     scan_dirs: &[PathBuf],
     config: &ServersConfig,
@@ -270,7 +270,7 @@ Each transport reads the same `ApiOutput` and produces handlers appropriate for 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entities` | `&[EntityDef]` | The parsed schema (`schema.entities`). A module is served as a JSON:API resource when its name is the module name of one of these entities. Pass `&[]` when you have no schema; every module is then served as a custom op, as a module with no entity behind it is. |
+| `schema` | `&SchemaOutput` | The parsed schema from `parse_schema`. A module is served as a JSON:API resource when its name is the module name of one of its entities. Pass `&SchemaOutput::default()` when you have no schema; every module is then served as a custom op, as a module with no entity behind it is. |
 | `api` | `Option<&ApiOutput>` | Structured API metadata. When `None`, falls back to scanning source files with `syn`. Reserved for future enrichment; currently ignored. |
 | `scan_dirs` | `&[PathBuf]` | Additional directories to scan. Reserved for future enrichment; currently ignored -- `config.api_dir` is always scanned. |
 | `config` | `&ServersConfig` | Server transport configuration -- which server generators to run, import paths, naming, route prefixes, pagination, etc. |
@@ -278,7 +278,7 @@ Each transport reads the same `ApiOutput` and produces handlers appropriate for 
 **Returns:** `ServersOutput` describing all generated HTTP routes, IPC commands, and MCP tools.
 
 ```rust
-let servers = gen_servers(&schema.entities, Some(&api), &[], &ServersConfig {
+let servers = gen_servers(&schema, Some(&api), &[], &ServersConfig {
     api_dir: "src/api/v1".into(),
     state_type: "AppState".to_string(),
     service_import_path: "crate::api::v1".to_string(),
@@ -305,7 +305,7 @@ let servers = gen_servers(&schema.entities, Some(&api), &[], &ServersConfig {
 
 ```rust
 pub fn gen_clients(
-    entities: &[EntityDef],
+    schema: &SchemaOutput,
     api: Option<&ApiOutput>,
     scan_dirs: &[PathBuf],
     config: &ClientsConfig,
@@ -323,13 +323,13 @@ Sibling of [`gen_servers`](#gen_servers) for the client-side surface. Reads the 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entities` | `&[EntityDef]` | The parsed schema (`schema.entities`). The HTTP transport uses it to build resource flatten and unflatten code, and the admin-registry generator uses it for per-field metadata; with `&[]` the registry ships empty `fields: []` per entity. |
+| `schema` | `&SchemaOutput` | The parsed schema from `parse_schema`. The HTTP transport uses its entities to build resource flatten and unflatten code, and the admin-registry generator uses its entities and enums for per-field metadata and `enumValues`; with `&SchemaOutput::default()` the registry ships empty `fields: []` per entity. |
 | `api` | `Option<&ApiOutput>` | Structured API metadata. When `None`, falls back to scanning source files with `syn`. Reserved for future enrichment; currently ignored. |
 | `scan_dirs` | `&[PathBuf]` | Additional directories to scan. Reserved for future enrichment; currently ignored. |
 | `config` | `&ClientsConfig` | Client configuration -- which client generators to run, plus `ts_formatter`, `ts_skip_commands`, `pool_extra_roots`, `pool_exclude_paths`. See the [`ClientsConfig` reference](/reference/configuration/#clientsconfig) for every field. |
 
 ```rust
-gen_clients(&schema.entities, Some(&api), &[], &ClientsConfig {
+gen_clients(&schema, Some(&api), &[], &ClientsConfig {
     api_dir: "src/api/v1".into(),
     state_type: "AppState".into(),
     service_import_path: "crate::api::v1".into(),
@@ -398,7 +398,7 @@ Sensible defaults are applied automatically:
 
 - `schema_module_path` defaults to [`DEFAULT_SCHEMA_MODULE_PATH`](#default_schema_module_path) (`"crate::schema"`) and propagates to both `StoreConfig` and `ApiConfig`.
 - When the `store` stage is enabled and the API stage hasn't overridden it, `store_type` defaults to `Some("Store")`.
-- The `servers` and `clients` stages are given the `schema.entities` the schema stage parsed. When `ServersConfig.error_source_dir` is `None`, the builder sets it to the schema directory.
+- The `servers` and `clients` stages are given the schema the schema stage parsed. When `ServersConfig.error_source_dir` is `None`, the builder sets it to the schema directory.
 - `ClientsConfig.pool_exclude_paths` is populated from the `seaorm()` stage's `entity_output`, so the per-entity `Relation` enums SeaORM emits can't make the long-tail resolver ambiguous.
 - `store_id_strategy` sets `StoreConfig::id_strategy` for either backend. It has no default: with the `store` stage enabled, `build()` returns a `CodegenError::Store` until it is called, even when every entity sets its own `#[ontology(entity, id = "...")]`.
 - The store backend is **inferred** when exactly one persistence stage is configured. Enable both `seaorm(...)` and `markdown_io(...)` and you must disambiguate with `.store_backend(StoreBackendChoice::Seaorm)` or `.store_backend(StoreBackendChoice::Markdown)`.

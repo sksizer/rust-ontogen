@@ -25,6 +25,8 @@ axum = ["dep:axum"]
 # segment in the request path as sent.
 axum = { version = "0.8", default-features = false, features = ["matched-path", "original-uri"], optional = true }
 http = "1"
+# `SortField` and `parse_sort`: `sort` reads with the parser IPC and MCP use.
+ontogen-core = { path = "../ontogen-core", version = "=0.6.1" }
 serde = { version = "1", features = ["derive"] }
 # `raw_value` lets an included resource keep its attributes' member order
 # without a type parameter per resource type.

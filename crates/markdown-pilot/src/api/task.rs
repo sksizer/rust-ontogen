@@ -17,7 +17,8 @@ pub async fn get_summary(
     verbose: Option<bool>,
     limit: Option<u32>,
 ) -> Result<TaskSummary, AppError> {
-    let matching: Vec<Task> = store.list_tasks(None, None).await?.into_iter().filter(|t| t.status == status).collect();
+    let matching: Vec<Task> =
+        store.list_tasks(&[], None, None).await?.into_iter().filter(|t| t.status == status).collect();
     let titles = verbose.unwrap_or(false).then(|| {
         let cap = limit.map_or(usize::MAX, |l| l as usize);
         matching.iter().take(cap).map(|t| t.title.clone()).collect()
@@ -38,7 +39,7 @@ pub async fn capture(store: &Store, input: CreateTaskInput, status: Option<Strin
 // read served as a custom GET, not a relationship.
 /// The tasks in `status`, in id order.
 pub async fn list_by_status(store: &Store, status: &str) -> Result<Vec<Task>, AppError> {
-    Ok(store.list_tasks(None, None).await?.into_iter().filter(|t| t.status == status).collect())
+    Ok(store.list_tasks(&[], None, None).await?.into_iter().filter(|t| t.status == status).collect())
 }
 
 /// Mark a task done.
@@ -58,7 +59,7 @@ pub async fn set_state(ctx: &Store, id: &str, state: String, store: Option<Strin
 /// Delete every done task, answering how many went.
 pub async fn purge_done(store: &Store) -> Result<u64, AppError> {
     let mut purged = 0;
-    for task in store.list_tasks(None, None).await? {
+    for task in store.list_tasks(&[], None, None).await? {
         if task.status == "done" {
             store.delete_task(&task.id).await?;
             purged += 1;

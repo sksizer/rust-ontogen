@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::model::EnumDef;
 use crate::resource::ResourceModel;
 use crate::servers::error_map::ErrorMap;
 use crate::servers::types::NamingConfig;
@@ -79,6 +80,10 @@ pub(crate) struct Config {
     /// The schema's entities as JSON:API resources. A module is served as a
     /// resource exactly when this has a resource for its name.
     pub(crate) resources: ResourceModel,
+
+    /// The schema's string enums. A field of an enum type sorts only when
+    /// the enum is one of these, so a list's sort keys depend on them.
+    pub(crate) enums: Vec<EnumDef>,
 
     /// The `AppError` found under `ServersConfig::error_source_dir`, if any.
     pub(crate) error_map: Option<ErrorMap>,
@@ -221,6 +226,7 @@ impl Default for Config {
             pagination: None,
             extra_surfaces: Vec::new(),
             resources: ResourceModel::default(),
+            enums: Vec::new(),
             error_map: None,
         }
     }

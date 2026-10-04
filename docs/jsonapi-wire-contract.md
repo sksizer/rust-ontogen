@@ -265,25 +265,27 @@ Building a resource object needs the schema. The generator must know:
 - whether an event's item type is an entity;
 - the serde attributes that §5.3 restricts.
 
-The parsed schema is an explicit first argument of both stages, as it is
-for `gen_api`:
+The parsed schema is an explicit first argument of both stages:
 
 ```rust
-pub fn gen_servers(entities: &[EntityDef], api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ServersConfig) -> Result<ServersOutput, CodegenError>;
-pub fn gen_clients(entities: &[EntityDef], api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError>;
+pub fn gen_servers(schema: &SchemaOutput, api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ServersConfig) -> Result<ServersOutput, CodegenError>;
+pub fn gen_clients(schema: &SchemaOutput, api: Option<&ApiOutput>, scan_dirs: &[PathBuf], config: &ClientsConfig) -> Result<(), CodegenError>;
 ```
 
-- `Pipeline` passes the entities it parsed.
-- Standalone callers pass `parse_schema`'s output, or `&[]`.
-- `ClientsConfig` has no `schema_entities` field; the argument is the only
-  route by which the schema reaches a stage.
+- `Pipeline` passes the schema it parsed.
+- Standalone callers pass `parse_schema`'s output, or
+  `&SchemaOutput::default()`.
+- `ClientsConfig` has no `schema_entities` or `schema_enums` field; the
+  argument is the only route by which the schema reaches a stage. The
+  stages need its enums for sort keys (§7.4), and `gen_store` takes the
+  schema for the same reason (ADR 0006).
 
-A module is a **resource module** when its name is the module name of an
-entity in `entities`. Its CRUD ops are served as resources (§7, §8). A
+A module is a **resource module** when its name is the module name of one
+of the schema's entities. Its CRUD ops are served as resources (§7, §8). A
 module with CRUD-classified ops (`list`, `get_by_id`, `create`, `update`,
 `delete`) but no entity behind it is served entirely as custom ops (§10.4).
 That module is what a scan-dirs-only consumer, or a standalone caller
-passing `&[]`, has. The alternative, a `CodegenError`, would break the
+passing an empty schema, has. The alternative, a `CodegenError`, would break the
 scan-dirs-only use case the servers stage supports today, and those ops
 have no schema from which to build a resource.
 
@@ -728,6 +730,22 @@ An `*Input` parameter on a `list` is a `CodegenError`, since a list has no
 body. These errors come from the HTTP generator only: IPC and MCP accept the
 same list.
 
+**The order parameter.** A parameter whose type is `&[OrderBy<…>]` (the last
+path segment is `OrderBy`, qualified or not, whatever the parameter is
+named) is the list's order, not a filter. Every transport and the clients
+stage check it, and each of these is a `CodegenError` naming
+`module::fn`:
+
+- it is on a fn other than a module's `list` served as its collection;
+- the list takes a second one;
+- it is not the last parameter, or, on a paginated list, the last before
+  `limit` and `offset`;
+- its module has no schema entity behind it, so the `list` is a custom
+  op (§10.4), which takes no `sort`;
+- its `{Entity}SortField` is not the module's entity's.
+
+The paginated-`count` rule ignores it.
+
 **Reading the filter.** A value is deserialized as `axum::extract::Query`
 reads one field: `true` is a `bool`, `5` a number, and anything is a string.
 An `Option` that is present is `Some(value)`, so an empty value is
@@ -839,8 +857,16 @@ Rules:
     dotted path (`sort=epic.title`);
   - a field named twice (`sort=title,-title`);
   - an empty item (`sort=title,,status`, `sort=`);
-  - any `sort` on a list that takes no `order` argument. The spec requires `400` from a server that
-    does not support the requested sort.
+  - any `sort` on a list that takes no `order` argument. The spec requires
+    `400` from a server that does not support the requested sort.
+- A repeated `sort` parameter is `400 invalid_query_parameter`, as for
+  every other parameter.
+- The detail for a duplicate is "`title` is named twice in `sort`" and for
+  an empty item "`sort` has an empty item" (not normative, §13.1). The
+  unknown-field detail lists the sort fields from the entity's
+  `{Entity}SortField::ALL`.
+- Handlers read the query in §13.2's order: filters, `sort`, `include`,
+  then the page, so a bad `sort` is reported before a bad `include`.
 
 ```json
 {
@@ -2271,8 +2297,17 @@ taskList(query?: ListTasksQuery, limit?: number, offset?: number, options?: List
 
 **Queries.** `toQueryString` gains a family form.
 `toQueryString({ filter: query, page: { offset, limit } })` emits
-`filter%5Bstatus%5D=…` and so on, skipping `null` and `undefined`. Arrays
-are not supported in filters, matching §7.3.
+`filter%5Bstatus%5D=…` and so on, skipping `null` and `undefined`. An array
+value is one parameter with its items joined by `,`, and is skipped when
+empty: `toQueryString({ sort: ['-created', 'title'] })` is
+`?sort=-created,title`. Arrays are not supported inside a family, so a
+filter takes none (§7.3).
+
+**Placement.** The `ListOptions<K>` interface and each `{Entity}SortKey`
+union are emitted once, beside `PaginatedResult`, in each generated client
+file, and only when some emitted list takes an order. The `{Entity}SortKey`
+union lists the keys in sort-field order, ascending then descending for
+each field.
 
 **Filtered lists.** Method signatures are unchanged: bare parameters first
 (camelCase, typed), then `query?`, then `limit?` and `offset?` when
@@ -2375,12 +2410,29 @@ A Tauri command names each parameter after the function's argument, since
 that name is the `invoke` key, and prefixes its own bindings with
 `ontogen_`. An argument named after a key the command itself uses is a
 build error naming the argument: `query` beside a list's `*Query` struct,
-`limit` or `offset` on a paginated junction list's parent id, `channel`
-on an event op, and, under a route prefix, the prefix parameter's name
-(`project_id`) on any op. A scoped MCP tool reads the prefix parameter
-from its arguments, so an op argument it would read under the same name
-(a custom op's or junction tool's parameter, a list's bare filter, or
-`id`) is a build error too.
+`limit` or `offset` on a paginated junction list's parent id, `channel` on
+an event op, `sort` on a list that takes an order, and, under a route
+prefix, the prefix parameter's name (`project_id`) on any op. The servers
+stage refuses these when it generates IPC, and the clients stage when it
+emits the IPC transport (`HttpTauriIpcSplit`), even in a build that
+generates no IPC server, because that transport invokes the commands with
+those keys; commands in `ts_skip_commands` are not emitted, so the clients
+stage does not check them. A scoped MCP tool reads the prefix parameter
+from its arguments, so an op argument it would read under the same name (a
+custom op's or junction tool's parameter, a list's bare filter, or `id`)
+is a build error too. A bare filter named `sort` on a list that takes an
+order is a build error on IPC and on MCP, since both read the list's sort
+keys from that name. Over HTTP it is not, because it travels as
+`filter[sort]`.
+
+Every generated TS client names a list method's parameters after its bare
+filters (camelCased), then `query`, `limit`, `offset`, the route prefix
+parameter (on `Transport` methods only) and `options` (on a list that
+takes an order). A bare filter, or the route prefix parameter, that would
+take one of those names, or the name of an earlier bare filter, is a build
+error from the clients stage naming the TS method, the fn and the
+argument: a sorted list's filter named `options` (or `options_`) is
+refused on every TS client.
 
 - **Tauri IPC**: same commands, same `invoke` argument objects, same flat
   entities, `PaginatedResult` for paginated lists, `String` errors, and the
@@ -2428,7 +2480,12 @@ Six changes reach them. Only the sixth changes a payload's shape:
    `options.sort` into it. The MCP list tool schema gains an optional
    `sort` array whose items enumerate the sort keys. Both parse with
    `ontogen_core::order::parse_sort` (ADR 0006 §1) and return its error
-   text on a bad key.
+   text on a bad key. They read it before they open the store, so a bad
+   key is reported whether or not the store would open. The MCP tool
+   reads `sort` strictly: absent or `null` is no keys, and anything but an
+   array of strings is the tool error `Invalid sort: …`. The tool skips
+   `sort` when it reads the `*Query` struct, so a struct field serialized
+   as `sort` cannot be set over MCP.
 2. **`has_many` writes clear dropped children** (decision 9). Today an
    update that drops a child leaves the child's foreign key set, on every
    transport. The store fix in phase 1a corrects IPC and MCP as well as
@@ -2487,6 +2544,13 @@ the section that states each and its reason.
 | The struct's members are read before the bare filters | 7.3, 13.2 | One fixed order, so the first error a client sees is deterministic |
 | A hand-written paginated `list` brings its own `count` | 7.3 | The store has no filter, so the generated count would count the table, not the filtered set |
 | `id` is the implicit last sort key | 7.4 | A total order makes pages stable (ADR 0006) |
+| A misplaced, repeated, foreign or entity-less `order` parameter is a `CodegenError` | 7.3 | `sort` is read into exactly one slot of the module's own list, so any other place has no meaning and would be silently dropped |
+| A bare filter named `sort` on a sorted list is a build error on IPC and MCP | 15 | Both transports read the sort keys from the `sort` argument, so the filter would share its key |
+| IPC and MCP read `sort` before opening the store | 15 | A bad key is the caller's error and should not depend on the store |
+| MCP reads `sort` strictly, and skips it when reading the `*Query` struct | 15 | One rule with the other arguments: a wrong type is a tool error, and a struct field named `sort` cannot be set over MCP |
+| `toQueryString` writes an array as one comma-joined parameter | 14.2 | `sort` takes a comma-separated value, and the server refuses a repeated parameter |
+| The clients stage refuses an `order` it cannot send | 7.3 | A client's sort keys are those of the module's resource, so any other order has no `options` type |
+| The clients stage applies the IPC wire-key rules when it emits the IPC transport, and refuses TS method parameter names that collide | 15 | It emits that TypeScript whether or not this build generates the server, and a duplicate key or parameter does not compile |
 | Dangling linkage is skipped in `included` and related links, not an error | 7.5 | Markdown tolerates dangling wikilinks by design |
 | `included` is fetched through the target's `get_by_id`, one call per distinct id, unbatched | 7.5 | Same lookup as related links (§9.3), so a hand-written `get_by_id` and scope rules apply; the store has no batch primitive, and a store-level batch read would bypass a hand-written `get_by_id` |
 | A relationship that cannot be included is a runtime `400 invalid_include_path`, not a build error; junction-op relationships are never includable | 7.5 | JSON:API requires 400 for an unsupported include path, and a list-only module is a legitimate configuration; included resources must be reachable by linkage (full linkage), and junction relationships carry links only |

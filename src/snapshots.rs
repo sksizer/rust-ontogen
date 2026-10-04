@@ -169,7 +169,7 @@ fn generate_store_file_with(entity: &EntityDef, id_strategy: crate::ir::IdStrate
         wikilink_policy: None,
         id_strategy,
     };
-    crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store failed");
+    crate::gen_store(&crate::schema::schema_of(std::slice::from_ref(entity)), &config).expect("gen_store failed");
 
     let snake = to_snake_case(&entity.name);
     read_file(&tmp.path().join(format!("{snake}.rs")))
@@ -257,18 +257,29 @@ fn a_sql_list_orders_before_it_takes_a_page() {
     // may answer the same query differently each time, so page 2 can repeat a
     // row page 1 already returned and skip another entirely.
     //
-    // This pins the SQL half of the default id order (ADR 0006 §3); the
-    // markdown runtime lists in id byte order, the other half.
+    // This pins the SQL half of ADR 0006 §3: every key of the order, then the
+    // id, before the page; `sort_{plural}` states the same rule on markdown.
     let code = generate_store_file(&article_mtm_tags_entity());
     assert!(code.contains("QueryOrder"), "the ordering trait is in scope:\n{code}");
 
     let body = &code[code.find("pub async fn list_").expect("a list method")..];
     let body = &body[..body.find("\n    }").expect("the list method's closing brace")];
-    assert!(body.contains(".order_by_asc(article::Column::Id)"), "the list orders by primary key:\n{body}");
-
-    let order_at = body.find(".order_by_asc(").expect("an order_by");
+    let order_at = body
+        .find("let mut query = order_articles_query(article::Entity::find(), order);")
+        .unwrap_or_else(|| panic!("the list orders through its helper:\n{body}"));
     let limit_at = body.find(".limit(").expect("a limit");
     assert!(order_at < limit_at, "the order is established before the page is taken:\n{body}");
+
+    let helper = order_helper(&code, "order_articles_query");
+    assert!(helper.contains("for key in ontogen_core::order::effective(order) {"), "ends on the id:\n{helper}");
+    assert!(helper.contains("ArticleSortField::Id => article::Column::Id,"), "the id is a key:\n{helper}");
+    assert!(helper.contains("query = query.order_by_with_nulls(column, direction, nulls);"), "{helper}");
+}
+
+/// The body of the module-level `order_{plural}_query` helper.
+fn order_helper<'a>(code: &'a str, name: &str) -> &'a str {
+    let helper = &code[code.find(&format!("pub fn {name}(")).unwrap_or_else(|| panic!("no {name}:\n{code}"))..];
+    &helper[..helper.find("\n}\n").expect("the helper's closing brace")]
 }
 
 #[test]
@@ -279,6 +290,8 @@ fn every_generated_sql_multi_row_select_is_ordered() {
     // is the same "identical code, two behaviours" split — just one altitude
     // down. The count is exempt: a row count does not depend on row order.
     let code = generate_store_file(&node_has_many_entity());
+    let helper = order_helper(&code, "order_nodes_query");
+    assert!(helper.contains(".order_by_with_nulls("), "the helper orders:\n{helper}");
 
     let mut checked = 0;
     for (i, _) in code.match_indices("Entity::find()") {
@@ -298,7 +311,13 @@ fn every_generated_sql_multi_row_select_is_ordered() {
             continue;
         }
         let stmt = &after[..all_at.expect("a multi-row chain terminates in .all(")];
-        assert!(stmt.contains(".order_by_asc("), "this SELECT returns rows with no ordering:\n{stmt}");
+        // The list hands its query to the order helper, checked above.
+        let line_start = code[..i].rfind('\n').map_or(0, |n| n + 1);
+        let through_helper = code[line_start..i].ends_with("order_nodes_query(node::");
+        assert!(
+            through_helper || stmt.contains(".order_by_asc("),
+            "this SELECT returns rows with no ordering:\n{stmt}"
+        );
         checked += 1;
     }
     // Node has a `has_many` field, so there is the list and the relation load.
@@ -388,7 +407,8 @@ fn generate_markdown_store_file_with(entity: &EntityDef, id_strategy: crate::ir:
         wikilink_policy: None,
         id_strategy,
     };
-    crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store(markdown) failed");
+    crate::gen_store(&crate::schema::schema_of(std::slice::from_ref(entity)), &config)
+        .expect("gen_store(markdown) failed");
 
     let snake = to_snake_case(&entity.name);
     read_file(&tmp.path().join(format!("{snake}.rs")))

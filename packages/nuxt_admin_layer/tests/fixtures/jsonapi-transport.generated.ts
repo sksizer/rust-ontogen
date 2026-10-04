@@ -22,6 +22,17 @@ export interface PaginatedResult<T> {
   offset: number;
 }
 
+/** A list's sort keys, applied in order: `-` sorts a field descending, and `id` ascending is the last key unless named. */
+export interface ListOptions<K extends string> {
+  sort?: K[];
+}
+
+export type TagSortKey = 'id' | '-id' | 'title' | '-title';
+
+export type TaskSortKey = 'id' | '-id' | 'title' | '-title' | 'estimate' | '-estimate';
+
+export type WorkoutSetSortKey = 'id' | '-id' | 'reps' | '-reps';
+
 // ── Event Subscriptions ──
 
 export interface SubscriptionHandlers<T> {
@@ -51,12 +62,12 @@ export interface Transport {
   boardArchive(taskId: string, reason: string | null): Promise<Task>;
   boardImport(input: CreateTaskInput, dryRun: boolean | null): Promise<number>;
   boardReset(): Promise<null>;
-  tagList(limit?: number, offset?: number): Promise<PaginatedResult<Tag>>;
+  tagList(limit?: number, offset?: number, options?: ListOptions<TagSortKey>): Promise<PaginatedResult<Tag>>;
   tagGetById(id: string): Promise<Tag>;
   tagCreate(input: CreateTagInput): Promise<Tag>;
   tagUpdate(id: string, input: UpdateTagInput): Promise<Tag>;
   tagDelete(id: string): Promise<null>;
-  taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>>;
+  taskList(limit?: number, offset?: number, options?: ListOptions<TaskSortKey>): Promise<PaginatedResult<Task>>;
   taskGetById(id: string): Promise<Task>;
   taskCreate(input: CreateTaskInput): Promise<Task>;
   taskUpdate(id: string, input: UpdateTaskInput): Promise<Task>;
@@ -65,7 +76,7 @@ export interface Transport {
   taskAddLabel(taskId: string, tagId: string): Promise<null>;
   taskRemoveLabel(taskId: string, tagId: string): Promise<null>;
   taskListDrafts(taskId: string): Promise<Task[]>;
-  workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>>;
+  workoutSetList(limit?: number, offset?: number, options?: ListOptions<WorkoutSetSortKey>): Promise<PaginatedResult<WorkoutSet>>;
   workoutSetGetById(id: string): Promise<WorkoutSet>;
   workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet>;
   workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet>;
@@ -182,9 +193,8 @@ function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
   const push = (key: string, value: unknown) => {
     if (value == null) return;
-    for (const v of Array.isArray(value) ? value : [value]) {
-      parts.push(`${key}=${encodeURIComponent(String(v))}`);
-    }
+    const values = Array.isArray(value) ? value : [value];
+    if (values.length > 0) parts.push(`${key}=${values.map((v) => encodeURIComponent(String(v))).join(',')}`);
   };
   for (const [key, value] of Object.entries(params)) {
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -448,8 +458,8 @@ export function createHttpTransport(): Transport {
     async boardReset(): Promise<null> {
       return callOp<null>('POST', '/boards/reset');
     },
-    async tagList(limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {
-      const { data, meta } = await httpGet<JsonApiPageDocument>(`/tags${toQueryString({ page: { offset, limit } })}`);
+    async tagList(limit?: number, offset?: number, options?: ListOptions<TagSortKey>): Promise<PaginatedResult<Tag>> {
+      const { data, meta } = await httpGet<JsonApiPageDocument>(`/tags${toQueryString({ sort: options?.sort, page: { offset, limit } })}`);
       return { items: data.map(flattenTag), total: meta.total, limit: meta.limit, offset: meta.offset };
     },
     async tagGetById(id: string): Promise<Tag> {
@@ -471,8 +481,8 @@ export function createHttpTransport(): Transport {
       await httpDelete(`/tags/${encodeURIComponent(id)}`);
       return null;
     },
-    async taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {
-      const { data, meta } = await httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ page: { offset, limit } })}`);
+    async taskList(limit?: number, offset?: number, options?: ListOptions<TaskSortKey>): Promise<PaginatedResult<Task>> {
+      const { data, meta } = await httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ sort: options?.sort, page: { offset, limit } })}`);
       return { items: data.map(flattenTask), total: meta.total, limit: meta.limit, offset: meta.offset };
     },
     async taskGetById(id: string): Promise<Task> {
@@ -509,8 +519,8 @@ export function createHttpTransport(): Transport {
     async taskListDrafts(taskId: string): Promise<Task[]> {
       return callOp<Task[]>('GET', `/tasks/list-drafts/${encodeURIComponent(taskId)}`);
     },
-    async workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>> {
-      const { data, meta } = await httpGet<JsonApiPageDocument>(`/workout-sets${toQueryString({ page: { offset, limit } })}`);
+    async workoutSetList(limit?: number, offset?: number, options?: ListOptions<WorkoutSetSortKey>): Promise<PaginatedResult<WorkoutSet>> {
+      const { data, meta } = await httpGet<JsonApiPageDocument>(`/workout-sets${toQueryString({ sort: options?.sort, page: { offset, limit } })}`);
       return { items: data.map(flattenWorkoutSet), total: meta.total, limit: meta.limit, offset: meta.offset };
     },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
@@ -620,8 +630,8 @@ export function createIpcTransport(): Transport {
       await invoke('board_reset');
       return null;
     },
-    async tagList(limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {
-      return invoke('tag_list', { limit: limit ?? null, offset: offset ?? null });
+    async tagList(limit?: number, offset?: number, options?: ListOptions<TagSortKey>): Promise<PaginatedResult<Tag>> {
+      return invoke('tag_list', { sort: options?.sort, limit: limit ?? null, offset: offset ?? null });
     },
     async tagGetById(id: string): Promise<Tag> {
       return invoke('tag_get_by_id', { id });
@@ -636,8 +646,8 @@ export function createIpcTransport(): Transport {
       await invoke('tag_delete', { id });
       return null;
     },
-    async taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {
-      return invoke('task_list', { limit: limit ?? null, offset: offset ?? null });
+    async taskList(limit?: number, offset?: number, options?: ListOptions<TaskSortKey>): Promise<PaginatedResult<Task>> {
+      return invoke('task_list', { sort: options?.sort, limit: limit ?? null, offset: offset ?? null });
     },
     async taskGetById(id: string): Promise<Task> {
       return invoke('task_get_by_id', { id });
@@ -666,8 +676,8 @@ export function createIpcTransport(): Transport {
     async taskListDrafts(taskId: string): Promise<Task[]> {
       return invoke('task_list_drafts', { taskId });
     },
-    async workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>> {
-      return invoke('workout_set_list', { limit: limit ?? null, offset: offset ?? null });
+    async workoutSetList(limit?: number, offset?: number, options?: ListOptions<WorkoutSetSortKey>): Promise<PaginatedResult<WorkoutSet>> {
+      return invoke('workout_set_list', { sort: options?.sort, limit: limit ?? null, offset: offset ?? null });
     },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
       return invoke('workout_set_get_by_id', { id });

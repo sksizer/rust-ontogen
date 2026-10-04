@@ -99,6 +99,16 @@ fn ontogen_removed(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
     (kept.len() != ids.len()).then_some(kept)
 }
 
+/// The answer to `sort` on a list whose API fn takes no order: the server
+/// cannot order it, which JSON:API answers with a `400`.
+fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
+    match query.sort()? {
+        None => Ok(()),
+        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
+            .with_parameter("sort")),
+    }
+}
+
 /// A paginated list that is not served as a resource takes its page as
 /// `opArg[limit]` and `opArg[offset]`.
 struct PageOpArgs;
@@ -162,16 +172,6 @@ struct GetParams;
 
 impl RouteQuery for GetParams {
     const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
-}
-
-/// No list takes an `order` argument, so every `sort` asks for an order the
-/// server does not support.
-fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
-    match query.sort()? {
-        None => Ok(()),
-        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
-            .with_parameter("sort")),
-    }
 }
 
 /// The effective `(offset, limit)` of a paginated list.
@@ -970,13 +970,14 @@ async fn note_list_scoped(
     Path(ontogen_scope): Path<String>,
     query: Query<PagedListParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "notes")?;
+    let order = query.sort_order("notes")?;
     let include = query.include_paths("notes", &[], &["tags"])?;
     let (offset, limit) = page(&query, 2, 3)?;
     let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
-    let items =
-        note::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
+    let items = note::list(&ontogen_store, &order, Some(u64::from(limit)), Some(u64::from(offset)))
+        .await
+        .map_err(ontogen_app_error)?;
     let total = note::count(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = &format!("/api/projects/{}/notes", encode_path_segment(&ontogen_scope.to_string()));
     let data: Vec<_> = items.iter().map(|entity| note_as_resource(entity, collection)).collect();
@@ -1325,7 +1326,7 @@ async fn section_list_scoped(
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: ListSectionsQuery = query.filter()?;
     let ontogen_filter_parent_id = query.required_filter_member::<String>("parent_id")?;
-    refuse_sort(&query, "sections")?;
+    let order = query.sort_order("sections")?;
     let include = query.include_paths("sections", &["parent", "children"], &[])?;
     let (offset, limit) = page(&query, 2, 3)?;
     let link_query = query.link_query(include.as_deref())?;
@@ -1334,6 +1335,7 @@ async fn section_list_scoped(
         &ontogen_store,
         ontogen_filter.clone(),
         &ontogen_filter_parent_id,
+        &order,
         Some(u64::from(limit)),
         Some(u64::from(offset)),
     )
@@ -1684,13 +1686,14 @@ async fn task_list_scoped(
     Path(ontogen_scope): Path<String>,
     query: Query<PagedListParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "tasks")?;
+    let order = query.sort_order("tasks")?;
     let include = query.include_paths("tasks", &["parent", "subtasks", "tags"], &["labels"])?;
     let (offset, limit) = page(&query, 2, 3)?;
     let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
-    let items =
-        task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
+    let items = task::list(&ontogen_store, &order, Some(u64::from(limit)), Some(u64::from(offset)))
+        .await
+        .map_err(ontogen_app_error)?;
     let total = task::count(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = &format!("/api/projects/{}/tasks", encode_path_segment(&ontogen_scope.to_string()));
     let data: Vec<_> = items.iter().map(|entity| task_as_resource(entity, collection)).collect();

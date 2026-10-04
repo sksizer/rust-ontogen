@@ -12,14 +12,13 @@ pub mod ts_client;
 use std::path::PathBuf;
 
 use crate::clients::config::Config;
-use crate::servers::parse::ApiFn;
+use crate::servers::parse::{ApiFn, Param};
 use crate::servers::types::{extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
 
 /// Derive the IPC/TS command name for any function.
 ///
-/// Mirrors [`crate::servers::generators::ipc::command_name`] but is keyed
-/// off the client-side [`Config`]. The two implementations stay in sync
-/// because they both use [`crate::servers::types::NamingConfig::url_singular`].
+/// [`crate::servers::generators::ipc::command_name`] keyed off the
+/// client-side [`Config`].
 ///
 /// Uses entity-first naming with singular entity prefix:
 ///   CRUD:     `{entity}_list`, `{entity}_get_by_id`, `{entity}_create`, etc.
@@ -29,10 +28,13 @@ use crate::servers::types::{extract_input_type, rust_type_to_ts, snake_to_camel,
 /// Source-side `#[ontogen(rename = "...")]` (recorded as
 /// [`ApiFn::command_override`]) wins over the default scheme.
 pub(crate) fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
-    f.command_override.clone().unwrap_or_else(|| {
-        let entity = config.naming.url_singular(module);
-        format!("{}_{}", entity, f.name)
-    })
+    crate::servers::generators::ipc::command_name_in(&config.naming, module, f)
+}
+
+/// `f`'s parameters whose Rust types the TypeScript surface names: every one
+/// but a `list`'s order, which a client sends as sort keys.
+pub(crate) fn typed_params(f: &ApiFn) -> impl Iterator<Item = &Param> {
+    f.params.iter().filter(|p| p.order_sort_field().is_none())
 }
 
 /// The TypeScript parameter list for a custom fn, in Rust declaration order.

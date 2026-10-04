@@ -1,5 +1,5 @@
-//! One schema, two backends, identical results (ADR 0006 §8, the phase 1a
-//! cases; JSON:API wire contract §5.4 and §8.2).
+//! One schema, two backends, identical results (ADR 0006 §8; JSON:API wire
+//! contract §5.4 and §8.2).
 //!
 //! Every scenario is written once, against [`Backend`], and run on SQLite
 //! in memory and on a temp vault. Each run records what the store returned
@@ -52,8 +52,15 @@ trait Backend: Sized {
     async fn get_item(&self, id: &str) -> R<Value>;
     async fn update_item(&self, id: &str, patch: Value) -> R<Value>;
     async fn delete_item(&self, id: &str) -> R<()>;
-    async fn list_items(&self, limit: Option<u64>, offset: Option<u64>) -> R<Vec<Value>>;
+    /// `sort` is transport sort keys (`"title"`, `"-int32"`), parsed as
+    /// every transport parses them.
+    async fn list_items(&self, sort: &[&str], limit: Option<u64>, offset: Option<u64>) -> R<Vec<Value>>;
     async fn count_items(&self) -> R<u64>;
+    /// Create `item` with the float `field` set to NaN, which JSON cannot
+    /// carry: only server-side Rust can write one.
+    async fn create_item_nan(&self, item: Value, field: &str) -> R<Value>;
+    /// Update `id`, setting only the float `field`, to NaN.
+    async fn update_item_nan(&self, id: &str, field: &str) -> R<Value>;
 
     async fn create_tag(&self, tag: Value) -> R<Value>;
 
@@ -88,11 +95,38 @@ macro_rules! store_methods {
         async fn delete_item(&self, id: &str) -> R<()> {
             self.store.delete_item(id).await.map_err(err)
         }
-        async fn list_items(&self, limit: Option<u64>, offset: Option<u64>) -> R<Vec<Value>> {
-            self.store.list_items(limit, offset).await.map(|v| v.into_iter().map(to_json).collect()).map_err(err)
+        async fn list_items(&self, sort: &[&str], limit: Option<u64>, offset: Option<u64>) -> R<Vec<Value>> {
+            let order = ontogen_core::order::parse_sort::<$krate::store::item::ItemSortField>(sort).expect("sort keys");
+            self.store
+                .list_items(&order, limit, offset)
+                .await
+                .map(|v| v.into_iter().map(to_json).collect())
+                .map_err(err)
         }
         async fn count_items(&self) -> R<u64> {
             self.store.count_items().await.map_err(err)
+        }
+        async fn create_item_nan(&self, item: Value, field: &str) -> R<Value> {
+            let mut item: $krate::schema::Item = serde_json::from_value(item).expect("an Item");
+            match field {
+                "float32" => item.float32 = f32::NAN,
+                "float64" => item.float64 = f64::NAN,
+                "maybe_float32" => item.maybe_float32 = Some(f32::NAN),
+                "maybe_float64" => item.maybe_float64 = Some(f64::NAN),
+                other => panic!("Item has no float field {other}"),
+            }
+            self.store.create_item(item).await.map(to_json).map_err(err)
+        }
+        async fn update_item_nan(&self, id: &str, field: &str) -> R<Value> {
+            let mut updates = $krate::store::item::ItemUpdate::default();
+            match field {
+                "float32" => updates.float32 = Some(f32::NAN),
+                "float64" => updates.float64 = Some(f64::NAN),
+                "maybe_float32" => updates.maybe_float32 = Some(Some(f32::NAN)),
+                "maybe_float64" => updates.maybe_float64 = Some(Some(f64::NAN)),
+                other => panic!("Item has no float field {other}"),
+            }
+            self.store.update_item(id, updates).await.map(to_json).map_err(err)
         }
         async fn create_tag(&self, tag: Value) -> R<Value> {
             let tag = serde_json::from_value(tag).expect("a Tag");
@@ -108,7 +142,7 @@ macro_rules! store_methods {
             self.store.update_section(id, input.into()).await.map(to_json).map_err(err)
         }
         async fn list_sections(&self) -> R<Vec<Value>> {
-            self.store.list_sections(None, None).await.map(|v| v.into_iter().map(to_json).collect()).map_err(err)
+            self.store.list_sections(&[], None, None).await.map(|v| v.into_iter().map(to_json).collect()).map_err(err)
         }
         async fn create_fixed(&self, fixed: Value) -> R<Value> {
             let fixed = serde_json::from_value(fixed).expect("a Fixed");
@@ -155,7 +189,7 @@ mod sqlite {
     use super::*;
 
     pub struct Sqlite {
-        store: parity_seaorm::Store,
+        pub store: parity_seaorm::Store,
     }
 
     impl Backend for Sqlite {
@@ -183,7 +217,7 @@ mod vault {
 
     pub struct Vault {
         _dir: tempfile::TempDir,
-        store: parity_markdown::Store,
+        pub store: parity_markdown::Store,
     }
 
     impl Backend for Vault {
@@ -315,7 +349,7 @@ async fn default_order_and_pages<B: Backend>(b: &B, mut t: Transcript) -> Transc
     expected.sort_unstable(); // `str: Ord` is byte order
     assert_eq!(expected, ["-z", "10", "9", "_x", "a", "a-2", "a.b", "a2", "a_b", "alpha", "a~b", "z", "z.z", "~"]);
 
-    t.expect("list", listed_ids(b.list_items(None, None).await), ok_ids(&expected));
+    t.expect("list", listed_ids(b.list_items(&[], None, None).await), ok_ids(&expected));
     t.expect("count", b.count_items().await, Ok(expected.len() as u64));
 
     let n = expected.len() as u64;
@@ -326,7 +360,7 @@ async fn default_order_and_pages<B: Backend>(b: &B, mut t: Transcript) -> Transc
             let end = (start + limit as usize).min(expected.len());
             t.expect(
                 &format!("page limit={limit} offset={offset}"),
-                listed_ids(b.list_items(Some(limit), Some(offset)).await),
+                listed_ids(b.list_items(&[], Some(limit), Some(offset)).await),
                 ok_ids(&expected[start..end]),
             );
             if offset > n || limit == 0 {
@@ -335,8 +369,12 @@ async fn default_order_and_pages<B: Backend>(b: &B, mut t: Transcript) -> Transc
             offset += limit;
         }
     }
-    t.expect("offset past the end", listed_ids(b.list_items(None, Some(n + 1)).await), ok_ids(&[]));
-    t.expect("offset only", listed_ids(b.list_items(None, Some(n - 2)).await), ok_ids(&expected[expected.len() - 2..]));
+    t.expect("offset past the end", listed_ids(b.list_items(&[], None, Some(n + 1)).await), ok_ids(&[]));
+    t.expect(
+        "offset only",
+        listed_ids(b.list_items(&[], None, Some(n - 2)).await),
+        ok_ids(&expected[expected.len() - 2..]),
+    );
     t
 }
 
@@ -365,7 +403,7 @@ async fn oversized_pages<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     for (limit, offset, expected) in cases {
         t.expect(
             &format!("limit={limit:?} offset={offset:?}"),
-            listed_ids(b.list_items(limit, offset).await),
+            listed_ids(b.list_items(&[], limit, offset).await),
             ok_ids(expected),
         );
     }
@@ -399,7 +437,7 @@ async fn field_values_round_trip<B: Backend>(b: &B, mut t: Transcript) -> Transc
         t.expect(&format!("create {id}"), b.create_item(record.clone()).await, Ok(record.clone()));
         t.expect(&format!("get {id}"), b.get_item(id).await, Ok(record.clone()));
     }
-    t.expect("list", b.list_items(None, None).await, Ok(vec![max.clone(), none.clone(), wide.clone()]));
+    t.expect("list", b.list_items(&[], None, None).await, Ok(vec![max.clone(), none.clone(), wide.clone()]));
 
     let mut updated = none.clone();
     updated["maybe_u32"] = json!(u32::MAX);
@@ -509,7 +547,7 @@ async fn linkage_order<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     );
     t.expect("drop a tag", tags(b.update_item("m", json!({ "tags": ["t1", "t2"] })).await), Ok(json!(["t1", "t2"])));
     let listed = b
-        .list_items(None, None)
+        .list_items(&[], None, None)
         .await
         .map(|all| all.into_iter().map(|r| json!([r["id"], r["children"], r["tags"]])).collect::<Vec<_>>());
     t.record("every record's linkage, listed", &listed).unwrap();
@@ -519,6 +557,343 @@ async fn linkage_order<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 #[tokio::test]
 async fn has_many_is_id_ascending_and_many_to_many_is_written_order() {
     parity!(linkage_order);
+}
+
+// ─── Requested order ────────────────────────────────────────────────────────
+
+/// Every sort key of `Item`: its sortable fields (ADR 0006 §2), each
+/// ascending and descending.
+const SORTABLE: &[&str] = &[
+    "id",
+    "title",
+    "int32",
+    "int64",
+    "float32",
+    "float64",
+    "flag",
+    "kind",
+    "maybe_text",
+    "maybe_int32",
+    "maybe_int64",
+    "maybe_float32",
+    "maybe_float64",
+    "maybe_flag",
+    "maybe_kind",
+    "n_u8",
+    "n_u16",
+    "n_u32",
+    "n_u64",
+    "n_usize",
+    "n_u128",
+    "n_i8",
+    "n_i16",
+    "n_isize",
+    "n_i128",
+    "maybe_u32",
+    "maybe_u64",
+];
+
+/// Records whose fields order differently from their ids and from each
+/// other, with nulls, ties, case and non-ASCII strings, both zeros, and
+/// enums whose stored strings sort apart from their declaration.
+fn sort_fixture() -> Vec<Value> {
+    vec![
+        item(
+            "e",
+            json!({
+                "title": "B", "int32": 7, "int64": -5, "float32": 0.0, "float64": -0.0, "flag": true,
+                "kind": "gamma", "maybe_text": "B", "maybe_int32": -1, "maybe_float32": 2.5, "maybe_flag": true,
+                "maybe_kind": "delta", "n_u8": 200, "n_u16": 9, "n_u32": 3_000_000_000u32, "n_u64": 10, "n_usize": 9,
+                "n_u128": 1, "n_i8": -128, "n_i16": 5, "n_isize": -9, "n_i128": 9, "maybe_u32": 3_000_000_000u32,
+                "maybe_u64": 9,
+            }),
+        ),
+        item(
+            "b",
+            json!({
+                "title": "a", "int32": -7, "int64": 5, "float32": -0.0, "float64": 0.0, "kind": "alpha",
+                "maybe_text": "", "maybe_int64": 10, "maybe_float32": -0.0, "maybe_float64": 1.0, "n_u8": 9,
+                "n_u16": 10, "n_u32": 9, "n_u64": 9, "n_usize": 10, "n_u128": 3_000_000_000u64, "n_i8": 9,
+                "n_i16": -10, "n_isize": 10, "n_i128": -9, "maybe_u32": 10,
+            }),
+        ),
+        item(
+            "h",
+            json!({
+                "title": "é", "int32": 7, "float32": 1.5, "float64": -1e10, "flag": true, "kind": "beta",
+                "maybe_int32": 9, "maybe_int64": -3, "maybe_float64": -0.0, "maybe_flag": false,
+                "maybe_kind": "gamma", "n_u8": 10, "n_u32": 10, "n_u64": i64::MAX, "n_u128": 9, "n_i8": 10,
+                "n_i16": 9, "n_isize": 9, "n_i128": 10, "maybe_u32": 9, "maybe_u64": 10,
+            }),
+        ),
+        item(
+            "a",
+            json!({
+                "title": "z", "float32": -1.25, "float64": 2.0, "kind": "delta", "maybe_text": "a",
+                "maybe_int32": -1, "maybe_float32": 0.0, "maybe_float64": 0.0, "maybe_flag": true,
+                "maybe_kind": "alpha",
+            }),
+        ),
+        item("j", json!({ "title": "B", "maybe_text": "é", "maybe_kind": "beta", "maybe_u32": 3_000_000_000u32 })),
+        item("c", json!({})),
+        item("g", json!({ "title": "", "maybe_text": "z", "maybe_kind": "gamma", "maybe_flag": false })),
+        item("d", json!({ "title": "a", "kind": "gamma", "flag": true, "maybe_u32": 0 })),
+    ]
+}
+
+/// ADR 0006 §3 restated over the records' JSON, independently of either
+/// store: nulls first, strings by bytes, numbers numerically with `-0.0`
+/// equal to `0.0`, `false < true`, and enums by the string they are
+/// stored as (the JSON value).
+fn reference_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Value::Null, Value::Null) => Ordering::Equal,
+        (Value::Null, _) => Ordering::Less,
+        (_, Value::Null) => Ordering::Greater,
+        (Value::String(x), Value::String(y)) => x.as_bytes().cmp(y.as_bytes()),
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        (Value::Number(x), Value::Number(y)) => {
+            let int = |n: &serde_json::Number| n.as_i64().map(i128::from).or(n.as_u64().map(i128::from));
+            match (int(x), int(y)) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                _ => {
+                    let (x, y) = (x.as_f64().unwrap(), y.as_f64().unwrap());
+                    if x == 0.0 && y == 0.0 { Ordering::Equal } else { x.total_cmp(&y) }
+                }
+            }
+        }
+        _ => panic!("incomparable {a} and {b}"),
+    }
+}
+
+/// The ids of `records` in the order `sort` asks for, then by id.
+fn reference_order(records: &[Value], sort: &[&str]) -> Vec<String> {
+    let mut sorted = records.to_vec();
+    sorted.sort_by(|a, b| {
+        sort.iter()
+            .chain(std::iter::once(&"id"))
+            .map(|key| {
+                let (field, desc) = key.strip_prefix('-').map_or((*key, false), |f| (f, true));
+                let ord = reference_cmp(&a[field], &b[field]);
+                if desc { ord.reverse() } else { ord }
+            })
+            .find(|o| o.is_ne())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    ids(&sorted)
+}
+
+async fn load<B: Backend>(b: &B, t: &mut Transcript, records: &[Value]) {
+    for record in records {
+        let id = record["id"].as_str().unwrap();
+        t.expect(&format!("create {id}"), b.create_item(record.clone()).await.map(|r| r["id"].clone()), Ok(json!(id)));
+    }
+}
+
+async fn every_field_both_ways<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let records = sort_fixture();
+    load(b, &mut t, &records).await;
+    t.expect(
+        "default order",
+        listed_ids(b.list_items(&[], None, None).await),
+        ok_ids(&["a", "b", "c", "d", "e", "g", "h", "j"]),
+    );
+    for field in SORTABLE {
+        for key in [field.to_string(), format!("-{field}")] {
+            let expected = reference_order(&records, &[key.as_str()]);
+            t.expect(&format!("sort {key}"), listed_ids(b.list_items(&[key.as_str()], None, None).await), Ok(expected));
+        }
+    }
+    t
+}
+
+#[tokio::test]
+async fn every_sortable_field_orders_alike_both_ways() {
+    parity!(every_field_both_ways);
+}
+
+async fn multi_key_orders<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let records = sort_fixture();
+    load(b, &mut t, &records).await;
+    let orders: &[&[&str]] = &[
+        &["-flag", "title"],
+        &["kind", "-maybe_text", "float64"],
+        &["-maybe_kind", "int32", "-id"],
+        &["maybe_flag", "-n_u32", "maybe_float32"],
+        &["title", "-id"],
+        &["-maybe_u32", "-title"],
+    ];
+    for sort in orders {
+        let expected = reference_order(&records, sort);
+        t.expect(&format!("sort {sort:?}"), listed_ids(b.list_items(sort, None, None).await), Ok(expected));
+    }
+    t
+}
+
+#[tokio::test]
+async fn a_multi_key_order_with_mixed_directions_orders_alike() {
+    parity!(multi_key_orders);
+}
+
+/// The rules spelled out, so that the reference comparator cannot be wrong
+/// in the same way as both stores.
+async fn pinned_orders<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let records = sort_fixture();
+    load(b, &mut t, &records).await;
+    let cases: &[(&[&str], &[&str])] = &[
+        // Byte order: "" < "B" < "Item c" < "a" < "z" < "é"; the two "B"s
+        // and the two "a"s tie and fall back to id.
+        (&["title"], &["g", "e", "j", "c", "b", "d", "a", "h"]),
+        // Nulls first, an empty string is a value.
+        (&["maybe_text"], &["c", "d", "h", "b", "e", "a", "g", "j"]),
+        // Nulls last when descending; the tie-break stays ascending.
+        (&["-maybe_text"], &["j", "g", "a", "e", "b", "c", "d", "h"]),
+        // -0.0 equals 0.0: id decides between them, whichever way.
+        (&["float64"], &["h", "b", "c", "d", "e", "g", "j", "a"]),
+        (&["-float64"], &["a", "b", "c", "d", "e", "g", "j", "h"]),
+        // Numeric, not text (9 < 10) and above i32::MAX.
+        (&["maybe_u32"], &["a", "c", "g", "d", "h", "b", "e", "j"]),
+        (&["-maybe_u32"], &["e", "j", "b", "h", "d", "a", "c", "g"]),
+        // By stored string (alpha < beta < delta < gamma), not declaration
+        // order (gamma, alpha, beta, zeta).
+        (&["kind"], &["b", "c", "g", "j", "h", "a", "d", "e"]),
+        (&["maybe_kind"], &["b", "c", "d", "a", "j", "e", "g", "h"]),
+        // A requested id key replaces the tie-break.
+        (&["-id"], &["j", "h", "g", "e", "d", "c", "b", "a"]),
+        (&["flag", "-id"], &["j", "g", "c", "b", "a", "h", "e", "d"]),
+    ];
+    for (sort, expected) in cases {
+        assert_eq!(reference_order(&records, sort), *expected, "the reference agrees on {sort:?}");
+        t.expect(&format!("pinned {sort:?}"), listed_ids(b.list_items(sort, None, None).await), ok_ids(expected));
+    }
+    t
+}
+
+#[tokio::test]
+async fn bytes_nulls_zeros_numbers_and_enums_order_as_adr_0006_says() {
+    parity!(pinned_orders);
+}
+
+/// A limit/offset walk over an order whose first key ties across most
+/// records: every page is the matching slice of the whole list.
+async fn pages_across_ties<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let mut records = Vec::new();
+    for (i, id) in ["m", "c", "x", "a", "q", "b", "z", "k", "e", "t"].iter().enumerate() {
+        let int32 = if i % 4 == 0 { 1 } else { 0 };
+        records.push(item(id, json!({ "int32": int32, "flag": i % 3 == 0 })));
+    }
+    load(b, &mut t, &records).await;
+    let sorts: &[&[&str]] = &[&["int32"], &["-int32"], &["flag", "-int32"], &["-flag"]];
+    for sort in sorts {
+        let whole = reference_order(&records, sort);
+        t.expect(&format!("{sort:?} whole"), listed_ids(b.list_items(sort, None, None).await), Ok(whole.clone()));
+        for limit in [1, 2, 3, 4] {
+            for offset in (0..=whole.len()).step_by(limit) {
+                let page = whole[offset..(offset + limit).min(whole.len())].to_vec();
+                t.expect(
+                    &format!("{sort:?} limit={limit} offset={offset}"),
+                    listed_ids(b.list_items(sort, Some(limit as u64), Some(offset as u64)).await),
+                    Ok(page),
+                );
+            }
+        }
+    }
+    t
+}
+
+#[tokio::test]
+async fn every_page_of_a_walk_across_ties_is_a_slice_of_the_order() {
+    parity!(pages_across_ties);
+}
+
+/// `sort_items` over SeaORM's records fetched in other orders gives what
+/// `list_items` gives: the in-memory comparator and the SQL agree, and
+/// neither depends on the order rows arrive in.
+#[tokio::test]
+async fn sort_items_over_unordered_rows_matches_the_sql_order() {
+    use parity_seaorm::persistence::db::entities::item as rows;
+    use parity_seaorm::store::item::{ItemSortField, sort_items};
+    use sea_orm::{EntityTrait, QueryOrder};
+
+    let b = Sqlite::open().await;
+    let mut t = Transcript::new::<Sqlite>();
+    load(&b, &mut t, &sort_fixture()).await;
+    let fetches = [
+        rows::Entity::find().order_by_desc(rows::Column::Id),
+        rows::Entity::find().order_by_asc(rows::Column::Title).order_by_desc(rows::Column::Int32),
+        rows::Entity::find().order_by_desc(rows::Column::MaybeFloat64).order_by_asc(rows::Column::NU8),
+    ];
+    let orders: &[&[&str]] =
+        &[&[], &["title"], &["-kind", "float32"], &["maybe_text", "-maybe_u32"], &["-flag", "-id"]];
+    for fetch in fetches {
+        let models = fetch.all(b.store.db()).await.expect("fetch");
+        let fetched: Vec<parity_seaorm::schema::Item> =
+            models.iter().map(parity_seaorm::schema::Item::from_model).collect::<Result<_, _>>().expect("decode");
+        assert_ne!(
+            fetched.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b", "c", "d", "e", "g", "h", "j"],
+            "the rows arrive in some order other than id order"
+        );
+        for sort in orders {
+            let order = ontogen_core::order::parse_sort::<ItemSortField>(*sort).expect("sort keys");
+            let mut sorted = fetched.clone();
+            sort_items(&mut sorted, &order);
+            let in_memory: Vec<String> = sorted.into_iter().map(|i| i.id).collect();
+            assert_eq!(Ok(in_memory), listed_ids(b.list_items(sort, None, None).await), "{sort:?}");
+        }
+    }
+}
+
+// ─── NaN ────────────────────────────────────────────────────────────────────
+
+const FLOATS: &[&str] = &["float32", "float64", "maybe_float32", "maybe_float64"];
+
+/// A NaN a write sets is refused on both backends with the catch-all, and
+/// nothing is stored (ADR 0006 §3).
+async fn nan_writes<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    for field in FLOATS {
+        let label = format!("create with {field} NaN");
+        let result = b.create_item_nan(item(&format!("nan-{field}"), json!({})), field).await;
+        assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] {label}: {result:?}", B::NAME);
+        t.record(label, &result).unwrap_err();
+    }
+    t.expect("nothing was stored", b.count_items().await, Ok(0));
+
+    let base = item("base", json!({ "float32": 1.5, "maybe_float64": 2.5 }));
+    t.expect("create base", b.create_item(base.clone()).await, Ok(base.clone()));
+    for field in FLOATS {
+        let label = format!("update {field} to NaN");
+        let result = b.update_item_nan("base", field).await;
+        assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] {label}: {result:?}", B::NAME);
+        t.record(label, &result).unwrap_err();
+    }
+    t.expect("base is unchanged", b.get_item("base").await, Ok(base));
+    t
+}
+
+#[tokio::test]
+async fn a_nan_write_is_refused_and_stores_nothing() {
+    parity!(nan_writes);
+}
+
+/// Markdown only, since SQLite cannot hold a NaN: one written into the file
+/// by hand does not fail an update that leaves the field alone.
+#[tokio::test]
+async fn a_hand_written_nan_does_not_fail_an_update_that_leaves_it() {
+    let b = Vault::open().await;
+    b.create_item(item("hand", json!({ "float64": 1.5 }))).await.expect("create");
+    let path = b.store.vault().root().join("items/hand.md");
+    let text = std::fs::read_to_string(&path).expect("read");
+    let edited = text.replace("float64: 1.5\n", "float64: .nan\n");
+    assert_ne!(text, edited, "the field is in the file: {text}");
+    std::fs::write(&path, edited).expect("write");
+
+    let updated = b.update_item("hand", json!({ "title": "Renamed" })).await.expect("the update succeeds");
+    assert_eq!(updated["title"], json!("Renamed"));
+    assert_eq!(updated["float64"], Value::Null, "the NaN is still there (JSON has no NaN)");
+    let refused = b.update_item_nan("hand", "float32").await;
+    assert!(matches!(refused, Err(StoreError::Backend(_))), "setting a NaN is still refused: {refused:?}");
 }
 
 // ─── Create: ids ────────────────────────────────────────────────────────────
@@ -598,7 +973,7 @@ async fn create_ids<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     }
     t.expect(
         "only the valid creates were stored",
-        listed_ids(b.list_items(None, None).await),
+        listed_ids(b.list_items(&[], None, None).await),
         ok_ids(&["dup", "index-2", "index-3", "log-2", "same", "same-2", "same-3", "same-4", "same-5"]),
     );
 
@@ -685,7 +1060,7 @@ async fn id_length<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
         format!("{}-2", "x".repeat(190)),
     ];
     expected.sort_unstable();
-    let listed = listed_ids(b.list_items(None, None).await);
+    let listed = listed_ids(b.list_items(&[], None, None).await);
     assert_eq!(listed, Ok(expected.clone()), "[{}] list", B::NAME);
     t.record("list", &listed).unwrap();
     t
@@ -730,7 +1105,7 @@ async fn device_names<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     t.expect("COM0 derives com0-2", created_id(b.create_item(derive("COM0")).await), Ok("com0-2".into()));
     t.expect(
         "only the valid creates were stored",
-        listed_ids(b.list_items(None, None).await),
+        listed_ids(b.list_items(&[], None, None).await),
         ok_ids(&[
             "a.con", "com0-2", "com10", "con-2", "con-2x", "con-3", "console", "lpt1-2", "lpt10", "nul-x", "xcon",
         ]),
@@ -807,7 +1182,7 @@ async fn spelling_variants<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     }
     t.expect("kept is unchanged", b.get_item("kept").await, Ok(kept));
     t.expect("the hand-named record is unchanged", b.get_item(cafe).await, Ok(hand));
-    t.expect("nothing was removed", listed_ids(b.list_items(None, None).await), ok_ids(&[cafe, "kept"]));
+    t.expect("nothing was removed", listed_ids(b.list_items(&[], None, None).await), ok_ids(&[cafe, "kept"]));
     t
 }
 
@@ -901,7 +1276,7 @@ async fn missing_children<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
         t.record(format!("create {kid}"), &b.create_item(item(kid, json!({ "parent_id": "p" }))).await).unwrap();
     }
     t.record("create loose", &b.create_item(item("loose", json!({}))).await).unwrap();
-    let before = b.list_items(None, None).await;
+    let before = b.list_items(&[], None, None).await;
     let not_found = |id: &str| Err(StoreError::NotFound("Item", id.into()));
 
     // Create: the first missing child in list order, and no record.
@@ -921,7 +1296,7 @@ async fn missing_children<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
         b.create_item(item("", json!({ "title": "!!!", "children": ["ghost"] }))).await,
         not_found("ghost"),
     );
-    t.expect("nothing was written", b.list_items(None, None).await, before.clone());
+    t.expect("nothing was written", b.list_items(&[], None, None).await, before.clone());
 
     // Update: the record and every child unchanged.
     t.expect(
@@ -929,7 +1304,7 @@ async fn missing_children<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
         b.update_item("p", json!({ "title": "Renamed", "children": ["k1", "loose", "ghost"] })).await,
         not_found("ghost"),
     );
-    t.expect("nothing was updated", b.list_items(None, None).await, before);
+    t.expect("nothing was updated", b.list_items(&[], None, None).await, before);
 
     // A child listed twice is not a missing one.
     let children = |v: R<Value>| v.map(|r| r["children"].clone());

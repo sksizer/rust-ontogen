@@ -13,7 +13,7 @@ use ontogen_core::ir::OpKind;
 use ontogen_core::model::{EntityDef, FieldRole, FieldType};
 
 use crate::clients::config::Config;
-use crate::clients::generators::command_name;
+use crate::clients::generators::{command_name, typed_params};
 use crate::servers::classify::classify_op;
 use crate::servers::parse::ApiModule;
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts};
@@ -55,7 +55,7 @@ pub fn module_referenced_ts_types(m: &ApiModule, config: &Config) -> Vec<String>
         }
         let ts_ret = rust_type_to_ts(&f.return_type);
         collect_ts_import(&ts_ret, &mut import_types);
-        for p in &f.params {
+        for p in typed_params(f) {
             let ty = extract_input_type(&p.ty);
             let ts_ty = rust_type_to_ts(&ty);
             collect_ts_import(&ts_ty, &mut import_types);

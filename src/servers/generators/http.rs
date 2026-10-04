@@ -778,6 +778,21 @@ fn ontogen_removed(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
 ",
     ),
     (
+        "refuse_sort",
+        "\
+/// The answer to `sort` on a list whose API fn takes no order: the server
+/// cannot order it, which JSON:API answers with a `400`.
+fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
+    match query.sort()? {
+        None => Ok(()),
+        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!(\"`{type_name}` cannot be sorted\"))
+            .with_parameter(\"sort\")),
+    }
+}
+
+",
+    ),
+    (
         "PageOpArgs",
         "\
 /// A paginated list that is not served as a resource takes its page as
@@ -813,16 +828,6 @@ struct GetParams;
 
 impl RouteQuery for GetParams {
     const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
-}
-
-/// No list takes an `order` argument, so every `sort` asks for an order the
-/// server does not support.
-fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
-    match query.sort()? {
-        None => Ok(()),
-        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!(\"`{type_name}` cannot be sorted\"))
-            .with_parameter(\"sort\")),
-    }
 }
 
 /// The effective `(offset, limit)` of a paginated list.
@@ -1366,7 +1371,7 @@ fn filter_reads(f: &ApiFn, query: &str) -> String {
 /// The arguments a list's filter is passed as, in declaration order, each
 /// as [`filter_arg`] decides.
 fn filter_args(f: &ApiFn, counted: bool) -> Vec<String> {
-    f.filter().iter().map(|p| filter_arg(p, &filter_binding(p), counted)).collect()
+    f.filter().into_iter().map(|p| filter_arg(p, &filter_binding(p), counted)).collect()
 }
 
 /// How a generated fn binds the route prefix's value as [`SCOPE`].
@@ -1496,12 +1501,18 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
             } else {
                 "ListParams".to_string()
             };
-            // The links repeat the filter and `include` the request sent
-            // (§4.3).
+            // The links repeat the filter, `sort` and `include` the request
+            // sent (§4.3).
             let filter = if f.takes_filter() { filter_reads(f, "query") } else { String::new() };
+            // A list that takes an order follows its filter with it (§7.3).
+            let (sort, order) = if f.takes_order() {
+                (format!("    let order = query.sort_order(\"{type_name}\")?;\n"), vec!["&order".to_string()])
+            } else {
+                (format!("    refuse_sort(&query, \"{type_name}\")?;\n"), Vec::new())
+            };
             let (page, call, document) = match paging {
                 Some(pg) => {
-                    let list_args = [vec![arg.to_string()], filter_args(f, true)].concat().join(", ");
+                    let list_args = [vec![arg.to_string()], filter_args(f, true), order].concat().join(", ");
                     let count_args = [vec![arg.to_string()], filter_args(f, false)].concat().join(", ");
                     (
                         format!("    let (offset, limit) = page(&query, {}, {})?;\n", pg.default_limit, pg.max_limit),
@@ -1516,7 +1527,7 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
                     )
                 }
                 None => {
-                    let mut args = [vec![arg.to_string()], filter_args(f, false)].concat();
+                    let mut args = [vec![arg.to_string()], filter_args(f, false), order].concat();
                     if f.takes_page() {
                         args.extend(["None".to_string(), "None".to_string()]);
                     }
@@ -1529,9 +1540,9 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
                 }
             };
             out.push_str(&format!(
-                "{head}{collection_extract}    query: Query<{params}>,\n{tail}{filter}    refuse_sort(&query, \
-                 \"{type_name}\")?;\n{include}{page}{link_query}{open}{call}{collection}    let data: Vec<_> = \
-                 items.iter().map({}).collect();\n{document}{}    Ok(response::ok(&document))\n}}\n\n",
+                "{head}{collection_extract}    query: Query<{params}>,\n{tail}{filter}{sort}{include}{page}{link_query}\
+                 {open}{call}{collection}    let data: Vec<_> = items.iter().map({}).collect();\n{document}{}    \
+                 Ok(response::ok(&document))\n}}\n\n",
                 // A builder taking the entity alone is passed as it is
                 // (clippy's `redundant_closure`).
                 if linked { format!("|entity| {}", as_resource("entity")) } else { names.resource.clone() },
@@ -1841,7 +1852,8 @@ fn op_handler(
     let args: Vec<String> = if classify_op(m, f) == OpKind::List {
         // A list's filter, then its page: from the store when it pages,
         // and none when it does not.
-        let page = f.params[f.filter().len()..]
+        let page = f
+            .page()
             .iter()
             .map(|p| if store_paged { format!("Some(u64::from(ontogen_{}))", p.name) } else { "None".to_string() });
         [first_arg.clone(), filter_args(f, store_paged), page.collect()].concat()

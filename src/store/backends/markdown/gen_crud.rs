@@ -12,8 +12,10 @@
 use crate::ir::IdStrategy;
 use crate::persistence::seaorm::gen_entity::{is_integer_primitive, widens_to_i64_losslessly};
 use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType};
+use crate::store::gen_order::sort_field_type;
 use crate::store::has_many::{self, has_many_writes};
 use crate::store::helpers::{pluralize, to_snake_case};
+use crate::store::nan::{FloatSource, Skipped, emit_nan_checks};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -89,15 +91,19 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let plural = pluralize(&snake);
     let fm = fm_type(name);
     let records = records(&snake);
+    let sort_field = sort_field_type(entity);
 
     code.push_str(&format!(
-        "    pub async fn list_{plural}(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
+        "    pub async fn list_{plural}(&self, order: &[OrderBy<{sort_field}>], limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
     ));
     code.push_str(&format!("        let mut {plural} = Vec::new();\n"));
     code.push_str(&format!("        for (id, doc) in self.vault().{records}.read_all().map_err(AppError::from)? {{\n"));
     code.push_str(&format!("            let fm: {fm} = doc.deserialize().map_err(AppError::from)?;\n"));
     code.push_str(&format!("            {plural}.push({});\n", into_call(&snake, entity, "id", "doc")));
     code.push_str("        }\n");
+    // The walk's path order is not the list order: a nested layout's paths
+    // do not sort as its ids do (ADR 0006 §5). The sort precedes the page.
+    code.push_str(&format!("        sort_{plural}(&mut {plural}, order);\n"));
     code.push_str("        let offset = offset.unwrap_or(0) as usize;\n");
     code.push_str("        let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);\n");
 
@@ -184,6 +190,7 @@ fn generate_create(code: &mut String, entity: &EntityDef, id_strategy: &IdStrate
     }
     has_many::emit_missing_children_check(code, entity, &writes, |f| format!("&{f}"));
     emit_integer_range_checks(code, entity, IntegerSource::Record(&snake));
+    emit_nan_checks(code, entity, FloatSource::Record(&snake), Skipped::NotStored, serialize_error);
 
     code.push_str("        let mut doc = markdown_store::Document::new();\n");
     code.push_str(&format!(
@@ -257,6 +264,7 @@ fn generate_update(code: &mut String, entity: &EntityDef) {
     has_many::emit_missing_children_check(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
     has_many::emit_dropped_children(code, &writes);
     emit_integer_range_checks(code, entity, IntegerSource::Updates);
+    emit_nan_checks(code, entity, FloatSource::Updates, Skipped::NotStored, serialize_error);
 
     code.push_str("        self.vault()\n");
     code.push_str(&format!("            .{records}\n"));
@@ -409,15 +417,21 @@ fn emit_integer_range_checks(code: &mut String, entity: &EntityDef, source: Inte
             (IntegerSource::Updates, true) => format!("updates.{f}.flatten()"),
         };
         code.push_str(&format!("        if let Some(v) = {value}.filter(|v| i64::try_from(*v).is_err()) {{\n"));
-        code.push_str("            return Err(AppError::from(markdown_store::Error::Serialize {\n");
-        code.push_str(&format!("                message: format!(\"{message}\"),\n"));
-        code.push_str("            }));\n");
+        code.push_str(&format!("            return Err({});\n", serialize_error(&format!("format!(\"{message}\")"))));
         code.push_str("        }\n");
         any = true;
     }
     if any {
         code.push('\n');
     }
+}
+
+/// The catch-all the markdown store refuses a value with before writing:
+/// `markdown_store::Error::Serialize` into the consumer's `AppError`, as a
+/// value the vault could hold but SeaORM could not. `message` is an
+/// expression of type `String`.
+fn serialize_error(message: &str) -> String {
+    format!("AppError::from(markdown_store::Error::Serialize {{ message: {message} }})")
 }
 
 // ─── set_parent helper ───────────────────────────────────────────────────────
@@ -593,7 +607,12 @@ mod tests {
         let check = create.find("if let Some(v) = Some(node.seq).filter(|v| i64::try_from(*v).is_err()) {");
         let check = check.unwrap_or_else(|| panic!("create checks a bare u64: {create}"));
         assert!(create.contains("if let Some(v) = node.cap.filter(|v| i64::try_from(*v).is_err()) {"), "{create}");
-        assert!(create.contains(r#"message: format!("Node.seq: value {v} is out of range for i64"),"#), "{create}");
+        assert!(
+            create.contains(
+                r#"return Err(AppError::from(markdown_store::Error::Serialize { message: format!("Node.seq: value {v} is out of range for i64") }));"#
+            ),
+            "{create}"
+        );
         assert!(check > create.find("if !self.node_exists(child_id)").unwrap(), "after the child check: {create}");
         assert!(check < create.find(".create(\n").unwrap(), "before the record write: {create}");
 
@@ -606,6 +625,48 @@ mod tests {
 
         assert!(!code.contains("small"), "a u32 always fits: {code}");
         assert!(!code.contains("hidden"), "a skipped field is not stored: {code}");
+        syn::parse_file(&code).unwrap_or_else(|e| panic!("invalid Rust: {e}\n{code}"));
+    }
+
+    #[test]
+    fn a_list_sorts_every_record_before_it_cuts_the_page() {
+        let code = crud(&node(FieldType::OptionString));
+        let list = method(&code, "list_nodes");
+        assert!(
+            list.contains(
+                "fn list_nodes(&self, order: &[OrderBy<NodeSortField>], limit: Option<u64>, offset: Option<u64>)"
+            ),
+            "{list}"
+        );
+        let sort = list.find("sort_nodes(&mut nodes, order);").expect("the list sorts");
+        assert!(sort > list.find("read_all()").unwrap(), "after every record is read: {list}");
+        assert!(sort < list.find(".skip(offset)").unwrap(), "before the page is cut: {list}");
+    }
+
+    #[test]
+    fn a_nan_is_refused_after_the_hook_and_before_anything_is_written() {
+        let mut entity = node(FieldType::OptionString);
+        entity.fields.push(FieldDef::new("weight", FieldType::F64, FieldRole::Plain));
+        entity.fields.push(FieldDef::new("low", FieldType::OptionF32, FieldRole::Plain));
+        // Never written to the file, so never checked.
+        entity.fields.push(FieldDef::new("cached", FieldType::F64, FieldRole::Skip));
+        let code = crud(&entity);
+        assert!(!code.contains("cached.is_nan"), "{code}");
+        let refusal = r#"return Err(AppError::from(markdown_store::Error::Serialize { message: "Node.weight: NaN cannot be stored".to_string() }));"#;
+
+        let create = method(&code, "create_node");
+        let check = create.find("if node.weight.is_nan() {").unwrap_or_else(|| panic!("create checks: {create}"));
+        assert!(create.contains("if node.low.is_some_and(f32::is_nan) {"), "{create}");
+        assert!(create.contains(refusal), "{create}");
+        assert!(check > create.find("hooks::before_create").unwrap(), "after the hook: {create}");
+        assert!(check < create.find(".create(\n").unwrap(), "before the record write: {create}");
+
+        let update = method(&code, "update_node");
+        let check = update.find("if updates.weight.is_some_and(f64::is_nan) {").unwrap_or_else(|| panic!("{update}"));
+        assert!(update.contains("if updates.low.flatten().is_some_and(f32::is_nan) {"), "{update}");
+        assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
+        assert!(check < update.find(".modify(id,").unwrap(), "before the record write: {update}");
+        assert!(!update.contains("current.weight"), "only what the update sets is checked: {update}");
         syn::parse_file(&code).unwrap_or_else(|e| panic!("invalid Rust: {e}\n{code}"));
     }
 

@@ -335,7 +335,7 @@ fn main() {
 Two fields worth noticing, because they're easy to miss and the compiler will demand them:
 
 - **`ts_formatter`** — `TsFormatter::None` emits the TypeScript exactly as generated. Iron Log's Nuxt app runs its own formatter over the tree, so there's nothing for Ontogen to do here.
-- **`error_source_dir`** — left `None` because `Pipeline` fills it with the schema directory. The generated HTTP server scans that directory for `enum AppError` and maps each variant to an HTTP status and `code`. A direct `gen_servers` caller sets it, and passes `&schema.entities` as the first argument of `gen_servers` and `gen_clients`.
+- **`error_source_dir`** — left `None` because `Pipeline` fills it with the schema directory. The generated HTTP server scans that directory for `enum AppError` and maps each variant to an HTTP status and `code`. A direct `gen_servers` caller sets it, and passes `&schema` as the first argument of `gen_servers` and `gen_clients`.
 
 Pipeline runs every stage in dependency order regardless of method-call order. It also threads each stage's typed output (`SchemaOutput → SeaOrmOutput → ApiOutput → ServersOutput / ()`) into the next, applies `schema_module_path` defaults to `StoreConfig`/`ApiConfig`, and passes `schema.entities` to the servers and clients stages, so the HTTP resources and the admin-registry field metadata come from the parsed schema.
 

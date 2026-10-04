@@ -24,8 +24,7 @@ pub use config::ServerGenerator as ServerGeneratorConfig;
 use std::path::PathBuf;
 
 use crate::CodegenError;
-use crate::ir::{ApiOutput, HttpRouteMeta, IpcCommandMeta, McpToolMeta, ParamMeta, ServersOutput};
-use crate::model::EntityDef;
+use crate::ir::{ApiOutput, HttpRouteMeta, IpcCommandMeta, McpToolMeta, ParamMeta, SchemaOutput, ServersOutput};
 use crate::resource::ResourceModel;
 
 /// Generate server transports (Axum / Tauri IPC / MCP).
@@ -37,12 +36,12 @@ use crate::resource::ResourceModel;
 /// [`crate::gen_clients`] entry point; this function no longer touches
 /// the TS surface.
 pub fn generate(
-    entities: &[EntityDef],
+    schema: &SchemaOutput,
     _api: Option<&ApiOutput>,
     _scan_dirs: &[PathBuf],
     config: &crate::ServersConfig,
 ) -> Result<ServersOutput, CodegenError> {
-    let resources = ResourceModel::build(entities, &config.naming).map_err(CodegenError::Server)?;
+    let resources = ResourceModel::build(&schema.entities, &config.naming).map_err(CodegenError::Server)?;
     let error_map = match &config.error_source_dir {
         Some(dir) => error_map::scan(dir).map_err(CodegenError::Server)?,
         None => None,
@@ -64,6 +63,7 @@ pub fn generate(
         pagination: config.pagination.clone(),
         extra_surfaces: config.extra_surfaces.clone(),
         resources,
+        enums: schema.enums.clone(),
         error_map,
     };
 
@@ -226,6 +226,7 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     if modules.is_empty() {
         return Ok(modules);
     }
+    classify::check_order_params(&modules, &config.resources)?;
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::HttpAxum { .. })) {
         classify::check_http_ops(&modules, &config.resources, config.route_prefix.as_ref())?;
         generators::http::check_resource_ops(&modules, config)?;
@@ -235,10 +236,11 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     }
 
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::TauriIpc { .. })) {
-        generators::ipc::check_wire_keys(&modules, config)?;
+        generators::ipc::check_wire_keys(&modules, &generators::ipc::WireKeyScope::of(config))?;
     }
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::Mcp { .. })) {
         generators::mcp::check_scope_key(&modules, config)?;
+        generators::mcp::check_sort_key(&modules, config)?;
     }
 
     for generator in &config.generators {

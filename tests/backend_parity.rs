@@ -4,14 +4,17 @@
 //! backends. Two consumers in one workspace can share the entire transport
 //! stack while their stores diverge.
 //!
-//! Enforced three ways, under every `IdStrategy` and with per-entity
+//! Enforced four ways, under every `IdStrategy` and with per-entity
 //! overrides (the default reaches the store of either backend through
 //! `StoreConfig`, an override through the entity, and neither may change
 //! anything above it):
 //! - `StoreOutput` method metadata is compared field-by-field (the fast
-//!   unit-level guard — `collect_method_meta` must never branch on backend);
+//!   unit-level guard — `collect_method_meta` must never branch on backend),
+//!   `list_*` with its `order` and `count_*` included;
 //! - the public signatures of each generated store module, `count_*`
 //!   included, are compared, since the API layer calls them by name;
+//! - each module's `{Entity}SortField` and `sort_{plural}` source, which
+//!   hand-written lists order with (ADR 0006 §7), is compared byte for byte;
 //! - the full downstream output trees (API with a paginated module, the
 //!   HTTP, IPC and MCP servers, the TS client, bindings and admin registry)
 //!   are diffed recursively, byte for byte.
@@ -23,17 +26,24 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use ontogen::clients::ClientGenerator;
+use ontogen::ir::SchemaOutput;
 use ontogen::ir::{Backend, IdStrategy, MarkdownIoOutput, StoreOutput};
 use ontogen::servers::{NamingConfig, ServerGenerator};
 use ontogen::{ApiConfig, ApiOutput, ClientsConfig, EntityDef, SchemaConfig, ServersConfig, StoreConfig};
 use quote::ToTokens;
 
-fn fixture_entities() -> Vec<EntityDef> {
+fn fixture_schema() -> SchemaOutput {
     // The relation-complete pilot schema: belongs_to + self-referential
     // has_many (optional and required foreign keys) + many_to_many + body
     // fields.
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/markdown-pilot/src/schema");
-    ontogen::parse_schema(&SchemaConfig { schema_dir: dir }).expect("parse pilot schema").entities
+    ontogen::parse_schema(&SchemaConfig { schema_dir: dir }).expect("parse pilot schema")
+}
+
+/// The runtime parity fixture's schema, with a field of every sortable type.
+fn parity_schema() -> SchemaOutput {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/parity/schema");
+    ontogen::parse_schema(&SchemaConfig { schema_dir: dir }).expect("parse parity schema")
 }
 
 /// Every strategy the pilot schema admits (each entity has a `title`).
@@ -59,9 +69,9 @@ fn markdown_backend(entities: &[EntityDef]) -> Backend {
     })
 }
 
-fn gen_store_with(entities: &[EntityDef], backend: Backend, id_strategy: &IdStrategy, out: &Path) -> StoreOutput {
+fn gen_store_with(schema: &SchemaOutput, backend: Backend, id_strategy: &IdStrategy, out: &Path) -> StoreOutput {
     ontogen::gen_store(
-        entities,
+        schema,
         &StoreConfig {
             output_dir: out.to_path_buf(),
             hooks_dir: None,
@@ -98,7 +108,7 @@ pub async fn list(
     limit: Option<u64>,
     offset: Option<u64>,
 ) -> Result<Vec<Task>, AppError> {
-    let tasks = store.list_tasks(None, None).await?;
+    let tasks = store.list_tasks(&[], None, None).await?;
     let _ = (query, limit, offset);
     Ok(tasks)
 }
@@ -137,21 +147,21 @@ fn gen_api_into(entities: &[EntityDef], api_dir: &Path) -> ApiOutput {
 
 /// Generate one backend's whole stack under `root`: the store, then
 /// everything above it. Returns the store's metadata.
-fn gen_stack(entities: &[EntityDef], backend: Backend, id_strategy: &IdStrategy, root: &Path) -> StoreOutput {
-    gen_stack_with(entities, backend, id_strategy, root, true)
+fn gen_stack(schema: &SchemaOutput, backend: Backend, id_strategy: &IdStrategy, root: &Path) -> StoreOutput {
+    gen_stack_with(schema, backend, id_strategy, root, true)
 }
 
 /// [`gen_stack`], with the TS clients left out when `clients` is false.
 fn gen_stack_with(
-    entities: &[EntityDef],
+    schema: &SchemaOutput,
     backend: Backend,
     id_strategy: &IdStrategy,
     root: &Path,
     clients: bool,
 ) -> StoreOutput {
-    let store = gen_store_with(entities, backend, id_strategy, &root.join("store"));
+    let store = gen_store_with(schema, backend, id_strategy, &root.join("store"));
     let above = root.join("above");
-    let api = gen_api_into(entities, &above.join("api"));
+    let api = gen_api_into(&schema.entities, &above.join("api"));
 
     let servers = ServersConfig {
         api_dir: above.join("api"),
@@ -173,7 +183,7 @@ fn gen_stack_with(
         extra_surfaces: vec![],
         error_source_dir: None,
     };
-    ontogen::gen_servers(entities, Some(&api), &[], &servers).expect("gen_servers failed");
+    ontogen::gen_servers(schema, Some(&api), &[], &servers).expect("gen_servers failed");
     if !clients {
         return store;
     }
@@ -193,7 +203,7 @@ fn gen_stack_with(
     clients.pool_extra_roots = vec![above.join("api")];
     clients.store_type = Some("Store".into());
     clients.store_import = Some("crate::store::Store".into());
-    ontogen::gen_clients(entities, Some(&api), &[], &clients).expect("gen_clients failed");
+    ontogen::gen_clients(schema, Some(&api), &[], &clients).expect("gen_clients failed");
 
     store
 }
@@ -265,33 +275,72 @@ fn store_signatures(file: &Path) -> Vec<String> {
     out
 }
 
+/// The ordering block of a generated store module: from `{Entity}SortField`
+/// up to the `impl Store` block, which is where the backends' code begins.
+fn order_block(file: &Path) -> String {
+    let src = std::fs::read_to_string(file).expect("read store module");
+    let start = src.find("/// The fields `list_").unwrap_or_else(|| panic!("{}: no sort field enum", file.display()));
+    let end = start + src[start..].find("\nimpl Store {").expect("the impl Store block follows");
+    src[start..end].to_string()
+}
+
 #[test]
 fn store_method_metadata_is_backend_identical() {
-    let entities = fixture_entities();
+    let schema = fixture_schema();
     for strategy in strategies() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let seaorm = gen_store_with(&entities, Backend::Seaorm(None), &strategy, &tmp.path().join("store_seaorm"));
+        let seaorm = gen_store_with(&schema, Backend::Seaorm(None), &strategy, &tmp.path().join("store_seaorm"));
         let markdown =
-            gen_store_with(&entities, markdown_backend(&entities), &strategy, &tmp.path().join("store_markdown"));
+            gen_store_with(&schema, markdown_backend(&schema.entities), &strategy, &tmp.path().join("store_markdown"));
 
         assert_eq!(
             method_meta_fingerprint(&seaorm),
             method_meta_fingerprint(&markdown),
             "{strategy:?}: StoreMethodMeta must never branch on backend — gen_api consumes it"
         );
+        let fingerprint = method_meta_fingerprint(&seaorm);
+        assert!(
+            fingerprint.contains(
+                &"Task::list_tasks(order: &[OrderBy<TaskSortField>], limit: Option<u64>, offset: Option<u64>) -> Vec<Task>"
+                    .to_string()
+            ),
+            "{fingerprint:#?}"
+        );
+        assert!(fingerprint.contains(&"Task::count_tasks() -> u64".to_string()), "{fingerprint:#?}");
+    }
+}
+
+#[test]
+fn the_sort_field_and_in_memory_sort_are_byte_identical_across_backends() {
+    for schema in [fixture_schema(), parity_schema()] {
+        for strategy in strategies() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let (a, b) = (tmp.path().join("store_seaorm"), tmp.path().join("store_markdown"));
+            gen_store_with(&schema, Backend::Seaorm(None), &strategy, &a);
+            gen_store_with(&schema, markdown_backend(&schema.entities), &strategy, &b);
+
+            for entity in &schema.entities {
+                let file = format!("{}.rs", ontogen::to_snake_case(&entity.name));
+                let (block_a, block_b) = (order_block(&a.join(&file)), order_block(&b.join(&file)));
+                let plural = ontogen::pluralize(&ontogen::to_snake_case(&entity.name));
+                assert!(block_a.contains(&format!("pub enum {}SortField {{", entity.name)), "{file}: {block_a}");
+                assert!(block_a.contains(&format!("pub fn sort_{plural}(")), "{file}: {block_a}");
+                assert_eq!(block_a, block_b, "{strategy:?}: {file}: the ordering block differs between backends");
+            }
+        }
     }
 }
 
 #[test]
 fn store_public_signatures_are_backend_identical() {
-    let entities = fixture_entities();
+    let schema = fixture_schema();
     for strategy in strategies() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (a, b) = (tmp.path().join("store_seaorm"), tmp.path().join("store_markdown"));
-        gen_store_with(&entities, Backend::Seaorm(None), &strategy, &a);
-        gen_store_with(&entities, markdown_backend(&entities), &strategy, &b);
+        gen_store_with(&schema, Backend::Seaorm(None), &strategy, &a);
+        gen_store_with(&schema, markdown_backend(&schema.entities), &strategy, &b);
 
-        for entity in &entities {
+        for entity in &schema.entities {
             let file = format!("{}.rs", ontogen::to_snake_case(&entity.name));
             let (sig_a, sig_b) = (store_signatures(&a.join(&file)), store_signatures(&b.join(&file)));
             assert!(sig_a.iter().any(|s| s.contains("fn count_")), "{file}: count is part of the surface");
@@ -308,25 +357,24 @@ fn store_public_signatures_are_backend_identical() {
 /// for those too.
 #[test]
 fn the_runtime_parity_schema_is_backend_identical() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/parity/schema");
-    let entities = ontogen::parse_schema(&SchemaConfig { schema_dir: dir }).expect("parse parity schema").entities;
+    let schema = parity_schema();
     for strategy in strategies() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (seaorm, markdown) = (tmp.path().join("seaorm"), tmp.path().join("markdown"));
         // No TS clients: they are generated from the API output alone, which
         // is compared below, and ontogen-ts resolves a schema enum such as
         // `Kind` only from the consuming crate's own `src/`.
-        let meta_a = gen_stack_with(&entities, Backend::Seaorm(None), &strategy, &seaorm, false);
-        let meta_b = gen_stack_with(&entities, markdown_backend(&entities), &strategy, &markdown, false);
+        let meta_a = gen_stack_with(&schema, Backend::Seaorm(None), &strategy, &seaorm, false);
+        let meta_b = gen_stack_with(&schema, markdown_backend(&schema.entities), &strategy, &markdown, false);
 
         assert_eq!(method_meta_fingerprint(&meta_a), method_meta_fingerprint(&meta_b), "{strategy:?}");
-        for entity in &entities {
+        for entity in &schema.entities {
             let file = format!("{}.rs", ontogen::to_snake_case(&entity.name));
             let sig_a = store_signatures(&seaorm.join("store").join(&file));
             let sig_b = store_signatures(&markdown.join("store").join(&file));
             assert_eq!(sig_a, sig_b, "{strategy:?}: {file}: the store's callable surface differs between backends");
         }
-        let fixed = entities.iter().find(|e| e.name == "Fixed").expect("Fixed");
+        let fixed = schema.entities.iter().find(|e| e.name == "Fixed").expect("Fixed");
         assert_eq!(fixed.id_strategy, Some(IdStrategy::Provided), "Fixed overrides the default in the schema");
         let fixed_store = std::fs::read_to_string(seaorm.join("store/fixed.rs")).expect("fixed.rs");
         assert!(fixed_store.contains("this store requires the caller to supply an id"), "{strategy:?}: {fixed_store}");
@@ -343,15 +391,15 @@ fn the_runtime_parity_schema_is_backend_identical() {
 
 #[test]
 fn downstream_output_is_byte_identical_across_backends() {
-    let entities = fixture_entities();
+    let schema = fixture_schema();
     for strategy in strategies() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (seaorm, markdown): (PathBuf, PathBuf) = (tmp.path().join("seaorm"), tmp.path().join("markdown"));
 
         // The store layers differ by design; everything above them is
         // generated by each pipeline in turn…
-        gen_stack(&entities, Backend::Seaorm(None), &strategy, &seaorm);
-        gen_stack(&entities, markdown_backend(&entities), &strategy, &markdown);
+        gen_stack(&schema, Backend::Seaorm(None), &strategy, &seaorm);
+        gen_stack(&schema, markdown_backend(&schema.entities), &strategy, &markdown);
 
         // …and must be the same bytes.
         assert_trees_identical(
@@ -393,24 +441,24 @@ fn downstream_output_is_byte_identical_across_backends() {
 /// change their stores and nothing above them, whatever the default.
 #[test]
 fn per_entity_id_overrides_are_byte_identical_above_the_store() {
-    let mut entities = fixture_entities();
+    let mut schema = fixture_schema();
     let overrides = [
         ("Note", IdStrategy::Uuid),
         ("Task", IdStrategy::Provided),
         ("Tag", IdStrategy::SlugFromField("title".into())),
     ];
     for (name, strategy) in &overrides {
-        let entity = entities.iter_mut().find(|e| &e.name == name).unwrap_or_else(|| panic!("pilot has {name}"));
+        let entity = schema.entities.iter_mut().find(|e| &e.name == name).unwrap_or_else(|| panic!("pilot has {name}"));
         entity.id_strategy = Some(strategy.clone());
     }
     for default in strategies() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (seaorm, markdown) = (tmp.path().join("seaorm"), tmp.path().join("markdown"));
-        let meta_a = gen_stack(&entities, Backend::Seaorm(None), &default, &seaorm);
-        let meta_b = gen_stack(&entities, markdown_backend(&entities), &default, &markdown);
+        let meta_a = gen_stack(&schema, Backend::Seaorm(None), &default, &seaorm);
+        let meta_b = gen_stack(&schema, markdown_backend(&schema.entities), &default, &markdown);
 
         assert_eq!(method_meta_fingerprint(&meta_a), method_meta_fingerprint(&meta_b), "{default:?}");
-        for entity in &entities {
+        for entity in &schema.entities {
             let file = format!("{}.rs", ontogen::to_snake_case(&entity.name));
             let sig_a = store_signatures(&seaorm.join("store").join(&file));
             let sig_b = store_signatures(&markdown.join("store").join(&file));
@@ -437,13 +485,13 @@ fn per_entity_id_overrides_are_byte_identical_above_the_store() {
 /// in one tree must be caught — otherwise the invariant is unfalsifiable.
 #[test]
 fn parity_comparison_detects_a_perturbation() {
-    let entities = fixture_entities();
+    let schema = fixture_schema();
     let tmp = tempfile::tempdir().expect("tempdir");
 
     let a = tmp.path().join("a");
     let b = tmp.path().join("b");
-    gen_api_into(&entities, &a);
-    gen_api_into(&entities, &b);
+    gen_api_into(&schema.entities, &a);
+    gen_api_into(&schema.entities, &b);
 
     // Perturb one byte in one generated file of tree B.
     let victim = b.join("generated/note.rs");

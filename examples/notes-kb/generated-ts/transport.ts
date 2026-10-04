@@ -9,10 +9,17 @@ import type {
 
 import { invoke } from '@tauri-apps/api/core';
 
+/** A list's sort keys, applied in order: `-` sorts a field descending, and `id` ascending is the last key unless named. */
+export interface ListOptions<K extends string> {
+  sort?: K[];
+}
+
+export type NoteSortKey = 'id' | '-id' | 'title' | '-title';
+
 // ── Transport Interface ──
 
 export interface Transport {
-  noteList(): Promise<Note[]>;
+  noteList(options?: ListOptions<NoteSortKey>): Promise<Note[]>;
   noteGetById(id: string): Promise<Note>;
   noteCreate(input: CreateNoteInput): Promise<Note>;
   noteUpdate(id: string, input: UpdateNoteInput): Promise<Note>;
@@ -125,9 +132,8 @@ function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
   const push = (key: string, value: unknown) => {
     if (value == null) return;
-    for (const v of Array.isArray(value) ? value : [value]) {
-      parts.push(`${key}=${encodeURIComponent(String(v))}`);
-    }
+    const values = Array.isArray(value) ? value : [value];
+    if (values.length > 0) parts.push(`${key}=${values.map((v) => encodeURIComponent(String(v))).join(',')}`);
   };
   for (const [key, value] of Object.entries(params)) {
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -248,8 +254,8 @@ function unflattenNote(input: object, id?: string): JsonApiWriteDocument {
 
 export function createHttpTransport(): Transport {
   return {
-    async noteList(): Promise<Note[]> {
-      const { data } = await httpGet<JsonApiCollectionDocument>('/notes');
+    async noteList(options?: ListOptions<NoteSortKey>): Promise<Note[]> {
+      const { data } = await httpGet<JsonApiCollectionDocument>(`/notes${toQueryString({ sort: options?.sort })}`);
       return data.map(flattenNote);
     },
     async noteGetById(id: string): Promise<Note> {
@@ -278,8 +284,8 @@ export function createHttpTransport(): Transport {
 
 export function createIpcTransport(): Transport {
   return {
-    async noteList(): Promise<Note[]> {
-      return invoke('note_list');
+    async noteList(options?: ListOptions<NoteSortKey>): Promise<Note[]> {
+      return invoke('note_list', { sort: options?.sort });
     },
     async noteGetById(id: string): Promise<Note> {
       return invoke('note_get_by_id', { id });

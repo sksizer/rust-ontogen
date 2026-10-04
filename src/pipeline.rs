@@ -433,8 +433,7 @@ impl Pipeline {
     /// [`Pipeline::clients_scan_dirs`] to set the scan dirs passed to
     /// `gen_clients`; defaults to `[]`.
     ///
-    /// The builder passes the parsed schema entities to `gen_clients` and
-    /// forwards `schema.enums` into [`ClientsConfig::schema_enums`] when empty.
+    /// The builder passes the parsed schema to `gen_clients`.
     #[must_use]
     pub fn clients(mut self, config: ClientsConfig) -> Self {
         self.clients = Some(ClientsStage { config, scan_dirs: Vec::new() });
@@ -571,7 +570,7 @@ impl Pipeline {
             };
 
             gen_store(
-                &schema.entities,
+                &schema,
                 &StoreConfig {
                     output_dir: stage.output_dir,
                     hooks_dir: stage.hooks_dir,
@@ -645,15 +644,12 @@ impl Pipeline {
             if servers_config.error_source_dir.is_none() {
                 servers_config.error_source_dir = Some(self.schema_dir.clone());
             }
-            gen_servers(&schema.entities, api_out.as_ref(), &stage.scan_dirs, &servers_config)?;
+            gen_servers(&schema, api_out.as_ref(), &stage.scan_dirs, &servers_config)?;
         }
 
         // Stage 6: clients (TypeScript bindings + admin registry)
         if let Some(stage) = self.clients {
             let mut clients_config = stage.config;
-            if clients_config.schema_enums.is_empty() {
-                clients_config.schema_enums = schema.enums.clone();
-            }
             // Auto-exclude the SeaORM `entity_output` directory from the
             // ontogen-ts pool (see comment near the capture above). Only
             // append when the caller hasn't already listed it.
@@ -662,7 +658,7 @@ impl Pipeline {
             {
                 clients_config.pool_exclude_paths.push(entity_output.clone());
             }
-            gen_clients(&schema.entities, api_out.as_ref(), &stage.scan_dirs, &clients_config)?;
+            gen_clients(&schema, api_out.as_ref(), &stage.scan_dirs, &clients_config)?;
         }
 
         Ok(())

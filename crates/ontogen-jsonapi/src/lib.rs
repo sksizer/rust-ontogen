@@ -2,11 +2,12 @@
 //!
 //! Generated Axum handlers call this crate to negotiate the media type, read
 //! query parameters (a list's filter into its typed `*Query` struct and bare
-//! parameters) and request documents (a resource's, or a custom op's
-//! arguments), and write resource, link and error documents and the payloads
-//! of event frames. The [wire contract] is normative: where this crate and the
-//! contract disagree, the crate is wrong. Section signs (§) in this crate's
-//! docs refer to that contract.
+//! parameters, and `sort` into an order over its generated sort fields) and
+//! request documents (a resource's, or a custom op's arguments), and write
+//! resource, link and error documents and the payloads of event frames. The
+//! [wire contract] is normative: where this crate and the contract disagree,
+//! the crate is wrong. Section signs (§) in this crate's docs refer to that
+//! contract.
 //!
 //! Everything that needs the schema (attribute and relationship names, sort
 //! fields, which relationships can be included) stays in generated code;

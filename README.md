@@ -68,7 +68,7 @@ fn main() {
         skip_conversions: vec![],
     }).unwrap();
 
-    let _store = gen_store(&schema.entities, &StoreConfig {
+    let _store = gen_store(&schema, &StoreConfig {
         output_dir: "src/store/generated".into(),
         hooks_dir: Some("src/store/hooks".into()),
         schema_module_path: DEFAULT_SCHEMA_MODULE_PATH.into(),

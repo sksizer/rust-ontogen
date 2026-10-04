@@ -249,11 +249,17 @@ async fn list_query_parameters_are_checked() {
     // The generated list takes no filter.
     assert_eq!(server.get("/api/notes?filter[title]=x").await.parameter("invalid_query_parameter"), "filter[title]");
 
-    // `sort` is an accepted name that no route honours, checked before
-    // `include` (§13.2 step 5).
+    // `sort` is checked before `include`: a bad key on a sorted list, and
+    // any key on a list that takes no order.
     let error =
-        server.get("/api/notes?include=x&sort=title").await.error(StatusCode::BAD_REQUEST, "invalid_sort_field");
+        server.get("/api/notes?include=x&sort=priority").await.error(StatusCode::BAD_REQUEST, "invalid_sort_field");
     assert_eq!(error["source"], json!({ "parameter": "sort" }));
+    let error = server.get("/api/tags?include=x&sort=title").await.error(StatusCode::BAD_REQUEST, "invalid_sort_field");
+    assert_eq!(error["source"], json!({ "parameter": "sort" }));
+    // A valid sort leaves the include error to speak.
+    let error =
+        server.get("/api/notes?include=x&sort=title").await.error(StatusCode::BAD_REQUEST, "invalid_include_path");
+    assert_eq!(error["source"], json!({ "parameter": "include" }));
     let error = server.get("/api/notes/x?include=x").await.error(StatusCode::BAD_REQUEST, "invalid_include_path");
     assert_eq!(error["source"], json!({ "parameter": "include" }));
 }
@@ -744,7 +750,7 @@ async fn custom_post_documents_are_checked_member_by_member() {
     assert_eq!(reply.pointer(StatusCode::BAD_REQUEST, "invalid_document"), "/meta/args/status");
 
     // Nothing was created along the way.
-    assert!(server.store().list_tasks(None, None).await.expect("list").is_empty());
+    assert!(server.store().list_tasks(&[], None, None).await.expect("list").is_empty());
 }
 
 #[tokio::test]
@@ -2179,8 +2185,10 @@ async fn filter_checks_run_in_the_contract_order() {
     assert_eq!(parameter("/api/tags?page[offset]=-1&filter[min_title_len]=x").await, "filter[min_title_len]");
     let error = server.get("/api/sections?sort=title&filter[parent_id]=a&filter[parent_id]=b").await;
     assert_eq!(error.parameter("invalid_query_parameter"), "filter[parent_id]");
-    let error = server.get("/api/sections?sort=title&filter[parent_id]=root").await;
+    let error = server.get("/api/sections?sort=parent&filter[parent_id]=root").await;
     assert_eq!(error.parameter("invalid_sort_field"), "sort");
+    let error = server.get("/api/tags?sort=title&filter[min_title_len]=-1").await;
+    assert_eq!(error.parameter("invalid_query_parameter"), "filter[min_title_len]");
     assert_eq!(
         parameter("/api/bookmarks?opArg[limit]=-1&filter[url_contains]=a&filter[url_contains]=b").await,
         "filter[url_contains]"
@@ -2238,6 +2246,9 @@ async fn a_scoped_filtered_list_answers_as_the_unscoped_one() {
         "/api/outlines?filter[title_contains]=Us&opArg[limit]=1",
         "/api/outlines?filter[title]=x",
         "/api/notes?filter[title]=x",
+        "/api/sections?filter[parent_id]=root&sort=-title&include=parent&page[limit]=1",
+        "/api/sections?filter[parent_id]=root&sort=parent",
+        "/api/tags?sort=title",
     ] {
         let unscoped = server.get(uri).await;
         let scoped = server.get_scoped(&uri.replacen("/api/", &format!("/api/{}/", project_path()), 1)).await;
@@ -2875,10 +2886,14 @@ async fn include_is_checked_at_its_place_in_the_contract_order(scope: Scope) {
     let error = reply.error(StatusCode::BAD_REQUEST, "invalid_query_parameter");
     assert_eq!(error["source"], json!({ "parameter": "page[limit]" }));
 
-    // After `sort`.
-    let reply = server.get_in(scope, "/api/tasks?include=owner&sort=title").await;
-    let error = reply.error(StatusCode::BAD_REQUEST, "invalid_sort_field");
-    assert_eq!(error["source"], json!({ "parameter": "sort" }));
+    // After `sort`: a bad key, and any key on a list that takes no order.
+    // A valid sort leaves the include error to speak.
+    for uri in ["/api/tasks?include=owner&sort=priority", "/api/tags?include=owner&sort=title"] {
+        let reply = server.get_in(scope, uri).await;
+        let error = reply.error(StatusCode::BAD_REQUEST, "invalid_sort_field");
+        assert_eq!(error["source"], json!({ "parameter": "sort" }), "{uri}");
+    }
+    server.get_in(scope, "/api/tasks?include=owner&sort=title").await.include_error();
 
     // A name the route does not accept comes before every accepted one.
     let reply = server.get_in(scope, "/api/tasks?x=1&include=owner").await;
@@ -2945,6 +2960,268 @@ async fn scoped_included_resources_carry_the_route_prefix() {
 fn project_path() -> String {
     format!("projects/{PROJECT}")
 }
+
+// ── Sort ──
+//
+// The generated CRUD lists take an `order`, and so does the hand-written
+// `section::list`; `tag::list` is hand-written without one, so it refuses
+// `sort`. Task sort fields are `id`, `title` and `status`; section ones are
+// `id` and `title`.
+
+/// Seven open, done and blocked tasks, so `status` ties.
+async fn seed_sort_tasks(server: &Server) {
+    for (title, status) in [
+        ("Alpha", "open"),
+        ("Bravo", "done"),
+        ("Charlie", "open"),
+        ("Delta", "blocked"),
+        ("Echo", "done"),
+        ("Foxtrot", "open"),
+        ("Golf", "blocked"),
+    ] {
+        server.task(title, status).await;
+    }
+}
+
+impl Server {
+    /// The ids of every page of the list at `uri`, following `next`.
+    async fn walk(&self, scope: Scope, uri: &str) -> Vec<String> {
+        let mut reply = self.get_in(scope, uri).await;
+        let mut seen = Vec::new();
+        loop {
+            assert_eq!(reply.status, StatusCode::OK, "{uri}: {}", reply.raw);
+            seen.extend(ids(&reply.body).into_iter().map(str::to_owned));
+            if reply.body["links"]["next"].is_null() {
+                return seen;
+            }
+            reply = self.follow(scope, &reply.body["links"]["next"]).await;
+        }
+    }
+}
+
+impl Reply {
+    /// A `400 invalid_sort_field` for `sort`, answering its detail.
+    fn sort_error(&self) -> String {
+        let error = self.error(StatusCode::BAD_REQUEST, "invalid_sort_field");
+        assert_eq!(error["title"], "Bad Request", "{}", self.raw);
+        assert_eq!(error["source"], json!({ "parameter": "sort" }), "{}", self.raw);
+        error["detail"].as_str().expect("a detail").to_owned()
+    }
+}
+
+async fn a_list_sorts_by_its_keys_with_id_last(scope: Scope) {
+    let server = Server::new();
+    seed_sort_tasks(&server).await;
+
+    for (sort, expected) in [
+        // No sort is id ascending.
+        ("", ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"]),
+        ("title", ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"]),
+        ("-title", ["golf", "foxtrot", "echo", "delta", "charlie", "bravo", "alpha"]),
+        ("-id", ["golf", "foxtrot", "echo", "delta", "charlie", "bravo", "alpha"]),
+        // Ties break on id ascending, whichever way the key runs.
+        ("status", ["delta", "golf", "bravo", "echo", "alpha", "charlie", "foxtrot"]),
+        ("-status", ["alpha", "charlie", "foxtrot", "bravo", "echo", "delta", "golf"]),
+        // A named id keeps its direction.
+        ("-status,-id", ["foxtrot", "charlie", "alpha", "echo", "bravo", "golf", "delta"]),
+        ("status,-title", ["golf", "delta", "echo", "bravo", "foxtrot", "charlie", "alpha"]),
+        // Keys after a key with no ties change nothing.
+        ("id,-status", ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"]),
+    ] {
+        let uri = if sort.is_empty() { "/api/tasks".to_owned() } else { format!("/api/tasks?sort={sort}") };
+        // Every page size cuts its pages from the one order.
+        for limit in [1, 2, 3] {
+            let paged = format!("{uri}{}page[limit]={limit}", if sort.is_empty() { "?" } else { "&" });
+            assert_eq!(server.walk(scope, &paged).await, expected, "{paged}");
+        }
+    }
+
+    // The links carry `sort` as sent, before the page.
+    let reply = server.get_in(scope, "/api/tasks?page[offset]=2&sort=status,-title").await;
+    assert_eq!(ids(&reply.body), ["echo", "bravo"]);
+    assert_eq!(reply.body["meta"], json!({ "total": 7, "limit": 2, "offset": 2 }));
+    let links: Value = serde_json::from_str(&page_links("/api/tasks?sort=status,-title", 2, 2, 7)).unwrap();
+    assert_eq!(reply.body["links"], serde_json::from_str::<Value>(&scope.links(&links.to_string())).unwrap());
+    // Encoded the same as raw.
+    let encoded = server.get_in(scope, "/api/tasks?page%5Boffset%5D=2&sort=status%2C-title").await;
+    assert_eq!(encoded.raw, reply.raw);
+}
+in_both_scopes!(a_list_sorts_by_its_keys_with_id_last);
+
+async fn a_sorted_list_includes_and_pages_with_canonical_links(scope: Scope) {
+    let server = Server::new();
+    seed_task_graph(&server).await;
+    let alpha = task_json("alpha", None, &["beta", "charlie"], &[]);
+    let beta = task_json("beta", Some("alpha"), &["delta"], &["b", "a"]);
+    let charlie = task_json("charlie", Some("alpha"), &[], &["b", "c"]);
+    let delta = task_json("delta", Some("beta"), &[], &["c"]);
+
+    // Request order is not canonical order: `sort` goes after the filters
+    // and before `include` and the page.
+    let reply = server.get_in(scope, "/api/tasks?page[limit]=2&include=parent&sort=-title").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    let links = page_links("/api/tasks?sort=-title&include=parent", 0, 2, 4);
+    let expected = list_document(&links, (4, 2, 0), &[delta, charlie], Some(&[beta.clone(), alpha.clone()]));
+    assert_eq!(reply.raw, scope.links(&expected));
+
+    // `next` keeps the sort and the include. Beta's parent is on the page.
+    let next = server.follow(scope, &reply.body["links"]["next"]).await;
+    let links = page_links("/api/tasks?sort=-title&include=parent", 2, 2, 4);
+    assert_eq!(next.raw, scope.links(&list_document(&links, (4, 2, 2), &[beta, alpha], Some(&[]))));
+}
+in_both_scopes!(a_sorted_list_includes_and_pages_with_canonical_links);
+
+async fn a_hand_written_list_sorts_after_its_filters(scope: Scope) {
+    let server = Server::new();
+    seed_sections(&server).await;
+    // A second `Usage` under root, so `title` ties.
+    server.section("again", "Usage", "root").await;
+
+    // Filter, sort, include and page together; the links write them in
+    // canonical order.
+    let uri = "/api/sections?page[limit]=1&include=parent&sort=-title&filter[parent_id]=root&page[offset]=1";
+    let reply = server.get_in(scope, uri).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(ids(&reply.body), ["usage"]);
+    assert_eq!(included_keys(&reply), ["sections/root"]);
+    assert_eq!(reply.body["meta"], json!({ "total": 4, "limit": 1, "offset": 1 }));
+    let base = "/api/sections?filter%5Bparent_id%5D=root&sort=-title&include=parent";
+    let link = |offset: u32| scope.path(&format!("{base}&page%5Boffset%5D={offset}&page%5Blimit%5D=1"));
+    assert_eq!(
+        reply.body["links"],
+        json!({ "self": link(1), "first": link(0), "prev": link(0), "next": link(2), "last": link(3) })
+    );
+
+    // Every page of the walk: the tie breaks on id, and root, its own
+    // parent, includes nothing.
+    let mut page = server.follow(scope, &reply.body["links"]["first"]).await;
+    let mut walked = Vec::new();
+    loop {
+        walked.push((ids(&page.body)[0].to_owned(), included_keys(&page)));
+        if page.body["links"]["next"].is_null() {
+            break;
+        }
+        page = server.follow(scope, &page.body["links"]["next"]).await;
+    }
+    let root = || vec!["sections/root".to_owned()];
+    assert_eq!(
+        walked,
+        [("again".into(), root()), ("usage".into(), root()), ("root".into(), vec![]), ("intro".into(), root())]
+    );
+
+    // Several keys, and a struct member beside the bare filter.
+    let uri = "/api/sections?filter[parent_id]=root&sort=title,-id&page[limit]=3";
+    assert_eq!(server.walk(scope, uri).await, ["intro", "root", "usage", "again"]);
+    let reply = server.get_in(scope, "/api/sections?sort=-id&filter[min_children]=1&filter[parent_id]=root").await;
+    assert_eq!(ids(&reply.body), ["usage", "root"]);
+    assert_eq!(reply.body["meta"]["total"], 2);
+    assert_eq!(
+        reply.body["links"]["self"],
+        scope.path(
+            "/api/sections?filter%5Bmin_children%5D=1&filter%5Bparent_id%5D=root&sort=-id&page%5Boffset%5D=0&page%5Blimit%5D=2"
+        )
+    );
+}
+in_both_scopes!(a_hand_written_list_sorts_after_its_filters);
+
+async fn a_bad_sort_is_invalid_sort_field(scope: Scope) {
+    let server = Server::new();
+    seed_sort_tasks(&server).await;
+    seed_sections(&server).await;
+    let detail = async |uri: &str| server.get_in(scope, uri).await.sort_error();
+    let unknown = |name: &str| format!("`{name}` is not a sort field of `tasks`; sort fields are: id, title, status");
+
+    // Unknown fields: not a field, a relationship, a relationship's key, the
+    // body, a dotted path. A `-` is not part of the name.
+    for name in ["priority", "parent", "tags", "subtasks", "parent_id", "body", "parent.title"] {
+        assert_eq!(detail(&format!("/api/tasks?sort={name}")).await, unknown(name));
+        assert_eq!(detail(&format!("/api/tasks?sort=title,-{name}")).await, unknown(name));
+    }
+    assert_eq!(detail("/api/tasks?sort=--title").await, unknown("-title"));
+    // The first bad key decides.
+    assert_eq!(detail("/api/tasks?sort=nope,title,,title").await, unknown("nope"));
+    // A hand-written list names its own fields.
+    assert_eq!(
+        detail("/api/sections?filter[parent_id]=root&sort=children").await,
+        "`children` is not a sort field of `sections`; sort fields are: id, title"
+    );
+
+    // A field named twice, either way round.
+    for (sort, named) in
+        [("title,-title", "title"), ("-title,title", "title"), ("id,status,id", "id"), ("-id,-id", "id")]
+    {
+        assert_eq!(detail(&format!("/api/tasks?sort={sort}")).await, format!("`{named}` is named twice in `sort`"));
+    }
+
+    // An empty item, the whole value included.
+    for sort in ["", ",", "-", "title,", ",title", "title,,status", "title,-"] {
+        assert_eq!(detail(&format!("/api/tasks?sort={sort}")).await, "`sort` has an empty item", "sort={sort}");
+    }
+    assert_eq!(detail("/api/sections?filter[parent_id]=root&sort=").await, "`sort` has an empty item");
+
+    // Any `sort` on a list that takes no order, valid key or not.
+    for sort in ["title", "id", "", "nope"] {
+        assert_eq!(detail(&format!("/api/tags?sort={sort}")).await, "`tags` cannot be sorted", "sort={sort}");
+    }
+
+    // A repeated `sort` is a repeated parameter, valid keys or not.
+    for uri in ["/api/tasks?sort=title&sort=status", "/api/tasks?sort=title&sort=title", "/api/tags?sort=a&sort=b"] {
+        assert_eq!(server.get_in(scope, uri).await.parameter("invalid_query_parameter"), "sort", "{uri}");
+    }
+    // Where no route accepts `sort`, it is any other unaccepted name: a
+    // single resource, and a list with no entity behind it.
+    for uri in ["/api/tasks/alpha?sort=title", "/api/outlines?sort=title"] {
+        assert_eq!(server.get_in(scope, uri).await.parameter("invalid_query_parameter"), "sort", "{uri}");
+    }
+}
+in_both_scopes!(a_bad_sort_is_invalid_sort_field);
+
+async fn sort_is_checked_at_its_place_in_the_contract_order(scope: Scope) {
+    let server = Server::new();
+    seed_sort_tasks(&server).await;
+    seed_sections(&server).await;
+    let sort_error = async |uri: &str| {
+        server.get_in(scope, uri).await.sort_error();
+    };
+    let parameter = async |uri: &str| server.get_in(scope, uri).await.parameter("invalid_query_parameter");
+
+    // Before the page, in canonical order and not in request order (the
+    // contract's own example first).
+    sort_error("/api/tasks?sort=priority&page[limit]=0").await;
+    sort_error("/api/tasks?page[limit]=0&sort=priority").await;
+    sort_error("/api/tasks?page[offset]=x&sort=").await;
+    sort_error("/api/tags?page[limit]=0&sort=title").await;
+    // A valid sort leaves the page error to speak.
+    assert_eq!(parameter("/api/tasks?sort=title&page[limit]=0").await, "page[limit]");
+
+    // After the filters: a struct member, a missing required filter, a bare
+    // filter, and a filter on a list that takes none.
+    assert_eq!(
+        parameter("/api/sections?sort=priority&filter[parent_id]=root&filter[min_children]=x").await,
+        "filter[min_children]"
+    );
+    assert_eq!(parameter("/api/sections?sort=priority").await, "filter[parent_id]");
+    assert_eq!(parameter("/api/tags?sort=title&filter[min_title_len]=-1").await, "filter[min_title_len]");
+    assert_eq!(parameter("/api/notes?sort=priority&filter[title]=x").await, "filter[title]");
+
+    // Before `include`; a valid sort leaves the include error to speak.
+    sort_error("/api/tasks?include=owner&sort=priority").await;
+    sort_error("/api/sections?include=owner&filter[parent_id]=root&sort=-children").await;
+    sort_error("/api/tags?include=owner&sort=title").await;
+    server.get_in(scope, "/api/sections?include=owner&filter[parent_id]=root&sort=-title").await.include_error();
+    // A repeated `sort` is still the `sort` step.
+    assert_eq!(parameter("/api/tasks?include=owner&sort=title&sort=id").await, "sort");
+
+    // A name the route does not accept comes before every accepted one.
+    assert_eq!(parameter("/api/tasks?sort=priority&x=1").await, "x");
+    assert_eq!(parameter("/api/tags?x=1&sort=title").await, "x");
+
+    // `Accept` is checked first of all.
+    let reply =
+        server.raw_in(scope, "GET", "/api/tasks?sort=priority", &[(header::ACCEPT, "application/json")], "").await;
+    reply.error(StatusCode::NOT_ACCEPTABLE, "not_acceptable");
+}
+in_both_scopes!(sort_is_checked_at_its_place_in_the_contract_order);
 
 // ── Event streams (§12) ──
 

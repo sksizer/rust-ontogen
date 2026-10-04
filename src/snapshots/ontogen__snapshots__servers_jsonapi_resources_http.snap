@@ -1,6 +1,6 @@
 ---
 source: src/snapshots.rs
-assertion_line: 529
+assertion_line: 530
 expression: read_file(&output)
 ---
 #![allow(dead_code, unused_imports, clippy::pedantic, clippy::needless_borrow)]
@@ -18,8 +18,8 @@ use axum::{
     routing::get,
 };
 use ontogen_jsonapi::{
-    AnyResource, Document, ErrorCode, ErrorObject, Included, Linkage, Links, LookupKey, PageMeta, QueryParams,
-    QuerySpec, Relationship, ResourceIdentifier, ResourceObject, ResultMeta,
+    AnyResource, Document, ErrorObject, Included, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec,
+    Relationship, ResourceIdentifier, ResourceObject, ResultMeta,
     error::{method_not_allowed, relationship_not_found, relationship_update_unsupported},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::{CanonicalQuery, encode_path_segment, pagination_links},
@@ -111,16 +111,6 @@ struct GetParams;
 
 impl RouteQuery for GetParams {
     const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
-}
-
-/// No list takes an `order` argument, so every `sort` asks for an order the
-/// server does not support.
-fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
-    match query.sort()? {
-        None => Ok(()),
-        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
-            .with_parameter("sort")),
-    }
 }
 
 /// The effective `(offset, limit)` of a paginated list.
@@ -460,13 +450,14 @@ async fn epic_list(
     _: AcceptGuard,
     query: Query<PagedListParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "epics")?;
+    let order = query.sort_order("epics")?;
     let include = query.include_paths("epics", &[], &[])?;
     let (offset, limit) = page(&query, 20, 100)?;
     let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items =
-        epic::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
+    let items = epic::list(&ontogen_store, &order, Some(u64::from(limit)), Some(u64::from(offset)))
+        .await
+        .map_err(ontogen_app_error)?;
     let total = epic::count(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/epics";
     let data: Vec<_> = items.iter().map(|entity| epic_as_resource(entity, collection)).collect();
@@ -630,13 +621,14 @@ async fn tag_list(
     _: AcceptGuard,
     query: Query<PagedListParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "tags")?;
+    let order = query.sort_order("tags")?;
     let include = query.include_paths("tags", &[], &[])?;
     let (offset, limit) = page(&query, 20, 100)?;
     let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items =
-        tag::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
+    let items = tag::list(&ontogen_store, &order, Some(u64::from(limit)), Some(u64::from(offset)))
+        .await
+        .map_err(ontogen_app_error)?;
     let total = tag::count(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/tags";
     let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
@@ -725,13 +717,14 @@ async fn task_list(
     _: AcceptGuard,
     query: Query<PagedListParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "tasks")?;
+    let order = query.sort_order("tasks")?;
     let include = query.include_paths("tasks", &["epic", "tags"], &[])?;
     let (offset, limit) = page(&query, 20, 100)?;
     let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items =
-        task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
+    let items = task::list(&ontogen_store, &order, Some(u64::from(limit)), Some(u64::from(offset)))
+        .await
+        .map_err(ontogen_app_error)?;
     let total = task::count(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/tasks";
     let data: Vec<_> = items.iter().map(|entity| task_as_resource(entity, collection)).collect();

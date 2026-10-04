@@ -2638,6 +2638,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "http",
+ "ontogen-core",
  "serde",
  "serde_json",
 ]

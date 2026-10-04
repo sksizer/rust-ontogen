@@ -357,15 +357,14 @@ The signature of `gen_store` tells the story:
 
 ```rust
 pub fn gen_store(
-    entities: &[EntityDef],
-    seaorm: Option<&SeaOrmOutput>,
+    schema: &SchemaOutput,
     config: &StoreConfig,
 ) -> Result<StoreOutput, CodegenError>
 ```
 
-That `Option<&SeaOrmOutput>` is the optional chaining pattern. If you ran `gen_seaorm` first, pass its output. If you didn't, pass `None`. The store generator adapts.
+Its config's backend, `Backend::Seaorm(Option<SeaOrmOutput>)`, carries the optional chaining pattern. If you ran `gen_seaorm` first, pass its output. If you didn't, pass `None`. The store generator adapts.
 
-Similarly, `gen_servers` takes `Option<&ApiOutput>` (after the schema entities it also needs, which tell it which modules are JSON:API resources). When it's `Some`, the server generator uses the structured metadata. When it's `None`, it falls back to scanning source files with `syn` to discover API functions directly.
+Similarly, `gen_servers` takes `Option<&ApiOutput>` (after the schema it also needs, which tell it which modules are JSON:API resources). When it's `Some`, the server generator uses the structured metadata. When it's `None`, it falls back to scanning source files with `syn` to discover API functions directly.
 
 This means the pipeline is a directed acyclic graph, not a rigid sequence. You can enter at any point and skip stages you don't need.
 

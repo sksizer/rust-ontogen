@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::clients::config::Config;
 use crate::clients::generators::jsonapi;
-use crate::clients::generators::{FallbackRecord, command_name};
+use crate::clients::generators::{FallbackRecord, command_name, typed_params};
 use crate::servers::parse::ApiModule;
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel};
 
@@ -48,7 +48,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
             }
             let ts_ret = rust_type_to_ts(&f.return_type);
             collect_ts_import(&ts_ret, &mut import_types);
-            for p in &f.params {
+            for p in typed_params(f) {
                 let ty = extract_input_type(&p.ty);
                 let ts_ty = rust_type_to_ts(&ty);
                 collect_ts_import(&ts_ty, &mut import_types);
@@ -94,6 +94,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     if config.any_pagination() {
         out.push_str(jsonapi::PAGINATED_RESULT);
     }
+    out.push_str(&jsonapi::sort_types(modules, config));
     out.push_str(jsonapi::JSON_API_TYPES);
     out.push_str(&jsonapi::http_helpers());
     if !resources.is_empty() {
@@ -115,7 +116,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
             out.push_str(&format!(
                 "  async {}({}): Promise<{}> {{\n    {}\n  }},\n\n",
                 snake_to_camel(&cmd_name),
-                method.params.join(", "),
+                method.signature(None),
                 method.return_type,
                 method.body.join("\n").replace('\n', "\n    "),
             ));

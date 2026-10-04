@@ -18,9 +18,14 @@ use crate::store::Store;
 // ── Exercise IPC Commands ──
 
 #[tauri::command]
-pub async fn exercise_list(ontogen_state: State<'_, Arc<AppState>>) -> Result<Vec<Exercise>, String> {
+pub async fn exercise_list(
+    sort: Option<Vec<String>>,
+    ontogen_state: State<'_, Arc<AppState>>,
+) -> Result<Vec<Exercise>, String> {
+    let ontogen_order =
+        ontogen_core::order::parse_sort(sort.unwrap_or_default()).map_err(|ontogen_e| ontogen_e.to_string())?;
     let ontogen_store = ontogen_state.store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
-    exercise::list(&ontogen_store).await.map_err(|ontogen_e| ontogen_e.to_string())
+    exercise::list(&ontogen_store, &ontogen_order).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
@@ -57,9 +62,11 @@ pub async fn exercise_delete(id: String, ontogen_state: State<'_, Arc<AppState>>
 // ── Tag IPC Commands ──
 
 #[tauri::command]
-pub async fn tag_list(ontogen_state: State<'_, Arc<AppState>>) -> Result<Vec<Tag>, String> {
+pub async fn tag_list(sort: Option<Vec<String>>, ontogen_state: State<'_, Arc<AppState>>) -> Result<Vec<Tag>, String> {
+    let ontogen_order =
+        ontogen_core::order::parse_sort(sort.unwrap_or_default()).map_err(|ontogen_e| ontogen_e.to_string())?;
     let ontogen_store = ontogen_state.store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
-    tag::list(&ontogen_store).await.map_err(|ontogen_e| ontogen_e.to_string())
+    tag::list(&ontogen_store, &ontogen_order).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
@@ -93,9 +100,14 @@ pub async fn tag_delete(id: String, ontogen_state: State<'_, Arc<AppState>>) -> 
 // ── Workout IPC Commands ──
 
 #[tauri::command]
-pub async fn workout_list(ontogen_state: State<'_, Arc<AppState>>) -> Result<Vec<Workout>, String> {
+pub async fn workout_list(
+    sort: Option<Vec<String>>,
+    ontogen_state: State<'_, Arc<AppState>>,
+) -> Result<Vec<Workout>, String> {
+    let ontogen_order =
+        ontogen_core::order::parse_sort(sort.unwrap_or_default()).map_err(|ontogen_e| ontogen_e.to_string())?;
     let ontogen_store = ontogen_state.store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
-    workout::list(&ontogen_store).await.map_err(|ontogen_e| ontogen_e.to_string())
+    workout::list(&ontogen_store, &ontogen_order).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
@@ -132,9 +144,14 @@ pub async fn workout_delete(id: String, ontogen_state: State<'_, Arc<AppState>>)
 // ── Workout_set IPC Commands ──
 
 #[tauri::command]
-pub async fn workout_set_list(ontogen_state: State<'_, Arc<AppState>>) -> Result<Vec<WorkoutSet>, String> {
+pub async fn workout_set_list(
+    sort: Option<Vec<String>>,
+    ontogen_state: State<'_, Arc<AppState>>,
+) -> Result<Vec<WorkoutSet>, String> {
+    let ontogen_order =
+        ontogen_core::order::parse_sort(sort.unwrap_or_default()).map_err(|ontogen_e| ontogen_e.to_string())?;
     let ontogen_store = ontogen_state.store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
-    workout_set::list(&ontogen_store).await.map_err(|ontogen_e| ontogen_e.to_string())
+    workout_set::list(&ontogen_store, &ontogen_order).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]

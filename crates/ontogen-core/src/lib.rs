@@ -11,6 +11,8 @@
 //! - The shared `CodegenError` type
 //! - The record-id rule and slug function (`id`), which generated SeaORM
 //!   stores call at runtime
+//! - Sort keys and their parser (`order`), which generated stores and
+//!   transports use at runtime
 //! - With the `events` feature, runtime support for generated event ops
 
 #[cfg(feature = "events")]
@@ -19,6 +21,7 @@ pub mod id;
 pub mod ir;
 pub mod model;
 pub mod naming;
+pub mod order;
 pub mod utils;
 
 // Re-export key types at the crate root for ergonomic use

@@ -238,7 +238,7 @@ If a function genuinely doesn't need state — a pure data transformation, a clo
 Used by [`gen_servers()`](/reference/public-api/#gen_servers). Controls **Rust server transports only** -- Axum, Tauri IPC, MCP. The HTTP transport serves CRUD routes as JSON:API; see [Server Transports](/guides/server-transports/#httpaxum-generation). The parsed schema is the first argument of `gen_servers`, not a config field.
 
 <Aside type="note">
-Client-side TypeScript and admin-registry generation moved out of this struct into its own [`ClientsConfig`](#clientsconfig), paired with [`gen_clients`](/reference/public-api/#gen_clients). If you're carrying a build script that sets `client_generators` or `ts_skip_commands` on `ServersConfig`, those fields now live on `ClientsConfig`. `schema_entities` is gone from both configs: `gen_servers` and `gen_clients` take the schema entities as their first argument.
+Client-side TypeScript and admin-registry generation moved out of this struct into its own [`ClientsConfig`](#clientsconfig), paired with [`gen_clients`](/reference/public-api/#gen_clients). If you're carrying a build script that sets `client_generators` or `ts_skip_commands` on `ServersConfig`, those fields now live on `ClientsConfig`. `schema_entities` is gone from both configs: `gen_servers` and `gen_clients` take the parsed schema as their first argument.
 </Aside>
 
 | Field | Type | Description |
@@ -386,7 +386,7 @@ ApiSurface {
 
 Used by [`gen_clients()`](/reference/public-api/#gen_clients). The sibling of `ServersConfig` for the **client-side** surface: TypeScript bindings, the HTTP and HTTP+IPC transport clients, and the admin registry.
 
-The two configs overlap on naming, state, and routing because those decisions drive both sides of the wire -- URL pluralization, pagination, route prefixes. Both stages also take the parsed schema entities as their first argument, which is where the admin-registry generator gets its per-field metadata; leaving it empty (`&[]`) ships `admin-registry.ts` with empty `fields: []` per entity. The shared types are re-exported from `ontogen::servers`.
+The two configs overlap on naming, state, and routing because those decisions drive both sides of the wire -- URL pluralization, pagination, route prefixes. Both stages also take the parsed schema as their first argument, which is where the admin-registry generator gets its per-field metadata and enum values and where the sort keys come from; an empty schema (`&SchemaOutput::default()`) ships `admin-registry.ts` with empty `fields: []` per entity. The shared types are re-exported from `ontogen::servers`.
 
 | Field | Type | Description |
 |-------|------|-------------|

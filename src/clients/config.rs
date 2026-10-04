@@ -85,6 +85,9 @@ pub(crate) struct Config {
     /// servers stage uses so the TS transport and the Axum handlers agree.
     pub resources: ResourceModel,
 
+    /// The schema's string enums passed to [`crate::gen_clients`]: the admin
+    /// registry's `enumValues`, and which fields sort (a field of an enum
+    /// type sorts only when the enum is one of these).
     pub schema_enums: Vec<ontogen_core::model::EnumDef>,
 
     pub label_overrides: HashMap<String, String>,

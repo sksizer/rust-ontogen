@@ -272,7 +272,7 @@ pub fn gen_dtos(entities: &[EntityDef], config: &DtoConfig) -> Result<(), Codege
 ///     skip_conversions: vec![],
 /// })?;
 ///
-/// let store = gen_store(&schema.entities, &StoreConfig {
+/// let store = gen_store(&schema, &StoreConfig {
 ///     output_dir: PathBuf::from("src/store/generated"),
 ///     hooks_dir: Some(PathBuf::from("src/store/hooks")),
 ///     schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
@@ -282,8 +282,8 @@ pub fn gen_dtos(entities: &[EntityDef], config: &DtoConfig) -> Result<(), Codege
 /// })?;
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
-pub fn gen_store(entities: &[EntityDef], config: &StoreConfig) -> Result<StoreOutput, CodegenError> {
-    store::generate(entities, config)
+pub fn gen_store(schema: &SchemaOutput, config: &StoreConfig) -> Result<StoreOutput, CodegenError> {
+    store::generate(schema, config)
 }
 
 /// Generate the API layer: CRUD forwarding functions that delegate to store methods.
@@ -324,12 +324,12 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 /// Generate server transport handlers (Axum HTTP routes, Tauri IPC commands,
 /// MCP tools) from the parsed schema and API metadata.
 ///
-/// `entities` is [`parse_schema`]'s output, or `&[]` when there is no schema.
-/// An API module whose name is an entity's module name (the entity name in
-/// snake_case, as [`gen_api`] names it) is served as that entity's JSON:API
-/// resource over HTTP. Every entity must therefore be servable as one: a
-/// `String` id field, legal and distinct member names, and relation targets
-/// that are entities of `entities`.
+/// `schema` is [`parse_schema`]'s output, or `&SchemaOutput::default()` when
+/// there is no schema. An API module whose name is an entity's module name
+/// (the entity name in snake_case, as [`gen_api`] names it) is served as that
+/// entity's JSON:API resource over HTTP. Every entity must therefore be
+/// servable as one: a `String` id field, legal and distinct member names, and
+/// relation targets that are entities of the schema.
 ///
 /// Currently, this function always scans `config.api_dir` and every
 /// [`ServersConfig::extra_surfaces`] entry with `syn`, regardless of `api`
@@ -370,7 +370,7 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 /// })?;
 ///
 /// gen_servers(
-///     &schema.entities,
+///     &schema,
 ///     Some(&api),
 ///     &[PathBuf::from("src/api/v1")],
 ///     &ServersConfig {
@@ -393,12 +393,12 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
 pub fn gen_servers(
-    entities: &[EntityDef],
+    schema: &SchemaOutput,
     api: Option<&ApiOutput>,
     scan_dirs: &[PathBuf],
     config: &ServersConfig,
 ) -> Result<ServersOutput, CodegenError> {
-    servers::generate(entities, api, scan_dirs, config)
+    servers::generate(schema, api, scan_dirs, config)
 }
 
 /// Generate TypeScript clients (bindings, HTTP / IPC transports) and the
@@ -409,11 +409,12 @@ pub fn gen_servers(
 /// admin-registry metadata file. Both consume the same schema and parsed API
 /// surface; neither produces input for the other.
 ///
-/// `entities` is [`parse_schema`]'s output, or `&[]` when there is no schema.
-/// It supplies the schema-known TypeScript bindings, the admin registry's
-/// field metadata, and the JSON:API resource shapes the HTTP transport reads
-/// and writes, under the same rules as [`gen_servers`]. Passing `&[]` leaves
-/// `admin-registry.ts` with `fields: []` for every entity.
+/// `schema` is [`parse_schema`]'s output, or `&SchemaOutput::default()` when
+/// there is no schema. It supplies the schema-known TypeScript bindings, the
+/// admin registry's field metadata and enum values, and the JSON:API resource
+/// shapes the HTTP transport reads and writes, under the same rules as
+/// [`gen_servers`]. An empty schema leaves `admin-registry.ts` with
+/// `fields: []` for every entity.
 ///
 /// As with [`gen_servers`], the `api` and `scan_dirs` parameters are reserved
 /// for future enrichment - this function currently always scans
@@ -436,7 +437,7 @@ pub fn gen_servers(
 /// let schema = parse_schema(&SchemaConfig { schema_dir: "src/schema".into() })?;
 ///
 /// gen_clients(
-///     &schema.entities,
+///     &schema,
 ///     None,
 ///     &[],
 ///     &ClientsConfig {
@@ -452,12 +453,12 @@ pub fn gen_servers(
 /// # Ok::<(), ontogen::CodegenError>(())
 /// ```
 pub fn gen_clients(
-    entities: &[EntityDef],
+    schema: &SchemaOutput,
     api: Option<&ApiOutput>,
     scan_dirs: &[PathBuf],
     config: &ClientsConfig,
 ) -> Result<(), CodegenError> {
-    clients::generate(entities, api, scan_dirs, config)
+    clients::generate(schema, api, scan_dirs, config)
 }
 
 /// Generate the data-model reference and JSON Schema from the parsed schema.
@@ -773,10 +774,6 @@ pub struct ClientsConfig {
     pub store_import: Option<String>,
     /// Optional pagination configuration for list operations.
     pub pagination: Option<servers::PaginationConfig>,
-    /// The schema's string enums, which give the admin registry a field's
-    /// `enumValues`. [`Pipeline`] users do not need to set this; the builder
-    /// forwards `schema.enums` automatically.
-    pub schema_enums: Vec<EnumDef>,
     /// Admin-registry labels that replace the title-cased field name, keyed
     /// `entity.field` for one entity's field or `field` for every entity's
     /// field of that name: `("avg_hr_bpm", "Average HR (bpm)")`.
@@ -824,7 +821,7 @@ pub struct ClientsConfig {
 impl ClientsConfig {
     /// A config carrying the inputs client generation cannot infer, with every
     /// other field at its inert default: no generators, no formatting, no route
-    /// prefix, no store, no pagination, no schema metadata.
+    /// prefix, no store, no pagination, no label overrides.
     ///
     /// Reach for it as the base of a struct literal (see the type's own docs)
     /// rather than spelling out every field — that is what keeps a new
@@ -852,7 +849,6 @@ impl ClientsConfig {
             store_type: None,
             store_import: None,
             pagination: None,
-            schema_enums: Vec::new(),
             label_overrides: std::collections::HashMap::new(),
             pool_extra_roots: Vec::new(),
             pool_exclude_paths: Vec::new(),

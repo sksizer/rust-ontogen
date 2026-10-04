@@ -84,7 +84,9 @@ pub(crate) fn surface_use_stmts_where(
             services.entry(&surface.service_import_path).or_default().insert(entry(f.surface));
             let mut names = Vec::new();
             collect_type_import(&f.return_type_ast, &mut names);
-            for p in &f.params {
+            // An order's types live in the store, not the types module, and
+            // no handler names them: the order is inferred from `list`.
+            for p in f.params.iter().filter(|p| p.order_sort_field().is_none()) {
                 collect_type_import(&p.ty_ast, &mut names);
             }
             types.entry(&surface.types_import_path).or_default().extend(names);

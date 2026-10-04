@@ -16,16 +16,20 @@
 //! on `ontogen-core`, with its `uuid` feature under `IdStrategy::Uuid`.
 
 use crate::ir::IdStrategy;
-use crate::schema::model::EntityDef;
+use crate::resource::member_name;
+use crate::schema::model::{EntityDef, EnumDef};
+use crate::schema::sort::{SortKind, sort_fields};
+use crate::store::gen_order::sort_field_type;
 use crate::store::has_many::{self, has_many_writes};
 use crate::store::helpers::{
     junction_source_col, junction_table_name, junction_target_col, pluralize, to_pascal_case, to_snake_case,
 };
+use crate::store::nan::{FloatSource, Skipped, emit_nan_checks};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /// Generate the complete `impl Store { ... }` block with CRUD methods.
-pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
+pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, enums: &[EnumDef], id_strategy: &IdStrategy) {
     let has_relations = entity.junction_relations().next().is_some() || entity.has_many_relations().next().is_some();
 
     code.push_str("impl Store {\n");
@@ -52,7 +56,9 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, id_strategy: &I
         generate_exists_helper(code, entity);
     }
 
-    code.push_str("}\n");
+    code.push_str("}\n\n");
+
+    generate_order_query(code, entity, enums);
 }
 
 // ─── Individual CRUD methods ─────────────────────────────────────────────────
@@ -61,23 +67,14 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let plural = pluralize(&snake);
-    let id_col = id_column(entity);
+    let sort_field = sort_field_type(entity);
 
     code.push_str(&format!(
-        "    pub async fn list_{plural}(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
+        "    pub async fn list_{plural}(&self, order: &[OrderBy<{sort_field}>], limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
     ));
-    code.push_str(&format!("        let mut query = {snake}::Entity::find();\n"));
-    // A page only means something over a defined order. `LIMIT`/`OFFSET` with
-    // no `ORDER BY` lets the engine return rows in whatever order it likes, so
-    // the same offset can repeat a row the previous page already returned and
-    // skip another entirely.
-    //
-    // Id order is also the default on the markdown backend, which compares
-    // ids byte-wise (ADR 0006 §3). SQLite's default BINARY collation does the
-    // same; a text collation such as Postgres under `en_US.UTF-8` (`alpha`
-    // before `Zeta`) or MySQL's case-insensitive default would not.
-    code.push_str("        // sqlite-only: ids sort in byte order under SQLite's default BINARY collation.\n");
-    code.push_str(&format!("        query = query.order_by_asc({snake}::Column::{id_col});\n"));
+    // The order is applied before the page is cut, or the page is not a
+    // slice of that order.
+    code.push_str(&format!("        let mut query = order_{plural}_query({snake}::Entity::find(), order);\n"));
     // The engine takes `LIMIT` and `OFFSET` as i64, and sea-query panics
     // binding a larger u64. Clamped, an oversized offset is past the end (an
     // empty page) and an oversized limit is every row, as on markdown.
@@ -110,6 +107,54 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     }
 
     code.push_str("    }\n\n");
+}
+
+/// `order_{plural}_query`: the `ORDER BY` of `list_*`, for a hand-written
+/// list that filters in SQL to order by the same rules (ADR 0006 §1.1, §4).
+/// A page only means something over a total order: `LIMIT`/`OFFSET` with no
+/// `ORDER BY` lets the engine return rows in whatever order it likes, so the
+/// same offset can repeat a row and skip another. `effective` ends every
+/// order on the id, so the order is total.
+///
+/// Null ordering is stated for every key, though SQLite's default already
+/// puts nulls first ascending and last descending, so the rule is in the
+/// generated code rather than implied by the engine. String keys compare
+/// bytewise as on markdown only under SQLite's default BINARY collation:
+/// generated columns declare no `COLLATE`, and a text collation such as
+/// Postgres under `en_US.UTF-8` (`alpha` before `Zeta`) or MySQL's
+/// case-insensitive default would not.
+fn generate_order_query(code: &mut String, entity: &EntityDef, enums: &[EnumDef]) {
+    let name = &entity.name;
+    let snake = to_snake_case(name);
+    let plural = pluralize(&snake);
+    let sort_field = sort_field_type(entity);
+
+    code.push_str(&format!(
+        "/// Applies `order` to `query` as `list_{plural}` does: each key with nulls first ascending and last\n"
+    ));
+    code.push_str("/// descending, then the id. A hand-written list that filters in SQL orders through this.\n");
+    code.push_str(&format!(
+        "pub fn order_{plural}_query(mut query: Select<{snake}::Entity>, order: &[OrderBy<{sort_field}>]) -> Select<{snake}::Entity> {{\n"
+    ));
+    code.push_str("    for key in ontogen_core::order::effective(order) {\n");
+    code.push_str("        let column = match key.field {\n");
+    for spec in sort_fields(entity, enums) {
+        let column = match spec.kind {
+            SortKind::Id => id_column(entity),
+            _ => to_pascal_case(member_name(&spec.field.name)),
+        };
+        code.push_str(&format!("            {sort_field}::{} => {snake}::Column::{column},\n", spec.variant));
+    }
+    code.push_str("        };\n");
+    code.push_str("        let (direction, nulls) = match key.direction {\n");
+    code.push_str("            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),\n");
+    code.push_str("            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),\n");
+    code.push_str("        };\n");
+    code.push_str("        // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.\n");
+    code.push_str("        query = query.order_by_with_nulls(column, direction, nulls);\n");
+    code.push_str("    }\n");
+    code.push_str("    query\n");
+    code.push_str("}\n");
 }
 
 fn generate_count(code: &mut String, entity: &EntityDef) {
@@ -173,6 +218,7 @@ fn generate_create(code: &mut String, entity: &EntityDef, has_relations: bool, i
         code.push('\n');
     }
     has_many::emit_missing_children_check(code, entity, &has_many_writes(entity), |f| format!("&{f}"));
+    emit_nan_checks(code, entity, FloatSource::Record(&snake), Skipped::Stored, |m| format!("AppError::DbError({m})"));
 
     generate_insert_with_id(code, entity, id_strategy);
 
@@ -318,6 +364,7 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let writes = has_many_writes(entity);
     has_many::emit_missing_children_check(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
     has_many::emit_dropped_children(code, &writes);
+    emit_nan_checks(code, entity, FloatSource::Updates, Skipped::Stored, |m| format!("AppError::DbError({m})"));
 
     // Apply updates
     code.push_str("        updates.apply(&mut current);\n\n");
@@ -540,15 +587,10 @@ fn generate_exists_helper(code: &mut String, entity: &EntityDef) {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// The SeaORM `Column` variant for an entity's primary key, e.g. `Id`.
-///
-/// Every other method this generator writes hardcodes `.id`, `find_by_id` or
-/// `Column::Id`, so an entity with no `#[ontology(id)]` field already cannot
-/// produce compiling SeaORM output — `gen_entity` would emit a
-/// `DeriveEntityModel` with no `primary_key`. Reading the field keeps a
-/// renamed id correct; falling back to `Id` keeps the emitted ordering
-/// unconditional, so the ordering and the `QueryOrder` import it needs cannot
-/// drift out of lockstep.
-pub(crate) fn id_column(entity: &EntityDef) -> String {
+/// Reading the field keeps a renamed id correct. The store stage refuses an
+/// entity with no `#[ontology(id)]` field, so the `Id` fallback is never
+/// emitted.
+fn id_column(entity: &EntityDef) -> String {
     entity.id_field().map(|f| to_pascal_case(&f.name)).unwrap_or_else(|| "Id".to_string())
 }
 
@@ -634,7 +676,7 @@ mod tests {
     fn test_simple_entity_crud() {
         let entity = make_role_entity();
         let mut code = String::new();
-        generate_crud_impl(&mut code, &entity, &IdStrategy::Provided);
+        generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
 
         assert!(code.contains("fn list_roles("));
         assert!(code.contains("fn get_role("));
@@ -649,7 +691,7 @@ mod tests {
     fn test_complex_entity_has_populate_relations() {
         let entity = make_node_entity();
         let mut code = String::new();
-        generate_crud_impl(&mut code, &entity, &IdStrategy::Provided);
+        generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
 
         assert!(code.contains("populate_node_relations"));
         assert!(code.contains("sync_junction(\"node_fulfills\""));
@@ -660,7 +702,7 @@ mod tests {
     fn test_junction_sync_in_create() {
         let entity = make_node_entity();
         let mut code = String::new();
-        generate_crud_impl(&mut code, &entity, &IdStrategy::Provided);
+        generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
 
         // Create should sync junctions
         assert!(code.contains("let fulfills = node.fulfills.clone()"));
@@ -671,12 +713,14 @@ mod tests {
     fn test_list_has_pagination_params() {
         let entity = make_role_entity();
         let mut code = String::new();
-        generate_crud_impl(&mut code, &entity, &IdStrategy::Provided);
+        generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
 
-        // Generated list_* must accept optional limit / offset for SQL-level pagination
+        // Generated list_* must accept an order and optional limit / offset for SQL-level pagination
         assert!(
-            code.contains("fn list_roles(&self, limit: Option<u64>, offset: Option<u64>)"),
-            "list_roles should have pagination params, got:\n{code}"
+            code.contains(
+                "fn list_roles(&self, order: &[OrderBy<RoleSortField>], limit: Option<u64>, offset: Option<u64>)"
+            ),
+            "list_roles should have order and pagination params, got:\n{code}"
         );
         // And wire them into the SeaORM query
         assert!(code.contains("query = query.limit(l);"), "missing .limit() call");
@@ -698,6 +742,83 @@ mod tests {
     }
 
     #[test]
+    fn the_list_orders_through_its_query_helper_before_the_page() {
+        let code = crud(&make_role_entity(), &IdStrategy::Provided);
+        let list = method(&code, "list_roles");
+        let order = list.find("let mut query = order_roles_query(role::Entity::find(), order);").expect("ordered");
+        assert!(order < list.find("query = query.limit(l);").unwrap(), "{list}");
+    }
+
+    #[test]
+    fn the_order_helper_maps_every_sort_field_to_its_column_with_explicit_nulls() {
+        let mut entity = make_node_entity();
+        entity.fields.push(FieldDef::new("r#type", FieldType::OptionString, FieldRole::Plain));
+        let code = crud(&entity, &IdStrategy::Provided);
+        let helper = &code[code.find("pub fn order_nodes_query(").expect("a module-level helper")..];
+        assert!(
+            helper.starts_with(
+                "pub fn order_nodes_query(mut query: Select<node::Entity>, order: &[OrderBy<NodeSortField>]) -> Select<node::Entity> {"
+            ),
+            "{helper}"
+        );
+        for expected in [
+            "for key in ontogen_core::order::effective(order) {",
+            "NodeSortField::Id => node::Column::Id,",
+            "NodeSortField::Name => node::Column::Name,",
+            "NodeSortField::Type => node::Column::Type,",
+            "ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),",
+            "ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),",
+            "string keys sort in byte order under SQLite's default BINARY collation.",
+            "query = query.order_by_with_nulls(column, direction, nulls);",
+        ] {
+            assert!(helper.contains(expected), "missing `{expected}`:\n{helper}");
+        }
+        assert!(!helper.contains("ParentId") && !helper.contains("Body"), "relations and body do not sort: {helper}");
+    }
+
+    #[test]
+    fn a_nan_is_refused_after_the_hook_and_before_anything_is_written() {
+        let mut entity = make_node_entity();
+        entity.fields.push(FieldDef::new("weight", FieldType::F32, FieldRole::Plain));
+        entity.fields.push(FieldDef::new("high", FieldType::OptionF64, FieldRole::Plain));
+        let code = crud(&entity, &IdStrategy::Provided);
+        let refusal = r#"return Err(AppError::DbError("Node.weight: NaN cannot be stored".to_string()));"#;
+
+        let create = method(&code, "create_node");
+        let check = create.find("if node.weight.is_nan() {").unwrap_or_else(|| panic!("create checks: {create}"));
+        assert!(create.contains("if node.high.is_some_and(f64::is_nan) {"), "{create}");
+        assert!(create.contains(refusal), "{create}");
+        assert!(check > create.find("hooks::before_create").unwrap(), "after the hook: {create}");
+        assert!(check < create.find("let id = if node.id.trim().is_empty()").unwrap(), "before the insert: {create}");
+
+        let update = method(&code, "update_node");
+        let check = update.find("if updates.weight.is_some_and(f32::is_nan) {").unwrap_or_else(|| panic!("{update}"));
+        assert!(update.contains("if updates.high.flatten().is_some_and(f64::is_nan) {"), "{update}");
+        assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
+        assert!(check < update.find(".update(self.db())").unwrap(), "before the record write: {update}");
+        assert!(!crud(&make_role_entity(), &IdStrategy::Provided).contains("is_nan"), "no float, no check");
+    }
+
+    /// A skipped field has a column, so a create refuses a NaN in a skipped
+    /// float as in any other; `NodeUpdate` has no skipped field, so an
+    /// update has none to check.
+    #[test]
+    fn a_nan_in_a_skipped_float_is_refused_on_create() {
+        let mut entity = make_node_entity();
+        entity.fields.push(FieldDef::new("cached", FieldType::F64, FieldRole::Skip));
+        entity.fields.push(FieldDef::new("maybe_cached", FieldType::OptionF32, FieldRole::Skip));
+        let code = crud(&entity, &IdStrategy::Provided);
+        let create = method(&code, "create_node");
+        assert!(create.contains("if node.cached.is_nan() {"), "{create}");
+        assert!(create.contains("if node.maybe_cached.is_some_and(f32::is_nan) {"), "{create}");
+        assert!(
+            create.contains(r#"return Err(AppError::DbError("Node.cached: NaN cannot be stored".to_string()));"#),
+            "{create}"
+        );
+        assert!(!method(&code, "update_node").contains("cached"), "{code}");
+    }
+
+    #[test]
     fn a_record_is_not_its_own_has_many_child() {
         let code = crud(&make_node_entity(), &IdStrategy::Provided);
         let populate = method(&code, "populate_node_relations");
@@ -709,7 +830,7 @@ mod tests {
     fn test_update_tracks_junction_changes() {
         let entity = make_node_entity();
         let mut code = String::new();
-        generate_crud_impl(&mut code, &entity, &IdStrategy::Provided);
+        generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
 
         // Update should track which junction fields changed
         assert!(code.contains("let fulfills_changed = updates.fulfills.is_some()"));
@@ -731,7 +852,7 @@ mod tests {
 
     fn crud(entity: &EntityDef, strategy: &IdStrategy) -> String {
         let mut code = String::new();
-        generate_crud_impl(&mut code, entity, strategy);
+        generate_crud_impl(&mut code, entity, &[], strategy);
         code
     }
 

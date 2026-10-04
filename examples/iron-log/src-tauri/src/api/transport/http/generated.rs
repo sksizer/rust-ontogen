@@ -150,16 +150,6 @@ impl RouteQuery for GetParams {
     const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
 }
 
-/// No list takes an `order` argument, so every `sort` asks for an order the
-/// server does not support.
-fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
-    match query.sort()? {
-        None => Ok(()),
-        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
-            .with_parameter("sort")),
-    }
-}
-
 /// The effective `(offset, limit)` of a paginated list.
 fn page(query: &QueryParams, default_limit: u32, max_limit: u32) -> Result<(u32, u32), ErrorObject> {
     let offset = query.page_offset()?.unwrap_or(0);
@@ -687,11 +677,11 @@ async fn exercise_list(
     _: AcceptGuard,
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "exercises")?;
+    let order = query.sort_order("exercises")?;
     let include = query.include_paths("exercises", &[], &[])?;
     let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items = exercise::list(&ontogen_store).await.map_err(ontogen_app_error)?;
+    let items = exercise::list(&ontogen_store, &order).await.map_err(ontogen_app_error)?;
     let collection = "/api/exercises";
     let data: Vec<_> = items.iter().map(|entity| exercise_as_resource(entity, collection)).collect();
     let mut document = Document::new(data, Links::new(link_query.href(collection)));
@@ -783,11 +773,11 @@ async fn tag_list(
     _: AcceptGuard,
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "tags")?;
+    let order = query.sort_order("tags")?;
     let include = query.include_paths("tags", &[], &[])?;
     let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items = tag::list(&ontogen_store).await.map_err(ontogen_app_error)?;
+    let items = tag::list(&ontogen_store, &order).await.map_err(ontogen_app_error)?;
     let collection = "/api/tags";
     let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
     let mut document = Document::new(data, Links::new(link_query.href(collection)));
@@ -879,11 +869,11 @@ async fn workout_list(
     _: AcceptGuard,
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "workouts")?;
+    let order = query.sort_order("workouts")?;
     let include = query.include_paths("workouts", &["tags"], &[])?;
     let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items = workout::list(&ontogen_store).await.map_err(ontogen_app_error)?;
+    let items = workout::list(&ontogen_store, &order).await.map_err(ontogen_app_error)?;
     let collection = "/api/workouts";
     let data: Vec<_> = items.iter().map(|entity| workout_as_resource(entity, collection)).collect();
     let mut document = Document::new(data, Links::new(link_query.href(collection)));
@@ -1104,11 +1094,11 @@ async fn workout_set_list(
     _: AcceptGuard,
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "workout-sets")?;
+    let order = query.sort_order("workout-sets")?;
     let include = query.include_paths("workout-sets", &["workout", "exercise"], &[])?;
     let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items = workout_set::list(&ontogen_store).await.map_err(ontogen_app_error)?;
+    let items = workout_set::list(&ontogen_store, &order).await.map_err(ontogen_app_error)?;
     let collection = "/api/workout-sets";
     let data: Vec<_> = items.iter().map(|entity| workout_set_as_resource(entity, collection)).collect();
     let mut document = Document::new(data, Links::new(link_query.href(collection)));

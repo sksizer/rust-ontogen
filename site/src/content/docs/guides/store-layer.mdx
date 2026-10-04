@@ -11,7 +11,7 @@ The store layer sits between your persistence layer and your API. For each entit
 
 ```rust
 let store_output = ontogen::gen_store(
-    &schema.entities,
+    &schema,
     &ontogen::StoreConfig {
         output_dir: PathBuf::from("src/store/generated"),
         hooks_dir: Some(PathBuf::from("src/store/hooks")),
@@ -161,11 +161,13 @@ The core of the generated module is an `impl Store` block with five methods:
 <Tabs>
   <TabItem label="list">
     ```rust
-    pub async fn list_workouts(&self, limit: Option<u64>, offset: Option<u64>)
-        -> Result<Vec<Workout>, AppError>
-    {
-        let mut query = workout::Entity::find();
-        query = query.order_by_asc(workout::Column::Id);
+    pub async fn list_workouts(
+        &self,
+        order: &[OrderBy<WorkoutSortField>],
+        limit: Option<u64>,
+        offset: Option<u64>,
+    ) -> Result<Vec<Workout>, AppError> {
+        let mut query = order_workouts_query(workout::Entity::find(), order);
         if let Some(l) = limit {
             query = query.limit(l);
         }
@@ -186,7 +188,7 @@ The core of the generated module is an `impl Store` block with five methods:
     }
     ```
 
-    A list is ordered by id, byte order, on both backends, so a `limit`/`offset` walk visits every record once. For entities without relations, the population loop is omitted.
+    A list is ordered by `order`, then by id, on both backends, so a `limit`/`offset` walk visits every record once. Pass `&[]` for id order. See [Ordering](#ordering). For entities without relations, the population loop is omitted.
   </TabItem>
   <TabItem label="get">
     ```rust
@@ -311,6 +313,31 @@ The core of the generated module is an `impl Store` block with five methods:
   </TabItem>
 </Tabs>
 
+## Ordering
+
+`list_{plural}` takes an order, `&[OrderBy<{Entity}SortField>]`, as its first argument after `&self`. `count_{plural}` takes none. The store module also holds the sortable fields and an in-memory sort, emitted identically for both backends:
+
+```rust
+// crate::store::workout
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkoutSortField { Id, Name, Intensity, Started }
+
+pub fn sort_workouts(items: &mut [Workout], order: &[OrderBy<WorkoutSortField>]);
+```
+
+`{Entity}SortField` implements `ontogen_core::order::SortField`. Its fields are the id (as `Id`, whatever the Rust field is called) and each plain scalar field in declaration order: strings, integers, floats and bools, their `Option` forms, schema enums, and integer primitives held as an `OptionEnum` or `Other` field. A body, a relation, a `Vec` and a skipped field are not sortable.
+
+Use `OrderBy::asc(field)` or `OrderBy::desc(field)`. `ontogen_core::order::parse_sort` reads transport keys (`name`, `-name`) into an order and rejects an unknown, repeated or empty key.
+
+The same rules hold on both backends:
+
+- Keys apply in the order given. The id ascending is the last key unless the order names the id, so every order is total.
+- `None` sorts before every value ascending and after every value descending.
+- Strings compare by byte, and an enum by its stored string.
+- A float compares by `f64::total_cmp`, with `-0.0` equal to `0.0`. A NaN write is refused, so none is stored.
+
+The markdown `list_*` reads every record, sorts with `sort_{plural}`, then cuts the page. The SeaORM `list_*` orders in SQL through `order_{plural}_query(query, order)`, a free function beside the entity that takes a `Select` and returns it ordered. It is SeaORM-only. A hand-written list that filters in SQL calls it, and one that filters in memory calls `sort_{plural}`. See [Filtered lists](/cookbook/custom-api-endpoints/#recipe-filtered-lists) and [ADR 0006](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0006-ordering-on-both-store-backends.md).
+
 ## Relation Population
 
 Entities with `has_many` or `many_to_many` fields get a `populate_{entity}_relations` method. This method fills in the relation fields that `from_model()` left as `Vec::new()`.
@@ -411,7 +438,7 @@ The strategy is chosen at build time, in two places. The store-wide default is r
 pub struct Event { /* ... */ }
 ```
 
-Both apply to both backends. The SeaORM store calls `ontogen_core::id` at runtime, so a SeaORM consumer depends on `ontogen-core`, with the `uuid` feature for `IdStrategy::Uuid`. (A markdown consumer needs the `uuid` feature of `markdown-store` instead.)
+Both apply to both backends. The SeaORM store calls `ontogen_core::id` at runtime, with the `uuid` feature for `IdStrategy::Uuid`; every generated store depends on `ontogen-core` anyway, for its ordering. (A markdown consumer needs the `uuid` feature of `markdown-store` instead.)
 
 Your `AppError` declares `{Entity}IdRequired(String)` and `{Entity}AlreadyExists(String)` for every entity:
 
@@ -561,11 +588,12 @@ pub struct StoreMethodMeta {
 }
 ```
 
-The five standard methods per entity are:
+The six standard methods per entity are:
 
 | Method Name | Kind | Return Type |
 |---|---|---|
 | `list_{entities}` | `Crud(List)` | `Vec<Entity>` |
+| `count_{entities}` | `Crud(Count)` | `u64` |
 | `get_{entity}` | `Crud(Get)` | `Entity` |
 | `create_{entity}` | `Crud(Create)` | `Entity` |
 | `update_{entity}` | `Crud(Update)` | `Entity` |

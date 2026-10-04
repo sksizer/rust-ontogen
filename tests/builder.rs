@@ -485,10 +485,9 @@ fn builder_direct_gen_api_without_the_servers_dir_gets_the_same_surface_error() 
     std::fs::write(api.join("workout.rs"), HAND_WRITTEN_LIST).unwrap();
     let generated = api.join("generated");
 
-    let entities =
-        ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: fixture_schema_dir() }).expect("schema").entities;
+    let schema = ontogen::parse_schema(&ontogen::SchemaConfig { schema_dir: fixture_schema_dir() }).expect("schema");
     let api_out = ontogen::gen_api(
-        &entities,
+        &schema.entities,
         &ontogen::ApiConfig {
             output_dir: generated,
             exclude: vec![],
@@ -500,7 +499,7 @@ fn builder_direct_gen_api_without_the_servers_dir_gets_the_same_surface_error() 
         },
     )
     .expect("gen_api");
-    let Err(err) = ontogen::gen_servers(&entities, Some(&api_out), &[], &servers_config(&api, tmp.path())) else {
+    let Err(err) = ontogen::gen_servers(&schema, Some(&api_out), &[], &servers_config(&api, tmp.path())) else {
         panic!("the generated and the hand-written list collide");
     };
     let msg = err.to_string();

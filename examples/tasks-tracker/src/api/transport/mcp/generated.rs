@@ -149,22 +149,64 @@ fn with_pagination_schema(mut schema: Value) -> Value {
     schema
 }
 
+/// Inject the optional `sort` property, an array of `keys`, into a JSON schema.
+fn with_sort_schema(mut schema: Value, keys: &[&str]) -> Value {
+    if let Some(obj) = schema.as_object_mut() {
+        let props = obj.entry("properties").or_insert_with(|| json!({}));
+        if let Some(props_obj) = props.as_object_mut() {
+            props_obj.insert("sort".to_string(), json!({
+                "type": "array",
+                "items": { "type": "string", "enum": keys },
+                "description": "Sort keys, applied in order: a field name sorts ascending, and `-` before it descending. The id is the final tie-break."
+            }));
+        }
+    }
+    schema
+}
+
+/// The keys of the `sort` argument: none when it is absent or `null`, and
+/// the tool's error for anything but an array of strings.
+fn sort_arg(args: &Value) -> Result<Vec<&str>, String> {
+    match args.get("sort") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(keys)) => keys
+            .iter()
+            .map(|key| key.as_str().ok_or_else(|| format!("Invalid sort: expected a string, got {key}")))
+            .collect(),
+        Some(other) => Err(format!("Invalid sort: expected an array of strings, got {other}")),
+    }
+}
+
 /// Generated MCP tool definitions.
 pub fn generated_tool_registry() -> Vec<McpToolDef> {
     vec![
         McpToolDef {
             name: "epic_list",
             description: "One page of epics",
-            schema_fn: || with_pagination_schema(schema_for::<EmptyInput>()),
+            schema_fn: || {
+                with_sort_schema(
+                    with_pagination_schema(schema_for::<EmptyInput>()),
+                    &["id", "-id", "title", "-title", "status", "-status"],
+                )
+            },
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
-                    refuse_unknown_args(ontogen_args, with_pagination_schema(schema_for::<EmptyInput>()))?;
+                    refuse_unknown_args(
+                        ontogen_args,
+                        with_sort_schema(
+                            with_pagination_schema(schema_for::<EmptyInput>()),
+                            &["id", "-id", "title", "-title", "status", "-status"],
+                        ),
+                    )?;
+                    let ontogen_order =
+                        ontogen_core::order::parse_sort(sort_arg(ontogen_args)?).map_err(|e| e.to_string())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let ontogen_limit = ontogen_args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100);
                     let ontogen_offset = ontogen_args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let ontogen_items = epic::list(&ontogen_store, Some(ontogen_limit), Some(ontogen_offset))
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let ontogen_items =
+                        epic::list(&ontogen_store, &ontogen_order, Some(ontogen_limit), Some(ontogen_offset))
+                            .await
+                            .map_err(|e| e.to_string())?;
                     let ontogen_total = epic::count(&ontogen_store).await.map_err(|e| e.to_string())?;
                     Ok(json!({
                         "items": serde_json::to_value(&ontogen_items).map_err(|e| format!("Serialize error: {e}"))?,
@@ -237,16 +279,27 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
         McpToolDef {
             name: "tag_list",
             description: "One page of tags",
-            schema_fn: || with_pagination_schema(schema_for::<EmptyInput>()),
+            schema_fn: || {
+                with_sort_schema(with_pagination_schema(schema_for::<EmptyInput>()), &["id", "-id", "title", "-title"])
+            },
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
-                    refuse_unknown_args(ontogen_args, with_pagination_schema(schema_for::<EmptyInput>()))?;
+                    refuse_unknown_args(
+                        ontogen_args,
+                        with_sort_schema(
+                            with_pagination_schema(schema_for::<EmptyInput>()),
+                            &["id", "-id", "title", "-title"],
+                        ),
+                    )?;
+                    let ontogen_order =
+                        ontogen_core::order::parse_sort(sort_arg(ontogen_args)?).map_err(|e| e.to_string())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let ontogen_limit = ontogen_args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100);
                     let ontogen_offset = ontogen_args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let ontogen_items = tag::list(&ontogen_store, Some(ontogen_limit), Some(ontogen_offset))
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let ontogen_items =
+                        tag::list(&ontogen_store, &ontogen_order, Some(ontogen_limit), Some(ontogen_offset))
+                            .await
+                            .map_err(|e| e.to_string())?;
                     let ontogen_total = tag::count(&ontogen_store).await.map_err(|e| e.to_string())?;
                     Ok(json!({
                         "items": serde_json::to_value(&ontogen_items).map_err(|e| format!("Serialize error: {e}"))?,
@@ -377,21 +430,39 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
         },
         McpToolDef {
             name: "task_list",
-            description: "List tasks, optionally filtered by status and epic",
-            schema_fn: || with_pagination_schema(schema_for::<ListTasksQuery>()),
+            description: "List tasks, optionally filtered by status and epic, and sorted",
+            schema_fn: || {
+                with_sort_schema(
+                    with_pagination_schema(schema_for::<ListTasksQuery>()),
+                    &["id", "-id", "title", "-title", "status", "-status", "created", "-created"],
+                )
+            },
             handler: |ontogen_state, ontogen_args| {
                 Box::pin(async move {
-                    refuse_unknown_args(ontogen_args, with_pagination_schema(schema_for::<ListTasksQuery>()))?;
+                    refuse_unknown_args(
+                        ontogen_args,
+                        with_sort_schema(
+                            with_pagination_schema(schema_for::<ListTasksQuery>()),
+                            &["id", "-id", "title", "-title", "status", "-status", "created", "-created"],
+                        ),
+                    )?;
                     let ontogen_filter: ListTasksQuery =
-                        serde_json::from_value(args_without(ontogen_args, &["limit", "offset"]))
+                        serde_json::from_value(args_without(ontogen_args, &["sort", "limit", "offset"]))
                             .map_err(|e| format!("Invalid filter: {e}"))?;
+                    let ontogen_order =
+                        ontogen_core::order::parse_sort(sort_arg(ontogen_args)?).map_err(|e| e.to_string())?;
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let ontogen_limit = ontogen_args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100);
                     let ontogen_offset = ontogen_args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let ontogen_items =
-                        task::list(&ontogen_store, ontogen_filter.clone(), Some(ontogen_limit), Some(ontogen_offset))
-                            .await
-                            .map_err(|e| e.to_string())?;
+                    let ontogen_items = task::list(
+                        &ontogen_store,
+                        ontogen_filter.clone(),
+                        &ontogen_order,
+                        Some(ontogen_limit),
+                        Some(ontogen_offset),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
                     let ontogen_total = task::count(&ontogen_store, ontogen_filter).await.map_err(|e| e.to_string())?;
                     Ok(json!({
                         "items": serde_json::to_value(&ontogen_items).map_err(|e| format!("Serialize error: {e}"))?,

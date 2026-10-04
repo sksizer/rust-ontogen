@@ -29,13 +29,13 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        let result = store::generate(&entities, &config);
+        let result = store::generate(&crate::schema::schema_of(&entities), &config);
         assert!(result.is_ok(), "gen_store failed: {:?}", result.err());
 
         let output = result.unwrap();
 
-        // Should have 5 CRUD methods per entity
-        assert_eq!(output.methods.len(), entities.len() * 5, "Expected 5 methods per entity");
+        // Five CRUD methods and count per entity
+        assert_eq!(output.methods.len(), entities.len() * 6, "Expected 6 methods per entity");
 
         // Check that files were written
         let mod_rs = tmp.path().join("mod.rs");
@@ -88,7 +88,7 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        store::generate(std::slice::from_ref(tag), &config).expect("gen_store failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(tag)), &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
@@ -137,7 +137,7 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        store::generate(std::slice::from_ref(tag), &config).expect("gen_store failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(tag)), &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
         assert!(content.contains("use my_crate::domain::Tag;"), "Expected custom schema path import, got:\n{content}");
@@ -173,7 +173,7 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        store::generate(std::slice::from_ref(workout), &config).expect("gen_store failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(workout)), &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("workout.rs")).unwrap();
 
@@ -204,16 +204,24 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        let output = store::generate(std::slice::from_ref(role), &config).expect("gen_store failed");
+        let output =
+            store::generate(&crate::schema::schema_of(std::slice::from_ref(role)), &config).expect("gen_store failed");
 
         let by_name =
             |n: &str| output.methods.iter().find(|m| m.name == n).unwrap_or_else(|| panic!("missing method {n}"));
 
         let list = by_name("list_roles");
-        assert_eq!(list.params.len(), 2);
-        assert_eq!(list.params[0].name, "limit");
-        assert_eq!(list.params[0].param_type, "Option<u64>");
-        assert_eq!(list.params[1].name, "offset");
+        assert_eq!(list.params.len(), 3);
+        assert_eq!(list.params[0].name, "order");
+        assert_eq!(list.params[0].param_type, "&[OrderBy<RoleSortField>]");
+        assert_eq!(list.params[1].name, "limit");
+        assert_eq!(list.params[1].param_type, "Option<u64>");
+        assert_eq!(list.params[2].name, "offset");
+
+        let count = by_name("count_roles");
+        assert_eq!(count.kind, crate::ir::StoreMethodKind::Crud(crate::ir::CrudOp::Count));
+        assert!(count.params.is_empty());
+        assert_eq!(count.return_type, "u64");
 
         let get = by_name("get_role");
         assert_eq!(get.params.len(), 1);
@@ -263,7 +271,8 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::SlugFromField("name".into()),
         };
 
-        store::generate(std::slice::from_ref(tag), &config).expect("gen_store(markdown) failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(tag)), &config)
+            .expect("gen_store(markdown) failed");
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
         // Lifecycle parity with the SeaORM emission.
@@ -332,12 +341,40 @@ mod tests {
             wikilink_policy: None,
             id_strategy: crate::ir::IdStrategy::Provided,
         };
-        store::generate(std::slice::from_ref(tag), &config).expect("gen_store(markdown) failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(tag)), &config)
+            .expect("gen_store(markdown) failed");
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
         assert!(content.contains("const TAG_TYPE: &str = \"Label\";"), "{content}");
         assert!(content.contains("const TAGS_DIR: &str = \"labels\";"), "{content}");
         assert!(!content.contains("TAG_TYPE, TagFrontmatter"), "the frontmatter module has no type const: {content}");
+    }
+
+    /// Every store method reads the record's id, and the id ends every
+    /// order, so an entity without one fails before anything is written.
+    #[test]
+    fn an_entity_without_an_id_field_fails_on_both_backends() {
+        let schema_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema");
+        let entities = parse_schema_dir(&schema_dir).expect("parse failed");
+        let mut tag = entities.iter().find(|e| e.name == "Tag").expect("Tag entity not found").clone();
+        tag.fields.retain(|f| f.role != crate::schema::model::FieldRole::Id);
+
+        for backend in [crate::ir::Backend::Seaorm(None), markdown_backend()] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let out_dir = tmp.path().join("generated");
+            let config = StoreConfig {
+                output_dir: out_dir.clone(),
+                hooks_dir: None,
+                schema_module_path: "crate::schema".to_string(),
+                backend: backend.clone(),
+                wikilink_policy: None,
+                id_strategy: crate::ir::IdStrategy::Provided,
+            };
+            let err = store::generate(&crate::schema::schema_of(std::slice::from_ref(&tag)), &config)
+                .expect_err("an entity needs an id");
+            assert!(format!("{err}").contains("entity `Tag` has no `#[ontology(id)]` field"), "{backend:?}: {err}");
+            assert!(!out_dir.exists(), "validation failures must not write files");
+        }
     }
 
     /// SlugFromField must name a String field on every entity — validated at
@@ -365,8 +402,8 @@ mod tests {
                     id_strategy: crate::ir::IdStrategy::SlugFromField((*field).into()),
                 };
 
-                let err =
-                    store::generate(std::slice::from_ref(target), &config).expect_err("a bad slug field must fail");
+                let err = store::generate(&crate::schema::schema_of(std::slice::from_ref(target)), &config)
+                    .expect_err("a bad slug field must fail");
                 let msg = format!("{err}");
                 assert!(msg.contains(*needle), "{backend:?}: the error says what is wrong: {msg}");
                 assert!(
@@ -405,7 +442,7 @@ mod tests {
                 wikilink_policy: None,
                 id_strategy: IdStrategy::SlugFromField("name".into()),
             };
-            store::generate(&[tag.clone(), workout.clone(), exercise.clone()], &config)
+            store::generate(&crate::schema::schema_of(&[tag.clone(), workout.clone(), exercise.clone()]), &config)
                 .unwrap_or_else(|e| panic!("{backend:?}: {e}"));
             let read = |file: &str| std::fs::read_to_string(tmp.path().join(file)).unwrap();
             let (tag_code, workout_code, exercise_code) = (read("tag.rs"), read("workout.rs"), read("exercise.rs"));
@@ -452,7 +489,8 @@ mod tests {
                 wikilink_policy: None,
                 id_strategy: IdStrategy::Provided,
             };
-            let err = store::generate(std::slice::from_ref(&workout), &config).expect_err("Workout.name is optional");
+            let err = store::generate(&crate::schema::schema_of(std::slice::from_ref(&workout)), &config)
+                .expect_err("Workout.name is optional");
             let msg = format!("{err}");
             assert!(
                 msg.contains("`#[ontology(entity, id = \"slug(name)\")]` on entity `Workout`")
@@ -489,7 +527,7 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        store::generate(std::slice::from_ref(workout), &config).expect("gen_store failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(workout)), &config).expect("gen_store failed");
         let content = std::fs::read_to_string(tmp.path().join("workout.rs")).unwrap();
 
         assert!(
@@ -531,7 +569,7 @@ mod tests {
                 id_strategy: crate::ir::IdStrategy::Provided,
             };
 
-            let err = store::generate(std::slice::from_ref(&workout), &config)
+            let err = store::generate(&crate::schema::schema_of(std::slice::from_ref(&workout)), &config)
                 .expect_err("a cross-entity has_many must fail");
             let msg = format!("{err}");
             assert!(msg.contains("`Workout.sets`: has_many target `WorkoutSet`"), "{backend:?}: {msg}");

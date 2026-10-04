@@ -5,7 +5,7 @@ description: Every breaking change in 0.9 and how to migrate, grouped by area.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Version 0.9 is still in progress. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, relationships, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API, and lists and gets honour `include`. Sorting arrives in a later release, and its section will be added here. Work through the sections that apply to your project.
+Version 0.9 is still in progress. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, relationships, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API, lists and gets honour `include`, and every generated list (and any hand-written list that declares one) takes an order, so `sort` works on every transport. Work through the sections that apply to your project.
 
 ## Build configuration
 
@@ -56,16 +56,18 @@ The field named in `SlugFromField` must be a plain `String` on every entity the 
 
 With `MarkdownLayout::PerEntityDir`, `gen_markdown_io` fails when an entity's directory is a Windows device name (`con`, `prn`, `aux`, `nul`, `com0` to `com9`, `lpt0` to `lpt9`, in any case). That covers `#[ontology(entity, directory = "con")]` and the default directory of an entity named `Con`, `Nul` or `Com1`. Windows cannot create such a directory. The error names the entity and the attribute, for example ``entity `Thing`: `directory = "con"` is a Windows device name``. Give the entity another `directory` and move its records there. A `Flat` vault has no entity directories and is not checked.
 
-### `gen_servers` and `gen_clients` take the schema
+### `gen_store`, `gen_servers` and `gen_clients` take the schema
 
-Both stages take the parsed schema entities as their first argument, as `gen_api` does. `ClientsConfig::schema_entities` is removed.
+`gen_store`, `gen_servers` and `gen_clients` take the parsed schema, a `&SchemaOutput`, as their first argument. `ClientsConfig::schema_entities` and `ClientsConfig::schema_enums` are removed. The stages need the schema's enums as well as its entities: the store orders an enum field by its stored string, and the MCP and TypeScript sort keys list every sortable field.
 
 Before:
 
 ```rust
+ontogen::gen_store(&schema.entities, &store_config)?;
 ontogen::gen_servers(Some(&api), &scan_dirs, &servers_config)?;
 ontogen::gen_clients(Some(&api), &scan_dirs, &ClientsConfig {
     schema_entities: schema.entities.clone(),
+    schema_enums: schema.enums.clone(),
     ..clients_config
 })?;
 ```
@@ -73,13 +75,14 @@ ontogen::gen_clients(Some(&api), &scan_dirs, &ClientsConfig {
 After:
 
 ```rust
-ontogen::gen_servers(&schema.entities, Some(&api), &scan_dirs, &servers_config)?;
-ontogen::gen_clients(&schema.entities, Some(&api), &scan_dirs, &clients_config)?;
+ontogen::gen_store(&schema, &store_config)?;
+ontogen::gen_servers(&schema, Some(&api), &scan_dirs, &servers_config)?;
+ontogen::gen_clients(&schema, Some(&api), &scan_dirs, &clients_config)?;
 ```
 
-`Pipeline` users change nothing. A direct caller with no schema passes `&[]`; every module is then served as a custom op, as a module with no entity behind it is, and the admin registry has no field metadata.
+`Pipeline` users change nothing. A direct caller with no schema passes `&SchemaOutput::default()`; every module is then served as a custom op, as a module with no entity behind it is, and the admin registry has no field metadata.
 
-The same argument is the first parameter of `ontogen::servers::generate` and `ontogen::clients::generate`, which `gen_servers` and `gen_clients` call.
+The same argument is the first parameter of `ontogen::store::generate`, `ontogen::servers::generate` and `ontogen::clients::generate`, which the three functions call.
 
 `gen_servers` also scans for your `AppError`; see [`ServersConfig` has `error_source_dir`](#serversconfig-has-error_source_dir).
 
@@ -243,7 +246,7 @@ ontogen-core = "…"
 serde_json = "1"
 ```
 
-`ontogen-jsonapi` is part of the release set with `ontogen`, so use the version released alongside the `ontogen` you build with. A server with no resource module (`gen_servers` called with `&[]`) does not use these.
+`ontogen-jsonapi` is part of the release set with `ontogen`, so use the version released alongside the `ontogen` you build with. A server with no resource module (`gen_servers` called with an empty schema) does not use these.
 
 ### Mount the router at the root
 
@@ -574,7 +577,7 @@ A struct whose fields serde does not report, for example one with `#[serde(flatt
 
 ### Unknown query parameters are refused
 
-A query parameter a route does not accept is `400 invalid_query_parameter`, with `source.parameter` naming it. That includes `limit` and `offset` (use `page[…]`), `page[…]` on a list that is not paginated, `fields[…]`, and `filter[…]` on a list that takes no filter. A request that sends stray parameters and used to work now fails. `include` on a list or a get is honoured (see [Compound documents](#compound-documents)). `sort` on a list is recognised but no list takes an `order` argument, so it is `400 invalid_sort_field`.
+A query parameter a route does not accept is `400 invalid_query_parameter`, with `source.parameter` naming it. That includes `limit` and `offset` (use `page[…]`), `page[…]` on a list that is not paginated, `fields[…]`, and `filter[…]` on a list that takes no filter. A request that sends stray parameters and used to work now fails. `include` on a list or a get is honoured (see [Compound documents](#compound-documents)). `sort` is read on a list that takes an `order` argument (see [Sorting](#sorting)); on any other list it is `400 invalid_sort_field`.
 
 ### Related resources must exist
 
@@ -727,7 +730,7 @@ Values deserialize the way the old query extraction did (`true`, `5`, plain stri
 
 ### Modules with no entity behind them
 
-A module that no schema entity backs (for example when you scan hand-written API files with `gen_servers(&[], …)`) serves its CRUD functions as custom ops, on the same paths as before. Their requests and responses follow the custom op rules, and one verb changes:
+A module that no schema entity backs (for example when you scan hand-written API files with `gen_servers(&SchemaOutput::default(), …)`) serves its CRUD functions as custom ops, on the same paths as before. Their requests and responses follow the custom op rules, and one verb changes:
 
 | Op | Before | After |
 |----|--------|-------|
@@ -864,6 +867,157 @@ taskRemoveLabel(taskId: string, tagId: string): Promise<null>;
 Given a `projectId`, every junction method calls the same path under the prefix; there is no separate scoped form. A lone `list_X` is a custom `GET` (see [A `list_X` without `add_Y` or `remove_Y` is a custom op](#a-list_x-without-add_y-or-remove_y-is-a-custom-op)): on both HTTP clients and the IPC transport it loses `limit?` and `offset?` and returns its plain array.
 
 The HTTP-only client (`HttpTs`) changes in two ways. Its custom op methods now call the server's actual paths, kebab-cased and singleton-aware, where some used the module's Rust name. Its paginated lists, including junction lists, take `limit?` and `offset?` and return `PaginatedResult<T>`; before, they took no page arguments and returned the server's default first page.
+
+## Sorting
+
+Every generated list takes an order, and `sort` works on HTTP, Tauri IPC, MCP and the generated TypeScript. The order is one argument to the store and the API, built from `sort` by `ontogen_core::order::parse_sort`, so the transports accept the same keys. `name` sorts ascending and `-name` descending. The id is always the last key. See [Sorting a list](/guides/store-layer/#ordering) for the rules and [ADR 0006](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0006-ordering-on-both-store-backends.md) for the design.
+
+### Every generated crate depends on `ontogen-core`
+
+The generated store and API modules name `ontogen_core::order` (`OrderBy`, `SortField`) on both backends. Before, a markdown consumer with no event ops and no HTTP server did not need `ontogen-core`; now every crate that holds a generated store adds it:
+
+```toml
+ontogen-core = "…"
+```
+
+### `CrudOp` has a `Count` variant
+
+`StoreOutput.methods` now records each entity's `count_{plural}` as `StoreMethodKind::Crud(CrudOp::Count)`, beside the other five, and the `list_{plural}` entry's `params` start with `order`. A `match` over `CrudOp` adds an arm for `Count`.
+
+### The store's `list_*` takes an order
+
+`list_{plural}` takes `order: &[OrderBy<{Entity}SortField>]` first. Pass `&[]` for the default order, which is id ascending. `count_{plural}` is unchanged. Each entity gets a generated `{Entity}SortField` enum, in its store module beside `{Entity}Update`.
+
+Before:
+
+```rust
+let tasks = store.list_tasks(Some(20), Some(0)).await?;
+```
+
+After:
+
+```rust
+use ontogen_core::order::OrderBy;
+use crate::store::task::TaskSortField;
+
+let tasks = store.list_tasks(&[], Some(20), Some(0)).await?;
+let newest = store
+    .list_tasks(&[OrderBy::desc(TaskSortField::Created)], Some(20), Some(0))
+    .await?;
+```
+
+### The generated API `list` takes an order
+
+The generated `list` of an entity module takes `order` after the store, before the page parameters when the module is paginated. Before, `task::list(&store, Some(20), Some(0))`. After, `task::list(&store, &[], Some(20), Some(0))`, and `task::list(&store, &[])` for an unpaginated module. A hand-written caller adds `&[]`.
+
+### A hand-written `list` opts into `sort`
+
+A hand-written `list` answers `sort` only when it declares an order. Put it after the filter parameters and before the page parameters:
+
+```rust
+pub async fn list(
+    store: &Store,
+    query: ListTasksQuery,
+    order: &[OrderBy<TaskSortField>],
+    limit: Option<u64>,
+    offset: Option<u64>,
+) -> Result<Vec<Task>, AppError> {
+    // Filter in memory, then `sort_tasks(&mut items, order)` before the page is cut.
+    // A SeaORM list filters in SQL and calls `order_tasks_query(query, order)` instead.
+}
+```
+
+The paginated `count` takes the filters and no order. The parameter is found by its type, `&[OrderBy<…>]`, whatever it is named. Order through `list_*`, `sort_{plural}` (both backends) or `order_{plural}_query` (SeaORM only) so your list follows the same rules as the generated one; the parity guarantee covers it only then.
+
+A hand-written list that declares no order still answers `sort` with `400 invalid_sort_field`, as before.
+
+`gen_servers` and `gen_clients` fail the build, naming `module::fn`, for an order parameter that is:
+
+- on a fn that is not a module's `list`;
+- not the last parameter, or on a paginated list not the last before `limit` and `offset`;
+- the second one on the fn;
+- on a list in a module that no schema entity backs;
+- another entity's (`&[OrderBy<EpicSortField>]` in the `task` module).
+
+### An entity without an id field is refused
+
+`gen_store` fails the build, with ``entity `Task` has no `#[ontology(id)]` field; the generated store needs one``, for any schema entity that has no id field. Every generated store method reads the record's id, and the id is the last key of every order. Before, `gen_store` did not check, and such an entity generated a store whose methods read an id the entity does not declare. After, the build stops at `gen_store`. Mark the entity's id field:
+
+```rust
+// Refused by gen_store: no #[ontology(id)] field
+#[ontology(entity, directory = "tasks")]
+pub struct Task {
+    pub id: String,
+    pub title: String,
+}
+
+// After
+#[ontology(entity, directory = "tasks")]
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,
+    pub title: String,
+}
+```
+
+### Float NaN is refused on write
+
+A store `create_*` or `update_*` that sets a float field (`f32` or `f64`, optional or not) to NaN is an error on both backends. It fails after the `before_*` hook and before anything is stored, and it answers `500` over HTTP. Before, a hook or a direct caller could store a NaN. No transport can send one, since JSON cannot carry it, and the order has no place for it. An update checks only the fields it sets. On SeaORM, create also checks `#[ontology(skip)]` float fields, which SeaORM stores; markdown does not store skipped fields and does not check them.
+
+### HTTP honours `sort`
+
+Before, `GET /api/tasks?sort=-created` was `400 invalid_sort_field` on every list. After, it sorts, and the response links repeat `sort` between the filter and the page:
+
+```http
+GET /api/tasks?sort=-created,title&page[limit]=2 HTTP/1.1
+```
+
+```json
+{
+  "links": {
+    "self": "/api/tasks?sort=-created,title&page%5Boffset%5D=0&page%5Blimit%5D=2",
+    "next": "/api/tasks?sort=-created,title&page%5Boffset%5D=2&page%5Blimit%5D=2"
+  }
+}
+```
+
+An unknown field, a field named twice and an empty item (`sort=`, `sort=title,,id`) are each `400 invalid_sort_field` with `source.parameter` `sort`. A repeated `sort` is `400 invalid_query_parameter`.
+
+### IPC list commands take `sort`
+
+A list command whose list takes an order gains `sort: Option<Vec<String>>`:
+
+```ts
+await invoke('task_list', { sort: ['-created', 'title'] });
+```
+
+A bad key is the string error ``unknown sort field `priority` ``. A bare filter named `sort` on such a list now fails `gen_servers` when it generates IPC, because the command reads its sort keys from that name. Rename the filter.
+
+### MCP list tools take `sort`
+
+The list tool's input schema gains an optional `sort` array whose items enumerate the keys: `{"sort": ["-created", "title"]}`. Anything but an array of strings is the tool error `Invalid sort: …`, and a bad key is the same text as on IPC. A bare filter named `sort` fails `gen_servers` when it generates MCP. A field of a `*Query` struct that serializes as `sort` is not read from the arguments, so it cannot be set over MCP; rename it with `#[serde(rename = …)]`. IPC and MCP read `sort` before they open the store.
+
+### TypeScript lists take `options`
+
+A `Transport` list method of a list that takes an order gains a trailing `options` parameter, after every existing one (`projectId` included):
+
+```ts
+taskList(query?: ListTasksQuery, limit?: number, offset?: number, options?: ListOptions<TaskSortKey>): Promise<PaginatedResult<Task>>;
+
+await transport.taskList(undefined, 20, 0, { sort: ['-created', 'title'] });
+```
+
+`TaskSortKey` (`'id' | '-id' | 'title' | '-title' | …`) and `ListOptions<K>` are exported from each generated client file, beside `PaginatedResult`. Positional callers do not change. The HTTP transport sends `sort=-created,title`, and the IPC transport passes `sort` in the invoke arguments. `toQueryString` now writes an array value as one comma-joined parameter and skips an empty array. Regenerate the TypeScript.
+
+### The clients stage refuses colliding parameter names
+
+A sorted list's TS method takes `options` as its last parameter, so a bare filter on that list that camelCases to `options` (`options`, `options_`) fails the build on every TS client; rename it. A route prefix parameter named `options` is refused on the `Transport` of a sorted list. More generally, a bare filter whose TS name equals `query`, `limit`, `offset`, the route prefix parameter or an earlier filter is refused, where it used to emit a method with a duplicate parameter that `tsc` rejects.
+
+With an `HttpTauriIpcSplit` client, the clients stage applies the IPC wire-key rules itself, even when the build generates only an HTTP server: a bare filter named `sort` on a sorted list, `query` beside a `*Query` struct, `limit` or `offset` on a paginated junction list, `channel` on an event op, or an argument named like the route prefix parameter fails the build instead of generating TypeScript that does not compile. Names are compared by the invoke key they travel under, which is the camelCased name, so `sort_` collides with `sort` and `project_id_` with the prefix parameter `project_id`; this applies to the IPC server's own check too. An unsorted list may still take filters named `sort` or `options`.
+
+### Clients-stage errors are `CodegenError::Client`
+
+`gen_clients` and the pipeline's clients stage report every failure as `CodegenError::Client`, where they reported `CodegenError::Server`. The message prefix changes from `server codegen error:` to `client codegen error:`. Code that matches the variant, or text that quotes the prefix, follows the change.
 
 ## Calling the HTTP API directly
 

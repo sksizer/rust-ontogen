@@ -91,16 +91,17 @@ mod tests {
         assert!(content.contains("CreateTagInput"), "Missing CreateTagInput");
         assert!(content.contains("UpdateTagInput"), "Missing UpdateTagInput");
         assert!(content.contains("TagUpdate"), "Missing TagUpdate import");
+        assert!(content.contains("use crate::store::tag::{TagSortField, TagUpdate};"), "Missing TagSortField import");
 
         // Function signatures
-        assert!(content.contains("pub async fn list(store: &Store)"));
+        assert!(content.contains("pub async fn list(store: &Store, order: &[OrderBy<TagSortField>])"));
         assert!(content.contains("pub async fn get_by_id(store: &Store, id: &str)"));
         assert!(content.contains("pub async fn create(store: &Store, input: CreateTagInput)"));
         assert!(content.contains("pub async fn update(store: &Store, id: &str, input: UpdateTagInput)"));
         assert!(content.contains("pub async fn delete(store: &Store, id: &str)"));
 
         // Store delegation
-        assert!(content.contains("store.list_tags(None, None)"));
+        assert!(content.contains("store.list_tags(order, None, None)"));
         assert!(content.contains("store.get_tag(id)"));
         assert!(content.contains("store.create_tag(tag)"));
         assert!(content.contains("store.update_tag(id, updates)"));
@@ -384,7 +385,10 @@ mod tests {
             pub async fn count(store: &Store) -> Result<u64, AppError> { todo!() }\n";
         let (_tmp, output, code) = generate_with_scanned(source, true);
         assert!(!code.contains("fn count("), "{code}");
-        assert!(code.contains("pub async fn list(store: &Store, limit: Option<u64>"), "{code}");
+        assert!(
+            code.contains("pub async fn list(\n    store: &Store,\n    order: &[OrderBy<WorkoutSortField>],\n    limit: Option<u64>,"),
+            "{code}"
+        );
         assert!(matches!(fn_source(&output, "count"), ir::Source::Scanned { .. }));
         assert!(matches!(fn_source(&output, "list"), ir::Source::Generated { .. }));
     }
