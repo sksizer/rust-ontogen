@@ -6651,6 +6651,79 @@ pub async fn thing_changes(app: &AppState, state: String, store: Option<String>,
     }
 }
 
+/// The error `generate_transport` gives for an IPC generator over `files`,
+/// paginated or not.
+fn ipc_generation_error(files: &[(&str, &str)], paginated: bool) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    for (file, source) in files {
+        write_synthetic_api(&api_dir, file, source);
+    }
+    let mut config = test_config(api_dir);
+    if paginated {
+        config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+    }
+    config.generators = vec![ServerGenerator::TauriIpc { output: tmp.path().join("ipc.rs") }];
+    crate::servers::generate_transport(&config).expect_err("the IPC command cannot be generated")
+}
+
+/// A list that takes a `*Query` struct takes it as `query`, its IPC wire
+/// key, so another argument named `query` fails the build, naming the
+/// module, the fn and the argument.
+#[test]
+fn an_ipc_list_refuses_an_argument_named_like_its_query_struct() {
+    let gadget = "\
+pub async fn list(store: &Store, filter: GadgetQuery, query: Option<String>) -> Result<Vec<Gadget>, AppError> \
+  { todo!() }
+";
+    assert_eq!(
+        ipc_generation_error(&[("gadget.rs", gadget)], false),
+        "ontogen: the IPC command `gadget_list` cannot be generated: `gadget::list` takes an argument named `query`, \
+         which is the IPC wire key the command itself uses for the list's `*Query` filter struct, so the two would \
+         collide. Rename the argument."
+    );
+}
+
+/// A paginated junction list takes the page as `limit` and `offset`, so its
+/// one argument, the parent's id, named either fails the build.
+/// Unpaginated, the same fn generates.
+#[test]
+fn a_paginated_ipc_command_refuses_an_argument_named_like_the_page() {
+    let task = "\
+pub async fn list_tags(store: &Store, limit: &str) -> Result<Vec<Tag>, AppError> { todo!() }
+";
+    assert_eq!(
+        ipc_generation_error(&[("task.rs", task)], true),
+        "ontogen: the IPC command `task_list_tags` cannot be generated: `task::list_tags` takes an argument named \
+         `limit`, which is the IPC wire key the command itself uses for the page's `limit` and `offset`, so the two \
+         would collide. Rename the argument."
+    );
+    let offset = task.replace("limit: &str", "offset: &str");
+    assert!(ipc_generation_error(&[("task.rs", &offset)], true).contains("takes an argument named `offset`"));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(&api_dir, "task.rs", task);
+    let mut config = test_config(api_dir);
+    config.generators = vec![ServerGenerator::TauriIpc { output: tmp.path().join("ipc.rs") }];
+    crate::servers::generate_transport(&config).unwrap_or_else(|e| panic!("unpaginated: {e}"));
+}
+
+/// An event subscription takes its channel as `channel`, so an event fn
+/// argument named `channel` fails the build.
+#[test]
+fn an_ipc_subscription_refuses_an_argument_named_channel() {
+    let feed = "\
+pub fn thing_changes(state: &AppState, channel: String) -> tokio::sync::broadcast::Receiver<String> { todo!() }
+";
+    assert_eq!(
+        ipc_generation_error(&[("feed.rs", feed)], false),
+        "ontogen: the IPC command `thing_changes_subscribe` cannot be generated: `feed::thing_changes` takes an \
+         argument named `channel`, which is the IPC wire key the command itself uses for the subscription's event \
+         channel, so the two would collide. Rename the argument."
+    );
+}
+
 #[test]
 fn server_metadata_routes_a_resource_update_as_patch() {
     let tmp = tempfile::tempdir().unwrap();

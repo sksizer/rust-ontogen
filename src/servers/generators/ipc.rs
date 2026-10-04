@@ -90,6 +90,58 @@ pub fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
     })
 }
 
+/// Refuses a fn whose IPC command would take an argument under a name the
+/// command itself takes another parameter under. A command's parameter
+/// names are the IPC wire keys the TS transport invokes it with, so neither
+/// side can be renamed in the generated code:
+///
+/// - a list that takes a `*Query` struct takes it as `query`, so no other
+///   argument of it may be named `query`;
+/// - a paginated junction list takes the page as `limit` and `offset`, so
+///   its one argument, the parent's id, may be named neither (a paginated
+///   list's own page is its last two parameters, which
+///   `parse::check_paginated_lists` holds it to, so it has no other `limit`
+///   or `offset`);
+/// - an event subscription takes its channel as `channel`, so no argument of
+///   the event fn may be named `channel`.
+pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<(), String> {
+    let refuse = |m: &ApiModule, fn_name: &str, command: &str, arg: &str, use_: &str| {
+        Err(format!(
+            "ontogen: the IPC command `{command}` cannot be generated: `{}::{fn_name}` takes an argument named \
+             `{arg}`, which is the IPC wire key the command itself uses for {use_}, so the two would collide. \
+             Rename the argument.",
+            m.name
+        ))
+    };
+    for m in modules {
+        for f in &m.functions {
+            let command = command_name(&m.name, f, config);
+            match classify_op(f) {
+                OpKind::List if f.filter_struct().is_some() => {
+                    if let Some(p) = f.bare_filters().into_iter().find(|p| p.name == "query") {
+                        return refuse(m, &f.name, &command, &p.name, "the list's `*Query` filter struct");
+                    }
+                }
+                OpKind::JunctionList { .. }
+                    if config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<") =>
+                {
+                    if let Some(p) = f.params.iter().find(|p| p.name == "limit" || p.name == "offset") {
+                        return refuse(m, &f.name, &command, &p.name, "the page's `limit` and `offset`");
+                    }
+                }
+                _ => {}
+            }
+        }
+        for ev in &m.events {
+            if let Some(p) = ev.params.iter().find(|p| p.name == "channel") {
+                let command = format!("{}_subscribe", ev.name);
+                return refuse(m, &ev.name, &command, &p.name, "the subscription's event channel");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Generate IPC command handlers and write to the output file.
 ///
 /// Each command parameter that carries a fn argument is named after it, as
