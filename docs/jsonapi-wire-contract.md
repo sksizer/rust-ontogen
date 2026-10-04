@@ -1614,6 +1614,10 @@ no `data`.
 - Related collections are not filtered or sorted. They are paginated only
   for a junction op in a paginated module (§9.1), and then carry `self` and
   the four pagination links. Otherwise the document's only link is `self`.
+  A paginated junction op that lists ids is paged over its ids: `meta.total`
+  counts them, dangling ones included, and the page is cut before the
+  dangling ids in it are skipped, so a page can hold fewer than `limit`
+  resources.
 
 ### 9.4 Route shadowing
 
