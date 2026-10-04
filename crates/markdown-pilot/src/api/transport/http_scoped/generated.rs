@@ -332,7 +332,7 @@ fn section_request_fields(
 /// names a resource that exists, in the order the document was read.
 async fn section_check_linked_scoped(
     state: &AppState,
-    ontogen_scope: &String,
+    ontogen_scope: &str,
     linked: &SectionLinkedIds,
 ) -> Result<(), ErrorObject> {
     let store = state.store_for(ontogen_scope).map_err(ontogen_internal_error)?;
@@ -498,7 +498,7 @@ fn task_request_fields(
 /// names a resource that exists, in the order the document was read.
 async fn task_check_linked_scoped(
     state: &AppState,
-    ontogen_scope: &String,
+    ontogen_scope: &str,
     linked: &TaskLinkedIds,
 ) -> Result<(), ErrorObject> {
     let store = state.store_for(ontogen_scope).map_err(ontogen_internal_error)?;

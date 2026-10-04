@@ -1070,7 +1070,12 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
     let linked_ty = resource_names(&m.name).linked;
     for scoped in kinds {
         let prefix = config.route_prefix.as_ref().filter(|_| scoped);
-        let scope_param = prefix.map(|p| format!("{SCOPE}: &{}, ", p.params[0].rust_type));
+        // A `String` prefix is borrowed as `&str`, which clippy's `ptr_arg`
+        // asks of a consumer's code.
+        let scope_param = prefix.map(|p| {
+            let ty = &p.params[0].rust_type;
+            format!("{SCOPE}: &{}, ", if ty == "String" { "str" } else { ty.as_str() })
+        });
         let mut opens: Vec<String> = Vec::new();
         let mut checks = String::new();
         for rel in &resource.relationships {
