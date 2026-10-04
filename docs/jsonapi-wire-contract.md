@@ -205,7 +205,7 @@ is fixed so that insta snapshots and example diffs are deterministic.
 | Member | When present |
 |---|---|
 | `jsonapi` | always, exactly `{"version": "1.1"}` |
-| `links` | on every document with primary data (§4.3) |
+| `links` | on every document with primary data (§4.3), except a create or update of a type whose module serves no `get_by_id` (§5.2) |
 | `meta` | paginated collections (§7.2, §9.1) and custom ops (§10) |
 | `data` | every success document except custom ops |
 | `included` | when the request carried `include` (§7.5) |
@@ -312,8 +312,11 @@ Member order is `type`, `id`, `attributes`, `relationships`, `links`.
 - **`relationships`** is present when the type declares at least one
   relationship, a relation field (§5.4) or a junction-op relationship
   (§9.1), and absent otherwise (`epics` and `tags` in the example).
-- **`links.self`** is always present. It equals the `Location` header on
-  create (§8.2), as the spec requires when both exist.
+- **`links.self`** is present when the type's module serves `get_by_id`
+  as the type's resource (§9). It equals the `Location` header on create
+  (§8.2), as the spec requires when both exist. Otherwise the resource
+  object has no `links` member, because no route serves
+  `/api/{type}/{id}`.
 - There is no `meta` member.
 
 ### 5.3 Attributes
@@ -852,9 +855,15 @@ Rules:
 ### 7.5 Include
 
 `include` is honoured on the two routes that accept it (§6):
-`GET /api/{type}` and `GET /api/{type}/{id}`. Every relationship of the
-primary type except a junction-op relationship can be included, to-one and
-to-many alike, one level deep.
+`GET /api/{type}` and `GET /api/{type}/{id}`. A relationship of the primary
+type can be included, to-one and to-many alike, one level deep, when it is
+a field relationship (§5.4) whose target module serves `get_by_id` as the
+target's resource, reachable in the handler's scope (§11.1). A junction-op
+relationship is never includable: it has no linkage (§9.1). For a type that
+serves relationship routes, every field relationship is includable (§9).
+The extra conditions matter in practice for a type that serves `list` but
+not `get_by_id`, and under a route prefix (§11.1). Relationship and related routes do not accept `include` (§6),
+which the spec makes optional.
 
 ```http
 GET /api/tasks?include=epic,tags HTTP/1.1
@@ -866,44 +875,75 @@ HTTP/1.1 200 OK
 
 {
   "jsonapi": { "version": "1.1" },
-  "links": { "self": "/api/tasks?include=epic,tags&page%5Boffset%5D=0&page%5Blimit%5D=20",
-             "first": "…", "prev": null, "next": null, "last": "…" },
+  "links": {
+    "self":  "/api/tasks?include=epic,tags&page%5Boffset%5D=0&page%5Blimit%5D=20",
+    "first": "/api/tasks?include=epic,tags&page%5Boffset%5D=0&page%5Blimit%5D=20",
+    "prev":  null,
+    "next":  null,
+    "last":  "/api/tasks?include=epic,tags&page%5Boffset%5D=0&page%5Blimit%5D=20"
+  },
   "meta": { "total": 1, "limit": 20, "offset": 0 },
   "data": [ ‹task ship-the-emitter› ],
   "included": [ ‹epic markdown-backend›, ‹tag codegen› ]
 }
 ```
 
+The get route is `GET /api/tasks/ship-the-emitter?include=epic`. Its
+document is shown in §8.1: top-level `self` carries the query, and the
+resource's own `links.self` does not.
+
 Rules:
 
 - `included` holds each distinct `(type, id)` once. It is ordered by
   relationship in `include` order, then by first appearance in `data`
-  order.
-- A resource already present in `data` is not repeated in `included` (the
-  self-referential `parent` case). The spec forbids two objects for one
-  `(type, id)`.
-- Included resources are fetched with the target entity's store `get`, one
-  call per distinct id.
-- A linkage id that the store reports as not found (a dangling markdown
-  wikilink) is left out of `included`. Its identifier stays in the linkage.
-  This is not an error, because the markdown backend tolerates dangling
-  links by design (ADR 0001 amendment 5). Any other store error fails the
-  request.
+  order, each resource's linkage taken in linkage order.
+- A resource already present in `data` is not repeated in `included`. The
+  spec forbids two objects for one `(type, id)`. With
+  `GET /api/tasks?include=parent,subtasks`, a task whose parent is also on
+  the page does not repeat that parent.
+- A resource reached under two paths (`parent` and `subtasks` are both
+  `tasks`) appears once, at its first position, and is fetched once.
+- Included resources are fetched through the target module's `get_by_id`,
+  as related links are (§9.3), so a hand-written `get_by_id` and the scope
+  rules of §11.1 apply. One call is made per distinct id.
+- A linkage id that `get_by_id` reports as not found (a dangling markdown
+  wikilink) is left out of `included`, and is fetched once however often it
+  is linked. Its identifier stays in the linkage. This is not an error,
+  because the markdown backend tolerates dangling links by design (ADR 0001
+  amendment 5). Any other error fails the request.
 - On a paginated list, only the page's relationships are included.
-- `include=` (empty value) is `"included": []`. The spec requires the
-  member whenever `include` is given.
+- Each included resource is the target's own resource object, with the
+  target's links (§5.2).
+- `include=` (empty value) is `"included": []`, and links carry `include=`.
+  The spec requires the member whenever `include` is given.
 - `include=epic,epic` is the same as `include=epic`.
 - Each of these is `400 invalid_include_path` with
-  `source.parameter: "include"`:
-  - a name that is not an includable relationship of the primary type
-    (`include=owner`, or a junction-op relationship);
+  `source.parameter: "include"`, for the first offending item in request
+  order:
+  - an empty item in a non-empty value (`include=epic,`, `include=,`);
+  - a name that is not a relationship of the primary type
+    (`include=owner`);
+  - a junction-op relationship;
+  - a field relationship that is not includable here, because its target
+    module serves no `get_by_id` reachable in the handler's scope;
   - a dotted path (`include=epic.tasks`), since nested inclusion is out of
     scope.
 - On every other route, `include` is not an accepted parameter, and is
   `400 invalid_query_parameter` (§6).
 
-Cost: one store `get` per distinct included id. That is acceptable at the
-page sizes `max_limit` allows.
+```json
+{
+  "status": "400",
+  "code": "invalid_include_path",
+  "title": "Bad Request",
+  "detail": "`owner` is not a relationship of `tasks`; it can include: epic, tags, parent, subtasks",
+  "source": { "parameter": "include" }
+}
+```
+
+Cost: one `get_by_id` per distinct included id, so at most `max_limit`
+times the relationships' fan-out for one page. That is acceptable at the
+page sizes `max_limit` allows. Batching is a follow-up (backlog B-BGMN).
 
 ## 8. Single resources
 
@@ -1010,6 +1050,12 @@ Vary: Accept
 `201` with `Location: /api/tasks/review-q3`. A client id is honoured under
 every `IdStrategy` (decision 4), so the server never answers `403` for a
 client-generated id.
+
+`Location` is sent when the type's module serves `get_by_id`, since
+`links.self` names that route (§5.2). Otherwise the `201` has no
+`Location` and the document has no top-level `links`, because the spec's
+SHOULD does not apply to a URL nobody serves. An update document of such a
+type has no top-level `links` either.
 
 The spec asks *clients* to generate globally unique ids, preferably UUIDs.
 Ontogen accepts any valid id:
@@ -1844,7 +1890,11 @@ scoped route has the shape of its unscoped one under the prefix:
   routes link a target whose `get_by_id` takes no store at its unscoped
   collection and call junction ops that take no store as they are, and a
   scoped `create` or `update` checks such a target with the state. The
-  generator refuses every other combination at build time.
+  generator refuses every other combination at build time. `include`
+  (§7.5) follows the same reach without a build check: an unscoped `list`
+  cannot include a type whose `get_by_id` takes the store, and answers `400 invalid_include_path` for it, while a scoped one
+  includes a target whose `get_by_id` takes no store, linked at its
+  unscoped collection.
 - Junction ops outside a resource module are served at their §10.4 routes
   under the prefix:
   `GET`/`POST /api/projects/{project_id}/{m}/{parent_id}/{segment}` and
@@ -2421,7 +2471,7 @@ the section that states each and its reason.
 | `opArg[limit]=0` is an empty page, not `400` | 10.4 | A link-less `meta.result` page needs no `next` or `last`, and the IPC list command takes `limit: 0` the same way |
 | A CRUD-named op with no entity behind it takes exactly its row's arguments | 10.4 | The generated clients call these ops with those arguments only, so extra parameters would be routes no client can reach. `list` with extra parameters is a filtered list instead |
 | CRUD ops with no entity behind them are served as custom ops | 5.1, 10.4 | Keeps the scan-dirs-only use case working, and without a schema there is no resource to build |
-| `links.self` on every resource object | 5.2 | `Location` must match it, and clients can refetch without building URLs |
+| `links.self` on every resource object whose module serves `get_by_id`; none otherwise, and no `Location` on create | 5.2, 8.2 | `Location` must match it, and the spec requires a server to serve every link it emits |
 | `relationships` omitted when a type has none | 5.2 | Avoids an empty object on every `tags` and `epics` resource |
 | Shape-changing serde attributes on entities are a `CodegenError` | 5.3 | Attribute, sort and filter names all assume field name = member name |
 | `belongs_to` loses `_id`; other relation fields keep their name | 5.4 | Matches how the field reads; JSON:API names relationships, not keys |
@@ -2438,6 +2488,9 @@ the section that states each and its reason.
 | A hand-written paginated `list` brings its own `count` | 7.3 | The store has no filter, so the generated count would count the table, not the filtered set |
 | `id` is the implicit last sort key | 7.4 | A total order makes pages stable (ADR 0006) |
 | Dangling linkage is skipped in `included` and related links, not an error | 7.5 | Markdown tolerates dangling wikilinks by design |
+| `included` is fetched through the target's `get_by_id`, one call per distinct id, unbatched | 7.5 | Same lookup as related links (§9.3), so a hand-written `get_by_id` and scope rules apply; the store has no batch primitive, and a store-level batch read would bypass a hand-written `get_by_id` |
+| A relationship that cannot be included is a runtime `400 invalid_include_path`, not a build error; junction-op relationships are never includable | 7.5 | JSON:API requires 400 for an unsupported include path, and a list-only module is a legitimate configuration; included resources must be reachable by linkage (full linkage), and junction relationships carry links only |
+| An empty item in a non-empty `include` is `400 invalid_include_path`; only `include=` is `included: []` | 7.5 | `sort` refuses empty items the same way, and `include=epic,` is a malformed list, not an empty one |
 | One id-validity rule on both backends, applied to ids being created: lowercase `[a-z0-9._~-]`, at most 200 bytes, not `index`/`log`, not a Windows device name (`con`, `nul.x`, …); an invalid one is `400` | 8.2 | A malformed id is a bad request, not a store `500`; the backends agree, and every id is a filename on Linux, macOS and Windows and a URL segment |
 | A path `{id}` is a lookup key, never validated | 8.1 | Every row the store lists stays servable at its `links.self`, including SeaORM rows that predate the rule |
 | Unknown attributes are `400` | 8.2 | Catches clients still sending the flat shape |
@@ -2486,5 +2539,5 @@ Phases 1a, 1b and 1c ship together as `0.9.0`.
 | 1c | Everything else on the 0.9.0 wire. §10 custom ops (`meta.args`, `opArg`, singleton check, §10.4 ops served as custom, junction ops included). §12 event frames. §11.1 scoped pagination of what 1b leaves, the lists not served as resources. §14 for custom, junction and subscription methods |
 | 2 | §7.3 filter, including the hand-written-list precedence (the API stage scans before it emits, and the transports' api dirs when `api_scan_dirs` is unset) and the bare-parameter fix. Filtered lists as resources and as custom ops (§10.4, §11.1). The TS filter family (§14.2) |
 | 3a | §9 relationship endpoints, related links and relationship `links` (§5.4). The junction classification change and the junction-op build checks (§9.1). Scoped junction routes (§10.4, §11.1). TS junction methods (§14.2). tasks-tracker's `parent_id`, `subtasks` and `release` tag (§2) |
-| 3b | §7.5 include |
+| 3b | §7.5 include, with `get_by_id` as its fetch and the empty-item rule. The §5.2 and §8.2 follow-up: a type whose module serves no `get_by_id` has no resource `links`, no `Location` on create and no top-level `links` on create and update documents |
 | 3c | §7.4 sort, the `order` argument (ADR 0006), and `sort` on TS, IPC and MCP (§14.2, §15) |

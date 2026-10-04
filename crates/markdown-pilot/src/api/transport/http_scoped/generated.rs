@@ -13,8 +13,8 @@ use axum::{
     routing::{delete, get, post},
 };
 use ontogen_jsonapi::{
-    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
-    ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
+    AnyResource, Document, ErrorCode, ErrorObject, Included, Linkage, Links, LookupKey, PageMeta, QueryParams,
+    QuerySpec, Relationship, ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
     error::{method_not_allowed, relationship_not_found, relationship_update_unsupported},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     filter_fields,
@@ -171,19 +171,6 @@ fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> 
         None => Ok(()),
         Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
             .with_parameter("sort")),
-    }
-}
-
-/// No route includes related resources, so every `include` names a path the
-/// server cannot include.
-fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
-    match query.include()? {
-        None => Ok(()),
-        Some(_) => Err(ErrorObject::new(
-            ErrorCode::InvalidIncludePath,
-            format!("`{type_name}` has no relationship that can be included"),
-        )
-        .with_parameter("include")),
     }
 }
 
@@ -740,6 +727,80 @@ async fn ontogen_task_check_ids_scoped(
     Ok(())
 }
 
+/// The resources `paths` include for `entities`, path by path and each in
+/// linkage order: each once, and none of `entities` among them. `paths` are
+/// those `include_paths` admitted, so no other path occurs.
+async fn ontogen_section_included_scoped(
+    state: &AppState,
+    ontogen_scope: &str,
+    entities: &[Section],
+    paths: &[&str],
+) -> Result<Vec<AnyResource>, ErrorObject> {
+    let mut included = Included::new("sections", entities.iter().map(|entity| entity.id.as_str()));
+    for path in paths {
+        match *path {
+            "parent" => {
+                let ids = included.new_ids("sections", entities.iter().map(|entity| entity.parent_id.as_str()));
+                let collection = &format!("/api/projects/{}/sections", encode_path_segment(ontogen_scope));
+                for related in ontogen_section_fetch_scoped(state, ontogen_scope, &ids).await? {
+                    included.push(section_as_resource(&related, collection))?;
+                }
+            }
+            "children" => {
+                let ids = included
+                    .new_ids("sections", entities.iter().flat_map(|entity| entity.children.iter().map(String::as_str)));
+                let collection = &format!("/api/projects/{}/sections", encode_path_segment(ontogen_scope));
+                for related in ontogen_section_fetch_scoped(state, ontogen_scope, &ids).await? {
+                    included.push(section_as_resource(&related, collection))?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(included.finish())
+}
+
+/// The resources `paths` include for `entities`, path by path and each in
+/// linkage order: each once, and none of `entities` among them. `paths` are
+/// those `include_paths` admitted, so no other path occurs.
+async fn ontogen_task_included_scoped(
+    state: &AppState,
+    ontogen_scope: &str,
+    entities: &[Task],
+    paths: &[&str],
+) -> Result<Vec<AnyResource>, ErrorObject> {
+    let mut included = Included::new("tasks", entities.iter().map(|entity| entity.id.as_str()));
+    for path in paths {
+        match *path {
+            "parent" => {
+                let ids = included.new_ids("tasks", entities.iter().filter_map(|entity| entity.parent_id.as_deref()));
+                let collection = &format!("/api/projects/{}/tasks", encode_path_segment(ontogen_scope));
+                for related in ontogen_task_fetch_scoped(state, ontogen_scope, &ids).await? {
+                    included.push(task_as_resource(&related, collection))?;
+                }
+            }
+            "subtasks" => {
+                let ids = included
+                    .new_ids("tasks", entities.iter().flat_map(|entity| entity.subtasks.iter().map(String::as_str)));
+                let collection = &format!("/api/projects/{}/tasks", encode_path_segment(ontogen_scope));
+                for related in ontogen_task_fetch_scoped(state, ontogen_scope, &ids).await? {
+                    included.push(task_as_resource(&related, collection))?;
+                }
+            }
+            "tags" => {
+                let ids =
+                    included.new_ids("tags", entities.iter().flat_map(|entity| entity.tags.iter().map(String::as_str)));
+                let collection = &format!("/api/projects/{}/tags", encode_path_segment(ontogen_scope));
+                for related in ontogen_tag_fetch_scoped(state, ontogen_scope, &ids).await? {
+                    included.push(tag_as_resource(&related, collection))?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(included.finish())
+}
+
 // ── Bookmark Handlers ──
 
 struct OntogenBookmarkListFilterParams;
@@ -910,16 +971,21 @@ async fn note_list_scoped(
     query: Query<PagedListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "notes")?;
-    refuse_include(&query, "notes")?;
+    let include = query.include_paths("notes", &[], &["tags"])?;
     let (offset, limit) = page(&query, 2, 3)?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     let items =
         note::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
     let total = note::count(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = &format!("/api/projects/{}/notes", encode_path_segment(&ontogen_scope.to_string()));
     let data: Vec<_> = items.iter().map(|entity| note_as_resource(entity, collection)).collect();
-    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
-    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
+    let links = pagination_links(collection, &link_query, offset, limit, total);
+    let mut document = Document::new(data, links).with_meta(PageMeta { total, limit, offset });
+    if include.is_some() {
+        document = document.with_included(Vec::new());
+    }
+    Ok(response::ok(&document))
 }
 
 async fn note_get_by_id_scoped(
@@ -928,13 +994,16 @@ async fn note_get_by_id_scoped(
     Path((ontogen_scope, id)): Path<(String, LookupKey)>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "notes")?;
+    let include = query.include_paths("notes", &[], &["tags"])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     let entity = note::get_by_id(&ontogen_store, note_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = &format!("/api/projects/{}/notes", encode_path_segment(&ontogen_scope.to_string()));
-    let resource = note_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    let mut document = Document::resource(note_as_resource(&entity, collection), &link_query);
+    if include.is_some() {
+        document = document.with_included(Vec::new());
+    }
+    Ok(response::ok(&document))
 }
 
 async fn note_create_scoped(
@@ -959,10 +1028,9 @@ async fn note_create_scoped(
         }
         e => ontogen_app_error(e),
     })?;
-    let resource = note_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
+    let document = Document::resource(note_as_resource(&entity, collection), &CanonicalQuery::new());
+    let location = document.data().and_then(ResourceObject::links).map(Links::self_link);
+    Ok(response::created(location, &document))
 }
 
 async fn note_update_scoped(
@@ -983,9 +1051,7 @@ async fn note_update_scoped(
     let input: UpdateNoteInput = from_fields(fields)?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     let entity = note::update(&ontogen_store, note_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = note_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    Ok(response::ok(&Document::resource(note_as_resource(&entity, collection), &CanonicalQuery::new())))
 }
 
 async fn note_delete_scoped(
@@ -1162,13 +1228,19 @@ async fn section_get_by_id_scoped(
     Path((ontogen_scope, id)): Path<(String, LookupKey)>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "sections")?;
+    let include = query.include_paths("sections", &["parent", "children"], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     let entity = section::get_by_id(&ontogen_store, section_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = &format!("/api/projects/{}/sections", encode_path_segment(&ontogen_scope.to_string()));
-    let resource = section_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    let mut document = Document::resource(section_as_resource(&entity, collection), &link_query);
+    if let Some(paths) = &include {
+        document = document.with_included(
+            ontogen_section_included_scoped(&ontogen_state, &ontogen_scope, std::slice::from_ref(&entity), paths)
+                .await?,
+        );
+    }
+    Ok(response::ok(&document))
 }
 
 async fn section_create_scoped(
@@ -1194,10 +1266,9 @@ async fn section_create_scoped(
         }
         e => ontogen_app_error(e),
     })?;
-    let resource = section_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
+    let document = Document::resource(section_as_resource(&entity, collection), &CanonicalQuery::new());
+    let location = document.data().and_then(ResourceObject::links).map(Links::self_link);
+    Ok(response::created(location, &document))
 }
 
 async fn section_update_scoped(
@@ -1219,9 +1290,7 @@ async fn section_update_scoped(
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     section_check_linked_scoped(&ontogen_state, &ontogen_scope, &linked).await?;
     let entity = section::update(&ontogen_store, section_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = section_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    Ok(response::ok(&Document::resource(section_as_resource(&entity, collection), &CanonicalQuery::new())))
 }
 
 async fn section_delete_scoped(
@@ -1257,9 +1326,9 @@ async fn section_list_scoped(
     let ontogen_filter: ListSectionsQuery = query.filter()?;
     let ontogen_filter_parent_id = query.required_filter_member::<String>("parent_id")?;
     refuse_sort(&query, "sections")?;
-    refuse_include(&query, "sections")?;
+    let include = query.include_paths("sections", &["parent", "children"], &[])?;
     let (offset, limit) = page(&query, 2, 3)?;
-    let link_query = query.link_query()?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     let items = section::list(
         &ontogen_store,
@@ -1275,7 +1344,12 @@ async fn section_list_scoped(
     let collection = &format!("/api/projects/{}/sections", encode_path_segment(&ontogen_scope.to_string()));
     let data: Vec<_> = items.iter().map(|entity| section_as_resource(entity, collection)).collect();
     let links = pagination_links(collection, &link_query, offset, limit, total);
-    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
+    let mut document = Document::new(data, links).with_meta(PageMeta { total, limit, offset });
+    if let Some(paths) = &include {
+        document = document
+            .with_included(ontogen_section_included_scoped(&ontogen_state, &ontogen_scope, &items, paths).await?);
+    }
+    Ok(response::ok(&document))
 }
 
 async fn ontogen_section_relationship_get_scoped(
@@ -1486,13 +1560,16 @@ async fn tag_get_by_id_scoped(
     Path((ontogen_scope, id)): Path<(String, LookupKey)>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "tags")?;
+    let include = query.include_paths("tags", &[], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     let entity = tag::get_by_id(&ontogen_store, tag_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = &format!("/api/projects/{}/tags", encode_path_segment(&ontogen_scope.to_string()));
-    let resource = tag_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    let mut document = Document::resource(tag_as_resource(&entity, collection), &link_query);
+    if include.is_some() {
+        document = document.with_included(Vec::new());
+    }
+    Ok(response::ok(&document))
 }
 
 async fn tag_create_scoped(
@@ -1517,10 +1594,9 @@ async fn tag_create_scoped(
         }
         e => ontogen_app_error(e),
     })?;
-    let resource = tag_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
+    let document = Document::resource(tag_as_resource(&entity, collection), &CanonicalQuery::new());
+    let location = document.data().and_then(ResourceObject::links).map(Links::self_link);
+    Ok(response::created(location, &document))
 }
 
 async fn tag_update_scoped(
@@ -1541,9 +1617,7 @@ async fn tag_update_scoped(
     let input: UpdateTagInput = from_fields(fields)?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     let entity = tag::update(&ontogen_store, tag_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = tag_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    Ok(response::ok(&Document::resource(tag_as_resource(&entity, collection), &CanonicalQuery::new())))
 }
 
 async fn tag_delete_scoped(
@@ -1578,9 +1652,9 @@ async fn tag_list_scoped(
     let ontogen_filter_min_title_len = query.filter_member::<u32>("min_title_len")?;
     let ontogen_filter_title_prefix = query.filter_member::<String>("title_prefix")?;
     refuse_sort(&query, "tags")?;
-    refuse_include(&query, "tags")?;
+    let include = query.include_paths("tags", &[], &[])?;
     let (offset, limit) = page(&query, 2, 3)?;
-    let link_query = query.link_query()?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     let items = tag::list(
         &ontogen_store,
@@ -1597,7 +1671,11 @@ async fn tag_list_scoped(
     let collection = &format!("/api/projects/{}/tags", encode_path_segment(&ontogen_scope.to_string()));
     let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
     let links = pagination_links(collection, &link_query, offset, limit, total);
-    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
+    let mut document = Document::new(data, links).with_meta(PageMeta { total, limit, offset });
+    if include.is_some() {
+        document = document.with_included(Vec::new());
+    }
+    Ok(response::ok(&document))
 }
 
 async fn task_list_scoped(
@@ -1607,16 +1685,22 @@ async fn task_list_scoped(
     query: Query<PagedListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "tasks")?;
-    refuse_include(&query, "tasks")?;
+    let include = query.include_paths("tasks", &["parent", "subtasks", "tags"], &["labels"])?;
     let (offset, limit) = page(&query, 2, 3)?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     let items =
         task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
     let total = task::count(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = &format!("/api/projects/{}/tasks", encode_path_segment(&ontogen_scope.to_string()));
     let data: Vec<_> = items.iter().map(|entity| task_as_resource(entity, collection)).collect();
-    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
-    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
+    let links = pagination_links(collection, &link_query, offset, limit, total);
+    let mut document = Document::new(data, links).with_meta(PageMeta { total, limit, offset });
+    if let Some(paths) = &include {
+        document =
+            document.with_included(ontogen_task_included_scoped(&ontogen_state, &ontogen_scope, &items, paths).await?);
+    }
+    Ok(response::ok(&document))
 }
 
 async fn task_get_by_id_scoped(
@@ -1625,13 +1709,18 @@ async fn task_get_by_id_scoped(
     Path((ontogen_scope, id)): Path<(String, LookupKey)>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "tasks")?;
+    let include = query.include_paths("tasks", &["parent", "subtasks", "tags"], &["labels"])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     let entity = task::get_by_id(&ontogen_store, task_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = &format!("/api/projects/{}/tasks", encode_path_segment(&ontogen_scope.to_string()));
-    let resource = task_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    let mut document = Document::resource(task_as_resource(&entity, collection), &link_query);
+    if let Some(paths) = &include {
+        document = document.with_included(
+            ontogen_task_included_scoped(&ontogen_state, &ontogen_scope, std::slice::from_ref(&entity), paths).await?,
+        );
+    }
+    Ok(response::ok(&document))
 }
 
 async fn task_create_scoped(
@@ -1657,10 +1746,9 @@ async fn task_create_scoped(
         }
         e => ontogen_app_error(e),
     })?;
-    let resource = task_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
+    let document = Document::resource(task_as_resource(&entity, collection), &CanonicalQuery::new());
+    let location = document.data().and_then(ResourceObject::links).map(Links::self_link);
+    Ok(response::created(location, &document))
 }
 
 async fn task_update_scoped(
@@ -1682,9 +1770,7 @@ async fn task_update_scoped(
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
     task_check_linked_scoped(&ontogen_state, &ontogen_scope, &linked).await?;
     let entity = task::update(&ontogen_store, task_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = task_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    Ok(response::ok(&Document::resource(task_as_resource(&entity, collection), &CanonicalQuery::new())))
 }
 
 async fn task_delete_scoped(

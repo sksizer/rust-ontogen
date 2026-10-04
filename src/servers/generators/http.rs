@@ -28,6 +28,7 @@ use crate::servers::types::{
     capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type, to_pascal_case,
 };
 
+mod include;
 mod relationship;
 
 pub(in crate::servers) use relationship::route_table as relationship_route_table;
@@ -331,9 +332,11 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
             out.push_str(&format!("// ── `{}` ──\n\n", resource.resource_type));
             emit_resource_object(&mut out, resource, item_type, None);
         }
-        emit_frame_data(&mut out, resource, item_type);
+        let linked = modules.iter().any(|m| m.name == resource.module && config.resources.serves_get_by_id(m));
+        emit_frame_data(&mut out, resource, item_type, linked);
     }
     relationship::emit_helpers(&mut out, modules, config);
+    include::emit_helpers(&mut out, modules, config);
 
     // Unscoped junction routes go last, in path order. `BTreeMap` keeps the
     // bytes stable across runs, which `write_if_changed` relies on (a
@@ -356,7 +359,7 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
         }
         out.push_str(&format!("// ── {} Handlers ──\n\n", capitalize(&m.name)));
         for f in functions {
-            let (method, path, handler_name) = emit_fn(&mut out, m, f, config, None);
+            let (method, path, handler_name) = emit_fn(&mut out, m, modules, f, config, None);
             if is_junction(m, f) {
                 junction_routes.entry(path).or_default().push((method, handler_name));
             } else {
@@ -383,7 +386,7 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
         out.push_str("\n// ── Project-Scoped Handlers ──\n\n");
         for m in modules {
             for f in m.functions.iter().filter(|f| is_scoped(f, config) && !is_relationship_op(m, f, config)) {
-                let (method, path, handler_name) = emit_fn(&mut out, m, f, config, Some(prefix));
+                let (method, path, handler_name) = emit_fn(&mut out, m, modules, f, config, Some(prefix));
                 routes.add(&path, method, &handler_name);
             }
             if relationship_routes(m, config).is_some_and(|get| is_scoped(get, config)) {
@@ -464,6 +467,7 @@ use ontogen_core::events::EventFrame;
 fn emit_fn(
     out: &mut String,
     m: &ApiModule,
+    modules: &[ApiModule],
     f: &ApiFn,
     config: &Config,
     scope: Option<&RoutePrefix>,
@@ -476,7 +480,7 @@ fn emit_fn(
     };
     let (method, path) = route_of(m, f, config);
     if let Some(resource) = served_resource(m, f, config) {
-        let op = ResourceOp { m, f, resource, handler_name: &handler_name, config };
+        let op = ResourceOp { m, modules, f, resource, handler_name: &handler_name, config };
         resource_handler(out, &op, access.expect("a resource op takes the state or a store"), scope);
     } else {
         op_handler(out, m, f, &op_shape(m, f, config), &handler_name, access, scope, config);
@@ -603,9 +607,11 @@ fn runtime_imports(body: &str, routes: &Routes) -> String {
     axum.extend(tree("routing", strings(routes.methods())));
 
     let mut jsonapi = strings(used(&[
+        "AnyResource",
         "Document",
         "ErrorCode",
         "ErrorObject",
+        "Included",
         "Linkage",
         "Links",
         "LookupKey",
@@ -819,19 +825,6 @@ fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> 
     }
 }
 
-/// No route includes related resources, so every `include` names a path the
-/// server cannot include.
-fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
-    match query.include()? {
-        None => Ok(()),
-        Some(_) => Err(ErrorObject::new(
-            ErrorCode::InvalidIncludePath,
-            format!(\"`{type_name}` has no relationship that can be included\"),
-        )
-        .with_parameter(\"include\")),
-    }
-}
-
 /// The effective `(offset, limit)` of a paginated list.
 fn page(query: &QueryParams, default_limit: u32, max_limit: u32) -> Result<(u32, u32), ErrorObject> {
     let offset = query.page_offset()?.unwrap_or(0);
@@ -891,11 +884,12 @@ fn resource_names(module: &str) -> ResourceNames {
 /// The attributes serializer and the resource builder of `resource`, whose
 /// entity this file names `entity_ty` (§5).
 ///
-/// With `junctions`, the module serves its relationship routes (§9), so every
-/// relationship carries the `links` that point at them and each junction
+/// With `junctions`, the module serves `get_by_id`: the builder takes the
+/// collection the resource's `links.self` is under, every relationship
+/// carries the `links` of its relationship routes (§9), and each junction
 /// relationship follows the field ones with `links` alone. Without, the
-/// relationships carry linkage only: a server must serve every link it
-/// emits.
+/// resource has no `links` and its relationships carry linkage only: a
+/// server must serve every link it emits.
 fn emit_resource_object(
     out: &mut String,
     resource: &Resource,
@@ -920,14 +914,25 @@ fn emit_resource_object(
     }
     out.push_str("        attributes.end()\n    }\n}\n\n");
 
-    let self_link = if junctions.is_some() { "self_link.clone()" } else { "self_link" };
-    out.push_str(&format!(
-        "/// `entity` as a resource object of type `{type_name}`, its `links.self`\n/// under `collection`.\nfn \
-         {}<'a>(entity: &'a {entity_ty}, collection: &str) -> ResourceObject<{attrs}<'a>> {{\n    let self_link \
-         = format!(\"{{collection}}/{{}}\", encode_path_segment(&entity.{id_field}));\n    \
-         ResourceObject::new(\"{type_name}\", entity.{id_field}.clone(), {attrs}(entity), {self_link})",
-        names.resource
-    ));
+    let has_relationship_links = junctions.is_some_and(|j| !j.is_empty() || !resource.relationships.is_empty());
+    if junctions.is_some() {
+        let self_link = if has_relationship_links { "self_link.clone()" } else { "self_link" };
+        out.push_str(&format!(
+            "/// `entity` as a resource object of type `{type_name}`, its `links.self`\n/// under `collection`.\nfn \
+             {}<'a>(entity: &'a {entity_ty}, collection: &str) -> ResourceObject<{attrs}<'a>> {{\n    let \
+             self_link = format!(\"{{collection}}/{{}}\", encode_path_segment(&entity.{id_field}));\n    \
+             ResourceObject::new(\"{type_name}\", entity.{id_field}.clone(), {attrs}(entity), {self_link})",
+            names.resource
+        ));
+    } else {
+        out.push_str(&format!(
+            "/// `entity` as a resource object of type `{type_name}`. Its module serves no\n/// `get_by_id`, so no \
+             URL names it and it has no `links`.\nfn {}<'a>(entity: &'a {entity_ty}) -> \
+             ResourceObject<{attrs}<'a>> {{\n    ResourceObject::without_links(\"{type_name}\", \
+             entity.{id_field}.clone(), {attrs}(entity))",
+            names.resource
+        ));
+    }
     let links = |name: &str| {
         let rel = encode_path_segment(name);
         format!(
@@ -974,16 +979,27 @@ fn linkage_expr(rel: &Relationship, entity: &str, id: &str) -> String {
 
 /// The writer of an event frame's `data:` for an item of `resource`'s
 /// entity, which this file names `item_type`: its resource object without
-/// links (§12). The resource builder needs a collection for the links it
-/// leaves out; the unscoped one is as good as any.
-fn emit_frame_data(out: &mut String, resource: &Resource, item_type: &str) {
+/// links (§12). A `linked` resource builder needs a collection for the links
+/// it leaves out; the unscoped one is as good as any.
+fn emit_frame_data(out: &mut String, resource: &Resource, item_type: &str, linked: bool) {
     let names = resource_names(&resource.module);
+    let collection = format!("\"/api/{}\"", resource.resource_type);
     out.push_str(&format!(
         "/// A `{}` event item as its resource object. A frame is not tied to a\n/// request URL, so it carries no \
          links.\nfn {}(event: Event, entity: &{item_type}) -> Result<Event, axum::Error> {{\n    \
-         event.json_data({}(entity, \"/api/{}\").into_unlinked())\n}}\n\n",
-        resource.entity.name, names.frame, names.resource, resource.resource_type
+         event.json_data({}.into_unlinked())\n}}\n\n",
+        resource.entity.name,
+        names.frame,
+        as_resource_call(&resource.module, linked, "entity", &collection),
     ));
+}
+
+/// A call of `module`'s resource builder on `entity`, with the collection
+/// its links are under when the builder is `linked` (the module serves
+/// `get_by_id`, [`emit_resource_object`]).
+fn as_resource_call(module: &str, linked: bool, entity: &str, collection: &str) -> String {
+    let builder = resource_names(module).resource;
+    if linked { format!("{builder}({entity}, {collection})") } else { format!("{builder}({entity})") }
 }
 
 /// Per resource, emitted once whichever handlers serve it: the attributes
@@ -1020,7 +1036,7 @@ fn emit_resource_helpers(
         .junctions(m)
         .expect("`check_http_ops` refuses a module whose junction relationships do not build");
     if let Some(entity_ty) = &entity_ty {
-        let links = config.resources.serves_relationships(m).then_some(junctions.as_slice());
+        let links = config.resources.serves_get_by_id(m).then_some(junctions.as_slice());
         emit_resource_object(out, resource, entity_ty, links);
     }
     let emitted_object = entity_ty.is_some();
@@ -1167,6 +1183,7 @@ fn emit_resource_helpers(
 #[derive(Clone, Copy)]
 struct ResourceOp<'a> {
     m: &'a ApiModule,
+    modules: &'a [ApiModule],
     f: &'a ApiFn,
     resource: &'a Resource,
     handler_name: &'a str,
@@ -1205,12 +1222,7 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
     let linked_ty = resource_names(&m.name).linked;
     for scoped in kinds {
         let prefix = config.route_prefix.as_ref().filter(|_| scoped);
-        // A `String` prefix is borrowed as `&str`, which clippy's `ptr_arg`
-        // asks of a consumer's code.
-        let scope_param = prefix.map(|p| {
-            let ty = &p.params[0].rust_type;
-            format!("{SCOPE}: &{}, ", if ty == "String" { "str" } else { ty.as_str() })
-        });
+        let scope_param = prefix.map(helper_scope_param);
         let mut opens: Vec<String> = Vec::new();
         let mut checks = String::new();
         for rel in &resource.relationships {
@@ -1357,20 +1369,52 @@ fn filter_args(f: &ApiFn, counted: bool) -> Vec<String> {
     f.filter().iter().map(|p| filter_arg(p, &filter_binding(p), counted)).collect()
 }
 
+/// How a generated fn binds the route prefix's value as [`SCOPE`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScopeBinding {
+    /// A handler's, of the prefix's own type as `Path` reads it.
+    Owned,
+    /// A helper's parameter, as [`helper_scope_param`] declares it.
+    Borrowed,
+}
+
+/// Whether the prefix's type is `String`, by any path that names it. The
+/// type is the consumer's text, so `std::string::String` is as likely as
+/// the bare name.
+fn scope_is_string(prefix: &RoutePrefix) -> bool {
+    let ty: String = prefix.params[0].rust_type.chars().filter(|c| !c.is_whitespace()).collect();
+    matches!(ty.trim_start_matches("::"), "String" | "std::string::String" | "alloc::string::String")
+}
+
+/// A helper's [`SCOPE`] parameter, with its trailing separator. A `String`
+/// prefix is borrowed as `&str`, which clippy's `ptr_arg` asks of a
+/// consumer's code.
+fn helper_scope_param(prefix: &RoutePrefix) -> String {
+    let ty = if scope_is_string(prefix) { "str" } else { prefix.params[0].rust_type.as_str() };
+    format!("{SCOPE}: &{ty}, ")
+}
+
 /// The path of the collection `url_plural` as a `&str` expression: a literal,
 /// or under `scope` a `format!` of the prefix with its parameter bound as
-/// [`SCOPE`] (§11.1).
-fn collection_expr(url_plural: &str, scope: Option<&RoutePrefix>) -> String {
-    let Some(prefix) = scope else { return format!("\"/api/{url_plural}\"") };
+/// [`SCOPE`] the way the binding says (§11.1).
+fn collection_expr(url_plural: &str, scope: Option<(&RoutePrefix, ScopeBinding)>) -> String {
+    let Some((prefix, binding)) = scope else { return format!("\"/api/{url_plural}\"") };
     let pp = &prefix.params[0];
+    // A borrowed `&str` is already the segment: `to_string` on it is
+    // clippy's `unnecessary_to_owned`.
+    let scope_segment = if binding == ScopeBinding::Borrowed && scope_is_string(prefix) {
+        SCOPE.to_string()
+    } else {
+        format!("&{SCOPE}.to_string()")
+    };
     let mut args = Vec::new();
     let template: Vec<String> = prefix
         .segments
         .split('/')
         .map(|segment| match segment.strip_prefix(':') {
             Some(name) => {
-                let ident = if name == pp.name { SCOPE } else { name };
-                args.push(format!("encode_path_segment(&{ident}.to_string())"));
+                let arg = if name == pp.name { scope_segment.clone() } else { format!("&{name}.to_string()") };
+                args.push(format!("encode_path_segment({arg})"));
                 "{}".to_string()
             }
             None => segment.to_string(),
@@ -1397,11 +1441,13 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
     let map_err = err_map(f, config);
     let Access { open, arg } = access;
     let key = &names.key;
-    let as_resource = &names.resource;
+    let linked = config.resources.serves_get_by_id(m);
+    let as_resource = |entity: &str| as_resource_call(&m.name, linked, entity, "collection");
 
     // The collection's and the item's path parameters, as a pattern and the
     // type `Path` reads.
-    let collection = format!("    let collection = {};\n", collection_expr(&url_plural, scope));
+    let collection =
+        format!("    let collection = {};\n", collection_expr(&url_plural, scope.map(|p| (p, ScopeBinding::Owned))));
     let (collection_path, item_path) = match scope {
         None => (None, ("id".to_string(), "LookupKey".to_string())),
         Some(prefix) => {
@@ -1431,10 +1477,11 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
     let head =
         format!("async fn {handler_name}(\n    State(ontogen_state): State<Arc<{state_type}>>,\n    _: AcceptGuard,\n");
     let tail = ") -> Result<Response, ErrorObject> {\n";
-    let single_response = format!(
-        "    let resource = {as_resource}(&entity, collection);\n    let links = \
-         Links::new(resource.links().self_link());\n    Ok(response::ok(&Document::new(resource, links)))\n}}\n\n"
-    );
+    // A list and a get read `include` (§7.5) after `sort` and before the
+    // page (§13.2 step 5), and add `included` to the document they answer.
+    let includes = include::Includes::new(m, op.modules, config, scope.is_some());
+    let include = format!("    let include = query.include_paths({})?;\n", includes.spec_args());
+    let link_query = "    let link_query = query.link_query(include.as_deref())?;\n";
 
     match classify_op(m, f) {
         OpKind::List => {
@@ -1449,19 +1496,9 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
             } else {
                 "ListParams".to_string()
             };
-            // The links repeat the filter the request sent (§4.3). An
-            // unfiltered list accepts no member to repeat, so its links carry
-            // no query but the page.
-            let (filter, link_query, links_query, self_link) = if f.takes_filter() {
-                (
-                    filter_reads(f, "query"),
-                    "    let link_query = query.link_query()?;\n",
-                    "&link_query",
-                    "link_query.href(collection)",
-                )
-            } else {
-                (String::new(), "", "&CanonicalQuery::new()", "collection")
-            };
+            // The links repeat the filter and `include` the request sent
+            // (§4.3).
+            let filter = if f.takes_filter() { filter_reads(f, "query") } else { String::new() };
             let (page, call, document) = match paging {
                 Some(pg) => {
                     let list_args = [vec![arg.to_string()], filter_args(f, true)].concat().join(", ");
@@ -1473,11 +1510,9 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
                              Some(u64::from(offset))){aw}{map_err}?;\n    let total = \
                              {svc}::count({count_args}){aw}{map_err}?;\n"
                         ),
-                        format!(
-                            "    let links = pagination_links(collection, {links_query}, offset, limit, total);\n    \
-                             Ok(response::ok(&Document::new(data, links).with_meta(PageMeta {{ total, limit, offset \
-                             }})))\n"
-                        ),
+                        "    let links = pagination_links(collection, &link_query, offset, limit, total);\n    let mut \
+                         document = Document::new(data, links).with_meta(PageMeta { total, limit, offset });\n"
+                            .to_string(),
                     )
                 }
                 None => {
@@ -1488,22 +1523,28 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
                     (
                         String::new(),
                         format!("    let items = {svc}::list({}){aw}{map_err}?;\n", args.join(", ")),
-                        format!("    Ok(response::ok(&Document::new(data, Links::new({self_link}))))\n"),
+                        "    let mut document = Document::new(data, Links::new(link_query.href(collection)));\n"
+                            .to_string(),
                     )
                 }
             };
             out.push_str(&format!(
                 "{head}{collection_extract}    query: Query<{params}>,\n{tail}{filter}    refuse_sort(&query, \
-                 \"{type_name}\")?;\n    refuse_include(&query, \"{type_name}\")?;\n{page}{link_query}{open}{call}\
-                 {collection}    let data: Vec<_> = items.iter().map(|entity| {as_resource}(entity, \
-                 collection)).collect();\n{document}}}\n\n"
+                 \"{type_name}\")?;\n{include}{page}{link_query}{open}{call}{collection}    let data: Vec<_> = \
+                 items.iter().map({}).collect();\n{document}{}    Ok(response::ok(&document))\n}}\n\n",
+                // A builder taking the entity alone is passed as it is
+                // (clippy's `redundant_closure`).
+                if linked { format!("|entity| {}", as_resource("entity")) } else { names.resource.clone() },
+                includes.handler_lines("&items"),
             ));
         }
         OpKind::GetById => {
             out.push_str(&format!(
-                "{head}{item_extract}    query: Query<GetParams>,\n{tail}    refuse_include(&query, \
-                 \"{type_name}\")?;\n{open}    let entity = {svc}::get_by_id({arg}, \
-                 {key}(&id)?){aw}{map_err}?;\n{collection}{single_response}"
+                "{head}{item_extract}    query: Query<GetParams>,\n{tail}{include}{link_query}{open}    let entity = \
+                 {svc}::get_by_id({arg}, {key}(&id)?){aw}{map_err}?;\n{collection}    let mut document = \
+                 Document::resource({}, &link_query);\n{}    Ok(response::ok(&document))\n}}\n\n",
+                as_resource("&entity"),
+                includes.handler_lines("std::slice::from_ref(&entity)"),
             ));
         }
         OpKind::Create => {
@@ -1526,14 +1567,21 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
                 None => map_err.to_string(),
             };
             let (extractors, checks_first) = deferred(collection_path.as_ref());
+            // `Location` is read from the resource's own `links.self` (§8.2),
+            // so the two cannot differ, and a resource without links (its
+            // module serves no `get_by_id`) answers without one.
+            let respond = format!(
+                "    let document = Document::resource({}, &CanonicalQuery::new());\n    let location = \
+                 document.data().and_then(ResourceObject::links).map(Links::self_link);\n    \
+                 Ok(response::created(location, &document))\n",
+                as_resource("&entity")
+            );
             out.push_str(&format!(
                 "{head}{extractors}{tail}{checks_first}{collection}    let endpoint = Endpoint {{ type_name: \
                  \"{type_name}\", path: collection }};\n    let data = request::parse_create(&body, endpoint, |id| {{\n        \
                  ontogen_core::id::validate_id(id).map_err(|e| e.reason)\n    }})?;\n{fields}    let input: \
                  {input_ty} = from_fields(fields)?;\n{open}{checks}    let entity = {svc}::create({arg}, \
-                 input){aw}{create_err}?;\n    let resource = {as_resource}(&entity, collection);\n    let location \
-                 = resource.links().self_link().to_owned();\n    let links = Links::new(location.as_str());\n    \
-                 Ok(response::created(&location, &Document::new(resource, links)))\n}}\n\n"
+                 input){aw}{create_err}?;\n{respond}}}\n\n"
             ));
         }
         OpKind::Update => {
@@ -1545,7 +1593,8 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
                  format!(\"{{collection}}/{{id}}\");\n    let endpoint = Endpoint {{ type_name: \"{type_name}\", path: \
                  &path }};\n    let data = request::parse_update(&body, endpoint, &id)?;\n{fields}    let input: {input_ty} = \
                  from_fields(fields)?;\n{open}{checks}    let entity = {svc}::update({arg}, {key}(&id)?, \
-                 input){aw}{map_err}?;\n{single_response}"
+                 input){aw}{map_err}?;\n    Ok(response::ok(&Document::resource({}, &CanonicalQuery::new())))\n}}\n\n",
+                as_resource("&entity"),
             ));
         }
         OpKind::Delete => {

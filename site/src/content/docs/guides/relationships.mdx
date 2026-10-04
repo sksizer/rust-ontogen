@@ -202,7 +202,7 @@ pub async fn remove_label(store: &Store, id: &str, tag_id: &str) -> Result<(), A
 - `GET /api/tasks/{id}/labels` lists the tags, `GET /api/tasks/{id}/relationships/labels` their linkage, and `POST` and `DELETE /api/tasks/{id}/relationships/labels` call `add_label` and `remove_label`. `PATCH` is `403`, and so is `POST` without an `add_Y` or `DELETE` without a `remove_Y`.
 - Add and remove call `list_X` first and skip your function when the tag is already a member, or is not one. An add checks that the tag exists; a remove does not.
 - On a paginated surface the two `GET`s page `list_X`'s result in memory with `page[offset]` and `page[limit]`.
-- The resource object lists the relationship after the relation fields, with `links` only. It cannot be included or sent in a create or update body.
+- The resource object lists the relationship after the relation fields, with `links` only. It cannot be included (`include` on a list or get) or sent in a create or update body.
 - The target is `list_X`'s element type, or for a `Vec<String>` list of ids, the entity whose plural is `X`. Each id parameter is a `&str`, `String` or `&String`, the module must serve `get_by_id`, and the name must not clash with an attribute or another relationship: `list_tags` beside the `tags` field fails the build. A `list_X` with no `add_Y` or `remove_Y` beside it is not a junction op but a custom `GET`.
 
 Junction ops in a module with no entity behind it are served as custom ops instead, at `/api/{module}/{parent_id}/{segment}`; see [Operations that are not CRUD](/guides/server-transports/#operations-that-are-not-crud).

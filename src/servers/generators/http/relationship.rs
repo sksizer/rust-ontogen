@@ -13,8 +13,9 @@ use ontogen_core::ir::OpKind;
 use ontogen_jsonapi::links::encode_path_segment;
 
 use super::{
-    Routes, SCOPE, app_error_path, await_str, axum_path, collection_expr, entity_type, err_map, is_scoped,
-    linkage_expr, linked_lookup, relationship_routes, resource_names, returns_app_error, served_resource,
+    Routes, SCOPE, ScopeBinding, app_error_path, await_str, axum_path, collection_expr, entity_type, err_map,
+    helper_scope_param, is_scoped, linkage_expr, linked_lookup, relationship_routes, resource_names, returns_app_error,
+    served_resource,
 };
 use crate::resource::{Arity, JunctionRelationship, Relationship, Resource};
 use crate::servers::classify::classify_op;
@@ -77,14 +78,17 @@ impl<'a> Served<'a> {
     /// prefix when this is the scoped handler and the target's `get_by_id`
     /// is scoped too.
     fn target_collection(&self, target_type: &str, target_get: &ApiFn) -> String {
-        collection_expr(target_type, self.scope.filter(|_| target_get.first_param_is_store))
+        collection_expr(
+            target_type,
+            self.scope.filter(|_| target_get.first_param_is_store).map(|p| (p, ScopeBinding::Owned)),
+        )
     }
 }
 
 /// The helpers the relationship handlers share, one per module, kind and
-/// scope.
+/// scope. `include` fetches its resources with `Fetch` too.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Helper {
+pub(super) enum Helper {
     /// The parent resource, read as its `GET` reads it.
     Read,
     /// One relation field written through the module's `update`.
@@ -96,7 +100,7 @@ enum Helper {
 }
 
 impl Helper {
-    fn name(self, module: &str, scoped: bool) -> String {
+    pub(super) fn name(self, module: &str, scoped: bool) -> String {
         let kind = match self {
             Helper::Read => "read",
             Helper::WriteField => "write_field",
@@ -108,7 +112,8 @@ impl Helper {
     }
 }
 
-/// Emit every helper the relationship handlers of `modules` call, once each.
+/// Emit every helper the relationship handlers of `modules` call, and every
+/// `Fetch` helper the `include` helpers call, once each.
 pub(super) fn emit_helpers(out: &mut String, modules: &[ApiModule], config: &Config) {
     let mut wanted: Vec<(Helper, &ApiModule, &ApiFn, bool)> = Vec::new();
     for m in modules {
@@ -140,6 +145,11 @@ pub(super) fn emit_helpers(out: &mut String, modules: &[ApiModule], config: &Con
             }
         }
     }
+    for (module, f, scoped) in super::include::fetches(modules, config) {
+        if !wanted.iter().any(|(k, wm, _, s)| *k == Helper::Fetch && wm.name == module.name && *s == scoped) {
+            wanted.push((Helper::Fetch, module, f, scoped));
+        }
+    }
     for (kind, m, f, scoped) in wanted {
         emit_helper(out, kind, m, f, config, scoped);
     }
@@ -154,14 +164,7 @@ fn emit_helper(out: &mut String, kind: Helper, m: &ApiModule, f: &ApiFn, config:
     let aw = await_str(f.is_async);
     let map_err = err_map(f, config);
     let prefix = config.route_prefix.as_ref().filter(|_| scoped);
-    // A `String` prefix is borrowed as `&str`, which clippy's `ptr_arg` asks
-    // of a consumer's code.
-    let scope_param = prefix
-        .map(|p| {
-            let ty = &p.params[0].rust_type;
-            format!("{SCOPE}: &{}, ", if ty == "String" { "str" } else { ty.as_str() })
-        })
-        .unwrap_or_default();
+    let scope_param = prefix.map(helper_scope_param).unwrap_or_default();
     let (open, arg) = match (f.first_param_is_store, prefix) {
         (false, _) => (String::new(), "state"),
         (true, Some(prefix)) => (
@@ -324,7 +327,8 @@ fn get_handler(served: &Served<'_>, rels: &[Rel<'_, '_>], name: &str, related: b
     let state_type = &served.config.state_type;
     let type_name = &served.resource.resource_type;
     let (pattern, ty) = path_extract(served);
-    let collection = collection_expr(&served.config.naming.url_for_module(served.m), served.scope);
+    let collection =
+        collection_expr(&served.config.naming.url_for_module(served.m), served.scope.map(|p| (p, ScopeBinding::Owned)));
     let mut out = format!(
         "async fn {name}(\n    State(ontogen_state): State<Arc<{state_type}>>,\n    _: AcceptGuard,\n    \
          Path({pattern}): Path<{ty}>,\n    RawQuery(ontogen_raw_query): RawQuery,\n) -> Result<Response, \

@@ -136,7 +136,7 @@ Every response from a generated route that carries a body has `Content-Type: app
 
 ### Documents and resources
 
-A success response is a document with `jsonapi`, `links`, optional `meta` and `data`, in that order. A resource object has `type`, `id`, `attributes`, `relationships` and `links.self`.
+A success response is a document with `jsonapi`, `links`, optional `meta` and `data`, in that order. A resource object has `type`, `id`, `attributes`, `relationships` and `links.self`. A module that serves no `get_by_id` has no route at `/api/{type}/{id}`, so its resource objects carry no `links`, a create sends no `Location`, and its create and update documents have no top-level `links`.
 
 ```json
 {
@@ -181,13 +181,23 @@ A success response is a document with `jsonapi`, `links`, optional `meta` and `d
 |-----------|---------|
 | `List` | `200`, `data` is an array (`[]` when empty), ordered by id ascending |
 | `GetById` | `200`, `data` is one resource |
-| `Create` | `201`, `Location` header equal to `links.self`, `data` is the created resource |
+| `Create` | `201`, `Location` header equal to `links.self` (when the module serves `get_by_id`), `data` is the created resource |
 | `Update` | `200`, `data` is the full updated resource |
 | `Delete` | `204`, no body |
 
 A create body is `{"data": {"type": "tasks", "attributes": {...}, "relationships": {...}}}`. A client `data.id` is honoured under every `IdStrategy`; without one the store derives it. A `PATCH` body must carry `data.type` and a `data.id` equal to the URL id. An attribute or relationship that is absent is left unchanged on update; `null` clears an `Option` field or an optional to-one; a to-many `data` array replaces the whole list.
 
 Before it creates or updates, the handler checks that every linked resource exists and answers `404 related_resource_not_found` otherwise, so a markdown vault never receives a dangling wikilink.
+
+### Compound documents
+
+`GET /api/{type}` and `GET /api/{type}/{id}` accept `include`: a comma-separated list of relationship names, one level deep. The related resources arrive in a top-level `included` member after `data`, each once, in `include` order and then in order of first appearance. `GET /api/tasks?include=epic,tags` returns the page's tasks plus their epics and tags. Every link on the document carries the `include` value, so `next` keeps it, and on a get the top-level `self` is `/api/tasks/ship-the-emitter?include=epic`.
+
+- Each included resource is read through the target module's `get_by_id`, one read per distinct id. A dangling id is left out of `included` and stays in the linkage.
+- A field relationship can be included when its target module serves `get_by_id` in the handler's scope. A junction-op relationship cannot.
+- An unknown name, a dotted path (`epic.tasks`), an empty item (`epic,`) and a relationship that cannot be included are `400 invalid_include_path`.
+- Relationship and related routes do not accept `include`.
+- The generated TypeScript transport does not expose `include`. It is an HTTP-only feature, because the flat return shape has nowhere to put included resources.
 
 ### Relationship endpoints
 
@@ -256,7 +266,7 @@ A list that is not paginated rejects `page[...]` with `400 invalid_query_paramet
 
 ### Query parameters
 
-A generated route accepts a fixed set of query parameters. Anything else is `400 invalid_query_parameter` with `source.parameter` naming it: an unknown name, a repeated name, a malformed name, `fields[...]`, and `page[...]` on a route that is not paginated. `[` and `]` are accepted raw or percent-encoded. `filter[...]` is accepted on a list that takes filter parameters and refused on any other route. Relationship and related routes take no query parameters, except `page[offset]` and `page[limit]` for a junction op's relationship on a paginated surface. `sort` and `include` are recognised on a list (`include` also on a get) but nothing can be sorted or included yet, so they are `400 invalid_sort_field` and `400 invalid_include_path` with `source.parameter` naming the parameter; they are not `invalid_query_parameter`.
+A generated route accepts a fixed set of query parameters. Anything else is `400 invalid_query_parameter` with `source.parameter` naming it: an unknown name, a repeated name, a malformed name, `fields[...]`, and `page[...]` on a route that is not paginated. `[` and `]` are accepted raw or percent-encoded. `filter[...]` is accepted on a list that takes filter parameters and refused on any other route. Relationship and related routes take no query parameters, except `page[offset]` and `page[limit]` for a junction op's relationship on a paginated surface. `include` is honoured on a list and a get (see [Compound documents](#compound-documents)); a bad value is `400 invalid_include_path` with `source.parameter: "include"`. `sort` is recognised on a list but no list takes an `order` argument, so any value is `400 invalid_sort_field`. A bad value of either is the code named above, not `invalid_query_parameter`.
 
 ### Errors
 
@@ -295,8 +305,8 @@ A variant whose snake_case name equals one of ontogen's own codes (for example a
 | Status | `code` | Raised when |
 |--------|--------|-------------|
 | 400 | `invalid_query_parameter` | an unknown, repeated or malformed query parameter, a bad `page[...]` or `opArg[...]` value, or any query parameter on a custom `POST` |
-| 400 | `invalid_sort_field` | a `sort` parameter on a list (no list takes an order yet) |
-| 400 | `invalid_include_path` | an `include` parameter on a list or a get (nothing can be included yet) |
+| 400 | `invalid_sort_field` | a `sort` parameter on a list (no list takes an order) |
+| 400 | `invalid_include_path` | a bad `include` on a list or a get: an unknown, dotted, empty or non-includable relationship name |
 | 400 | `invalid_path_parameter` | a typed route-prefix parameter fails to parse |
 | 400 | `invalid_document` | the body is not JSON or not a valid resource document, or a custom op body whose `meta.args` is missing, unknown or ill-typed |
 | 400 | `unknown_attribute`, `missing_attribute`, `invalid_attribute` | attribute problems in a create or update body |

@@ -277,7 +277,7 @@ mod tests {
         let body = body.into_bytes()?;
         let data = parse_create(&body, Endpoint { type_name: "tasks", path: "/api/tasks" }, |_| Ok::<(), String>(()))?;
         let id = data.id.unwrap_or_else(|| "derived".to_owned());
-        Ok(response::created(&format!("/api/tasks/{id}"), &serde_json::json!({ "id": id })))
+        Ok(response::created(Some(&format!("/api/tasks/{id}")), &serde_json::json!({ "id": id })))
     }
 
     async fn create_scoped_task(

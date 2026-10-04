@@ -9,8 +9,8 @@
 //! docs refer to that contract.
 //!
 //! Everything that needs the schema (attribute and relationship names, sort
-//! fields, include paths) stays in generated code; this crate holds only the
-//! schema-independent rules.
+//! fields, which relationships can be included) stays in generated code;
+//! this crate holds only the schema-independent rules.
 //!
 //! The Axum extractors ([`extract`]) and responses ([`response`]) sit behind
 //! the default `axum` feature. Without it the crate is the core meant for
@@ -34,7 +34,7 @@ functions:
 ```no_run
 use axum::{Router, response::Response, routing::post};
 use ontogen_jsonapi::{
-    Document, ErrorObject, Links, ResourceObject,
+    CanonicalQuery, Document, ErrorObject, ResourceObject,
     extract::{AcceptGuard, Body, NoParams, Path, Query},
     links::encode_path_segment,
     request::{Endpoint, parse_create},
@@ -72,8 +72,8 @@ async fn create_task(
     let id = data.id.unwrap_or_else(|| "derived-by-the-store".to_owned());
     let self_link = format!("{collection}/{}", encode_path_segment(&id));
     let resource = ResourceObject::new("tasks", id, TaskAttributes { title }, self_link.clone());
-    let document = Document::new(resource, Links::new(self_link.clone()));
-    Ok(response::created(&self_link, &document))
+    let document = Document::resource(resource, &CanonicalQuery::new());
+    Ok(response::created(Some(&self_link), &document))
 }
 
 let app: Router = Router::new().route("/api/projects/{project_id}/tasks", post(create_task));
@@ -86,6 +86,7 @@ pub mod document;
 pub mod error;
 #[cfg(feature = "axum")]
 pub mod extract;
+pub mod include;
 pub mod links;
 pub mod media;
 pub mod path;
@@ -99,6 +100,7 @@ pub use document::{
     ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta, UnlinkedResource,
 };
 pub use error::{ErrorCode, ErrorObject, ErrorSource};
+pub use include::Included;
 pub use links::CanonicalQuery;
 pub use path::LookupKey;
 pub use query::{QueryParams, QuerySpec, filter_fields};

@@ -2,7 +2,7 @@
 type: epic
 schema_version: "1"
 id: E0004
-status: proposed
+status: in-progress
 title: JSON:API as the generated HTTP wire format
 created: 2026-10-03
 last_reviewed: 2026-10-04
@@ -11,7 +11,7 @@ tags: [servers, clients, http, jsonapi, wire-format]
 # Epic — JSON:API as the generated HTTP wire format
 
 **Milestone:** M4 — Standard formats ([roadmap](../../roadmap.md))
-**Status:** proposed — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)), completing the 0.9.0 wire; phase 2 done ([#202](https://github.com/sksizer/rust-ontogen/pull/202)); phase 3a done ([#203](https://github.com/sksizer/rust-ontogen/pull/203)); phase 3b is next
+**Status:** in-progress — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)), completing the 0.9.0 wire; phase 2 done ([#202](https://github.com/sksizer/rust-ontogen/pull/202)); phase 3a done ([#203](https://github.com/sksizer/rust-ontogen/pull/203)); phase 3b done ([#205](https://github.com/sksizer/rust-ontogen/pull/205)); phase 3c is next
 **Spec:** [JSON:API 1.1](https://jsonapi.org/format/)
 **Wire contract:** [`docs/jsonapi-wire-contract.md`](../../jsonapi-wire-contract.md) — normative; every phase implements against it
 **Decision records:** [ADR 0004](../../architecture/0004-jsonapi-http-wire-format.md) (this epic's decisions),
@@ -204,7 +204,16 @@ each of its sections to a phase.
   - `links.self`/`links.related` go on every relationship;
   - scoped junction ops take their unscoped shape, and TS junction methods move;
   - tasks-tracker gains `parent_id`/`subtasks` and a `release` tag.
-- **3b.** `include`: one level, to-one and to-many, with full linkage.
+- **3b.** Done ([#205](https://github.com/sksizer/rust-ontogen/pull/205)). `include`: one level, to-one and to-many, with full linkage:
+  - `GET /api/{type}` and `GET /api/{type}/{id}` honour it; every link
+    carries it; related resources are fetched through the target's
+    `get_by_id`, one call per distinct id, and de-duplicated against `data`;
+  - a bad value, including an empty item (`include=epic,`), is
+    `400 invalid_include_path`;
+  - a resource module that serves no `get_by_id` emits no resource
+    `links.self`, no `Location` on create and no top-level `links` on create
+    and update documents, because no route serves them;
+  - batching the fetch stays backlog B-BGMN.
 - **3c.** The `order` argument per ADR 0006 on both store backends, with
   `sort_{plural}` and `order_{plural}_query`, and the rest of the runtime
   parity fixture. `sort` on HTTP, and on the TS `Transport`, IPC and MCP
@@ -320,6 +329,6 @@ Filed when phase 0 closes; one task per phase, PR-sized.
 - [x] phase 1c — custom ops, ops served as custom, event frames, scoped pagination ([#201](https://github.com/sksizer/rust-ontogen/pull/201))
 - [x] phase 2 — filter family, hand-written `list`/`count` precedence, TS filter family ([#202](https://github.com/sksizer/rust-ontogen/pull/202))
 - [x] phase 3a — relationship endpoints, related links, junction re-route ([#203](https://github.com/sksizer/rust-ontogen/pull/203))
-- [ ] phase 3b — `include` compound documents
+- [x] phase 3b — `include` compound documents, and no links to an unserved `get_by_id` ([#205](https://github.com/sksizer/rust-ontogen/pull/205))
 - [ ] phase 3c — `order` argument on both backends (ADR 0006) + `sort` on every transport
 - [ ] phase 4 — docs and examples

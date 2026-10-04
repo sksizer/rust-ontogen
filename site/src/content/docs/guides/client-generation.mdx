@@ -112,6 +112,7 @@ On the wire:
 - Updates use `PATCH` (`httpPatch`). No generated route uses `PUT`, so there is no `httpPut` helper.
 - A key whose value is `undefined` is left out of an update body, which means "unchanged". `null` is sent and clears the field. A relation field moves into `relationships`; every other key goes in `attributes`. The id goes in `data.id`, never in `attributes`.
 - A paginated list in the `HttpTauriIpcSplit` HTTP transport sends `page[offset]` and `page[limit]` and still returns `PaginatedResult<T>` (`items`, `total`, `limit`, `offset`), built from `data` and `meta`. `limit` and `offset` are the effective values the server used. The HTTP-only client (`HttpTs`) pages the same way: its paginated list methods take `limit?` and `offset?` and return `PaginatedResult<T>`.
+- `include` is not exposed on the TS transport. It is an HTTP-only query parameter, and the flat return shape (entities, `PaginatedResult<T>`) has nowhere to put `included` resources; call the route directly to use it.
 - A filtered list sends the `filter[...]` family: `toQueryString({ filter: query, page: { offset, limit } })` for a query struct, `{ skill_id: skillId }` for bare parameters, and `{ ...query, skill_id: skillId }` for both. A filtered list with no entity behind it sends `filter[...]` with `opArg[limit]` and `opArg[offset]`. The method signatures are unchanged: bare parameters, then `query?`, then `limit?` and `offset?`.
 
 ### Errors

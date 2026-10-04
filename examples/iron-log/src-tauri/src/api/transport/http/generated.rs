@@ -13,11 +13,11 @@ use axum::{
     routing::get,
 };
 use ontogen_jsonapi::{
-    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, QueryParams, QuerySpec, Relationship,
-    ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
+    AnyResource, Document, ErrorCode, ErrorObject, Included, Linkage, Links, LookupKey, QueryParams, QuerySpec,
+    Relationship, ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
     error::{method_not_allowed, relationship_not_found, relationship_update_unsupported},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
-    links::encode_path_segment,
+    links::{CanonicalQuery, encode_path_segment},
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
 };
@@ -157,19 +157,6 @@ fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> 
         None => Ok(()),
         Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
             .with_parameter("sort")),
-    }
-}
-
-/// No route includes related resources, so every `include` names a path the
-/// server cannot include.
-fn refuse_include(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
-    match query.include()? {
-        None => Ok(()),
-        Some(_) => Err(ErrorObject::new(
-            ErrorCode::InvalidIncludePath,
-            format!("`{type_name}` has no relationship that can be included"),
-        )
-        .with_parameter("include")),
     }
 }
 
@@ -640,6 +627,59 @@ async fn ontogen_exercise_check_ids(state: &AppState, ids: &[LinkedId]) -> Resul
     Ok(())
 }
 
+/// The resources `paths` include for `entities`, path by path and each in
+/// linkage order: each once, and none of `entities` among them. `paths` are
+/// those `include_paths` admitted, so no other path occurs.
+async fn ontogen_workout_included(
+    state: &AppState,
+    entities: &[Workout],
+    paths: &[&str],
+) -> Result<Vec<AnyResource>, ErrorObject> {
+    let mut included = Included::new("workouts", entities.iter().map(|entity| entity.id.as_str()));
+    for path in paths {
+        if *path == "tags" {
+            let ids =
+                included.new_ids("tags", entities.iter().flat_map(|entity| entity.tags.iter().map(String::as_str)));
+            let collection = "/api/tags";
+            for related in ontogen_tag_fetch(state, &ids).await? {
+                included.push(tag_as_resource(&related, collection))?;
+            }
+        }
+    }
+    Ok(included.finish())
+}
+
+/// The resources `paths` include for `entities`, path by path and each in
+/// linkage order: each once, and none of `entities` among them. `paths` are
+/// those `include_paths` admitted, so no other path occurs.
+async fn ontogen_workout_set_included(
+    state: &AppState,
+    entities: &[WorkoutSet],
+    paths: &[&str],
+) -> Result<Vec<AnyResource>, ErrorObject> {
+    let mut included = Included::new("workout-sets", entities.iter().map(|entity| entity.id.as_str()));
+    for path in paths {
+        match *path {
+            "workout" => {
+                let ids = included.new_ids("workouts", entities.iter().map(|entity| entity.workout_id.as_str()));
+                let collection = "/api/workouts";
+                for related in ontogen_workout_fetch(state, &ids).await? {
+                    included.push(workout_as_resource(&related, collection))?;
+                }
+            }
+            "exercise" => {
+                let ids = included.new_ids("exercises", entities.iter().map(|entity| entity.exercise_id.as_str()));
+                let collection = "/api/exercises";
+                for related in ontogen_exercise_fetch(state, &ids).await? {
+                    included.push(exercise_as_resource(&related, collection))?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(included.finish())
+}
+
 // ── Exercise Handlers ──
 
 async fn exercise_list(
@@ -648,12 +688,17 @@ async fn exercise_list(
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "exercises")?;
-    refuse_include(&query, "exercises")?;
+    let include = query.include_paths("exercises", &[], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let items = exercise::list(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/exercises";
     let data: Vec<_> = items.iter().map(|entity| exercise_as_resource(entity, collection)).collect();
-    Ok(response::ok(&Document::new(data, Links::new(collection))))
+    let mut document = Document::new(data, Links::new(link_query.href(collection)));
+    if include.is_some() {
+        document = document.with_included(Vec::new());
+    }
+    Ok(response::ok(&document))
 }
 
 async fn exercise_get_by_id(
@@ -662,13 +707,16 @@ async fn exercise_get_by_id(
     Path(id): Path<LookupKey>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "exercises")?;
+    let include = query.include_paths("exercises", &[], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let entity = exercise::get_by_id(&ontogen_store, exercise_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = "/api/exercises";
-    let resource = exercise_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    let mut document = Document::resource(exercise_as_resource(&entity, collection), &link_query);
+    if include.is_some() {
+        document = document.with_included(Vec::new());
+    }
+    Ok(response::ok(&document))
 }
 
 async fn exercise_create(
@@ -691,10 +739,9 @@ async fn exercise_create(
         }
         e => ontogen_app_error(e),
     })?;
-    let resource = exercise_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
+    let document = Document::resource(exercise_as_resource(&entity, collection), &CanonicalQuery::new());
+    let location = document.data().and_then(ResourceObject::links).map(Links::self_link);
+    Ok(response::created(location, &document))
 }
 
 async fn exercise_update(
@@ -715,9 +762,7 @@ async fn exercise_update(
     let input: UpdateExerciseInput = from_fields(fields)?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let entity = exercise::update(&ontogen_store, exercise_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = exercise_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    Ok(response::ok(&Document::resource(exercise_as_resource(&entity, collection), &CanonicalQuery::new())))
 }
 
 async fn exercise_delete(
@@ -739,12 +784,17 @@ async fn tag_list(
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "tags")?;
-    refuse_include(&query, "tags")?;
+    let include = query.include_paths("tags", &[], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let items = tag::list(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/tags";
     let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
-    Ok(response::ok(&Document::new(data, Links::new(collection))))
+    let mut document = Document::new(data, Links::new(link_query.href(collection)));
+    if include.is_some() {
+        document = document.with_included(Vec::new());
+    }
+    Ok(response::ok(&document))
 }
 
 async fn tag_get_by_id(
@@ -753,13 +803,16 @@ async fn tag_get_by_id(
     Path(id): Path<LookupKey>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "tags")?;
+    let include = query.include_paths("tags", &[], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let entity = tag::get_by_id(&ontogen_store, tag_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = "/api/tags";
-    let resource = tag_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    let mut document = Document::resource(tag_as_resource(&entity, collection), &link_query);
+    if include.is_some() {
+        document = document.with_included(Vec::new());
+    }
+    Ok(response::ok(&document))
 }
 
 async fn tag_create(
@@ -782,10 +835,9 @@ async fn tag_create(
         }
         e => ontogen_app_error(e),
     })?;
-    let resource = tag_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
+    let document = Document::resource(tag_as_resource(&entity, collection), &CanonicalQuery::new());
+    let location = document.data().and_then(ResourceObject::links).map(Links::self_link);
+    Ok(response::created(location, &document))
 }
 
 async fn tag_update(
@@ -806,9 +858,7 @@ async fn tag_update(
     let input: UpdateTagInput = from_fields(fields)?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let entity = tag::update(&ontogen_store, tag_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = tag_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    Ok(response::ok(&Document::resource(tag_as_resource(&entity, collection), &CanonicalQuery::new())))
 }
 
 async fn tag_delete(
@@ -830,12 +880,17 @@ async fn workout_list(
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "workouts")?;
-    refuse_include(&query, "workouts")?;
+    let include = query.include_paths("workouts", &["tags"], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let items = workout::list(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/workouts";
     let data: Vec<_> = items.iter().map(|entity| workout_as_resource(entity, collection)).collect();
-    Ok(response::ok(&Document::new(data, Links::new(collection))))
+    let mut document = Document::new(data, Links::new(link_query.href(collection)));
+    if let Some(paths) = &include {
+        document = document.with_included(ontogen_workout_included(&ontogen_state, &items, paths).await?);
+    }
+    Ok(response::ok(&document))
 }
 
 async fn workout_get_by_id(
@@ -844,13 +899,17 @@ async fn workout_get_by_id(
     Path(id): Path<LookupKey>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "workouts")?;
+    let include = query.include_paths("workouts", &["tags"], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let entity = workout::get_by_id(&ontogen_store, workout_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = "/api/workouts";
-    let resource = workout_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    let mut document = Document::resource(workout_as_resource(&entity, collection), &link_query);
+    if let Some(paths) = &include {
+        document = document
+            .with_included(ontogen_workout_included(&ontogen_state, std::slice::from_ref(&entity), paths).await?);
+    }
+    Ok(response::ok(&document))
 }
 
 async fn workout_create(
@@ -874,10 +933,9 @@ async fn workout_create(
         }
         e => ontogen_app_error(e),
     })?;
-    let resource = workout_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
+    let document = Document::resource(workout_as_resource(&entity, collection), &CanonicalQuery::new());
+    let location = document.data().and_then(ResourceObject::links).map(Links::self_link);
+    Ok(response::created(location, &document))
 }
 
 async fn workout_update(
@@ -899,9 +957,7 @@ async fn workout_update(
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     workout_check_linked(&ontogen_state, &linked).await?;
     let entity = workout::update(&ontogen_store, workout_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = workout_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    Ok(response::ok(&Document::resource(workout_as_resource(&entity, collection), &CanonicalQuery::new())))
 }
 
 async fn workout_delete(
@@ -1049,12 +1105,17 @@ async fn workout_set_list(
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "workout-sets")?;
-    refuse_include(&query, "workout-sets")?;
+    let include = query.include_paths("workout-sets", &["workout", "exercise"], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let items = workout_set::list(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/workout-sets";
     let data: Vec<_> = items.iter().map(|entity| workout_set_as_resource(entity, collection)).collect();
-    Ok(response::ok(&Document::new(data, Links::new(collection))))
+    let mut document = Document::new(data, Links::new(link_query.href(collection)));
+    if let Some(paths) = &include {
+        document = document.with_included(ontogen_workout_set_included(&ontogen_state, &items, paths).await?);
+    }
+    Ok(response::ok(&document))
 }
 
 async fn workout_set_get_by_id(
@@ -1063,14 +1124,18 @@ async fn workout_set_get_by_id(
     Path(id): Path<LookupKey>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_include(&query, "workout-sets")?;
+    let include = query.include_paths("workout-sets", &["workout", "exercise"], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     let entity =
         workout_set::get_by_id(&ontogen_store, workout_set_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = "/api/workout-sets";
-    let resource = workout_set_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    let mut document = Document::resource(workout_set_as_resource(&entity, collection), &link_query);
+    if let Some(paths) = &include {
+        document = document
+            .with_included(ontogen_workout_set_included(&ontogen_state, std::slice::from_ref(&entity), paths).await?);
+    }
+    Ok(response::ok(&document))
 }
 
 async fn workout_set_create(
@@ -1094,10 +1159,9 @@ async fn workout_set_create(
         }
         e => ontogen_app_error(e),
     })?;
-    let resource = workout_set_as_resource(&entity, collection);
-    let location = resource.links().self_link().to_owned();
-    let links = Links::new(location.as_str());
-    Ok(response::created(&location, &Document::new(resource, links)))
+    let document = Document::resource(workout_set_as_resource(&entity, collection), &CanonicalQuery::new());
+    let location = document.data().and_then(ResourceObject::links).map(Links::self_link);
+    Ok(response::created(location, &document))
 }
 
 async fn workout_set_update(
@@ -1120,9 +1184,7 @@ async fn workout_set_update(
     workout_set_check_linked(&ontogen_state, &linked).await?;
     let entity =
         workout_set::update(&ontogen_store, workout_set_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
-    let resource = workout_set_as_resource(&entity, collection);
-    let links = Links::new(resource.links().self_link());
-    Ok(response::ok(&Document::new(resource, links)))
+    Ok(response::ok(&Document::resource(workout_set_as_resource(&entity, collection), &CanonicalQuery::new())))
 }
 
 async fn workout_set_delete(

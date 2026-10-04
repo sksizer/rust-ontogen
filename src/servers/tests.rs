@@ -5992,18 +5992,19 @@ fn a_resource_module_is_served_as_jsonapi() {
     // A handler with no body extracts its path directly.
     assert!(http.contains("Path(id): Path<LookupKey>,\n    _: Query<NoParams>,\n) -> Result<Response, ErrorObject>"));
 
-    // Documents and links come from the runtime crate.
-    assert!(
-        flat.contains(&compact(
-            "let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);"
-        ))
-    );
-    // An unfiltered list accepts no `filter[…]`, so its links carry none.
-    assert!(!flat.contains("link_query"), "{http}");
+    // Documents and links come from the runtime crate. An unfiltered list
+    // accepts no `filter[…]`, so its links repeat only `include`.
+    assert!(flat.contains(&compact("let link_query = query.link_query(include.as_deref())?;")));
+    assert!(flat.contains(&compact("let links = pagination_links(collection, &link_query, offset, limit, total);")));
     assert!(flat.contains(&compact("with_meta(PageMeta { total, limit, offset })")));
     assert!(flat.contains(&compact("let (offset, limit) = page(&query, 20, 100)?;")));
     assert!(flat.contains(&compact("task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset)))")));
-    assert!(flat.contains(&compact("Ok(response::created(&location, &Document::new(resource, links)))")));
+    // `Location` is the created resource's `links.self` (§8.2).
+    assert!(flat.contains(&compact(
+        "let document = Document::resource(task_as_resource(&entity, collection), &CanonicalQuery::new()); \
+         let location = document.data().and_then(ResourceObject::links).map(Links::self_link); \
+         Ok(response::created(location, &document))"
+    )));
     assert!(flat.contains(&compact("Ok(response::no_content())")));
     assert!(flat.contains(&compact("ontogen_core::id::validate_id(id).map_err(|e| e.reason)")));
 
@@ -6944,11 +6945,13 @@ fn a_filtered_resource_list_reads_its_filter_from_the_filter_family() {
             "_: AcceptGuard, query: Query<OntogenTagListFilterParams>, ) -> Result<Response, ErrorObject> {",
             "let ontogen_filter: ListTagsQuery = query.filter()?;",
             "refuse_sort(&query, \"tags\")?;",
-            "refuse_include(&query, \"tags\")?;",
-            "let link_query = query.link_query()?;",
+            "let include = query.include_paths(\"tags\", &[], &[])?;",
+            "let link_query = query.link_query(include.as_deref())?;",
             "let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;",
             "let items = tag::list(&ontogen_store, ontogen_filter).await.map_err(ontogen_app_error)?;",
-            "Ok(response::ok(&Document::new(data, Links::new(link_query.href(collection)))))",
+            "let mut document = Document::new(data, Links::new(link_query.href(collection)));",
+            "if include.is_some() { document = document.with_included(Vec::new()); }",
+            "Ok(response::ok(&document))",
         ],
     );
     assert!(!list.contains("count("), "an unpaginated list has no total:\n{list}");
@@ -6984,9 +6987,9 @@ fn a_paginated_filtered_resource_list_reads_struct_then_bare_filters_in_byte_ord
             "let ontogen_filter_owner = query.required_filter_member::<String>(\"owner\")?;",
             "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
             "refuse_sort(&query, \"epics\")?;",
-            "refuse_include(&query, \"epics\")?;",
+            "let include = query.include_paths(\"epics\", &[], &[])?;",
             "let (offset, limit) = page(&query, 20, 100)?;",
-            "let link_query = query.link_query()?;",
+            "let link_query = query.link_query(include.as_deref())?;",
             "let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;",
             "let items = epic::list(&ontogen_store, ontogen_filter.clone(), ontogen_filter_title.as_deref(), \
              &ontogen_filter_owner, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;",
@@ -6994,7 +6997,8 @@ fn a_paginated_filtered_resource_list_reads_struct_then_bare_filters_in_byte_ord
              &ontogen_filter_owner).await.map_err(ontogen_app_error)?;",
             "let collection = \"/api/epics\";",
             "let links = pagination_links(collection, &link_query, offset, limit, total);",
-            "Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))",
+            "let mut document = Document::new(data, links).with_meta(PageMeta { total, limit, offset });",
+            "Ok(response::ok(&document))",
         ],
     );
     // An unfiltered list beside it keeps its shared spec.
@@ -7026,8 +7030,9 @@ fn a_scoped_filtered_resource_list_reads_its_filter_as_the_unscoped_one_does() {
             "let ontogen_filter_owner = query.required_filter_member::<String>(\"owner\")?;",
             "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
             "refuse_sort(&query, \"epics\")?;",
+            "let include = query.include_paths(\"epics\", &[], &[])?;",
             "let (offset, limit) = page(&query, 20, 100)?;",
-            "let link_query = query.link_query()?;",
+            "let link_query = query.link_query(include.as_deref())?;",
             "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;",
             "epic::list(&ontogen_store, ontogen_filter.clone(), ontogen_filter_title.as_deref(), &ontogen_filter_owner,",
             "epic::count(&ontogen_store, ontogen_filter, ontogen_filter_title.as_deref(), &ontogen_filter_owner)",
@@ -7046,7 +7051,7 @@ fn a_scoped_filtered_resource_list_reads_its_filter_as_the_unscoped_one_does() {
 fn a_resource_list_filter_may_be_named_like_a_handler_binding() {
     let tmp = tempfile::tempdir().unwrap();
     let filter = "query: Option<&str>, items: Option<u32>, collection: &str, links: Option<bool>, total: String, \
-                  link_query: u64";
+                  link_query: u64, include: Option<u32>, document: Option<bool>";
     let http = generate_http(tmp.path(), filtered_tag_fixture(tmp.path(), filter, true));
 
     let bound = handler_bindings(&http, "tag_list");
@@ -7054,24 +7059,28 @@ fn a_resource_list_filter_may_be_named_like_a_handler_binding() {
     unique.sort();
     unique.dedup();
     assert_eq!(unique.len(), bound.len(), "tag_list binds a name twice: {bound:?}");
-    for name in ["query", "items", "collection", "links", "total", "link_query"] {
+    for name in ["query", "items", "collection", "links", "total", "link_query", "include", "document"] {
         assert!(bound.contains(&format!("ontogen_filter_{name}")), "{name}: {bound:?}");
     }
-    assert!(http.contains("filter: &[\"collection\", \"items\", \"link_query\", \"links\", \"query\", \"total\"],"));
+    assert!(http.contains(
+        "filter: &[\"collection\", \"document\", \"include\", \"items\", \"link_query\", \"links\", \"query\", \"total\"],"
+    ));
     assert!(!http.contains("filter_fields"), "no struct, no member probe:\n{http}");
     let list = handler_body(&http, "tag_list");
     assert!(
         list.contains(&compact(
             "tag::list(&ontogen_store, ontogen_filter_query.as_deref(), ontogen_filter_items, \
              &ontogen_filter_collection, ontogen_filter_links, ontogen_filter_total.clone(), \
-             ontogen_filter_link_query, Some(u64::from(limit)), Some(u64::from(offset)))"
+             ontogen_filter_link_query, ontogen_filter_include, ontogen_filter_document, Some(u64::from(limit)), \
+             Some(u64::from(offset)))"
         )),
         "{list}"
     );
     assert!(
         list.contains(&compact(
             "tag::count(&ontogen_store, ontogen_filter_query.as_deref(), ontogen_filter_items, \
-             &ontogen_filter_collection, ontogen_filter_links, ontogen_filter_total, ontogen_filter_link_query)"
+             &ontogen_filter_collection, ontogen_filter_links, ontogen_filter_total, ontogen_filter_link_query, \
+             ontogen_filter_include, ontogen_filter_document)"
         )),
         "{list}"
     );
@@ -7515,8 +7524,13 @@ fn an_entity_only_events_carry_still_gets_its_resource_builder() {
     let http = generate_http(tmp.path(), config);
 
     assert!(http.contains("struct TaskResourceAttributes<'a>(&'a Task);"), "{http}");
-    assert!(http.contains("fn task_as_resource<'a>(entity: &'a Task, collection: &str)"), "{http}");
+    // No module serves `get_by_id` for it, so it has no links to leave out.
+    assert!(http.contains("fn task_as_resource<'a>(entity: &'a Task) -> ResourceObject<"), "{http}");
+    assert!(
+        http.contains("ResourceObject::without_links(\"tasks\", entity.id.clone(), TaskResourceAttributes(entity))")
+    );
     assert!(http.contains("fn ontogen_task_frame_data(event: Event, entity: &Task)"), "{http}");
+    assert!(http.contains("event.json_data(task_as_resource(entity).into_unlinked())"), "{http}");
     assert!(!http.contains("task_lookup_key"), "no handler serves `tasks`:\n{http}");
     assert!(!http.contains("ListParams"), "no resource route, no resource query specs:\n{http}");
 }
@@ -8524,4 +8538,359 @@ fn an_input_is_a_type_named_for_one() {
     }
     assert!(param("p", "Option<u32>").is_option());
     assert!(!param("p", "u32").is_option());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JSON:API `include` (wire contract §7.5) and resources without `get_by_id`
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// [`resource_fixture`] with `module.rs` rewritten by `edit`, line by line:
+/// `None` drops the line.
+fn edited_resource_fixture(root: &std::path::Path, module: &str, edit: impl Fn(&str) -> Option<String>) -> Config {
+    let config = resource_fixture(root, true);
+    let path = config.api_dir.join(format!("{module}.rs"));
+    let source: String =
+        std::fs::read_to_string(&path).unwrap().lines().filter_map(edit).map(|l| format!("{l}\n")).collect();
+    write_synthetic_api(&config.api_dir, &format!("{module}.rs"), &source);
+    config
+}
+
+/// The emitted fn `name`, compacted.
+fn emitted_fn(http: &str, name: &str) -> String {
+    let code = &http[http.find(&format!("fn {name}")).unwrap_or_else(|| panic!("no fn {name} in:\n{http}"))..];
+    compact(&code[..code.find("\n}\n").unwrap()])
+}
+
+/// A list and a get read `include` after `sort` and before the page, ahead
+/// of the store (§13.2 step 5), repeat it in their links, and answer
+/// `included` when the request carried it. Every flavour of list does.
+#[test]
+fn a_list_and_a_get_read_include_in_the_contract_order() {
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let http = generate_http(tmp.path(), ops_fixture(tmp.path(), scoped));
+        let (suffix, scope) = if scoped { ("_scoped", "&ontogen_scope, ") } else { ("", "") };
+        let include = "let include = query.include_paths(\"tasks\", &[\"epic\", \"tags\"], &[\"labels\"])?;";
+        let open = if scoped { "ontogen_state.store_for(&ontogen_scope)" } else { "ontogen_state.store().await" };
+        assert_in_order(
+            "task_list",
+            &handler_body(&http, &format!("task_list{suffix}")),
+            &[
+                "refuse_sort(&query, \"tasks\")?;",
+                include,
+                "let (offset, limit) = page(&query, 20, 100)?;",
+                "let link_query = query.link_query(include.as_deref())?;",
+                open,
+                "let links = pagination_links(collection, &link_query, offset, limit, total);",
+                "let mut document = Document::new(data, links).with_meta(PageMeta { total, limit, offset });",
+                &format!(
+                    "if let Some(paths) = &include {{ document = document.with_included(ontogen_task_included{suffix}(\
+                     &ontogen_state, {scope}&items, paths).await?); }}"
+                ),
+                "Ok(response::ok(&document))",
+            ],
+        );
+        assert_in_order(
+            "task_get_by_id",
+            &handler_body(&http, &format!("task_get_by_id{suffix}")),
+            &[
+                "query: Query<GetParams>",
+                include,
+                "let link_query = query.link_query(include.as_deref())?;",
+                open,
+                "let entity = task::get_by_id(&ontogen_store, task_lookup_key(&id)?)",
+                "let mut document = Document::resource(task_as_resource(&entity, collection), &link_query);",
+                &format!(
+                    "if let Some(paths) = &include {{ document = document.with_included(ontogen_task_included{suffix}(\
+                     &ontogen_state, {scope}std::slice::from_ref(&entity), paths).await?); }}"
+                ),
+                "Ok(response::ok(&document))",
+            ],
+        );
+        // A filtered list reads `include` after its filter, and a type with
+        // nothing to include still answers `include=` with `included: []`.
+        assert_in_order(
+            "epic_list",
+            &handler_body(&http, &format!("epic_list{suffix}")),
+            &[
+                "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
+                "refuse_sort(&query, \"epics\")?;",
+                "let include = query.include_paths(\"epics\", &[], &[])?;",
+                "let (offset, limit) = page(&query, 20, 100)?;",
+                "let link_query = query.link_query(include.as_deref())?;",
+                "if include.is_some() { document = document.with_included(Vec::new()); }",
+            ],
+        );
+        assert!(!http.contains("ontogen_epic_included"), "nothing to include, no helper:\n{http}");
+        assert!(!http.contains("refuse_include"), "{http}");
+    }
+}
+
+/// An unpaginated list repeats `include` in its only link.
+#[test]
+fn an_unpaginated_list_repeats_include_in_its_self_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = resource_fixture(tmp.path(), true);
+    config.pagination = None;
+    for module in ["task", "epic", "tag"] {
+        write_synthetic_api(&config.api_dir, &format!("{module}.rs"), &crud_module_source(module, "Store"));
+    }
+    let http = generate_http(tmp.path(), config);
+    assert_in_order(
+        "task_list",
+        &handler_body(&http, "task_list"),
+        &[
+            "query: Query<ListParams>",
+            "let include = query.include_paths(\"tasks\", &[\"epic\", \"tags\"], &[])?;",
+            "let link_query = query.link_query(include.as_deref())?;",
+            "let items = task::list(&ontogen_store).await",
+            "let mut document = Document::new(data, Links::new(link_query.href(collection)));",
+            "document.with_included(ontogen_task_included(&ontogen_state, &items, paths).await?);",
+        ],
+    );
+}
+
+/// The include helper fetches each path's resources with the target's
+/// `get_by_id`, through the `Fetch` helper the related links use, and
+/// builds each as the target's own resource object.
+#[test]
+fn the_include_helper_reads_each_path_through_its_targets_get_by_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
+    assert_in_order(
+        "ontogen_task_included",
+        &emitted_fn(&http, "ontogen_task_included("),
+        &[
+            "state: &AppState, entities: &[Task], paths: &[&str], ) -> Result<Vec<AnyResource>, ErrorObject> {",
+            "let mut included = Included::new(\"tasks\", entities.iter().map(|entity| entity.id.as_str()));",
+            "for path in paths { match *path {",
+            "\"epic\" => { let ids = included.new_ids(\"epics\", entities.iter().filter_map(|entity| \
+             entity.epic_id.as_deref()));",
+            "let collection = \"/api/epics\";",
+            "for related in ontogen_epic_fetch(state, &ids).await? { included.push(epic_as_resource(&related, \
+             collection))?; }",
+            "\"tags\" => { let ids = included.new_ids(\"tags\", entities.iter().flat_map(|entity| \
+             entity.tags.iter().map(String::as_str)));",
+            "for related in ontogen_tag_fetch(state, &ids).await? { included.push(tag_as_resource(&related, \
+             collection))?; }",
+            "_ => {}",
+            "Ok(included.finish())",
+        ],
+    );
+    // The junction relationship has no arm: it has no linkage to include.
+    assert!(!emitted_fn(&http, "ontogen_task_included(").contains("labels"), "{http}");
+    // One `Fetch` helper per target, shared with the related links.
+    for helper in ["async fn ontogen_epic_fetch(", "async fn ontogen_tag_fetch("] {
+        assert_eq!(http.matches(helper).count(), 1, "{helper}:\n{http}");
+    }
+    // The scoped helper reads under the prefix and links there.
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), true));
+    assert_in_order(
+        "ontogen_task_included_scoped",
+        &emitted_fn(&http, "ontogen_task_included_scoped("),
+        &[
+            "state: &AppState, ontogen_scope: &uuid::Uuid, entities: &[Task], paths: &[&str])",
+            "let collection = &format!(\"/api/projects/{}/epics\", encode_path_segment(&ontogen_scope.to_string()));",
+            "for related in ontogen_epic_fetch_scoped(state, ontogen_scope, &ids).await? {",
+        ],
+    );
+    assert!(!http.contains("async fn ontogen_task_included("), "no unscoped handler includes:\n{http}");
+    assert_eq!(http.matches("async fn ontogen_epic_fetch_scoped(").count(), 1, "{http}");
+}
+
+/// Under a route prefix, `task`'s handlers sit in one scope and `epic`'s
+/// `get_by_id` takes the store, so it is read under the prefix, while
+/// `tag`'s takes the state and is read outside it. `task` serves `list`,
+/// and `get_by_id` and the writes when `serves_get`.
+fn mixed_scope_fixture(root: &std::path::Path, task_takes_store: bool, serves_get: bool) -> Config {
+    let mut config = edited_resource_fixture(root, "task", |line| {
+        let keep = serves_get || line.contains("fn list(") || line.contains("fn count(");
+        let line = if task_takes_store { line.to_string() } else { line.replace("store: &Store", "state: &AppState") };
+        keep.then_some(line)
+    });
+    let tag = app_error_crud_source("tag").replace("store: &Store", "state: &AppState");
+    write_synthetic_api(&config.api_dir, "tag.rs", &tag);
+    config.route_prefix = test_config_with_prefix(PathBuf::new()).route_prefix;
+    config
+}
+
+/// An unscoped handler cannot include a type read under the prefix: it
+/// cannot open that store, and the resource's links would name routes
+/// served only under the prefix. Including it is `invalid_include_path`,
+/// not a build error; the type stays named in the detail.
+#[test]
+fn an_unscoped_list_cannot_include_a_type_read_under_the_prefix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), mixed_scope_fixture(tmp.path(), false, false));
+    let list = handler_body(&http, "task_list");
+    assert!(
+        list.contains(&compact("let include = query.include_paths(\"tasks\", &[\"tags\"], &[\"epic\"])?;")),
+        "{list}"
+    );
+    assert!(
+        list.contains(&compact("document.with_included(ontogen_task_included(&ontogen_state, &items, paths).await?);")),
+        "{list}"
+    );
+    let helper = emitted_fn(&http, "ontogen_task_included(");
+    assert!(helper.contains(&compact("state: &AppState, entities: &[Task], paths: &[&str]")), "{helper}");
+    assert!(!helper.contains("\"epic\"") && !helper.contains("ontogen_scope"), "{helper}");
+    assert!(helper.contains(&compact("let collection = \"/api/tags\";")), "{helper}");
+    // A lone path is compared rather than matched.
+    assert!(helper.contains(&compact("for path in paths { if *path == \"tags\" {")), "{helper}");
+    assert_eq!(http.matches("async fn ontogen_tag_fetch(").count(), 1, "{http}");
+    assert!(!http.contains("fn ontogen_epic_fetch"), "no handler reads epics through a fetch:\n{http}");
+}
+
+/// A scoped handler includes a type read outside the prefix with the state,
+/// at its unscoped collection, and one read under it with the scope.
+#[test]
+fn a_scoped_handler_includes_types_read_on_either_side_of_the_prefix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), mixed_scope_fixture(tmp.path(), true, true));
+    assert!(
+        handler_body(&http, "task_get_by_id_scoped")
+            .contains(&compact("let include = query.include_paths(\"tasks\", &[\"epic\", \"tags\"], &[])?;"))
+    );
+    assert_in_order(
+        "ontogen_task_included_scoped",
+        &emitted_fn(&http, "ontogen_task_included_scoped("),
+        &[
+            "state: &AppState, ontogen_scope: &uuid::Uuid, entities: &[Task], paths: &[&str])",
+            "\"epic\" =>",
+            "let collection = &format!(\"/api/projects/{}/epics\", encode_path_segment(&ontogen_scope.to_string()));",
+            "for related in ontogen_epic_fetch_scoped(state, ontogen_scope, &ids).await? {",
+            "\"tags\" =>",
+            "let collection = \"/api/tags\";",
+            "for related in ontogen_tag_fetch(state, &ids).await? {",
+        ],
+    );
+    // A helper that reads nothing under the prefix takes no scope.
+    let tmp = tempfile::tempdir().unwrap();
+    let config = mixed_scope_fixture(tmp.path(), true, true);
+    let epic = app_error_crud_source("epic").replace("store: &Store", "state: &AppState");
+    write_synthetic_api(&config.api_dir, "epic.rs", &epic);
+    let http = generate_http(tmp.path(), config);
+    assert!(
+        emitted_fn(&http, "ontogen_task_included_scoped(")
+            .contains(&compact("(state: &AppState, entities: &[Task], paths: &[&str])")),
+        "{http}"
+    );
+    assert!(
+        handler_body(&http, "task_list_scoped")
+            .contains(&compact("ontogen_task_included_scoped(&ontogen_state, &items, paths).await?")),
+        "{http}"
+    );
+}
+
+/// A resource module that serves no `get_by_id` names no URL for its
+/// resources: they have no `links`, a create answers `201` without
+/// `Location`, and a create or update document has no top-level links. Its
+/// list keeps its links, since the list itself serves them, and it can
+/// still include the types it links.
+#[test]
+fn without_get_by_id_a_resource_has_no_links_and_no_location() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = edited_resource_fixture(tmp.path(), "task", |l| (!l.contains("fn get_by_id(")).then(|| l.to_string()));
+    let http = generate_http(tmp.path(), config);
+
+    let builder = emitted_fn(&http, "task_as_resource");
+    assert!(
+        builder.starts_with(&compact(
+            "fn task_as_resource<'a>(entity: &'a Task) -> ResourceObject<TaskResourceAttributes<'a>> { \
+             ResourceObject::without_links(\"tasks\", entity.id.clone(), TaskResourceAttributes(entity))"
+        )),
+        "{builder}"
+    );
+    assert!(!builder.contains("self_link") && !builder.contains("Links::new"), "{builder}");
+    assert!(builder.contains("Relationship::from_data("), "{builder}");
+
+    // The create reads `Location` from the resource as a linked type's does,
+    // and finds none there.
+    let create = handler_body(&http, "task_create");
+    assert!(
+        create.contains(&compact(
+            "let document = Document::resource(task_as_resource(&entity), &CanonicalQuery::new()); \
+             let location = document.data().and_then(ResourceObject::links).map(Links::self_link); \
+             Ok(response::created(location, &document))"
+        )),
+        "{create}"
+    );
+    assert!(
+        handler_body(&http, "task_update").contains(&compact(
+            "Ok(response::ok(&Document::resource(task_as_resource(&entity), &CanonicalQuery::new())))"
+        )),
+        "{http}"
+    );
+    assert_in_order(
+        "task_list",
+        &handler_body(&http, "task_list"),
+        &[
+            "let include = query.include_paths(\"tasks\", &[\"epic\", \"tags\"], &[])?;",
+            "let data: Vec<_> = items.iter().map(task_as_resource).collect();",
+            "let links = pagination_links(collection, &link_query, offset, limit, total);",
+            "document.with_included(ontogen_task_included(&ontogen_state, &items, paths).await?);",
+        ],
+    );
+    // No relationship route reads the targets, so `include` alone wants
+    // their `Fetch` helpers, each once.
+    for helper in ["async fn ontogen_epic_fetch(", "async fn ontogen_tag_fetch("] {
+        assert_eq!(http.matches(helper).count(), 1, "{helper}:\n{http}");
+    }
+    assert!(!http.contains("task_get_by_id"), "{http}");
+
+    // The types that serve `get_by_id` are unchanged.
+    assert!(http.contains("fn epic_as_resource<'a>(entity: &'a Epic, collection: &str)"), "{http}");
+    let epic_create = handler_body(&http, "epic_create");
+    assert!(
+        epic_create.contains(&compact(
+            "let document = Document::resource(epic_as_resource(&entity, collection), &CanonicalQuery::new()); \
+             let location = document.data().and_then(ResourceObject::links).map(Links::self_link); \
+             Ok(response::created(location, &document))"
+        )),
+        "{epic_create}"
+    );
+}
+
+/// A prefix typed `String` by its full path is borrowed as `&str` like the
+/// bare name: helpers take `ontogen_scope: &str` and pass it to
+/// `encode_path_segment` as it is, while a handler, which owns the value
+/// `Path` read, formats it.
+#[test]
+fn a_string_prefix_named_by_its_path_is_borrowed_as_str() {
+    for ty in ["std::string::String", "::alloc::string::String"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ops_fixture(tmp.path(), true);
+        config.route_prefix.as_mut().unwrap().params[0].rust_type = ty.to_string();
+        let http = generate_http(tmp.path(), config);
+        let flat = compact(&http);
+
+        assert_in_order(
+            "ontogen_task_included_scoped",
+            &emitted_fn(&http, "ontogen_task_included_scoped("),
+            &[
+                "state: &AppState, ontogen_scope: &str, entities: &[Task], paths: &[&str])",
+                "let collection = &format!(\"/api/projects/{}/epics\", encode_path_segment(ontogen_scope));",
+                "for related in ontogen_epic_fetch_scoped(state, ontogen_scope, &ids).await? {",
+            ],
+        );
+        for helper in [
+            "ontogen_epic_fetch_scoped(state: &AppState, ontogen_scope: &str, ids: &[String])",
+            "ontogen_task_read_scoped(state: &AppState, ontogen_scope: &str, id: &LookupKey)",
+            "task_check_linked_scoped(state: &AppState, ontogen_scope: &str, linked: &TaskLinkedIds)",
+        ] {
+            assert!(flat.contains(&compact(&format!("async fn {helper}"))), "{helper}:\n{http}");
+        }
+        assert!(!http.contains(&format!("&{ty}")), "no helper borrows the `String` itself:\n{http}");
+        assert!(!http.contains("encode_path_segment(&ontogen_scope)"), "{http}");
+
+        let create = handler_body(&http, "task_create_scoped");
+        assert!(create.contains(&compact(&format!("path_params: Result<Path<{ty}>, ErrorObject>,"))), "{create}");
+        assert!(
+            create.contains(&compact(
+                "let collection = &format!(\"/api/projects/{}/tasks\", encode_path_segment(&ontogen_scope.to_string()));"
+            )),
+            "{create}"
+        );
+    }
 }
