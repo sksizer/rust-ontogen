@@ -221,7 +221,7 @@ Parameterless sync event ops also keep the older `onX(callback)` methods, which 
 
 ### Route prefix in client code
 
-When `route_prefix` is configured, the generated client functions accept an optional project ID parameter:
+Route prefixes apply to the `HttpTauriIpcSplit` transport only; the `HttpTs` client does not support them, so against a server generated with a route prefix its calls do not reach the scoped routes. When `route_prefix` is configured, the split transport's functions accept an optional project ID parameter:
 
 ```typescript
 export async function taskList(projectId?: string): Promise<Task[]> {
