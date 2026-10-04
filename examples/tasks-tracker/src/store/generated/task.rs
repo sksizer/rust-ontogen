@@ -18,6 +18,8 @@ pub struct TaskUpdate {
     pub created: Option<String>,
     pub epic_id: Option<Option<String>>,
     pub tags: Option<Vec<String>>,
+    pub parent_id: Option<Option<String>>,
+    pub subtasks: Option<Vec<String>>,
     pub body: Option<String>,
 }
 
@@ -38,6 +40,12 @@ impl TaskUpdate {
         if let Some(tags) = &self.tags {
             task.tags.clone_from(tags);
         }
+        if let Some(parent_id) = &self.parent_id {
+            task.parent_id.clone_from(parent_id);
+        }
+        if let Some(subtasks) = &self.subtasks {
+            task.subtasks.clone_from(subtasks);
+        }
         if let Some(body) = &self.body {
             task.body.clone_from(body);
         }
@@ -52,6 +60,8 @@ impl From<crate::schema::UpdateTaskInput> for TaskUpdate {
             created: input.created,
             epic_id: input.epic_id.map(markdown_store::wikilink::strip_opt),
             tags: input.tags.map(markdown_store::wikilink::strip_vec),
+            parent_id: input.parent_id.map(markdown_store::wikilink::strip_opt),
+            subtasks: input.subtasks.map(markdown_store::wikilink::strip_vec),
             body: input.body,
         }
     }
@@ -66,6 +76,8 @@ impl From<crate::schema::CreateTaskInput> for Task {
             created: input.created,
             epic_id: markdown_store::wikilink::strip_opt(input.epic_id),
             tags: markdown_store::wikilink::strip_vec(input.tags),
+            parent_id: markdown_store::wikilink::strip_opt(input.parent_id),
+            subtasks: markdown_store::wikilink::strip_vec(input.subtasks),
             body: input.body,
         }
     }
@@ -108,6 +120,14 @@ impl Store {
     pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
         hooks::before_create(self, &mut task).await?;
 
+        let subtasks = task.subtasks.clone();
+
+        for child_id in &subtasks {
+            if !self.task_exists(child_id).await? {
+                return Err(AppError::TaskNotFound(child_id.clone()));
+            }
+        }
+
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&TaskFrontmatter::from_task(&task), TASK_FM_FIELDS).map_err(AppError::from)?;
         doc.set_body(task.body.clone());
@@ -123,6 +143,10 @@ impl Store {
             Err(e) => return Err(AppError::from(e)),
         };
 
+        for child_id in &subtasks {
+            self.set_task_parent(child_id, Some(&id)).await?;
+        }
+
         let created = self.get_task(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Task, id);
         hooks::after_create(self, &created).await?;
@@ -132,6 +156,19 @@ impl Store {
     pub async fn update_task(&self, id: &str, updates: TaskUpdate) -> Result<Task, AppError> {
         let current = self.get_task(id).await?;
         hooks::before_update(self, &current, &updates).await?;
+
+        let subtasks_changed = updates.subtasks.is_some();
+
+        for child_id in updates.subtasks.iter().flatten() {
+            if !self.task_exists(child_id).await? {
+                return Err(AppError::TaskNotFound(child_id.clone()));
+            }
+        }
+
+        let subtasks_dropped: Vec<String> = match &updates.subtasks {
+            Some(new_ids) => current.subtasks.iter().filter(|c| !new_ids.contains(c)).cloned().collect(),
+            None => Vec::new(),
+        };
 
         self.vault()
             .entity(TASKS_DIR, TASK_TYPE)
@@ -144,6 +181,15 @@ impl Store {
                 Ok(())
             })
             .map_err(AppError::from)?;
+
+        if subtasks_changed {
+            for child_id in updates.subtasks.iter().flatten() {
+                self.set_task_parent(child_id, Some(id)).await?;
+            }
+            for child_id in &subtasks_dropped {
+                self.set_task_parent(child_id, None).await?;
+            }
+        }
 
         let result = self.get_task(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::Task, id.to_string());
@@ -171,10 +217,36 @@ impl Store {
         &self,
         task: &mut crate::schema::Task,
     ) -> Result<(), crate::schema::AppError> {
-        // many_to_many lists are authoritative in this record's own
-        // frontmatter and were populated at parse time.
-        let _ = &*self;
-        let _ = &*task;
+        let mut subtasks = Vec::new();
+        for (child_id, doc) in self.vault().entity(TASKS_DIR, TASK_TYPE).read_all().map_err(AppError::from)? {
+            if child_id == task.id {
+                continue;
+            }
+            let child: TaskFrontmatter = doc.deserialize().map_err(AppError::from)?;
+            if markdown_store::wikilink::strip_opt(child.parent_id).as_deref() == Some(task.id.as_str()) {
+                subtasks.push(child_id);
+            }
+        }
+        task.subtasks = subtasks;
         Ok(())
+    }
+
+    async fn set_task_parent(&self, child_id: &str, parent_id: Option<&str>) -> Result<(), AppError> {
+        self.vault()
+            .entity(TASKS_DIR, TASK_TYPE)
+            .modify(child_id, |doc| {
+                let mut fm: TaskFrontmatter = doc.deserialize()?;
+                fm.parent_id = parent_id.map(markdown_store::wikilink::encode);
+                doc.merge_serialize(&fm, TASK_FM_FIELDS)
+            })
+            .map_err(AppError::from)
+    }
+
+    async fn task_exists(&self, id: &str) -> Result<bool, AppError> {
+        match self.vault().entity(TASKS_DIR, TASK_TYPE).read_opt(id) {
+            Ok(doc) => Ok(doc.is_some()),
+            Err(markdown_store::Error::InvalidId { .. }) => Ok(false),
+            Err(e) => Err(AppError::from(e)),
+        }
     }
 }

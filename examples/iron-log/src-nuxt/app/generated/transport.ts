@@ -150,8 +150,8 @@ async function httpPatch<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
-async function httpDelete(path: string): Promise<void> {
-  await httpRequest('DELETE', path);
+async function httpDelete(path: string, body?: unknown): Promise<void> {
+  await httpRequest('DELETE', path, body);
 }
 
 /**
@@ -265,12 +265,13 @@ interface JsonApiResourceDocument {
   data: JsonApiResource;
 }
 
-interface JsonApiCollectionDocument {
-  data: JsonApiResource[];
+/** `T` is `JsonApiResourceIdentifier` for a relationship's linkage. */
+interface JsonApiCollectionDocument<T = JsonApiResource> {
+  data: T[];
 }
 
-interface JsonApiPageDocument {
-  data: JsonApiResource[];
+interface JsonApiPageDocument<T = JsonApiResource> {
+  data: T[];
   meta: { total: number; limit: number; offset: number };
 }
 

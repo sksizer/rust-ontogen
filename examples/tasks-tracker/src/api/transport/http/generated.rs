@@ -270,6 +270,22 @@ fn task_as_resource<'a>(entity: &'a Task, collection: &str) -> ResourceObject<Ta
                 Linkage::ToMany(entity.tags.iter().map(|id| ResourceIdentifier::new("tags", id.as_str())).collect()),
             ),
         )
+        .with_relationship(
+            "parent",
+            Relationship::new(
+                Links::new(format!("{self_link}/relationships/parent")).with_related(format!("{self_link}/parent")),
+                Linkage::ToOne(entity.parent_id.as_ref().map(|id| ResourceIdentifier::new("tasks", id.as_str()))),
+            ),
+        )
+        .with_relationship(
+            "subtasks",
+            Relationship::new(
+                Links::new(format!("{self_link}/relationships/subtasks")).with_related(format!("{self_link}/subtasks")),
+                Linkage::ToMany(
+                    entity.subtasks.iter().map(|id| ResourceIdentifier::new("tasks", id.as_str())).collect(),
+                ),
+            ),
+        )
 }
 
 /// The id an `{id}` path segment names.
@@ -283,6 +299,8 @@ fn task_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
 struct TaskLinkedIds {
     epic: Option<LinkedId>,
     tags: Vec<LinkedId>,
+    parent: Option<LinkedId>,
+    subtasks: Vec<LinkedId>,
 }
 
 /// The fields a create or update document for `tasks` sets, named as
@@ -296,7 +314,7 @@ fn task_request_fields(
         attributes,
         "tasks",
         &["title", "status", "created", "body"],
-        &[("epic_id", "epic"), ("tags", "tags")],
+        &[("epic_id", "epic"), ("tags", "tags"), ("parent_id", "parent"), ("subtasks", "subtasks")],
     )?;
     let mut fields = serde_json::Map::new();
     if create {
@@ -307,7 +325,7 @@ fn task_request_fields(
     set_field(&mut fields, "created", request::attribute::<String>(attributes, "created", create)?);
     set_field(&mut fields, "body", request::attribute::<String>(attributes, "body", create)?);
     let relationships = data.relationships()?;
-    request::check_relationship_names(relationships, "tasks", &["epic", "tags"])?;
+    request::check_relationship_names(relationships, "tasks", &["epic", "tags", "parent", "subtasks"])?;
     let mut linked = TaskLinkedIds::default();
     if let Some(rel) = relationships.and_then(|r| r.get("epic")) {
         let id = request::to_one(rel, "/data/relationships/epic", "epics", true)?;
@@ -318,6 +336,16 @@ fn task_request_fields(
         let ids = request::to_many_linked(rel, "/data/relationships/tags", "tags", None)?;
         fields.insert("tags".to_owned(), ids.iter().map(|l| serde_json::Value::String(l.id.clone())).collect());
         linked.tags = ids;
+    }
+    if let Some(rel) = relationships.and_then(|r| r.get("parent")) {
+        let id = request::to_one(rel, "/data/relationships/parent", "tasks", true)?;
+        fields.insert("parent_id".to_owned(), id.clone().map_or(serde_json::Value::Null, serde_json::Value::String));
+        linked.parent = id.map(|id| LinkedId { id, pointer: "/data/relationships/parent/data".to_owned() });
+    }
+    if let Some(rel) = relationships.and_then(|r| r.get("subtasks")) {
+        let ids = request::to_many_linked(rel, "/data/relationships/subtasks", "tasks", None)?;
+        fields.insert("subtasks".to_owned(), ids.iter().map(|l| serde_json::Value::String(l.id.clone())).collect());
+        linked.subtasks = ids;
     }
     Ok((fields, linked))
 }
@@ -337,6 +365,20 @@ async fn task_check_linked(state: &AppState, linked: &TaskLinkedIds) -> Result<(
         match tag::get_by_id(&store, &linked.id).await {
             Ok(_) => {}
             Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    if let Some(linked) = &linked.parent {
+        match task::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    for linked in &linked.subtasks {
+        match task::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
             Err(e) => return Err(ontogen_app_error(e)),
         }
     }
@@ -415,6 +457,34 @@ async fn ontogen_tag_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(),
         match tag::get_by_id(&store, &linked.id).await {
             Ok(_) => {}
             Err(crate::schema::AppError::TagNotFound(..)) => return Err(linked.not_found("tags")),
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(())
+}
+
+/// The `tasks` resources `ids` name, in order, without the ids that
+/// name none.
+async fn ontogen_task_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Task>, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    let mut found = Vec::with_capacity(ids.len());
+    for id in ids {
+        match task::get_by_id(&store, id).await {
+            Ok(entity) => found.push(entity),
+            Err(crate::schema::AppError::TaskNotFound(..)) => {}
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(found)
+}
+
+/// Checks that a `tasks` resource exists for each of `ids`, in order.
+async fn ontogen_task_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    for linked in ids {
+        match task::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::TaskNotFound(..)) => return Err(linked.not_found("tasks")),
             Err(e) => return Err(ontogen_app_error(e)),
         }
     }
@@ -761,6 +831,35 @@ async fn ontogen_task_relationship_get(
             );
             Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
         }
+        Some("parent") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            let ontogen_base = format!("{ontogen_collection}/{}", encode_path_segment(&ontogen_entity.id));
+            let ontogen_links = Links::new(format!("{ontogen_base}/relationships/parent"))
+                .with_related(format!("{ontogen_base}/parent"));
+            let ontogen_data = Linkage::ToOne(
+                ontogen_entity
+                    .parent_id
+                    .as_ref()
+                    .map(|ontogen_member| ResourceIdentifier::new("tasks", ontogen_member.as_str())),
+            );
+            Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
+        }
+        Some("subtasks") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            let ontogen_base = format!("{ontogen_collection}/{}", encode_path_segment(&ontogen_entity.id));
+            let ontogen_links = Links::new(format!("{ontogen_base}/relationships/subtasks"))
+                .with_related(format!("{ontogen_base}/subtasks"));
+            let ontogen_data = Linkage::ToMany(
+                ontogen_entity
+                    .subtasks
+                    .iter()
+                    .map(|ontogen_member| ResourceIdentifier::new("tasks", ontogen_member.as_str()))
+                    .collect(),
+            );
+            Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
+        }
         _ => Err(relationship_not_found("tasks", &rel)),
     }
 }
@@ -806,6 +905,38 @@ async fn ontogen_task_relationship_patch(
             .await?;
             Ok(response::no_content())
         }
+        Some("parent") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked = request::to_one(&request::parse_relationship(&ontogen_bytes)?, "", "tasks", true)?
+                .map(|ontogen_member| LinkedId { id: ontogen_member, pointer: "/data".to_owned() });
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            ontogen_task_check_ids(&ontogen_state, ontogen_linked.as_slice()).await?;
+            ontogen_task_write_field(
+                &ontogen_state,
+                &ontogen_entity.id,
+                "parent_id",
+                ontogen_linked.map(|ontogen_member| ontogen_member.id).into(),
+            )
+            .await?;
+            Ok(response::no_content())
+        }
+        Some("subtasks") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tasks", None)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            ontogen_task_check_ids(&ontogen_state, &ontogen_linked).await?;
+            ontogen_task_write_field(
+                &ontogen_state,
+                &ontogen_entity.id,
+                "subtasks",
+                ontogen_linked.into_iter().map(|ontogen_member| ontogen_member.id).collect(),
+            )
+            .await?;
+            Ok(response::no_content())
+        }
         _ => Err(relationship_not_found("tasks", &rel)),
     }
 }
@@ -832,6 +963,22 @@ async fn ontogen_task_relationship_post(
             ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;
             if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.tags, &ontogen_linked) {
                 ontogen_task_write_field(&ontogen_state, &ontogen_entity.id, "tags", ontogen_ids.into()).await?;
+            }
+            Ok(response::no_content())
+        }
+        Some("parent") => {
+            ontogen_query?;
+            Err(relationship_update_unsupported("tasks", "parent", "POST"))
+        }
+        Some("subtasks") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tasks", Some(1))?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            ontogen_task_check_ids(&ontogen_state, &ontogen_linked).await?;
+            if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.subtasks, &ontogen_linked) {
+                ontogen_task_write_field(&ontogen_state, &ontogen_entity.id, "subtasks", ontogen_ids.into()).await?;
             }
             Ok(response::no_content())
         }
@@ -863,6 +1010,21 @@ async fn ontogen_task_relationship_delete(
             }
             Ok(response::no_content())
         }
+        Some("parent") => {
+            ontogen_query?;
+            Err(relationship_update_unsupported("tasks", "parent", "DELETE"))
+        }
+        Some("subtasks") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tasks", Some(1))?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            if let Some(ontogen_ids) = ontogen_removed(&ontogen_entity.subtasks, &ontogen_linked) {
+                ontogen_task_write_field(&ontogen_state, &ontogen_entity.id, "subtasks", ontogen_ids.into()).await?;
+            }
+            Ok(response::no_content())
+        }
         _ => Err(relationship_not_found("tasks", &rel)),
     }
 }
@@ -891,6 +1053,24 @@ async fn ontogen_task_related_get(
             let ontogen_data: Vec<_> =
                 ontogen_related.iter().map(|ontogen_member| tag_as_resource(ontogen_member, "/api/tags")).collect();
             let ontogen_self = format!("{ontogen_collection}/{}/tags", encode_path_segment(&ontogen_entity.id));
+            Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
+        }
+        Some("parent") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            let ontogen_related = ontogen_task_fetch(&ontogen_state, ontogen_entity.parent_id.as_slice()).await?;
+            let ontogen_data =
+                ontogen_related.first().map(|ontogen_member| task_as_resource(ontogen_member, "/api/tasks"));
+            let ontogen_self = format!("{ontogen_collection}/{}/parent", encode_path_segment(&ontogen_entity.id));
+            Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
+        }
+        Some("subtasks") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
+            let ontogen_related = ontogen_task_fetch(&ontogen_state, &ontogen_entity.subtasks).await?;
+            let ontogen_data: Vec<_> =
+                ontogen_related.iter().map(|ontogen_member| task_as_resource(ontogen_member, "/api/tasks")).collect();
+            let ontogen_self = format!("{ontogen_collection}/{}/subtasks", encode_path_segment(&ontogen_entity.id));
             Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
         }
         _ => Err(relationship_not_found("tasks", &rel)),
