@@ -596,9 +596,9 @@ async fn task_delete(
     Ok(response::no_content())
 }
 
-struct TaskListFilterParams;
+struct OntogenTaskListFilterParams;
 
-impl RouteQuery for TaskListFilterParams {
+impl RouteQuery for OntogenTaskListFilterParams {
     const SPEC: QuerySpec = QuerySpec {
         filter: &[],
         filter_fields: Some(filter_fields::<ListTasksQuery>),
@@ -612,7 +612,7 @@ impl RouteQuery for TaskListFilterParams {
 async fn task_list(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    query: Query<TaskListFilterParams>,
+    query: Query<OntogenTaskListFilterParams>,
 ) -> Result<Response, ErrorObject> {
     let ontogen_filter: ListTasksQuery = query.filter()?;
     refuse_sort(&query, "tasks")?;
