@@ -441,7 +441,7 @@ fn entityless_crud_route(op: &OpKind) -> Option<(&'static str, &'static [&'stati
 /// The `filter[…]` rules of a `list` (§7.3): at most one `*Query` struct,
 /// taken by value or by `&`, and every other filter argument read from one value.
 fn check_list_filter(m: &ApiModule, f: &ApiFn, resources: &ResourceModel) -> Result<(), String> {
-    let structs: Vec<&Param> = f.filter().iter().filter(|p| p.is_filter_struct()).collect();
+    let structs: Vec<&Param> = f.filter().into_iter().filter(|p| p.is_filter_struct()).collect();
     if let [first, second, ..] = structs.as_slice() {
         return Err(format!(
             "ontogen: `{}::{}` takes two `*Query` filter structs, `{}: {}` and `{}: {}`, but every `filter[…]` \

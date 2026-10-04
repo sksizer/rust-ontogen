@@ -45,7 +45,7 @@ fn markdown_store_emission_matches_note_golden() {
     .expect("gen_markdown_io failed");
 
     ontogen::gen_store(
-        entities,
+        &schema,
         &ontogen::StoreConfig {
             output_dir: tmp.path().join("store"),
             hooks_dir: None,
@@ -105,7 +105,7 @@ fn pilot_committed_generated_trees_match_a_fresh_generation() {
     )
     .expect("gen_markdown_io");
     ontogen::gen_store(
-        entities,
+        &schema,
         &ontogen::StoreConfig {
             output_dir: tmp.path().join("store"),
             hooks_dir: None,

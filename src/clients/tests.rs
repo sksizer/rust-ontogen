@@ -652,7 +652,6 @@ fn a_config_built_from_only_its_required_inputs_is_inert() {
     assert!(config.route_prefix.is_none());
     assert!(config.store_type.is_none() && config.store_import.is_none());
     assert!(config.pagination.is_none());
-    assert!(config.schema_enums.is_empty());
     assert!(config.label_overrides.is_empty());
     assert!(config.pool_extra_roots.is_empty() && config.pool_exclude_paths.is_empty());
     assert!(config.extra_surfaces.is_empty(), "one surface, the primary");
@@ -979,8 +978,9 @@ fn try_generate_jsonapi(
     config.pool_extra_roots.push(filters);
     adjust(&mut config);
     let read = |path: &std::path::Path| fs::read_to_string(path).unwrap();
-    let clients =
-        crate::gen_clients(&entities, Some(&api), &[], &config).map_err(|e| e.to_string()).map(|()| JsonApiClients {
+    let clients = crate::gen_clients(&crate::schema::schema_of(&entities), Some(&api), &[], &config)
+        .map_err(|e| e.to_string())
+        .map(|()| JsonApiClients {
             transport: read(&ts.join("transport.ts")),
             http: read(&ts.join("http.ts")),
             bindings: read(&bindings_path),
@@ -1010,7 +1010,7 @@ fn try_generate_jsonapi(
         extra_surfaces: Vec::new(),
         error_source_dir: None,
     };
-    let servers = crate::gen_servers(&entities, Some(&api), &[], &servers)
+    let servers = crate::gen_servers(&crate::schema::schema_of(&entities), Some(&api), &[], &servers)
         .map_err(|e| e.to_string())
         .map(|_| Servers { http: read(&server_out), ipc: read(&ipc_out) });
     (Some(servers), clients)

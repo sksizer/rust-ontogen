@@ -22,7 +22,9 @@ pub enum Source {
 
 // ── Schema output ───────────────────────────────────────────────────
 
-/// Output from `parse_schema`. The starting point for the pipeline.
+/// Output from `parse_schema`. The starting point for the pipeline. A
+/// caller with no schema passes `SchemaOutput::default()`.
+#[derive(Debug, Clone, Default)]
 pub struct SchemaOutput {
     pub entities: Vec<EntityDef>,
     /// The string enums declared beside the entities.

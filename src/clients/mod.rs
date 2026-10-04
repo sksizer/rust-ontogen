@@ -38,14 +38,13 @@ use std::path::PathBuf;
 
 use crate::CodegenError;
 use crate::ir::{ApiOutput, SchemaOutput};
-use crate::model::EntityDef;
 use crate::resource::ResourceModel;
 use crate::servers::ApiModule;
 use crate::servers::parse;
 
 /// Generate TypeScript client and admin-registry artefacts.
 ///
-/// Mirrors the shape of [`crate::gen_servers`] - takes the schema entities, the parsed
+/// Mirrors the shape of [`crate::gen_servers`] - takes the schema, the parsed
 /// [`ApiOutput`] (or scans the configured surfaces itself, as a fallback), the additional
 /// scan dirs (reserved for future enrichment), and a [`crate::ClientsConfig`].
 ///
@@ -63,12 +62,12 @@ use crate::servers::parse;
 /// formatting failure. (That variant predates the split and remains shared
 /// with the server pipeline.)
 pub fn generate(
-    entities: &[EntityDef],
+    schema: &SchemaOutput,
     _api: Option<&ApiOutput>,
     _scan_dirs: &[PathBuf],
     config: &crate::ClientsConfig,
 ) -> Result<(), CodegenError> {
-    let resources = ResourceModel::build(entities, &config.naming).map_err(CodegenError::Client)?;
+    let resources = ResourceModel::build(&schema.entities, &config.naming).map_err(CodegenError::Client)?;
     // Convert public ClientsConfig → internal Config
     let internal = config::Config {
         api_dir: config.api_dir.clone(),
@@ -85,9 +84,9 @@ pub fn generate(
         route_prefix: config.route_prefix.clone(),
         store_type: config.store_type.clone(),
         store_import: config.store_import.clone(),
-        entities: entities.to_vec(),
+        entities: schema.entities.clone(),
         resources,
-        schema_enums: config.schema_enums.clone(),
+        schema_enums: schema.enums.clone(),
         label_overrides: config.label_overrides.clone(),
         pagination: config.pagination.clone(),
         pool_extra_roots: config.pool_extra_roots.clone(),

@@ -169,7 +169,7 @@ fn generate_store_file_with(entity: &EntityDef, id_strategy: crate::ir::IdStrate
         wikilink_policy: None,
         id_strategy,
     };
-    crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store failed");
+    crate::gen_store(&crate::schema::schema_of(std::slice::from_ref(entity)), &config).expect("gen_store failed");
 
     let snake = to_snake_case(&entity.name);
     read_file(&tmp.path().join(format!("{snake}.rs")))
@@ -388,7 +388,8 @@ fn generate_markdown_store_file_with(entity: &EntityDef, id_strategy: crate::ir:
         wikilink_policy: None,
         id_strategy,
     };
-    crate::gen_store(std::slice::from_ref(entity), &config).expect("gen_store(markdown) failed");
+    crate::gen_store(&crate::schema::schema_of(std::slice::from_ref(entity)), &config)
+        .expect("gen_store(markdown) failed");
 
     let snake = to_snake_case(&entity.name);
     read_file(&tmp.path().join(format!("{snake}.rs")))

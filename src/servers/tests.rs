@@ -39,6 +39,7 @@ fn test_config(api_dir: PathBuf) -> Config {
         pagination: None,
         extra_surfaces: Vec::new(),
         resources: Default::default(),
+        enums: Vec::new(),
         error_map: None,
     }
 }
@@ -3406,6 +3407,7 @@ fn test_e2e_generate_transport_with_real_api() {
         pagination: None,
         extra_surfaces: Vec::new(),
         resources: Default::default(),
+        enums: Vec::new(),
         error_map: None,
     };
 
@@ -8172,13 +8174,13 @@ fn pipelines(
         store_type: Some("Store".to_string()),
         store_import: Some("crate::store::Store".to_string()),
         pagination: None,
-        schema_enums: Vec::new(),
         label_overrides: HashMap::new(),
         pool_extra_roots: Vec::new(),
         pool_exclude_paths: Vec::new(),
         extra_surfaces: Vec::new(),
     };
-    let client = crate::clients::generate(&[], None, &[], &clients).map_err(|e| e.to_string());
+    let client =
+        crate::clients::generate(&crate::ir::SchemaOutput::default(), None, &[], &clients).map_err(|e| e.to_string());
     (server, client)
 }
 
@@ -8513,7 +8515,7 @@ fn a_paginated_count_is_neither_served_nor_called() {
         pagination,
         ..crate::ClientsConfig::new(api_dir, "AppState", "crate::api", "crate::schema", "crate::AppState")
     };
-    crate::gen_clients(&entities, Some(&api), &[], &clients).unwrap();
+    crate::gen_clients(&crate::schema::schema_of(&entities), Some(&api), &[], &clients).unwrap();
     for file in ["transport.ts", "client.ts"] {
         let ts = std::fs::read_to_string(out.join(file)).unwrap();
         assert!(ts.contains("tagList("), "{file}:\n{ts}");

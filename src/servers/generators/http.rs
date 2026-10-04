@@ -1366,7 +1366,7 @@ fn filter_reads(f: &ApiFn, query: &str) -> String {
 /// The arguments a list's filter is passed as, in declaration order, each
 /// as [`filter_arg`] decides.
 fn filter_args(f: &ApiFn, counted: bool) -> Vec<String> {
-    f.filter().iter().map(|p| filter_arg(p, &filter_binding(p), counted)).collect()
+    f.filter().into_iter().map(|p| filter_arg(p, &filter_binding(p), counted)).collect()
 }
 
 /// How a generated fn binds the route prefix's value as [`SCOPE`].
@@ -1841,7 +1841,8 @@ fn op_handler(
     let args: Vec<String> = if classify_op(m, f) == OpKind::List {
         // A list's filter, then its page: from the store when it pages,
         // and none when it does not.
-        let page = f.params[f.filter().len()..]
+        let page = f
+            .page()
             .iter()
             .map(|p| if store_paged { format!("Some(u64::from(ontogen_{}))", p.name) } else { "None".to_string() });
         [first_arg.clone(), filter_args(f, store_paged), page.collect()].concat()

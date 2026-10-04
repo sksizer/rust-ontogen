@@ -29,7 +29,7 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        let result = store::generate(&entities, &config);
+        let result = store::generate(&crate::schema::schema_of(&entities), &config);
         assert!(result.is_ok(), "gen_store failed: {:?}", result.err());
 
         let output = result.unwrap();
@@ -88,7 +88,7 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        store::generate(std::slice::from_ref(tag), &config).expect("gen_store failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(tag)), &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
@@ -137,7 +137,7 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        store::generate(std::slice::from_ref(tag), &config).expect("gen_store failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(tag)), &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
         assert!(content.contains("use my_crate::domain::Tag;"), "Expected custom schema path import, got:\n{content}");
@@ -173,7 +173,7 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        store::generate(std::slice::from_ref(workout), &config).expect("gen_store failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(workout)), &config).expect("gen_store failed");
 
         let content = std::fs::read_to_string(tmp.path().join("workout.rs")).unwrap();
 
@@ -204,7 +204,8 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        let output = store::generate(std::slice::from_ref(role), &config).expect("gen_store failed");
+        let output =
+            store::generate(&crate::schema::schema_of(std::slice::from_ref(role)), &config).expect("gen_store failed");
 
         let by_name =
             |n: &str| output.methods.iter().find(|m| m.name == n).unwrap_or_else(|| panic!("missing method {n}"));
@@ -263,7 +264,8 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::SlugFromField("name".into()),
         };
 
-        store::generate(std::slice::from_ref(tag), &config).expect("gen_store(markdown) failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(tag)), &config)
+            .expect("gen_store(markdown) failed");
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
         // Lifecycle parity with the SeaORM emission.
@@ -332,7 +334,8 @@ mod tests {
             wikilink_policy: None,
             id_strategy: crate::ir::IdStrategy::Provided,
         };
-        store::generate(std::slice::from_ref(tag), &config).expect("gen_store(markdown) failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(tag)), &config)
+            .expect("gen_store(markdown) failed");
         let content = std::fs::read_to_string(tmp.path().join("tag.rs")).unwrap();
 
         assert!(content.contains("const TAG_TYPE: &str = \"Label\";"), "{content}");
@@ -365,8 +368,8 @@ mod tests {
                     id_strategy: crate::ir::IdStrategy::SlugFromField((*field).into()),
                 };
 
-                let err =
-                    store::generate(std::slice::from_ref(target), &config).expect_err("a bad slug field must fail");
+                let err = store::generate(&crate::schema::schema_of(std::slice::from_ref(target)), &config)
+                    .expect_err("a bad slug field must fail");
                 let msg = format!("{err}");
                 assert!(msg.contains(*needle), "{backend:?}: the error says what is wrong: {msg}");
                 assert!(
@@ -405,7 +408,7 @@ mod tests {
                 wikilink_policy: None,
                 id_strategy: IdStrategy::SlugFromField("name".into()),
             };
-            store::generate(&[tag.clone(), workout.clone(), exercise.clone()], &config)
+            store::generate(&crate::schema::schema_of(&[tag.clone(), workout.clone(), exercise.clone()]), &config)
                 .unwrap_or_else(|e| panic!("{backend:?}: {e}"));
             let read = |file: &str| std::fs::read_to_string(tmp.path().join(file)).unwrap();
             let (tag_code, workout_code, exercise_code) = (read("tag.rs"), read("workout.rs"), read("exercise.rs"));
@@ -452,7 +455,8 @@ mod tests {
                 wikilink_policy: None,
                 id_strategy: IdStrategy::Provided,
             };
-            let err = store::generate(std::slice::from_ref(&workout), &config).expect_err("Workout.name is optional");
+            let err = store::generate(&crate::schema::schema_of(std::slice::from_ref(&workout)), &config)
+                .expect_err("Workout.name is optional");
             let msg = format!("{err}");
             assert!(
                 msg.contains("`#[ontology(entity, id = \"slug(name)\")]` on entity `Workout`")
@@ -489,7 +493,7 @@ mod tests {
             id_strategy: crate::ir::IdStrategy::Provided,
         };
 
-        store::generate(std::slice::from_ref(workout), &config).expect("gen_store failed");
+        store::generate(&crate::schema::schema_of(std::slice::from_ref(workout)), &config).expect("gen_store failed");
         let content = std::fs::read_to_string(tmp.path().join("workout.rs")).unwrap();
 
         assert!(
@@ -531,7 +535,7 @@ mod tests {
                 id_strategy: crate::ir::IdStrategy::Provided,
             };
 
-            let err = store::generate(std::slice::from_ref(&workout), &config)
+            let err = store::generate(&crate::schema::schema_of(std::slice::from_ref(&workout)), &config)
                 .expect_err("a cross-entity has_many must fail");
             let msg = format!("{err}");
             assert!(msg.contains("`Workout.sets`: has_many target `WorkoutSet`"), "{backend:?}: {msg}");

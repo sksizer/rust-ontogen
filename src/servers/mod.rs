@@ -24,8 +24,7 @@ pub use config::ServerGenerator as ServerGeneratorConfig;
 use std::path::PathBuf;
 
 use crate::CodegenError;
-use crate::ir::{ApiOutput, HttpRouteMeta, IpcCommandMeta, McpToolMeta, ParamMeta, ServersOutput};
-use crate::model::EntityDef;
+use crate::ir::{ApiOutput, HttpRouteMeta, IpcCommandMeta, McpToolMeta, ParamMeta, SchemaOutput, ServersOutput};
 use crate::resource::ResourceModel;
 
 /// Generate server transports (Axum / Tauri IPC / MCP).
@@ -37,12 +36,12 @@ use crate::resource::ResourceModel;
 /// [`crate::gen_clients`] entry point; this function no longer touches
 /// the TS surface.
 pub fn generate(
-    entities: &[EntityDef],
+    schema: &SchemaOutput,
     _api: Option<&ApiOutput>,
     _scan_dirs: &[PathBuf],
     config: &crate::ServersConfig,
 ) -> Result<ServersOutput, CodegenError> {
-    let resources = ResourceModel::build(entities, &config.naming).map_err(CodegenError::Server)?;
+    let resources = ResourceModel::build(&schema.entities, &config.naming).map_err(CodegenError::Server)?;
     let error_map = match &config.error_source_dir {
         Some(dir) => error_map::scan(dir).map_err(CodegenError::Server)?,
         None => None,
@@ -64,6 +63,7 @@ pub fn generate(
         pagination: config.pagination.clone(),
         extra_surfaces: config.extra_surfaces.clone(),
         resources,
+        enums: schema.enums.clone(),
         error_map,
     };
 

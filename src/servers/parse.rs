@@ -215,6 +215,30 @@ impl Param {
         let name = ty.rsplit("::").next().unwrap_or(&ty);
         !name.contains(['<', '(', '[']) && name.ends_with("Query")
     }
+
+    /// For an order parameter, `&[OrderBy<F>]`, the last path segment of
+    /// `F` (`TaskSortField`). `OrderBy` and `F` may be path-qualified
+    /// (`&[ontogen_core::order::OrderBy<crate::store::task::TaskSortField>]`).
+    /// The shape is checked on `ty_ast`; the name is sliced from `ty`, its
+    /// normalized form.
+    pub fn order_sort_field(&self) -> Option<&str> {
+        let syn::Type::Reference(reference) = &self.ty_ast else { return None };
+        if reference.mutability.is_some() {
+            return None;
+        }
+        let syn::Type::Slice(slice) = &*reference.elem else { return None };
+        let syn::Type::Path(outer) = &*slice.elem else { return None };
+        let order_by = outer.path.segments.last().filter(|s| outer.qself.is_none() && s.ident == "OrderBy")?;
+        let syn::PathArguments::AngleBracketed(args) = &order_by.arguments else { return None };
+        let mut args = args.args.iter();
+        let (Some(syn::GenericArgument::Type(syn::Type::Path(field))), None) = (args.next(), args.next()) else {
+            return None;
+        };
+        let field_segment = field.path.segments.last().filter(|s| field.qself.is_none() && s.arguments.is_none())?;
+        let ident = field_segment.ident.to_string();
+        let name = self.ty.strip_suffix(">]")?.rsplit([':', '<']).next()?;
+        (name == ident).then_some(name)
+    }
 }
 
 /// An event function: returns `broadcast::Receiver<T>` or
@@ -377,22 +401,48 @@ impl ApiFn {
         self.name == "count" && !self.is_stateless
     }
 
-    /// This function's parameters other than the page, as `name: type` — the
-    /// filter a paginated `list` applies and its `count` must apply too.
+    /// The page parameters ([`PAGE_PARAMS`]) when the fn takes a page, else
+    /// none.
+    pub fn page(&self) -> &[Param] {
+        let n = self.params.len();
+        if self.takes_page() { &self.params[n - PAGE_PARAMS.len()..] } else { &[] }
+    }
+
+    /// The parameter a `list` takes its order in: the first whose type is
+    /// `&[OrderBy<F>]` ([`Param::order_sort_field`]), whatever its name.
+    pub fn order_param(&self) -> Option<&Param> {
+        self.params.iter().find(|p| p.order_sort_field().is_some())
+    }
+
+    /// True when this function takes an order ([`Self::order_param`]).
+    pub fn takes_order(&self) -> bool {
+        self.order_param().is_some()
+    }
+
+    /// The entity the order parameter sorts: its `{Entity}SortField` type's
+    /// last path segment without `SortField` (`Task`). `None` without an
+    /// order parameter, or when the type is not named `{Entity}SortField`.
+    pub fn sort_entity(&self) -> Option<&str> {
+        let field = self.order_param()?.order_sort_field()?;
+        field.strip_suffix("SortField").filter(|entity| !entity.is_empty())
+    }
+
+    /// This function's filter parameters, as `name: type` — the filter a
+    /// paginated `list` applies and its `count` must apply too.
     pub fn filter_params(&self) -> Vec<String> {
         self.filter().iter().map(|p| format!("{}: {}", p.name, p.ty)).collect()
     }
 
-    /// This function's parameters other than the page: the filter of a
-    /// `list` (wire contract §7.3), in declaration order.
-    pub fn filter(&self) -> &[Param] {
+    /// This function's parameters other than the page and the order: the
+    /// filter of a `list` (wire contract §7.3), in declaration order.
+    pub fn filter(&self) -> Vec<&Param> {
         let n = self.params.len();
         let end = if self.takes_page() { n - PAGE_PARAMS.len() } else { n };
-        &self.params[..end]
+        self.params[..end].iter().filter(|p| p.order_sort_field().is_none()).collect()
     }
 
     /// True when this function, a `list`, takes a filter: any parameter but
-    /// its page.
+    /// its page and its order.
     pub fn takes_filter(&self) -> bool {
         !self.filter().is_empty()
     }
@@ -400,14 +450,14 @@ impl ApiFn {
     /// The list's `*Query` filter struct ([`Param::is_filter_struct`]), if it
     /// takes one.
     pub fn filter_struct(&self) -> Option<&Param> {
-        self.filter().iter().find(|p| p.is_filter_struct())
+        self.filter().into_iter().find(|p| p.is_filter_struct())
     }
 
     /// The list's bare filter parameters (`skill_id: &str`): every filter
     /// parameter that is not a `*Query` struct, each one `filter[{name}]` on
     /// HTTP.
     pub fn bare_filters(&self) -> Vec<&Param> {
-        self.filter().iter().filter(|p| !p.is_filter_struct()).collect()
+        self.filter().into_iter().filter(|p| !p.is_filter_struct()).collect()
     }
 }
 
@@ -1664,5 +1714,111 @@ mod tests {
         let err = scan_surfaces(&one_surface(tmp.path()), "AppState").unwrap_err();
         assert!(err.contains("fn `task::publish` is defined twice in API directory"), "{err}");
         assert!(!err.contains("api_scan_dirs"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod order_param_tests {
+    use super::*;
+
+    /// A `list` with the parameters of `sig` after its first, as the parser
+    /// reads them.
+    fn list(sig: &str) -> ApiFn {
+        let func: syn::ItemFn = syn::parse_str(&format!("pub async fn list({sig}) {{ todo!() }}")).unwrap();
+        ApiFn { name: "list".into(), params: parse_params(&func, 1), ..Default::default() }
+    }
+
+    fn names(params: &[&Param]) -> Vec<String> {
+        params.iter().map(|p| p.name.clone()).collect()
+    }
+
+    #[test]
+    fn an_order_param_is_recognised_by_type_under_any_name() {
+        for (sig, field) in [
+            ("store: &Store, order: &[OrderBy<TaskSortField>]", "TaskSortField"),
+            ("store: &Store, sorting: &[OrderBy<TaskSortField>]", "TaskSortField"),
+            ("store: &Store, o: &[ontogen_core::order::OrderBy<crate::store::task::TaskSortField>]", "TaskSortField"),
+            ("store: &Store, order: &'a [OrderBy<store::Epic_SortField>]", "Epic_SortField"),
+        ] {
+            let f = list(sig);
+            let order = f.order_param().unwrap_or_else(|| panic!("{sig}"));
+            assert_eq!(order.order_sort_field(), Some(field), "{sig}");
+            assert!(f.takes_order(), "{sig}");
+        }
+        let f = list("store: &Store, order: &[ontogen_core::order::OrderBy<crate::store::task::TaskSortField>]");
+        assert_eq!(f.order_param().map(|p| p.name.as_str()), Some("order"));
+        assert_eq!(f.sort_entity(), Some("Task"));
+    }
+
+    #[test]
+    fn other_shapes_are_not_an_order() {
+        for sig in [
+            "store: &Store",
+            "store: &Store, order: Vec<OrderBy<TaskSortField>>",
+            "store: &Store, order: &Vec<OrderBy<TaskSortField>>",
+            "store: &Store, order: &mut [OrderBy<TaskSortField>]",
+            "store: &Store, order: [OrderBy<TaskSortField>; 2]",
+            "store: &Store, order: &[TaskSortField]",
+            "store: &Store, order: &[Order<TaskSortField>]",
+            "store: &Store, order: &[OrderBy]",
+            "store: &Store, order: &[OrderBy<TaskSortField, Extra>]",
+            "store: &Store, order: &[OrderBy<Vec<TaskSortField>>]",
+            "store: &Store, order: &[OrderBy<&TaskSortField>]",
+            "store: &Store, order: Option<&[OrderBy<TaskSortField>]>",
+            "store: &Store, order: &str",
+        ] {
+            let f = list(sig);
+            assert!(f.order_param().is_none() && !f.takes_order() && f.sort_entity().is_none(), "{sig}");
+        }
+    }
+
+    #[test]
+    fn the_sort_entity_needs_a_sort_field_suffix() {
+        assert_eq!(list("s: &Store, order: &[OrderBy<TaskSortField>]").sort_entity(), Some("Task"));
+        assert_eq!(list("s: &Store, order: &[OrderBy<WorkoutSetSortField>]").sort_entity(), Some("WorkoutSet"));
+        assert_eq!(list("s: &Store, order: &[OrderBy<TaskOrder>]").sort_entity(), None);
+        assert_eq!(list("s: &Store, order: &[OrderBy<SortField>]").sort_entity(), None);
+    }
+
+    #[test]
+    fn the_first_order_param_is_the_order() {
+        let f = list("s: &Store, a: &[OrderBy<TaskSortField>], b: &[OrderBy<EpicSortField>]");
+        assert_eq!(f.order_param().map(|p| p.name.as_str()), Some("a"));
+        assert_eq!(f.sort_entity(), Some("Task"));
+    }
+
+    #[test]
+    fn the_filter_excludes_the_order_wherever_it_sits() {
+        let paged = list(
+            "store: &Store, status: &str, query: TaskQuery, order: &[OrderBy<TaskSortField>], limit: Option<u64>, \
+             offset: Option<u64>",
+        );
+        assert!(paged.takes_page() && paged.takes_order());
+        assert_eq!(names(&paged.filter()), ["status", "query"]);
+        assert_eq!(paged.filter_params(), ["status: &str", "query: TaskQuery"]);
+        assert_eq!(paged.filter_struct().map(|p| p.name.as_str()), Some("query"));
+        assert_eq!(names(&paged.bare_filters()), ["status"]);
+        assert!(paged.takes_filter());
+        assert_eq!(paged.page().iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), PAGE_PARAMS);
+
+        let unpaged = list("store: &Store, status: &str, order: &[OrderBy<TaskSortField>]");
+        assert!(!unpaged.takes_page() && unpaged.takes_order());
+        assert_eq!(names(&unpaged.filter()), ["status"]);
+        assert!(unpaged.page().is_empty());
+
+        let first = list("store: &Store, order: &[OrderBy<TaskSortField>], status: &str");
+        assert_eq!(names(&first.filter()), ["status"]);
+    }
+
+    #[test]
+    fn an_order_alone_is_no_filter() {
+        for sig in [
+            "store: &Store, order: &[OrderBy<TaskSortField>]",
+            "store: &Store, order: &[OrderBy<TaskSortField>], limit: Option<u64>, offset: Option<u64>",
+        ] {
+            let f = list(sig);
+            assert!(f.filter().is_empty() && !f.takes_filter() && f.filter_params().is_empty(), "{sig}");
+            assert!(f.filter_struct().is_none() && f.bare_filters().is_empty(), "{sig}");
+        }
     }
 }

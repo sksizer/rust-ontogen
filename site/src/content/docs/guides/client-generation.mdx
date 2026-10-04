@@ -36,7 +36,7 @@ let clients_config = ClientsConfig {
 ```
 
 <Aside type="note">
-  `gen_clients` is a sibling of `gen_servers`, and like it takes the parsed schema entities as its first argument. Server-side transport generation (Axum / Tauri IPC / MCP) and client-side TypeScript generation no longer share a config struct; each has its own dedicated entry point and config type.
+  `gen_clients` is a sibling of `gen_servers`, and like it takes the parsed schema as its first argument. Server-side transport generation (Axum / Tauri IPC / MCP) and client-side TypeScript generation no longer share a config struct; each has its own dedicated entry point and config type.
 </Aside>
 
 `ClientGenerator` lives at `ontogen::clients::ClientGenerator` (re-exported at the module level). The internal path `ontogen::clients::config::ClientGenerator` is `pub(crate)` and no longer accessible to downstream crates.
@@ -281,7 +281,7 @@ The registry only includes modules that have all five CRUD functions (`list`, `g
 
 ### Per-field metadata
 
-When `gen_clients` is given the schema entities (the `Pipeline` builder passes them from the schema stage), the admin generator emits detailed field information:
+When `gen_clients` is given the parsed schema (the `Pipeline` builder passes it from the schema stage), the admin generator emits detailed field information:
 
 - **type** -- the TypeScript type (`string`, `number`, `boolean`, arrays)
 - **role** -- the field's purpose (`id`, `plain`, `enum`, `relation`, `body`)

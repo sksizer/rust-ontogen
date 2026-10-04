@@ -193,7 +193,7 @@ fn main() {
     // or to a markdown vault. Here it carries the SeaOrmOutput from above.
     let _store = unwrap_codegen(
         ontogen::gen_store(
-            &schema.entities,
+            &schema,
             &ontogen::StoreConfig {
                 output_dir: "src/store/generated".into(),
                 hooks_dir: Some("src/store/hooks".into()),
@@ -225,7 +225,7 @@ fn main() {
     // ── 5. Server transports ─────────────────────────────────────
     let _servers = unwrap_codegen(
         ontogen::gen_servers(
-            &schema.entities,
+            &schema,
             Some(&api),
             &["src/api/v1".into()],
             &ontogen::ServersConfig {
@@ -261,7 +261,7 @@ fn main() {
     // ── 6. TypeScript clients + admin registry ───────────────────
     unwrap_codegen(
         ontogen::gen_clients(
-            &schema.entities,
+            &schema,
             Some(&api),
             &["src/api/v1".into()],
             &ontogen::ClientsConfig {
@@ -305,7 +305,7 @@ fn main() {
 <Aside type="caution">
 Two things `Pipeline` does for you that the explicit form must do manually:
 
-- **The schema entities** -- `gen_servers` and `gen_clients` take them as their first argument. Pass `&schema.entities` (from `parse_schema`). With `&[]`, the HTTP transport has no resources to build and the `AdminRegistry` generator silently emits empty `fields: []` for every entity.
+- **The schema** -- `gen_store`, `gen_servers` and `gen_clients` take it as their first argument. Pass `&schema` (from `parse_schema`). With `&SchemaOutput::default()`, the HTTP transport has no resources to build and the `AdminRegistry` generator silently emits empty `fields: []` for every entity.
 - **`pool_exclude_paths`** -- point it at your `gen_seaorm` `entity_output`. `gen_seaorm` emits a `Relation` enum per entity, so a consumer with its own `Relation` type otherwise hits an ambiguous-match abort.
 </Aside>
 
@@ -383,7 +383,7 @@ You don't need to run everything. Pick the generators you need.
     );
 
     unwrap_codegen(
-        ontogen::gen_store(&schema.entities, &ontogen::StoreConfig {
+        ontogen::gen_store(&schema, &ontogen::StoreConfig {
             output_dir: "src/store/generated".into(),
             hooks_dir: Some("src/store/hooks".into()),
             schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),
@@ -435,7 +435,7 @@ You don't need to run everything. Pick the generators you need.
 
     // The returned metadata is what wires the store at the vault runtime.
     unwrap_codegen(
-        ontogen::gen_store(&schema.entities, &ontogen::StoreConfig {
+        ontogen::gen_store(&schema, &ontogen::StoreConfig {
             output_dir: "src/store/generated".into(),
             hooks_dir: Some("src/store/hooks".into()),
             schema_module_path: ontogen::DEFAULT_SCHEMA_MODULE_PATH.into(),

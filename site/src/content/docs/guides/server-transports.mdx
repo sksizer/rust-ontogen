@@ -21,7 +21,7 @@ You enable each transport independently through `ServerGeneratorConfig` variants
 
 ```rust
 let servers_output = ontogen::gen_servers(
-    &schema.entities,
+    &schema,
     Some(&api_output),
     &["src/api/v1".into()],
     &ontogen::ServersConfig {

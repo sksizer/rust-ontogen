@@ -345,14 +345,12 @@ pub struct SeaOrmOutput {
 }
 ```
 
-This is passed to `gen_store` as an optional enrichment:
+This is passed to `gen_store`, inside `StoreConfig::backend`, as an optional enrichment:
 
 ```rust
-let store_output = ontogen::gen_store(
-    &schema.entities,
-    Some(&seaorm_output),  // enriches store with exact table/column names
-    &store_config,
-)?;
+// Enriches the store with exact table/column names.
+store_config.backend = ontogen::Backend::Seaorm(Some(seaorm_output));
+let store_output = ontogen::gen_store(&schema, &store_config)?;
 ```
 
 When present, the store generator uses the exact table names and junction metadata from `SeaOrmOutput`. When absent, it infers these from naming conventions.

@@ -11,7 +11,7 @@ The store layer sits between your persistence layer and your API. For each entit
 
 ```rust
 let store_output = ontogen::gen_store(
-    &schema.entities,
+    &schema,
     &ontogen::StoreConfig {
         output_dir: PathBuf::from("src/store/generated"),
         hooks_dir: Some(PathBuf::from("src/store/hooks")),
