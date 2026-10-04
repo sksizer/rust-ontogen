@@ -94,6 +94,20 @@ pub(crate) struct JunctionRelationship<'a> {
     pub lists_entities: bool,
 }
 
+impl<'a> JunctionRelationship<'a> {
+    /// The ops defining this relationship: `list_X`, then `add_Y` and
+    /// `remove_Y` when the module has them.
+    pub fn ops(&self) -> impl Iterator<Item = &'a ApiFn> {
+        [Some(self.list), self.add, self.remove].into_iter().flatten()
+    }
+
+    /// Whether `f` is one of [`Self::ops`]. Matched by name, which is unique
+    /// within a module.
+    pub fn defines(&self, f: &ApiFn) -> bool {
+        self.ops().any(|g| g.name == f.name)
+    }
+}
+
 /// Whether a relationship's `data` is one identifier or an array of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Arity {
@@ -140,11 +154,17 @@ impl ResourceModel {
         }
     }
 
-    /// True when resource module `m` serves `get_by_id` as its resource. A
-    /// relationship route reads its parent with it, and a relationship to
-    /// the module's type reads each related resource with it.
+    /// The `get_by_id` resource module `m` serves as its resource, if any. A
+    /// relationship route reads its parent with it and is served in its
+    /// scope, and a relationship to the module's type reads each related
+    /// resource with it.
+    pub fn get_by_id<'a>(&self, m: &'a ApiModule) -> Option<&'a ApiFn> {
+        m.functions.iter().find(|f| self.serving(m, f).is_some() && classify_op(m, f) == OpKind::GetById)
+    }
+
+    /// True when resource module `m` serves `get_by_id` as its resource.
     pub fn serves_get_by_id(&self, m: &ApiModule) -> bool {
-        m.functions.iter().any(|f| self.serving(m, f).is_some() && classify_op(m, f) == OpKind::GetById)
+        self.get_by_id(m).is_some()
     }
 
     /// Whether resource module `m` serves relationship and related routes
@@ -152,10 +172,35 @@ impl ResourceModel {
     /// relationship, field or junction. Relationship `links` are emitted
     /// exactly when this holds, since a server must serve every link it
     /// emits.
+    ///
+    /// A junction op of a resource module either defines a relationship or
+    /// is an error of [`ResourceModel::junctions`], so having one is having
+    /// a junction relationship. Asking that, rather than building them,
+    /// keeps this total for a build that never checks the junction rules
+    /// (one with no HTTP server or client).
     pub fn serves_relationships(&self, m: &ApiModule) -> bool {
         let Some(resource) = self.by_module(&m.name) else { return false };
-        self.serves_get_by_id(m)
-            && (!resource.relationships.is_empty() || self.junctions(m).is_ok_and(|j| !j.is_empty()))
+        let has_junction = m.functions.iter().any(|f| {
+            matches!(
+                classify_op(m, f),
+                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }
+            )
+        });
+        self.serves_get_by_id(m) && (!resource.relationships.is_empty() || has_junction)
+    }
+
+    /// The junction relationship op `f` of resource module `m` belongs to:
+    /// its `list_X`, `add_Y` or `remove_Y`. `None` for any other op.
+    ///
+    /// # Panics
+    ///
+    /// When `m`'s junction relationships do not build: callers run after
+    /// `check_http_ops`, which refuses such a module.
+    pub fn junction_of<'a>(&self, m: &'a ApiModule, f: &ApiFn) -> Option<JunctionRelationship<'a>> {
+        self.junctions(m)
+            .expect("`check_http_ops` refuses a module whose junction relationships do not build")
+            .into_iter()
+            .find(|j| j.defines(f))
     }
 
     /// The junction-op relationships of resource module `m` (§9.1), in the
@@ -1044,7 +1089,7 @@ mod tests {
     fn check_http_ops_raises_the_junction_rules() {
         let model = model(JUNCTIONS).unwrap();
         let modules = [module("task", vec![get_by_id(), list("list_tags", "Vec<Tag>"), write("add_tag")])];
-        let err = crate::servers::classify::check_http_ops(&modules, &model).unwrap_err();
+        let err = crate::servers::classify::check_http_ops(&modules, &model, None).unwrap_err();
         assert!(err.starts_with("ontogen: `task::list_tags` defines the relationship `tags`"), "{err}");
     }
 
@@ -1054,7 +1099,7 @@ mod tests {
         let target =
             |entity: &str| module(&entity.to_lowercase(), vec![op_returning("get_by_id", &[("id", "&str")], entity)]);
         let task = module("task", vec![get_by_id(), list("list_labels", "Vec<Label>"), write("add_label")]);
-        let check = |modules: &[ApiModule]| crate::servers::classify::check_http_ops(modules, &model);
+        let check = |modules: &[ApiModule]| crate::servers::classify::check_http_ops(modules, &model, None);
 
         check(&[task.clone(), target("Tag"), target("Label")]).unwrap();
         assert_eq!(

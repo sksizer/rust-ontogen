@@ -915,6 +915,18 @@ fn generate_jsonapi(
     adjust: impl FnOnce(&mut crate::ClientsConfig),
     server: bool,
 ) -> (Option<Servers>, JsonApiClients) {
+    let (servers, clients) = try_generate_jsonapi(paginated, extra, adjust, server);
+    (servers.map(Result::unwrap), clients.unwrap())
+}
+
+/// [`generate_jsonapi`] with each stage's error kept: `gen_servers` runs
+/// (with `server`) whether or not `gen_clients` failed.
+fn try_generate_jsonapi(
+    paginated: bool,
+    extra: &[(&str, &str)],
+    adjust: impl FnOnce(&mut crate::ClientsConfig),
+    server: bool,
+) -> (Option<Result<Servers, String>>, Result<JsonApiClients, String>) {
     let tmp = tempfile::tempdir().unwrap();
     let entities =
         crate::schema::parse::parse_schema_source(JSONAPI_SCHEMA, std::path::Path::new("schema.rs")).unwrap();
@@ -966,14 +978,13 @@ fn generate_jsonapi(
     fs::write(filters.join("lib.rs"), FILTER_STRUCTS).unwrap();
     config.pool_extra_roots.push(filters);
     adjust(&mut config);
-    crate::gen_clients(&entities, Some(&api), &[], &config).unwrap();
-
     let read = |path: &std::path::Path| fs::read_to_string(path).unwrap();
-    let clients = JsonApiClients {
-        transport: read(&ts.join("transport.ts")),
-        http: read(&ts.join("http.ts")),
-        bindings: read(&bindings_path),
-    };
+    let clients =
+        crate::gen_clients(&entities, Some(&api), &[], &config).map_err(|e| e.to_string()).map(|()| JsonApiClients {
+            transport: read(&ts.join("transport.ts")),
+            http: read(&ts.join("http.ts")),
+            bindings: read(&bindings_path),
+        });
     if !server {
         return (None, clients);
     }
@@ -999,8 +1010,10 @@ fn generate_jsonapi(
         extra_surfaces: Vec::new(),
         error_source_dir: None,
     };
-    crate::gen_servers(&entities, Some(&api), &[], &servers).unwrap();
-    (Some(Servers { http: read(&server_out), ipc: read(&ipc_out) }), clients)
+    let servers = crate::gen_servers(&entities, Some(&api), &[], &servers)
+        .map_err(|e| e.to_string())
+        .map(|_| Servers { http: read(&server_out), ipc: read(&ipc_out) });
+    (Some(servers), clients)
 }
 
 /// A `route_prefix` scoping every store-scoped op under `projects/{project_id}`.
@@ -1516,6 +1529,163 @@ fn a_relationship_is_scoped_as_its_resources_get_by_id() {
          type: 'tags', id: tagId }] });\n      return null;\n    },\n"
     );
     assert!(ts_method(ts, "workoutSetListTags").contains("(scopedPath(projectId, `/workout-sets/"), "{ts}");
+}
+
+const STORE: &str = "store: &Store";
+const STATE: &str = "state: &AppState";
+
+/// `tag`, its `list`, `get_by_id`, `create`, `update` and `delete` taking
+/// [`STORE`] or [`STATE`] as given, in that order.
+fn tag_module([list, get, create, update, delete]: [&str; 5]) -> String {
+    format!(
+        "use crate::schema::{{CreateTagInput, Tag, UpdateTagInput}};\nuse crate::store::Store;\nuse \
+         crate::AppState;\n\npub async fn list({list}) -> Result<Vec<Tag>, anyhow::Error> {{ todo!() }}\npub async fn \
+         get_by_id({get}, id: &str) -> Result<Tag, anyhow::Error> {{ todo!() }}\npub async fn create({create}, input: \
+         CreateTagInput) -> Result<Tag, anyhow::Error> {{ todo!() }}\npub async fn update({update}, id: &str, input: \
+         UpdateTagInput) -> Result<Tag, anyhow::Error> {{ todo!() }}\npub async fn delete({delete}, id: &str) -> \
+         Result<(), anyhow::Error> {{ todo!() }}\n"
+    )
+}
+
+/// `workout_set` with an unscoped `get_by_id` and `others`.
+fn unscoped_workout_set(others: &str) -> String {
+    format!(
+        "use crate::schema::{{UpdateWorkoutSetInput, WorkoutSet}};\nuse crate::store::Store;\nuse \
+         crate::AppState;\n\npub async fn get_by_id(state: &AppState, id: &str) -> Result<WorkoutSet, anyhow::Error> \
+         {{ todo!() }}\n{others}"
+    )
+}
+
+/// The errors `gen_servers` and `gen_clients` each fail with for `extra`
+/// under the route prefix; with no prefix, both accept it.
+fn scoping_errors(extra: &[(&str, &str)]) -> [String; 2] {
+    let (servers, clients) = try_generate_jsonapi(false, extra, |_| {}, true);
+    assert!(servers.unwrap().is_ok() && clients.is_ok(), "with no route prefix nothing is scoped");
+    let (servers, clients) = try_generate_jsonapi(false, extra, scope_under_projects, true);
+    [servers.unwrap().err().expect("gen_servers refuses it"), clients.err().expect("gen_clients refuses it")]
+}
+
+/// Under a route prefix, a resource's `list`, `create` and `update` are
+/// served in its `get_by_id`'s scope: each resource they answer links to
+/// itself in their own scope, where only that `get_by_id` could serve it.
+/// `delete` answers no document, so its scope is free.
+#[test]
+fn under_a_route_prefix_a_resource_links_only_to_routes_its_scope_serves() {
+    for (fns, culprit) in [
+        ([STORE, STATE, STORE, STORE, STORE], "list"),
+        ([STATE, STORE, STORE, STORE, STORE], "list"),
+        ([STORE, STORE, STATE, STORE, STORE], "create"),
+        ([STORE, STORE, STORE, STATE, STORE], "update"),
+    ] {
+        for err in scoping_errors(&[("tag.rs", &tag_module(fns))]) {
+            assert!(err.contains(&format!("`tag::{culprit}` is served ")), "{culprit}: {err}");
+            assert!(err.contains("take a store in both fns or in neither"), "{culprit}: {err}");
+        }
+    }
+    let [err, _] = scoping_errors(&[("tag.rs", &tag_module([STATE, STORE, STORE, STORE, STORE]))]);
+    assert!(
+        err.ends_with(
+            "ontogen: `tag::list` is served outside the route prefix `projects/:project_id` (it takes no store) and \
+             `tag::get_by_id` only under it (it takes a store), but every resource `tag::list` answers links to \
+             itself in `tag::list`'s scope, where no `get_by_id` route is served; take a store in both fns or in \
+             neither"
+        ),
+        "{err}"
+    );
+    let (servers, clients) = try_generate_jsonapi(
+        false,
+        &[("tag.rs", &tag_module([STORE, STORE, STORE, STORE, STATE]))],
+        scope_under_projects,
+        true,
+    );
+    assert!(servers.unwrap().is_ok() && clients.is_ok(), "a scope apart for `delete` is fine");
+}
+
+/// Under a route prefix, a resource whose `get_by_id` takes no store serves
+/// its relationship routes outside the prefix, so they may neither link to a
+/// target served only under it nor call a junction op or `update` that takes
+/// a store, which no unscoped handler can open.
+#[test]
+fn under_a_route_prefix_unscoped_relationship_routes_reach_nothing_scoped() {
+    let [server, client] = scoping_errors(&[("workout_set.rs", &unscoped_workout_set(""))]);
+    for err in [&server, &client] {
+        assert!(
+            err.ends_with(
+                "ontogen: `workout_set::get_by_id` takes no store, so the relationship routes of the JSON:API \
+                 resource `workout-sets` are served outside the route prefix `projects/:project_id`, but its \
+                 relationship `tag` links `tags` resources, which `tag::get_by_id` serves only under the prefix (it \
+                 takes a store); take a store in `workout_set::get_by_id`, or the state in `tag::get_by_id`"
+            ),
+            "{err}"
+        );
+    }
+
+    let unscoped_tags = tag_module([STATE; 5]);
+    for (ops, culprit) in [
+        (
+            "pub async fn list_tags(store: &Store, set_id: &str) -> Result<Vec<String>, anyhow::Error> { todo!() }\n\
+             pub async fn add_tag(state: &AppState, set_id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }\n",
+            "list_tags",
+        ),
+        (
+            "pub async fn list_tags(state: &AppState, set_id: &str) -> Result<Vec<String>, anyhow::Error> { todo!() }\n\
+             pub async fn remove_tag(store: &Store, set_id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }\n",
+            "remove_tag",
+        ),
+    ] {
+        let module = unscoped_workout_set(ops);
+        for err in scoping_errors(&[("workout_set.rs", &module), ("tag.rs", &unscoped_tags)]) {
+            assert!(
+                err.ends_with(&format!(
+                    "ontogen: `workout_set::{culprit}` takes a store, which only a handler under the route prefix \
+                     `projects/:project_id` opens, but it serves the relationship `tags` of the JSON:API resource \
+                     `workout-sets`, whose routes are served outside the prefix because `workout_set::get_by_id` \
+                     takes no store; take a store in `workout_set::get_by_id`, or the state in \
+                     `workout_set::{culprit}`"
+                )),
+                "{culprit}: {err}"
+            );
+        }
+    }
+
+    let update = unscoped_workout_set(
+        "pub async fn update(store: &Store, id: &str, input: UpdateWorkoutSetInput) -> Result<WorkoutSet, \
+         anyhow::Error> { todo!() }\n",
+    );
+    for err in scoping_errors(&[("workout_set.rs", &update), ("tag.rs", &unscoped_tags)]) {
+        assert!(
+            err.ends_with(
+                "ontogen: `workout_set::update` is served under the route prefix `projects/:project_id` (it takes a \
+                 store) and `workout_set::get_by_id` only outside it (it takes no store), but every resource \
+                 `workout_set::update` answers links to itself in `workout_set::update`'s scope, where no \
+                 `get_by_id` route is served; take a store in both fns or in neither"
+            ),
+            "{err}"
+        );
+    }
+}
+
+/// Scoped relationship routes may reach what is served outside the prefix:
+/// a target whose `get_by_id` takes no store is linked at its unscoped
+/// collection, and junction ops taking the state are called with it.
+#[test]
+fn scoped_relationship_routes_reach_unscoped_targets_and_junction_ops() {
+    let unscoped_tags = tag_module([STATE; 5]);
+    let (servers, clients) = try_generate_jsonapi(
+        false,
+        &[("workout_set.rs", STATE_JUNCTION_MODULE), ("tag.rs", &unscoped_tags)],
+        scope_under_projects,
+        true,
+    );
+    assert!(clients.is_ok(), "{:?}", clients.err());
+    let http = servers.unwrap().unwrap().http;
+    let related = &http[http.find("async fn ontogen_workout_set_related_get_scoped(").expect(&http)..];
+    let related = &related[..related.find("\n}\n").unwrap()];
+    assert!(related.contains("\"/api/tags\""), "the tags are linked where they are served:\n{related}");
+    assert!(!related.contains("/tags\", encode_path_segment(&ontogen_scope"), "{related}");
+    let post = &http[http.find("async fn ontogen_workout_set_relationship_post_scoped(").unwrap()..];
+    let post = &post[..post.find("\n}\n").unwrap()];
+    assert!(post.contains("add_tag(&ontogen_state, "), "the junction op takes the state:\n{post}");
 }
 
 /// A `list_X` with no add or remove beside it is a custom GET at its action

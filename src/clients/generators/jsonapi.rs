@@ -352,12 +352,7 @@ pub(crate) fn served<'a>(module: &'a ApiModule, f: &ApiFn, config: &'a Config) -
         return Served::Resource(resource);
     }
     let Some(resource) = config.resources.by_module(&module.name) else { return Served::Op };
-    let junctions =
-        config.resources.junctions(module).expect("`check_http_ops` refuses junction ops that define no relationship");
-    match junctions
-        .into_iter()
-        .find(|j| [Some(j.list), j.add, j.remove].into_iter().flatten().any(|g| g.name == f.name))
-    {
+    match config.resources.junction_of(module, f) {
         Some(junction) => Served::Relationship(resource, junction),
         None => Served::Op,
     }
@@ -522,11 +517,9 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&s
 /// the `get_by_id` that reads its parent is.
 pub(crate) fn scope_of<'a>(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&'a str>) -> Option<&'a str> {
     let routed_by = match served(m, f, config) {
-        Served::Relationship(..) => m
-            .functions
-            .iter()
-            .find(|g| classify_op(m, g) == OpKind::GetById && config.resources.serving(m, g).is_some())
-            .unwrap_or(f),
+        Served::Relationship(..) => {
+            config.resources.get_by_id(m).expect("a junction relationship's module serves get_by_id")
+        }
         _ => f,
     };
     scope.filter(|_| routed_by.first_param_is_store)

@@ -30,6 +30,8 @@ use crate::servers::types::{
 
 mod relationship;
 
+pub(in crate::servers) use relationship::route_table as relationship_route_table;
+
 /// Convert colon-style path params (`:name`) to axum 0.8's `{name}` form.
 ///
 /// Config-facing strings (`route_prefix.segments`, `sse_route_overrides`)
@@ -493,30 +495,15 @@ fn handler_name(m: &ApiModule, f: &ApiFn, config: &Config, scoped: bool) -> Stri
 /// is store-scoped and one is configured. The generator and the server
 /// metadata both read it, so they cannot disagree.
 ///
-/// A junction op of a resource module has no route of its own: it is
-/// reported at the relationship route it is reached through, under the
-/// scope of its module's `get_by_id`, with `{rel}` its relationship's name.
-/// A list returning entities is reached through the related route, one
-/// returning ids through the relationship route.
+/// Not for a junction op of a resource module ([`is_relationship_op`]),
+/// which has no route of its own: it is reached through its module's
+/// [`relationship::route_table`].
 pub(in crate::servers) fn route_of(m: &ApiModule, f: &ApiFn, config: &Config) -> (&'static str, String) {
-    let base = |scoped: bool| {
-        let url = config.naming.url_for_module(m);
-        match config.route_prefix.as_ref().filter(|_| scoped) {
-            None => format!("/api/{url}"),
-            Some(prefix) => format!("/api/{}/{url}", axum_path(&prefix.segments)),
-        }
+    let url = config.naming.url_for_module(m);
+    let base = match config.route_prefix.as_ref().filter(|_| f.first_param_is_store) {
+        None => format!("/api/{url}"),
+        Some(prefix) => format!("/api/{}/{url}", axum_path(&prefix.segments)),
     };
-    if let Some((get, junction)) = relationship_of(m, f, config) {
-        let base = base(is_scoped(get, config));
-        let rel = &junction.name;
-        return match classify_op(m, f) {
-            OpKind::JunctionList { .. } if junction.lists_entities => ("get", format!("{base}/{{id}}/{rel}")),
-            OpKind::JunctionList { .. } => ("get", format!("{base}/{{id}}/relationships/{rel}")),
-            OpKind::JunctionAdd { .. } => ("post", format!("{base}/{{id}}/relationships/{rel}")),
-            _ => ("delete", format!("{base}/{{id}}/relationships/{rel}")),
-        };
-    }
-    let base = base(f.first_param_is_store);
     let path = if served_resource(m, f, config).is_some() {
         match classify_op(m, f) {
             OpKind::List | OpKind::Create => String::new(),
@@ -542,23 +529,6 @@ fn route_method(m: &ApiModule, f: &ApiFn, config: &Config) -> &'static str {
     }
 }
 
-/// The name of the handler serving `f` at [`route_of`]: for a junction op
-/// of a resource module, the relationship or related route's handler.
-pub(in crate::servers) fn route_handler(m: &ApiModule, f: &ApiFn, config: &Config) -> String {
-    match relationship_of(m, f, config) {
-        Some((_, junction)) => {
-            let kind = match classify_op(m, f) {
-                OpKind::JunctionList { .. } if junction.lists_entities => "related_get",
-                OpKind::JunctionList { .. } => "relationship_get",
-                OpKind::JunctionAdd { .. } => "relationship_post",
-                _ => "relationship_delete",
-            };
-            format!("ontogen_{}_{kind}", m.name)
-        }
-        None => handler_name(m, f, config, false),
-    }
-}
-
 fn is_junction(m: &ApiModule, f: &ApiFn) -> bool {
     matches!(
         classify_op(m, f),
@@ -568,32 +538,14 @@ fn is_junction(m: &ApiModule, f: &ApiFn) -> bool {
 
 /// Whether `f` is a junction op of a resource module, which defines one of
 /// its relationships rather than serving a route of its own (§9.1).
-fn is_relationship_op(m: &ApiModule, f: &ApiFn, config: &Config) -> bool {
+pub(in crate::servers) fn is_relationship_op(m: &ApiModule, f: &ApiFn, config: &Config) -> bool {
     is_junction(m, f) && config.resources.by_module(&m.name).is_some()
-}
-
-/// For a junction op of a resource module: its module's `get_by_id`, whose
-/// scope its routes share, and the relationship it defines.
-fn relationship_of<'a>(m: &'a ApiModule, f: &ApiFn, config: &Config) -> Option<(&'a ApiFn, JunctionRelationship<'a>)> {
-    if !is_relationship_op(m, f, config) {
-        return None;
-    }
-    let get = relationship_routes(m, config)?;
-    let junction = config.resources.junctions(m).ok()?.into_iter().find(|j| {
-        std::ptr::eq(j.list, f)
-            || j.add.is_some_and(|add| std::ptr::eq(add, f))
-            || j.remove.is_some_and(|remove| std::ptr::eq(remove, f))
-    })?;
-    Some((get, junction))
 }
 
 /// The `get_by_id` of resource module `m` when `m` serves relationship routes
 /// (§9): they read the parent with it, under its scope.
 fn relationship_routes<'a>(m: &'a ApiModule, config: &Config) -> Option<&'a ApiFn> {
-    if !config.resources.serves_relationships(m) {
-        return None;
-    }
-    m.functions.iter().find(|f| classify_op(m, f) == OpKind::GetById && served_resource(m, f, config).is_some())
+    config.resources.get_by_id(m).filter(|_| config.resources.serves_relationships(m))
 }
 
 /// Every resource an event op's item type names, with the item type as the
@@ -1062,8 +1014,10 @@ fn emit_resource_helpers(
     let entity_ty = entity_type(m).or_else(|| {
         frames.iter().find(|(r, _)| r.module == resource.module).map(|(_, item_type)| item_type.to_string())
     });
-    // Checked by `check_http_ops`.
-    let junctions = config.resources.junctions(m).unwrap_or_default();
+    let junctions = config
+        .resources
+        .junctions(m)
+        .expect("`check_http_ops` refuses a module whose junction relationships do not build");
     if let Some(entity_ty) = &entity_ty {
         let links = config.resources.serves_relationships(m).then_some(junctions.as_slice());
         emit_resource_object(out, resource, entity_ty, links);

@@ -2975,7 +2975,7 @@ fn test_http_generator_junction_module() {
     // Regression guards - no old-style custom URLs.
     assert!(
         !content.contains("/api/destination_skills/add-skill"),
-        "regression: old action-style custom URL leaked into HTTP routes"
+        "a junction add is served at its nested route `{{base}}/{{parent_id}}/{{segment}}`, never at an action route:\n{content}"
     );
     assert!(
         !content.contains("/api/destination_skills/"),
@@ -3164,7 +3164,7 @@ fn test_ts_transport_junction_module() {
     );
     assert!(
         !content.contains("'/destination_skills/add-skill'") && !content.contains("\"/destination_skills/add-skill\""),
-        "regression: old action-style custom URL leaked into TS HTTP transport"
+        "a junction add is called at its nested route `/{{base}}/{{parentId}}/{{segment}}`, never at an action route:\n{content}"
     );
 }
 
@@ -8033,30 +8033,30 @@ fn server_metadata_routes_every_op_where_the_generator_does() {
             };
             let method = route.method.to_ascii_lowercase();
             let needle = format!("{method}({handler})");
-            // A relationship route captures `{rel}`, which the metadata
-            // names: `labels` is served at `…/{rel}`.
-            let serves = |template: &str| {
-                let (template, path): (Vec<&str>, Vec<&str>) =
-                    (template.split('/').collect(), route.path.split('/').collect());
-                template.len() == path.len()
-                    && template.iter().zip(&path).all(|(t, p)| t == p || (*t == "{rel}" && !p.starts_with('{')))
-            };
             let registered = flat.split(".route(\"").skip(1).any(|r| {
                 let (template, handlers) = r.split_once('"').unwrap();
-                serves(template) && handlers.contains(&needle)
+                template == route.path && handlers.contains(&needle)
             });
             assert!(registered, "{} {} ({handler}) is not a generated route:\n{http}", route.method, route.path);
             assert_ne!(route.method, "PUT", "no route is PUT");
         }
+        let mut registrations: Vec<(&str, &str)> =
+            meta.http_routes.iter().map(|r| (r.method.as_str(), r.path.as_str())).collect();
+        registrations.sort_unstable();
+        let rows = registrations.len();
+        registrations.dedup();
+        assert_eq!(registrations.len(), rows, "one row per method of each route:\n{:#?}", meta.http_routes);
     }
 }
 
-/// A junction op of a resource module is reported at the relationship route
-/// that reaches it, with its relationship's name for `{rel}`, under the scope
-/// of the module's `get_by_id`; one outside a resource module at its own
-/// route, the same scoped or not.
+/// A resource module serving relationships reports its relationship and
+/// related routes with their `{rel}` capture, one row per method, under the
+/// scope of its `get_by_id` and named for the handlers serving them; its
+/// junction ops, reached only through those routes, have no rows of their
+/// own. A junction op outside a resource module keeps its own route, the
+/// same scoped or not.
 #[test]
-fn server_metadata_reports_junction_ops_at_their_relationship_routes() {
+fn server_metadata_reports_relationship_routes_with_their_rel_template() {
     for scoped in [false, true] {
         let tmp = tempfile::tempdir().unwrap();
         let config = ops_fixture(tmp.path(), scoped);
@@ -8066,42 +8066,47 @@ fn server_metadata_reports_junction_ops_at_their_relationship_routes() {
         write_synthetic_api(&config.api_dir, "epic.rs", &epic);
         let modules = crate::servers::generate_transport(&config).unwrap();
         let meta = crate::servers::extract_server_metadata(&modules, &config);
-        // The metadata row `module::command` gets: the route of the fn of that
-        // name.
-        let route = |module: &str, command: &str| {
-            let m = modules.iter().find(|m| m.name == module).unwrap();
-            let f = m.functions.iter().find(|f| f.name == command).unwrap();
-            let (method, path) = crate::servers::generators::http::route_of(m, f, &config);
-            let handler = crate::servers::generators::http::route_handler(m, f, &config);
-            let row = meta.http_routes.iter().find(|r| {
-                r.module_name == module
-                    && r.method == method.to_ascii_uppercase()
-                    && r.path == path
-                    && r.handler_name == handler
-            });
-            let row = row.unwrap_or_else(|| panic!("{module}::{command}: no metadata row {method} {path}"));
-            (row.method.as_str(), row.path.clone(), row.handler_name.as_str())
-        };
         let prefix = if scoped { "/api/projects/{project_id}" } else { "/api" };
-        let at = |path: &str| format!("{prefix}{path}");
-        assert_eq!(route("task", "list_labels"), ("GET", at("/tasks/{id}/labels"), "ontogen_task_related_get"));
+        let suffix = if scoped { "_scoped" } else { "" };
+        let rows = |module: &str| -> Vec<(String, String, String)> {
+            meta.http_routes
+                .iter()
+                .filter(|r| r.module_name == module && r.path.contains("{rel}"))
+                .map(|r| (r.method.clone(), r.path.clone(), r.handler_name.clone()))
+                .collect()
+        };
+        for (module, plural) in [("task", "tasks"), ("epic", "epics")] {
+            let row = |method: &str, path: &str, kind: &str| {
+                (method.to_string(), format!("{prefix}/{plural}{path}"), format!("ontogen_{module}_{kind}{suffix}"))
+            };
+            assert_eq!(
+                rows(module),
+                [
+                    row("GET", "/{id}/relationships/{rel}", "relationship_get"),
+                    row("PATCH", "/{id}/relationships/{rel}", "relationship_patch"),
+                    row("POST", "/{id}/relationships/{rel}", "relationship_post"),
+                    row("DELETE", "/{id}/relationships/{rel}", "relationship_delete"),
+                    row("GET", "/{id}/{rel}", "related_get"),
+                ],
+                "{module}"
+            );
+        }
+        assert!(rows("tag").is_empty(), "a type with no relationship serves no relationship routes");
+        for command in ["task_list_labels", "task_add_label", "task_remove_label", "epic_list_tags", "epic_add_tag"] {
+            assert!(
+                meta.http_routes.iter().all(|r| r.handler_name != command),
+                "`{command}` has no route of its own:\n{:#?}",
+                meta.http_routes
+            );
+        }
+        let own = |command: &str| {
+            let r = meta.http_routes.iter().find(|r| r.handler_name == command).unwrap();
+            (r.method.as_str(), r.path.clone())
+        };
+        assert_eq!(own("workout_list_labels"), ("GET", format!("{prefix}/workouts/{{parent_id}}/labels")));
         assert_eq!(
-            route("task", "add_label"),
-            ("POST", at("/tasks/{id}/relationships/labels"), "ontogen_task_relationship_post")
-        );
-        assert_eq!(
-            route("task", "remove_label"),
-            ("DELETE", at("/tasks/{id}/relationships/labels"), "ontogen_task_relationship_delete")
-        );
-        // A list returning ids is reached through the linkage.
-        assert_eq!(
-            route("epic", "list_tags"),
-            ("GET", at("/epics/{id}/relationships/tags"), "ontogen_epic_relationship_get")
-        );
-        assert_eq!(route("workout", "list_labels"), ("GET", at("/workouts/{parent_id}/labels"), "workout_list_labels"));
-        assert_eq!(
-            route("workout", "remove_label"),
-            ("DELETE", at("/workouts/{parent_id}/labels/{child_id}"), "workout_remove_label")
+            own("workout_remove_label"),
+            ("DELETE", format!("{prefix}/workouts/{{parent_id}}/labels/{{child_id}}"))
         );
     }
 }
