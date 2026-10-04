@@ -13,8 +13,8 @@ use axum::{
     routing::get,
 };
 use ontogen_jsonapi::{
-    AnyResource, Document, ErrorCode, ErrorObject, Included, Linkage, Links, LookupKey, QueryParams, QuerySpec,
-    Relationship, ResourceIdentifier, ResourceObject,
+    AnyResource, Document, ErrorObject, Included, Linkage, Links, LookupKey, QueryParams, QuerySpec, Relationship,
+    ResourceIdentifier, ResourceObject,
     error::{method_not_allowed, relationship_not_found},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::{CanonicalQuery, encode_path_segment},
@@ -84,16 +84,6 @@ struct GetParams;
 
 impl RouteQuery for GetParams {
     const SPEC: QuerySpec = QuerySpec { include: true, ..QuerySpec::NONE };
-}
-
-/// No list takes an `order` argument, so every `sort` asks for an order the
-/// server does not support.
-fn refuse_sort(query: &QueryParams, type_name: &str) -> Result<(), ErrorObject> {
-    match query.sort()? {
-        None => Ok(()),
-        Some(_) => Err(ErrorObject::new(ErrorCode::InvalidSortField, format!("`{type_name}` cannot be sorted"))
-            .with_parameter("sort")),
-    }
 }
 
 /// The effective `(offset, limit)` of a paginated list.
@@ -278,11 +268,11 @@ async fn note_list(
     _: AcceptGuard,
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "notes")?;
+    let order = query.sort_order("notes")?;
     let include = query.include_paths("notes", &["links"], &[])?;
     let link_query = query.link_query(include.as_deref())?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items = note::list(&ontogen_store).await.map_err(ontogen_app_error)?;
+    let items = note::list(&ontogen_store, &order).await.map_err(ontogen_app_error)?;
     let collection = "/api/notes";
     let data: Vec<_> = items.iter().map(|entity| note_as_resource(entity, collection)).collect();
     let mut document = Document::new(data, Links::new(link_query.href(collection)));

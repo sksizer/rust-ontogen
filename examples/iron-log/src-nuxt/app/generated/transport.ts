@@ -21,6 +21,19 @@ import type {
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
+/** A list's sort keys, applied in order: `-` sorts a field descending, and `id` ascending is the last key unless named. */
+export interface ListOptions<K extends string> {
+  sort?: K[];
+}
+
+export type ExerciseSortKey = 'id' | '-id' | 'name' | '-name' | 'muscle_group' | '-muscle_group' | 'equipment' | '-equipment' | 'notes' | '-notes';
+
+export type TagSortKey = 'id' | '-id' | 'name' | '-name';
+
+export type WorkoutSortKey = 'id' | '-id' | 'name' | '-name' | 'date' | '-date' | 'duration_minutes' | '-duration_minutes' | 'notes' | '-notes' | 'created_at' | '-created_at';
+
+export type WorkoutSetSortKey = 'id' | '-id' | 'set_number' | '-set_number' | 'weight_grams' | '-weight_grams' | 'reps' | '-reps' | 'rpe' | '-rpe' | 'notes' | '-notes';
+
 // ── Event Subscriptions ──
 
 export interface SubscriptionHandlers<T> {
@@ -38,22 +51,22 @@ type EventFrame<T> = { kind: 'event'; id: string | null; data: T } | { kind: 'la
 // ── Transport Interface ──
 
 export interface Transport {
-  exerciseList(): Promise<Exercise[]>;
+  exerciseList(options?: ListOptions<ExerciseSortKey>): Promise<Exercise[]>;
   exerciseGetById(id: string): Promise<Exercise>;
   exerciseCreate(input: CreateExerciseInput): Promise<Exercise>;
   exerciseUpdate(id: string, input: UpdateExerciseInput): Promise<Exercise>;
   exerciseDelete(id: string): Promise<null>;
-  tagList(): Promise<Tag[]>;
+  tagList(options?: ListOptions<TagSortKey>): Promise<Tag[]>;
   tagGetById(id: string): Promise<Tag>;
   tagCreate(input: CreateTagInput): Promise<Tag>;
   tagUpdate(id: string, input: UpdateTagInput): Promise<Tag>;
   tagDelete(id: string): Promise<null>;
-  workoutList(): Promise<Workout[]>;
+  workoutList(options?: ListOptions<WorkoutSortKey>): Promise<Workout[]>;
   workoutGetById(id: string): Promise<Workout>;
   workoutCreate(input: CreateWorkoutInput): Promise<Workout>;
   workoutUpdate(id: string, input: UpdateWorkoutInput): Promise<Workout>;
   workoutDelete(id: string): Promise<null>;
-  workoutSetList(): Promise<WorkoutSet[]>;
+  workoutSetList(options?: ListOptions<WorkoutSetSortKey>): Promise<WorkoutSet[]>;
   workoutSetGetById(id: string): Promise<WorkoutSet>;
   workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet>;
   workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet>;
@@ -170,9 +183,8 @@ function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
   const push = (key: string, value: unknown) => {
     if (value == null) return;
-    for (const v of Array.isArray(value) ? value : [value]) {
-      parts.push(`${key}=${encodeURIComponent(String(v))}`);
-    }
+    const values = Array.isArray(value) ? value : [value];
+    if (values.length > 0) parts.push(`${key}=${values.map((v) => encodeURIComponent(String(v))).join(',')}`);
   };
   for (const [key, value] of Object.entries(params)) {
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -415,8 +427,8 @@ function unflattenWorkoutSet(input: object, id?: string): JsonApiWriteDocument {
 
 export function createHttpTransport(): Transport {
   return {
-    async exerciseList(): Promise<Exercise[]> {
-      const { data } = await httpGet<JsonApiCollectionDocument>('/exercises');
+    async exerciseList(options?: ListOptions<ExerciseSortKey>): Promise<Exercise[]> {
+      const { data } = await httpGet<JsonApiCollectionDocument>(`/exercises${toQueryString({ sort: options?.sort })}`);
       return data.map(flattenExercise);
     },
     async exerciseGetById(id: string): Promise<Exercise> {
@@ -438,8 +450,8 @@ export function createHttpTransport(): Transport {
       await httpDelete(`/exercises/${encodeURIComponent(id)}`);
       return null;
     },
-    async tagList(): Promise<Tag[]> {
-      const { data } = await httpGet<JsonApiCollectionDocument>('/tags');
+    async tagList(options?: ListOptions<TagSortKey>): Promise<Tag[]> {
+      const { data } = await httpGet<JsonApiCollectionDocument>(`/tags${toQueryString({ sort: options?.sort })}`);
       return data.map(flattenTag);
     },
     async tagGetById(id: string): Promise<Tag> {
@@ -461,8 +473,8 @@ export function createHttpTransport(): Transport {
       await httpDelete(`/tags/${encodeURIComponent(id)}`);
       return null;
     },
-    async workoutList(): Promise<Workout[]> {
-      const { data } = await httpGet<JsonApiCollectionDocument>('/workouts');
+    async workoutList(options?: ListOptions<WorkoutSortKey>): Promise<Workout[]> {
+      const { data } = await httpGet<JsonApiCollectionDocument>(`/workouts${toQueryString({ sort: options?.sort })}`);
       return data.map(flattenWorkout);
     },
     async workoutGetById(id: string): Promise<Workout> {
@@ -484,8 +496,8 @@ export function createHttpTransport(): Transport {
       await httpDelete(`/workouts/${encodeURIComponent(id)}`);
       return null;
     },
-    async workoutSetList(): Promise<WorkoutSet[]> {
-      const { data } = await httpGet<JsonApiCollectionDocument>('/workout-sets');
+    async workoutSetList(options?: ListOptions<WorkoutSetSortKey>): Promise<WorkoutSet[]> {
+      const { data } = await httpGet<JsonApiCollectionDocument>(`/workout-sets${toQueryString({ sort: options?.sort })}`);
       return data.map(flattenWorkoutSet);
     },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
@@ -577,8 +589,8 @@ async function subscribeIpc<T>(
 
 export function createIpcTransport(): Transport {
   return {
-    async exerciseList(): Promise<Exercise[]> {
-      return invoke('exercise_list');
+    async exerciseList(options?: ListOptions<ExerciseSortKey>): Promise<Exercise[]> {
+      return invoke('exercise_list', { sort: options?.sort });
     },
     async exerciseGetById(id: string): Promise<Exercise> {
       return invoke('exercise_get_by_id', { id });
@@ -593,8 +605,8 @@ export function createIpcTransport(): Transport {
       await invoke('exercise_delete', { id });
       return null;
     },
-    async tagList(): Promise<Tag[]> {
-      return invoke('tag_list');
+    async tagList(options?: ListOptions<TagSortKey>): Promise<Tag[]> {
+      return invoke('tag_list', { sort: options?.sort });
     },
     async tagGetById(id: string): Promise<Tag> {
       return invoke('tag_get_by_id', { id });
@@ -609,8 +621,8 @@ export function createIpcTransport(): Transport {
       await invoke('tag_delete', { id });
       return null;
     },
-    async workoutList(): Promise<Workout[]> {
-      return invoke('workout_list');
+    async workoutList(options?: ListOptions<WorkoutSortKey>): Promise<Workout[]> {
+      return invoke('workout_list', { sort: options?.sort });
     },
     async workoutGetById(id: string): Promise<Workout> {
       return invoke('workout_get_by_id', { id });
@@ -625,8 +637,8 @@ export function createIpcTransport(): Transport {
       await invoke('workout_delete', { id });
       return null;
     },
-    async workoutSetList(): Promise<WorkoutSet[]> {
-      return invoke('workout_set_list');
+    async workoutSetList(options?: ListOptions<WorkoutSetSortKey>): Promise<WorkoutSet[]> {
+      return invoke('workout_set_list', { sort: options?.sort });
     },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
       return invoke('workout_set_get_by_id', { id });

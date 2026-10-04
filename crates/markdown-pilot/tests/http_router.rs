@@ -249,8 +249,8 @@ async fn list_query_parameters_are_checked() {
     // The generated list takes no filter.
     assert_eq!(server.get("/api/notes?filter[title]=x").await.parameter("invalid_query_parameter"), "filter[title]");
 
-    // `sort` is checked before `include` (§13.2 step 5): a bad key on a
-    // sorted list, and any key on a list that takes no order.
+    // `sort` is checked before `include`: a bad key on a sorted list, and
+    // any key on a list that takes no order.
     let error =
         server.get("/api/notes?include=x&sort=priority").await.error(StatusCode::BAD_REQUEST, "invalid_sort_field");
     assert_eq!(error["source"], json!({ "parameter": "sort" }));
@@ -2961,7 +2961,7 @@ fn project_path() -> String {
     format!("projects/{PROJECT}")
 }
 
-// ── Sort (§7.4) ──
+// ── Sort ──
 //
 // The generated CRUD lists take an `order`, and so does the hand-written
 // `section::list`; `tag::list` is hand-written without one, so it refuses
