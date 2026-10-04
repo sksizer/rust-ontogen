@@ -408,8 +408,9 @@ pub(crate) struct Method {
     pub body: Vec<String>,
 }
 
-/// The method `f` of module `m` gets in either HTTP client, or `None` for an
-/// event op. `scope` names the route-prefix parameter (`projectId`) of a
+/// The method `f` of module `m` gets in either HTTP client, whose
+/// parameters and return type the `Transport` interface declares, or `None`
+/// for an event op. `scope` names the route-prefix parameter (`projectId`) of a
 /// client that calls scoped routes through `scopedPath`, and is `None` for
 /// one that calls only unscoped routes.
 pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -> Option<Method> {
@@ -658,15 +659,14 @@ fn paginated_result(array: &str) -> String {
     format!("PaginatedResult<{}>", array.strip_suffix("[]").unwrap_or(array))
 }
 
-/// The `list` method for `f`, its collection at `/{base}`. The `Transport`
-/// interface takes its parameters and return type from here too.
+/// The `list` method for `f`, its collection at `/{base}`.
 ///
 /// A list served as a resource pages with the `page` family and reads a
 /// collection document; a filtered list sends its filter and flat
 /// `limit`/`offset` as plain query parameters and returns the body as sent;
 /// any other list is an op (§10.4), paging with the `opArg` family. Every
 /// paginated list returns `PaginatedResult`.
-pub(crate) fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -> Method {
+fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -> Method {
     let scope = scope_of(f, scope);
     let base = config.naming.url_for_module(m);
     let path = |p: &str| fetch(p, scope);

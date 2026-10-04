@@ -14,7 +14,7 @@ use ontogen_core::ir::OpKind;
 
 use crate::clients::config::Config;
 use crate::clients::generators::jsonapi;
-use crate::clients::generators::{FallbackRecord, command_name, ts_params_in_declaration_order};
+use crate::clients::generators::{FallbackRecord, command_name};
 use crate::servers::classify::classify_op;
 use crate::servers::parse::{ApiModule, EventFn, Param, is_page_param, is_resume_param};
 use crate::servers::types::{
@@ -240,83 +240,23 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
     out.push_str("export interface Transport {\n");
 
     for m in modules {
-        if m.functions.is_empty() {
-            continue;
-        }
-
         for f in &m.functions {
             let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
-
-            let op = classify_op(f);
-            let camel = snake_to_camel(&cmd_name);
-            let ts_ret = rust_type_to_ts(&f.return_type);
-            let returns_unit = f.return_type == "()";
-            let ret_str = if returns_unit { "null" } else { &ts_ret };
-
-            match op {
-                OpKind::List => {
-                    let list = jsonapi::list_method(m, f, config, None);
-                    let mut params = list.params;
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
-                    out.push_str(&format!("  {camel}({}): Promise<{}>;\n", params.join(", "), list.return_type));
-                }
-                OpKind::GetById => {
-                    out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<{}>;\n", camel, ret_str));
-                }
-                OpKind::Create => {
-                    let input_type = rust_type_to_ts(&extract_input_type(&f.params[0].ty));
-                    out.push_str(&format!("  {}(input: {}{pp_trailing}): Promise<{}>;\n", camel, input_type, ret_str));
-                }
-                OpKind::Update => {
-                    let input_type = rust_type_to_ts(&extract_input_type(&f.params[1].ty));
-                    out.push_str(&format!(
-                        "  {}(id: string, input: {}{pp_trailing}): Promise<{}>;\n",
-                        camel, input_type, ret_str
-                    ));
-                }
-                OpKind::Delete => {
-                    out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<null>;\n", camel));
-                }
-                OpKind::JunctionList { .. } => {
-                    // JunctionList follows the same pagination rules as List:
-                    // when config.pagination is set and the return is Vec<T>,
-                    // the method returns PaginatedResult<T> and accepts
-                    // limit/offset. Without this the interface and HTTP/IPC
-                    // implementations get out of sync.
-                    let paginated =
-                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
-                    let mut params = ts_params_in_declaration_order(f);
-                    if paginated {
-                        params.push("limit?: number".to_string());
-                        params.push("offset?: number".to_string());
-                    }
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
-                    let params_str = params.join(", ");
-                    let return_type = if paginated {
-                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str);
-                        format!("PaginatedResult<{}>", item_type)
-                    } else {
-                        ret_str.to_string()
-                    };
-                    out.push_str(&format!("  {}({}): Promise<{}>;\n", camel, params_str, return_type));
-                }
-                OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } | OpKind::CustomGet | OpKind::CustomPost => {
-                    let mut params = ts_params_in_declaration_order(f);
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
-                    let params_str = params.join(", ");
-                    out.push_str(&format!("  {}({}): Promise<{}>;\n", camel, params_str, ret_str));
-                }
-                OpKind::EventStream => continue,
+            // The HTTP impl's own signature, so the two cannot drift.
+            let Some(method) = jsonapi::method(m, f, config, None) else { continue };
+            let mut params = method.params;
+            if !pp_only.is_empty() {
+                params.push(pp_only.clone());
             }
+            out.push_str(&format!(
+                "  {}({}): Promise<{}>;\n",
+                snake_to_camel(&cmd_name),
+                params.join(", "),
+                method.return_type
+            ));
         }
     }
 
