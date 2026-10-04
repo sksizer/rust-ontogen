@@ -120,8 +120,8 @@ async function httpPatch<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
-async function httpDelete(path: string): Promise<void> {
-  await httpRequest('DELETE', path);
+async function httpDelete(path: string, body?: unknown): Promise<void> {
+  await httpRequest('DELETE', path, body);
 }
 
 /**
