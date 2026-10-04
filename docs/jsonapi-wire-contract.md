@@ -1640,7 +1640,10 @@ relationship, related, custom and event routes alike.
 - A prefix parameter that fails to parse (e.g. a non-UUID `project_id`) is
   `400 invalid_path_parameter`, with no `source`. The spec has no source
   member for path segments.
-- A failing scope accessor (`state.store_for(&project_id)`) stays
+- A handler binds the prefix parameter's value as `ontogen_scope`, never
+  under its configured name, which could be a name the handler binds
+  itself (`query`, `id`). The name appears only in the route.
+- A failing scope accessor (`state.store_for(&ontogen_scope)`) stays
   `500 internal_error`, as E0003 phase 1 keeps it. Mapping it to `404` waits
   on E0003's store-accessor contract.
 

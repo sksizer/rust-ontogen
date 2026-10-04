@@ -2122,7 +2122,7 @@ fn test_http_generator_crud_module() {
     assert!(content.contains("/api/projects/{project_id}/nodes"));
 
     // Should have store construction
-    assert!(content.contains("state.store_for(&project_id)"));
+    assert!(content.contains("state.store_for(&ontogen_scope)"));
 
     // Standard Axum imports
     assert!(content.contains("use axum::"));
@@ -2250,8 +2250,8 @@ fn test_http_generator_scoped_parameterized_event() {
     crate::servers::generators::http::generate(&output, &[make_param_event_module()], &config);
     let content = std::fs::read_to_string(&output).unwrap();
 
-    assert!(content.contains("Path((project_id, vault_id)): Path<(uuid::Uuid, String)>"));
-    assert!(content.contains(".subscribe_vault_note_changes_for(&project_id, vault_id, q.classes, resume)"));
+    assert!(content.contains("Path((ontogen_scope, vault_id)): Path<(uuid::Uuid, String)>"));
+    assert!(content.contains(".subscribe_vault_note_changes_for(&ontogen_scope, vault_id, q.classes, resume)"));
     assert!(content.contains("/api/projects/{project_id}/events/vault-note-changes/{vault_id}"));
 }
 
@@ -5555,27 +5555,102 @@ fn scoped_resource_routes_carry_the_prefix() {
          .patch(update_task_handler_scoped).delete(delete_task_handler_scoped)\
          .fallback(allow([Method::GET, Method::PATCH, Method::DELETE])))"
     )));
-    assert!(http.contains("Path((project_id, id)): Path<(uuid::Uuid, LookupKey)>,"));
-    assert!(http.contains("Path(project_id): Path<uuid::Uuid>,"));
+    assert!(http.contains("Path((ontogen_scope, id)): Path<(uuid::Uuid, LookupKey)>,"));
+    assert!(http.contains("Path(ontogen_scope): Path<uuid::Uuid>,"));
     // A handler reading a body checks its prefix after the media type.
     assert!(http.contains("path_params: Result<Path<uuid::Uuid>, ErrorObject>,"));
-    assert!(http.contains("let Path(project_id) = path_params?;"));
+    assert!(http.contains("let Path(ontogen_scope) = path_params?;"));
     assert!(http.contains("path_params: Result<Path<(uuid::Uuid, LookupKey)>, ErrorObject>,"));
-    assert!(http.contains("let Path((project_id, id)) = path_params?;"));
+    assert!(http.contains("let Path((ontogen_scope, id)) = path_params?;"));
     // The linked-resource checks open the scoped store, once per resource.
     assert!(flat.contains(&compact(
-        "async fn task_check_linked_scoped(state: &AppState, project_id: &uuid::Uuid, linked: &TaskLinkedIds) \
-         -> Result<(), ErrorObject> { let store = state.store_for(project_id).map_err(internal_error)?;"
+        "async fn task_check_linked_scoped(state: &AppState, ontogen_scope: &uuid::Uuid, linked: &TaskLinkedIds) \
+         -> Result<(), ErrorObject> { let store = state.store_for(ontogen_scope).map_err(internal_error)?;"
     )));
-    assert_eq!(http.matches("task_check_linked_scoped(&state, &project_id, &linked).await?;").count(), 2, "{http}");
+    assert_eq!(http.matches("task_check_linked_scoped(&state, &ontogen_scope, &linked).await?;").count(), 2, "{http}");
     assert!(!http.contains("async fn task_check_linked("), "no unscoped handler links:\n{http}");
     assert!(flat.contains(&compact(
-        "let collection = &format!(\"/api/projects/{}/tasks\", encode_path_segment(&project_id.to_string()));"
+        "let collection = &format!(\"/api/projects/{}/tasks\", encode_path_segment(&ontogen_scope.to_string()));"
     )));
-    assert!(http.contains("let store = state.store_for(&project_id).map_err(internal_error)?;"));
+    assert!(http.contains("let store = state.store_for(&ontogen_scope).map_err(internal_error)?;"));
     // The scoped list pages through the store like the unscoped one.
     assert!(flat.contains(&compact("let total = task::count(&store).await.map_err(app_error)?;")));
     assert!(!flat.contains(&compact(".route(\"/api/tasks\"")), "store-scoped CRUD has no unscoped route:\n{http}");
+}
+
+/// Every name a pattern binds.
+fn pattern_idents(pat: &syn::Pat, out: &mut Vec<String>) {
+    match pat {
+        syn::Pat::Ident(i) => out.push(i.ident.to_string()),
+        syn::Pat::Tuple(t) => t.elems.iter().for_each(|p| pattern_idents(p, out)),
+        syn::Pat::TupleStruct(t) => t.elems.iter().for_each(|p| pattern_idents(p, out)),
+        syn::Pat::Paren(p) => pattern_idents(&p.pat, out),
+        syn::Pat::Type(t) => pattern_idents(&t.pat, out),
+        _ => {}
+    }
+}
+
+/// A prefix param may share a name with any binding of a generated handler:
+/// the handlers bind its value as `ontogen_scope`, and the name stays in the
+/// route only.
+#[test]
+fn a_prefix_param_may_be_named_like_a_handler_binding() {
+    for name in ["query", "path_params"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = resource_fixture(tmp.path(), true);
+        config.route_prefix = Some(RoutePrefix {
+            segments: format!("projects/:{name}"),
+            state_accessor: "store_for".to_string(),
+            params: vec![PrefixParam {
+                name: name.to_string(),
+                rust_type: "uuid::Uuid".to_string(),
+                ts_type: "string".to_string(),
+            }],
+        });
+        let http = generate_http(tmp.path(), config);
+        let flat = compact(&http);
+
+        assert!(flat.contains(&compact(&format!(".route(\"/api/projects/{{{name}}}/tasks/{{id}}\""))), "{http}");
+        for handler in ["create_task_handler_scoped", "update_task_handler_scoped"] {
+            let body =
+                &http[http.find(&format!("async fn {handler}(")).unwrap_or_else(|| panic!("{handler}:\n{http}"))..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            let handler_fn = syn::parse_str::<syn::ItemFn>(&format!("{body}\n}}")).expect("the handler parses");
+            let mut bound = Vec::new();
+            for arg in &handler_fn.sig.inputs {
+                if let syn::FnArg::Typed(t) = arg {
+                    pattern_idents(&t.pat, &mut bound);
+                }
+            }
+            for stmt in &handler_fn.block.stmts {
+                if let syn::Stmt::Local(local) = stmt
+                    && let syn::Pat::TupleStruct(_) = &local.pat
+                {
+                    pattern_idents(&local.pat, &mut bound);
+                }
+            }
+            let mut unique = bound.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(unique.len(), bound.len(), "{handler} binds a name twice: {bound:?}\n{body}");
+            assert!(bound.contains(&"ontogen_scope".to_string()), "{handler}: {bound:?}");
+            assert!(body.contains("query?;"), "{handler} still answers its query check:\n{body}");
+        }
+        assert!(http.contains("let Path(ontogen_scope) = path_params?;"), "{http}");
+        assert!(http.contains("let Path((ontogen_scope, id)) = path_params?;"), "{http}");
+        assert!(http.contains("let store = state.store_for(&ontogen_scope).map_err(internal_error)?;"), "{http}");
+        assert!(
+            flat.contains(&compact(
+                "let collection = &format!(\"/api/projects/{}/tasks\", encode_path_segment(&ontogen_scope.to_string()));"
+            )),
+            "{http}"
+        );
+        // The list and get handlers read the prefix beside their own `query`.
+        assert!(
+            flat.contains(&compact("Path(ontogen_scope): Path<uuid::Uuid>, query: Query<PagedListParams>")),
+            "{http}"
+        );
+    }
 }
 
 #[test]

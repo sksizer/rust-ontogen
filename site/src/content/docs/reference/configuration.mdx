@@ -329,7 +329,7 @@ Optional prefix for project-scoped routes (e.g., `/api/projects/{project_id}/nod
 | Field | Type | Description |
 |-------|------|-------------|
 | `segments` | `String` | Path segments to insert (e.g., `"projects/:project_id"`). |
-| `state_accessor` | `String` | State method for validation (e.g., `"store_for"` produces `state.store_for(&project_id)?`). |
+| `state_accessor` | `String` | State method for validation (e.g., `"store_for"` produces `state.store_for(&ontogen_scope)?`, where `ontogen_scope` is the prefix param's value). |
 | `params` | `Vec<PrefixParam>` | Parameters extracted from segments. |
 
 #### Route parameter syntax
@@ -342,7 +342,7 @@ That asymmetry is deliberate: `axum_path()` normalizes every route string at emi
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | `String` | Parameter name (e.g., `"project_id"`). |
+| `name` | `String` | Parameter name (e.g., `"project_id"`). In HTTP it names the route segment only: generated handlers bind the value as `ontogen_scope`, so any name works, including one a handler uses itself (`query`, `id`). IPC and MCP commands take it under this name. |
 | `rust_type` | `String` | Rust type (e.g., `"uuid::Uuid"`). |
 | `ts_type` | `String` | TypeScript type (e.g., `"string"`). |
 

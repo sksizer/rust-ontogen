@@ -165,15 +165,18 @@ fn unscoped_access(f: &ApiFn) -> Access {
     }
 }
 
+/// The ident a scoped handler binds the route prefix's value to. The
+/// prefix param's configured name is only a route segment: as an ident it
+/// could be any name a handler already binds (`query`, `state`, `id`,
+/// `path_params`, a function's own parameter), so no handler uses it.
+const SCOPE: &str = "ontogen_scope";
+
 /// A scoped handler's access through the prefix accessor. Its failure is a
 /// `500`: the accessor's error does not say whether the scope is missing
 /// (§11.1).
 fn scoped_access(prefix: &RoutePrefix) -> Access {
     Access {
-        open: format!(
-            "    let store = state.{}(&{}).map_err(internal_error)?;\n",
-            prefix.state_accessor, prefix.params[0].name
-        ),
+        open: format!("    let store = state.{}(&{SCOPE}).map_err(internal_error)?;\n", prefix.state_accessor),
         arg: "&store",
     }
 }
@@ -866,7 +869,7 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
     let linked_ty = resource_names(&m.name).linked;
     for scoped in kinds {
         let prefix = config.route_prefix.as_ref().filter(|_| scoped);
-        let scope_param = prefix.map(|p| format!("{}: &{}, ", p.params[0].name, p.params[0].rust_type));
+        let scope_param = prefix.map(|p| format!("{SCOPE}: &{}, ", p.params[0].rust_type));
         let mut opens: Vec<String> = Vec::new();
         let mut checks = String::new();
         for rel in &resource.relationships {
@@ -875,10 +878,8 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
             let arg = match (tf.first_param_is_store, prefix) {
                 (false, _) => "state".to_string(),
                 (true, Some(prefix)) => {
-                    let open = format!(
-                        "    let store = state.{}({}).map_err(internal_error)?;\n",
-                        prefix.state_accessor, prefix.params[0].name
-                    );
+                    let open =
+                        format!("    let store = state.{}({SCOPE}).map_err(internal_error)?;\n", prefix.state_accessor);
                     if !opens.contains(&open) {
                         opens.push(open);
                     }
@@ -936,10 +937,7 @@ fn write_steps(op: &ResourceOp<'_>) -> (String, String) {
         return (format!("    let fields = {fields_fn}(&data, {create})?;\n"), String::new());
     }
     let scoped = is_scoped(op.f, op.config);
-    let scope_arg = match op.config.route_prefix.as_ref().filter(|_| scoped) {
-        Some(prefix) => format!("&{}, ", prefix.params[0].name),
-        None => String::new(),
-    };
+    let scope_arg = if op.config.route_prefix.is_some() && scoped { format!("&{SCOPE}, ") } else { String::new() };
     (
         format!("    let (fields, linked) = {fields_fn}(&data, {create})?;\n"),
         format!("    {}(&state, {scope_arg}&linked).await?;\n", check_linked_fn(&op.m.name, scoped)),
@@ -987,7 +985,8 @@ fn resource_handler(
                 .split('/')
                 .map(|segment| match segment.strip_prefix(':') {
                     Some(name) => {
-                        args.push(format!("encode_path_segment(&{name}.to_string())"));
+                        let ident = if name == pp.name { SCOPE } else { name };
+                        args.push(format!("encode_path_segment(&{ident}.to_string())"));
                         "{}".to_string()
                     }
                     None => segment.to_string(),
@@ -999,8 +998,8 @@ fn resource_handler(
                     template.join("/"),
                     args.join(", ")
                 ),
-                Some((pp.name.clone(), pp.rust_type.clone())),
-                (format!("({}, id)", pp.name), format!("({}, LookupKey)", pp.rust_type)),
+                Some((SCOPE.to_string(), pp.rust_type.clone())),
+                (format!("({SCOPE}, id)"), format!("({}, LookupKey)", pp.rust_type)),
             )
         }
     };
@@ -1505,9 +1504,8 @@ fn generate_sse_handler(
     let mut path_names: Vec<String> = Vec::new();
     let mut path_types: Vec<String> = Vec::new();
     if let Some(prefix) = scoped {
-        let pp = &prefix.params[0];
-        path_names.push(pp.name.clone());
-        path_types.push(pp.rust_type.clone());
+        path_names.push(SCOPE.to_string());
+        path_types.push(prefix.params[0].rust_type.clone());
     }
     for p in &path_params {
         path_names.push(p.name.clone());
@@ -1551,9 +1549,8 @@ fn generate_sse_handler(
         }
     }
     let call = match scoped {
-        Some(prefix) => {
-            let pp_name = &prefix.params[0].name;
-            let mut all = vec![format!("&{pp_name}")];
+        Some(_) => {
+            let mut all = vec![format!("&{SCOPE}")];
             all.extend(args);
             format!("state.subscribe_{fn_name}_for({})", all.join(", "))
         }
@@ -1758,9 +1755,8 @@ fn generate_scoped_handlers(
     prefix: &RoutePrefix,
 ) {
     let state_type = &config.state_type;
-    let pp = &prefix.params[0];
-    let pp_name = &pp.name;
-    let pp_type = &pp.rust_type;
+    let pp_name = SCOPE;
+    let pp_type = &prefix.params[0].rust_type;
     let store_let = scoped_access(prefix).open;
 
     out.push_str("\n// ── Project-Scoped Handlers ──\n\n");
@@ -1975,9 +1971,8 @@ fn generate_generic_http_handler_scoped(
     let url_plural = config.naming.url_for_module(module);
     let state_type = &config.state_type;
     let accessor = &prefix.state_accessor;
-    let pp = &prefix.params[0];
-    let pp_name = &pp.name;
-    let pp_type = &pp.rust_type;
+    let pp_name = SCOPE;
+    let pp_type = &prefix.params[0].rust_type;
     let params = CustomParams::of(f);
 
     // Build scoped route path
@@ -2012,7 +2007,7 @@ fn generate_generic_http_handler_scoped(
         let path_type = if p.ty == "i32" { "i32" } else { "String" };
         out.push_str(&format!("    Path(({pp_name}, {})): Path<({pp_type}, {})>,\n", p.name, path_type));
     } else {
-        let mut names = vec![pp_name.clone()];
+        let mut names = vec![pp_name.to_string()];
         let mut types = vec![pp_type.clone()];
         for p in &params.path {
             names.push(p.name.clone());

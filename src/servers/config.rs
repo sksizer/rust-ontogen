@@ -235,7 +235,8 @@ pub struct RoutePrefix {
     /// form when routes are emitted.
     pub segments: String,
     /// The state accessor method to call for validation
-    /// (e.g., `"store_for"` → `state.store_for(&project_id)?`).
+    /// (e.g., `"store_for"` → `state.store_for(&ontogen_scope)?` in an HTTP
+    /// handler, which binds the prefix param's value as `ontogen_scope`).
     pub state_accessor: String,
     /// Parameters extracted from the prefix segments.
     pub params: Vec<PrefixParam>,
