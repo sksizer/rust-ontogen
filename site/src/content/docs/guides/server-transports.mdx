@@ -588,6 +588,10 @@ naming: ontogen::servers::NamingConfig {
     ]),
     label_overrides: Default::default(),
     plural_label_overrides: Default::default(),
+    // Modules served at a singular URL, as `// ontogen:singleton` does.
+    singleton_modules: HashSet::from(["database".to_string()]),
+    // Per-function IPC command / TS method names, keyed `module::fn`.
+    command_overrides: Default::default(),
 },
 ```
 
