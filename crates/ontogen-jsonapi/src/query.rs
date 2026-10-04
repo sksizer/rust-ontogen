@@ -214,7 +214,9 @@ impl QueryParams {
                 invalid(&parameter, format!("`{parameter}` is invalid: {message}"))
             }
             form::Error::MissingField(field) => required(&filter_name(field)),
-            form::Error::Custom(message) => invalid("filter", format!("`filter` is invalid: {message}")),
+            err @ (form::Error::Custom(_) | form::Error::Duplicate(_)) => {
+                invalid("filter", format!("`filter` is invalid: {err}"))
+            }
         })
     }
 
@@ -927,6 +929,24 @@ mod tests {
             assert!(parse("filter[min]=1&filter[max]=2", &RANGE).filter::<Range>().is_ok());
             let (parameter, detail) = filter_failure::<Range>("filter[min]=3&filter[max]=2", &RANGE);
             assert_eq!((parameter.as_str(), detail.as_str()), ("filter", "`filter` is invalid: min is above max"));
+        }
+
+        #[test]
+        fn a_filter_alias_given_twice_names_the_later_member() {
+            #[derive(Debug, Deserialize)]
+            #[allow(dead_code)]
+            struct Aliased {
+                #[serde(alias = "state")]
+                status: Option<String>,
+            }
+            const ALIASED: QuerySpec = QuerySpec { filter_fields: Some(filter_fields::<Aliased>), ..QuerySpec::NONE };
+            // Members are read in byte order, so `status` sorts after `state` and is the later one
+            // whatever the request order.
+            for raw in ["filter[status]=a&filter[state]=b", "filter[state]=b&filter[status]=a"] {
+                let (parameter, detail) = filter_failure::<Aliased>(raw, &ALIASED);
+                assert_eq!(parameter, "filter[status]", "{raw}");
+                assert!(detail.contains("duplicate field `status`"), "{detail}");
+            }
         }
 
         #[test]

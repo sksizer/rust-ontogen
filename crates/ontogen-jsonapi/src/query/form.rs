@@ -2,7 +2,7 @@
 //! reads a field, a struct read from the members of one family, and the
 //! field names a struct declares.
 
-use std::fmt;
+use std::{cell::Cell, fmt};
 
 use serde::{
     de::{
@@ -21,6 +21,9 @@ pub(super) enum Error {
     MissingField(&'static str),
     /// The member is given more than once.
     Repeated(String),
+    /// serde saw one field twice, as two members that name it (a serde
+    /// alias); not yet tied to a member.
+    Duplicate(&'static str),
     /// serde rejected the member's value.
     Member { member: String, message: String },
 }
@@ -31,6 +34,7 @@ impl fmt::Display for Error {
             Error::Custom(message) | Error::Member { message, .. } => f.write_str(message),
             Error::MissingField(field) => write!(f, "missing field `{field}`"),
             Error::Repeated(member) => write!(f, "`{member}` is given more than once"),
+            Error::Duplicate(field) => write!(f, "duplicate field `{field}`"),
         }
     }
 }
@@ -46,6 +50,11 @@ impl de::Error for Error {
     // lets the error name the member the request lacks.
     fn missing_field(field: &'static str) -> Self {
         Error::MissingField(field)
+    }
+
+    // A field reached through two members, which only an alias allows.
+    fn duplicate_field(field: &'static str) -> Self {
+        Error::Duplicate(field)
     }
 }
 
@@ -162,16 +171,28 @@ where
     T: DeserializeOwned,
     I: Iterator<Item = Member<'a>>,
 {
-    T::deserialize(MapAccessDeserializer::new(Members { members, pending: None }))
+    // serde's derive raises a duplicate field after reading the later
+    // member's name and before its value, so the member whose name was
+    // handed out last is the one that triggered it.
+    let last = Cell::new(None);
+    T::deserialize(MapAccessDeserializer::new(Members { members, pending: None, last: &last })).map_err(|err| match err
+    {
+        Error::Duplicate(field) => match last.get() {
+            Some(member) => Error::Member { member: member.to_owned(), message: format!("duplicate field `{field}`") },
+            None => Error::Custom(format!("duplicate field `{field}`")),
+        },
+        other => other,
+    })
 }
 
-struct Members<'a, I> {
+struct Members<'a, 'r, I> {
     members: I,
+    last: &'r Cell<Option<&'a str>>,
     /// The member whose name was handed out and whose value is next.
     pending: Option<(&'a str, &'a str)>,
 }
 
-impl<'a, I: Iterator<Item = Member<'a>>> MapAccess<'a> for Members<'a, I> {
+impl<'a, I: Iterator<Item = Member<'a>>> MapAccess<'a> for Members<'a, '_, I> {
     type Error = Error;
 
     fn next_key_seed<K: DeserializeSeed<'a>>(&mut self, seed: K) -> Result<Option<K::Value>, Error> {
@@ -180,6 +201,7 @@ impl<'a, I: Iterator<Item = Member<'a>>> MapAccess<'a> for Members<'a, I> {
             return Err(Error::Repeated(member.to_owned()));
         }
         self.pending = Some((member, value));
+        self.last.set(Some(member));
         seed.deserialize(BorrowedStrDeserializer::new(member)).map(Some)
     }
 
