@@ -22,7 +22,7 @@ pub(super) enum Error {
     /// The member is given more than once.
     Repeated(String),
     /// serde saw one field twice, as two members that name it (a serde
-    /// alias); not yet tied to a member.
+    /// alias); no member is attached to it.
     Duplicate(&'static str),
     /// serde rejected the member's value.
     Member { member: String, message: String },
@@ -287,7 +287,7 @@ mod tests {
     #[derive(Debug, PartialEq, Deserialize)]
     struct Newtype(u8);
 
-    /// The old reader: `serde_urlencoded` reading one pair into a field.
+    /// The reference reader: `serde_urlencoded` reading one pair into a field.
     fn urlencoded<T: DeserializeOwned>(value: &str) -> Result<T, String> {
         #[derive(Deserialize)]
         struct One<T> {

@@ -391,10 +391,22 @@ mod tests {
 
     #[test]
     fn a_stateless_list_does_not_replace_the_generated_list() {
-        let source = "use crate::schema::Workout;\n\n#[ontogen(stateless)]\n\
+        let source = "use crate::schema::Workout;\n\n#[ontogen::stateless]\n\
             pub async fn list() -> Result<Vec<Workout>, crate::schema::AppError> { todo!() }\n";
-        let (_tmp, _output, code) = generate_with_scanned(source, false);
+        let (tmp, _output, code) = generate_with_scanned(source, false);
         assert!(code.contains("fn list("), "{code}");
+        // The hand-written list was scanned, as a stateless fn, and still did
+        // not replace the generated one.
+        let scan = tmp.path().join("api");
+        let scanned = crate::servers::parse::scan_api_dir_excluding(
+            &scan,
+            "AppState",
+            Some("Store"),
+            Some(&scan.join("generated")),
+        );
+        let workout = scanned.modules.iter().find(|m| m.name == "workout").expect("workout scanned");
+        let list = workout.functions.iter().find(|f| f.name == "list").expect("hand-written list scanned");
+        assert!(list.is_stateless);
     }
 
     #[test]

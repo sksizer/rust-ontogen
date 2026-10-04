@@ -277,9 +277,11 @@ in `api_dir/{module}.rs` replaces the generated `list` for that module, and
 the generated `count` too when the module is paginated. The API stage scans
 the hand-written fns before it emits, so `gen_api` does not emit them, and
 the merge keeps a scanned `list` or `count` over a generated one of the same
-name (every other name still keeps the generated fn). A filtered list can
-therefore be the module's list, and the unfiltered generated `count` never
-disagrees with it.
+name. Only `list` and `count` may be hand-written beside the generated
+module: any other name it defines, written again by hand, fails the build
+as defined twice in that API directory. A filtered list can therefore be
+the module's list, and the unfiltered generated `count` never disagrees
+with it.
 
 ### 2. Sortable fields
 

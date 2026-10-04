@@ -599,7 +599,7 @@ impl Pipeline {
             Some(stage) => {
                 // Explicit directories come first and add to the transports' ones. A
                 // missing explicit directory is an error in `gen_api`; a transport's
-                // directory that does not exist yet is skipped here, because the
+                // directory that does not exist is skipped here, because the
                 // servers or clients stage reports it with its own message.
                 let mut scan_dirs = stage.scan_dirs;
                 for dir in transport_api_dirs {
