@@ -1089,7 +1089,7 @@ mod tests {
     fn check_http_ops_raises_the_junction_rules() {
         let model = model(JUNCTIONS).unwrap();
         let modules = [module("task", vec![get_by_id(), list("list_tags", "Vec<Tag>"), write("add_tag")])];
-        let err = crate::servers::classify::check_http_ops(&modules, &model).unwrap_err();
+        let err = crate::servers::classify::check_http_ops(&modules, &model, None).unwrap_err();
         assert!(err.starts_with("ontogen: `task::list_tags` defines the relationship `tags`"), "{err}");
     }
 
@@ -1099,7 +1099,7 @@ mod tests {
         let target =
             |entity: &str| module(&entity.to_lowercase(), vec![op_returning("get_by_id", &[("id", "&str")], entity)]);
         let task = module("task", vec![get_by_id(), list("list_labels", "Vec<Label>"), write("add_label")]);
-        let check = |modules: &[ApiModule]| crate::servers::classify::check_http_ops(modules, &model);
+        let check = |modules: &[ApiModule]| crate::servers::classify::check_http_ops(modules, &model, None);
 
         check(&[task.clone(), target("Tag"), target("Label")]).unwrap();
         assert_eq!(

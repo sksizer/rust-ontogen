@@ -225,7 +225,7 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
         return Ok(modules);
     }
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::HttpAxum { .. })) {
-        classify::check_http_ops(&modules, &config.resources)?;
+        classify::check_http_ops(&modules, &config.resources, config.route_prefix.as_ref())?;
         generators::http::check_resource_ops(&modules, config)?;
         for warning in generators::http::unplaced_app_error_warnings(&modules, config) {
             println!("{warning}");
