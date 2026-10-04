@@ -251,7 +251,10 @@ mod tests {
             ]
         );
         let SortKind::Enum(kind) = specs[7].kind else { panic!("kind is an enum") };
-        assert_eq!(kind.variants.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), ["alpha", "beta", "gamma"]);
+        assert_eq!(
+            kind.variants.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(),
+            ["gamma", "alpha", "beta", "delta"]
+        );
     }
 
     #[test]

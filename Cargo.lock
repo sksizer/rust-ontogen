@@ -1072,6 +1072,7 @@ dependencies = [
 name = "parity-check"
 version = "0.1.0"
 dependencies = [
+ "ontogen-core",
  "parity-markdown",
  "parity-seaorm",
  "sea-orm",
@@ -1087,6 +1088,7 @@ version = "0.1.0"
 dependencies = [
  "markdown-store",
  "ontogen",
+ "ontogen-core",
  "ontogen-macros",
  "schemars",
  "serde",

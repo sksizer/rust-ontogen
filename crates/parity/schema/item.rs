@@ -1,13 +1,19 @@
 use ontogen_macros::OntologyEntity;
 use serde::{Deserialize, Serialize};
 
-/// A string enum. Both backends store the serialized name.
+/// A string enum. Both backends store the serialized name, and sort by it
+/// (ADR 0006 §3): declaration order (gamma, alpha, beta, zeta), variant-name
+/// order (Alpha, Beta, Gamma, Zeta) and stored-string order (alpha, beta,
+/// delta, gamma) all differ, so a sort by anything but the stored string
+/// shows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
+    Gamma,
     Alpha,
     Beta,
-    Gamma,
+    #[serde(rename = "delta")]
+    Zeta,
 }
 
 /// One field of every type ADR 0006 §2 lists as sortable (and so has to

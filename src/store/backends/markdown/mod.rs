@@ -6,7 +6,7 @@ pub(crate) mod gen_crud;
 
 use super::{StoreBackend, WikilinkPolicy};
 use crate::ir::{IdStrategy, MarkdownIoOutput};
-use crate::schema::model::EntityDef;
+use crate::schema::model::{EntityDef, EnumDef};
 use crate::store::helpers::to_snake_case;
 
 pub(crate) struct MarkdownBackend {
@@ -33,7 +33,7 @@ impl StoreBackend for MarkdownBackend {
         code.push_str(&format!("const {}: &str = {type_name:?};\n\n", gen_crud::type_const(&snake)));
     }
 
-    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
+    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef, _enums: &[EnumDef], id_strategy: &IdStrategy) {
         gen_crud::generate_crud_impl(code, entity, id_strategy);
     }
 

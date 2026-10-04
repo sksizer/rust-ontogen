@@ -115,7 +115,7 @@ async fn ids_the_create_rule_refuses_are_not_created_but_hand_named_files_are_se
         assert!(matches!(store.create_note(note(id, "t")).await, Err(AppError::Md(_))), "create {id:?}");
         assert!(matches!(store.get_note(id).await, Err(AppError::NoteNotFound(_))), "get {id:?}");
     }
-    assert!(store.list_notes(None, None).await.unwrap().is_empty(), "nothing was written");
+    assert!(store.list_notes(&[], None, None).await.unwrap().is_empty(), "nothing was written");
 
     std::fs::create_dir_all(dir.path().join("notes")).unwrap();
     std::fs::write(dir.path().join("notes/Draft.md"), "---\ntitle: Old\n---\n").unwrap();
@@ -136,9 +136,9 @@ async fn lists_and_has_many_children_are_in_id_byte_order() {
     for id in ["é", "B"] {
         std::fs::write(dir.path().join(format!("notes/{id}.md")), format!("---\ntitle: {id}\n---\n")).unwrap();
     }
-    let ids: Vec<String> = store.list_notes(None, None).await.unwrap().into_iter().map(|n| n.id).collect();
+    let ids: Vec<String> = store.list_notes(&[], None, None).await.unwrap().into_iter().map(|n| n.id).collect();
     assert_eq!(ids, ["B", "a", "a-2", "a2", "z", "é"], "UTF-8 byte order, not case-folded or locale order");
-    let page: Vec<String> = store.list_notes(Some(2), Some(1)).await.unwrap().into_iter().map(|n| n.id).collect();
+    let page: Vec<String> = store.list_notes(&[], Some(2), Some(1)).await.unwrap().into_iter().map(|n| n.id).collect();
     assert_eq!(page, ["a", "a-2"]);
 
     store.create_task(task("parent", None)).await.unwrap();

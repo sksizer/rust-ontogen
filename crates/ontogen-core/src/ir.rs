@@ -250,10 +250,12 @@ pub enum StoreMethodKind {
     Custom,
 }
 
-/// The five standard CRUD operations.
+/// The standard store operations: the five CRUD operations and `count`,
+/// the total behind a page of `list`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrudOp {
     List,
+    Count,
     Get,
     Create,
     Update,
