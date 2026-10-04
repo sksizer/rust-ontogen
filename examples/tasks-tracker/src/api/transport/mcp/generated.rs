@@ -13,7 +13,8 @@ use serde_json::{Value, json};
 use crate::AppState;
 use crate::api::v1::{epic, tag, task};
 use crate::schema::{
-    CreateEpicInput, CreateTagInput, CreateTaskInput, Epic, Tag, Task, UpdateEpicInput, UpdateTagInput, UpdateTaskInput,
+    CreateEpicInput, CreateTagInput, CreateTaskInput, Epic, ListTasksQuery, Tag, Task, UpdateEpicInput, UpdateTagInput,
+    UpdateTaskInput,
 };
 use crate::store::Store;
 
@@ -262,26 +263,6 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
             },
         },
         McpToolDef {
-            name: "task_list",
-            description: "One page of tasks",
-            schema_fn: || with_pagination_schema(schema_for::<EmptyInput>()),
-            handler: |state, args| {
-                Box::pin(async move {
-                    let store = state.store().await.map_err(|e| e.to_string())?;
-                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100);
-                    let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let items = task::list(&store, Some(limit), Some(offset)).await.map_err(|e| e.to_string())?;
-                    let total = task::count(&store).await.map_err(|e| e.to_string())?;
-                    Ok(json!({
-                        "items": serde_json::to_value(&items).map_err(|e| format!("Serialize error: {e}"))?,
-                        "total": total,
-                        "limit": limit,
-                        "offset": offset
-                    }))
-                })
-            },
-        },
-        McpToolDef {
             name: "task_get_by_id",
             description: "Get a single task by ID",
             schema_fn: schema_for::<GetByIdInput>,
@@ -333,6 +314,29 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
                     let id = required_str(args, "id")?.to_string();
                     task::delete(&store, &id).await.map_err(|e| e.to_string())?;
                     Ok(json!({"success": true}))
+                })
+            },
+        },
+        McpToolDef {
+            name: "task_list",
+            description: "List tasks, optionally filtered by status and epic",
+            schema_fn: || with_pagination_schema(schema_for::<ListTasksQuery>()),
+            handler: |state, args| {
+                Box::pin(async move {
+                    let store = state.store().await.map_err(|e| e.to_string())?;
+                    let query: ListTasksQuery = serde_json::from_value(args.clone()).unwrap_or_default();
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100);
+                    let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let items = task::list(&store, query.clone(), Some(limit), Some(offset))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let total = task::count(&store, query).await.map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "items": serde_json::to_value(&items).map_err(|e| format!("Serialize error: {e}"))?,
+                        "total": total,
+                        "limit": limit,
+                        "offset": offset
+                    }))
                 })
             },
         },
