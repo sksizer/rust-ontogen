@@ -11,7 +11,7 @@ tags: [servers, clients, http, jsonapi, wire-format]
 # Epic — JSON:API as the generated HTTP wire format
 
 **Milestone:** M4 — Standard formats ([roadmap](../../roadmap.md))
-**Status:** proposed — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c is next
+**Status:** proposed — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)), completing the 0.9.0 wire; phase 2 is next
 **Spec:** [JSON:API 1.1](https://jsonapi.org/format/)
 **Wire contract:** [`docs/jsonapi-wire-contract.md`](../../jsonapi-wire-contract.md) — normative; every phase implements against it
 **Decision records:** [ADR 0004](../../architecture/0004-jsonapi-http-wire-format.md) (this epic's decisions),
@@ -156,8 +156,8 @@ each of its sections to a phase.
 **Phase 1b — CRUD over JSON:API.**
 
 - The parsed schema as an explicit input of `gen_servers` and
-  `gen_clients` (contract §5.1). Modules with no entity behind them keep
-  today's handlers until 1c.
+  `gen_clients` (contract §5.1). Modules with no entity behind them kept
+  their handlers until 1c.
 - Media type, documents, and resource objects with relationship `data`.
 - Query-parameter rules, list and pagination (`page[]`, `meta`, `self` plus
   the four pagination links).
@@ -169,7 +169,7 @@ each of its sections to a phase.
 - Snapshots and examples regenerated, with tasks-tracker paginating `task`, `epic` and `tag` (pagination is per
   surface, contract §2).
 
-**Phase 1c — the rest of the 0.9.0 wire.**
+**Phase 1c — the rest of the 0.9.0 wire.** Done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)):
 
 - Custom ops as meta-only documents, with `meta.args` request bodies and
   `opArg[…]` (decisions 1 and 7), and the singleton CRUD check.
@@ -313,7 +313,7 @@ Filed when phase 0 closes; one task per phase, PR-sized.
 - [x] phase 0 — wire contract doc + ADR 0004 + ADR 0006
 - [x] phase 1a — `ontogen-jsonapi` runtime crate, `IdStrategy` on SeaORM with one source of truth, `{Entity}AlreadyExists`/`IdRequired`, `has_many` fix, markdown default id order ([#197](https://github.com/sksizer/rust-ontogen/pull/197) runtime crate, [#198](https://github.com/sksizer/rust-ontogen/pull/198) store)
 - [x] phase 1b — schema input, CRUD envelope, media type, errors, PATCH, TS flattener ([#200](https://github.com/sksizer/rust-ontogen/pull/200))
-- [ ] phase 1c — custom ops, ops served as custom, event frames, scoped pagination
+- [x] phase 1c — custom ops, ops served as custom, event frames, scoped pagination ([#201](https://github.com/sksizer/rust-ontogen/pull/201))
 - [ ] phase 2 — filter family
 - [ ] phase 3a — relationship endpoints, related links, junction re-route
 - [ ] phase 3b — `include` compound documents
