@@ -141,7 +141,10 @@ In a module named after an entity, a hand-written `list` now replaces the genera
 
 - When the module is paginated, a hand-written `list` also drops the generated `count`, because the generated one counts the whole table. The module must define a `count` that takes the same filter parameters as the `list` (and no page). Without one the build fails with a message saying the hand-written `list` replaces the generated `count`.
 - Any other name still keeps the generated fn over a hand-written fn of the same name.
-- `Pipeline` now scans the servers stage's `api_dir`, every extra surface's `api_dir` and the clients stage's `api_dir` for the api stage, when `api_scan_dirs` is not set. Set `api_scan_dirs` to scan something else. A direct `gen_api` caller still lists its `scan_dirs`.
+- `Pipeline` now scans the servers stage's `api_dir`, every extra surface's `api_dir` and the clients stage's `api_dir` for the api stage. Directories given to `api_scan_dirs` are scanned too, ahead of those; before, `api_scan_dirs` was the whole list. A direct `gen_api` caller lists its `scan_dirs` and must include every directory that holds a hand-written `list` or `count`.
+- When the api stage does not scan the directory holding a hand-written `list` or `count`, the generated one is still emitted and the servers stage finds the fn twice in one API directory. The build then fails with an error that names the fn and this rule. Before, it reported the fn as defined by two API surfaces.
+- A `#[ontogen::stateless]` `list` or `count` never replaces the generated one, so it fails the build the same way. Give it the state or the store.
+- A directory listed in `api_scan_dirs` or `ApiConfig::scan_dirs` that does not exist is an error. A transport's `api_dir` that does not exist is skipped by the api stage with a warning, and the servers stage reports it.
 - `gen_api` no longer prints warnings about scan records it skips; the servers and clients stages print the same ones.
 - The HTTP generator refuses, as a build error, a list whose filter it cannot serve: a second `*Query` struct, a `*Query` struct that is not taken by value (`&ListTasksQuery`, `Option<ListTasksQuery>`), a bare filter whose type one value cannot carry (`Vec<_>`, a tuple, a schema entity), and an `*Input` parameter on a `list`, which has no body. IPC and MCP generation does not apply these checks.
 
