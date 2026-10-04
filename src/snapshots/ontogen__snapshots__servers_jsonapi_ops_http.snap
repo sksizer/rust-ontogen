@@ -1,6 +1,6 @@
 ---
 source: src/snapshots.rs
-expression: read_file(&output)
+expression: "crate::servers::tests::generate_http(tmp.path(), config)"
 ---
 #![allow(dead_code, unused_imports, clippy::pedantic, clippy::needless_borrow)]
 //! Auto-generated HTTP route handlers. DO NOT EDIT.
@@ -11,28 +11,31 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::State,
+    extract::{State, rejection::QueryRejection},
     http::{Method, StatusCode},
-    response::Response,
-    routing::get,
+    response::{Json, Response},
+    routing::{delete, get, post},
 };
 use ontogen_jsonapi::{
     Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
-    ResourceIdentifier, ResourceObject, ResultMeta,
+    ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
     error::method_not_allowed,
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::{CanonicalQuery, encode_path_segment, pagination_links},
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-use crate::api::v1::{epic, report, tag, task};
+use crate::api::v1::{activity, agent, epic, report, tag, task, workout};
 use crate::schema::{
-    CreateEpicInput, CreateReportInput, CreateTagInput, CreateTaskInput, Epic, Tag, Task, UpdateEpicInput,
-    UpdateReportInput, UpdateTagInput, UpdateTaskInput,
+    Agent, AgentQuery, CreateEpicInput, CreateReportInput, CreateTagInput, CreateTaskInput, Epic, StartWorkoutInput,
+    Tag, Task, UpdateEpicInput, UpdateReportInput, UpdateTagInput, UpdateTaskInput,
 };
+use axum::response::sse::{Event, KeepAlive, Sse};
+use ontogen_core::events::EventFrame;
+use std::convert::Infallible;
 
 /// An `AppError` as an error object: the status its variant's name gives,
 /// and the name in snake_case as the code.
@@ -61,6 +64,13 @@ fn allow<const N: usize>(
     move |method| std::future::ready(method_not_allowed(&method, &allowed))
 }
 
+/// The error document for a rejection of Axum's own `Query`. A list that
+/// takes a filter and an event stream read their query parameters with it,
+/// not with the JSON:API `Query`.
+fn ontogen_query_rejection(e: QueryRejection) -> ErrorObject {
+    ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
+}
+
 /// One page of a list that is not served as a resource.
 #[derive(Serialize)]
 pub struct PaginatedResult<T: Serialize> {
@@ -70,12 +80,61 @@ pub struct PaginatedResult<T: Serialize> {
     pub offset: u32,
 }
 
+/// The page of a list that takes a filter, beside its filter.
+#[derive(Deserialize)]
+pub struct PaginationParams {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+/// Writes an event item that is not an entity as `{"meta":{"result":…}}`.
+fn ontogen_result_frame<T: Serialize>(event: Event, item: &T) -> Result<Event, axum::Error> {
+    event.json_data(ResultFrame::new(item))
+}
+
 /// A paginated list that is not served as a resource takes its page as
 /// `opArg[limit]` and `opArg[offset]`.
 struct PageOpArgs;
 
 impl RouteQuery for PageOpArgs {
     const SPEC: QuerySpec = QuerySpec { op_args: &["limit", "offset"], ..QuerySpec::NONE };
+}
+
+/// How an event op's items are written into their frames' `data:`:
+/// `ontogen_result_frame`, or the item entity's own `ontogen_…_frame_data`.
+type FrameData<T> = fn(Event, &T) -> Result<Event, axum::Error>;
+
+/// One frame as an SSE event: an item as event `name`, its `data:` written
+/// by `data`, with its id as `id:` unless the id holds a line break or NUL;
+/// a lag as event `lag` with `{"skipped":n}`.
+fn sse_event<T>(name: &'static str, frame: EventFrame<T>, data: FrameData<T>) -> Event {
+    match frame {
+        EventFrame::Event { id, data: item } => {
+            let event = data(Event::default().event(name), &item)
+                .unwrap_or_else(|e| Event::default().event("error").data(e.to_string()));
+            match id {
+                Some(id) if !id.contains(['\n', '\r', '\0']) => event.id(id),
+                _ => event,
+            }
+        }
+        EventFrame::Lag { skipped } => Event::default().event("lag").data(format!("{{\"skipped\":{skipped}}}")),
+    }
+}
+
+/// An event op's receiver as an SSE stream of frames, kept alive while idle.
+fn ontogen_sse_stream<T>(
+    name: &'static str,
+    rx: tokio::sync::broadcast::Receiver<T>,
+    id: ontogen_core::events::IdFn<T>,
+    data: FrameData<T>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>>
+where
+    T: Clone + Send + 'static,
+{
+    let stream = futures::stream::unfold(rx, move |mut rx| async move {
+        ontogen_core::events::next_frame(&mut rx, id).await.map(|frame| (Ok(sse_event(name, frame, data)), rx))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 // ── JSON:API resources ──
@@ -337,6 +396,41 @@ async fn task_check_linked(state: &AppState, linked: &TaskLinkedIds) -> Result<(
         }
     }
     Ok(())
+}
+
+/// A `Task` event item as its resource object. A frame is not tied to a
+/// request URL, so it carries no links.
+fn ontogen_task_frame_data(event: Event, entity: &Task) -> Result<Event, axum::Error> {
+    event.json_data(task_as_resource(entity, "/api/tasks").into_unlinked())
+}
+
+// ── Agent Handlers ──
+
+async fn agent_list(
+    State(ontogen_state): State<Arc<AppState>>,
+    ontogen_filter: Result<axum::extract::Query<AgentQuery>, QueryRejection>,
+    ontogen_page: Result<axum::extract::Query<PaginationParams>, QueryRejection>,
+) -> Result<Json<PaginatedResult<Agent>>, ErrorObject> {
+    let axum::extract::Query(ontogen_filter) = ontogen_filter.map_err(ontogen_query_rejection)?;
+    let axum::extract::Query(ontogen_page) = ontogen_page.map_err(ontogen_query_rejection)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let ontogen_limit = ontogen_page.limit.unwrap_or(20).min(100);
+    let ontogen_offset = ontogen_page.offset.unwrap_or(0);
+    let ontogen_items = agent::list(
+        &ontogen_store,
+        ontogen_filter.clone(),
+        Some(u64::from(ontogen_limit)),
+        Some(u64::from(ontogen_offset)),
+    )
+    .await
+    .map_err(ontogen_app_error)?;
+    let ontogen_total = agent::count(&ontogen_store, ontogen_filter).await.map_err(ontogen_app_error)?;
+    Ok(Json(PaginatedResult {
+        items: ontogen_items,
+        total: ontogen_total,
+        limit: ontogen_limit,
+        offset: ontogen_offset,
+    }))
 }
 
 // ── Epic Handlers ──
@@ -691,9 +785,179 @@ async fn task_delete(
     Ok(response::no_content())
 }
 
+async fn task_list_tags(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(task_id): Path<String>,
+    ontogen_query: Query<PageOpArgs>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(20).min(100);
+    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let ontogen_all = task::list_tags(&ontogen_store, &task_id).await.map_err(ontogen_app_error)?;
+    let ontogen_total = ontogen_all.len() as u64;
+    let ontogen_items = ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();
+    let ontogen_result =
+        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn task_add_tag(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(task_id) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["tag_id"])?;
+    let tag_id = request::op_arg::<String>(&ontogen_args, "tag_id", true)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    task::add_tag(&ontogen_store, &task_id, &tag_id).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+async fn task_remove_tag(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((task_id, tag_id)): Path<(String, String)>,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    task::remove_tag(&ontogen_store, &task_id, &tag_id).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+// ── Workout Handlers ──
+
+struct WorkoutGetSummaryOpArgs;
+
+impl RouteQuery for WorkoutGetSummaryOpArgs {
+    const SPEC: QuerySpec = QuerySpec { op_args: &["verbose", "label"], ..QuerySpec::NONE };
+}
+
+async fn workout_get_summary(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path(id): Path<String>,
+    ontogen_query: Query<WorkoutGetSummaryOpArgs>,
+) -> Result<Response, ErrorObject> {
+    let label = ontogen_query.op_arg::<String>("label")?;
+    let verbose = ontogen_query.op_arg::<bool>("verbose")?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result =
+        workout::get_summary(&ontogen_store, &id, verbose, label.as_deref()).await.map_err(ontogen_app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn workout_start(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["input", "note"])?;
+    let input = request::op_arg::<StartWorkoutInput>(&ontogen_args, "input", true)?;
+    let note = request::op_arg::<Option<String>>(&ontogen_args, "note", false)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = workout::start(&ontogen_store, input, note).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn workout_rename(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["id", "name"])?;
+    let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
+    let name = request::op_arg::<String>(&ontogen_args, "name", true)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    workout::rename(&ontogen_store, &id, name).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+async fn workout_pause(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, false)?;
+    request::check_op_arg_names(&ontogen_args, &[])?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    workout::pause(&ontogen_store).await.map_err(ontogen_app_error)?;
+    Ok(response::no_content())
+}
+
+async fn workout_get_version(_: AcceptGuard, _: Query<NoParams>) -> Result<Response, ErrorObject> {
+    let ontogen_result = workout::get_version().map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+// ── task_changed SSE Handler ──
+
+async fn task_changed_sse(
+    State(ontogen_state): State<Arc<AppState>>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let ontogen_rx = activity::task_changed(&ontogen_state);
+    ontogen_sse_stream("task-changed", ontogen_rx, ontogen_core::events::no_id, ontogen_task_frame_data)
+}
+
+// ── activity_for_kind SSE Handler ──
+
+#[derive(Deserialize)]
+struct ActivityActivityForKindEventQuery {
+    resume: Option<String>,
+}
+
+async fn activity_for_kind_sse(
+    State(ontogen_state): State<Arc<AppState>>,
+    Path(kind): Path<String>,
+    ontogen_query: Result<axum::extract::Query<ActivityActivityForKindEventQuery>, QueryRejection>,
+    ontogen_headers: axum::http::HeaderMap,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ErrorObject> {
+    let axum::extract::Query(ontogen_query) = ontogen_query.map_err(ontogen_query_rejection)?;
+    let ontogen_resume =
+        ontogen_core::events::last_event_id(ontogen_headers.get("last-event-id").map(|v| v.as_bytes()))
+            .or(ontogen_query.resume);
+    let ontogen_rx =
+        activity::activity_for_kind(&ontogen_state, kind, ontogen_resume).await.map_err(ontogen_app_error)?;
+    Ok(ontogen_sse_stream("activity-for-kind", ontogen_rx, ontogen_core::events::seq_id, ontogen_result_frame))
+}
+
+// ── log_lines SSE Handler ──
+
+#[derive(Deserialize)]
+struct ActivityLogLinesEventQuery {
+    level: Option<u32>,
+}
+
+async fn log_lines_sse(
+    State(ontogen_state): State<Arc<AppState>>,
+    ontogen_query: Result<axum::extract::Query<ActivityLogLinesEventQuery>, QueryRejection>,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ErrorObject> {
+    let axum::extract::Query(ontogen_query) = ontogen_query.map_err(ontogen_query_rejection)?;
+    let ontogen_rx = activity::log_lines(&ontogen_state, ontogen_query.level).map_err(ontogen_internal_error)?;
+    Ok(ontogen_sse_stream("log-lines", ontogen_rx, ontogen_core::events::no_id, ontogen_result_frame))
+}
+
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/api/agents", get(agent_list).fallback(allow([Method::GET])))
         .route("/api/epics", get(epic_list).post(epic_create).fallback(allow([Method::GET, Method::POST])))
         .route(
             "/api/epics/{id}",
@@ -730,4 +994,17 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
+        .route("/api/workouts/summary/{id}", get(workout_get_summary).fallback(allow([Method::GET])))
+        .route("/api/workouts/start", post(workout_start).fallback(allow([Method::POST])))
+        .route("/api/workouts/rename", post(workout_rename).fallback(allow([Method::POST])))
+        .route("/api/workouts/pause", post(workout_pause).fallback(allow([Method::POST])))
+        .route("/api/workouts/version", get(workout_get_version).fallback(allow([Method::GET])))
+        .route(
+            "/api/tasks/{parent_id}/tags",
+            get(task_list_tags).post(task_add_tag).fallback(allow([Method::GET, Method::POST])),
+        )
+        .route("/api/tasks/{parent_id}/tags/{child_id}", delete(task_remove_tag).fallback(allow([Method::DELETE])))
+        .route("/api/events/task-changed", get(task_changed_sse).fallback(allow([Method::GET])))
+        .route("/api/events/activity-for-kind/{kind}", get(activity_for_kind_sse).fallback(allow([Method::GET])))
+        .route("/api/events/log-lines", get(log_lines_sse).fallback(allow([Method::GET])))
 }

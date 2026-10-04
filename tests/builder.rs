@@ -218,7 +218,6 @@ fn servers_only(
             state_import: "crate::AppState".into(),
             naming: Default::default(),
             generators: vec![],
-            rustfmt_edition: "2024".into(),
             sse_route_overrides: Default::default(),
             route_prefix: None,
             store_type: None,

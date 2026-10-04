@@ -13,7 +13,7 @@ import type {
   WorkoutSet,
 } from './jsonapi-bindings';
 
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -22,27 +22,51 @@ export interface PaginatedResult<T> {
   offset: number;
 }
 
+// ── Event Subscriptions ──
+
+export interface SubscriptionHandlers<T> {
+  /** An event. `id` is its resume id, or null for an op that is not resumable. */
+  onEvent: (data: T, id: string | null) => void;
+  /** The subscription fell behind and `skipped` events were dropped. */
+  onLag?: (skipped: number) => void;
+  /** Fires on the first connect and on every reconnect: the hook for a catch-up read. */
+  onOpen?: () => void;
+  onError?: (err: unknown) => void;
+}
+
+type EventFrame<T> = { kind: 'event'; id: string | null; data: T } | { kind: 'lag'; skipped: number };
+
 // ── Transport Interface ──
 
 export interface Transport {
+  boardList(limit?: number, offset?: number): Promise<PaginatedResult<Task>>;
+  boardGetById(id: string): Promise<Task>;
+  boardCreate(input: CreateTaskInput): Promise<Task>;
+  boardUpdate(id: string, input: UpdateTaskInput): Promise<Task>;
+  boardDelete(id: string): Promise<null>;
+  boardListTags(boardId: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>>;
+  boardAddTag(boardId: string, tagId: string): Promise<null>;
+  boardRemoveTag(boardId: string, tagId: string): Promise<null>;
+  boardGetSummary(id: string, includeDone: boolean | null): Promise<Task>;
+  boardArchive(taskId: string, reason: string | null): Promise<Task>;
+  boardImport(input: CreateTaskInput, dryRun: boolean | null): Promise<number>;
+  boardReset(): Promise<null>;
   tagList(limit?: number, offset?: number): Promise<PaginatedResult<Tag>>;
-  tagCount(): Promise<number>;
   tagGetById(id: string): Promise<Tag>;
   tagCreate(input: CreateTagInput): Promise<Tag>;
   tagUpdate(id: string, input: UpdateTagInput): Promise<Tag>;
   tagDelete(id: string): Promise<null>;
   taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>>;
-  taskCount(): Promise<number>;
   taskGetById(id: string): Promise<Task>;
   taskCreate(input: CreateTaskInput): Promise<Task>;
   taskUpdate(id: string, input: UpdateTaskInput): Promise<Task>;
   taskDelete(id: string): Promise<null>;
   workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>>;
-  workoutSetCount(): Promise<number>;
   workoutSetGetById(id: string): Promise<WorkoutSet>;
   workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet>;
   workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet>;
   workoutSetDelete(id: string): Promise<null>;
+  subscribeTaskChanges(args: { resume?: string | null }, handlers: SubscriptionHandlers<Task>): Promise<() => void>;
 }
 
 // ── JSON:API ──
@@ -135,6 +159,18 @@ async function httpDelete(path: string): Promise<void> {
   await httpRequest('DELETE', path);
 }
 
+/**
+ * Calls an op that is not served as a resource. `args` travel as the body's
+ * `meta.args`, keyed by the op's parameter names; without them no body is
+ * sent. Resolves to the reply's `meta.result`, or `null` for a 204.
+ */
+async function callOp<T>(method: string, path: string, args?: Record<string, unknown>): Promise<T> {
+  const res = await httpRequest(method, path, args === undefined ? undefined : { meta: { args } });
+  if (res.status === 204) return null as T;
+  const doc = (await res.json()) as { meta: { result: T } };
+  return doc.meta.result;
+}
+
 function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
   const push = (key: string, value: unknown) => {
@@ -153,6 +189,72 @@ function toQueryString(params: Record<string, unknown>): string {
     }
   }
   return parts.length > 0 ? `?${parts.join('&')}` : '';
+}
+
+const SSE_RETRY_BASE_MS = 500;
+const SSE_RETRY_MAX_MS = 30000;
+
+function subscribeSse<T>(
+  url: (resume: string | null) => string,
+  eventName: string,
+  initialResume: string | null,
+  decode: (frame: unknown) => T,
+  handlers: SubscriptionHandlers<T>,
+): () => void {
+  let source: EventSource | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let lastId = initialResume;
+  let attempt = 0;
+  let closed = false;
+  function connect() {
+    if (closed) return;
+    const es = new EventSource(url(lastId));
+    source = es;
+    es.onopen = () => {
+      attempt = 0;
+      handlers.onOpen?.();
+    };
+    es.addEventListener(eventName, (event: MessageEvent) => {
+      const id = event.lastEventId || null;
+      if (id) lastId = id;
+      let data: T;
+      try {
+        data = decode(JSON.parse(event.data));
+      } catch (err) {
+        handlers.onError?.(err);
+        return;
+      }
+      handlers.onEvent(data, id);
+    });
+    es.addEventListener('lag', (event: MessageEvent) => {
+      try {
+        handlers.onLag?.(JSON.parse(event.data).skipped);
+      } catch (err) {
+        handlers.onError?.(err);
+      }
+    });
+    es.onerror = (err: Event) => {
+      es.close();
+      if (source === es) source = null;
+      if (closed) return;
+      handlers.onError?.(err);
+      const delay = Math.min(SSE_RETRY_MAX_MS, SSE_RETRY_BASE_MS * 2 ** attempt);
+      attempt += 1;
+      timer = setTimeout(connect, delay / 2 + Math.random() * (delay / 2));
+    };
+  }
+  connect();
+  return () => {
+    closed = true;
+    if (timer) clearTimeout(timer);
+    source?.close();
+    source = null;
+  };
+}
+
+/** An event frame whose item is not a resource carries it as `meta.result`. */
+function metaResult<T>(frame: unknown): T {
+  return (frame as { meta: { result: T } }).meta.result;
 }
 
 // ── JSON:API Resources ──
@@ -302,12 +404,45 @@ function unflattenWorkoutSet(input: object, id?: string): JsonApiWriteDocument {
 
 export function createHttpTransport(): Transport {
   return {
+    async boardList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {
+      return callOp<PaginatedResult<Task>>('GET', `/boards${toQueryString({ opArg: { limit, offset } })}`);
+    },
+    async boardGetById(id: string): Promise<Task> {
+      return callOp<Task>('GET', `/boards/${encodeURIComponent(id)}`);
+    },
+    async boardCreate(input: CreateTaskInput): Promise<Task> {
+      return callOp<Task>('POST', '/boards', { input });
+    },
+    async boardUpdate(id: string, input: UpdateTaskInput): Promise<Task> {
+      return callOp<Task>('PATCH', `/boards/${encodeURIComponent(id)}`, { input });
+    },
+    async boardDelete(id: string): Promise<null> {
+      return callOp<null>('DELETE', `/boards/${encodeURIComponent(id)}`);
+    },
+    async boardListTags(boardId: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {
+      return callOp<PaginatedResult<Tag>>('GET', `/boards/${encodeURIComponent(boardId)}/tags${toQueryString({ opArg: { limit, offset } })}`);
+    },
+    async boardAddTag(boardId: string, tagId: string): Promise<null> {
+      return callOp<null>('POST', `/boards/${encodeURIComponent(boardId)}/tags`, { tag_id: tagId });
+    },
+    async boardRemoveTag(boardId: string, tagId: string): Promise<null> {
+      return callOp<null>('DELETE', `/boards/${encodeURIComponent(boardId)}/tags/${encodeURIComponent(tagId)}`);
+    },
+    async boardGetSummary(id: string, includeDone: boolean | null): Promise<Task> {
+      return callOp<Task>('GET', `/boards/summary/${encodeURIComponent(id)}${toQueryString({ opArg: { include_done: includeDone } })}`);
+    },
+    async boardArchive(taskId: string, reason: string | null): Promise<Task> {
+      return callOp<Task>('POST', '/boards/archive', { task_id: taskId, reason });
+    },
+    async boardImport(input: CreateTaskInput, dryRun: boolean | null): Promise<number> {
+      return callOp<number>('POST', '/boards/import', { input, dry_run: dryRun });
+    },
+    async boardReset(): Promise<null> {
+      return callOp<null>('POST', '/boards/reset');
+    },
     async tagList(limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {
       const { data, meta } = await httpGet<JsonApiPageDocument>(`/tags${toQueryString({ page: { offset, limit } })}`);
       return { items: data.map(flattenTag), total: meta.total, limit: meta.limit, offset: meta.offset };
-    },
-    async tagCount(): Promise<number> {
-      return httpPost<number>('/tags/count');
     },
     async tagGetById(id: string): Promise<Tag> {
       const { data } = await httpGet<JsonApiResourceDocument>(`/tags/${encodeURIComponent(id)}`);
@@ -332,9 +467,6 @@ export function createHttpTransport(): Transport {
       const { data, meta } = await httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ page: { offset, limit } })}`);
       return { items: data.map(flattenTask), total: meta.total, limit: meta.limit, offset: meta.offset };
     },
-    async taskCount(): Promise<number> {
-      return httpPost<number>('/tasks/count');
-    },
     async taskGetById(id: string): Promise<Task> {
       const { data } = await httpGet<JsonApiResourceDocument>(`/tasks/${encodeURIComponent(id)}`);
       return flattenTask(data);
@@ -358,9 +490,6 @@ export function createHttpTransport(): Transport {
       const { data, meta } = await httpGet<JsonApiPageDocument>(`/workout-sets${toQueryString({ page: { offset, limit } })}`);
       return { items: data.map(flattenWorkoutSet), total: meta.total, limit: meta.limit, offset: meta.offset };
     },
-    async workoutSetCount(): Promise<number> {
-      return httpPost<number>('/workout-sets/count');
-    },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
       const { data } = await httpGet<JsonApiResourceDocument>(`/workout-sets/${encodeURIComponent(id)}`);
       return flattenWorkoutSet(data);
@@ -380,6 +509,35 @@ export function createHttpTransport(): Transport {
       await httpDelete(`/workout-sets/${encodeURIComponent(id)}`);
       return null;
     },
+    async subscribeTaskChanges(args: { resume?: string | null }, handlers: SubscriptionHandlers<Task>): Promise<() => void> {
+      return subscribeSse(
+        (resume) => `${BASE}${`/events/task-changes`}` + toQueryString({ resume: resume }),
+        'task-changes',
+        args.resume ?? null,
+        (frame) => flattenTask(frame as JsonApiResource),
+        handlers,
+      );
+    },
+  };
+}
+
+// ── IPC Helpers ──
+
+async function subscribeIpc<T>(
+  command: string,
+  unsubscribeCommand: string,
+  args: Record<string, unknown>,
+  handlers: SubscriptionHandlers<T>,
+): Promise<() => void> {
+  const channel = new Channel<EventFrame<T>>();
+  channel.onmessage = (frame) => {
+    if (frame.kind === 'event') handlers.onEvent(frame.data, frame.id ?? null);
+    else handlers.onLag?.(frame.skipped);
+  };
+  const id = await invoke<number>(command, { ...args, channel });
+  handlers.onOpen?.();
+  return () => {
+    invoke(unsubscribeCommand, { id }).catch((err: unknown) => handlers.onError?.(err));
   };
 }
 
@@ -387,11 +545,48 @@ export function createHttpTransport(): Transport {
 
 export function createIpcTransport(): Transport {
   return {
+    async boardList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {
+      return invoke('board_list', { limit: limit ?? null, offset: offset ?? null });
+    },
+    async boardGetById(id: string): Promise<Task> {
+      return invoke('board_get_by_id', { id });
+    },
+    async boardCreate(input: CreateTaskInput): Promise<Task> {
+      return invoke('board_create', { input });
+    },
+    async boardUpdate(id: string, input: UpdateTaskInput): Promise<Task> {
+      return invoke('board_update', { id, input });
+    },
+    async boardDelete(id: string): Promise<null> {
+      await invoke('board_delete', { id });
+      return null;
+    },
+    async boardListTags(boardId: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {
+      return invoke('board_list_tags', { boardId, limit: limit ?? null, offset: offset ?? null });
+    },
+    async boardAddTag(boardId: string, tagId: string): Promise<null> {
+      await invoke('board_add_tag', { boardId, tagId });
+      return null;
+    },
+    async boardRemoveTag(boardId: string, tagId: string): Promise<null> {
+      await invoke('board_remove_tag', { boardId, tagId });
+      return null;
+    },
+    async boardGetSummary(id: string, includeDone: boolean | null): Promise<Task> {
+      return invoke('board_get_summary', { id, includeDone });
+    },
+    async boardArchive(taskId: string, reason: string | null): Promise<Task> {
+      return invoke('board_archive', { taskId, reason });
+    },
+    async boardImport(input: CreateTaskInput, dryRun: boolean | null): Promise<number> {
+      return invoke('board_import', { input, dryRun });
+    },
+    async boardReset(): Promise<null> {
+      await invoke('board_reset');
+      return null;
+    },
     async tagList(limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {
       return invoke('tag_list', { limit: limit ?? null, offset: offset ?? null });
-    },
-    async tagCount(): Promise<number> {
-      return invoke('tag_count');
     },
     async tagGetById(id: string): Promise<Tag> {
       return invoke('tag_get_by_id', { id });
@@ -409,9 +604,6 @@ export function createIpcTransport(): Transport {
     async taskList(limit?: number, offset?: number): Promise<PaginatedResult<Task>> {
       return invoke('task_list', { limit: limit ?? null, offset: offset ?? null });
     },
-    async taskCount(): Promise<number> {
-      return invoke('task_count');
-    },
     async taskGetById(id: string): Promise<Task> {
       return invoke('task_get_by_id', { id });
     },
@@ -428,9 +620,6 @@ export function createIpcTransport(): Transport {
     async workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>> {
       return invoke('workout_set_list', { limit: limit ?? null, offset: offset ?? null });
     },
-    async workoutSetCount(): Promise<number> {
-      return invoke('workout_set_count');
-    },
     async workoutSetGetById(id: string): Promise<WorkoutSet> {
       return invoke('workout_set_get_by_id', { id });
     },
@@ -443,6 +632,9 @@ export function createIpcTransport(): Transport {
     async workoutSetDelete(id: string): Promise<null> {
       await invoke('workout_set_delete', { id });
       return null;
+    },
+    async subscribeTaskChanges(args: { resume?: string | null }, handlers: SubscriptionHandlers<Task>): Promise<() => void> {
+      return subscribeIpc('task_changes_subscribe', 'task_changes_unsubscribe', { resume: args.resume ?? null }, handlers);
     },
   };
 }

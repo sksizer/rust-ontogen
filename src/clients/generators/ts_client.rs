@@ -5,13 +5,10 @@
 use std::fs;
 use std::path::Path;
 
-use ontogen_core::ir::OpKind;
-
 use crate::clients::config::Config;
-use crate::clients::generators::jsonapi::{self, served_resource};
-use crate::clients::generators::{FallbackRecord, command_name, ts_params_in_declaration_order};
-use crate::servers::classify::{classify_op, is_read_op};
-use crate::servers::parse::{ApiFn, ApiModule, Param};
+use crate::clients::generators::jsonapi;
+use crate::clients::generators::{FallbackRecord, command_name};
+use crate::servers::parse::ApiModule;
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel};
 
 /// Generate TypeScript HTTP client and write to the output file.
@@ -59,8 +56,8 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         }
     }
 
-    // Each flattener returns its entity type, whichever CRUD methods are emitted.
-    let resources = jsonapi::served_resources(modules, config);
+    // Each flattener returns its entity type, whichever methods use it.
+    let resources = jsonapi::served_resources(modules, config, false);
     for r in &resources {
         collect_ts_import(&r.entity.name, &mut import_types);
     }
@@ -98,7 +95,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         out.push_str(jsonapi::PAGINATED_RESULT);
     }
     out.push_str(jsonapi::JSON_API_TYPES);
-    out.push_str(&jsonapi::http_helpers(jsonapi::needs_put(modules, config)));
+    out.push_str(&jsonapi::http_helpers());
     if !resources.is_empty() {
         out.push_str(jsonapi::RESOURCE_HELPERS);
         for r in &resources {
@@ -109,109 +106,19 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     out.push_str("export const httpCommands = {\n");
 
     for m in modules {
-        if m.functions.is_empty() {
-            continue;
-        }
-        let module = &m.name;
-        let plural = config.naming.module_plural(module);
-
         for f in &m.functions {
-            let op = classify_op(f);
-            let cmd_name = command_name(module, f, config);
+            let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
-
-            let ts_ret = rust_type_to_ts(&f.return_type);
-            let camel = snake_to_camel(&cmd_name);
-
-            let resource = served_resource(m, f, config);
-            match op {
-                OpKind::List => {
-                    let quote = |p: &str, template: bool| if template { format!("`{p}`") } else { format!("'{p}'") };
-                    let path_plural = resource.map_or(plural.as_str(), |r| r.resource_type.as_str());
-                    let list = jsonapi::list_method(m, f, config, path_plural, &quote);
-                    out.push_str(&format!(
-                        "  async {camel}({}): Promise<{}> {{\n\
-                         \x20   {}\n\
-                         \x20 }},\n\n",
-                        list.params.join(", "),
-                        list.return_type,
-                        list.body.join("\n    "),
-                    ));
-                }
-                OpKind::GetById => {
-                    let body = match resource {
-                        Some(r) => format!(
-                            "const {{ data }} = await httpGet<JsonApiResourceDocument>(`/{}/${{encodeURIComponent(id)}}`);\n\
-                             \x20   return {}(data);",
-                            r.resource_type,
-                            jsonapi::flatten_fn(r)
-                        ),
-                        None => format!("return httpGet(`/{plural}/${{encodeURIComponent(id)}}`);"),
-                    };
-                    out.push_str(&format!(
-                        "  async {camel}(id: string): Promise<{ts_ret}> {{\n\
-                         \x20   {body}\n\
-                         \x20 }},\n\n",
-                    ));
-                }
-                OpKind::Create => {
-                    let input_type = rust_type_to_ts(&extract_input_type(&f.params[0].ty));
-                    let body = match resource {
-                        Some(r) => format!(
-                            "const {{ data }} = await httpPost<JsonApiResourceDocument>('/{}', {}(input));\n\
-                             \x20   return {}(data);",
-                            r.resource_type,
-                            jsonapi::unflatten_fn(r),
-                            jsonapi::flatten_fn(r)
-                        ),
-                        None => format!("return httpPost<{ts_ret}>('/{plural}', input);"),
-                    };
-                    out.push_str(&format!(
-                        "  async {camel}(input: {input_type}): Promise<{ts_ret}> {{\n\
-                         \x20   {body}\n\
-                         \x20 }},\n\n",
-                    ));
-                }
-                OpKind::Update => {
-                    let input_type = rust_type_to_ts(&extract_input_type(&f.params[1].ty));
-                    let body = match resource {
-                        Some(r) => format!(
-                            "const {{ data }} = await httpPatch<JsonApiResourceDocument>(\n\
-                             \x20     `/{}/${{encodeURIComponent(id)}}`,\n\
-                             \x20     {}(input, id),\n\
-                             \x20   );\n\
-                             \x20   return {}(data);",
-                            r.resource_type,
-                            jsonapi::unflatten_fn(r),
-                            jsonapi::flatten_fn(r)
-                        ),
-                        None => format!("return httpPut<{ts_ret}>(`/{plural}/${{encodeURIComponent(id)}}`, input);"),
-                    };
-                    out.push_str(&format!(
-                        "  async {camel}(id: string, input: {input_type}): Promise<{ts_ret}> {{\n\
-                         \x20   {body}\n\
-                         \x20 }},\n\n",
-                    ));
-                }
-                OpKind::Delete => {
-                    let path = resource.map_or(plural.as_str(), |r| r.resource_type.as_str());
-                    out.push_str(&format!(
-                        "  async {camel}(id: string): Promise<null> {{\n\
-                         \x20   await httpDelete(`/{path}/${{encodeURIComponent(id)}}`);\n\
-                         \x20   return null;\n\
-                         \x20 }},\n\n",
-                    ));
-                }
-                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-                    generate_generic_ts_handler(&mut out, module, f, config);
-                }
-                OpKind::CustomGet | OpKind::CustomPost => {
-                    generate_generic_ts_handler(&mut out, module, f, config);
-                }
-                OpKind::EventStream => continue,
-            }
+            let Some(method) = jsonapi::method(m, f, config, None) else { continue };
+            out.push_str(&format!(
+                "  async {}({}): Promise<{}> {{\n    {}\n  }},\n\n",
+                snake_to_camel(&cmd_name),
+                method.params.join(", "),
+                method.return_type,
+                method.body.join("\n").replace('\n', "\n    "),
+            ));
         }
     }
 
@@ -223,149 +130,4 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     crate::write_and_format_ts(output, out, &config.ts_formatter).expect("Failed to write TS HTTP client");
 
     fallbacks
-}
-
-fn generate_generic_ts_handler(out: &mut String, module: &str, f: &ApiFn, config: &Config) {
-    let fn_name = &f.name;
-    // Method name uses the resolved command name (override-aware) so the TS
-    // surface matches the IPC command. The route action below still uses the
-    // raw `fn_name`, since the override is a naming fix for IPC/TS surfaces
-    // only - HTTP route paths are intentionally unaffected (see OF-003).
-    let camel = snake_to_camel(&command_name(module, f, config));
-    let ts_ret = rust_type_to_ts(&f.return_type);
-    let is_get = is_read_op(&classify_op(f));
-    let action = config.naming.derive_action(module, fn_name);
-    let plural = config.naming.module_plural(module);
-    let returns_unit = f.return_type == "()";
-
-    let body_struct: Option<&Param> = f.params.iter().find(|p| p.ty.contains("Input"));
-    let query_params: Vec<&Param> = f.params.iter().filter(|p| p.ty.starts_with("Option<")).collect();
-    let path_params: Vec<&Param> = if is_get {
-        f.params.iter().filter(|p| !p.ty.starts_with("Option<") && !p.ty.contains("Input")).collect()
-    } else {
-        vec![]
-    };
-    let body_fields: Vec<&Param> = if !is_get && body_struct.is_none() {
-        f.params.iter().filter(|p| !p.ty.starts_with("Option<") && !p.ty.contains("Input")).collect()
-    } else {
-        vec![]
-    };
-
-    let mut route_path = format!("/{}", plural);
-    if !action.is_empty() {
-        route_path.push_str(&format!("/{}", action));
-    }
-
-    let ts_params = ts_params_in_declaration_order(f);
-
-    let ts_ret_str = if returns_unit { "null".to_string() } else { ts_ret.clone() };
-
-    if is_get && path_params.is_empty() && query_params.is_empty() {
-        out.push_str(&format!(
-            "  async {camel}(): Promise<{ts_ret_str}> {{\n\
-             \x20   return httpGet('{route_path}');\n\
-             \x20 }},\n\n",
-        ));
-    } else if is_get && !path_params.is_empty() && query_params.is_empty() {
-        let mut url = route_path.clone();
-        for p in &path_params {
-            url.push_str(&format!("/${{encodeURIComponent({})}}", snake_to_camel(&p.name)));
-        }
-        let params_str = ts_params.join(", ");
-        out.push_str(&format!(
-            "  async {camel}({params_str}): Promise<{ts_ret_str}> {{\n\
-             \x20   return httpGet(`{url}`);\n\
-             \x20 }},\n\n",
-        ));
-    } else if is_get && !query_params.is_empty() {
-        // Path segments come before the query string — the HTTP server
-        // registers the route as `/{plural}/{action}/:path_param`, so a fn
-        // mixing a required path param with optional query params keeps both.
-        let mut url = route_path.clone();
-        for p in &path_params {
-            url.push_str(&format!("/${{encodeURIComponent({})}}", snake_to_camel(&p.name)));
-        }
-        let params_str = ts_params.join(", ");
-        let mut query_parts = Vec::new();
-        for qp in &query_params {
-            let camel_name = snake_to_camel(&qp.name);
-            query_parts
-                .push(format!("{camel_name} != null ? `{}=${{encodeURIComponent({camel_name})}}` : ''", qp.name));
-        }
-        let query_build = if query_parts.len() == 1 {
-            format!(
-                "const params = {} != null ? `?${{{}}}` : ''",
-                snake_to_camel(&query_params[0].name),
-                query_parts[0]
-            )
-        } else {
-            format!(
-                "const parts = [{}].filter(Boolean);\n\
-                 \x20   const params = parts.length > 0 ? `?${{parts.join('&')}}` : ''",
-                query_parts.join(", ")
-            )
-        };
-        out.push_str(&format!(
-            "  async {camel}({params_str}): Promise<{ts_ret_str}> {{\n\
-             \x20   {query_build};\n\
-             \x20   return httpGet(`{url}${{params}}`);\n\
-             \x20 }},\n\n",
-        ));
-    } else if body_struct.is_some() {
-        let params_str = ts_params.join(", ");
-        if returns_unit {
-            out.push_str(&format!(
-                "  async {camel}({params_str}): Promise<null> {{\n\
-                 \x20   await httpPost('{route_path}', input);\n\
-                 \x20   return null;\n\
-                 \x20 }},\n\n",
-            ));
-        } else {
-            out.push_str(&format!(
-                "  async {camel}({params_str}): Promise<{ts_ret_str}> {{\n\
-                 \x20   return httpPost<{ts_ret_str}>('{route_path}', input);\n\
-                 \x20 }},\n\n",
-            ));
-        }
-    } else if !body_fields.is_empty() {
-        let params_str = ts_params.join(", ");
-        let body_obj: Vec<String> = body_fields
-            .iter()
-            .map(|bf| {
-                let camel_name = snake_to_camel(&bf.name);
-                if camel_name == bf.name { bf.name.clone() } else { format!("{}: {}", bf.name, camel_name) }
-            })
-            .collect();
-        let body_str = format!("{{ {} }}", body_obj.join(", "));
-        if returns_unit {
-            out.push_str(&format!(
-                "  async {camel}({params_str}): Promise<null> {{\n\
-                 \x20   await httpPost('{route_path}', {body_str});\n\
-                 \x20   return null;\n\
-                 \x20 }},\n\n",
-            ));
-        } else {
-            out.push_str(&format!(
-                "  async {camel}({params_str}): Promise<{ts_ret_str}> {{\n\
-                 \x20   return httpPost<{ts_ret_str}>('{route_path}', {body_str});\n\
-                 \x20 }},\n\n",
-            ));
-        }
-    } else {
-        // POST with no params
-        if returns_unit {
-            out.push_str(&format!(
-                "  async {camel}(): Promise<null> {{\n\
-                 \x20   await httpPost('{route_path}');\n\
-                 \x20   return null;\n\
-                 \x20 }},\n\n",
-            ));
-        } else {
-            out.push_str(&format!(
-                "  async {camel}(): Promise<{ts_ret_str}> {{\n\
-                 \x20   return httpPost<{ts_ret_str}>('{route_path}');\n\
-                 \x20 }},\n\n",
-            ));
-        }
-    }
 }

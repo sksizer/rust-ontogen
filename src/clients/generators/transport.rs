@@ -13,9 +13,9 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::clients::config::Config;
-use crate::clients::generators::jsonapi::{self, served_resource};
-use crate::clients::generators::{FallbackRecord, command_name, ts_params_in_declaration_order};
-use crate::servers::classify::{classify_op, is_read_op};
+use crate::clients::generators::jsonapi;
+use crate::clients::generators::{FallbackRecord, command_name};
+use crate::servers::classify::classify_op;
 use crate::servers::parse::{ApiModule, EventFn, Param, is_page_param, is_resume_param};
 use crate::servers::types::{
     collect_ts_import, event_name, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref,
@@ -129,8 +129,8 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         }
     }
 
-    // Each flattener returns its entity type, whichever CRUD methods are emitted.
-    let resources = jsonapi::served_resources(modules, config);
+    // Each flattener returns its entity type, whichever methods use it.
+    let resources = jsonapi::served_resources(modules, config, true);
     for r in &resources {
         collect_ts_import(&r.entity.name, &mut import_types);
     }
@@ -202,9 +202,10 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
     // ── HTTP Helpers ──
     out.push_str(jsonapi::JSON_API_TYPES);
-    generate_http_helpers(&mut out, modules, config);
+    generate_http_helpers(&mut out, config);
     if has_events {
         out.push_str(SSE_SUBSCRIBE_HELPER);
+        out.push_str(jsonapi::META_RESULT);
     }
     if !resources.is_empty() {
         out.push_str(jsonapi::RESOURCE_HELPERS);
@@ -239,83 +240,23 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
     out.push_str("export interface Transport {\n");
 
     for m in modules {
-        if m.functions.is_empty() {
-            continue;
-        }
-
         for f in &m.functions {
             let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
-
-            let op = classify_op(f);
-            let camel = snake_to_camel(&cmd_name);
-            let ts_ret = rust_type_to_ts(&f.return_type);
-            let returns_unit = f.return_type == "()";
-            let ret_str = if returns_unit { "null" } else { &ts_ret };
-
-            match op {
-                OpKind::List => {
-                    let list = jsonapi::list_method(m, f, config, "", &|p, _| p.to_string());
-                    let mut params = list.params;
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
-                    out.push_str(&format!("  {camel}({}): Promise<{}>;\n", params.join(", "), list.return_type));
-                }
-                OpKind::GetById => {
-                    out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<{}>;\n", camel, ret_str));
-                }
-                OpKind::Create => {
-                    let input_type = rust_type_to_ts(&extract_input_type(&f.params[0].ty));
-                    out.push_str(&format!("  {}(input: {}{pp_trailing}): Promise<{}>;\n", camel, input_type, ret_str));
-                }
-                OpKind::Update => {
-                    let input_type = rust_type_to_ts(&extract_input_type(&f.params[1].ty));
-                    out.push_str(&format!(
-                        "  {}(id: string, input: {}{pp_trailing}): Promise<{}>;\n",
-                        camel, input_type, ret_str
-                    ));
-                }
-                OpKind::Delete => {
-                    out.push_str(&format!("  {}(id: string{pp_trailing}): Promise<null>;\n", camel));
-                }
-                OpKind::JunctionList { .. } => {
-                    // JunctionList follows the same pagination rules as List:
-                    // when config.pagination is set and the return is Vec<T>,
-                    // the method returns PaginatedResult<T> and accepts
-                    // limit/offset. Without this the interface and HTTP/IPC
-                    // implementations get out of sync.
-                    let paginated =
-                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
-                    let mut params = ts_params_in_declaration_order(f);
-                    if paginated {
-                        params.push("limit?: number".to_string());
-                        params.push("offset?: number".to_string());
-                    }
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
-                    let params_str = params.join(", ");
-                    let return_type = if paginated {
-                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str);
-                        format!("PaginatedResult<{}>", item_type)
-                    } else {
-                        ret_str.to_string()
-                    };
-                    out.push_str(&format!("  {}({}): Promise<{}>;\n", camel, params_str, return_type));
-                }
-                OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } | OpKind::CustomGet | OpKind::CustomPost => {
-                    let mut params = ts_params_in_declaration_order(f);
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
-                    let params_str = params.join(", ");
-                    out.push_str(&format!("  {}({}): Promise<{}>;\n", camel, params_str, ret_str));
-                }
-                OpKind::EventStream => continue,
+            // The HTTP impl's own signature, so the two cannot drift.
+            let Some(method) = jsonapi::method(m, f, config, None) else { continue };
+            let mut params = method.params;
+            if !pp_only.is_empty() {
+                params.push(pp_only.clone());
             }
+            out.push_str(&format!(
+                "  {}({}): Promise<{}>;\n",
+                snake_to_camel(&cmd_name),
+                params.join(", "),
+                method.return_type
+            ));
         }
     }
 
@@ -341,8 +282,8 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
 }
 
 /// Generate HTTP helper functions.
-fn generate_http_helpers(out: &mut String, modules: &[ApiModule], config: &Config) {
-    out.push_str(&jsonapi::http_helpers(jsonapi::needs_put(modules, config)));
+fn generate_http_helpers(out: &mut String, config: &Config) {
+    out.push_str(&jsonapi::http_helpers());
 
     // Add scopedPath helper when route_prefix is configured
     if let Some(prefix) = &config.route_prefix {
@@ -372,208 +313,33 @@ fn generate_http_helpers(out: &mut String, modules: &[ApiModule], config: &Confi
 fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Config) {
     let pp_trailing = ts_trailing_prefix_param(config);
     let pp_only = ts_prefix_param_only(config);
-    let has_prefix = config.route_prefix.is_some();
-    let pp_camel = config.route_prefix.as_ref().map(|p| snake_to_camel(&p.params[0].name)).unwrap_or_default();
-
-    // Helper to wrap path with scopedPath when prefix is configured
-    let sp = |path: &str| -> String {
-        if has_prefix { format!("scopedPath({}, '{}')", pp_camel, path) } else { format!("'{}'", path) }
-    };
-    let sp_template = |path: &str| -> String {
-        if has_prefix { format!("scopedPath({}, `{}`)", pp_camel, path) } else { format!("`{}`", path) }
-    };
+    let scope = config.route_prefix.as_ref().map(|p| snake_to_camel(&p.params[0].name));
 
     out.push_str("// ── HTTP Transport ──\n\n");
     out.push_str("export function createHttpTransport(): Transport {\n");
     out.push_str("  return {\n");
 
     for m in modules {
-        if m.functions.is_empty() {
-            continue;
-        }
-        let module = &m.name;
-        // Use kebab-case URL plural to match the routes registered by http.rs
-        // (e.g., `destination-skills`, not `destination_skills`). Singleton
-        // modules collapse to their singular kebab form via `url_for_module`.
-        let plural = config.naming.url_for_module(m);
-
         for f in &m.functions {
-            let op = classify_op(f);
-            let cmd_name = command_name(module, f, config);
+            let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
-
-            let resource = served_resource(m, f, config);
-            let camel = snake_to_camel(&cmd_name);
-            let ts_ret = rust_type_to_ts(&f.return_type);
-            let returns_unit = f.return_type == "()";
-            let ret_str = if returns_unit { "null".to_string() } else { ts_ret.clone() };
-
-            match op {
-                OpKind::List => {
-                    let path = |p: &str, template: bool| if template { sp_template(p) } else { sp(p) };
-                    let list = jsonapi::list_method(m, f, config, &plural, &path);
-                    let mut params = list.params;
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
-                    out.push_str(&format!(
-                        "    async {camel}({}): Promise<{}> {{\n\
-                         \x20     {}\n\
-                         \x20   }},\n",
-                        params.join(", "),
-                        list.return_type,
-                        list.body.join("\n      "),
-                    ));
-                }
-                OpKind::GetById => {
-                    let path_expr = sp_template(&format!("/{plural}/${{encodeURIComponent(id)}}"));
-                    let body = match resource {
-                        Some(r) => format!(
-                            "const {{ data }} = await httpGet<JsonApiResourceDocument>({path_expr});\n\
-                             \x20     return {}(data);",
-                            jsonapi::flatten_fn(r)
-                        ),
-                        None => format!("return httpGet({path_expr});"),
-                    };
-                    out.push_str(&format!(
-                        "    async {camel}(id: string{pp_trailing}): Promise<{ret_str}> {{\n\
-                         \x20     {body}\n\
-                         \x20   }},\n",
-                    ));
-                }
-                OpKind::Create => {
-                    let input_type = rust_type_to_ts(&extract_input_type(&f.params[0].ty));
-                    let path_expr = sp(&format!("/{plural}"));
-                    let body = match resource {
-                        Some(r) => format!(
-                            "const {{ data }} = await httpPost<JsonApiResourceDocument>({path_expr}, {}(input));\n\
-                             \x20     return {}(data);",
-                            jsonapi::unflatten_fn(r),
-                            jsonapi::flatten_fn(r)
-                        ),
-                        None => format!("return httpPost<{ret_str}>({path_expr}, input);"),
-                    };
-                    out.push_str(&format!(
-                        "    async {camel}(input: {input_type}{pp_trailing}): Promise<{ret_str}> {{\n\
-                         \x20     {body}\n\
-                         \x20   }},\n",
-                    ));
-                }
-                OpKind::Update => {
-                    let input_type = rust_type_to_ts(&extract_input_type(&f.params[1].ty));
-                    let path_expr = sp_template(&format!("/{plural}/${{encodeURIComponent(id)}}"));
-                    let body = match resource {
-                        Some(r) => format!(
-                            "const {{ data }} = await httpPatch<JsonApiResourceDocument>(\n\
-                             \x20       {path_expr},\n\
-                             \x20       {}(input, id),\n\
-                             \x20     );\n\
-                             \x20     return {}(data);",
-                            jsonapi::unflatten_fn(r),
-                            jsonapi::flatten_fn(r)
-                        ),
-                        None => format!("return httpPut<{ret_str}>({path_expr}, input);"),
-                    };
-                    out.push_str(&format!(
-                        "    async {camel}(id: string, input: {input_type}{pp_trailing}): Promise<{ret_str}> {{\n\
-                         \x20     {body}\n\
-                         \x20   }},\n",
-                    ));
-                }
-                OpKind::Delete => {
-                    let path_expr = sp_template(&format!("/{plural}/${{encodeURIComponent(id)}}"));
-                    out.push_str(&format!(
-                        "    async {}(id: string{pp_trailing}): Promise<null> {{\n\
-                         \x20     await httpDelete({path_expr});\n\
-                         \x20     return null;\n\
-                         \x20   }},\n",
-                        camel,
-                    ));
-                }
-                OpKind::JunctionList { ref child_segment } => {
-                    // Junction list: `GET /<plural>/<parent_id>/<child_segment>`.
-                    // The parent_id is the first (and only non-pagination) plain param.
-                    let parent_param = f.params.first().map(|p| snake_to_camel(&p.name)).unwrap_or_default();
-                    let paginated =
-                        config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<");
-                    let return_type = if paginated {
-                        let item_type = ret_str.strip_suffix("[]").unwrap_or(ret_str.as_str());
-                        format!("PaginatedResult<{}>", item_type)
-                    } else {
-                        ret_str.clone()
-                    };
-                    let mut params = vec![format!("{parent_param}: string")];
-                    if paginated {
-                        params.push("limit?: number".to_string());
-                        params.push("offset?: number".to_string());
-                    }
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
-                    let params_str = params.join(", ");
-                    let path_expr = if paginated {
-                        sp_template(&format!(
-                            "/{plural}/${{encodeURIComponent({parent_param})}}/{child_segment}${{toQueryString({{ limit, offset }})}}"
-                        ))
-                    } else {
-                        sp_template(&format!("/{plural}/${{encodeURIComponent({parent_param})}}/{child_segment}"))
-                    };
-                    out.push_str(&format!(
-                        "    async {camel}({params_str}): Promise<{return_type}> {{\n\
-                         \x20     return httpGet({path_expr});\n\
-                         \x20   }},\n",
-                    ));
-                }
-                OpKind::JunctionAdd { ref child_segment } => {
-                    // Junction add: `POST /<plural>/<parent_id>/<child_segment>` with
-                    // body `{ <child_id_field>: <childId> }`. The Rust handler
-                    // extracts `child_id` from the body using the service
-                    // function's second parameter name.
-                    let parent_param = f.params.first().map(|p| snake_to_camel(&p.name)).unwrap_or_default();
-                    let child_id_field =
-                        f.params.get(1).map(|p| p.name.clone()).unwrap_or_else(|| "child_id".to_string());
-                    let child_param = snake_to_camel(&child_id_field);
-                    let mut params = vec![format!("{parent_param}: string"), format!("{child_param}: string")];
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
-                    let params_str = params.join(", ");
-                    let path_expr =
-                        sp_template(&format!("/{plural}/${{encodeURIComponent({parent_param})}}/{child_segment}"));
-                    out.push_str(&format!(
-                        "    async {camel}({params_str}): Promise<null> {{\n\
-                         \x20     await httpPost({path_expr}, {{ {child_id_field}: {child_param} }});\n\
-                         \x20     return null;\n\
-                         \x20   }},\n",
-                    ));
-                }
-                OpKind::JunctionRemove { ref child_segment } => {
-                    // Junction remove: `DELETE /<plural>/<parent_id>/<child_segment>/<child_id>`
-                    let parent_param = f.params.first().map(|p| snake_to_camel(&p.name)).unwrap_or_default();
-                    let child_param =
-                        f.params.get(1).map(|p| snake_to_camel(&p.name)).unwrap_or_else(|| "childId".to_string());
-                    let mut params = vec![format!("{parent_param}: string"), format!("{child_param}: string")];
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
-                    let params_str = params.join(", ");
-                    let path_expr = sp_template(&format!(
-                        "/{plural}/${{encodeURIComponent({parent_param})}}/{child_segment}/${{encodeURIComponent({child_param})}}"
-                    ));
-                    out.push_str(&format!(
-                        "    async {camel}({params_str}): Promise<null> {{\n\
-                         \x20     await httpDelete({path_expr});\n\
-                         \x20     return null;\n\
-                         \x20   }},\n",
-                    ));
-                }
-                OpKind::CustomGet | OpKind::CustomPost => {
-                    generate_http_custom_method(out, m, f, config);
-                }
-                OpKind::EventStream => continue,
+            let Some(method) = jsonapi::method(m, f, config, scope.as_deref()) else { continue };
+            let mut params = method.params;
+            if !pp_only.is_empty() {
+                // An op served unscoped only takes the prefix argument to
+                // match the interface, and ignores it.
+                let unused = jsonapi::scope_of(f, scope.as_deref()).is_none();
+                params.push(if unused { format!("_{pp_only}") } else { pp_only.clone() });
             }
+            out.push_str(&format!(
+                "    async {}({}): Promise<{}> {{\n      {}\n    }},\n",
+                snake_to_camel(&cmd_name),
+                params.join(", "),
+                method.return_type,
+                method.body.join("\n").replace('\n', "\n      "),
+            ));
         }
     }
 
@@ -609,7 +375,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                      \x20     function connect() {{\n\
                      \x20       es = new EventSource(url);\n\
                      \x20       es.addEventListener('{ev_name}', (event: MessageEvent) => {{\n\
-                     \x20         try {{ callback(JSON.parse(event.data)); }}\n\
+                     \x20         try {{ callback({decode}); }}\n\
                      \x20         catch {{ callback({{}}); }}\n\
                      \x20       }});\n\
                      \x20       es.onerror = () => {{\n\
@@ -627,6 +393,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                      \x20   }},\n",
                     cap = capitalize_first(&camel),
                     sse_path = route_path.strip_prefix("/api").unwrap_or(&route_path),
+                    decode = jsonapi::decode_event_frame(ev, config, "JSON.parse(event.data)"),
                 ));
             } else {
                 out.push_str(&format!(
@@ -636,7 +403,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                      \x20     function connect() {{\n\
                      \x20       es = new EventSource('{route_path}');\n\
                      \x20       es.addEventListener('{ev_name}', (event: MessageEvent) => {{\n\
-                     \x20         try {{ callback(JSON.parse(event.data)); }}\n\
+                     \x20         try {{ callback({decode}); }}\n\
                      \x20         catch {{ callback({{}}); }}\n\
                      \x20       }});\n\
                      \x20       es.onerror = () => {{\n\
@@ -653,6 +420,7 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                      \x20     }};\n\
                      \x20   }},\n",
                     cap = capitalize_first(&camel),
+                    decode = jsonapi::decode_event_frame(ev, config, "JSON.parse(event.data)"),
                 ));
             }
         }
@@ -840,13 +608,14 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                          \x20   }},\n",
                     ));
                 }
+                // A junction add or remove resolves to `null` whatever the fn
+                // returns, as the `Transport` interface and the HTTP route
+                // (`204`) have it.
                 OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-                    // JunctionAdd/Remove have exactly 2 string params, no pagination.
-                    // The generic custom IPC path produces correct output.
-                    generate_ipc_custom_method(out, f, &cmd_name, config);
+                    generate_ipc_custom_method(out, f, &cmd_name, config, true);
                 }
                 OpKind::CustomGet | OpKind::CustomPost => {
-                    generate_ipc_custom_method(out, f, &cmd_name, config);
+                    generate_ipc_custom_method(out, f, &cmd_name, config, false);
                 }
                 OpKind::EventStream => continue,
             }
@@ -904,6 +673,7 @@ type EventFrame<T> = { kind: 'event'; id: string | null; data: T } | { kind: 'la
 ";
 
 /// The SSE subscription loop shared by every HTTP `subscribeX` method.
+/// `decode` turns a parsed frame into the item the handlers receive.
 ///
 /// Every error closes the `EventSource` and reconnects after a capped
 /// exponential backoff with jitter; the reconnect passes the last seen id as
@@ -916,6 +686,7 @@ function subscribeSse<T>(
   url: (resume: string | null) => string,
   eventName: string,
   initialResume: string | null,
+  decode: (frame: unknown) => T,
   handlers: SubscriptionHandlers<T>,
 ): () => void {
   let source: EventSource | null = null;
@@ -936,7 +707,7 @@ function subscribeSse<T>(
       if (id) lastId = id;
       let data: T;
       try {
-        data = JSON.parse(event.data);
+        data = decode(JSON.parse(event.data));
       } catch (err) {
         handlers.onError?.(err);
         return;
@@ -1031,7 +802,7 @@ fn subscribe_signature(ev: &EventFn, config: &Config) -> String {
 
 /// The HTTP `subscribeX`: builds the SSE URL from the args (path params
 /// interpolated, optional params and `resume` on the query string) and hands
-/// it to `subscribeSse`.
+/// it to `subscribeSse` with the item's frame decoder.
 fn generate_http_subscribe_method(out: &mut String, ev: &EventFn, config: &Config) {
     let route = ev.sse_route(&config.sse_route_overrides);
     let route = route.strip_prefix("/api").unwrap_or(&route);
@@ -1068,11 +839,13 @@ fn generate_http_subscribe_method(out: &mut String, ev: &EventFn, config: &Confi
          \x20       ({resume_arg}) => `${{BASE}}${{{path_expr}}}`{query_expr},\n\
          \x20       '{ev_name}',\n\
          \x20       {initial},\n\
+         \x20       (frame) => {decode},\n\
          \x20       handlers,\n\
          \x20     );\n\
          \x20   }},\n",
         sig = subscribe_signature(ev, config),
         ev_name = event_name(&ev.name),
+        decode = jsonapi::decode_event_frame(ev, config, "frame"),
     ));
 }
 
@@ -1106,213 +879,17 @@ fn generate_ipc_subscribe_method(out: &mut String, ev: &EventFn, config: &Config
     ));
 }
 
-/// Generate a custom HTTP method (GET or POST with various param shapes).
-fn generate_http_custom_method(
-    out: &mut String,
-    module: &crate::servers::parse::ApiModule,
-    f: &crate::servers::parse::ApiFn,
-    config: &Config,
-) {
-    let fn_name = &f.name;
-    let name = module.name.as_str();
-    let cmd_name = command_name(name, f, config);
-    let camel = snake_to_camel(&cmd_name);
-    let ts_ret = rust_type_to_ts(&f.return_type);
-    let is_get = is_read_op(&classify_op(f));
-    let action = config.naming.derive_action(name, fn_name);
-    // Use kebab-case URL plural to match http.rs route registration. Singleton
-    // modules collapse to the singular kebab form via `url_for_module`.
-    let plural = config.naming.url_for_module(module);
-    let returns_unit = f.return_type == "()";
-    let has_prefix = config.route_prefix.is_some();
-    let pp_camel = config.route_prefix.as_ref().map(|p| snake_to_camel(&p.params[0].name)).unwrap_or_default();
-    let pp_only = ts_prefix_param_only(config);
-
-    let body_struct: Option<&Param> = f.params.iter().find(|p| p.ty.contains("Input"));
-    let query_params: Vec<&Param> = f.params.iter().filter(|p| p.ty.starts_with("Option<")).collect();
-    let path_params: Vec<&Param> = if is_get {
-        f.params.iter().filter(|p| !p.ty.starts_with("Option<") && !p.ty.contains("Input")).collect()
-    } else {
-        vec![]
-    };
-    let body_fields: Vec<&Param> = if !is_get && body_struct.is_none() {
-        f.params.iter().filter(|p| !p.ty.starts_with("Option<") && !p.ty.contains("Input")).collect()
-    } else {
-        vec![]
-    };
-
-    let mut route_path = format!("/{}", plural);
-    if !action.is_empty() {
-        route_path.push_str(&format!("/{}", action));
-    }
-
-    // A POST that carries query params needs the templated path (so `${params}`
-    // interpolates); one that does not keeps the plain literal.
-    fn post_path_expr(
-        sp: &dyn Fn(&str) -> String,
-        sp_template: &dyn Fn(&str) -> String,
-        route_path: &str,
-        has_query: bool,
-    ) -> String {
-        if has_query { sp_template(&format!("{route_path}${{params}}")) } else { sp(route_path) }
-    }
-
-    // Optional params ride the QUERY STRING on both methods, not just GET.
-    // `http.rs` emits a `Query(...)` extractor whenever any param is
-    // `Option<T>`, regardless of the route's method — so a POST whose params
-    // are all optional has a server reading them from a query string the
-    // client never sends. Every argument arrives `None`, with no compile
-    // error and no runtime error: the call simply does nothing, quietly.
-    //
-    // This builder is therefore shared by the GET and POST arms below rather
-    // than living inside the GET one.
-    let build_query = |query_params: &[&Param]| -> Option<String> {
-        if query_params.is_empty() {
-            return None;
-        }
-        let query_parts: Vec<String> = query_params
-            .iter()
-            .map(|qp| {
-                let camel_name = snake_to_camel(&qp.name);
-                format!("{camel_name} != null ? `{}=${{encodeURIComponent({camel_name})}}` : ''", qp.name)
-            })
-            .collect();
-        Some(if query_parts.len() == 1 {
-            format!(
-                "const params = {} != null ? `?${{{}}}` : ''",
-                snake_to_camel(&query_params[0].name),
-                query_parts[0]
-            )
-        } else {
-            format!(
-                "const parts = [{}].filter(Boolean);\n\
-                 \x20       const params = parts.length > 0 ? `?${{parts.join('&')}}` : ''",
-                query_parts.join(", ")
-            )
-        })
-    };
-
-    // Helper closures for scoped paths
-    let sp = |path: &str| -> String {
-        if has_prefix { format!("scopedPath({}, '{}')", pp_camel, path) } else { format!("'{}'", path) }
-    };
-    let sp_template = |path: &str| -> String {
-        if has_prefix { format!("scopedPath({}, `{}`)", pp_camel, path) } else { format!("`{}`", path) }
-    };
-
-    let mut ts_params = ts_params_in_declaration_order(f);
-    if !pp_only.is_empty() {
-        ts_params.push(pp_only.clone());
-    }
-    let params_str = ts_params.join(", ");
-    let ret_str = if returns_unit { "null".to_string() } else { ts_ret.clone() };
-
-    if is_get && path_params.is_empty() && query_params.is_empty() {
-        let path_expr = sp(&route_path);
-        out.push_str(&format!(
-            "    async {camel}({params_str}): Promise<{ret_str}> {{\n\
-             \x20     return httpGet({path_expr});\n\
-             \x20   }},\n",
-        ));
-    } else if is_get && !path_params.is_empty() && query_params.is_empty() {
-        let mut url = route_path.clone();
-        for p in &path_params {
-            url.push_str(&format!("/${{encodeURIComponent({})}}", snake_to_camel(&p.name)));
-        }
-        let path_expr = sp_template(&url);
-        out.push_str(&format!(
-            "    async {camel}({params_str}): Promise<{ret_str}> {{\n\
-             \x20     return httpGet({path_expr});\n\
-             \x20   }},\n",
-        ));
-    } else if is_get && !query_params.is_empty() {
-        // Path segments come before the query string — http.rs registers the
-        // route as `/{plural}/{action}/{path_param}`, so a fn mixing a required
-        // path param with optional query params must keep both.
-        let mut url = route_path.clone();
-        for p in &path_params {
-            url.push_str(&format!("/${{encodeURIComponent({})}}", snake_to_camel(&p.name)));
-        }
-        let query_build = build_query(&query_params).expect("branch guarded on non-empty query_params");
-        let path_expr = sp_template(&format!("{}${{params}}", url));
-        out.push_str(&format!(
-            "    async {camel}({params_str}): Promise<{ret_str}> {{\n\
-             \x20     {query_build};\n\
-             \x20     return httpGet({path_expr});\n\
-             \x20   }},\n",
-        ));
-    } else if body_struct.is_some() {
-        let post_query = build_query(&query_params);
-        let path_expr = post_path_expr(&sp, &sp_template, &route_path, post_query.is_some());
-        let prelude = post_query.as_ref().map(|q| format!("      {q};\n")).unwrap_or_default();
-        if returns_unit {
-            out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<null> {{\n{prelude}\
-                 \x20     await httpPost({path_expr}, input);\n\
-                 \x20     return null;\n\
-                 \x20   }},\n",
-            ));
-        } else {
-            out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<{ret_str}> {{\n{prelude}\
-                 \x20     return httpPost<{ret_str}>({path_expr}, input);\n\
-                 \x20   }},\n",
-            ));
-        }
-    } else if !body_fields.is_empty() {
-        let post_query = build_query(&query_params);
-        let prelude = post_query.as_ref().map(|q| format!("      {q};\n")).unwrap_or_default();
-        let body_obj: Vec<String> = body_fields
-            .iter()
-            .map(|bf| {
-                let camel_name = snake_to_camel(&bf.name);
-                if camel_name == bf.name { bf.name.clone() } else { format!("{}: {}", bf.name, camel_name) }
-            })
-            .collect();
-        let body_str = format!("{{ {} }}", body_obj.join(", "));
-        let path_expr = post_path_expr(&sp, &sp_template, &route_path, post_query.is_some());
-        if returns_unit {
-            out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<null> {{\n{prelude}\
-                 \x20     await httpPost({path_expr}, {body_str});\n\
-                 \x20     return null;\n\
-                 \x20   }},\n",
-            ));
-        } else {
-            out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<{ret_str}> {{\n{prelude}\
-                 \x20     return httpPost<{ret_str}>({path_expr}, {body_str});\n\
-                 \x20   }},\n",
-            ));
-        }
-    } else {
-        // POST whose only params, if any, are optional — they ride the query
-        // string, exactly as the server's `Query(...)` extractor expects.
-        let post_query = build_query(&query_params);
-        let prelude = post_query.as_ref().map(|q| format!("      {q};\n")).unwrap_or_default();
-        let path_expr = post_path_expr(&sp, &sp_template, &route_path, post_query.is_some());
-        if returns_unit {
-            out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<null> {{\n{prelude}\
-                 \x20     await httpPost({path_expr});\n\
-                 \x20     return null;\n\
-                 \x20   }},\n",
-            ));
-        } else {
-            out.push_str(&format!(
-                "    async {camel}({params_str}): Promise<{ret_str}> {{\n{prelude}\
-                 \x20     return httpPost<{ret_str}>({path_expr});\n\
-                 \x20   }},\n",
-            ));
-        }
-    }
-}
-
 /// Generate a custom IPC method.
-fn generate_ipc_custom_method(out: &mut String, f: &crate::servers::parse::ApiFn, cmd_name: &str, config: &Config) {
+fn generate_ipc_custom_method(
+    out: &mut String,
+    f: &crate::servers::parse::ApiFn,
+    cmd_name: &str,
+    config: &Config,
+    resolves_null: bool,
+) {
     let camel = snake_to_camel(cmd_name);
     let ts_ret = rust_type_to_ts(&f.return_type);
-    let returns_unit = f.return_type == "()";
+    let returns_unit = resolves_null || f.return_type == "()";
     let ret_str = if returns_unit { "null".to_string() } else { ts_ret.clone() };
     let pp_only = ts_prefix_param_only(config);
     let ipc_arg = ts_ipc_prefix_arg(config);

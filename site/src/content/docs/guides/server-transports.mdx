@@ -42,7 +42,6 @@ let servers_output = ontogen::gen_servers(
                 output: "src/api/transport/mcp/generated.rs".into(),
             },
         ],
-        rustfmt_edition: "2024".to_string(),
         sse_route_overrides: Default::default(),
         route_prefix: None,
         store_type: Some("Store".to_string()),
@@ -69,7 +68,6 @@ Let's walk through the important fields:
 | `state_import` | Full import path for the state type |
 | `naming` | Pluralization and URL naming overrides |
 | `generators` | Which server transports to generate |
-| `rustfmt_edition` | Rust edition used when formatting the generated Rust |
 | `store_type` | Store type name for entity-scoped functions |
 | `store_import` | Full import path for the Store type |
 | `route_prefix` | Optional scope prepended to every route -- see [Route prefix](#route-prefix-for-project-scoping) |
@@ -86,7 +84,7 @@ Client-side fields (`client_generators`, `ts_skip_commands`) used to live on thi
 
 ## HTTP/Axum generation
 
-The HTTP generator produces Axum route handlers and an `entity_routes()` function. CRUD routes for every module backed by a schema entity speak [JSON:API 1.1](https://jsonapi.org/format/1.1/). Custom ops, junction ops, event streams and modules with no entity behind them keep the shapes and routes described under [Operations that are not CRUD](#operations-that-are-not-crud).
+The HTTP generator produces Axum route handlers and an `entity_routes()` function. Every generated route speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/). CRUD routes for every module backed by a schema entity carry resource documents. Custom ops, junction ops and the CRUD ops of a module with no entity behind it carry meta-only documents, described under [Operations that are not CRUD](#operations-that-are-not-crud). The one exception is a hand-written `list` with filter parameters, which keeps its own query extraction and body until filters arrive in a later release.
 
 The generated server depends on the `ontogen-jsonapi` runtime crate, which holds the document types, link building, error documents and request extractors. It also calls `ontogen_core::id::validate_id` to check a client-supplied id, and builds request fields with `serde_json`. Add all three to the crate that contains the generated HTTP file, the way you add `markdown-store` (the examples use path dependencies):
 
@@ -128,7 +126,7 @@ Entity names in URLs are pluralized and kebab-cased automatically: `work_session
 
 Every response from a generated route that carries a body has `Content-Type: application/vnd.api+json`, and every response carries `Vary: Accept`.
 
-- A request with a body (`POST`, `PATCH`) must send `Content-Type: application/vnd.api+json`. Anything else, including `application/json`, is `415` with `source.header: "Content-Type"`. A `ext` parameter, or any parameter other than `profile`, is also `415`.
+- A request with a body (`POST`, `PATCH`; for a custom op, only when it sends one) must send `Content-Type: application/vnd.api+json`. Anything else, including `application/json`, is `415` with `source.header: "Content-Type"`. A `ext` parameter, or any parameter other than `profile`, is also `415`.
 - A request whose `Accept` lists `application/vnd.api+json` only with parameters other than `profile` and `q`, or with `q=0`, is `406`. A missing `Accept`, `*/*` and `application/*` are acceptable.
 - `204` responses have no body and no `Content-Type`.
 
@@ -160,7 +158,7 @@ A success response is a document with `jsonapi`, `links`, optional `meta` and `d
 
 - `id` is the entity's `#[ontology(id)]` field, which must be a `String`.
 - `attributes` holds every other non-relation field under its Rust field name. `Option` fields that are `None` are `null`.
-- Each relation field becomes a relationship. A `belongs_to` field named `epic_id` becomes `epic`; other relation fields keep their name. Relationship objects carry `data` only for now. Relationship links and relationship endpoints arrive in a later phase of 0.9.
+- Each relation field becomes a relationship. A `belongs_to` field named `epic_id` becomes `epic`; other relation fields keep their name. Relationship objects carry `data` only for now. Relationship links and relationship endpoints arrive in a later release.
 - Links are relative paths. Ids in links are percent-encoded.
 
 | Operation | Success |
@@ -177,7 +175,7 @@ Before it creates or updates, the handler checks that every linked resource exis
 
 ### Pagination support
 
-When you set `pagination` in your config, the `List` operations of the surface's modules take `page[offset]` and `page[limit]` query parameters. `pagination` belongs to a surface, and the primary surface's value covers every module on it, so every entity module of a single-surface crate pages (tasks-tracker pages `task`, `epic` and `tag`, and its `build.rs` lists the same three with `.api_paginated(..)` so each API `list` takes the page). A scoped list (`route_prefix`) pages exactly like an unscoped one: the page goes to the store, not to an in-memory slice.
+When you set `pagination` in your config, the `List` operations of the surface's modules take `page[offset]` and `page[limit]` query parameters. `pagination` belongs to a surface, and the primary surface's value covers every module on it, so every entity module of a single-surface crate pages (tasks-tracker pages `task`, `epic` and `tag`, and its `build.rs` lists the same three with `.api_paginated(..)` so each API `list` takes the page). A scoped list (`route_prefix`) pages exactly like an unscoped one: the page goes to the store and `count` supplies the total, not an in-memory slice. That holds for lists that are not served as resources too (see [Operations that are not CRUD](#operations-that-are-not-crud)).
 
 ```rust
 pagination: Some(ontogen::servers::PaginationConfig {
@@ -215,7 +213,7 @@ A list that is not paginated rejects `page[...]` with `400 invalid_query_paramet
 
 ### Query parameters
 
-A generated route accepts a fixed set of query parameters. Anything else is `400 invalid_query_parameter` with `source.parameter` naming it: an unknown name, a repeated name, a malformed name, `fields[...]`, and `page[...]` on a route that is not paginated. `[` and `]` are accepted raw or percent-encoded. `filter` is not accepted yet and arrives in a later phase of 0.9. `sort` and `include` are recognised on a list (`include` also on a get) but nothing can be sorted or included yet, so they are `400 invalid_sort_field` and `400 invalid_include_path` with `source.parameter` naming the parameter; they are not `invalid_query_parameter`.
+A generated route accepts a fixed set of query parameters. Anything else is `400 invalid_query_parameter` with `source.parameter` naming it: an unknown name, a repeated name, a malformed name, `fields[...]`, and `page[...]` on a route that is not paginated. `[` and `]` are accepted raw or percent-encoded. `filter` is not accepted yet and arrives in a later release. `sort` and `include` are recognised on a list (`include` also on a get) but nothing can be sorted or included yet, so they are `400 invalid_sort_field` and `400 invalid_include_path` with `source.parameter` naming the parameter; they are not `invalid_query_parameter`.
 
 ### Errors
 
@@ -253,11 +251,11 @@ A variant whose snake_case name equals one of ontogen's own codes (for example a
 
 | Status | `code` | Raised when |
 |--------|--------|-------------|
-| 400 | `invalid_query_parameter` | an unknown, repeated or malformed query parameter, or a bad `page[...]` value |
+| 400 | `invalid_query_parameter` | an unknown, repeated or malformed query parameter, a bad `page[...]` or `opArg[...]` value, or any query parameter on a custom `POST` |
 | 400 | `invalid_sort_field` | a `sort` parameter on a list (no list takes an order yet) |
 | 400 | `invalid_include_path` | an `include` parameter on a list or a get (nothing can be included yet) |
 | 400 | `invalid_path_parameter` | a typed route-prefix parameter fails to parse |
-| 400 | `invalid_document` | the body is not JSON or not a valid resource document |
+| 400 | `invalid_document` | the body is not JSON or not a valid resource document, or a custom op body whose `meta.args` is missing, unknown or ill-typed |
 | 400 | `unknown_attribute`, `missing_attribute`, `invalid_attribute` | attribute problems in a create or update body |
 | 400 | `unknown_relationship`, `missing_relationship` | relationship problems in a create body |
 | 403 | `relationship_required` | `null` for a non-`Option` to-one |
@@ -268,21 +266,74 @@ A variant whose snake_case name equals one of ontogen's own codes (for example a
 | 409 | `id_mismatch` | a `PATCH` body id that differs from the URL id |
 | 413 | `content_too_large` | the body exceeds the server's body limit |
 | 415 | `unsupported_media_type` | `Content-Type` is not acceptable |
-| 500 | `internal_error` | a store-construction or scope-accessor failure, or an error type that is not `AppError` |
+| 500 | `internal_error` | a store-construction or scope-accessor failure, or any op or event subscribe whose error type is not `AppError` |
 
 Axum's own extractor rejections never reach the client in plain text: the generated handlers use the `ontogen-jsonapi` extractors, which produce these documents.
 
 ### Operations that are not CRUD
 
-For now these keep their current routes and success bodies:
+Custom ops, junction ops, and the CRUD ops of a module with no entity behind them are served as custom ops: documents with `meta` and no `data`.
 
-- custom ops (`CustomGet`, `CustomPost`) return and accept plain JSON as before;
-- junction ops keep their `/{id}/{children}` routes and plain bodies;
-- event streams are unchanged `text/event-stream` routes;
-- a hand-written `list` in a resource module that takes filter parameters (anything besides the page) keeps its own handler, with its old query extraction and body, until filters arrive in a later phase of 0.9;
-- a module with CRUD-shaped functions but no entity behind it (for instance when `gen_servers` is called with `&[]`) is served as it was, including `PUT` for update and `limit`/`offset`.
+**Responses.** A custom op answers `200` with `meta.result` holding the value the function returned, serialized by serde. It is a plain value even when it is an entity or a list of entities. A function that returns `()` answers `204` with no body. The status is never `201`. There are no `links`.
 
-Their error responses are already JSON:API `errors` documents. An event-stream function that fails before the stream opens answers `500 internal_error`, whatever its error type; a bad query parameter on the route is `400 invalid_query_parameter`. These success shapes change in a later phase of 0.9.
+```http
+GET /api/stats/workout
+```
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "meta": { "result": { "total_count": 12, "total_duration_minutes": 540 } }
+}
+```
+
+**`POST` bodies.** Every argument after the state and store is a member of `meta.args`, keyed by its Rust parameter name. That includes an `*Input` argument and `Option` arguments.
+
+```http
+POST /api/workouts/start
+Content-Type: application/vnd.api+json
+
+{ "meta": { "args": { "input": { "template_id": "push-day" } } } }
+```
+
+- A request with no body is read as `{"meta": {"args": {}}}` and needs no `Content-Type`.
+- A body that is not a JSON object is `400 invalid_document`. A missing `meta` has the pointer `""`, a missing `meta.args` the pointer `/meta`, and a `meta` or `meta.args` that is not an object the pointer `/meta` or `/meta/args`. A function with no required arguments reads a missing member as `{}`. Other top-level members are ignored.
+- An unknown `meta.args` member is `400 invalid_document` at `/meta/args/{name}`. A missing required argument is `400 invalid_document` at `/meta/args`. A value serde rejects is `400 invalid_document` at its member. An absent or `null` `Option` argument is `None`.
+- A custom `POST` accepts no query parameters.
+
+**`GET` arguments.** Required arguments are path segments after the action, as in `GET /api/workouts/summary/{id}`. `Option` arguments are `opArg[name]` query parameters: `GET /api/workouts/summary/w1?opArg[verbose]=true`. Values deserialize as serde does from a string. A bare name, an unknown `opArg[…]` or a malformed value is `400 invalid_query_parameter`.
+
+An `*Input` parameter on an op served without a body is a build error (`CodegenError`): an `#[ontogen::http::get]` op, `get_by_id`, `delete`, `list_X` and `remove_Y`.
+
+**Singletons.** A singleton module (`// ontogen:singleton`) has no resource type, and every op in it is a custom op on `/api/{singular}/{action}`. An op there that classifies as `list`, `get_by_id`, `create`, `update`, `delete` or a junction op is a build error.
+
+**Modules with no entity behind them** (for instance when `gen_servers` is called with `&[]`) serve their CRUD functions at the usual routes, under the custom op rules:
+
+| Op | Route | Request | Response |
+|----|-------|---------|----------|
+| `list` | `GET /api/{m}` | paginated: `opArg[limit]`, `opArg[offset]` | `meta.result`: the list, or `{items, total, limit, offset}` when paginated |
+| `get_by_id` | `GET /api/{m}/{id}` | none | `meta.result` |
+| `create` | `POST /api/{m}` | `meta.args.input` | `200`, `meta.result` |
+| `update` | `PATCH /api/{m}/{id}` | `meta.args.input` | `200`, `meta.result` |
+| `delete` | `DELETE /api/{m}/{id}` | none | `204` |
+
+`opArg[limit]` and `opArg[offset]` are unsigned 32-bit integers. An absent `limit` is `default_limit`, a larger one is clamped to `max_limit` (`opArg[limit]=0` is a zero-size page, not an error), and an absent `offset` is `0`. A malformed value is `400 invalid_query_parameter`. The page goes to the store's page-taking `list`, and `count` supplies `total`.
+
+**Junction ops** keep their routes and use the same wire in every module, entity-backed or not:
+
+| Op | Route | Request | Response |
+|----|-------|---------|----------|
+| `list_X` | `GET /api/{m}/{parent_id}/{children}` | paginated: `opArg[limit]`, `opArg[offset]` | `meta.result`: the list, or `{items, total, limit, offset}` |
+| `add_Y` | `POST /api/{m}/{parent_id}/{children}` | `meta.args.{child param}` | `204` |
+| `remove_Y` | `DELETE /api/{m}/{parent_id}/{children}/{child_id}` | none | `204` |
+
+A paginated junction list slices the full list in memory.
+
+**Event streams** are `text/event-stream` routes, and only the `data:` payload is JSON:API shaped. When the item type is a schema entity, `data:` is its resource object without `links`: `type`, `id`, `attributes` and `relationships` (`data` only, and left out when the entity has none). Any other item is `{"meta": {"result": …}}`. A `lag` frame stays `{"skipped": n}`. See [Event subscriptions](#event-subscriptions).
+
+**Filtered lists.** A hand-written `list` that takes filter parameters (anything besides the page), in any module, keeps its own handler with its old query extraction and body until filters arrive in a later release. Its scoped variant behaves like its unscoped one.
+
+Every error from these routes is the error document described under [Errors](#errors).
 
 ### Handler and router shape
 
@@ -304,7 +355,7 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
 }
 ```
 
-Handlers are named `{module}_{op}` (`task_list`, `task_get_by_id`, `task_create`, `task_update`, `task_delete`). The file also holds two error helpers, `app_error` (an `AppError` to its status and `code`) and `internal_error` (every other failure, `500 internal_error`).
+Handlers are named `{module}_{op}` (`task_list`, `task_get_by_id`, `task_create`, `task_update`, `task_delete`). The file also holds two error helpers, `ontogen_app_error` (an `AppError` to its status and `code`) and `ontogen_internal_error` (every other failure, `500 internal_error`).
 
 ## Tauri IPC generation
 
@@ -365,8 +416,9 @@ pub async fn vault_changes(
 ) -> Result<broadcast::Receiver<LoggedChange>, AppError>;
 ```
 
-- **HTTP.** An SSE route. Required params are path segments and `Option` params are query params, as for a `CustomGet`: `GET /api/events/vault-changes/{vault_id}?classes=…`. A subscribe that fails before the stream opens is a `500 internal_error` response for now.
+- **HTTP.** An SSE route. Required params are path segments and `Option` params are plain query params (not `opArg[…]`, which only custom `GET` ops use): `GET /api/events/vault-changes/{vault_id}?classes=…`. A subscribe that fails before the stream opens is an error document, mapped like any op: an error of type `AppError` gets its status and `code`, any other error type `500 internal_error`.
 - **Resume.** A param named `resume` of type `Option<String>` makes the op resumable. The handler fills it from the `Last-Event-ID` header, or the `resume` query param when the header is absent. The item type must implement `ontogen_core::events::EventSeq`; its `event_id()` is written as each event's `id:`. Ontogen does not replay history; the function decides what resuming means.
+- **Frames.** Over HTTP the `data:` payload is the entity's resource object (no `links`) when the item type is a schema entity, and `{"meta": {"result": …}}` otherwise. IPC frames are flat.
 - **Lag.** When a subscriber falls behind the broadcast, it receives an `event: lag` frame with `data: {"skipped": n}` and the stream stays open.
 - **IPC.** Each event op generates `{fn}_subscribe(args…, channel)` and `{fn}_unsubscribe(id)`. Subscribe forwards `EventFrame<T>` messages (`{"kind":"event","id":…,"data":…}` or `{"kind":"lag","skipped":n}`) into the caller's `tauri::ipc::Channel` and returns a subscription id. The forwarding task ends on unsubscribe, on the first failed send (the webview is gone), or when the senders close. Both commands are in `ipc_handler()`.
 
@@ -461,7 +513,7 @@ route_prefix: Some(ontogen::servers::RoutePrefix {
 }),
 ```
 
-This generates scoped routes like `/api/projects/{project_id}/tasks` alongside the entity handlers. The `state_accessor` method is called to construct a project-scoped Store from the extracted path parameter. Scoped CRUD routes speak JSON:API like unscoped ones, with the prefix in every link and `Location`; the resource `type` does not carry it. A prefix parameter that fails to parse is `400 invalid_path_parameter`.
+This generates scoped routes like `/api/projects/{project_id}/tasks` alongside the entity handlers. Every kind of route exists under the prefix with the same wire behaviour, with one difference: scoped junction ops are action-style routes (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/tasks/add-tag`, `…/tasks/remove-tag`) that follow the custom op rules. The `state_accessor` method is called to construct a project-scoped Store from the extracted path parameter. Scoped CRUD routes speak JSON:API like unscoped ones, with the prefix in every link and `Location`; the resource `type` does not carry it. A prefix parameter that fails to parse is `400 invalid_path_parameter`. A scoped list that is not served as a resource passes the page to the store's `list` and calls `count`, like an unscoped one, so a hand-written scoped `list` must honour its `limit` and `offset`.
 
 <Aside type="note" title="Colons in config, braces in output">
 `RoutePrefix::segments` and the values in `sse_route_overrides` take **colon-style** parameters (`projects/:project_id`), while every generated axum route uses axum 0.8's **brace style** (`/api/projects/{project_id}/tasks`).

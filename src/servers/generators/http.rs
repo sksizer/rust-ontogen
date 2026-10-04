@@ -2,11 +2,14 @@
 
 //! Generate Axum HTTP route handlers from API modules.
 //!
-//! A resource module's CRUD ops are served as JSON:API (wire contract §7,
-//! §8) through the `ontogen-jsonapi` runtime crate. Custom ops, junction
-//! ops, a list that takes a filter, modules with no entity behind them and
-//! event streams keep their own flat success shapes, but every error the
-//! server returns is an `errors[]` document (§13).
+//! Every route speaks JSON:API through the `ontogen-jsonapi` runtime crate:
+//! a resource module's CRUD ops are served as its resource (wire contract
+//! §7, §8), and every other op as a custom op with a meta-only document
+//! (§10), at the routes §10.4 gives CRUD-named ops with no resource and
+//! junction ops. Event streams send resource objects or `meta.result`
+//! frames (§12). The one exception is a list that takes a filter, which
+//! keeps its flat query and flat success shape; its errors are `errors[]`
+//! documents (§13) like every other route's.
 
 use std::fs;
 use std::path::Path;
@@ -14,11 +17,11 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::persistence::dto::{create_field_required, field_to_create_type};
-use crate::resource::{Arity, Resource, member_name};
-use crate::servers::classify::{classify_op, is_read_op};
+use crate::resource::{Arity, Resource, list_takes_filter, member_name};
+use crate::servers::classify::classify_op;
 use crate::servers::config::{Config, RoutePrefix};
 use crate::servers::error_map::VariantShape;
-use crate::servers::generators::surface_use_stmts;
+use crate::servers::generators::surface_use_stmts_where;
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param, is_page_param, is_resume_param};
 use crate::servers::types::{
     capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type, to_pascal_case,
@@ -128,6 +131,15 @@ impl Routes {
         self.0[i].1.push((method, handler.to_string()));
     }
 
+    /// The routing fns the routes call, in name order: each route's first
+    /// method. The rest chain as `MethodRouter` methods.
+    fn methods(&self) -> Vec<&'static str> {
+        let mut methods: Vec<&'static str> = self.0.iter().filter_map(|(_, m)| m.first().map(|(m, _)| *m)).collect();
+        methods.sort_unstable();
+        methods.dedup();
+        methods
+    }
+
     fn render(&self) -> String {
         let mut out = String::new();
         for (path, methods) in &self.0 {
@@ -145,6 +157,14 @@ impl Routes {
 }
 
 /// How a handler reaches its fn's first argument.
+///
+/// Every binding a generated handler makes of its own is `ontogen_`-prefixed
+/// (`ontogen_state`, `ontogen_store`, `ontogen_query`, …), and a fn's
+/// arguments are bound under their own names: an argument may be named
+/// anything, `state` and `store` included, without shadowing the handler's.
+/// So is every helper fn a handler calls once its arguments are bound
+/// (`ontogen_app_error`, `ontogen_query_rejection`, `ontogen_sse_stream`, …),
+/// which an argument of the same name would otherwise shadow.
 struct Access {
     /// Lines opening the store, if the fn takes one.
     open: String,
@@ -157,11 +177,14 @@ struct Access {
 fn unscoped_access(f: &ApiFn) -> Access {
     if f.first_param_is_store {
         Access {
-            open: format!("    let store = state.{}().await.map_err(internal_error)?;\n", f.store_accessor),
-            arg: "&store",
+            open: format!(
+                "    let ontogen_store = ontogen_state.{}().await.map_err(ontogen_internal_error)?;\n",
+                f.store_accessor
+            ),
+            arg: "&ontogen_store",
         }
     } else {
-        Access { open: String::new(), arg: "&state" }
+        Access { open: String::new(), arg: "&ontogen_state" }
     }
 }
 
@@ -176,27 +199,39 @@ const SCOPE: &str = "ontogen_scope";
 /// (§11.1).
 fn scoped_access(prefix: &RoutePrefix) -> Access {
     Access {
-        open: format!("    let store = state.{}(&{SCOPE}).map_err(internal_error)?;\n", prefix.state_accessor),
-        arg: "&store",
+        open: format!(
+            "    let ontogen_store = ontogen_state.{}(&{SCOPE}).map_err(ontogen_internal_error)?;\n",
+            prefix.state_accessor
+        ),
+        arg: "&ontogen_store",
     }
 }
 
-/// `.map_err(…)` for a call returning `f`'s error: `app_error` for the
-/// consumer's `AppError`, `internal_error` for anything else (§13.4).
+/// `.map_err(…)` for a call returning `f`'s error: `ontogen_app_error` for the
+/// consumer's `AppError`, `ontogen_internal_error` for anything else (§13.4).
 fn err_map(f: &ApiFn, config: &Config) -> &'static str {
-    if returns_app_error(f, config) { ".map_err(app_error)" } else { ".map_err(internal_error)" }
+    if returns_app_error(f, config) { ".map_err(ontogen_app_error)" } else { ".map_err(ontogen_internal_error)" }
 }
 
-/// True when `f` fails with the `AppError` that `app_error` takes: the one
+/// True when `f` fails with the `AppError` that `ontogen_app_error` takes: the one
 /// in the primary surface's types module (§13.4). Anything else maps
-/// through `internal_error`, which takes any `Display` error, so a type
+/// through `ontogen_internal_error`, which takes any `Display` error, so a type
 /// this cannot place is a `500` rather than a build failure.
 pub(crate) fn returns_app_error(f: &ApiFn, config: &Config) -> bool {
-    error_path(f, config).is_some_and(|path| path == app_error_path(config))
+    is_app_error(f.error_type.as_deref(), f.surface, config)
 }
 
-/// `f`'s error type as a path the generated crate can compare, read in
-/// `f`'s surface.
+/// [`returns_app_error`] for an event fn's subscribe call.
+pub(crate) fn event_returns_app_error(ev: &EventFn, config: &Config) -> bool {
+    is_app_error(ev.error_type.as_deref(), ev.surface, config)
+}
+
+fn is_app_error(error: Option<&str>, surface: usize, config: &Config) -> bool {
+    error_path(error, surface, config).is_some_and(|path| path == app_error_path(config))
+}
+
+/// An error type as a path the generated crate can compare, read in the
+/// surface of the fn that returns it.
 ///
 /// The parser has resolved the type through `f`'s file's `use` items.
 /// Then a `crate::` path is in the crate the surface's service path names
@@ -211,9 +246,9 @@ pub(crate) fn returns_app_error(f: &ApiFn, config: &Config) -> bool {
 /// `AppError` a glob (`use fitness::schema::*;`) brings in is read as the
 /// surface's own, which is wrong only when the glob names another surface's
 /// types module.
-fn error_path(f: &ApiFn, config: &Config) -> Option<String> {
-    let error = f.error_type.as_deref()?;
-    let (service, types) = match f.surface {
+fn error_path(error: Option<&str>, surface: usize, config: &Config) -> Option<String> {
+    let error = error?;
+    let (service, types) = match surface {
         0 => (config.service_import_path.as_str(), config.types_import_path.as_str()),
         i => {
             let surface = &config.extra_surfaces[i - 1];
@@ -238,22 +273,22 @@ pub(crate) fn unplaced_app_error_warnings(modules: &[ApiModule], config: &Config
     let known: Vec<String> = std::iter::once(app_error_path(config))
         .chain(config.extra_surfaces.iter().map(|s| format!("{}::AppError", s.types_import_path)))
         .collect();
-    modules
-        .iter()
-        .flat_map(|m| m.functions.iter().map(move |f| (m, f)))
-        .filter_map(|(m, f)| {
-            let path = error_path(f, config)?;
-            (path.rsplit("::").next() == Some("AppError") && !known.contains(&path)).then(|| {
-                format!(
-                    "cargo:warning=ontogen: `{}::{}` returns `{path}`, which is not proven to be `{}`; its errors \
-                     answer 500 internal_error. If it is that type, name it by that path.",
-                    m.name,
-                    f.name,
-                    app_error_path(config),
-                )
-            })
+    let fns = modules.iter().flat_map(|m| {
+        let functions = m.functions.iter().map(move |f| (m, &f.name, f.error_type.as_deref(), f.surface));
+        functions.chain(m.events.iter().map(move |ev| (m, &ev.name, ev.error_type.as_deref(), ev.surface)))
+    });
+    fns.filter_map(|(m, name, error, surface)| {
+        let path = error_path(error, surface, config)?;
+        (path.rsplit("::").next() == Some("AppError") && !known.contains(&path)).then(|| {
+            format!(
+                "cargo:warning=ontogen: `{}::{name}` returns `{path}`, which is not proven to be `{}`; its errors \
+                 answer 500 internal_error. If it is that type, name it by that path.",
+                m.name,
+                app_error_path(config),
+            )
         })
-        .collect()
+    })
+    .collect()
 }
 
 fn await_str(is_async: bool) -> &'static str {
@@ -267,9 +302,105 @@ fn app_error_path(config: &Config) -> String {
 
 /// Generate HTTP route handlers and write to the output file.
 pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
+    // Handlers and the helpers they share, emitted first so that the
+    // on-demand helpers and the `use` items are exactly those they use.
     let mut out = String::new();
 
-    out.push_str(
+    let has_events = modules.iter().any(|m| !m.events.is_empty());
+    if has_events {
+        out.push_str(SSE_HELPERS);
+    }
+
+    let frames = event_resources(modules, config);
+    if modules.iter().any(|m| m.functions.iter().any(|f| served_resource(m, f, config).is_some())) {
+        out.push_str(RESOURCE_HELPERS);
+    }
+    let mut with_object: Vec<&str> = Vec::new();
+    for m in modules {
+        if emit_resource_helpers(&mut out, m, modules, config, &frames) {
+            with_object.push(&m.name);
+        }
+    }
+    for (resource, item_type) in &frames {
+        if !with_object.contains(&resource.module.as_str()) {
+            out.push_str(&format!("// ── `{}` ──\n\n", resource.resource_type));
+            emit_resource_object(&mut out, resource, item_type);
+        }
+        emit_frame_data(&mut out, resource, item_type);
+    }
+
+    // Unscoped junction routes go last, in path order. `BTreeMap` keeps the
+    // bytes stable across runs, which `write_if_changed` relies on (a
+    // `tauri dev` watcher would otherwise rebuild forever).
+    let mut routes = Routes::default();
+    let mut junction_routes: std::collections::BTreeMap<String, Vec<(&'static str, String)>> =
+        std::collections::BTreeMap::new();
+
+    for m in modules {
+        // With a `route_prefix`, a store-scoped fn is served under the prefix
+        // only (below); a state-scoped or stateless fn keeps its unscoped
+        // route. Decided per fn: a merged module may mix both kinds.
+        let functions: Vec<&ApiFn> = m.functions.iter().filter(|f| !is_scoped(f, config)).collect();
+        if functions.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("// ── {} Handlers ──\n\n", capitalize(&m.name)));
+        for f in functions {
+            let (method, path, handler_name) = emit_fn(&mut out, m, f, config, None);
+            if is_junction(f) {
+                junction_routes.entry(path).or_default().push((method, handler_name));
+            } else {
+                routes.add(&path, method, &handler_name);
+            }
+        }
+    }
+    for (path, methods) in &junction_routes {
+        for (method, handler) in methods {
+            routes.add(path, method, handler);
+        }
+    }
+
+    for m in modules {
+        for ev in &m.events {
+            generate_sse_handler(&mut out, &mut routes, m, ev, config, None);
+        }
+    }
+
+    if let Some(prefix) = &config.route_prefix {
+        out.push_str("\n// ── Project-Scoped Handlers ──\n\n");
+        for m in modules {
+            for f in m.functions.iter().filter(|f| is_scoped(f, config)) {
+                let (method, path, handler_name) = emit_fn(&mut out, m, f, config, Some(prefix));
+                routes.add(&path, method, &handler_name);
+            }
+        }
+        for m in modules {
+            for ev in &m.events {
+                generate_sse_handler(&mut out, &mut routes, m, ev, config, Some(prefix));
+            }
+        }
+    }
+
+    let state_type = &config.state_type;
+    out.push_str(&format!(
+        "/// Generated routes. Call this from your main router.\npub fn entity_routes() -> Router<Arc<{state_type}>> {{\n    Router::new()\n"
+    ));
+    out.push_str(&routes.render());
+    out.push_str("}\n");
+
+    let mut helpers = String::new();
+    emit_error_helpers(&mut helpers, config);
+    helpers.push_str(ROUTE_HELPERS);
+    let handlers = without_comments(&out);
+    for (name, definition) in ON_DEMAND_HELPERS {
+        if uses_ident(&handlers, name) {
+            helpers.push_str(definition);
+        }
+    }
+    let body = helpers + &out;
+    let code = without_comments(&body);
+
+    let mut file = String::from(
         "\
 #![allow(dead_code, unused_imports, clippy::pedantic, clippy::needless_borrow)]
 //! Auto-generated HTTP route handlers. DO NOT EDIT.
@@ -278,48 +409,24 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
 
 use std::sync::Arc;
 
-use axum::{
-    extract::{
-        State,
-        rejection::{JsonRejection, QueryRejection},
-    },
-    http::{Method, StatusCode},
-    response::{Json, Response},
-    routing::{delete, get, patch, post, put},
-    Router,
-};
-use ontogen_jsonapi::{
-    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
-    ResourceIdentifier, ResourceObject,
-    error::method_not_allowed,
-    extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
-    links::{CanonicalQuery, encode_path_segment, pagination_links},
-    request::{self, Endpoint, LinkedId, ResourceData},
-    response,
-};
-use serde::{Deserialize, Serialize};
-
 ",
     );
-
-    // Emit use statements in sorted order (matches rustfmt alphabetical sort)
-    let mut use_stmts = surface_use_stmts(modules, config);
-
-    use_stmts.push(format!("use {};\n", config.state_import));
-
-    if let Some(ref store_import) = config.store_import {
-        use_stmts.push(format!("use {};\n", store_import));
-    }
-
+    file.push_str(&runtime_imports(&code, &routes));
+    file.push('\n');
+    let mut use_stmts = surface_use_stmts_where(modules, config, &|name| uses_ident(&code, name));
+    let named = |path: &str| uses_ident(&code, path.rsplit("::").next().unwrap_or(path));
+    use_stmts.extend(
+        std::iter::once(&config.state_import)
+            .chain(&config.store_import)
+            .filter(|path| named(path))
+            .map(|path| format!("use {path};\n")),
+    );
     use_stmts.sort();
     for stmt in &use_stmts {
-        out.push_str(stmt);
+        file.push_str(stmt);
     }
-
-    // Add SSE-specific imports if any module has events
-    let has_events = modules.iter().any(|m| !m.events.is_empty());
     if has_events {
-        out.push_str(
+        file.push_str(
             "\
 use std::convert::Infallible;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -327,148 +434,178 @@ use ontogen_core::events::EventFrame;
 ",
         );
     }
-
-    out.push('\n');
-
-    emit_error_helpers(&mut out, config);
-    out.push_str(ROUTE_HELPERS);
-
-    if has_events {
-        out.push_str(SSE_HELPERS);
-    }
-
-    // A list outside a resource, and a junction list, keep `PaginatedResult`.
-    let legacy_pagination = modules.iter().any(|m| {
-        m.functions.iter().any(|f| {
-            let op = classify_op(f);
-            let unserved_list = op == OpKind::List && served_resource(m, f, config).is_none();
-            (unserved_list || matches!(op, OpKind::JunctionList { .. }))
-                && config.pagination_for(&m.name, f.surface).is_some()
-        })
-    });
-    if legacy_pagination {
-        out.push_str(
-            "\
-#[derive(Serialize)]
-pub struct PaginatedResult<T: Serialize> {
-    pub items: Vec<T>,
-    pub total: u64,
-    pub limit: u32,
-    pub offset: u32,
-}
-
-#[derive(Deserialize)]
-pub struct PaginationParams {
-    pub limit: Option<u32>,
-    pub offset: Option<u32>,
-}
-
-",
-        );
-    }
-
-    if modules.iter().any(|m| m.functions.iter().any(|f| served_resource(m, f, config).is_some())) {
-        out.push_str(RESOURCE_HELPERS);
-        for m in modules {
-            emit_resource_helpers(&mut out, m, modules, config);
-        }
-    }
-
-    // Generate handlers and collect routes.
-    //
-    // `junction_routes` uses BTreeMap so the emit order is the natural sort
-    // of route paths, not HashMap iteration order. Iteration order matters
-    // because the generated `http.rs` is written via `write_if_changed`:
-    // if the bytes differ between cargo invocations, the file gets rewritten
-    // even when no API surface changed — and on consumers running
-    // `tauri dev`, that triggers an infinite rebuild loop (the file
-    // watcher sees the new mtime, kicks off another `cargo run`, which
-    // re-runs build.rs, which re-emits with a fresh per-process RandomState
-    // seed, etc.).
-    let mut routes = Routes::default();
-    let mut junction_routes: std::collections::BTreeMap<String, Vec<(&'static str, String)>> =
-        std::collections::BTreeMap::new();
-
-    for m in modules {
-        let module = &m.name;
-        let base = format!("/api/{}", config.naming.url_for_module(m));
-
-        // Store-scoped fns (first param is &Store) get scoped routes only
-        // (generate_scoped_handlers below) when route_prefix is set. Otherwise
-        // each store-scoped handler opens the store through its surface's
-        // accessor. Decided per fn: a merged module may mix both kinds.
-        let functions: Vec<&ApiFn> =
-            m.functions.iter().filter(|f| !(f.first_param_is_store && config.route_prefix.is_some())).collect();
-        if functions.is_empty() {
-            continue;
-        }
-
-        out.push_str(&format!("// ── {} Handlers ──\n\n", capitalize(module)));
-
-        for f in functions {
-            let op = classify_op(f);
-            let handler_name = crate::servers::generators::ipc::command_name(module, f, config);
-
-            if let Some(resource) = served_resource(m, f, config) {
-                let op = ResourceOp { m, f, resource, handler_name: &handler_name, config };
-                let (method, path) = resource_handler(&mut out, &op, unscoped_access(f), None);
-                routes.add(&format!("{base}{path}"), method, &handler_name);
-                continue;
-            }
-
-            match op {
-                OpKind::List | OpKind::GetById | OpKind::Create | OpKind::Update | OpKind::Delete => {
-                    let (method, path) = legacy_crud_handler(&mut out, m, f, &handler_name, config);
-                    routes.add(&format!("{base}{path}"), method, &handler_name);
-                }
-
-                OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-                    let (method, path) = junction_handler(&mut out, m, f, &handler_name, config);
-                    junction_routes.entry(format!("{base}{path}")).or_default().push((method, handler_name));
-                }
-
-                OpKind::CustomGet | OpKind::CustomPost => {
-                    generate_generic_http_handler(&mut out, &mut routes, m, f, config);
-                }
-
-                OpKind::EventStream => continue,
-            }
-        }
-    }
-
-    for (path, methods) in &junction_routes {
-        for (method, handler) in methods {
-            routes.add(path, method, handler);
-        }
-    }
-
-    // Generate SSE handlers for event functions
-    for m in modules {
-        for ev in &m.events {
-            generate_sse_handler(&mut out, &mut routes, m, ev, config, None);
-        }
-    }
-
-    // Generate project-scoped handler variants if route_prefix is configured
-    if let Some(prefix) = &config.route_prefix {
-        generate_scoped_handlers(&mut out, &mut routes, modules, config, prefix);
-    }
-
-    // Router function
-    let state_type = &config.state_type;
-    out.push_str(&format!(
-        "/// Generated routes. Call this from your main router.\npub fn entity_routes() -> Router<Arc<{state_type}>> {{\n    Router::new()\n"
-    ));
-    out.push_str(&routes.render());
-    out.push_str("}\n");
+    file.push('\n');
+    file.push_str(&body);
 
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).expect("Failed to create output directory");
     }
-    crate::write_and_format(output, out).expect("Failed to write HTTP generated file");
+    crate::write_and_format(output, file).expect("Failed to write HTTP generated file");
 }
 
-/// `app_error` maps the consumer's `AppError` (§13.4); `internal_error`
+/// Emit `f`'s handler, served under `scope` when given, returning its method,
+/// its route and its handler name.
+fn emit_fn(
+    out: &mut String,
+    m: &ApiModule,
+    f: &ApiFn,
+    config: &Config,
+    scope: Option<&RoutePrefix>,
+) -> (&'static str, String, String) {
+    let handler_name = handler_name(m, f, config, scope.is_some());
+    let access = match scope {
+        _ if f.is_stateless => None,
+        Some(prefix) => Some(scoped_access(prefix)),
+        None => Some(unscoped_access(f)),
+    };
+    let (method, path) = route_of(m, f, config);
+    if let Some(resource) = served_resource(m, f, config) {
+        let op = ResourceOp { m, f, resource, handler_name: &handler_name, config };
+        resource_handler(out, &op, access.expect("a resource op takes the state or a store"), scope);
+    } else if is_filtered_list(f) {
+        legacy_list_handler(out, m, f, &handler_name, access, scope, config);
+    } else {
+        op_handler(out, m, f, &op_shape(m, f, config, scope.is_some()), &handler_name, access, scope, config);
+    }
+    (method, path, handler_name)
+}
+
+/// The handler name: the IPC command's name, which is unique in the file,
+/// and for a scoped handler that name with `_scoped`.
+fn handler_name(m: &ApiModule, f: &ApiFn, config: &Config, scoped: bool) -> String {
+    let name = crate::servers::generators::ipc::command_name(&m.name, f, config);
+    if scoped { format!("{name}_scoped") } else { name }
+}
+
+/// The method and route `f` is served at: under the route prefix when `f`
+/// is store-scoped and one is configured. The generator and the server
+/// metadata both read it, so they cannot disagree.
+pub(in crate::servers) fn route_of(m: &ApiModule, f: &ApiFn, config: &Config) -> (&'static str, String) {
+    let scope = config.route_prefix.as_ref().filter(|_| f.first_param_is_store);
+    let url = config.naming.url_for_module(m);
+    let base = match scope {
+        None => format!("/api/{url}"),
+        Some(prefix) => format!("/api/{}/{url}", axum_path(&prefix.segments)),
+    };
+    let (method, path) = if served_resource(m, f, config).is_some() {
+        match classify_op(f) {
+            OpKind::List => ("get", ""),
+            OpKind::GetById => ("get", "/{id}"),
+            OpKind::Create => ("post", ""),
+            OpKind::Update => ("patch", "/{id}"),
+            OpKind::Delete => ("delete", "/{id}"),
+            _ => unreachable!("served_resource picks CRUD ops only"),
+        }
+    } else if is_filtered_list(f) {
+        ("get", "")
+    } else {
+        let shape = op_shape(m, f, config, scope.is_some());
+        return (shape.method, format!("{base}{}", shape.path));
+    };
+    (method, format!("{base}{path}"))
+}
+
+fn is_junction(f: &ApiFn) -> bool {
+    matches!(classify_op(f), OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. })
+}
+
+/// A `list` that takes anything but its page: a filter. No filter is read
+/// from the wire as JSON:API (§7.3), so this list keeps its flat handler.
+fn is_filtered_list(f: &ApiFn) -> bool {
+    classify_op(f) == OpKind::List && list_takes_filter(f)
+}
+
+/// Every resource an event op's item type names, with the item type as the
+/// file names it, in event order.
+fn event_resources<'a>(modules: &'a [ApiModule], config: &'a Config) -> Vec<(&'a Resource, &'a str)> {
+    let mut found: Vec<(&Resource, &str)> = Vec::new();
+    for ev in modules.iter().flat_map(|m| &m.events) {
+        if let Some(resource) = config.resources.by_item_type(&ev.item_type_ast)
+            && !found.iter().any(|(r, _)| r.module == resource.module)
+        {
+            found.push((resource, &ev.item_type));
+        }
+    }
+    found
+}
+
+/// `code` without its comment lines, which name types and helpers without
+/// using them.
+fn without_comments(code: &str) -> String {
+    code.lines().filter(|line| !line.trim_start().starts_with("//")).flat_map(|line| [line, "\n"]).collect()
+}
+
+/// True when `body` names `ident` unqualified: as a whole identifier, not
+/// after `::`.
+fn uses_ident(body: &str, ident: &str) -> bool {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    body.match_indices(ident).any(|(at, _)| {
+        let before = &body[..at];
+        let after = body[at + ident.len()..].chars().next();
+        !before.ends_with(|c: char| is_ident(c) || c == ':') && !after.is_some_and(is_ident)
+    })
+}
+
+/// The `use` items of `axum`, `ontogen_jsonapi` and `serde` that `body`
+/// names, and the routing fns `routes` calls.
+fn runtime_imports(body: &str, routes: &Routes) -> String {
+    let used = |names: &[&'static str]| -> Vec<&'static str> {
+        names.iter().copied().filter(|name| uses_ident(body, name)).collect()
+    };
+    let tree = |prefix: &str, items: Vec<String>| match items.as_slice() {
+        [] => None,
+        [item] if item == "self" => Some(prefix.to_string()),
+        [item] => Some(format!("{prefix}::{item}")),
+        _ => Some(format!("{prefix}::{{{}}}", items.join(", "))),
+    };
+    let strings = |names: Vec<&str>| names.into_iter().map(str::to_string).collect::<Vec<_>>();
+
+    let mut extract = strings(used(&["State"]));
+    extract.extend(tree("rejection", strings(used(&["QueryRejection"]))));
+    let mut axum = vec!["Router".to_string()];
+    axum.extend(tree("extract", extract));
+    axum.extend(tree("http", strings(used(&["Method", "StatusCode"]))));
+    axum.extend(tree("response", strings(used(&["Json", "Response"]))));
+    axum.extend(tree("routing", strings(routes.methods())));
+
+    let mut jsonapi = strings(used(&[
+        "Document",
+        "ErrorCode",
+        "ErrorObject",
+        "Linkage",
+        "Links",
+        "LookupKey",
+        "PageMeta",
+        "QueryParams",
+        "QuerySpec",
+        "Relationship",
+        "ResourceIdentifier",
+        "ResourceObject",
+        "ResultFrame",
+        "ResultMeta",
+    ]));
+    jsonapi.extend(tree("error", strings(used(&["method_not_allowed"]))));
+    jsonapi.extend(tree("extract", strings(used(&["AcceptGuard", "Body", "NoParams", "Path", "Query", "RouteQuery"]))));
+    jsonapi.extend(tree("links", strings(used(&["CanonicalQuery", "encode_path_segment", "pagination_links"]))));
+    let mut request = Vec::new();
+    if body.contains("request::") {
+        request.push("self".to_string());
+    }
+    request.extend(strings(used(&["Endpoint", "LinkedId", "ResourceData"])));
+    jsonapi.extend(tree("request", request));
+    if body.contains("response::") {
+        jsonapi.push("response".to_string());
+    }
+
+    let mut out = format!("use axum::{{{}}};\n", axum.join(", "));
+    out.push_str(&format!("use ontogen_jsonapi::{{{}}};\n", jsonapi.join(", ")));
+    if let Some(serde) = tree("serde", strings(used(&["Deserialize", "Serialize"]))) {
+        out.push_str(&format!("use {serde};\n"));
+    }
+    out
+}
+
+/// `ontogen_app_error` maps the consumer's `AppError` (§13.4); `ontogen_internal_error`
 /// takes every failure no `AppError` describes.
 fn emit_error_helpers(out: &mut String, config: &Config) {
     match &config.error_map {
@@ -476,7 +613,7 @@ fn emit_error_helpers(out: &mut String, config: &Config) {
             let path = app_error_path(config);
             out.push_str(&format!(
                 "/// An `AppError` as an error object: the status its variant's name gives,\n/// and the name in \
-                 snake_case as the code.\nfn app_error(e: {path}) -> ErrorObject {{\n    let (status, code) \
+                 snake_case as the code.\nfn ontogen_app_error(e: {path}) -> ErrorObject {{\n    let (status, code) \
                  = match &e {{\n"
             ));
             for v in &map.variants {
@@ -493,7 +630,7 @@ fn emit_error_helpers(out: &mut String, config: &Config) {
             "\
 /// No `AppError` was found in the schema directory, so no error carries a
 /// status of its own: every one is a `500`.
-fn app_error(e: impl std::fmt::Display) -> ErrorObject {
+fn ontogen_app_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
 
@@ -504,7 +641,7 @@ fn app_error(e: impl std::fmt::Display) -> ErrorObject {
         "\
 /// A failure no `AppError` describes: opening the store, a scope accessor,
 /// or an op with another error type.
-fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
+fn ontogen_internal_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
 
@@ -523,9 +660,7 @@ fn status_const(status: u16) -> String {
     }
 }
 
-/// Emitted once: the `405` fallback every route installs (§13.5), and the
-/// error documents for the Axum extractors the ops outside a resource still
-/// use.
+/// Emitted once: the `405` fallback every route installs (§13.5).
 const ROUTE_HELPERS: &str = "\
 /// The method fallback of a route serving `allowed`: `405` with `Allow`.
 fn allow<const N: usize>(
@@ -534,21 +669,72 @@ fn allow<const N: usize>(
     move |method| std::future::ready(method_not_allowed(&method, &allowed))
 }
 
-fn json_rejection(e: JsonRejection) -> ErrorObject {
-    match e.status() {
-        StatusCode::UNSUPPORTED_MEDIA_TYPE => {
-            ErrorObject::new(ErrorCode::UnsupportedMediaType, e.body_text()).with_header(\"Content-Type\")
-        }
-        StatusCode::PAYLOAD_TOO_LARGE => ErrorObject::new(ErrorCode::ContentTooLarge, e.body_text()),
-        _ => ErrorObject::new(ErrorCode::InvalidDocument, e.body_text()),
-    }
-}
+";
 
-fn query_rejection(e: QueryRejection) -> ErrorObject {
+/// Helpers emitted only when a handler names them, each with its name.
+const ON_DEMAND_HELPERS: &[(&str, &str)] = &[
+    (
+        "ontogen_query_rejection",
+        "\
+/// The error document for a rejection of Axum's own `Query`. A list that
+/// takes a filter and an event stream read their query parameters with it,
+/// not with the JSON:API `Query`.
+fn ontogen_query_rejection(e: QueryRejection) -> ErrorObject {
     ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
 }
 
-";
+",
+    ),
+    (
+        "PaginatedResult",
+        "\
+/// One page of a list that is not served as a resource.
+#[derive(Serialize)]
+pub struct PaginatedResult<T: Serialize> {
+    pub items: Vec<T>,
+    pub total: u64,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+",
+    ),
+    (
+        "PaginationParams",
+        "\
+/// The page of a list that takes a filter, beside its filter.
+#[derive(Deserialize)]
+pub struct PaginationParams {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+",
+    ),
+    (
+        "ontogen_result_frame",
+        "\
+/// Writes an event item that is not an entity as `{\"meta\":{\"result\":…}}`.
+fn ontogen_result_frame<T: Serialize>(event: Event, item: &T) -> Result<Event, axum::Error> {
+    event.json_data(ResultFrame::new(item))
+}
+
+",
+    ),
+    (
+        "PageOpArgs",
+        "\
+/// A paginated list that is not served as a resource takes its page as
+/// `opArg[limit]` and `opArg[offset]`.
+struct PageOpArgs;
+
+impl RouteQuery for PageOpArgs {
+    const SPEC: QuerySpec = QuerySpec { op_args: &[\"limit\", \"offset\"], ..QuerySpec::NONE };
+}
+
+",
+    ),
+];
 
 /// Emitted once when any resource is served: the query parameters each
 /// resource route accepts (§6), and the rules every resource shares.
@@ -615,7 +801,7 @@ fn set_field(fields: &mut serde_json::Map<String, serde_json::Value>, name: &str
 fn from_fields<T: serde::de::DeserializeOwned>(
     fields: serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, ErrorObject> {
-    serde_json::from_value(serde_json::Value::Object(fields)).map_err(internal_error)
+    serde_json::from_value(serde_json::Value::Object(fields)).map_err(ontogen_internal_error)
 }
 
 ";
@@ -637,6 +823,7 @@ struct ResourceNames {
     resource: String,
     fields: String,
     key: String,
+    frame: String,
 }
 
 fn resource_names(module: &str) -> ResourceNames {
@@ -647,19 +834,92 @@ fn resource_names(module: &str) -> ResourceNames {
         resource: format!("{module}_as_resource"),
         fields: format!("{module}_request_fields"),
         key: format!("{module}_lookup_key"),
+        frame: format!("ontogen_{module}_frame_data"),
     }
+}
+
+/// The attributes serializer and the resource builder of `resource`, whose
+/// entity this file names `entity_ty` (§5).
+fn emit_resource_object(out: &mut String, resource: &Resource, entity_ty: &str) {
+    let names = resource_names(&resource.module);
+    let type_name = &resource.resource_type;
+    let entity = &resource.entity.name;
+    let id_field = &resource.id_field;
+    let attrs = &names.attributes;
+    out.push_str(&format!(
+        "/// `{entity}`'s attributes: every field but the id and the relations, in\n/// declaration \
+         order.\nstruct {attrs}<'a>(&'a {entity_ty});\n\nimpl Serialize for {attrs}<'_> {{\n    fn \
+         serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {{\n        use \
+         serde::ser::SerializeStruct;\n        let mut attributes = serializer.serialize_struct(\"{attrs}\", \
+         {})?;\n",
+        resource.attributes.len()
+    ));
+    for a in &resource.attributes {
+        out.push_str(&format!("        attributes.serialize_field(\"{}\", &self.0.{})?;\n", a.name, a.field));
+    }
+    out.push_str("        attributes.end()\n    }\n}\n\n");
+
+    out.push_str(&format!(
+        "/// `entity` as a resource object of type `{type_name}`, its `links.self`\n/// under `collection`.\nfn \
+         {}<'a>(entity: &'a {entity_ty}, collection: &str) -> ResourceObject<{attrs}<'a>> {{\n    let self_link \
+         = format!(\"{{collection}}/{{}}\", encode_path_segment(&entity.{id_field}));\n    \
+         ResourceObject::new(\"{type_name}\", entity.{id_field}.clone(), {attrs}(entity), self_link)",
+        names.resource
+    ));
+    for rel in &resource.relationships {
+        let target = &rel.target_type;
+        let field = &rel.field;
+        let linkage = match rel.arity {
+            Arity::ToOne { nullable: true } => format!(
+                "Linkage::ToOne(entity.{field}.as_ref().map(|id| ResourceIdentifier::new(\"{target}\", \
+                 id.as_str())))"
+            ),
+            Arity::ToOne { nullable: false } => {
+                format!("Linkage::ToOne(Some(ResourceIdentifier::new(\"{target}\", entity.{field}.as_str())))")
+            }
+            Arity::ToMany => format!(
+                "Linkage::ToMany(entity.{field}.iter().map(|id| ResourceIdentifier::new(\"{target}\", \
+                 id.as_str())).collect())"
+            ),
+        };
+        out.push_str(&format!("\n        .with_relationship(\"{}\", Relationship::from_data({linkage}))", rel.name));
+    }
+    out.push_str("\n}\n\n");
+}
+
+/// The writer of an event frame's `data:` for an item of `resource`'s
+/// entity, which this file names `item_type`: its resource object without
+/// links (§12). The resource builder needs a collection for the links it
+/// leaves out; the unscoped one is as good as any.
+fn emit_frame_data(out: &mut String, resource: &Resource, item_type: &str) {
+    let names = resource_names(&resource.module);
+    out.push_str(&format!(
+        "/// A `{}` event item as its resource object. A frame is not tied to a\n/// request URL, so it carries no \
+         links.\nfn {}(event: Event, entity: &{item_type}) -> Result<Event, axum::Error> {{\n    \
+         event.json_data({}(entity, \"/api/{}\").into_unlinked())\n}}\n\n",
+        resource.entity.name, names.frame, names.resource, resource.resource_type
+    ));
 }
 
 /// Per resource, emitted once whichever handlers serve it: the attributes
 /// serializer and resource builder (§5), the `{id}` lookup key (§8.1), and
-/// the reader of create and update documents (§8.2, §8.3 step 7).
-fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule], config: &Config) {
+/// the reader of create and update documents (§8.2, §8.3 step 7). With the
+/// resource among `frames`, its event frame writer too (§12).
+///
+/// Returns whether it emitted the resource builder.
+fn emit_resource_helpers(
+    out: &mut String,
+    m: &ApiModule,
+    modules: &[ApiModule],
+    config: &Config,
+    frames: &[(&Resource, &str)],
+) -> bool {
     let served: Vec<OpKind> =
         m.functions.iter().filter(|f| served_resource(m, f, config).is_some()).map(classify_op).collect();
     if served.is_empty() {
-        return;
+        return false;
     }
-    let Some(resource) = config.resources.by_module(&m.name) else { return };
+    let Some(resource) = config.resources.by_module(&m.name) else { return false };
     let names = resource_names(&m.name);
     let type_name = &resource.resource_type;
     let entity = &resource.entity.name;
@@ -667,58 +927,20 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule],
 
     out.push_str(&format!("// ── `{type_name}` ──\n\n"));
 
-    if let Some(entity_ty) = entity_type(m) {
-        let attrs = &names.attributes;
-        out.push_str(&format!(
-            "/// `{entity}`'s attributes: every field but the id and the relations, in\n/// declaration \
-             order.\nstruct {attrs}<'a>(&'a {entity_ty});\n\nimpl Serialize for {attrs}<'_> {{\n    fn \
-             serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {{\n        use \
-             serde::ser::SerializeStruct;\n        let mut attributes = serializer.serialize_struct(\"{attrs}\", \
-             {})?;\n",
-            resource.attributes.len()
-        ));
-        for a in &resource.attributes {
-            out.push_str(&format!("        attributes.serialize_field(\"{}\", &self.0.{})?;\n", a.name, a.field));
-        }
-        out.push_str("        attributes.end()\n    }\n}\n\n");
-
-        out.push_str(&format!(
-            "/// `entity` as a resource object of type `{type_name}`, its `links.self`\n/// under `collection`.\nfn \
-             {}<'a>(entity: &'a {entity_ty}, collection: &str) -> ResourceObject<{attrs}<'a>> {{\n    let self_link \
-             = format!(\"{{collection}}/{{}}\", encode_path_segment(&entity.{id_field}));\n    \
-             ResourceObject::new(\"{type_name}\", entity.{id_field}.clone(), {attrs}(entity), self_link)",
-            names.resource
-        ));
-        for rel in &resource.relationships {
-            let target = &rel.target_type;
-            let field = &rel.field;
-            let linkage = match rel.arity {
-                Arity::ToOne { nullable: true } => format!(
-                    "Linkage::ToOne(entity.{field}.as_ref().map(|id| ResourceIdentifier::new(\"{target}\", \
-                     id.as_str())))"
-                ),
-                Arity::ToOne { nullable: false } => {
-                    format!("Linkage::ToOne(Some(ResourceIdentifier::new(\"{target}\", entity.{field}.as_str())))")
-                }
-                Arity::ToMany => format!(
-                    "Linkage::ToMany(entity.{field}.iter().map(|id| ResourceIdentifier::new(\"{target}\", \
-                     id.as_str())).collect())"
-                ),
-            };
-            out.push_str(&format!(
-                "\n        .with_relationship(\"{}\", Relationship::from_data({linkage}))",
-                rel.name
-            ));
-        }
-        out.push_str("\n}\n\n");
+    let entity_ty = entity_type(m).or_else(|| {
+        frames.iter().find(|(r, _)| r.module == resource.module).map(|(_, item_type)| item_type.to_string())
+    });
+    if let Some(entity_ty) = &entity_ty {
+        emit_resource_object(out, resource, entity_ty);
     }
+    let emitted_object = entity_ty.is_some();
 
     // An `{id}` that does not percent-decode names nothing: the store's own
     // `404` for a missing id (§8.1).
     let not_found = format!("{entity}NotFound");
     let missing = match config.error_map.as_ref().and_then(|map| map.variants.iter().find(|v| v.name == not_found)) {
         Some(v) if v.shape == VariantShape::Tuple(1) => {
-            format!("app_error({}::{not_found}(id.to_string()))", app_error_path(config))
+            format!("ontogen_app_error({}::{not_found}(id.to_string()))", app_error_path(config))
         }
         _ => format!("ErrorObject::internal(format!(\"`{{id}}` names no `{type_name}`\"))"),
     };
@@ -729,7 +951,7 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule],
     ));
 
     if !served.iter().any(|op| matches!(op, OpKind::Create | OpKind::Update)) {
-        return;
+        return emitted_object;
     }
 
     let has_relationships = !resource.relationships.is_empty();
@@ -781,7 +1003,7 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule],
             "    request::check_relationship_names(data.relationships()?, \"{type_name}\", &[])?;\n    \
              Ok(fields)\n}}\n\n"
         ));
-        return;
+        return emitted_object;
     }
     let rel_names: Vec<String> = resource.relationships.iter().map(|r| format!("\"{}\"", r.name)).collect();
     out.push_str(&format!(
@@ -825,6 +1047,7 @@ fn emit_resource_helpers(out: &mut String, m: &ApiModule, modules: &[ApiModule],
     }
     out.push_str("    Ok((fields, linked))\n}\n\n");
     emit_check_linked(out, m, resource, modules, config);
+    emitted_object
 }
 
 /// One CRUD op served as its resource.
@@ -878,8 +1101,10 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
             let arg = match (tf.first_param_is_store, prefix) {
                 (false, _) => "state".to_string(),
                 (true, Some(prefix)) => {
-                    let open =
-                        format!("    let store = state.{}({SCOPE}).map_err(internal_error)?;\n", prefix.state_accessor);
+                    let open = format!(
+                        "    let store = state.{}({SCOPE}).map_err(ontogen_internal_error)?;\n",
+                        prefix.state_accessor
+                    );
                     if !opens.contains(&open) {
                         opens.push(open);
                     }
@@ -887,7 +1112,8 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
                 }
                 (true, None) => {
                     let accessor = &tf.store_accessor;
-                    let open = format!("    let {accessor} = state.{accessor}().await.map_err(internal_error)?;\n");
+                    let open =
+                        format!("    let {accessor} = state.{accessor}().await.map_err(ontogen_internal_error)?;\n");
                     if !opens.contains(&open) {
                         opens.push(open);
                     }
@@ -908,7 +1134,7 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
                     )
                 })
                 .unwrap_or_default();
-            let fallback = if returns_app_error(tf, config) { "app_error" } else { "internal_error" };
+            let fallback = if returns_app_error(tf, config) { "ontogen_app_error" } else { "ontogen_internal_error" };
             let each = if rel.is_to_many() { "for linked in" } else { "if let Some(linked) =" };
             checks.push_str(&format!(
                 "    {each} &linked.{} {{\n        match {svc}::get_by_id({arg}, &linked.id){} {{\n            \
@@ -940,23 +1166,18 @@ fn write_steps(op: &ResourceOp<'_>) -> (String, String) {
     let scope_arg = if op.config.route_prefix.is_some() && scoped { format!("&{SCOPE}, ") } else { String::new() };
     (
         format!("    let (fields, linked) = {fields_fn}(&data, {create})?;\n"),
-        format!("    {}(&state, {scope_arg}&linked).await?;\n", check_linked_fn(&op.m.name, scoped)),
+        format!("    {}(&ontogen_state, {scope_arg}&linked).await?;\n", check_linked_fn(&op.m.name, scoped)),
     )
 }
 
-/// Emit the JSON:API handler of one CRUD op (§7, §8), returning its method
-/// and its path below the collection.
+/// Emit the JSON:API handler of one CRUD op (§7, §8), served at
+/// [`route_of`].
 ///
 /// Checks run in §13.2 order: `Accept`, then `Content-Type` when the op
 /// reads a body, then the path, the query and the body. With `scope`, the
 /// prefix parameter comes first in the path, and links carry the prefix
 /// (§11.1).
-fn resource_handler(
-    out: &mut String,
-    op: &ResourceOp<'_>,
-    access: Access,
-    scope: Option<&RoutePrefix>,
-) -> (&'static str, &'static str) {
+fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope: Option<&RoutePrefix>) {
     let ResourceOp { m, f, resource, handler_name, config, .. } = *op;
     let names = resource_names(&m.name);
     let svc = m.service_ident(f.surface);
@@ -1022,7 +1243,8 @@ fn resource_handler(
     };
     let collection_extract = collection_path.as_ref().map(extract).unwrap_or_default();
     let item_extract = extract(&item_path);
-    let head = format!("async fn {handler_name}(\n    State(state): State<Arc<{state_type}>>,\n    _: AcceptGuard,\n");
+    let head =
+        format!("async fn {handler_name}(\n    State(ontogen_state): State<Arc<{state_type}>>,\n    _: AcceptGuard,\n");
     let tail = ") -> Result<Response, ErrorObject> {\n";
     let single_response = format!(
         "    let resource = {as_resource}(&entity, collection);\n    let links = \
@@ -1060,7 +1282,6 @@ fn resource_handler(
                  let data: Vec<_> = items.iter().map(|entity| {as_resource}(entity, \
                  collection)).collect();\n{document}}}\n\n"
             ));
-            ("get", "")
         }
         OpKind::GetById => {
             out.push_str(&format!(
@@ -1068,7 +1289,6 @@ fn resource_handler(
                  \"{type_name}\")?;\n{open}    let entity = {svc}::get_by_id({arg}, \
                  {key}(&id)?){aw}{map_err}?;\n{collection}{single_response}"
             ));
-            ("get", "/{id}")
         }
         OpKind::Create => {
             let input_ty = extract_input_type(&f.params[0].ty);
@@ -1084,7 +1304,7 @@ fn resource_handler(
             let create_err = match variant {
                 Some(v) => format!(
                     ".map_err(|e| match e {{\n            e @ {} if data.id.is_some() => \
-                     app_error(e).with_pointer(\"/data/id\"),\n            e => app_error(e),\n        }})",
+                     ontogen_app_error(e).with_pointer(\"/data/id\"),\n            e => ontogen_app_error(e),\n        }})",
                     v.pattern(&app_error_path(config))
                 ),
                 None => map_err.to_string(),
@@ -1099,7 +1319,6 @@ fn resource_handler(
                  = resource.links().self_link().to_owned();\n    let links = Links::new(location.as_str());\n    \
                  Ok(response::created(&location, &Document::new(resource, links)))\n}}\n\n"
             ));
-            ("post", "")
         }
         OpKind::Update => {
             let input_ty = extract_input_type(&f.params[1].ty);
@@ -1112,320 +1331,423 @@ fn resource_handler(
                  from_fields(fields)?;\n{open}{checks}    let entity = {svc}::update({arg}, {key}(&id)?, \
                  input){aw}{map_err}?;\n{single_response}"
             ));
-            ("patch", "/{id}")
         }
         OpKind::Delete => {
             out.push_str(&format!(
                 "{head}{item_extract}    _: Query<NoParams>,\n{tail}{open}    {svc}::delete({arg}, \
                  {key}(&id)?){aw}{map_err}?;\n    Ok(response::no_content())\n}}\n\n"
             ));
-            ("delete", "/{id}")
         }
         _ => unreachable!("served_resource picks CRUD ops only"),
     }
 }
 
-/// Emit an op named like a CRUD op that is not served as a resource: one in
-/// a module with no entity behind it, or a list that takes a filter.
-/// Returns its method and its path below the collection.
-fn legacy_crud_handler(
+/// Emit a list that takes a filter: its query keeps Axum's flat `Query`, and
+/// its success its flat shape. Under `scope` it is the same handler with the
+/// prefix parameter first, paging through the store as the unscoped one does.
+fn legacy_list_handler(
     out: &mut String,
     m: &ApiModule,
     f: &ApiFn,
     handler_name: &str,
+    access: Option<Access>,
+    scope: Option<&RoutePrefix>,
     config: &Config,
-) -> (&'static str, &'static str) {
+) {
     let svc = m.service_ident(f.surface);
-    let fn_name = &f.name;
     let ret_type = &f.return_type;
     let state_type = &config.state_type;
     let await_str = if f.is_async { "\n        .await" } else { "" };
     let err_map = err_map(f, config);
-    let Access { open: store_let, arg: first_arg } = unscoped_access(f);
-
-    match classify_op(f) {
-        OpKind::List => {
-            let pagination = config.pagination_for(&m.name, f.surface);
-            let paginated = pagination.is_some() && ret_type.starts_with("Vec<");
-            // Check for a query parameter struct (e.g., ListAgentsQuery)
-            let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-            // Check for plain string params (e.g., skill_id: &str) - scoped list filters.
-            // A list that takes the page owns its limit/offset: they are never filters.
-            let plain_params: Vec<_> = f
-                .params
-                .iter()
-                .filter(|p| {
-                    !p.ty.contains("Query") && !p.ty.contains("Input") && (!f.takes_page() || !is_page_param(p))
-                })
-                .collect();
-
-            let mut extra_extractors = String::new();
-            let mut unwraps = String::new();
-            let mut extra_args = String::new();
-            if let Some(qp) = query_param {
-                let qt = extract_input_type(&qp.ty);
-                extra_extractors.push_str(&format!("\n    query: Result<axum::extract::Query<{qt}>, QueryRejection>,"));
-                unwraps.push_str("    let axum::extract::Query(query) = query.map_err(query_rejection)?;\n");
-                extra_args.push_str(", query");
-            }
-            for pp in &plain_params {
-                let name = &pp.name;
-                extra_extractors
-                    .push_str(&format!("\n    {name}: Result<axum::extract::Query<String>, QueryRejection>,"));
-                unwraps
-                    .push_str(&format!("    let axum::extract::Query({name}) = {name}.map_err(query_rejection)?;\n"));
-                extra_args.push_str(&format!(", &{name}"));
-            }
-
-            if let Some(pg) = pagination
-                && paginated
-            {
-                let item_type = inner_type(ret_type);
-                let default_limit = pg.default_limit;
-                let max_limit = pg.max_limit;
-                // A filtered page calls `count` with the same filter,
-                // after `list` has consumed it, so the by-value filter is
-                // cloned into the list call and the original goes to
-                // count. With no filter both are `extra_args`.
-                let count_args = extra_args.clone();
-                let list_args = extra_args.replace(", query", ", query.clone()");
-                extra_extractors
-                    .push_str("\n    pagination: Result<axum::extract::Query<PaginationParams>, QueryRejection>,");
-                unwraps.push_str("    let axum::extract::Query(pagination) = pagination.map_err(query_rejection)?;\n");
-                out.push_str(&format!(
-                    "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,{extra_extractors}
-) -> Result<Json<PaginatedResult<{item_type}>>, ErrorObject> {{
-{unwraps}{store_let}    let limit = pagination.limit.unwrap_or({default_limit}).min({max_limit});
-    let offset = pagination.offset.unwrap_or(0);
-    let items = {svc}::list({first_arg}{list_args}, Some(u64::from(limit)), Some(u64::from(offset))){await_str}
-        {err_map}?;
-    let total = {svc}::count({first_arg}{count_args}){await_str}
-        {err_map}?;
-    Ok(Json(PaginatedResult {{ items, total, limit, offset }}))
-}}
-
-"
-                ));
-            } else {
-                // This surface does not paginate: a list that takes the page gets the whole table.
-                let page_args = if f.takes_page() { ", None, None" } else { "" };
-                out.push_str(&format!(
-                    "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,{extra_extractors}
-) -> Result<Json<{ret_type}>, ErrorObject> {{
-{unwraps}{store_let}    {svc}::list({first_arg}{extra_args}{page_args}){await_str}
-        .map(Json)
-        {err_map}
-}}
-
-"
-                ));
-            }
-            ("get", "")
-        }
-
-        OpKind::GetById => {
-            out.push_str(&format!(
-                "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path(id): Path<String>,
-) -> Result<Json<{ret_type}>, ErrorObject> {{
-{store_let}    {svc}::{fn_name}({first_arg}, &id){await_str}
-        .map(Json)
-        {err_map}
-}}
-
-"
-            ));
-            ("get", "/{id}")
-        }
-
-        OpKind::Create => {
-            let input_type = extract_input_type(&f.params[0].ty);
-            out.push_str(&format!(
-                "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    input: Result<Json<{input_type}>, JsonRejection>,
-) -> Result<(StatusCode, Json<{ret_type}>), ErrorObject> {{
-    let Json(input) = input.map_err(json_rejection)?;
-{store_let}    {svc}::create({first_arg}, input){await_str}
-        .map(|entity| (StatusCode::CREATED, Json(entity)))
-        {err_map}
-}}
-
-"
-            ));
-            ("post", "")
-        }
-
-        OpKind::Update => {
-            let input_type = extract_input_type(&f.params[1].ty);
-            out.push_str(&format!(
-                "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path(id): Path<String>,
-    input: Result<Json<{input_type}>, JsonRejection>,
-) -> Result<Json<{ret_type}>, ErrorObject> {{
-    let Json(input) = input.map_err(json_rejection)?;
-{store_let}    {svc}::update({first_arg}, &id, input){await_str}
-        .map(Json)
-        {err_map}
-}}
-
-"
-            ));
-            ("put", "/{id}")
-        }
-
-        OpKind::Delete => {
-            out.push_str(&format!(
-                "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path(id): Path<String>,
-) -> Result<StatusCode, ErrorObject> {{
-{store_let}    {svc}::delete({first_arg}, &id){await_str}
-        .map(|_| StatusCode::NO_CONTENT)
-        {err_map}
-}}
-
-"
-            ));
-            ("delete", "/{id}")
-        }
-
-        _ => unreachable!("legacy_crud_handler takes CRUD ops only"),
-    }
-}
-
-/// Emit a junction op's handler, returning its method and its path below
-/// the collection.
-fn junction_handler(
-    out: &mut String,
-    m: &ApiModule,
-    f: &ApiFn,
-    handler_name: &str,
-    config: &Config,
-) -> (&'static str, String) {
-    let svc = m.service_ident(f.surface);
-    let fn_name = &f.name;
-    let ret_type = &f.return_type;
-    let state_type = &config.state_type;
-    let await_str = if f.is_async { "\n        .await" } else { "" };
-    let err_map = err_map(f, config);
-    let Access { open: store_let, arg: first_arg } = unscoped_access(f);
+    let (store_let, first_arg) = match access {
+        Some(Access { open, arg }) => (open, vec![arg.to_string()]),
+        None => (String::new(), Vec::new()),
+    };
     let pagination = config.pagination_for(&m.name, f.surface);
+    let paginated = pagination.is_some() && ret_type.starts_with("Vec<");
+    // A `*Query` struct, or plain params (`skill_id: &str`). A list that
+    // takes the page owns its `limit`/`offset`: they are never filters.
+    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
+    let plain_params: Vec<_> = f
+        .params
+        .iter()
+        .filter(|p| !p.ty.contains("Query") && !p.is_input() && (!f.takes_page() || !is_page_param(p)))
+        .collect();
 
-    match classify_op(f) {
-        OpKind::JunctionList { child_segment } => {
-            if let Some(pg) = pagination
-                && ret_type.starts_with("Vec<")
-            {
-                let item_type = inner_type(ret_type);
-                let default_limit = pg.default_limit;
-                let max_limit = pg.max_limit;
-                out.push_str(&format!(
-                    "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path(parent_id): Path<String>,
-    pagination: Result<axum::extract::Query<PaginationParams>, QueryRejection>,
+    let mut extractors = String::new();
+    if !f.is_stateless {
+        extractors.push_str(&format!("\n    State(ontogen_state): State<Arc<{state_type}>>,"));
+    }
+    if let Some(prefix) = scope {
+        extractors.push_str(&format!("\n    Path({SCOPE}): Path<{}>,", prefix.params[0].rust_type));
+    }
+    let mut unwraps = String::new();
+    let mut filter_args: Vec<String> = Vec::new();
+    if let Some(qp) = query_param {
+        let qt = extract_input_type(&qp.ty);
+        extractors.push_str(&format!("\n    ontogen_filter: Result<axum::extract::Query<{qt}>, QueryRejection>,"));
+        unwraps.push_str(
+            "    let axum::extract::Query(ontogen_filter) = ontogen_filter.map_err(ontogen_query_rejection)?;\n",
+        );
+        filter_args.push("ontogen_filter".to_string());
+    }
+    for pp in &plain_params {
+        let name = &pp.name;
+        extractors.push_str(&format!("\n    {name}: Result<axum::extract::Query<String>, QueryRejection>,"));
+        unwraps
+            .push_str(&format!("    let axum::extract::Query({name}) = {name}.map_err(ontogen_query_rejection)?;\n"));
+        filter_args.push(format!("&{name}"));
+    }
+
+    if let Some(pg) = pagination
+        && paginated
+    {
+        let item_type = inner_type(ret_type);
+        let default_limit = pg.default_limit;
+        let max_limit = pg.max_limit;
+        // `count` takes the same filter after `list` has consumed it, so a
+        // by-value filter is cloned into the list call.
+        let count_args = [first_arg.clone(), filter_args.clone()].concat().join(", ");
+        let mut list_args: Vec<String> = first_arg.clone();
+        list_args
+            .extend(filter_args.iter().map(|a| if a == "ontogen_filter" { format!("{a}.clone()") } else { a.clone() }));
+        list_args.extend(["Some(u64::from(ontogen_limit))".to_string(), "Some(u64::from(ontogen_offset))".to_string()]);
+        let list_args = list_args.join(", ");
+        extractors.push_str("\n    ontogen_page: Result<axum::extract::Query<PaginationParams>, QueryRejection>,");
+        unwraps
+            .push_str("    let axum::extract::Query(ontogen_page) = ontogen_page.map_err(ontogen_query_rejection)?;\n");
+        out.push_str(&format!(
+            "\
+async fn {handler_name}({extractors}
 ) -> Result<Json<PaginatedResult<{item_type}>>, ErrorObject> {{
-    let axum::extract::Query(pagination) = pagination.map_err(query_rejection)?;
-{store_let}    let all_items = {svc}::{fn_name}({first_arg}, &parent_id){await_str}
+{unwraps}{store_let}    let ontogen_limit = ontogen_page.limit.unwrap_or({default_limit}).min({max_limit});
+    let ontogen_offset = ontogen_page.offset.unwrap_or(0);
+    let ontogen_items = {svc}::list({list_args}){await_str}
         {err_map}?;
-    let total = all_items.len() as u64;
-    let limit = pagination.limit.unwrap_or({default_limit}).min({max_limit});
-    let offset = pagination.offset.unwrap_or(0);
-    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();
-    Ok(Json(PaginatedResult {{ items, total, limit, offset }}))
+    let ontogen_total = {svc}::count({count_args}){await_str}
+        {err_map}?;
+    Ok(Json(PaginatedResult {{
+        items: ontogen_items,
+        total: ontogen_total,
+        limit: ontogen_limit,
+        offset: ontogen_offset,
+    }}))
 }}
 
 "
-                ));
-            } else {
-                out.push_str(&format!(
-                    "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path(parent_id): Path<String>,
+        ));
+    } else {
+        // This surface does not paginate: a list that takes the page gets the whole table.
+        let mut args: Vec<String> = [first_arg, filter_args].concat();
+        if f.takes_page() {
+            args.extend(["None".to_string(), "None".to_string()]);
+        }
+        out.push_str(&format!(
+            "\
+async fn {handler_name}({extractors}
 ) -> Result<Json<{ret_type}>, ErrorObject> {{
-{store_let}    {svc}::{fn_name}({first_arg}, &parent_id){await_str}
+{unwraps}{store_let}    {svc}::list({}){await_str}
         .map(Json)
         {err_map}
 }}
 
-"
-                ));
-            }
-            ("get", format!("/{{parent_id}}/{child_segment}"))
-        }
-
-        OpKind::JunctionAdd { child_segment } => {
-            let child_id_param = if f.params.len() >= 2 { &f.params[1].name } else { "child_id" };
-            // A missing child id is the client's mistake: `400`, not `500`.
-            out.push_str(&format!(
-                "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path(parent_id): Path<String>,
-    body: Result<Json<std::collections::HashMap<String, String>>, JsonRejection>,
-) -> Result<StatusCode, ErrorObject> {{
-    let Json(body) = body.map_err(json_rejection)?;
-    let child_id = body
-        .get(\"{child_id_param}\")
-        .ok_or_else(|| ErrorObject::new(ErrorCode::InvalidDocument, \"`{child_id_param}` is required\"))?;
-{store_let}    {svc}::{fn_name}({first_arg}, &parent_id, child_id){await_str}
-        {err_map}?;
-    Ok(StatusCode::NO_CONTENT)
-}}
-
-"
-            ));
-            ("post", format!("/{{parent_id}}/{child_segment}"))
-        }
-
-        OpKind::JunctionRemove { child_segment } => {
-            out.push_str(&format!(
-                "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path((parent_id, child_id)): Path<(String, String)>,
-) -> Result<StatusCode, ErrorObject> {{
-{store_let}    {svc}::{fn_name}({first_arg}, &parent_id, &child_id){await_str}
-        {err_map}?;
-    Ok(StatusCode::NO_CONTENT)
-}}
-
-"
-            ));
-            ("delete", format!("/{{parent_id}}/{child_segment}/{{child_id}}"))
-        }
-
-        _ => unreachable!("junction_handler takes junction ops only"),
+",
+            args.join(", ")
+        ));
     }
 }
+
+/// How a custom op, or an op served as one (§10.4), reads its request and
+/// answers.
+struct OpShape<'a> {
+    method: &'static str,
+    /// The route below the module's collection: `/{action}/{p}`, `/{id}`, ….
+    path: String,
+    /// Arguments read from the path, in path order.
+    path_args: Vec<&'a Param>,
+    /// `Option` arguments read from `opArg[…]`, on a route with no body.
+    query_args: Vec<&'a Param>,
+    /// Arguments read from `meta.args`, in declaration order, on a route
+    /// that reads a body.
+    body_args: Option<Vec<&'a Param>>,
+    /// The page of a paginated list, read from `opArg[limit]` and
+    /// `opArg[offset]`.
+    page: Option<Paging>,
+    /// Whether success is `204` whatever the fn returns.
+    no_content: bool,
+}
+
+/// Where a paginated list that is not served as a resource takes its page.
+#[derive(Clone, Copy)]
+enum Paging {
+    /// From the store's page-taking `list`, with `count` for the total.
+    Store { default_limit: u32, max_limit: u32 },
+    /// From the fn's whole result, sliced in memory: a junction list.
+    InMemory { default_limit: u32, max_limit: u32 },
+}
+
+/// The request and response shape of `f`, served as a custom op (§10.2):
+/// a `CustomGet` or `CustomPost` at `/{action}`, or a CRUD-named or junction
+/// op at its §10.4 route. A scoped junction op is served as the custom op
+/// its read-ness makes it, at `/{action}`; only that route differs, so a
+/// scoped `JunctionList` pages like an unscoped one (§11.1).
+///
+/// Past the arguments a route names, a route that reads a body reads every
+/// other argument from `meta.args`; one that does not reads an `Option`
+/// from `opArg[…]` and anything else from one more path segment, as a
+/// `CustomGet` does.
+fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> OpShape<'a> {
+    let classified = classify_op(f);
+    let scoped_junction_list = scoped && matches!(classified, OpKind::JunctionList { .. });
+    let op = match &classified {
+        OpKind::JunctionList { .. } if scoped => OpKind::CustomGet,
+        OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } if scoped => OpKind::CustomPost,
+        op => op.clone(),
+    };
+    let paging = config.pagination_for(&m.name, f.surface).filter(|_| f.return_type.starts_with("Vec<"));
+    let (method, mut path, named) = match &op {
+        OpKind::CustomGet | OpKind::CustomPost => {
+            let action = config.naming.derive_action(&m.name, &f.name);
+            let path = if action.is_empty() { String::new() } else { format!("/{action}") };
+            (if op == OpKind::CustomGet { "get" } else { "post" }, path, 0)
+        }
+        OpKind::List => ("get", String::new(), 0),
+        OpKind::GetById => ("get", "/{id}".to_string(), 1),
+        OpKind::Create => ("post", String::new(), 0),
+        OpKind::Update => ("patch", "/{id}".to_string(), 1),
+        OpKind::Delete => ("delete", "/{id}".to_string(), 1),
+        OpKind::JunctionList { child_segment } => ("get", format!("/{{parent_id}}/{child_segment}"), 1),
+        OpKind::JunctionAdd { child_segment } => ("post", format!("/{{parent_id}}/{child_segment}"), 1),
+        OpKind::JunctionRemove { child_segment } => {
+            ("delete", format!("/{{parent_id}}/{child_segment}/{{child_id}}"), 2)
+        }
+        OpKind::EventStream => unreachable!("event fns are not ApiFns"),
+    };
+    let (named, rest) = f.params.split_at(named.min(f.params.len()));
+    let mut shape = OpShape {
+        method,
+        path: String::new(),
+        path_args: named.iter().collect(),
+        query_args: Vec::new(),
+        body_args: None,
+        page: None,
+        // From the op as classified: a scoped junction add or remove is
+        // served as a custom op but answers as its unscoped route does.
+        no_content: f.return_type == "()"
+            || matches!(classified, OpKind::Delete | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }),
+    };
+    match op {
+        // An unfiltered list's only parameters are its page.
+        OpKind::List => {
+            shape.page = paging.map(|pg| Paging::Store { default_limit: pg.default_limit, max_limit: pg.max_limit });
+        }
+        OpKind::JunctionList { .. } => {
+            shape.page = paging.map(|pg| Paging::InMemory { default_limit: pg.default_limit, max_limit: pg.max_limit });
+        }
+        OpKind::CustomGet if scoped_junction_list => {
+            shape.path_args.extend(rest);
+            path.extend(rest.iter().map(|p| format!("/{{{}}}", p.name)));
+            shape.page = paging.map(|pg| Paging::InMemory { default_limit: pg.default_limit, max_limit: pg.max_limit });
+        }
+        _ if matches!(method, "post" | "patch") => shape.body_args = Some(rest.iter().collect()),
+        _ => {
+            for p in rest {
+                if p.is_option() {
+                    shape.query_args.push(p);
+                } else {
+                    path.push_str(&format!("/{{{}}}", p.name));
+                    shape.path_args.push(p);
+                }
+            }
+        }
+    }
+    shape.path = path;
+    shape
+}
+
+/// Emit the handler of an op served as a custom op (§10): a meta-only
+/// document with the fn's `Ok` value as `meta.result`, or `204`.
+///
+/// Checks run in §13.2 order: `Accept`, then for a route that reads a body
+/// its media type, then the path, the query and the body. Axum runs `Body`
+/// last, so a handler reading one takes the path and the query as `Result`s
+/// and answers them after it.
+///
+/// The fn's arguments are bound under their own names and every other
+/// binding carries the `ontogen_` prefix (see [`Access`]), so an argument
+/// may be named `state`, `store`, `query`, `body`, `args`, `result`, `limit`
+/// or anything else a handler needs.
+#[allow(clippy::too_many_arguments)]
+fn op_handler(
+    out: &mut String,
+    m: &ApiModule,
+    f: &ApiFn,
+    shape: &OpShape<'_>,
+    handler_name: &str,
+    access: Option<Access>,
+    scope: Option<&RoutePrefix>,
+    config: &Config,
+) {
+    let svc = m.service_ident(f.surface);
+    let state_type = &config.state_type;
+    let aw = await_str(f.is_async);
+    let map_err = err_map(f, config);
+
+    let mut names: Vec<String> = Vec::new();
+    let mut types: Vec<String> = Vec::new();
+    if let Some(prefix) = scope {
+        names.push(SCOPE.to_string());
+        types.push(prefix.params[0].rust_type.clone());
+    }
+    for p in &shape.path_args {
+        names.push(p.name.clone());
+        types.push(param_to_owned_type(&p.ty_ast));
+    }
+    let path = match names.len() {
+        0 => None,
+        1 => Some((names[0].clone(), types[0].clone())),
+        _ => Some((format!("({})", names.join(", ")), format!("({})", types.join(", ")))),
+    };
+
+    let query_spec = if shape.page.is_some() {
+        Some("PageOpArgs".to_string())
+    } else if shape.query_args.is_empty() {
+        None
+    } else {
+        let spec = format!("{}{}OpArgs", to_pascal_case(&m.name), to_pascal_case(&f.name));
+        let declared: Vec<String> = shape.query_args.iter().map(|p| format!("\"{}\"", p.name)).collect();
+        out.push_str(&format!(
+            "struct {spec};\n\nimpl RouteQuery for {spec} {{\n    const SPEC: QuerySpec = QuerySpec {{ op_args: \
+             &[{}], ..QuerySpec::NONE }};\n}}\n\n",
+            declared.join(", ")
+        ));
+        Some(spec)
+    };
+
+    let mut extractors = String::new();
+    if access.is_some() {
+        extractors.push_str(&format!("    State(ontogen_state): State<Arc<{state_type}>>,\n"));
+    }
+    extractors.push_str("    _: AcceptGuard,\n");
+    let mut steps = String::new();
+    match &shape.body_args {
+        Some(args) => {
+            if let Some((pattern, ty)) = &path {
+                extractors.push_str(&format!("    ontogen_path: Result<Path<{ty}>, ErrorObject>,\n"));
+                steps.push_str(&format!("    let Path({pattern}) = ontogen_path?;\n"));
+            }
+            extractors.push_str("    ontogen_query: Result<Query<NoParams>, ErrorObject>,\n    ontogen_body: Body,\n");
+            let has_required = args.iter().any(|p| !p.is_option());
+            let declared: Vec<String> = args.iter().map(|p| format!("\"{}\"", p.name)).collect();
+            steps.push_str(&format!(
+                "    ontogen_query?;\n    let ontogen_bytes = ontogen_body.into_bytes()?;\n    let ontogen_args = \
+                 request::op_args(&ontogen_bytes, {has_required})?;\n    \
+                 request::check_op_arg_names(&ontogen_args, &[{}])?;\n",
+                declared.join(", ")
+            ));
+            for p in args {
+                steps.push_str(&format!(
+                    "    let {name} = request::op_arg::<{ty}>(&ontogen_args, \"{name}\", {required})?;\n",
+                    name = p.name,
+                    ty = param_to_owned_type(&p.ty_ast),
+                    required = !p.is_option(),
+                ));
+            }
+        }
+        None => {
+            if let Some((pattern, ty)) = &path {
+                extractors.push_str(&format!("    Path({pattern}): Path<{ty}>,\n"));
+            }
+            match &query_spec {
+                Some(spec) => extractors.push_str(&format!("    ontogen_query: Query<{spec}>,\n")),
+                None => extractors.push_str("    _: Query<NoParams>,\n"),
+            }
+            // `opArg[…]` in byte order of name (§13.2 step 5).
+            if let Some(Paging::Store { default_limit, max_limit } | Paging::InMemory { default_limit, max_limit }) =
+                shape.page
+            {
+                steps.push_str(&format!(
+                    "    let ontogen_limit = \
+                     ontogen_query.page_op_arg(\"limit\")?.unwrap_or({default_limit}).min({max_limit});\n    \
+                     let ontogen_offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);\n"
+                ));
+            }
+            let mut by_name = shape.query_args.clone();
+            by_name.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+            for p in by_name {
+                let owned = param_to_owned_type(&p.ty_ast);
+                let inner = owned.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')).unwrap_or(&owned);
+                steps.push_str(&format!(
+                    "    let {name} = ontogen_query.op_arg::<{inner}>(\"{name}\")?;\n",
+                    name = p.name
+                ));
+            }
+        }
+    }
+
+    let (open, first_arg) = match access {
+        Some(Access { open, arg }) => (open, Some(arg)),
+        None => (String::new(), None),
+    };
+    let args: Vec<String> = first_arg
+        .map(str::to_string)
+        .into_iter()
+        .chain(f.params.iter().map(|p| match shape.page {
+            Some(Paging::Store { .. }) => format!("Some(u64::from(ontogen_{}))", p.name),
+            None if classify_op(f) == OpKind::List => "None".to_string(),
+            _ => forward_arg_expr(&p.name, &p.ty_ast),
+        }))
+        .collect();
+    let call = format!("{svc}::{}({}){aw}{map_err}?", f.name, args.join(", "));
+    let respond = match shape.page {
+        _ if shape.no_content => format!("    {call};\n    Ok(response::no_content())\n"),
+        Some(Paging::Store { .. }) => {
+            let count_arg = first_arg.unwrap_or_default();
+            format!(
+                "    let ontogen_items = {call};\n    let ontogen_total = {svc}::count({count_arg}){aw}{map_err}?;\n\
+                 {PAGE_RESULT}{OK_RESULT}"
+            )
+        }
+        Some(Paging::InMemory { .. }) => format!(
+            "    let ontogen_all = {call};\n    let ontogen_total = ontogen_all.len() as u64;\n    let ontogen_items = \
+             ontogen_all.into_iter().skip(ontogen_offset as usize).take(ontogen_limit as usize).collect();\n\
+             {PAGE_RESULT}{OK_RESULT}"
+        ),
+        None => format!("    let ontogen_result = {call};\n{OK_RESULT}"),
+    };
+    out.push_str(&format!(
+        "async fn {handler_name}(\n{extractors}) -> Result<Response, ErrorObject> {{\n{steps}{open}{respond}}}\n\n"
+    ));
+}
+
+/// A custom op's success: its `Ok` value as `meta.result` (§10.1).
+const OK_RESULT: &str = "    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))\n";
+
+/// A list's page as `meta.result`.
+const PAGE_RESULT: &str = "    let ontogen_result = PaginatedResult {\n        items: ontogen_items,\n        total: \
+                           ontogen_total,\n        limit: ontogen_limit,\n        offset: ontogen_offset,\n    };\n";
 
 /// Shared SSE plumbing, emitted once when any module has events.
 ///
-/// `sse_stream` turns an event fn's receiver into frames with
+/// `ontogen_sse_stream` turns an event fn's receiver into frames with
 /// `ontogen_core::events::next_frame`: a lagged receiver becomes an
 /// `event: lag` frame carrying `{"skipped":n}` and the stream stays open;
 /// closed senders end it. Keep-alive comments let a dead client's stream (and
-/// its receiver) drop before the next event.
+/// its receiver) drop before the next event. Each item's `data:` is written
+/// by the handler's `FrameData` (§12): `ontogen_result_frame`, or the entity's own
+/// `ontogen_{module}_frame_data`.
 const SSE_HELPERS: &str = "\
-fn sse_event<T: Serialize>(name: &'static str, frame: EventFrame<T>) -> Event {
+/// How an event op's items are written into their frames' `data:`:
+/// `ontogen_result_frame`, or the item entity's own `ontogen_…_frame_data`.
+type FrameData<T> = fn(Event, &T) -> Result<Event, axum::Error>;
+
+/// One frame as an SSE event: an item as event `name`, its `data:` written
+/// by `data`, with its id as `id:` unless the id holds a line break or NUL;
+/// a lag as event `lag` with `{\"skipped\":n}`.
+fn sse_event<T>(name: &'static str, frame: EventFrame<T>, data: FrameData<T>) -> Event {
     match frame {
-        EventFrame::Event { id, data } => {
-            let event = Event::default()
-                .event(name)
-                .json_data(&data)
+        EventFrame::Event { id, data: item } => {
+            let event = data(Event::default().event(name), &item)
                 .unwrap_or_else(|e| Event::default().event(\"error\").data(e.to_string()));
             match id {
                 Some(id) if !id.contains(['\\n', '\\r', '\\0']) => event.id(id),
@@ -1436,16 +1758,18 @@ fn sse_event<T: Serialize>(name: &'static str, frame: EventFrame<T>) -> Event {
     }
 }
 
-fn sse_stream<T>(
+/// An event op's receiver as an SSE stream of frames, kept alive while idle.
+fn ontogen_sse_stream<T>(
     name: &'static str,
     rx: tokio::sync::broadcast::Receiver<T>,
     id: ontogen_core::events::IdFn<T>,
+    data: FrameData<T>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>>
 where
-    T: Clone + Serialize + Send + 'static,
+    T: Clone + Send + 'static,
 {
     let stream = futures::stream::unfold(rx, move |mut rx| async move {
-        ontogen_core::events::next_frame(&mut rx, id).await.map(|frame| (Ok(sse_event(name, frame)), rx))
+        ontogen_core::events::next_frame(&mut rx, id).await.map(|frame| (Ok(sse_event(name, frame, data)), rx))
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -1500,7 +1824,7 @@ fn generate_sse_handler(
         }
     }
 
-    out.push_str(&format!("async fn {handler_name}(\n    State(state): State<Arc<{state_type}>>,\n"));
+    out.push_str(&format!("async fn {handler_name}(\n    State(ontogen_state): State<Arc<{state_type}>>,\n"));
     let mut path_names: Vec<String> = Vec::new();
     let mut path_types: Vec<String> = Vec::new();
     if let Some(prefix) = scoped {
@@ -1517,10 +1841,10 @@ fn generate_sse_handler(
         _ => out.push_str(&format!("    Path(({})): Path<({})>,\n", path_names.join(", "), path_types.join(", "))),
     }
     if !query_params.is_empty() {
-        out.push_str(&format!("    q: Result<axum::extract::Query<{query_struct}>, QueryRejection>,\n"));
+        out.push_str(&format!("    ontogen_query: Result<axum::extract::Query<{query_struct}>, QueryRejection>,\n"));
     }
     if resumable {
-        out.push_str("    headers: axum::http::HeaderMap,\n");
+        out.push_str("    ontogen_headers: axum::http::HeaderMap,\n");
     }
     let sse_type = "Sse<impl futures::Stream<Item = Result<Event, Infallible>>>";
     let fallible = ev.returns_result || !query_params.is_empty();
@@ -1530,7 +1854,9 @@ fn generate_sse_handler(
         out.push_str(&format!(") -> {sse_type} {{\n"));
     }
     if !query_params.is_empty() {
-        out.push_str("    let axum::extract::Query(q) = q.map_err(query_rejection)?;\n");
+        out.push_str(
+            "    let axum::extract::Query(ontogen_query) = ontogen_query.map_err(ontogen_query_rejection)?;\n",
+        );
     }
 
     let mut args: Vec<String> = Vec::new();
@@ -1540,38 +1866,44 @@ fn generate_sse_handler(
     for qp in &query_params {
         if is_resume_param(qp) {
             out.push_str(
-                "    let resume = ontogen_core::events::last_event_id(\n        \
-                 headers.get(\"last-event-id\").map(|v| v.as_bytes()),\n    )\n    .or(q.resume);\n",
+                "    let ontogen_resume = ontogen_core::events::last_event_id(\n        \
+                 ontogen_headers.get(\"last-event-id\").map(|v| v.as_bytes()),\n    )\n    .or(ontogen_query.resume);\n",
             );
-            args.push("resume".to_string());
+            args.push("ontogen_resume".to_string());
         } else {
-            args.push(forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast));
+            args.push(forward_arg_expr(&format!("ontogen_query.{}", qp.name), &qp.ty_ast));
         }
     }
     let call = match scoped {
         Some(_) => {
             let mut all = vec![format!("&{SCOPE}")];
             all.extend(args);
-            format!("state.subscribe_{fn_name}_for({})", all.join(", "))
+            format!("ontogen_state.subscribe_{fn_name}_for({})", all.join(", "))
         }
         None => {
             let svc = m.service_ident(ev.surface);
-            let mut all = vec!["&state".to_string()];
+            let mut all = vec!["&ontogen_state".to_string()];
             all.extend(args);
             format!("{svc}::{fn_name}({})", all.join(", "))
         }
     };
     let await_str = if ev.is_async { ".await" } else { "" };
     let id_fn = if resumable { "ontogen_core::events::seq_id" } else { "ontogen_core::events::no_id" };
+    let data_fn = match config.resources.by_item_type(&ev.item_type_ast) {
+        Some(resource) => resource_names(&resource.module).frame,
+        None => "ontogen_result_frame".to_string(),
+    };
     if ev.returns_result {
-        out.push_str(&format!("    let rx = {call}{await_str}.map_err(internal_error)?;\n"));
+        let map_err = if event_returns_app_error(ev, config) { "ontogen_app_error" } else { "ontogen_internal_error" };
+        out.push_str(&format!("    let ontogen_rx = {call}{await_str}.map_err({map_err})?;\n"));
     } else {
-        out.push_str(&format!("    let rx = {call}{await_str};\n"));
+        out.push_str(&format!("    let ontogen_rx = {call}{await_str};\n"));
     }
+    let stream = format!("ontogen_sse_stream(\"{ev_name}\", ontogen_rx, {id_fn}, {data_fn})");
     if fallible {
-        out.push_str(&format!("    Ok(sse_stream(\"{ev_name}\", rx, {id_fn}))\n}}\n\n"));
+        out.push_str(&format!("    Ok({stream})\n}}\n\n"));
     } else {
-        out.push_str(&format!("    sse_stream(\"{ev_name}\", rx, {id_fn})\n}}\n\n"));
+        out.push_str(&format!("    {stream}\n}}\n\n"));
     }
 
     let route_path = match scoped {
@@ -1579,460 +1911,4 @@ fn generate_sse_handler(
         None => ev.sse_route(&config.sse_route_overrides),
     };
     routes.add(&axum_path(&route_path), "get", &handler_name);
-}
-
-/// A custom op's parameters by where they travel.
-struct CustomParams<'a> {
-    body_struct: Option<&'a Param>,
-    query: Vec<&'a Param>,
-    path: Vec<&'a Param>,
-    body_fields: Vec<&'a Param>,
-}
-
-impl<'a> CustomParams<'a> {
-    fn of(f: &'a ApiFn) -> Self {
-        let is_get = is_read_op(&classify_op(f));
-        let body_struct = f.params.iter().find(|p| p.ty.contains("Input"));
-        let required = || f.params.iter().filter(|p| !p.ty.starts_with("Option<") && !p.ty.contains("Input"));
-        Self {
-            body_struct,
-            query: f.params.iter().filter(|p| p.ty.starts_with("Option<")).collect(),
-            path: if is_get { required().collect() } else { vec![] },
-            body_fields: if !is_get && body_struct.is_none() { required().collect() } else { vec![] },
-        }
-    }
-
-    /// The query and body structs a custom op deserializes into.
-    fn emit_structs(&self, out: &mut String, module: &str, fn_name: &str) {
-        if !self.query.is_empty() {
-            let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
-            out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
-            for qp in &self.query {
-                out.push_str(&format!("    {}: {},\n", qp.name, param_to_owned_type(&qp.ty_ast)));
-            }
-            out.push_str("}\n\n");
-        }
-        if !self.body_fields.is_empty() {
-            let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
-            out.push_str(&format!("#[derive(Deserialize)]\nstruct {} {{\n", struct_name));
-            for bf in &self.body_fields {
-                out.push_str(&format!("    {}: {},\n", bf.name, param_to_owned_type(&bf.ty_ast)));
-            }
-            out.push_str("}\n\n");
-        }
-    }
-
-    /// The query and body extractors: Axum's own, since a custom op's
-    /// request is not a JSON:API document, with their rejections turned into
-    /// error documents. Returns the lines that unwrap them.
-    fn emit_extractors(&self, out: &mut String, module: &str, fn_name: &str) -> String {
-        let mut unwraps = String::new();
-        if !self.query.is_empty() {
-            let struct_name = format!("{}{}Query", to_pascal_case(module), to_pascal_case(fn_name));
-            out.push_str(&format!("    q: Result<axum::extract::Query<{struct_name}>, QueryRejection>,\n"));
-            unwraps.push_str("    let axum::extract::Query(q) = q.map_err(query_rejection)?;\n");
-        }
-        if let Some(bs) = self.body_struct {
-            let input_type = extract_input_type(&bs.ty);
-            out.push_str(&format!("    input: Result<Json<{input_type}>, JsonRejection>,\n"));
-            unwraps.push_str("    let Json(input) = input.map_err(json_rejection)?;\n");
-        }
-        if !self.body_fields.is_empty() {
-            let struct_name = format!("{}{}Body", to_pascal_case(module), to_pascal_case(fn_name));
-            out.push_str(&format!("    body: Result<Json<{struct_name}>, JsonRejection>,\n"));
-            unwraps.push_str("    let Json(body) = body.map_err(json_rejection)?;\n");
-        }
-        unwraps
-    }
-
-    /// The call, its result mapping and the end of the handler.
-    fn emit_call(&self, out: &mut String, svc: &str, f: &ApiFn, first_arg: Option<&str>, config: &Config) {
-        let mut args: Vec<String> = first_arg.map(str::to_string).into_iter().collect();
-        args.extend(self.path.iter().map(|p| forward_arg_expr(&p.name, &p.ty_ast)));
-        args.extend(self.query.iter().map(|qp| forward_arg_expr(&format!("q.{}", qp.name), &qp.ty_ast)));
-        if self.body_struct.is_some() {
-            args.push("input".to_string());
-        }
-        args.extend(self.body_fields.iter().map(|bf| forward_arg_expr(&format!("body.{}", bf.name), &bf.ty_ast)));
-        let await_str = if f.is_async { "\n        .await" } else { "" };
-        out.push_str(&format!("    {}::{}({}){await_str}\n", svc, f.name, args.join(", ")));
-        if f.return_type == "()" {
-            out.push_str("        .map(|_| StatusCode::NO_CONTENT)\n");
-        } else {
-            out.push_str("        .map(Json)\n");
-        }
-        out.push_str(&format!("        {}\n}}\n\n", err_map(f, config)));
-    }
-
-    fn return_type(f: &ApiFn) -> String {
-        if f.return_type == "()" {
-            ") -> Result<StatusCode, ErrorObject> {\n".to_string()
-        } else {
-            format!(") -> Result<Json<{}>, ErrorObject> {{\n", f.return_type)
-        }
-    }
-}
-
-fn generate_generic_http_handler(
-    out: &mut String,
-    routes: &mut Routes,
-    module: &ApiModule,
-    f: &ApiFn,
-    config: &Config,
-) {
-    let fn_name = &f.name;
-    let name = module.name.as_str();
-    let svc = module.service_ident(f.surface);
-    let is_get = is_read_op(&classify_op(f));
-    let action = config.naming.derive_action(name, fn_name);
-    let url_plural = config.naming.url_for_module(module);
-    let state_type = &config.state_type;
-    let params = CustomParams::of(f);
-
-    // Build route path
-    let mut route_path = format!("/api/{}", url_plural);
-    if !action.is_empty() {
-        route_path.push_str(&format!("/{}", action));
-    }
-    for p in &params.path {
-        route_path.push_str(&format!("/{{{}}}", p.name));
-    }
-
-    let handler_name = crate::servers::generators::ipc::command_name(name, f, config);
-    let method = if is_get { "get" } else { "post" };
-
-    params.emit_structs(out, name, fn_name);
-
-    // Generate handler function. Stateless handlers omit the `State<...>`
-    // extractor entirely; the rest of the signature is identical.
-    out.push_str(&format!("async fn {}(\n", handler_name));
-    if !f.is_stateless {
-        out.push_str(&format!("    State(state): State<Arc<{state_type}>>,\n"));
-    }
-
-    // Path params
-    if params.path.len() == 1 {
-        let p = params.path[0];
-        out.push_str(&format!("    Path({}): Path<{}>,\n", p.name, path_extract_type(&p.ty)));
-    } else if params.path.len() > 1 {
-        let types: Vec<&str> = params.path.iter().map(|p| path_extract_type(&p.ty)).collect();
-        let names: Vec<&str> = params.path.iter().map(|p| p.name.as_str()).collect();
-        out.push_str(&format!("    Path(({}),): Path<({},)>,\n", names.join(", "), types.join(", ")));
-    }
-
-    let unwraps = params.emit_extractors(out, name, fn_name);
-    out.push_str(&CustomParams::return_type(f));
-    out.push_str(&unwraps);
-
-    // Store construction for store-based functions without route_prefix.
-    // The constructed `store` is owned; service fns take `&Store`, so borrow it.
-    // Stateless handlers pass no state/store and skip construction entirely.
-    let first_arg: Option<&str> = if f.is_stateless {
-        None
-    } else if f.first_param_is_store && config.route_prefix.is_none() {
-        let access = unscoped_access(f);
-        out.push_str(&access.open);
-        Some(access.arg)
-    } else {
-        Some("&state")
-    };
-
-    params.emit_call(out, &svc, f, first_arg, config);
-    routes.add(&route_path, method, &handler_name);
-}
-
-/// Generate project-scoped handler variants and routes.
-///
-/// Only generates handlers for store-based modules (functions whose first
-/// parameter is `&Store`). These handlers construct a Store via the prefix
-/// accessor (e.g., `state.store_for(&project_id)`) and pass it to the
-/// service function, providing real project data isolation.
-fn generate_scoped_handlers(
-    out: &mut String,
-    routes: &mut Routes,
-    modules: &[ApiModule],
-    config: &Config,
-    prefix: &RoutePrefix,
-) {
-    let state_type = &config.state_type;
-    let pp_name = SCOPE;
-    let pp_type = &prefix.params[0].rust_type;
-    let store_let = scoped_access(prefix).open;
-
-    out.push_str("\n// ── Project-Scoped Handlers ──\n\n");
-
-    for m in modules {
-        let module = &m.name;
-        let plural = config.naming.module_plural(module);
-        let url_plural = config.naming.url_for_module(m);
-        let url_sing = config.naming.url_singular(module);
-        let scoped_base = format!("/api/{}/{}", axum_path(&prefix.segments), url_plural);
-
-        // Only store-scoped fns get scoped handlers; state-scoped fns of the
-        // same module keep their unscoped routes.
-        for f in m.functions.iter().filter(|f| f.first_param_is_store) {
-            let op = classify_op(f);
-            let svc = m.service_ident(f.surface);
-            let fn_name = &f.name;
-            let ret_type = &f.return_type;
-            let pagination = config.pagination_for(module, f.surface);
-            let await_str = if f.is_async { "\n        .await" } else { "" };
-            let err_map = err_map(f, config);
-            let handler_name = match op {
-                OpKind::List => format!("list_{plural}_scoped"),
-                OpKind::GetById => format!("get_{url_sing}_by_id_scoped"),
-                OpKind::Create => format!("create_{url_sing}_handler_scoped"),
-                OpKind::Update => format!("update_{url_sing}_handler_scoped"),
-                OpKind::Delete => format!("delete_{url_sing}_handler_scoped"),
-                _ => String::new(),
-            };
-
-            if let Some(resource) = served_resource(m, f, config) {
-                let op = ResourceOp { m, f, resource, handler_name: &handler_name, config };
-                let (method, path) = resource_handler(out, &op, scoped_access(prefix), Some(prefix));
-                routes.add(&format!("{scoped_base}{path}"), method, &handler_name);
-                continue;
-            }
-
-            match op {
-                OpKind::List => {
-                    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-                    let mut extra_extractors = String::new();
-                    let mut unwraps = String::new();
-                    let query_arg = if let Some(qp) = query_param {
-                        let qt = extract_input_type(&qp.ty);
-                        extra_extractors
-                            .push_str(&format!("\n    query: Result<axum::extract::Query<{qt}>, QueryRejection>,"));
-                        unwraps.push_str("    let axum::extract::Query(query) = query.map_err(query_rejection)?;\n");
-                        ", query".to_string()
-                    } else {
-                        String::new()
-                    };
-                    let page_args = if f.takes_page() { ", None, None" } else { "" };
-
-                    if let Some(pg) = pagination
-                        && ret_type.starts_with("Vec<")
-                    {
-                        let item_type = inner_type(ret_type);
-                        let default_limit = pg.default_limit;
-                        let max_limit = pg.max_limit;
-                        extra_extractors.push_str(
-                            "\n    pagination: Result<axum::extract::Query<PaginationParams>, QueryRejection>,",
-                        );
-                        unwraps.push_str(
-                            "    let axum::extract::Query(pagination) = pagination.map_err(query_rejection)?;\n",
-                        );
-                        out.push_str(&format!(
-                            "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path({pp_name}): Path<{pp_type}>,{extra_extractors}
-) -> Result<Json<PaginatedResult<{item_type}>>, ErrorObject> {{
-{unwraps}{store_let}    let all_items = {svc}::list(&store{query_arg}{page_args}){await_str}
-        {err_map}?;
-    let total = all_items.len() as u64;
-    let limit = pagination.limit.unwrap_or({default_limit}).min({max_limit});
-    let offset = pagination.offset.unwrap_or(0);
-    let items = all_items.into_iter().skip(offset as usize).take(limit as usize).collect();
-    Ok(Json(PaginatedResult {{ items, total, limit, offset }}))
-}}
-
-"
-                        ));
-                    } else {
-                        out.push_str(&format!(
-                            "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path({pp_name}): Path<{pp_type}>,{extra_extractors}
-) -> Result<Json<{ret_type}>, ErrorObject> {{
-{unwraps}{store_let}    {svc}::list(&store{query_arg}{page_args}){await_str}
-        .map(Json)
-        {err_map}
-}}
-
-"
-                        ));
-                    }
-                    routes.add(&scoped_base, "get", &handler_name);
-                }
-
-                OpKind::GetById => {
-                    out.push_str(&format!(
-                        "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path(({pp_name}, id)): Path<({pp_type}, String)>,
-) -> Result<Json<{ret_type}>, ErrorObject> {{
-{store_let}    {svc}::{fn_name}(&store, &id){await_str}
-        .map(Json)
-        {err_map}
-}}
-
-"
-                    ));
-                    routes.add(&format!("{scoped_base}/{{id}}"), "get", &handler_name);
-                }
-
-                OpKind::Create => {
-                    let input_type = extract_input_type(&f.params[0].ty);
-                    out.push_str(&format!(
-                        "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path({pp_name}): Path<{pp_type}>,
-    input: Result<Json<{input_type}>, JsonRejection>,
-) -> Result<(StatusCode, Json<{ret_type}>), ErrorObject> {{
-    let Json(input) = input.map_err(json_rejection)?;
-{store_let}    {svc}::create(&store, input){await_str}
-        .map(|entity| (StatusCode::CREATED, Json(entity)))
-        {err_map}
-}}
-
-"
-                    ));
-                    routes.add(&scoped_base, "post", &handler_name);
-                }
-
-                OpKind::Update => {
-                    let input_type = extract_input_type(&f.params[1].ty);
-                    out.push_str(&format!(
-                        "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path(({pp_name}, id)): Path<({pp_type}, String)>,
-    input: Result<Json<{input_type}>, JsonRejection>,
-) -> Result<Json<{ret_type}>, ErrorObject> {{
-    let Json(input) = input.map_err(json_rejection)?;
-{store_let}    {svc}::update(&store, &id, input){await_str}
-        .map(Json)
-        {err_map}
-}}
-
-"
-                    ));
-                    routes.add(&format!("{scoped_base}/{{id}}"), "put", &handler_name);
-                }
-
-                OpKind::Delete => {
-                    out.push_str(&format!(
-                        "\
-async fn {handler_name}(
-    State(state): State<Arc<{state_type}>>,
-    Path(({pp_name}, id)): Path<({pp_type}, String)>,
-) -> Result<StatusCode, ErrorObject> {{
-{store_let}    {svc}::delete(&store, &id){await_str}
-        .map(|_| StatusCode::NO_CONTENT)
-        {err_map}
-}}
-
-"
-                    ));
-                    routes.add(&format!("{scoped_base}/{{id}}"), "delete", &handler_name);
-                }
-
-                // Scoped junction ops are served as action-style routes, like
-                // custom ops, not in the unscoped `{parent_id}/{child}` form.
-                OpKind::JunctionList { .. }
-                | OpKind::JunctionAdd { .. }
-                | OpKind::JunctionRemove { .. }
-                | OpKind::CustomGet
-                | OpKind::CustomPost => {
-                    generate_generic_http_handler_scoped(out, routes, m, f, config, prefix);
-                }
-
-                OpKind::EventStream => continue,
-            }
-        }
-    }
-
-    // Scoped SSE handlers
-    for m in modules {
-        for ev in &m.events {
-            generate_sse_handler(out, routes, m, ev, config, Some(prefix));
-        }
-    }
-}
-
-/// Generate a scoped variant of a custom HTTP handler.
-fn generate_generic_http_handler_scoped(
-    out: &mut String,
-    routes: &mut Routes,
-    module: &ApiModule,
-    f: &ApiFn,
-    config: &Config,
-    prefix: &RoutePrefix,
-) {
-    let fn_name = &f.name;
-    let name = module.name.as_str();
-    let svc = module.service_ident(f.surface);
-    let is_get = is_read_op(&classify_op(f));
-    let action = config.naming.derive_action(name, fn_name);
-    let url_plural = config.naming.url_for_module(module);
-    let state_type = &config.state_type;
-    let accessor = &prefix.state_accessor;
-    let pp_name = SCOPE;
-    let pp_type = &prefix.params[0].rust_type;
-    let params = CustomParams::of(f);
-
-    // Build scoped route path
-    let mut route_path = format!("/api/{}/{}", axum_path(&prefix.segments), url_plural);
-    if !action.is_empty() {
-        route_path.push_str(&format!("/{}", action));
-    }
-    for p in &params.path {
-        route_path.push_str(&format!("/{{{}}}", p.name));
-    }
-
-    let handler_name = format!("{}_scoped", fn_name);
-    let method = if is_get { "get" } else { "post" };
-
-    // Query/body struct definitions (for store-based modules these are not
-    // generated by the unscoped handler since it's skipped)
-    params.emit_structs(out, name, fn_name);
-
-    // Generate handler function. Stateless handlers omit the `State<...>`
-    // extractor — the prefix path parameter still threads through so the
-    // route shape is preserved.
-    out.push_str(&format!("async fn {}(\n", handler_name));
-    if !f.is_stateless {
-        out.push_str(&format!("    State(state): State<Arc<{state_type}>>,\n"));
-    }
-
-    // Path params (prefix param + any entity path params)
-    if params.path.is_empty() {
-        out.push_str(&format!("    Path({pp_name}): Path<{pp_type}>,\n"));
-    } else if params.path.len() == 1 {
-        let p = params.path[0];
-        let path_type = if p.ty == "i32" { "i32" } else { "String" };
-        out.push_str(&format!("    Path(({pp_name}, {})): Path<({pp_type}, {})>,\n", p.name, path_type));
-    } else {
-        let mut names = vec![pp_name.to_string()];
-        let mut types = vec![pp_type.clone()];
-        for p in &params.path {
-            names.push(p.name.clone());
-            types.push(if p.ty == "i32" { "i32".to_string() } else { "String".to_string() });
-        }
-        out.push_str(&format!("    Path(({}),): Path<({},)>,\n", names.join(", "), types.join(", ")));
-    }
-
-    let unwraps = params.emit_extractors(out, name, fn_name);
-    out.push_str(&CustomParams::return_type(f));
-    out.push_str(&unwraps);
-
-    // Construct Store / validate prefix for state-bearing functions.
-    // Stateless handlers skip the prefix-validation step entirely: they
-    // never read state, so there is nothing to validate via the accessor.
-    let first_arg: Option<&str> = if f.is_stateless {
-        None
-    } else if f.first_param_is_store {
-        out.push_str(&scoped_access(prefix).open);
-        Some("&store")
-    } else {
-        out.push_str(&format!("    state.{accessor}(&{pp_name}).map_err(internal_error)?;\n"));
-        Some("&state")
-    };
-
-    params.emit_call(out, &svc, f, first_arg, config);
-    routes.add(&route_path, method, &handler_name);
 }

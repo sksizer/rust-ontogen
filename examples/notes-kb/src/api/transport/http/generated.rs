@@ -7,33 +7,29 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{
-        State,
-        rejection::{JsonRejection, QueryRejection},
-    },
+    extract::State,
     http::{Method, StatusCode},
-    response::{Json, Response},
-    routing::{delete, get, patch, post, put},
+    response::Response,
+    routing::get,
 };
 use ontogen_jsonapi::{
-    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
+    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, QueryParams, QuerySpec, Relationship,
     ResourceIdentifier, ResourceObject,
     error::method_not_allowed,
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
-    links::{CanonicalQuery, encode_path_segment, pagination_links},
+    links::encode_path_segment,
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::AppState;
 use crate::api::v1::note;
 use crate::schema::{CreateNoteInput, Note, UpdateNoteInput};
-use crate::store::Store;
 
 /// An `AppError` as an error object: the status its variant's name gives,
 /// and the name in snake_case as the code.
-fn app_error(e: crate::schema::AppError) -> ErrorObject {
+fn ontogen_app_error(e: crate::schema::AppError) -> ErrorObject {
     let (status, code) = match &e {
         crate::schema::AppError::NoteNotFound(..) => (StatusCode::NOT_FOUND, "note_not_found"),
         crate::schema::AppError::NoteIdRequired(..) => (StatusCode::BAD_REQUEST, "note_id_required"),
@@ -45,7 +41,7 @@ fn app_error(e: crate::schema::AppError) -> ErrorObject {
 
 /// A failure no `AppError` describes: opening the store, a scope accessor,
 /// or an op with another error type.
-fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
+fn ontogen_internal_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
 
@@ -54,20 +50,6 @@ fn allow<const N: usize>(
     allowed: [Method; N],
 ) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
     move |method| std::future::ready(method_not_allowed(&method, &allowed))
-}
-
-fn json_rejection(e: JsonRejection) -> ErrorObject {
-    match e.status() {
-        StatusCode::UNSUPPORTED_MEDIA_TYPE => {
-            ErrorObject::new(ErrorCode::UnsupportedMediaType, e.body_text()).with_header("Content-Type")
-        }
-        StatusCode::PAYLOAD_TOO_LARGE => ErrorObject::new(ErrorCode::ContentTooLarge, e.body_text()),
-        _ => ErrorObject::new(ErrorCode::InvalidDocument, e.body_text()),
-    }
-}
-
-fn query_rejection(e: QueryRejection) -> ErrorObject {
-    ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
 }
 
 // ── JSON:API resources ──
@@ -132,7 +114,7 @@ fn set_field(fields: &mut serde_json::Map<String, serde_json::Value>, name: &str
 fn from_fields<T: serde::de::DeserializeOwned>(
     fields: serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, ErrorObject> {
-    serde_json::from_value(serde_json::Value::Object(fields)).map_err(internal_error)
+    serde_json::from_value(serde_json::Value::Object(fields)).map_err(ontogen_internal_error)
 }
 
 // ── `notes` ──
@@ -165,7 +147,7 @@ fn note_as_resource<'a>(entity: &'a Note, collection: &str) -> ResourceObject<No
 
 /// The id an `{id}` path segment names.
 fn note_lookup_key(id: &LookupKey) -> Result<&str, ErrorObject> {
-    id.as_str().ok_or_else(|| app_error(crate::schema::AppError::NoteNotFound(id.to_string())))
+    id.as_str().ok_or_else(|| ontogen_app_error(crate::schema::AppError::NoteNotFound(id.to_string())))
 }
 
 /// The ids a request document for `notes` links, by relationship, to
@@ -203,12 +185,12 @@ fn note_request_fields(
 /// Checks that each id a create or update document for `notes` links
 /// names a resource that exists, in the order the document was read.
 async fn note_check_linked(state: &AppState, linked: &NoteLinkedIds) -> Result<(), ErrorObject> {
-    let store = state.store().await.map_err(internal_error)?;
+    let store = state.store().await.map_err(ontogen_internal_error)?;
     for linked in &linked.links {
         match note::get_by_id(&store, &linked.id).await {
             Ok(_) => {}
             Err(crate::schema::AppError::NoteNotFound(..)) => return Err(linked.not_found("notes")),
-            Err(e) => return Err(app_error(e)),
+            Err(e) => return Err(ontogen_app_error(e)),
         }
     }
     Ok(())
@@ -217,28 +199,28 @@ async fn note_check_linked(state: &AppState, linked: &NoteLinkedIds) -> Result<(
 // ── Note Handlers ──
 
 async fn note_list(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     query: Query<ListParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_sort(&query, "notes")?;
     refuse_include(&query, "notes")?;
-    let store = state.store().await.map_err(internal_error)?;
-    let items = note::list(&store).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let items = note::list(&ontogen_store).await.map_err(ontogen_app_error)?;
     let collection = "/api/notes";
     let data: Vec<_> = items.iter().map(|entity| note_as_resource(entity, collection)).collect();
     Ok(response::ok(&Document::new(data, Links::new(collection))))
 }
 
 async fn note_get_by_id(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<LookupKey>,
     query: Query<GetParams>,
 ) -> Result<Response, ErrorObject> {
     refuse_include(&query, "notes")?;
-    let store = state.store().await.map_err(internal_error)?;
-    let entity = note::get_by_id(&store, note_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let entity = note::get_by_id(&ontogen_store, note_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     let collection = "/api/notes";
     let resource = note_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
@@ -246,7 +228,7 @@ async fn note_get_by_id(
 }
 
 async fn note_create(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     query: Result<Query<NoParams>, ErrorObject>,
     body: Body,
@@ -258,13 +240,13 @@ async fn note_create(
     let data = request::parse_create(&body, endpoint, |id| ontogen_core::id::validate_id(id).map_err(|e| e.reason))?;
     let (fields, linked) = note_request_fields(&data, true)?;
     let input: CreateNoteInput = from_fields(fields)?;
-    let store = state.store().await.map_err(internal_error)?;
-    note_check_linked(&state, &linked).await?;
-    let entity = note::create(&store, input).await.map_err(|e| match e {
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    note_check_linked(&ontogen_state, &linked).await?;
+    let entity = note::create(&ontogen_store, input).await.map_err(|e| match e {
         e @ crate::schema::AppError::NoteAlreadyExists(..) if data.id.is_some() => {
-            app_error(e).with_pointer("/data/id")
+            ontogen_app_error(e).with_pointer("/data/id")
         }
-        e => app_error(e),
+        e => ontogen_app_error(e),
     })?;
     let resource = note_as_resource(&entity, collection);
     let location = resource.links().self_link().to_owned();
@@ -273,7 +255,7 @@ async fn note_create(
 }
 
 async fn note_update(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     path_params: Result<Path<LookupKey>, ErrorObject>,
     query: Result<Query<NoParams>, ErrorObject>,
@@ -288,22 +270,22 @@ async fn note_update(
     let data = request::parse_update(&body, endpoint, &id)?;
     let (fields, linked) = note_request_fields(&data, false)?;
     let input: UpdateNoteInput = from_fields(fields)?;
-    let store = state.store().await.map_err(internal_error)?;
-    note_check_linked(&state, &linked).await?;
-    let entity = note::update(&store, note_lookup_key(&id)?, input).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    note_check_linked(&ontogen_state, &linked).await?;
+    let entity = note::update(&ontogen_store, note_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
     let resource = note_as_resource(&entity, collection);
     let links = Links::new(resource.links().self_link());
     Ok(response::ok(&Document::new(resource, links)))
 }
 
 async fn note_delete(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(id): Path<LookupKey>,
     _: Query<NoParams>,
 ) -> Result<Response, ErrorObject> {
-    let store = state.store().await.map_err(internal_error)?;
-    note::delete(&store, note_lookup_key(&id)?).await.map_err(app_error)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    note::delete(&ontogen_store, note_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     Ok(response::no_content())
 }
 

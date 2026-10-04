@@ -489,7 +489,7 @@ fn servers_two_surfaces_http() {
     // from the fitness surface; the fitness handlers open `fitness_store()`,
     // call through the `workout_1` alias, and qualify the shared `Workout`.
     // Each surface has a fn failing with its own bare `AppError`: only the
-    // primary one maps through `app_error`, which takes `crate::schema`'s.
+    // primary one maps through `ontogen_app_error`, which takes `crate::schema`'s.
     let code = generate_two_surface_file(
         |output| crate::servers::ServerGenerator::HttpAxum { output },
         Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 }),
@@ -527,6 +527,26 @@ fn servers_jsonapi_resources_http() {
     config.generators = vec![crate::servers::ServerGenerator::HttpAxum { output: output.clone() }];
     crate::servers::generate_transport(&config).expect("generate_transport failed");
     insta::assert_snapshot!(read_file(&output));
+}
+
+/// Every kind of op served as a custom op (§10, §10.4): custom GET with
+/// `opArg`s, custom POSTs reading `meta.args`, junction ops, a module with
+/// no entity, a filtered list, and event ops with an entity item and with
+/// other items (§12).
+#[test]
+fn servers_jsonapi_ops_http() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = crate::servers::tests::ops_fixture(tmp.path(), false);
+    insta::assert_snapshot!(crate::servers::tests::generate_http(tmp.path(), config));
+}
+
+/// [`servers_jsonapi_ops_http`] under a `route_prefix` (§11.1): every
+/// store-scoped op moves under the prefix with the same wire behaviour.
+#[test]
+fn servers_jsonapi_ops_scoped_http() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = crate::servers::tests::ops_fixture(tmp.path(), true);
+    insta::assert_snapshot!(crate::servers::tests::generate_http(tmp.path(), config));
 }
 
 #[test]

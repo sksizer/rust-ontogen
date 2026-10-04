@@ -1,14 +1,18 @@
+mod bookmark;
 mod note;
 mod section;
 mod tag;
 mod task;
+mod task_summary;
 
 pub mod dto;
 
+pub use bookmark::{Bookmark, CreateBookmarkInput, UpdateBookmarkInput};
 pub use note::Note;
 pub use section::Section;
 pub use tag::Tag;
 pub use task::Task;
+pub use task_summary::TaskSummary;
 
 // Re-export DTOs at the schema level (generated code imports from crate::schema::)
 pub use dto::note::{CreateNoteInput, UpdateNoteInput};
@@ -19,8 +23,9 @@ pub use dto::task::{CreateTaskInput, UpdateTaskInput};
 // ── Error type ──────────────────────────────────────────────────────────────
 // The markdown consumer contract: the typed variants the generated store
 // constructs (per entity NotFound, IdRequired and AlreadyExists, plus
-// ParentRequired for a child whose has_many foreign key is required), and a
-// single Md variant carrying everything else from the runtime crate.
+// ParentRequired for a child whose has_many foreign key is required), the
+// hand-written bookmark API's BookmarkNotFound, and a single Md variant
+// carrying everything else from the runtime crate.
 
 #[derive(Debug)]
 pub enum AppError {
@@ -37,6 +42,7 @@ pub enum AppError {
     TagNotFound(String),
     TagIdRequired(String),
     TagAlreadyExists(String),
+    BookmarkNotFound(String),
     Md(String),
 }
 
@@ -47,6 +53,7 @@ impl std::fmt::Display for AppError {
             AppError::SectionNotFound(id) => write!(f, "Section not found: {id}"),
             AppError::TaskNotFound(id) => write!(f, "Task not found: {id}"),
             AppError::TagNotFound(id) => write!(f, "Tag not found: {id}"),
+            AppError::BookmarkNotFound(id) => write!(f, "Bookmark not found: {id}"),
             AppError::NoteIdRequired(reason)
             | AppError::SectionIdRequired(reason)
             | AppError::TaskIdRequired(reason)

@@ -20,7 +20,6 @@ fn main() {
             ServerGenerator::HttpAxum { output: "src/api/transport/http/generated.rs".into() },
             ServerGenerator::Mcp { output: "src/api/transport/mcp/generated.rs".into() },
         ],
-        rustfmt_edition: "2024".into(),
         sse_route_overrides: Default::default(),
         route_prefix: None,
         store_type: Some("Store".into()),

@@ -107,10 +107,27 @@ impl ResourceModel {
         let resource = self.by_module(module)?;
         match classify_op(f) {
             OpKind::GetById | OpKind::Create | OpKind::Update | OpKind::Delete => Some(resource),
-            OpKind::List => f.params.iter().all(|p| f.takes_page() && is_page_param(p)).then_some(resource),
+            OpKind::List => (!list_takes_filter(f)).then_some(resource),
             _ => None,
         }
     }
+
+    /// The resource whose entity an event op's item type names, by its last
+    /// path segment (`Task`, `crate::schema::Task`). Such an op's frames
+    /// carry the resource object (§12); any other item type, `Vec<Task>`
+    /// included, is not a resource.
+    pub fn by_item_type(&self, ty: &syn::Type) -> Option<&Resource> {
+        let syn::Type::Path(tp) = ty else { return None };
+        let last = tp.path.segments.last().filter(|seg| tp.qself.is_none() && seg.arguments.is_none())?;
+        self.resources.iter().find(|r| last.ident == r.entity.name)
+    }
+}
+
+/// True when `f`, a `list`, takes a filter: any parameter but its page. No
+/// filter is read from the JSON:API wire (§7.3), so such a list keeps its flat
+/// route, with or without a resource behind its module.
+pub(crate) fn list_takes_filter(f: &ApiFn) -> bool {
+    !f.params.iter().all(|p| f.takes_page() && is_page_param(p))
 }
 
 impl Relationship {
@@ -520,6 +537,19 @@ mod tests {
             assert!(model.serving("epic", &f).is_none(), "{} {:?}", f.name, f.params.len());
         }
         assert!(model.serving("stats", &op("list", &[])).is_none(), "no entity, no resource");
+        assert!(list_takes_filter(&op("list", &filtered_page)));
+        assert!(!list_takes_filter(&op("list", &page)) && !list_takes_filter(&op("list", &[])));
+    }
+
+    #[test]
+    fn an_item_type_naming_an_entity_is_its_resource() {
+        let model = model(TASKS).unwrap();
+        for ty in [syn::parse_quote!(Epic), syn::parse_quote!(crate::schema::Epic)] {
+            assert_eq!(model.by_item_type(&ty).map(|r| r.resource_type.as_str()), Some("epics"));
+        }
+        for ty in [syn::parse_quote!(Vec<Epic>), syn::parse_quote!(Option<Epic>), syn::parse_quote!(EpicChange)] {
+            assert!(model.by_item_type(&ty).is_none());
+        }
     }
 
     #[test]

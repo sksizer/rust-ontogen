@@ -124,6 +124,18 @@ async function httpDelete(path: string): Promise<void> {
   await httpRequest('DELETE', path);
 }
 
+/**
+ * Calls an op that is not served as a resource. `args` travel as the body's
+ * `meta.args`, keyed by the op's parameter names; without them no body is
+ * sent. Resolves to the reply's `meta.result`, or `null` for a 204.
+ */
+async function callOp<T>(method: string, path: string, args?: Record<string, unknown>): Promise<T> {
+  const res = await httpRequest(method, path, args === undefined ? undefined : { meta: { args } });
+  if (res.status === 204) return null as T;
+  const doc = (await res.json()) as { meta: { result: T } };
+  return doc.meta.result;
+}
+
 function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
   const push = (key: string, value: unknown) => {
@@ -151,6 +163,7 @@ function subscribeSse<T>(
   url: (resume: string | null) => string,
   eventName: string,
   initialResume: string | null,
+  decode: (frame: unknown) => T,
   handlers: SubscriptionHandlers<T>,
 ): () => void {
   let source: EventSource | null = null;
@@ -171,7 +184,7 @@ function subscribeSse<T>(
       if (id) lastId = id;
       let data: T;
       try {
-        data = JSON.parse(event.data);
+        data = decode(JSON.parse(event.data));
       } catch (err) {
         handlers.onError?.(err);
         return;
@@ -204,6 +217,11 @@ function subscribeSse<T>(
   };
 }
 
+/** An event frame whose item is not a resource carries it as `meta.result`. */
+function metaResult<T>(frame: unknown): T {
+  return (frame as { meta: { result: T } }).meta.result;
+}
+
 // ── HTTP Transport ──
 
 export function createHttpTransport(): Transport {
@@ -213,6 +231,7 @@ export function createHttpTransport(): Transport {
         (_resume) => `${BASE}${`/events/graph-updated`}`,
         'graph-updated',
         null,
+        (frame) => metaResult<GraphDelta>(frame),
         handlers,
       );
     },
@@ -221,6 +240,7 @@ export function createHttpTransport(): Transport {
         (_resume) => `${BASE}${`/events/entity-changed`}`,
         'entity-changed',
         null,
+        (frame) => metaResult<EntityChange>(frame),
         handlers,
       );
     },
@@ -229,6 +249,7 @@ export function createHttpTransport(): Transport {
         (resume) => `${BASE}${`/events/vault-note-changes/${encodeURIComponent(String(args.vaultId))}`}` + toQueryString({ classes: args.classes, resume: resume }),
         'vault-note-changes',
         args.resume ?? null,
+        (frame) => metaResult<LoggedChange>(frame),
         handlers,
       );
     },
@@ -238,7 +259,7 @@ export function createHttpTransport(): Transport {
       function connect() {
         es = new EventSource('/api/events/graph-updated');
         es.addEventListener('graph-updated', (event: MessageEvent) => {
-          try { callback(JSON.parse(event.data)); }
+          try { callback(metaResult<GraphDelta>(JSON.parse(event.data))); }
           catch { callback({}); }
         });
         es.onerror = () => {
@@ -260,7 +281,7 @@ export function createHttpTransport(): Transport {
       function connect() {
         es = new EventSource('/api/events/entity-changed');
         es.addEventListener('entity-changed', (event: MessageEvent) => {
-          try { callback(JSON.parse(event.data)); }
+          try { callback(metaResult<EntityChange>(JSON.parse(event.data))); }
           catch { callback({}); }
         });
         es.onerror = () => {

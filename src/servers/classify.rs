@@ -4,7 +4,8 @@ use ontogen_core::ir::OpKind;
 use ontogen_core::naming::pluralize;
 use syn::{PathArguments, Type};
 
-use crate::servers::parse::{ApiFn, ForcedMethod, Param};
+use crate::resource::ResourceModel;
+use crate::servers::parse::{ApiFn, ApiModule, ForcedMethod, Param};
 
 /// Classify a function into an operation kind.
 ///
@@ -162,14 +163,122 @@ pub fn classify_by_name_and_params(name: &str, params: &[Param]) -> OpKind {
     }
 }
 
-/// Returns true if a classified op should use HTTP `GET`.
+/// The rules every HTTP route sets on an op, checked for the server and the
+/// clients alike, so that neither generates a route the other refuses. Only
+/// a build with an HTTP server or HTTP client runs them: IPC and MCP read
+/// every argument from one flat payload, so none of these limits are theirs.
 ///
-/// Drives method selection in the HTTP server emitter, the TS client
-/// emitter, and the api-layer IR. Single source of truth — replaces the
-/// older name-based `is_read_operation` heuristic that diverged from
-/// classification once the classifier became AST-aware (OF-016).
-pub fn is_read_op(op: &OpKind) -> bool {
-    matches!(op, OpKind::List | OpKind::GetById | OpKind::CustomGet | OpKind::JunctionList { .. })
+/// - A singleton module has no collection and no resource type, so an op in
+///   it that classifies as CRUD or junction is a mistake (wire contract
+///   §10.3): ops named for a collection belong in a module that is not a
+///   singleton.
+/// - A `GET` or `DELETE` carries no body, so an op served with either cannot
+///   take an `*Input` argument (§10.2).
+/// - A CRUD-named op in a module with no resource behind it is served at
+///   its collection's route (§10.4), which carries the route's own
+///   arguments and no others, and the TypeScript clients call it with
+///   exactly those. A `list` is the exception: one that takes more than its
+///   page is a list that takes a filter (§7.3).
+/// - An `opArg[…]` value is one query-string value, so an optional argument
+///   of a `GET` must read from one: a type with no generic arguments that
+///   names no schema entity.
+///
+/// # Errors
+///
+/// The first op that breaks a rule, named `module::fn`.
+pub(crate) fn check_http_ops(modules: &[ApiModule], resources: &ResourceModel) -> Result<(), String> {
+    for m in modules {
+        for f in &m.functions {
+            let op = classify_op(f);
+            let crud_or_junction = matches!(
+                op,
+                OpKind::List
+                    | OpKind::GetById
+                    | OpKind::Create
+                    | OpKind::Update
+                    | OpKind::Delete
+                    | OpKind::JunctionList { .. }
+                    | OpKind::JunctionAdd { .. }
+                    | OpKind::JunctionRemove { .. }
+            );
+            if m.is_singleton && crud_or_junction {
+                return Err(format!(
+                    "ontogen: `{}::{}` is a collection op in the singleton module `{}`, which has no collection; \
+                     rename it or move it to a module that is not a singleton",
+                    m.name, f.name, m.name
+                ));
+            }
+            let bodyless = matches!(op, OpKind::CustomGet | OpKind::GetById | OpKind::JunctionList { .. })
+                || matches!(op, OpKind::Delete | OpKind::JunctionRemove { .. });
+            if bodyless && let Some(input) = f.params.iter().find(|p| p.is_input()) {
+                return Err(format!(
+                    "ontogen: `{}::{}` is served without a request body, so it cannot take `{}: {}`; serve it \
+                     as a POST (`#[ontogen::http::post]`) or pass the input's fields as arguments",
+                    m.name, f.name, input.name, input.ty
+                ));
+            }
+            if resources.by_module(&m.name).is_none()
+                && let Some((route, takes)) = entityless_crud_route(&op)
+                && f.params.len() != takes.len()
+            {
+                let given: Vec<String> = f.params.iter().map(|p| format!("`{}: {}`", p.name, p.ty)).collect();
+                let given = if given.is_empty() { "nothing".to_string() } else { given.join(", ") };
+                return Err(format!(
+                    "ontogen: `{}::{}` is served at `{route}`, since the module `{}` has no schema entity behind \
+                     it, and that route passes {} after the state or store; the fn takes {given}. Take exactly \
+                     those arguments, or rename the fn so it is served as a custom op",
+                    m.name,
+                    f.name,
+                    m.name,
+                    takes.join(" and "),
+                ));
+            }
+            if op == OpKind::CustomGet
+                && let Some(p) = f.params.iter().find(|p| p.is_option() && !reads_from_one_value(p, resources))
+            {
+                return Err(format!(
+                    "ontogen: `{}::{}` reads `{}: {}` from the query parameter `opArg[{}]`, which carries one \
+                     string, number, bool or unit enum value; serve it as a POST (`#[ontogen::http::post]`), \
+                     which reads it from `meta.args`, or take a type one value can carry",
+                    m.name, f.name, p.name, p.ty, p.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The route a CRUD-named op of a module with no resource is served at, and
+/// the arguments it passes (§10.4). `None` for a `list`, which may take a
+/// filter, and for every other op.
+fn entityless_crud_route(op: &OpKind) -> Option<(&'static str, &'static [&'static str])> {
+    match op {
+        OpKind::GetById => Some(("GET …/{id}", &["`id`"])),
+        OpKind::Create => Some(("POST …", &["its input"])),
+        OpKind::Update => Some(("PATCH …/{id}", &["`id`", "its input"])),
+        OpKind::Delete => Some(("DELETE …/{id}", &["`id`"])),
+        _ => None,
+    }
+}
+
+/// True when the `Option` argument `p` can be read from one query-string
+/// value: its inner type, under any `&`, is a path with no generic
+/// arguments that names no schema entity. Whether such a path is a struct
+/// cannot be told from its name, so only an entity is refused.
+fn reads_from_one_value(p: &Param, resources: &ResourceModel) -> bool {
+    let Ok(Type::Path(outer)) = syn::parse_str::<Type>(&p.ty) else { return false };
+    let Some(PathArguments::AngleBracketed(args)) = outer.path.segments.last().map(|s| &s.arguments) else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(inner)) = args.args.first() else { return false };
+    let inner = match inner {
+        Type::Reference(r) => &*r.elem,
+        ty => ty,
+    };
+    let Type::Path(tp) = inner else { return false };
+    tp.qself.is_none()
+        && tp.path.segments.iter().all(|s| s.arguments.is_none())
+        && resources.by_item_type(inner).is_none()
 }
 
 /// Returns true when the param type carries a body (JSON-extractable struct

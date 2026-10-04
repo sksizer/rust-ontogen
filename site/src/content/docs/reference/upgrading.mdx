@@ -5,7 +5,7 @@ description: Every breaking change in 0.9 and how to migrate, grouped by area.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Version 0.9 is still in progress. This page lists the breaking changes that have landed so far: the store and runtime changes, and the first part of the HTTP wire change, where CRUD routes and every error move to JSON:API. Later phases change the rest of the HTTP wire (custom ops, junction ops, event frames, filtering, sorting, relationship endpoints), and their sections will be added here. Work through the sections that apply to your project.
+Version 0.9 is still in progress. This page lists the breaking changes that have landed so far: the store and runtime changes, and the HTTP wire change, where CRUD routes, custom ops, junction ops, event frames and every error move to JSON:API. Filtering, sorting and relationship endpoints arrive in later releases, and their sections will be added here. Work through the sections that apply to your project.
 
 ## Build configuration
 
@@ -89,6 +89,24 @@ An entity-backed module must then be servable as a resource, or the stage fails 
 
 `ontogen::servers::Config` and `ontogen::servers::generate_transport` are no longer public API: a caller outside the crate cannot supply the resource model or the scanned `AppError` they now need. Call `gen_servers` with a `ServersConfig` instead.
 
+### `ServersConfig.rustfmt_edition` is removed
+
+```rust
+// before
+ServersConfig {
+    // ...
+    rustfmt_edition: "2024".into(),
+    // ...
+}
+
+// after
+ServersConfig {
+    // ...
+}
+```
+
+The servers stage never read it; delete the line.
+
 ### `ServersConfig` has `error_source_dir`
 
 `ServersConfig` has a new field, `error_source_dir: Option<PathBuf>`: the directory scanned for your `enum AppError`. Add it to every `ServersConfig` literal.
@@ -107,6 +125,15 @@ ServersConfig {
 The HTTP wire builds a resource's `attributes` from the entity's serde shape, so a struct or field with an attribute that changes that shape is now a schema error. The refused attributes are `rename`, `rename_all`, `alias`, `flatten`, `skip`, `skip_serializing`, `skip_serializing_if`, `serialize_with` and `with`. `#[serde(default)]` and `deserialize_with` change only deserialization and stay allowed. Remove the attribute, or rename the Rust field.
 
 Also refused at build time: an id field that is not a `String`, an attribute or relationship name that is not a legal JSON:API member name (for example one that starts or ends with `_`) or is `type` or `id`, a relationship that shares its name with an attribute or another relationship (or is named `relationships`), and a relation whose target is not in the schema.
+
+### Ops the generator now refuses
+
+These shapes fail `gen_servers` and `gen_clients` with a `CodegenError` that names the module and the function. The checks run only when the build generates an HTTP server (`HttpAxum`) or an HTTP TypeScript client; IPC-only and MCP-only builds are unaffected.
+
+- **A CRUD or junction op in a singleton module.** A module marked `// ontogen:singleton` (or listed in `NamingConfig::singleton_modules`) has no resource, so every op in it is a custom op. A function there that classifies as `list`, `get_by_id`, `create`, `update`, `delete`, or as a junction op (`list_X`, `add_Y`, `remove_Y`) is refused. Rename it so it classifies as a custom op, or move it to a module that is not a singleton.
+- **A parameter whose type name ends in `Input` on an op served without a body.** An `#[ontogen::http::get]` op, `get_by_id`, `delete`, `list_X` and `remove_Y` carry no request body, so such a parameter has nowhere to arrive. Change the op to a `POST`, or pass the fields as separate parameters.
+- **A CRUD-named op in a module with no entity that takes arguments beyond its route's.** Such an op takes exactly `get_by_id(id)`, `delete(id)`, `create(input)` or `update(id, input)`. Rename it, or drop the extra parameters. A `list` with extra arguments is a filtered list instead, not an error.
+- **An `Option` argument of a bodyless op that one query value cannot carry.** On a custom `GET`, an entity-less `get_by_id` or `delete`, or a junction list or remove, an `Option` whose inner type has generic arguments (`Option<Vec<String>>`), is a tuple, or is a schema entity cannot be read from one `opArg` value. Take it in a `POST` body instead.
 
 ### Depend on `ontogen-jsonapi`, `ontogen-core` and `serde_json`
 
@@ -165,11 +192,7 @@ A variant whose snake_case name equals one of ontogen's own error codes fails th
 
 ## HTTP wire
 
-Every CRUD route of a module backed by a schema entity now speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/). The examples use the tasks-tracker example.
-
-<Aside type="caution">
-Custom ops, junction ops, event streams, modules with no entity behind them, and a hand-written `list` with filter parameters in a resource module keep their current routes and success bodies for now. They change in a later phase of 0.9, and this page will list that change then. Their errors already use the new error document, described below.
-</Aside>
+Every generated HTTP route speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/), with one exception: a hand-written `list` that takes filter parameters (a `*Query` struct or bare parameters besides the page) keeps its pre-JSON:API query extraction and body until filters arrive in a later release. CRUD routes of a module backed by a schema entity carry resource documents. Custom ops, junction ops and the CRUD ops of a module with no entity behind it carry meta-only documents, described under [Custom op responses](#custom-op-responses) and the sections after it. The examples use the tasks-tracker example and iron-log.
 
 ### Media type
 
@@ -219,7 +242,7 @@ After:
 
 - `type` is the module's kebab-case plural, the same string as the URL segment.
 - A `belongs_to` field named `epic_id` becomes the relationship `epic`; other relation fields keep their name. A to-one is an identifier or `null`; a to-many is an array of identifiers.
-- Relationship objects carry `data` only. Relationship `links` and the relationship endpoints arrive in a later phase of 0.9.
+- Relationship objects carry `data` only. Relationship `links` and the relationship endpoints arrive in a later release.
 - A list is `{"jsonapi": …, "links": {"self": …}, "data": [ … ]}`, with `[]` when empty, ordered by id.
 
 ### Create
@@ -326,13 +349,165 @@ After, with `Content-Type: application/vnd.api+json`:
 }
 ```
 
-`detail` is the old `error` text. `status`, `code`, `title` and `source` are stable; do not parse `detail`. `source` is present for request problems and holds a `pointer` into the body, a `parameter`, or a `header`. Besides the `AppError` codes above, the server raises its own codes for malformed requests (`invalid_document`, `unknown_attribute`, `missing_attribute`, `invalid_attribute`, `unknown_relationship`, `missing_relationship`, `type_mismatch`, `id_mismatch`, `related_resource_not_found`, `method_not_allowed`, `content_too_large` and others); the full table is in [Server Transports](/guides/server-transports/#errors). Axum's own plain-text extractor rejections are replaced by these documents. Every route also answers a method it does not serve with `405`, an `Allow` header and a `method_not_allowed` document. An event-stream function that fails before the stream opens answers `500 internal_error` for now, whatever its error type.
+`detail` is the old `error` text. `status`, `code`, `title` and `source` are stable; do not parse `detail`. `source` is present for request problems and holds a `pointer` into the body, a `parameter`, or a `header`. Besides the `AppError` codes above, the server raises its own codes for malformed requests (`invalid_document`, `unknown_attribute`, `missing_attribute`, `invalid_attribute`, `unknown_relationship`, `missing_relationship`, `type_mismatch`, `id_mismatch`, `related_resource_not_found`, `method_not_allowed`, `content_too_large` and others); the full table is in [Server Transports](/guides/server-transports/#errors). Axum's own plain-text extractor rejections are replaced by these documents. Every route also answers a method it does not serve with `405`, an `Allow` header and a `method_not_allowed` document. An event-stream function that fails before the stream opens maps its error like any other op (see [Event stream frames](#event-stream-frames)).
+
+### Custom op responses
+
+A custom op (`CustomGet` and `CustomPost`) used to answer with the bare value its function returned. It now answers with a meta-only document: `jsonapi` plus `meta.result`, with no `links` and no `data`. The status is `200`, never `201`. A function that returns `()` still answers `204` with no body.
+
+Before, `GET /api/stats/workout`:
+
+```json
+{ "total_count": 12, "total_duration_minutes": 540 }
+```
+
+After, with `Content-Type: application/vnd.api+json`:
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "meta": { "result": { "total_count": 12, "total_duration_minutes": 540 } }
+}
+```
+
+`result` is the same value serde produced before, even when it is an entity or a list of entities: it is not turned into a resource object. Errors are unchanged from the section above: `AppError`-typed functions map to their status and `code`, and any other error type is `500 internal_error`.
+
+### Custom POST bodies
+
+A custom `POST` body is `{"meta": {"args": {…}}}`, with one member per Rust parameter name. That includes an `*Input` argument and `Option` arguments. Before, an op with a single `*Input` parameter took that struct as the bare body, an op with several parameters took a `{field: …}` object, and `Option` arguments went on the query string.
+
+Before, for `workout::start(state, input: StartWorkoutInput, note: Option<String>)`:
+
+```http
+POST /api/workouts/start?note=warm%20up
+Content-Type: application/json
+
+{ "template_id": "push-day" }
+```
+
+After:
+
+```http
+POST /api/workouts/start
+Content-Type: application/vnd.api+json
+
+{ "meta": { "args": { "input": { "template_id": "push-day" }, "note": "warm up" } } }
+```
+
+For `workout::rename(state, id: &str, name: String)`, the before body `{"id": "w1", "name": "Push day"}` becomes `{"meta": {"args": {"id": "w1", "name": "Push day"}}}`. The success status and body follow [Custom op responses](#custom-op-responses).
+
+- A body needs `Content-Type: application/vnd.api+json`, like every other body. An op with no required arguments can be called with no body at all.
+- A body that is not a JSON object is `400 invalid_document`. A missing `meta` is `400 invalid_document` with `source.pointer: ""`, and a missing `meta.args` is the same with `"/meta"`. A `meta` or `meta.args` that is present but not an object has the pointer `/meta` or `/meta/args`. An op with no required arguments reads a missing member as `{}`. Other top-level members are ignored.
+- An argument name the function does not have is `400 invalid_document` with `source.pointer: "/meta/args/note"`, and so is a value that does not deserialize into its parameter type. A missing required argument is `400 invalid_document` with `source.pointer: "/meta/args"`. An absent or `null` `Option` argument is `None`.
+- A custom `POST` accepts no query parameters. Any query parameter is `400 invalid_query_parameter`.
+
+### Custom GET arguments
+
+The `Option` arguments of a custom `GET` are `opArg[name]` query parameters. A bare name is now `400 invalid_query_parameter`. Required arguments are still path segments.
+
+Before, `GET /api/workouts/summary/w1?verbose=true`. After:
+
+```http
+GET /api/workouts/summary/w1?opArg[verbose]=true
+Accept: application/vnd.api+json
+```
+
+Values deserialize the way the old query extraction did (`true`, `5`, plain strings). An unknown `opArg[…]` name or a value that does not deserialize is `400 invalid_query_parameter` with `source.parameter` naming the parameter (`opArg[verbose]`). The brackets can be percent-encoded.
+
+### Modules with no entity behind them
+
+A module that no schema entity backs (for example when you scan hand-written API files with `gen_servers(&[], …)`) serves its CRUD functions as custom ops, on the same paths as before. Their requests and responses follow the custom op rules, and one verb changes:
+
+| Op | Before | After |
+|----|--------|-------|
+| `list` | `GET /api/reports?limit=10&offset=0`, bare list or `{items, total, limit, offset}` | `GET /api/reports?opArg[limit]=10&opArg[offset]=0`, the same value under `meta.result` |
+| `get_by_id` | `GET /api/reports/{id}`, bare value | same route, `meta.result` |
+| `create` | `POST /api/reports`, bare input, `201` with the bare value | `POST /api/reports`, body `{"meta": {"args": {"input": …}}}`, `200` with `meta.result` |
+| `update` | `PUT /api/reports/{id}`, bare input | `PATCH /api/reports/{id}`, body `{"meta": {"args": {"input": …}}}`, `200` with `meta.result` |
+| `delete` | `DELETE /api/reports/{id}`, `204` | unchanged |
+
+`PUT` is not routed any more and answers `405`. `opArg[limit]` and `opArg[offset]` are unsigned 32-bit integers. An absent `limit` is the configured `default_limit`, a `limit` above `max_limit` is clamped to it, and an absent `offset` is `0`. A malformed value is `400 invalid_query_parameter`. A list that is not paginated accepts no query parameters.
+
+After, `GET /api/reports?opArg[limit]=10` on a paginated surface:
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "meta": { "result": { "items": [ … ], "total": 45, "limit": 10, "offset": 0 } }
+}
+```
+
+### Junction ops
+
+Junction ops (`list_X`, `add_Y`, `remove_Y`) keep their routes, `/api/tasks/{parent_id}/tags` and `/api/tasks/{parent_id}/tags/{child_id}`, but use the custom op wire. This applies to every module with junction ops, entity-backed or not.
+
+- `list_X` answers its list under `meta.result`. When the module is paginated, the page is `opArg[limit]` and `opArg[offset]` (as above) and the result is the `{items, total, limit, offset}` object.
+- `add_Y` takes the child id in `meta.args`, keyed by the function's child parameter name. Before, the body was `{"tag_id": "codegen"}`; now it is `{"meta": {"args": {"tag_id": "codegen"}}}`.
+- `remove_Y` has no body, and add and remove still answer `204`.
+
+### Event stream frames
+
+Only the `data:` payload of an SSE frame changes. Routes, parameters, `id:`, resume, `event: lag` frames (`{"skipped": 3}`) and the keep-alive comment are as before. The frame carries no `links`, because it is not tied to a request URL.
+
+When the item type is a schema entity, `data:` is its resource object. Before, a `task_changed` event yielding `Task`:
+
+```text
+event: task-changed
+data: {"id":"ship-the-emitter","title":"Ship the emitter","epic_id":"markdown-backend","tags":["codegen"]}
+```
+
+After:
+
+```text
+event: task-changed
+data: {"type":"tasks","id":"ship-the-emitter","attributes":{"title":"Ship the emitter"},"relationships":{"epic":{"data":{"type":"epics","id":"markdown-backend"}},"tags":{"data":[{"type":"tags","id":"codegen"}]}}}
+```
+
+`relationships` is left out when the entity has none. Any other item type is wrapped as `{"meta": {"result": …}}`. Before, an `Activity` frame:
+
+```text
+event: activity-for-kind
+data: {"seq":4,"kind":"workout","id":"w1"}
+id: 4
+```
+
+After:
+
+```text
+event: activity-for-kind
+data: {"meta":{"result":{"seq":4,"kind":"workout","id":"w1"}}}
+id: 4
+```
+
+IPC frames stay flat.
+
+A subscribe call that fails before the stream opens now answers an error document like any other op: an error of type `AppError` maps to its status and `code` (`404 task_not_found`), and any other error type is `500 internal_error`. It used to be `500` for every error. `EventSource` cannot read that body; `fetch` and `curl` can.
+
+### Route prefix
+
+A scoped list (`route_prefix`) that is not served as a resource, meaning a list in a module with no entity behind it or a filtered list, used to fetch every record and slice the page in memory. It now passes the page to the store's `list` and calls `count`, like an unscoped one. A hand-written scoped `list` must therefore honour its `limit` and `offset`. Scoped custom ops and junction ops follow the rules above, under the prefix. The split transport now calls the action-style scoped junction routes when a `projectId` is given (`POST …/add-tag` with `{"meta":{"args":{"task_id":…,"tag_id":…}}}`, and likewise for list and remove); before, it called nested routes that the server does not serve under a prefix. An op whose first parameter is the state rather than a store, or that takes neither, is not scoped on the server, and the split transport now calls its unscoped route even when given a `projectId`; its prefix parameter is named `_projectId`. Scoped junction ops keep their action-style routes (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`, `…/remove-tag`), but a scoped junction list on a paginated surface now pages like an unscoped one: it takes `opArg[limit]` and `opArg[offset]` and answers the `{items, total, limit, offset}` object, where it used to return the whole list.
 
 ## TypeScript clients
 
-The generated `Transport` interface is unchanged: the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. The HTTP-only client (`HttpTs`) list methods take no page arguments and return the server's default first page. A list that takes a query struct still sends its fields flat until filters arrive in a later phase of 0.9.
+The generated `Transport` interface is unchanged, with the two exceptions below (a paginated module has no `xCount()`, and a junction add or remove is declared `Promise<null>`): the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A list that takes a query struct still sends its fields flat until filters arrive in a later release. The changes to the client's custom, junction and subscription methods follow below.
 
-One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone for entity-backed modules; updates use `httpPatch`. It is still emitted when a module with no entity behind it has an `update` op. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript; the IPC transport and MCP payloads are unchanged.
+One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone, because no generated route uses `PUT` any more; updates use `httpPatch`. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript; the IPC transport and MCP payloads are unchanged.
+
+The generated calls for ops follow the wire above, and every one of them returns `meta.result` (`null` on `204`). Each keeps its signature, except for the changes listed at the end of this section: `xCount()` is removed for a paginated module, a junction add or remove is declared `Promise<null>`, and the `HttpTs` client's paginated lists take `limit?` and `offset?` and return `PaginatedResult<T>`. For example:
+
+```ts
+async workoutStart(input: StartWorkoutInput, note: string | null): Promise<Workout> {
+  return callOp<Workout>('POST', '/workouts/start', { input, note });
+}
+```
+
+Before, the same method posted `input` bare and put `note` on the query string.
+
+A custom `GET` sends its `Option` arguments as `opArg[name]`, and a paginated entity-less or junction list sends `opArg[limit]` and `opArg[offset]`. `subscribeX` hands the callback a flat entity for an entity item and the `meta.result` value for any other item, and the legacy `on{Event}` listeners decode frames the same way. `SubscriptionHandlers.onEvent` still receives flat items.
+
+For a module whose list is paginated, the generated `xCount()` method is removed from the `Transport` interface and from the clients (both HTTP clients and the IPC transport). The server never served it: there was no HTTP route and no IPC command, because the count is the `total` of the paginated list. Read `PaginatedResult.total` instead. A junction `add` or `remove` op is declared `Promise<null>` on the `Transport` interface whatever its Rust return type, matching the `204` the server answers.
+
+The HTTP-only client (`HttpTs`) changes in two ways. Its custom op methods now call the server's actual paths, kebab-cased and singleton-aware, where some used the module's Rust name. Its paginated lists, including junction lists, take `limit?` and `offset?` and return `PaginatedResult<T>`; before, they took no page arguments and returned the server's default first page.
 
 ## Calling the HTTP API directly
 
@@ -346,7 +521,9 @@ If you call the generated HTTP routes from something other than the generated Ty
 - Read errors from `errors[0]` (`status`, `code`, `detail`) instead of `error`.
 - Drop any query parameter the route does not accept.
 - A create whose client `data.id` breaks the [id rule](/guides/store-layer/#creating-records) is `400 invalid_document` with `source.pointer: "/data/id"`, and the rule's message is the `detail`. An id that no strategy can supply is `400 {entity}_id_required`, whose `detail` is the store's reason.
-- Custom ops, junction ops, event streams and filtered `list`s: no change for now, except that their errors are `errors` documents.
+- Custom ops, junction ops and the CRUD ops of a module with no entity behind it: send arguments as `meta.args` (a `POST` or `PATCH` body) or `opArg[name]` (a `GET`), and read the result from `meta.result`.
+- Event streams: an entity item is a resource object, any other item is `{"meta": {"result": …}}`.
+- A filtered `list` is the one route with no change, except that its errors are `errors` documents.
 
 ## SeaORM data and code
 

@@ -11,35 +11,28 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{
-        State,
-        rejection::{JsonRejection, QueryRejection},
-    },
+    extract::State,
     http::{Method, StatusCode},
-    response::{Json, Response},
-    routing::{delete, get, patch, post, put},
+    response::Response,
+    routing::{get, post},
 };
 use ontogen_jsonapi::{
-    Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
-    ResourceIdentifier, ResourceObject,
+    Document, ErrorObject, QuerySpec, ResultMeta,
     error::method_not_allowed,
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
-    links::{CanonicalQuery, encode_path_segment, pagination_links},
-    request::{self, Endpoint, LinkedId, ResourceData},
-    response,
+    request, response,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::AppState;
 use crate::api::v1::{athlete, workout};
-use crate::schema::{Athlete, StartWorkoutInput, Workout, WorkoutSummary};
-use crate::store::Store;
+use crate::schema::StartWorkoutInput;
 use fitness::api::{exercise, workout as workout_1};
-use fitness::schema::{CreateExerciseInput, CreateWorkoutInput, Exercise, UpdateExerciseInput, UpdateWorkoutInput};
+use fitness::schema::{CreateExerciseInput, CreateWorkoutInput, UpdateExerciseInput, UpdateWorkoutInput};
 
 /// An `AppError` as an error object: the status its variant's name gives,
 /// and the name in snake_case as the code.
-fn app_error(e: crate::schema::AppError) -> ErrorObject {
+fn ontogen_app_error(e: crate::schema::AppError) -> ErrorObject {
     let (status, code) = match &e {
         crate::schema::AppError::WorkoutNotFound(..) => (StatusCode::NOT_FOUND, "workout_not_found"),
     };
@@ -48,7 +41,7 @@ fn app_error(e: crate::schema::AppError) -> ErrorObject {
 
 /// A failure no `AppError` describes: opening the store, a scope accessor,
 /// or an op with another error type.
-fn internal_error(e: impl std::fmt::Display) -> ErrorObject {
+fn ontogen_internal_error(e: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::internal(e.to_string())
 }
 
@@ -59,20 +52,7 @@ fn allow<const N: usize>(
     move |method| std::future::ready(method_not_allowed(&method, &allowed))
 }
 
-fn json_rejection(e: JsonRejection) -> ErrorObject {
-    match e.status() {
-        StatusCode::UNSUPPORTED_MEDIA_TYPE => {
-            ErrorObject::new(ErrorCode::UnsupportedMediaType, e.body_text()).with_header("Content-Type")
-        }
-        StatusCode::PAYLOAD_TOO_LARGE => ErrorObject::new(ErrorCode::ContentTooLarge, e.body_text()),
-        _ => ErrorObject::new(ErrorCode::InvalidDocument, e.body_text()),
-    }
-}
-
-fn query_rejection(e: QueryRejection) -> ErrorObject {
-    ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
-}
-
+/// One page of a list that is not served as a resource.
 #[derive(Serialize)]
 pub struct PaginatedResult<T: Serialize> {
     pub items: Vec<T>,
@@ -81,149 +61,223 @@ pub struct PaginatedResult<T: Serialize> {
     pub offset: u32,
 }
 
-#[derive(Deserialize)]
-pub struct PaginationParams {
-    pub limit: Option<u32>,
-    pub offset: Option<u32>,
+/// A paginated list that is not served as a resource takes its page as
+/// `opArg[limit]` and `opArg[offset]`.
+struct PageOpArgs;
+
+impl RouteQuery for PageOpArgs {
+    const SPEC: QuerySpec = QuerySpec { op_args: &["limit", "offset"], ..QuerySpec::NONE };
 }
 
 // ── Athlete Handlers ──
 
-async fn athlete_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Athlete>>, ErrorObject> {
-    let store = state.store().await.map_err(internal_error)?;
-    athlete::list(&store).await.map(Json).map_err(internal_error)
+async fn athlete_list(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = athlete::list(&ontogen_store).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 // ── Workout Handlers ──
 
 async fn workout_start(
-    State(state): State<Arc<AppState>>,
-    input: Result<Json<StartWorkoutInput>, JsonRejection>,
-) -> Result<Json<Workout>, ErrorObject> {
-    let Json(input) = input.map_err(json_rejection)?;
-    workout::start(&state, input).await.map(Json).map_err(internal_error)
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["input"])?;
+    let input = request::op_arg::<StartWorkoutInput>(&ontogen_args, "input", true)?;
+    let ontogen_result = workout::start(&ontogen_state, input).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_get_summary(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
     Path(id): Path<String>,
-) -> Result<Json<WorkoutSummary>, ErrorObject> {
-    workout::get_summary(&state, &id).await.map(Json).map_err(internal_error)
-}
-
-#[derive(Deserialize)]
-struct WorkoutFinishBody {
-    id: String,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_result = workout::get_summary(&ontogen_state, &id).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_finish(
-    State(state): State<Arc<AppState>>,
-    body: Result<Json<WorkoutFinishBody>, JsonRejection>,
-) -> Result<Json<Workout>, ErrorObject> {
-    let Json(body) = body.map_err(json_rejection)?;
-    workout::finish(&state, &body.id).await.map(Json).map_err(app_error)
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["id"])?;
+    let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
+    let ontogen_result = workout::finish(&ontogen_state, &id).await.map_err(ontogen_app_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
-async fn workout_list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<fitness::schema::Workout>>, ErrorObject> {
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    workout_1::list(&store).await.map(Json).map_err(internal_error)
+async fn workout_list(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = workout_1::list(&ontogen_store).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_get_by_id(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
     Path(id): Path<String>,
-) -> Result<Json<fitness::schema::Workout>, ErrorObject> {
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    workout_1::get_by_id(&store, &id).await.map(Json).map_err(internal_error)
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = workout_1::get_by_id(&ontogen_store, &id).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_create(
-    State(state): State<Arc<AppState>>,
-    input: Result<Json<CreateWorkoutInput>, JsonRejection>,
-) -> Result<(StatusCode, Json<fitness::schema::Workout>), ErrorObject> {
-    let Json(input) = input.map_err(json_rejection)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    workout_1::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(internal_error)
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["input"])?;
+    let input = request::op_arg::<CreateWorkoutInput>(&ontogen_args, "input", true)?;
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = workout_1::create(&ontogen_store, input).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn workout_update(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(id) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["input"])?;
+    let input = request::op_arg::<UpdateWorkoutInput>(&ontogen_args, "input", true)?;
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = workout_1::update(&ontogen_store, &id, input).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+async fn workout_delete(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
     Path(id): Path<String>,
-    input: Result<Json<UpdateWorkoutInput>, JsonRejection>,
-) -> Result<Json<fitness::schema::Workout>, ErrorObject> {
-    let Json(input) = input.map_err(json_rejection)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    workout_1::update(&store, &id, input).await.map(Json).map_err(internal_error)
-}
-
-async fn workout_delete(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<StatusCode, ErrorObject> {
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    workout_1::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(internal_error)
-}
-
-#[derive(Deserialize)]
-struct WorkoutArchiveBody {
-    id: String,
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    workout_1::delete(&ontogen_store, &id).await.map_err(ontogen_internal_error)?;
+    Ok(response::no_content())
 }
 
 async fn workout_archive(
-    State(state): State<Arc<AppState>>,
-    body: Result<Json<WorkoutArchiveBody>, JsonRejection>,
-) -> Result<Json<fitness::schema::Workout>, ErrorObject> {
-    let Json(body) = body.map_err(json_rejection)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    workout_1::archive(&store, &body.id).await.map(Json).map_err(internal_error)
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["id"])?;
+    let id = request::op_arg::<String>(&ontogen_args, "id", true)?;
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = workout_1::archive(&ontogen_store, &id).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 // ── Exercise Handlers ──
 
 async fn exercise_list(
-    State(state): State<Arc<AppState>>,
-    pagination: Result<axum::extract::Query<PaginationParams>, QueryRejection>,
-) -> Result<Json<PaginatedResult<Exercise>>, ErrorObject> {
-    let axum::extract::Query(pagination) = pagination.map_err(query_rejection)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    let limit = pagination.limit.unwrap_or(20).min(100);
-    let offset = pagination.offset.unwrap_or(0);
-    let items =
-        exercise::list(&store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(internal_error)?;
-    let total = exercise::count(&store).await.map_err(internal_error)?;
-    Ok(Json(PaginatedResult { items, total, limit, offset }))
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Query<PageOpArgs>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(20).min(100);
+    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    let ontogen_items = exercise::list(&ontogen_store, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))
+        .await
+        .map_err(ontogen_internal_error)?;
+    let ontogen_total = exercise::count(&ontogen_store).await.map_err(ontogen_internal_error)?;
+    let ontogen_result =
+        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn exercise_get_by_id(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
     Path(id): Path<String>,
-) -> Result<Json<Exercise>, ErrorObject> {
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    exercise::get_by_id(&store, &id).await.map(Json).map_err(internal_error)
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = exercise::get_by_id(&ontogen_store, &id).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn exercise_create(
-    State(state): State<Arc<AppState>>,
-    input: Result<Json<CreateExerciseInput>, JsonRejection>,
-) -> Result<(StatusCode, Json<Exercise>), ErrorObject> {
-    let Json(input) = input.map_err(json_rejection)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    exercise::create(&store, input).await.map(|entity| (StatusCode::CREATED, Json(entity))).map_err(internal_error)
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["input"])?;
+    let input = request::op_arg::<CreateExerciseInput>(&ontogen_args, "input", true)?;
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = exercise::create(&ontogen_store, input).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn exercise_update(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    input: Result<Json<UpdateExerciseInput>, JsonRejection>,
-) -> Result<Json<Exercise>, ErrorObject> {
-    let Json(input) = input.map_err(json_rejection)?;
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    exercise::update(&store, &id, input).await.map(Json).map_err(internal_error)
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<String>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path(id) = ontogen_path?;
+    ontogen_query?;
+    let ontogen_bytes = ontogen_body.into_bytes()?;
+    let ontogen_args = request::op_args(&ontogen_bytes, true)?;
+    request::check_op_arg_names(&ontogen_args, &["input"])?;
+    let input = request::op_arg::<UpdateExerciseInput>(&ontogen_args, "input", true)?;
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = exercise::update(&ontogen_store, &id, input).await.map_err(ontogen_internal_error)?;
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
 }
 
 async fn exercise_delete(
-    State(state): State<Arc<AppState>>,
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
     Path(id): Path<String>,
-) -> Result<StatusCode, ErrorObject> {
-    let store = state.fitness_store().await.map_err(internal_error)?;
-    exercise::delete(&store, &id).await.map(|_| StatusCode::NO_CONTENT).map_err(internal_error)
+    _: Query<NoParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(ontogen_internal_error)?;
+    exercise::delete(&ontogen_store, &id).await.map_err(ontogen_internal_error)?;
+    Ok(response::no_content())
 }
 
 /// Generated routes. Call this from your main router.
@@ -236,9 +290,9 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
         .route("/api/workouts", get(workout_list).post(workout_create).fallback(allow([Method::GET, Method::POST])))
         .route(
             "/api/workouts/{id}",
-            get(workout_get_by_id).put(workout_update).delete(workout_delete).fallback(allow([
+            get(workout_get_by_id).patch(workout_update).delete(workout_delete).fallback(allow([
                 Method::GET,
-                Method::PUT,
+                Method::PATCH,
                 Method::DELETE,
             ])),
         )
@@ -246,9 +300,9 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
         .route("/api/exercises", get(exercise_list).post(exercise_create).fallback(allow([Method::GET, Method::POST])))
         .route(
             "/api/exercises/{id}",
-            get(exercise_get_by_id).put(exercise_update).delete(exercise_delete).fallback(allow([
+            get(exercise_get_by_id).patch(exercise_update).delete(exercise_delete).fallback(allow([
                 Method::GET,
-                Method::PUT,
+                Method::PATCH,
                 Method::DELETE,
             ])),
         )

@@ -23,8 +23,6 @@ pub use config::ServerGenerator as ServerGeneratorConfig;
 
 use std::path::PathBuf;
 
-use ontogen_core::ir::OpKind;
-
 use crate::CodegenError;
 use crate::ir::{ApiOutput, HttpRouteMeta, IpcCommandMeta, McpToolMeta, ParamMeta, ServersOutput};
 use crate::model::EntityDef;
@@ -76,10 +74,17 @@ pub fn generate(
         let affected: Vec<String> = modules
             .iter()
             .flat_map(|m| {
-                m.functions
+                let functions = m
+                    .functions
                     .iter()
                     .filter(|f| generators::http::returns_app_error(f, &legacy_config))
-                    .map(move |f| format!("{}::{}", m.name, f.name))
+                    .map(|f| &f.name);
+                let events = m
+                    .events
+                    .iter()
+                    .filter(|ev| generators::http::event_returns_app_error(ev, &legacy_config))
+                    .map(|ev| &ev.name);
+                functions.chain(events).map(move |name| format!("{}::{name}", m.name))
             })
             .collect();
         if let Some(warning) = error_map::missing_enum_warning(dir, &affected) {
@@ -102,29 +107,18 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
     let mut mcp_tools = Vec::new();
 
     for m in modules {
-        let url_plural = config.naming.url_for_module(m);
-
         for f in &m.functions {
-            let op = classify::classify_op(f);
-            // HTTP base path: store-scoped fns get scoped under route_prefix
-            // when configured (mirroring the per-fn gating in http.rs's
-            // unscoped loop and generate_scoped_handlers).
-            let http_base = match (&config.route_prefix, f.first_param_is_store) {
-                (Some(prefix), true) => format!("/api/{}", generators::http::axum_path(&prefix.segments)),
-                _ => "/api".to_string(),
-            };
             let handler_name = generators::ipc::command_name(&m.name, f, config);
             let params: Vec<ParamMeta> =
                 f.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
 
-            if let Some((method, path)) = http_route_for(&op, &http_base, &url_plural, m, f, config) {
-                http_routes.push(HttpRouteMeta {
-                    method,
-                    path,
-                    handler_name: handler_name.clone(),
-                    module_name: m.name.clone(),
-                });
-            }
+            let (method, path) = generators::http::route_of(m, f, config);
+            http_routes.push(HttpRouteMeta {
+                method: method.to_ascii_uppercase(),
+                path,
+                handler_name: handler_name.clone(),
+                module_name: m.name.clone(),
+            });
 
             ipc_commands.push(IpcCommandMeta {
                 command_name: handler_name.clone(),
@@ -178,55 +172,6 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
     ServersOutput { http_routes, ipc_commands, mcp_tools }
 }
 
-/// Compute the HTTP method + path for a classified function.
-///
-/// Returns `None` for `EventStream` (events are emitted separately from `m.events`).
-fn http_route_for(
-    op: &OpKind,
-    base: &str,
-    plural: &str,
-    m: &parse::ApiModule,
-    f: &parse::ApiFn,
-    config: &config::Config,
-) -> Option<(String, String)> {
-    let route = match op {
-        OpKind::List => ("GET", format!("{base}/{plural}")),
-        OpKind::Create => ("POST", format!("{base}/{plural}")),
-        OpKind::GetById => ("GET", format!("{base}/{plural}/{{id}}")),
-        OpKind::Update if generators::http::served_resource(m, f, config).is_some() => {
-            ("PATCH", format!("{base}/{plural}/{{id}}"))
-        }
-        OpKind::Update => ("PUT", format!("{base}/{plural}/{{id}}")),
-        OpKind::Delete => ("DELETE", format!("{base}/{plural}/{{id}}")),
-        OpKind::JunctionList { child_segment } => ("GET", format!("{base}/{plural}/{{parent_id}}/{child_segment}")),
-        OpKind::JunctionAdd { child_segment } => ("POST", format!("{base}/{plural}/{{parent_id}}/{child_segment}")),
-        OpKind::JunctionRemove { child_segment } => {
-            ("DELETE", format!("{base}/{plural}/{{parent_id}}/{child_segment}/{{child_id}}"))
-        }
-        OpKind::CustomGet | OpKind::CustomPost => {
-            let is_get = classify::is_read_op(op);
-            let action = config.naming.derive_action(&m.name, &f.name);
-            let mut path = format!("{base}/{plural}");
-            if !action.is_empty() {
-                path.push('/');
-                path.push_str(&action);
-            }
-            // GET handlers extract path params from non-Option non-Input params.
-            // POST handlers put all such params into the JSON body - no path params.
-            if is_get {
-                for p in &f.params {
-                    if !p.ty.starts_with("Option<") && !p.ty.contains("Input") {
-                        path.push_str(&format!("/{{{}}}", p.name));
-                    }
-                }
-            }
-            (if is_get { "GET" } else { "POST" }, path)
-        }
-        OpKind::EventStream => return None,
-    };
-    Some((route.0.to_string(), route.1))
-}
-
 /// Run the server-side transport generation pipeline (parse API modules + generate server code).
 ///
 /// Parses API modules and generates server code for each configured
@@ -261,11 +206,12 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     parse::qualify_shared_types(&mut modules, &surfaces);
     parse::apply_singleton_overlay(&mut modules, &config.naming);
     parse::apply_command_overrides(&mut modules, &config.naming);
-    parse::check_paginated_lists(&mut modules, config)?;
+    parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces)?;
     if modules.is_empty() {
         return Ok(modules);
     }
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::HttpAxum { .. })) {
+        classify::check_http_ops(&modules, &config.resources)?;
         generators::http::check_resource_ops(&modules, config)?;
         for warning in generators::http::unplaced_app_error_warnings(&modules, config) {
             println!("{warning}");

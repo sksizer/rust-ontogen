@@ -29,6 +29,8 @@ serde = { version = "1", features = ["derive"] }
 # `raw_value` lets an included resource keep its attributes' member order
 # without a type parameter per resource type.
 serde_json = { version = "1", features = ["raw_value"] }
+# Reads an `opArg[…]` value as `axum::extract::Query` reads a field.
+serde_urlencoded = "0.7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

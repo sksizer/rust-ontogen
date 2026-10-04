@@ -1,4 +1,4 @@
-//! Response documents (§4, §5).
+//! Response documents (§4, §5), and the payloads of event frames (§12).
 //!
 //! Member order is fixed by field order, never by a map, so a document
 //! serializes to the same bytes every time (§4.1). `serde_json::Value` is
@@ -361,6 +361,82 @@ impl<A: Serialize> ResourceObject<A> {
     }
 }
 
+impl<A> ResourceObject<A> {
+    /// This resource as an event frame carries it (§12): no `links`, its
+    /// relationships with `data` only, and a relationship with no `data` (a
+    /// junction op's) left out. A frame is not tied to a request URL.
+    pub fn into_unlinked(self) -> UnlinkedResource<A> {
+        let relationships = self
+            .relationships
+            .0
+            .into_iter()
+            .filter_map(|(name, rel)| rel.data.map(|data| (name, Relationship::from_data(data))))
+            .collect();
+        UnlinkedResource {
+            type_name: self.type_name,
+            id: self.id,
+            attributes: self.attributes,
+            relationships: Relationships(relationships),
+        }
+    }
+}
+
+/// A resource object with no links: `type`, `id`, `attributes`,
+/// `relationships`, in that order, `relationships` omitted when there are
+/// none (§12). Build it with [`ResourceObject::into_unlinked`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnlinkedResource<A> {
+    #[serde(rename = "type")]
+    type_name: String,
+    id: String,
+    attributes: A,
+    #[serde(skip_serializing_if = "Relationships::is_empty")]
+    relationships: Relationships,
+}
+
+impl<A> UnlinkedResource<A> {
+    /// The resource type.
+    pub fn type_name(&self) -> &str {
+        &self.type_name
+    }
+
+    /// The resource id.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The attributes.
+    pub fn attributes(&self) -> &A {
+        &self.attributes
+    }
+
+    /// The relationships, in the order they serialize, each with `data`
+    /// only.
+    pub fn relationships(&self) -> impl Iterator<Item = (&str, &Relationship)> {
+        self.relationships.0.iter().map(|(name, rel)| (name.as_str(), rel))
+    }
+}
+
+/// The `data:` of an event frame whose item is not an entity:
+/// `{"meta":{"result":…}}`, the `meta` a custom op responds with (§10.1),
+/// without the document around it (§12).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ResultFrame<T> {
+    meta: ResultMeta<T>,
+}
+
+impl<T> ResultFrame<T> {
+    /// The frame of `result`.
+    pub fn new(result: T) -> Self {
+        ResultFrame { meta: ResultMeta { result } }
+    }
+
+    /// The item.
+    pub fn result(&self) -> &T {
+        &self.meta.result
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Relationships(Vec<(String, Relationship)>);
 
@@ -566,5 +642,55 @@ mod tests {
         assert_eq!(serde_json::to_string(&data_only).unwrap(), r#"{"data":null}"#);
         let empty_many = Relationship::from_data(Linkage::ToMany(vec![]));
         assert_eq!(serde_json::to_string(&empty_many).unwrap(), r#"{"data":[]}"#);
+    }
+
+    #[test]
+    fn an_unlinked_resource_leaves_out_every_link_and_data_less_relationships() {
+        let frame = task()
+            .with_relationship(
+                "subtasks",
+                Relationship::from_links(
+                    Links::new("/api/tasks/ship-the-emitter/relationships/subtasks")
+                        .with_related("/api/tasks/ship-the-emitter/subtasks"),
+                ),
+            )
+            .into_unlinked();
+        assert_eq!(
+            serde_json::to_string(&frame).unwrap(),
+            concat!(
+                r#"{"type":"tasks","id":"ship-the-emitter","#,
+                r#""attributes":{"title":"Ship the emitter","status":"closed/done","created":"2026-06-06","#,
+                r###""body":"## Goal\n\nEmit markdown CRUD matching the golden spec. ^summary\n\n## Outcome\n\nMatched on the first conformance run.\n"},"###,
+                r#""relationships":{"epic":{"data":{"type":"epics","id":"markdown-backend"}},"#,
+                r#""tags":{"data":[{"type":"tags","id":"codegen"}]}}}"#,
+            )
+        );
+        assert_eq!(frame.relationships().map(|(name, _)| name).collect::<Vec<_>>(), ["epic", "tags"]);
+    }
+
+    #[test]
+    fn an_unlinked_resource_without_relationships_omits_the_member() {
+        assert_eq!(
+            serde_json::to_string(&epic().into_unlinked()).unwrap(),
+            concat!(
+                r#"{"type":"epics","id":"markdown-backend","#,
+                r#""attributes":{"title":"Markdown backend","status":"in-progress","body":"Implement ADR 0001 as a stacked-PR campaign.\n"}}"#,
+            )
+        );
+    }
+
+    #[test]
+    fn a_result_frame_is_meta_only_without_a_document() {
+        #[derive(Serialize)]
+        struct Activity {
+            seq: u64,
+            kind: &'static str,
+            id: &'static str,
+        }
+        let frame = ResultFrame::new(Activity { seq: 4, kind: "workout", id: "w1" });
+        assert_eq!(
+            serde_json::to_string(&frame).unwrap(),
+            r#"{"meta":{"result":{"seq":4,"kind":"workout","id":"w1"}}}"#
+        );
     }
 }

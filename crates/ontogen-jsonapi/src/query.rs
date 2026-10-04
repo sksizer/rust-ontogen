@@ -12,6 +12,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::de::{self, DeserializeOwned};
+
 use crate::error::{ErrorCode, ErrorObject};
 
 /// The query parameters a route accepts (§6). Anything else is
@@ -157,6 +159,31 @@ impl QueryParams {
         members(&self.op_args, "opArg")
     }
 
+    /// `opArg[{name}]` read as `T`, or `None` when absent (§10.2). Call it
+    /// for each argument in ascending byte order of name, the order step 5
+    /// checks them in.
+    ///
+    /// The value is read as `axum::extract::Query` reads a field, through
+    /// `serde_urlencoded`: `true` is a `bool`, `5` a number, and anything is
+    /// a string. A repeated or malformed value is
+    /// `400 invalid_query_parameter`, with `source.parameter` the name.
+    pub fn op_arg<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>, ErrorObject> {
+        let parameter = format!("opArg[{name}]");
+        let Some(value) = single(self.op_args.get(name), &parameter)? else { return Ok(None) };
+        from_form_value(value).map(Some).map_err(|err| invalid(&parameter, format!("`{parameter}` is invalid: {err}")))
+    }
+
+    /// `opArg[{name}]` read as a page value, or `None` when absent: the
+    /// digits `page[offset]` takes (§7.2), `0` included. A paginated list
+    /// that is not served as a resource takes its page as `opArg[limit]` and
+    /// `opArg[offset]`, and reads them as strictly as a resource list reads
+    /// `page[…]`, which [`op_arg`](Self::op_arg) would not (`%2B5` is `5` to
+    /// it). Anything else is `400 invalid_query_parameter`, with
+    /// `source.parameter` the name.
+    pub fn page_op_arg(&self, name: &str) -> Result<Option<u32>, ErrorObject> {
+        page(self.op_args.get(name), &format!("opArg[{name}]"), 0)
+    }
+
     /// Every check of the accessors, in canonical order (§13.2 step 5):
     /// `filter[…]`, `sort`, `include`, `page[offset]`, `page[limit]`,
     /// `opArg[…]`.
@@ -214,6 +241,15 @@ fn page(slot: Option<&Slot>, name: &str, min: u32) -> Result<Option<u32>, ErrorO
         Some(n) if n >= min => Ok(Some(n)),
         _ => Err(invalid(name, format!("{name} must be an integer between {min} and {}", u32::MAX))),
     }
+}
+
+/// `value` deserialized as one `application/x-www-form-urlencoded` value.
+/// `serde_urlencoded` reads only whole forms, so the value is encoded back
+/// into a one-pair form and read as that pair.
+fn from_form_value<T: DeserializeOwned>(value: &str) -> Result<T, serde_urlencoded::de::Error> {
+    let form = serde_urlencoded::to_string([("v", value)]).map_err(|err| de::Error::custom(err.to_string()))?;
+    let pairs: Vec<(String, T)> = serde_urlencoded::from_str(&form)?;
+    pairs.into_iter().next().map(|(_, value)| value).ok_or_else(|| de::Error::custom("no value"))
 }
 
 fn invalid(name: &str, detail: String) -> ErrorObject {
@@ -429,6 +465,73 @@ mod tests {
     fn op_args_are_read_in_member_order() {
         let q = checked("opArg[verbose]=true&opArg[limit]=5", &GET_OP).unwrap();
         assert_eq!(q.op_args().unwrap(), vec![("limit", "5"), ("verbose", "true")]);
+    }
+
+    fn op_arg_failure<T: serde::de::DeserializeOwned + std::fmt::Debug>(q: &QueryParams, name: &str) -> String {
+        let err = q.op_arg::<T>(name).unwrap_err();
+        assert_eq!((err.status(), err.code()), (StatusCode::BAD_REQUEST, "invalid_query_parameter"));
+        match err.source() {
+            Some(crate::ErrorSource::Parameter(p)) => p.clone(),
+            other => panic!("expected a parameter source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn op_arg_values_read_as_a_form_field() {
+        #[derive(Debug, PartialEq, serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Kind {
+            Workout,
+        }
+        const SPEC: QuerySpec =
+            QuerySpec { op_args: &["verbose", "limit", "name", "kind", "empty"], ..QuerySpec::NONE };
+        let q = QueryParams::parse(
+            Some("opArg%5Bverbose%5D=true&opArg[limit]=5&opArg[name]=a+b%26c&opArg[kind]=workout&opArg[empty]="),
+            &SPEC,
+        )
+        .unwrap();
+        assert_eq!(q.op_arg::<bool>("verbose").unwrap(), Some(true));
+        assert_eq!(q.op_arg::<u32>("limit").unwrap(), Some(5));
+        assert_eq!(q.op_arg::<String>("limit").unwrap(), Some("5".to_owned()));
+        assert_eq!(q.op_arg::<String>("name").unwrap(), Some("a b&c".to_owned()));
+        assert_eq!(q.op_arg::<Kind>("kind").unwrap(), Some(Kind::Workout));
+        assert_eq!(q.op_arg::<String>("empty").unwrap(), Some(String::new()));
+        // Absent is `None`; the name was accepted by the route.
+        assert_eq!(QueryParams::parse(Some(""), &SPEC).unwrap().op_arg::<bool>("verbose").unwrap(), None);
+    }
+
+    #[test]
+    fn a_malformed_or_repeated_op_arg_names_its_parameter() {
+        let q = QueryParams::parse(Some("opArg[verbose]=yes&opArg[limit]=-1&opArg[limit]=2"), &GET_OP).unwrap();
+        assert_eq!(op_arg_failure::<bool>(&q, "verbose"), "opArg[verbose]");
+        assert_eq!(op_arg_failure::<u32>(&q, "limit"), "opArg[limit]");
+        let q = QueryParams::parse(Some("opArg[limit]=-1"), &GET_OP).unwrap();
+        assert_eq!(op_arg_failure::<u32>(&q, "limit"), "opArg[limit]");
+        let q = QueryParams::parse(Some("opArg[limit]="), &GET_OP).unwrap();
+        assert_eq!(op_arg_failure::<u32>(&q, "limit"), "opArg[limit]");
+    }
+
+    #[test]
+    fn page_op_args_read_as_page_values() {
+        const SPEC: QuerySpec = QuerySpec { op_args: &["limit", "offset"], ..QuerySpec::NONE };
+        let read =
+            |v: &str| QueryParams::parse(Some(&format!("opArg[limit]={v}")), &SPEC).unwrap().page_op_arg("limit");
+        assert_eq!(read("5").unwrap(), Some(5));
+        assert_eq!(read("020").unwrap(), Some(20));
+        assert_eq!(read("0").unwrap(), Some(0));
+        assert_eq!(read("4294967295").unwrap(), Some(u32::MAX));
+        assert_eq!(QueryParams::parse(None, &SPEC).unwrap().page_op_arg("limit").unwrap(), None);
+        for bad in ["+5", "%2B5", "-1", "", "1.5", " 5", "ten", "4294967296", "1e3"] {
+            let err = read(bad).unwrap_err();
+            assert_eq!((err.status(), err.code()), (StatusCode::BAD_REQUEST, "invalid_query_parameter"), "{bad}");
+            assert_eq!(err.source(), Some(&crate::ErrorSource::Parameter("opArg[limit]".to_owned())), "{bad}");
+            assert_eq!(err.detail(), "opArg[limit] must be an integer between 0 and 4294967295");
+        }
+        let q = QueryParams::parse(Some("opArg[offset]=1&opArg[offset]=2"), &SPEC).unwrap();
+        assert_eq!(
+            q.page_op_arg("offset").unwrap_err().source(),
+            Some(&crate::ErrorSource::Parameter("opArg[offset]".to_owned()))
+        );
     }
 
     #[test]

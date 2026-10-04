@@ -182,6 +182,27 @@ impl Default for Param {
     }
 }
 
+impl Param {
+    /// True for an `Option<…>` argument, which a caller may leave out.
+    pub fn is_option(&self) -> bool {
+        self.ty.starts_with("Option<")
+    }
+
+    /// True for an `*Input` argument: the type it names, under any `&` and
+    /// one `Option`, is a single path whose last segment ends in `Input`
+    /// (`CreateTaskInput`, `&crate::schema::UpdateTaskInput`). A type that
+    /// only contains the word (`InputMode`, `Vec<TaskInput>`) is not one.
+    pub fn is_input(&self) -> bool {
+        let unref = |ty: &str| ty.trim_start_matches('&').trim_start_matches("mut ").to_string();
+        let mut ty = unref(&self.ty);
+        if let Some(inner) = ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')) {
+            ty = unref(inner);
+        }
+        let name = ty.rsplit("::").next().unwrap_or(&ty);
+        !name.contains(['<', '(', '[']) && name.ends_with("Input")
+    }
+}
+
 /// An event function: returns `broadcast::Receiver<T>` or
 /// `Result<broadcast::Receiver<T>, E>`, sync or async.
 ///
@@ -206,6 +227,9 @@ pub struct EventFn {
     /// Whether the receiver comes wrapped in a `Result`. A failed subscribe
     /// is an HTTP error response or a rejected IPC command.
     pub returns_result: bool,
+    /// The `E` of a `Result<Receiver<T>, E>`, resolved as
+    /// [`ApiFn::error_type`] is.
+    pub error_type: Option<String>,
     /// Index of the surface this event was scanned from; see [`ApiFn::surface`].
     pub surface: usize,
 }
@@ -220,6 +244,7 @@ impl Default for EventFn {
             item_type: "()".to_string(),
             item_type_ast: syn::parse_quote!(()),
             returns_result: false,
+            error_type: None,
             surface: 0,
         }
     }
@@ -708,15 +733,16 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
             // to drop.
             let skip_first = if is_stateless { 0 } else { 1 };
 
-            if let Some((item_type_ast, returns_result)) = receiver_item_type(&func.sig.output) {
+            if let Some(receiver) = receiver_item_type(&func.sig.output) {
                 events.push(EventFn {
                     name: func.sig.ident.to_string(),
                     doc,
                     is_async: func.sig.asyncness.is_some(),
                     params: parse_params(func, skip_first),
-                    item_type: norm_type(&item_type_ast),
-                    item_type_ast,
-                    returns_result,
+                    item_type: norm_type(&receiver.item),
+                    item_type_ast: receiver.item,
+                    returns_result: receiver.is_result,
+                    error_type: receiver.error.map(|e| resolve_through_uses(&e, &uses)),
                     surface: 0,
                 });
                 continue;
@@ -841,21 +867,39 @@ fn parse_params(func: &syn::ItemFn, skip_first: usize) -> Vec<Param> {
         .collect()
 }
 
-/// The `T` of a `Receiver<T>` or `Result<Receiver<T>, E>` return type, and
-/// whether it came wrapped in a `Result`.
-fn receiver_item_type(ret: &ReturnType) -> Option<(Type, bool)> {
+/// An event fn's return type: `Receiver<T>` or `Result<Receiver<T>, E>`.
+struct ReceiverReturn {
+    /// The `T`.
+    item: Type,
+    /// Whether the receiver comes wrapped in a `Result`.
+    is_result: bool,
+    /// The `E`, when the `Result` names one (`anyhow::Result<Receiver<T>>`
+    /// does not).
+    error: Option<Type>,
+}
+
+fn receiver_item_type(ret: &ReturnType) -> Option<ReceiverReturn> {
     let ReturnType::Type(_, ty) = ret else {
         return None;
     };
     if let Some(item) = receiver_item(ty) {
-        return Some((item, false));
+        return Some(ReceiverReturn { item, is_result: false, error: None });
     }
     let seg = last_segment(ty)?;
     if seg.ident != "Result" {
         return None;
     }
-    let first_arg = first_type_arg(seg)?;
-    receiver_item(first_arg).map(|item| (item, true))
+    let item = receiver_item(first_type_arg(seg)?)?;
+    let PathArguments::AngleBracketed(args) = &seg.arguments else { return None };
+    let error = args
+        .args
+        .iter()
+        .filter_map(|a| match a {
+            GenericArgument::Type(t) => Some(t.clone()),
+            _ => None,
+        })
+        .nth(1);
+    Some(ReceiverReturn { item, is_result: true, error })
 }
 
 /// The `T` of `Receiver<T>` (any path ending in `Receiver`).
@@ -1315,14 +1359,23 @@ fn parse_ontogen_rename(attrs: &[syn::Attribute]) -> OntogenAttr {
 ///
 /// The `count` of a paginated module is what the page handlers call for the
 /// total, so it is taken off `functions` here; on a module no surface
-/// paginates it stays an operation of its own.
-pub fn check_paginated_lists(modules: &mut [ApiModule], config: &crate::servers::config::Config) -> Result<(), String> {
+/// paginates it stays an operation of its own. `gen_servers` and
+/// `gen_clients` both run this on the modules they generate from, so no
+/// client calls a `count` route, command or tool the servers do not serve.
+///
+/// `pagination` and `extra_surfaces` are the config's, as
+/// [`pagination_for`](crate::servers::config::pagination_for) reads them.
+pub fn check_paginated_lists(
+    modules: &mut [ApiModule],
+    pagination: &Option<crate::servers::config::PaginationConfig>,
+    extra_surfaces: &[crate::servers::config::ApiSurface],
+) -> Result<(), String> {
     for m in modules {
         let mut paginated = false;
         for f in &m.functions {
             if f.name != "list"
                 || !f.return_type.starts_with("Vec<")
-                || config.pagination_for(&m.name, f.surface).is_none()
+                || crate::servers::config::pagination_for(pagination, extra_surfaces, &m.name, f.surface).is_none()
             {
                 continue;
             }
@@ -1442,5 +1495,25 @@ mod tests {
         assert_eq!(error_of("summary").as_deref(), Some("String"));
         assert_eq!(error_of("ping"), None);
         assert_eq!(error_of("pong").as_deref(), Some("fitness::schema::AppError"));
+    }
+
+    #[test]
+    fn parsed_event_fns_carry_their_error_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("activity.rs");
+        fs::write(
+            &path,
+            "use crate::schema::{self as api};\n\
+             pub fn changed(state: &AppState) -> Receiver<Task> { todo!() }\n\
+             pub async fn for_kind(state: &AppState, kind: String) -> Result<Receiver<Activity>, api::AppError> { todo!() }\n\
+             pub fn plain(state: &AppState) -> anyhow::Result<Receiver<Activity>> { todo!() }\n",
+        )
+        .unwrap();
+        let module = parse_api_module(&path, "AppState", None).module.expect("module parses");
+        let event = |name: &str| module.events.iter().find(|e| e.name == name).expect("an event fn");
+        assert_eq!((event("changed").returns_result, event("changed").error_type.clone()), (false, None));
+        assert_eq!(event("for_kind").error_type.as_deref(), Some("crate::schema::AppError"));
+        assert!(event("for_kind").returns_result);
+        assert_eq!((event("plain").returns_result, event("plain").error_type.clone()), (true, None));
     }
 }

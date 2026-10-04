@@ -137,8 +137,10 @@ section, not on every example.
 `Content-Type: application/vnd.api+json`. Bodies are carried by:
 - `POST` to a collection;
 - `PATCH` to a resource;
-- a custom `POST` with a body (one may also carry none, §10.2);
-- `POST`, `PATCH` and `DELETE` on a relationship endpoint.
+- a custom `POST`, or a `POST` or `PATCH` row of §10.4, with a body (one
+  may also carry none, §10.2);
+- `POST`, `PATCH` and `DELETE` on a relationship endpoint (§9, served from
+  phase 3a).
 
 The server responds:
 
@@ -150,8 +152,9 @@ The server responds:
 | `application/vnd.api+json` with any other parameter (e.g. `charset=utf-8`) | `415`, as the spec requires |
 | anything else, including `application/json`, or the header absent while a body is present | `415` |
 
-Every `415` carries `source.header: "Content-Type"`. A body on `GET` or on
-a resource `DELETE` is ignored, and its `Content-Type` is not checked.
+Every `415` carries `source.header: "Content-Type"`. A body on `GET`, or on
+a `DELETE` other than a relationship endpoint's (a resource `DELETE`, or a
+`DELETE` row of §10.4), is ignored, and its `Content-Type` is not checked.
 
 **Accept.** Media types, parameter names and the `q` parameter are
 compared case-insensitively. A range with `q=0` is "not acceptable", as
@@ -660,8 +663,9 @@ the size of that write. The contract does not promise a snapshot.
 ### 7.3 Filter
 
 Phase 2. Filters are hand-written: the store takes none, and the generated
-CRUD `list` takes none. Until phase 2, a hand-written `list` with filter
-parameters in a resource module keeps its pre-JSON:API handler.
+CRUD `list` takes none. Until phase 2, a hand-written `list` with any
+parameter other than its page, in any module (with or without an entity
+behind it), keeps its pre-JSON:API handler.
 
 **A hand-written list replaces the generated one.** A `list` written in
 `api_dir/{module}.rs` replaces the generated `list` for that module, and
@@ -1560,9 +1564,12 @@ Rules for `POST` bodies, all within step 7 of §13.2:
 - A body that is not a JSON object is `400 invalid_document` with no
   `source`.
 - When `meta` or `meta.args` is missing or is not an object, the request is
-  `400 invalid_document`. The pointer names the nearest member that exists:
-  `""` when `meta` is missing, `/meta` when `args` is missing. If the fn has
-  no required arguments, a missing member is read as `{}` instead.
+  `400 invalid_document`. A missing member's pointer names the nearest member
+  that exists: `""` when `meta` is missing, `/meta` when `args` is missing. A
+  member that is present but not an object is named itself: `/meta` or
+  `/meta/args`. If the fn has no required arguments, a missing member is read
+  as `{}` instead.
+- Other top-level members of the request document are ignored.
 - Members are checked in §13.2 step 7's order.
 - An unknown member of `meta.args` is `400 invalid_document` at
   `/meta/args/{name}`.
@@ -1570,6 +1577,10 @@ Rules for `POST` bodies, all within step 7 of §13.2:
   - a missing required argument is `400 invalid_document` at `/meta/args`;
   - a value serde rejects is `400 invalid_document` at its member;
   - an absent or `null` member is `None` for an `Option` argument.
+
+An `*Input` parameter on an op served without a body (a custom `GET`,
+`get_by_id`, `delete`, `JunctionList`, `JunctionRemove`) is a
+`CodegenError`: there is no body to carry it.
 
 **`GET` optional arguments use the `opArg` family.** `Option` arguments of a
 `CustomGet` are `opArg[{name}]` query parameters. For illustration,
@@ -1597,6 +1608,12 @@ An op in a singleton module that classifies as `List`, `GetById`,
 singleton module is opted into explicitly, so a CRUD op there is a
 mistake. A module with no entity behind it is the case §10.4 serves.
 
+The build-time rules of §10.2–§10.4 apply to builds that generate an HTTP
+server or an HTTP TypeScript client: this singleton check, the `*Input` rule
+for ops served without a body, the exact arguments of a CRUD-named op in a
+module with no entity, and the types an `Option` argument read from `opArg`
+may have. IPC-only and MCP-only builds are unaffected.
+
 ### 10.4 Ops served as custom ops
 
 Three kinds of op have no resource to serve and are served as custom ops,
@@ -1620,6 +1637,35 @@ The §10.1 and §10.2 rules apply, with these routes:
 | `JunctionRemove` | `DELETE /api/{m}/{parent_id}/{segment}/{child_id}` | — | `204` |
 
 `update` uses `PATCH` here too, so that no generated route uses `PUT`.
+
+A CRUD-named op in a module with no entity takes exactly its row's
+arguments: `get_by_id(id)`, `delete(id)`, `create(input)`,
+`update(id, input)`, and `list()` or `list(limit, offset)`. Any other
+parameter is a `CodegenError`, because the generated clients call these ops
+with those arguments only. The exception is `list`, where an extra parameter
+makes the list a filtered list (§7.3). Junction rows keep their fixed
+arguments.
+
+A body on a `DELETE` row (`delete`, `JunctionRemove`), and its
+`Content-Type`, is ignored, as for a resource `DELETE` (§3.2).
+
+An `Option` argument of a bodyless row (a custom `GET`, entity-less
+`get_by_id` or `delete`, `JunctionList`, `JunctionRemove`) is read from a
+single `opArg` value, so its inner type must be a plain path: one with
+generic arguments (`Option<Vec<String>>`), a tuple, or a schema entity is a
+`CodegenError`. A struct the schema does not declare cannot be told from its
+name and is not refused; serde rejects its value at request time.
+
+On a paginated row, `opArg[limit]` and `opArg[offset]` are unsigned 32-bit
+integers. An absent `limit` is `default_limit` and an absent `offset` is
+`0`. `limit` is clamped to `max_limit`; `opArg[limit]=0` is not an error and
+yields a page of zero items. A `meta.result` page has no links, so an empty
+page needs no `next` or `last`, and the IPC list command takes `limit: 0`
+the same way. The values use the grammar of `page[…]` (§7.2): one or more
+ASCII digits, at most 4294967295. `+5`, `-1`, an empty value and `1.5` are
+`400 invalid_query_parameter`, with `source.parameter` naming the
+parameter. A list
+that is not paginated accepts no query parameters.
 
 ## 11. Route prefix and extra surfaces
 
@@ -1647,14 +1693,20 @@ relationship, related, custom and event routes alike.
   `500 internal_error`, as E0003 phase 1 keeps it. Mapping it to `404` waits
   on E0003's store-accessor contract.
 
-Scoped and unscoped routes MUST have identical wire behaviour. Today they
-diverge in two places:
+Scoped and unscoped routes MUST have identical wire behaviour. A scoped
+list that is not served as a resource passes the page to the store's
+page-taking `list` and calls `count`, like an unscoped one, so a hand-written
+scoped `list` must honour its page. The one remaining divergence:
 
-- A scoped list that is not served as a resource slices its page in memory
-  instead of calling the page-taking list. Phase 1c removes this. A scoped
-  resource list passes the page to the store from 1b, like an unscoped one.
-- Scoped junction ops become action-style routes instead of the
-  `{parent_id}/{child}` form. Phase 3a removes this.
+- Scoped junction ops are action-style custom-op routes
+  (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`,
+  `…/remove-tag`) instead of the `{parent_id}/{child}` form. Only the route
+  differs: a scoped `JunctionList` pages with `opArg[limit]`/`opArg[offset]`
+  like the unscoped one. Relationship endpoints (§9, phase 3a) replace these
+  routes.
+
+A client calling a scoped junction op uses that action route with both
+arguments in `meta.args`: `{"<parent param>":…, "<child param>":…}`.
 
 ### 11.2 Extra API surfaces
 
@@ -1685,8 +1737,8 @@ no event ops. For illustration, a resumable `task_changed` op yielding
 
 ```text
 event: task-changed
-id: 0:17
 data: {"type":"tasks","id":"ship-the-emitter","attributes":{"title":"Ship the emitter","status":"closed/done","created":"2026-06-06","body":"## Goal\n…"},"relationships":{"epic":{"data":{"type":"epics","id":"markdown-backend"}},"tags":{"data":[{"type":"tags","id":"codegen"}]}}}
+id: 0:17
 ```
 
 When the event's item type `T` is an entity (known from the schema, §5.1),
@@ -1704,8 +1756,8 @@ rule as custom ops (§10.1). An example is iron-log's `Activity`, whose
 
 ```text
 event: activity-for-kind
-id: 4
 data: {"meta":{"result":{"seq":4,"kind":"workout","id":"w1"}}}
+id: 4
 ```
 
 These are unchanged:
@@ -1718,8 +1770,11 @@ These are unchanged:
   every 15 s.
 
 A subscribe call that fails before the stream opens returns a JSON:API
-error document (§13) with the mapped status. `EventSource` cannot read that
-body, but a `fetch`-based client and `curl` can.
+error document (§13) with the mapped status, scoped or not. It is mapped by
+§13.4's routing on the event fn's own error type, which the parser records
+as it does for API fns: `AppError` gets its status and `code`, any other
+type is `500 internal_error`. `EventSource` cannot read that body, but a
+`fetch`-based client and `curl` can.
 
 ## 13. Errors
 
@@ -1836,7 +1891,7 @@ consumer's `AppError`:
 | 409 | `id_mismatch` | a `PATCH` body id differs from the URL id (§8.3) |
 | 413 | `content_too_large` | the body is larger than the server's body-size limit (Axum's `DefaultBodyLimit`: 2 MB unless the consumer's router sets another) |
 | 415 | `unsupported_media_type` | §3.2 |
-| 500 | `internal_error` | a store-construction or scope-accessor failure; a custom op whose error type is not `AppError`; an `AppError`-typed site in a consumer with no `AppError` in its schema directory |
+| 500 | `internal_error` | a store-construction or scope-accessor failure; any op or event subscribe whose error type is not the primary surface's `AppError`; an `AppError`-typed site in a consumer with no `AppError` in its schema directory |
 
 The `detail` for `internal_error` is the error's `Display` text, as today.
 
@@ -1848,10 +1903,11 @@ Decision 6 folds E0003 phases 0 and 1 into E0004:
 - the `AppError` scan over the schema directory;
 - the call-site routing predicate (below).
 
-**Routing predicate.** A call goes through `app_error` iff its error type
-is the primary surface's `{types_import_path}::AppError`; every other error
-type, another surface's `AppError` included, is `500 internal_error`. The
-error type is resolved in the function's own surface:
+**Routing predicate.** A call goes through `ontogen_app_error` iff its error
+type is the primary surface's `{types_import_path}::AppError`; every
+other error type, another surface's `AppError` included, is
+`500 internal_error`. The error type is resolved in the function's own
+surface:
 
 - through its file's `use` items: `use a::b::{AppError, X as Y}`,
   `use a::b::{self as c}`, and a leading segment one `use` binds
@@ -1946,7 +2002,11 @@ and `Path` in generated handlers and produce the documents above.
 
 The generated HTTP transport keeps the flat `Transport` interface:
 
-- every method name, parameter and return type is unchanged;
+- every method name, parameter and return type is unchanged, with two
+  exceptions: a paginated module has no `xCount()` method, because no route
+  or IPC command serves its `count` (the page carries `total`); and a junction
+  `xAddY` or `xRemoveY` is declared `Promise<null>` whatever its Rust return
+  type, matching the `204` its route answers;
 - list methods gain one trailing optional argument (§14.2).
 
 JSON:API is applied and removed inside the transport. The admin layer needs
@@ -1957,9 +2017,8 @@ no source change.
 - Every request sends `Accept: application/vnd.api+json`.
 - Every request with a body sends
   `Content-Type: application/vnd.api+json`.
-- The `httpPut` helper is removed, and `httpPatch` replaces it. Until phase 1c
-  it is still emitted when a module with no entity behind it has an `update`
-  op, since that module keeps its flat `PUT` route.
+- The `httpPut` helper is removed, and `httpPatch` replaces it. No generated
+  route uses `PUT`.
 
 ### 14.2 Per-operation mapping
 
@@ -1979,9 +2038,12 @@ no source change.
 | custom `POST` | body `{meta:{args:{<rust_param_name>: value, …}}}` | `meta.result`, or `null` on 204 |
 | op served as custom (§10.4) | its §10.4 route | `meta.result`, or `null` on 204 |
 | `subscribeX(args, handlers)` | unchanged URL, `?resume=` and lag | entity `T`: `flatten(JSON.parse(data))`; other `T`: `.meta.result` |
+| legacy `on{Event}(callback)` | as `subscribeX` | the same decoding; the callback gets the flat item |
 
-The junction rows describe phase 3a. Between phases 1c and 3a, junction
-methods call the §10.4 forms and read `meta.result`.
+Junction methods call the §10.4 forms and read `meta.result`; the junction
+rows above describe the relationship endpoints of phase 3a. When a prefix
+value is given, the TS client calls the scoped action route with both
+arguments in `meta.args` (§11.1).
 
 **Sort** (decision 8). Every list method whose Rust fn takes an `order`
 argument gains a trailing optional argument, after every existing
@@ -2067,7 +2129,9 @@ export class JsonApiError extends Error {
 
 ### 14.5 What stays identical for callers
 
-- Every existing method name, parameter and return type on `Transport`.
+- Every existing method name, parameter and return type on `Transport`,
+  except the two in §14's introduction: `xCount()` of a paginated module is
+  removed, and a junction add or remove is declared `Promise<null>`.
 - `PaginatedResult<T>`: same declaration, same fields, and same values.
   `limit` and `offset` are the effective values, as today.
 - Entities in and out are flat, with the same field names, `null` for
@@ -2095,7 +2159,7 @@ Payloads stay flat. JSON:API exists only at the HTTP boundary.
   arrays or `{items, total, limit, offset}` for lists. Event ops are still
   skipped.
 
-Three changes reach them, none of which changes a payload's shape:
+Five changes reach them, none of which changes a payload's shape:
 
 1. **`sort` on list** (decision 8). The IPC list command gains an optional
    `sort: Option<Vec<String>>` argument, and the TS IPC transport passes
@@ -2111,6 +2175,14 @@ Three changes reach them, none of which changes a payload's shape:
 3. **New typed store errors.** `{Entity}AlreadyExists`, `{Entity}IdRequired`
    and `{Child}ParentRequired` replace backend messages. On these
    transports they are still strings.
+4. **No `xCount()` for a paginated module.** The servers stage takes a
+   paginated module's `count` off its module list, since the list's page
+   reports `total`, so no IPC command or MCP tool serves it. The TS IPC
+   transport and the `Transport` interface no longer declare it (§14).
+5. **Junction add and remove resolve `null`.** The TS IPC transport declares
+   `xAddY` and `xRemoveY` as `Promise<null>` and resolves `null` whatever the
+   Rust fn returns, as the HTTP transport does (§14). The IPC command's own
+   return value is unchanged.
 
 ## 16. Decision index
 
@@ -2126,6 +2198,8 @@ the section that states each and its reason.
 | Links and `Location` are relative | 4.2 | The server cannot know its public origin behind proxies, dev servers and tunnels |
 | Canonical link query order and encoding | 4.3 | Byte-stable links for snapshots and caches |
 | The schema is an explicit input of the servers and clients stages | 5.1 | Nearly every rule needs it, and today neither stage sees it |
+| `opArg[limit]=0` is an empty page, not `400` | 10.4 | A link-less `meta.result` page needs no `next` or `last`, and the IPC list command takes `limit: 0` the same way |
+| A CRUD-named op with no entity behind it takes exactly its row's arguments | 10.4 | The generated clients call these ops with those arguments only, so extra parameters would be routes no client can reach. `list` with extra parameters is a filtered list instead |
 | CRUD ops with no entity behind them are served as custom ops | 5.1, 10.4 | Keeps the scan-dirs-only use case working, and without a schema there is no resource to build |
 | `links.self` on every resource object | 5.2 | `Location` must match it, and clients can refetch without building URLs |
 | `relationships` omitted when a type has none | 5.2 | Avoids an empty object on every `tags` and `epics` resource |
@@ -2160,6 +2234,7 @@ the section that states each and its reason.
 | Custom `POST` bodies are `{meta:{args:{…}}}` | 10.2 | Decision 7; one rule, and a valid JSON:API request document |
 | Custom `GET` optional args use the `opArg[…]` family | 10.2 | Decision 7; the spec reserves all-lowercase names |
 | CRUD ops in a singleton module are a `CodegenError` | 10.3 | A singleton is opted into, so a CRUD op there is a mistake |
+| An `*Input` parameter on an op served without a body is a `CodegenError` | 10.2, 10.4 | A custom `GET`, `get_by_id`, `delete`, `JunctionList` and `JunctionRemove` have no body to carry it |
 | Non-entity event payloads and custom results are `{meta:{result}}` | 10.1, 12 | One rule for every non-resource payload |
 | Event frames carry no links | 12 | A frame has no request URL, and links would double its size |
 | One error object per response, first failure in §13.2 order | 13.1, 13.2 | Every request has exactly one correct error |

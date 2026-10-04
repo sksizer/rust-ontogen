@@ -48,7 +48,7 @@ pub(crate) fn ts_params_in_declaration_order(f: &ApiFn) -> Vec<String> {
     f.params
         .iter()
         .map(|p| {
-            if p.ty.contains("Input") {
+            if p.is_input() {
                 format!("input: {}", rust_type_to_ts(&extract_input_type(&p.ty)))
             } else if p.ty.starts_with("Option<") {
                 // Type from the Option's inner type: `Option<u64>` → `number |
