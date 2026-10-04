@@ -2130,6 +2130,22 @@ fn both_http_clients_send_a_list_filter_as_the_filter_family() {
     }
 }
 
+/// A list's filter struct is only ever sent, and serde reads each of its
+/// `Option` fields as `None` when absent, so the TS type lets a caller leave
+/// any of them out (`digestList({ done: true })`).
+#[test]
+fn a_list_filter_structs_option_fields_are_optional_in_ts() {
+    let filtered = filtered_list_modules(false);
+    let extra: Vec<(&str, &str)> = filtered.iter().map(|(file, source)| (*file, source.as_str())).collect();
+    let bindings = jsonapi_clients_with(false, &extra, |_| {}).bindings;
+    for expected in [
+        "export type DigestQuery = {\n  since?: string | null;\n  done?: boolean | null;\n};",
+        "export type ListTagsQuery = {\n  title?: string | null;\n};",
+    ] {
+        assert!(bindings.contains(expected), "no `{expected}` in:\n{bindings}");
+    }
+}
+
 const LABEL_MODULE: &str = "\
 use crate::schema::Tag;
 use crate::store::Store;

@@ -143,10 +143,12 @@ pub fn emit_with_imports(
         }
 
         match item {
-            syn::Item::Struct(s) => match emit_struct_named(s, config, Some(&resolved_name)) {
-                Ok(ts) => outputs.push(ts),
-                Err(e) => errors.push(e),
-            },
+            syn::Item::Struct(s) => {
+                match emit_struct_named(s, config, Some(&resolved_name), config.deserialize_only.contains(path)) {
+                    Ok(ts) => outputs.push(ts),
+                    Err(e) => errors.push(e),
+                }
+            }
             syn::Item::Enum(e) => match emit_enum_named(e, config, Some(&resolved_name)) {
                 Ok(ts) => outputs.push(ts),
                 Err(err) => errors.push(err),
@@ -404,6 +406,10 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
 /// struct's `Default`, so it marks every field optional — a struct that
 /// accepts `{}` on the wire emits a TS type whose properties are all `?`.
 ///
+/// A struct in [`EmitConfig::deserialize_only`] also marks each `Option<T>`
+/// field optional (`field?: T | null`), unless the field has its own
+/// deserializer: serde reads such a field absent from the input as `None`.
+///
 /// `#[serde(flatten)]` splices the field type's keys into the parent object
 /// instead of nesting them under the field name, so the field becomes a TS
 /// intersection member rather than a property:
@@ -419,15 +425,18 @@ pub(crate) fn emit_type(ty: &Type, config: &EmitConfig, referenced_by: &TypePath
 /// which field types are admissible.
 #[allow(dead_code)] // tests-only convenience wrapper; production calls _named directly.
 pub(crate) fn emit_struct(item: &ItemStruct, config: &EmitConfig) -> Result<String, EmitError> {
-    emit_struct_named(item, config, None)
+    emit_struct_named(item, config, None, false)
 }
 
 /// Emit a struct with an optional TS name override (used by the top-level
 /// composition when `#[ts_name = "..."]` is present on the type).
+/// `deserialize_only` is the struct's membership of
+/// [`EmitConfig::deserialize_only`].
 pub(crate) fn emit_struct_named(
     item: &ItemStruct,
     config: &EmitConfig,
     name_override: Option<&str>,
+    deserialize_only: bool,
 ) -> Result<String, EmitError> {
     let raw_name = item.ident.to_string();
     let name = name_override.map(str::to_string).unwrap_or_else(|| raw_name.clone());
@@ -438,8 +447,14 @@ pub(crate) fn emit_struct_named(
 
     match &item.fields {
         Fields::Named(fields) => {
-            let collected =
-                collect_named_fields(fields, config, &referenced_by, effective_rename_all, container.default)?;
+            let collected = collect_named_fields(
+                fields,
+                config,
+                &referenced_by,
+                effective_rename_all,
+                container.default,
+                deserialize_only,
+            )?;
             // `struct Foo {}` — or all fields skipped/flattened. `None` here
             // means "no property object at all": with flattened members it
             // drops out of the intersection, without them it renders `{}`
@@ -488,12 +503,16 @@ struct NamedFields {
 /// fills every absent field from the struct's `Default`, so it makes the
 /// whole body optional — each field is treated exactly as if it carried its
 /// own `#[serde(default)]`.
+///
+/// `deserialize_only` marks a group that is never serialized, where an
+/// `Option<T>` field may be absent as well as `null`.
 fn collect_named_fields(
     fields: &syn::FieldsNamed,
     config: &EmitConfig,
     referenced_by: &TypePath,
     rename_all: Option<RenameAll>,
     container_default: bool,
+    deserialize_only: bool,
 ) -> Result<NamedFields, EmitError> {
     let mut out = NamedFields { intersections: Vec::new(), properties: Vec::with_capacity(fields.named.len()) };
     for field in &fields.named {
@@ -516,8 +535,11 @@ fn collect_named_fields(
         // A defaulted field may be absent on the wire — the deserializer
         // fills in a default. Emit it as TS-optional. Composes with
         // `Option<T>` → `T | null` to give `field?: T | null` for an
-        // optional, nullable field.
-        let opt = if defaulted { "?" } else { "" };
+        // optional, nullable field. Serde reads an absent `Option<T>` as
+        // `None` too, but only a struct that is never serialized may leave
+        // it out: one that is serialized always writes it.
+        let absent_is_none = deserialize_only && !field_attrs.deserialize_with && is_option(&field.ty);
+        let opt = if defaulted || absent_is_none { "?" } else { "" };
         out.properties.push((key, opt, ty_ts));
     }
     Ok(out)
@@ -873,7 +895,7 @@ pub(crate) fn emit_enum_named(
                 // No container-default to inherit: serde rejects
                 // `#[serde(default)]` on an enum outright, so a variant body
                 // is only optional field-by-field.
-                let collected = collect_named_fields(fields, config, &referenced_by, field_rename_all, false)?;
+                let collected = collect_named_fields(fields, config, &referenced_by, field_rename_all, false, false)?;
                 let object = (!collected.properties.is_empty()).then(|| {
                     let body = collected
                         .properties
@@ -959,6 +981,12 @@ enum Container<'a> {
     Map(&'a Type, &'a Type),
     /// `HashSet<T>` or `BTreeSet<T>` — same wire shape as `Vec<T>`.
     Set(&'a Type),
+}
+
+/// True when `ty` is written `Option<T>`: the type serde reads as `None`
+/// when its field is absent.
+fn is_option(ty: &Type) -> bool {
+    matches!(ty, Type::Path(path) if matches!(match_container(path), Some(Container::Option(_))))
 }
 
 /// Match `path` against the hardcoded container generics and return the

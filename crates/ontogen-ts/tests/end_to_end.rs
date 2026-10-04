@@ -313,3 +313,49 @@ fn emit_quote_style_double_double_quoted() {
     assert!(ts.contains("\"blue\""), "ts was:\n{ts}");
     assert!(!ts.contains("'red'"), "single-quoted leaked into double mode:\n{ts}");
 }
+
+/// A struct in `deserialize_only` leaves out an `Option<T>` field serde
+/// reads as `None` when absent; every other struct, a type it reaches
+/// included, keeps the field required, as does a field with its own
+/// deserializer, which serde reports missing.
+#[test]
+fn emit_deserialize_only_struct_makes_option_fields_optional() {
+    let dir = make_tempdir(&[(
+        "lib.rs",
+        r#"
+        pub struct ListTasksQuery {
+            pub status: Option<String>,
+            #[serde(default)]
+            pub done: bool,
+            pub epic: Option<Epic>,
+            #[serde(deserialize_with = "read_limit")]
+            pub limit: Option<u32>,
+            #[serde(with = "since")]
+            pub since: Option<String>,
+            pub tags: Vec<Option<String>>,
+            pub owner: String,
+        }
+        pub struct Epic { pub title: Option<String> }
+        pub struct Task { pub status: Option<String> }
+        "#,
+    )]);
+    let pool = scan_src_dir(dir.path()).unwrap();
+    let config =
+        EmitConfig { deserialize_only: [tp(&["ListTasksQuery"])].into_iter().collect(), ..EmitConfig::default() };
+    let ts = emit(&[tp(&["ListTasksQuery"]), tp(&["Task"])], &pool, &config).unwrap();
+    let expected = "export type ListTasksQuery = {
+  status?: string | null;
+  done?: boolean;
+  epic?: Epic | null;
+  limit: number | null;
+  since: string | null;
+  tags: (string | null)[];
+  owner: string;
+};";
+    assert!(ts.contains(expected), "ts was:\n{ts}");
+    assert!(ts.contains("export type Epic = {\n  title: string | null;\n};"), "ts was:\n{ts}");
+    assert!(ts.contains("export type Task = {\n  status: string | null;\n};"), "ts was:\n{ts}");
+
+    let unlisted = emit(&[tp(&["ListTasksQuery"])], &pool, &EmitConfig::default()).unwrap();
+    assert!(unlisted.contains("  status: string | null;\n"), "ts was:\n{unlisted}");
+}
