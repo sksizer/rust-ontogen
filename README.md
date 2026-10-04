@@ -113,11 +113,27 @@ and transport handlers. Add a new entity to your schema and rebuild -- everythin
 - **Store generation** with CRUD methods, update structs, and relation population
 - **Lifecycle hooks** scaffolded once per entity, never overwritten -- you own the hook files
 - **API layer** that merges generated CRUD with hand-written custom endpoints
-- **Server transports** for Axum HTTP, Tauri IPC, and MCP (Model Context Protocol)
+- **Server transports** for Axum HTTP (a [JSON:API 1.1](https://jsonapi.org/format/1.1/) server), Tauri IPC, and MCP
+  (Model Context Protocol)
 - **Client generation** for TypeScript and admin registries, with a build-time AST walker that emits the full
   reachable type closure -- no side-car binary, no extra compilation
 - **Docs generation** -- a `data-model.md` reference and JSON Schema (draft 2020-12) per entity, so the schema ships
   as a published spec
+
+## The HTTP Wire
+
+The generated Axum server speaks JSON:API 1.1 (`application/vnd.api+json`). Entities are resource objects; lists take
+`filter[…]`, `sort`, `include` and, when paginated, `page[offset]`/`page[limit]`; relations are relationships with their
+own endpoints; hand-written ops send and answer meta-only documents (`meta.args`, `meta.result`); and every error is an
+`errors[]` document with a status and a `code`. Tauri IPC and MCP keep flat payloads, and the generated TypeScript
+transport flattens the HTTP documents back into the same plain types, so calling code is identical on both transports.
+
+The normative rules are in the [wire contract](docs/jsonapi-wire-contract.md) and the
+[server transports guide](site/src/content/docs/guides/server-transports.mdx). Each example has a page of real
+requests and responses: [iron-log](site/src/content/docs/examples/iron-log-wire.mdx),
+[iron-log-md](site/src/content/docs/examples/iron-log-md-wire.mdx),
+[notes-kb](site/src/content/docs/examples/notes-kb-wire.mdx) and
+[tasks-tracker](site/src/content/docs/examples/tasks-tracker-wire.mdx).
 
 ## Example Projects
 
