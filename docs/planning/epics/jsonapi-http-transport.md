@@ -11,7 +11,7 @@ tags: [servers, clients, http, jsonapi, wire-format]
 # Epic — JSON:API as the generated HTTP wire format
 
 **Milestone:** M4 — Standard formats ([roadmap](../../roadmap.md))
-**Status:** in-progress — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)), completing the 0.9.0 wire; phase 2 done ([#202](https://github.com/sksizer/rust-ontogen/pull/202)); phase 3a done ([#203](https://github.com/sksizer/rust-ontogen/pull/203)); phase 3b done ([#205](https://github.com/sksizer/rust-ontogen/pull/205)); phase 3c is next
+**Status:** in-progress — gap analysis done, design questions settled 2026-10-03; phase 0 written (wire contract, ADR 0004, ADR 0006), maintainer decisions 7-9 added; phase 1a done ([#197](https://github.com/sksizer/rust-ontogen/pull/197), [#198](https://github.com/sksizer/rust-ontogen/pull/198)); phase 1b done ([#200](https://github.com/sksizer/rust-ontogen/pull/200)); phase 1c done ([#201](https://github.com/sksizer/rust-ontogen/pull/201)), completing the 0.9.0 wire; phase 2 done ([#202](https://github.com/sksizer/rust-ontogen/pull/202)); phase 3a done ([#203](https://github.com/sksizer/rust-ontogen/pull/203)); phase 3b done ([#205](https://github.com/sksizer/rust-ontogen/pull/205)); phase 3c done ([#206](https://github.com/sksizer/rust-ontogen/pull/206)); phase 4 is next
 **Spec:** [JSON:API 1.1](https://jsonapi.org/format/)
 **Wire contract:** [`docs/jsonapi-wire-contract.md`](../../jsonapi-wire-contract.md) — normative; every phase implements against it
 **Decision records:** [ADR 0004](../../architecture/0004-jsonapi-http-wire-format.md) (this epic's decisions),
@@ -214,7 +214,7 @@ each of its sections to a phase.
     `links.self`, no `Location` on create and no top-level `links` on create
     and update documents, because no route serves them;
   - batching the fetch stays backlog B-BGMN.
-- **3c.** The `order` argument per ADR 0006 on both store backends, with
+- **3c.** Done ([#206](https://github.com/sksizer/rust-ontogen/pull/206)). The `order` argument per ADR 0006 on both store backends, with
   `sort_{plural}` and `order_{plural}_query`, and the rest of the runtime
   parity fixture. `sort` on HTTP, and on the TS `Transport`, IPC and MCP
   (decision 8). tasks-tracker's hand-written `list` gains `order`.
@@ -330,5 +330,5 @@ Filed when phase 0 closes; one task per phase, PR-sized.
 - [x] phase 2 — filter family, hand-written `list`/`count` precedence, TS filter family ([#202](https://github.com/sksizer/rust-ontogen/pull/202))
 - [x] phase 3a — relationship endpoints, related links, junction re-route ([#203](https://github.com/sksizer/rust-ontogen/pull/203))
 - [x] phase 3b — `include` compound documents, and no links to an unserved `get_by_id` ([#205](https://github.com/sksizer/rust-ontogen/pull/205))
-- [ ] phase 3c — `order` argument on both backends (ADR 0006) + `sort` on every transport
+- [x] phase 3c — `order` argument on both backends (ADR 0006) + `sort` on every transport ([#206](https://github.com/sksizer/rust-ontogen/pull/206))
 - [ ] phase 4 — docs and examples
