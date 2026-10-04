@@ -2232,8 +2232,19 @@ filters beside the `*Query` struct's fields and the page. The tool reads
 the struct from its arguments without the ones it reads itself (bare
 filters, the page, the route-prefix parameter); an argument object the
 struct cannot be read from is the tool's error (`Invalid filter: …`), not an
-empty filter, and an argument the schema does not list is refused
-(`Unknown argument: …`), as HTTP refuses an unknown member. An MCP custom
+empty filter.
+
+Every MCP tool refuses an argument its input schema does not list
+(`Unknown argument: …`), as HTTP refuses an unknown member: list, get,
+create, update, delete, custom ops and junction tools. A body field sent
+beside an `*Input` taken under its parameter name is refused at the top
+level. The check reads the same schema the tool advertises, so a serde
+alias the schema does not name is refused too. A tool whose schema is a
+user type that names no closed set of arguments (`additionalProperties`
+other than `false`, or a top-level `allOf`, `anyOf`, `oneOf` or `$ref`,
+for example an input that flattens a map, or an enum body) refuses
+nothing; this can only be create, update, a custom op whose one argument
+is its `*Input`, or a list whose schema is its `*Query` struct. An MCP custom
 op reads each argument as its declared type, and one that takes an
 `*Input` beside other arguments takes the input under its parameter name,
 as the IPC command does.
