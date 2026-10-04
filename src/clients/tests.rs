@@ -3115,9 +3115,10 @@ fn a_sorted_list_sends_sort_to_its_ipc_command() {
     assert!(invokes["ticketList"].1.contains("sort"), "{invokes:?}");
 }
 
-/// An order a client cannot send is the clients stage's error: one on a
+/// The clients stage refuses an order as the servers stage does: one on a
 /// list with no resource behind it, one of another entity than its
-/// module's resource, and one on a fn that is not a `list`.
+/// module's resource, one on a fn that is not a `list`, one before the
+/// filter, and a second one.
 #[test]
 fn an_order_no_client_can_send_is_an_error() {
     let order = |entity: &str| format!("order: &[ontogen_core::order::OrderBy<{entity}SortField>]");
@@ -3135,6 +3136,22 @@ fn an_order_no_client_can_send_is_an_error() {
         (
             replace("note.rs", "id: &str) -> Result<Note", &format!("id: &str, {}) -> Result<Note", order("Note"))),
             "note::get_by_id",
+        ),
+        (
+            replace(
+                "ticket.rs",
+                "query: ListTicketsQuery, owner: &str, order: &[OrderBy<TicketSortField>]",
+                "order: &[OrderBy<TicketSortField>], query: ListTicketsQuery, owner: &str",
+            ),
+            "ticket::list",
+        ),
+        (
+            replace(
+                "ticket.rs",
+                "order: &[OrderBy<TicketSortField>]",
+                "again: &[OrderBy<TicketSortField>], order: &[OrderBy<TicketSortField>]",
+            ),
+            "ticket::list",
         ),
     ] {
         let err = try_sorted_clients(&bad, false, |_| {}).err().unwrap_or_else(|| panic!("{name} should fail"));

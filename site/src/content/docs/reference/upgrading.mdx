@@ -5,7 +5,7 @@ description: Every breaking change in 0.9 and how to migrate, grouped by area.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Version 0.9 is still in progress. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, relationships, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API, and lists and gets honour `include`. and every list takes an order, so `sort` works on every transport. Work through the sections that apply to your project.
+Version 0.9 is still in progress. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, relationships, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API, lists and gets honour `include`, and every generated list (and any hand-written list that declares one) takes an order, so `sort` works on every transport. Work through the sections that apply to your project.
 
 ## Build configuration
 
@@ -871,6 +871,18 @@ The HTTP-only client (`HttpTs`) changes in two ways. Its custom op methods now c
 ## Sorting
 
 Every generated list takes an order, and `sort` works on HTTP, Tauri IPC, MCP and the generated TypeScript. The order is one argument to the store and the API, built from `sort` by `ontogen_core::order::parse_sort`, so the transports accept the same keys. `name` sorts ascending and `-name` descending. The id is always the last key. See [Sorting a list](/guides/store-layer/#ordering) for the rules and [ADR 0006](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0006-ordering-on-both-store-backends.md) for the design.
+
+### Every generated crate depends on `ontogen-core`
+
+The generated store and API modules name `ontogen_core::order` (`OrderBy`, `SortField`) on both backends. Before, a markdown consumer with no event ops and no HTTP server did not need `ontogen-core`; now every crate that holds a generated store adds it:
+
+```toml
+ontogen-core = "…"
+```
+
+### `CrudOp` has a `Count` variant
+
+`StoreOutput.methods` now records each entity's `count_{plural}` as `StoreMethodKind::Crud(CrudOp::Count)`, beside the other five, and the `list_{plural}` entry's `params` start with `order`. A `match` over `CrudOp` adds an arm for `Count`.
 
 ### The store's `list_*` takes an order
 

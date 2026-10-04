@@ -23,7 +23,7 @@ ontogen = "0.6"
 That's the minimum. `ontogen-macros` goes in `[dependencies]` because your schema structs use its derive macro at compile time. `ontogen` goes in `[build-dependencies]` because it runs inside `build.rs` to generate code before your crate compiles.
 
 <Aside type="tip">
-  You don't need to depend on `ontogen-core` for code generation. The main `ontogen` crate re-exports everything from it -- all the IR types, model definitions, naming utilities, and helper functions are available under the `ontogen::` namespace. The crate you generate into does need `ontogen-core` as a regular dependency when it uses the SeaORM store (the generated create calls `ontogen_core::id`) or event ops; see [Creating records](/guides/store-layer/#creating-records).
+  You don't need to depend on `ontogen-core` for code generation. The main `ontogen` crate re-exports everything from it -- all the IR types, model definitions, naming utilities, and helper functions are available under the `ontogen::` namespace. The crate you generate into does need `ontogen-core` as a regular dependency: every generated store orders its lists through `ontogen_core::order`, the SeaORM store's create calls `ontogen_core::id`, and event ops use `ontogen_core::events`; see [Ordering](/guides/store-layer/#ordering) and [Creating records](/guides/store-layer/#creating-records).
 </Aside>
 
 <Aside type="caution">

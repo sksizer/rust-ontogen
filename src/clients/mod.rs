@@ -121,7 +121,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
     {
         crate::servers::classify::check_http_ops(&modules, &config.resources, config.route_prefix.as_ref())?;
     }
-    generators::jsonapi::check_orders(&modules, config)?;
+    crate::servers::classify::check_order_params(&modules, &config.resources)?;
     if modules.is_empty() {
         return Ok(modules);
     }

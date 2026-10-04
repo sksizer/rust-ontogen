@@ -700,8 +700,8 @@ costs no client anything. Rejected.
   [#178](https://github.com/sksizer/rust-ontogen/pull/178);
   [#172](https://github.com/sksizer/rust-ontogen/pull/172).
 - Implemented by E0004 phases 1a (default order), 2 (hand-written `list`
-  precedence) and 3c (the `order` argument), per §6. Until 3c, `list_*`
-  keeps its current signature.
+  precedence) and 3c (the `order` argument), per §6. Before 3c, `list_*`
+  kept its earlier signature.
 
 ## Amendment (2026-10-04): implementation of the order runtime
 

@@ -438,7 +438,7 @@ The strategy is chosen at build time, in two places. The store-wide default is r
 pub struct Event { /* ... */ }
 ```
 
-Both apply to both backends. The SeaORM store calls `ontogen_core::id` at runtime, so a SeaORM consumer depends on `ontogen-core`, with the `uuid` feature for `IdStrategy::Uuid`. (A markdown consumer needs the `uuid` feature of `markdown-store` instead.)
+Both apply to both backends. The SeaORM store calls `ontogen_core::id` at runtime, with the `uuid` feature for `IdStrategy::Uuid`; every generated store depends on `ontogen-core` anyway, for its ordering. (A markdown consumer needs the `uuid` feature of `markdown-store` instead.)
 
 Your `AppError` declares `{Entity}IdRequired(String)` and `{Entity}AlreadyExists(String)` for every entity:
 
@@ -588,11 +588,12 @@ pub struct StoreMethodMeta {
 }
 ```
 
-The five standard methods per entity are:
+The six standard methods per entity are:
 
 | Method Name | Kind | Return Type |
 |---|---|---|
 | `list_{entities}` | `Crud(List)` | `Vec<Entity>` |
+| `count_{entities}` | `Crud(Count)` | `u64` |
 | `get_{entity}` | `Crud(Get)` | `Entity` |
 | `create_{entity}` | `Crud(Create)` | `Entity` |
 | `update_{entity}` | `Crud(Update)` | `Entity` |

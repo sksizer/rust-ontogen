@@ -227,24 +227,6 @@ pub(crate) fn sort_resource<'a>(m: &ApiModule, f: &ApiFn, config: &'a Config) ->
     (classify_op(m, f) == OpKind::List && resource.entity.name == entity).then_some(resource)
 }
 
-/// Refuses an order no client can send: on a fn that is not the `list` of
-/// its module's resource, or of another entity than that resource's. The
-/// `sort` keys a client sends are that resource's (§7.4).
-pub(crate) fn check_orders(modules: &[ApiModule], config: &Config) -> Result<(), String> {
-    for m in modules {
-        for f in m.functions.iter().filter(|f| f.takes_order()) {
-            if sort_resource(m, f, config).is_none() {
-                return Err(format!(
-                    "ontogen: `{}::{}` takes an order, but only a module's `list` of its own resource sorts, by the \
-                     `{{Entity}}SortField` of that resource's entity",
-                    m.name, f.name
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// The document shapes and the table-driven `unflattenResource`, emitted once
 /// when any resource has a generated CRUD method.
 pub(crate) const RESOURCE_HELPERS: &str = "\
