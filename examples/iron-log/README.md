@@ -51,6 +51,10 @@ IRON_LOG_DB=iron-log.sqlite cargo run --bin iron-log-http   # keep the data in a
 curl -s localhost:3004/api/workouts | jq
 ```
 
+SQLite enforces the entities' foreign keys, so deleting a row that another
+row still references (a tagged workout, a workout with sets, a tag in use)
+currently answers `500 db_error`; [B-DLFK](../../docs/planning/backlog/B-DLFK-seaorm-delete-clears-junctions-and-refuses-referenced-rows.md) tracks the fix.
+
 Every create, update and delete is published on the activity event routes,
 `/api/events/activity-feed` (all kinds) and
 `/api/events/activity-for-kind/{kind}` (`exercise`, `workout`,

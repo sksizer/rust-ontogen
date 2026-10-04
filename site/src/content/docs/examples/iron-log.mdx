@@ -408,6 +408,8 @@ To serve the HTTP API without Tauri, run the headless binary. It creates its SQL
 cd src-tauri && PORT=39104 cargo run --bin iron-log-http   # without PORT it serves on 3004
 ```
 
+SQLite enforces the entities' foreign keys, so deleting a row that another row still references (a tagged workout, a workout with sets, a tag in use) currently answers `500 db_error`; [backlog item B-DLFK](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/backlog/B-DLFK-seaorm-delete-clears-junctions-and-refuses-referenced-rows.md) tracks the fix.
+
 <Aside type="note">
 Iron Log uses SQLite via SeaORM. The Tauri app does not create its database schema, and the SQL migrations aren't part of the example yet -- you'd need to create the tables manually or add SeaORM migrations. See the entity definitions for the expected table structures. The headless `iron-log-http` binary creates its own tables.
 </Aside>
