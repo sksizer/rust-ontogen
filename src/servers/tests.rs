@@ -5089,7 +5089,31 @@ fn a_paginated_list_may_filter_when_its_count_filters_alike() {
     let http = tmp.path().join("http.rs");
     crate::servers::generators::http::generate(&http, &modules, &config);
     let http = std::fs::read_to_string(&http).unwrap();
-    assert!(http.contains("workout::count(&ontogen_store, &plan_id)"), "the total carries the filter:\n{http}");
+    let flat = compact(&http);
+    assert!(
+        flat.contains(&compact(
+            "workout::list(&ontogen_store, &ontogen_filter_plan_id, Some(u64::from(ontogen_limit)), \
+             Some(u64::from(ontogen_offset)))"
+        )),
+        "the page carries the filter:\n{http}"
+    );
+    assert!(
+        flat.contains(&compact("workout::count(&ontogen_store, &ontogen_filter_plan_id)")),
+        "the total carries the filter:\n{http}"
+    );
+
+    // IPC and MCP read the filter from their flat payload and pass it to
+    // `list` and `count` alike.
+    let ipc = tmp.path().join("ipc.rs");
+    crate::servers::generators::ipc::generate(&ipc, &modules, &config);
+    let ipc = compact(&std::fs::read_to_string(&ipc).unwrap());
+    assert!(ipc.contains("workout::list(&store,&plan_id,Some(u64::from(limit)),Some(u64::from(offset)))"), "{ipc}");
+    assert!(ipc.contains("workout::count(&store,&plan_id)"), "{ipc}");
+    let mcp = tmp.path().join("mcp.rs");
+    crate::servers::generators::mcp::generate(&mcp, &modules, &config);
+    let mcp = compact(&std::fs::read_to_string(&mcp).unwrap());
+    assert!(mcp.contains("workout::list(&store,plan_id,Some(limit),Some(offset))"), "{mcp}");
+    assert!(mcp.contains("workout::count(&store,plan_id)"), "{mcp}");
 }
 
 /// The filter is usually a by-value `Query` struct. `list` consumes it, so the
@@ -5386,12 +5410,16 @@ pub(crate) fn resource_fixture(root: &std::path::Path, app_error: bool) -> Confi
     config
 }
 
-/// Custom ops, a module with no entity, junction ops, a filtered list and
+/// Custom ops, a module with no entity, junction ops, filtered lists and
 /// event ops beside the resources of [`resource_fixture`]: every kind of op
-/// served as a custom op (§10), and both event frame shapes (§12).
+/// served as a custom op (§10), a list's filter (§7.3, §10.4), and both
+/// event frame shapes (§12).
 ///
-/// `task` gains junction ops over `tag`; `agent` has a list that takes a
-/// filter; `workout` has a custom GET with path and `opArg` arguments, custom
+/// `task` gains junction ops over `tag`; `epic`'s list takes a
+/// `ListEpicsQuery` struct and two bare filters, `title` (optional) and
+/// `owner` (required), declared out of byte order; `agent`, which has no
+/// entity, has a list that takes an `AgentQuery` struct and an optional
+/// owned `skill_id`; `workout` has a custom GET with path and `opArg` arguments, custom
 /// POSTs with and without arguments, and a stateless GET; `activity` has an
 /// event yielding the `Task` entity, a fallible resumable one yielding
 /// `Activity`, and one failing with a `String`. With `scoped`, a
@@ -5404,11 +5432,19 @@ pub(crate) fn ops_fixture(root: &std::path::Path, scoped: bool) -> Config {
            pub async fn add_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n\
            pub async fn remove_tag(store: &Store, task_id: &str, tag_id: &str) -> Result<(), AppError> { todo!() }\n";
     write_synthetic_api(&api_dir, "task.rs", &task);
+    let epic_filter = "query: ListEpicsQuery, title: Option<&str>, owner: &str";
+    write_synthetic_api(
+        &api_dir,
+        "epic.rs",
+        &app_error_crud_source("epic")
+            .replace("list(store: &Store, limit", &format!("list(store: &Store, {epic_filter}, limit"))
+            .replace("count(store: &Store)", &format!("count(store: &Store, {epic_filter})")),
+    );
     write_synthetic_api(
         &api_dir,
         "agent.rs",
-        "pub async fn list(store: &Store, query: AgentQuery, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Agent>, AppError> { todo!() }\n\
-         pub async fn count(store: &Store, query: AgentQuery) -> Result<u64, AppError> { todo!() }\n",
+        "pub async fn list(store: &Store, query: AgentQuery, skill_id: Option<String>, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Agent>, AppError> { todo!() }\n\
+         pub async fn count(store: &Store, query: AgentQuery, skill_id: Option<String>) -> Result<u64, AppError> { todo!() }\n",
     );
     write_synthetic_api(
         &api_dir,
@@ -5501,6 +5537,8 @@ fn a_resource_module_is_served_as_jsonapi() {
             "let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);"
         ))
     );
+    // An unfiltered list accepts no `filter[…]`, so its links carry none.
+    assert!(!flat.contains("link_query"), "{http}");
     assert!(flat.contains(&compact("with_meta(PageMeta { total, limit, offset })")));
     assert!(flat.contains(&compact("let (offset, limit) = page(&query, 20, 100)?;")));
     assert!(flat.contains(&compact("task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset)))")));
@@ -5850,9 +5888,10 @@ fn assert_bindings_shadow_nothing(http: &str, handler: &str, args: &[&str]) {
 /// handler calls as that helper was once named (`app_error`,
 /// `internal_error`, `query_rejection`, `sse_stream`, `result_frame`,
 /// `{module}_frame_data`): every such helper carries the prefix too. Covers
-/// every handler that binds an argument by its name: custom `GET` and `POST`,
-/// the CRUD-named ops of a module with no entity, junction ops, a list that
-/// takes a filter, and event streams, unscoped and under a route prefix.
+/// every handler that binds an argument: custom `GET` and `POST`, the
+/// CRUD-named ops of a module with no entity, junction ops, a list that
+/// takes a filter (whose filters are bound as `ontogen_filter_{name}`), and
+/// event streams, unscoped and under a route prefix.
 #[test]
 fn an_op_argument_may_be_named_like_a_handler_binding() {
     let source = "\
@@ -5938,7 +5977,10 @@ pub async fn thing_changes(state: &AppState, app_error: String, internal_error: 
         );
         assert!(flat.contains("thing::add_tag(&ontogen_store,&state,&store)"), "{http}");
         assert!(flat.contains("thing::remove_tag(&ontogen_store,&app_error,&internal_error)"), "{http}");
-        assert!(flat.contains("gadget::count(&ontogen_store,&app_error,&query_rejection)"), "{http}");
+        assert!(
+            flat.contains("gadget::count(&ontogen_store,&ontogen_filter_app_error,&ontogen_filter_query_rejection)"),
+            "a filter is read into a binding of its own:\n{http}"
+        );
         assert!(flat.contains("ontogen_sse_stream(\"thing-changes\",ontogen_rx,"), "{http}");
     }
 
@@ -5995,25 +6037,299 @@ fn a_resource_op_that_does_not_return_its_entity_is_refused() {
     assert!(err.contains("must return `Epic`"), "{err}");
 }
 
+/// `tag::list` in the unpaginated resource fixture taking `filter` (the
+/// parameters between the store and the page), with a `count` taking the
+/// same filter when `paginated`.
+fn filtered_tag_fixture(root: &std::path::Path, filter: &str, paginated: bool) -> Config {
+    let mut config = resource_fixture(root, true);
+    let page = if paginated { ", limit: Option<u64>, offset: Option<u64>" } else { "" };
+    let mut tag = app_error_crud_source("tag")
+        .replace("store: &Store, limit: Option<u64>, offset: Option<u64>", &format!("store: &Store, {filter}{page}"))
+        .replace("count(store: &Store)", &format!("count(store: &Store, {filter})"));
+    if !paginated {
+        config.pagination = None;
+        tag = tag.lines().filter(|l| !l.contains("fn count(")).map(|l| format!("{l}\n")).collect();
+    }
+    write_synthetic_api(&config.api_dir, "tag.rs", &tag);
+    config
+}
+
+/// A list that takes a filter is served as its resource (§7.3): the
+/// `*Query` struct is read from `filter[…]` with the members serde declares
+/// for it, and `links.self` repeats the filter the request sent.
 #[test]
-fn a_filtered_list_in_a_resource_module_keeps_its_handler() {
+fn a_filtered_resource_list_reads_its_filter_from_the_filter_family() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut config = resource_fixture(tmp.path(), true);
-    config.pagination = None;
-    write_synthetic_api(
-        &config.api_dir,
-        "tag.rs",
-        &app_error_crud_source("tag")
-            .replace("store: &Store, limit: Option<u64>, offset: Option<u64>", "store: &Store, query: ListTagsQuery")
-            .replace("pub async fn count(store: &Store) -> Result<u64, AppError> { todo!() }\n", ""),
-    );
-    let http = generate_http(tmp.path(), config);
+    let http = generate_http(tmp.path(), filtered_tag_fixture(tmp.path(), "query: ListTagsQuery", false));
+    let flat = compact(&http);
+
     assert!(
-        http.contains("ontogen_filter: Result<axum::extract::Query<ListTagsQuery>, QueryRejection>"),
-        "no filter is read from the wire, so the list keeps its query struct:\n{http}"
+        flat.contains(&compact(
+            "struct TagListFilterParams; impl RouteQuery for TagListFilterParams { const SPEC: QuerySpec = \
+             QuerySpec { filter: &[], filter_fields: Some(filter_fields::<ListTagsQuery>), sort: true, \
+             include: true, ..QuerySpec::NONE }; }"
+        )),
+        "no page on an unpaginated list:\n{http}"
     );
-    assert!(http.contains("Result<Json<Vec<Tag>>, ErrorObject>"));
-    assert!(compact(&http).contains(&compact("get(tag_get_by_id).patch(tag_update)")), "the rest is served:\n{http}");
+    let list = handler_body(&http, "tag_list");
+    assert_in_order(
+        "tag_list",
+        &list,
+        &[
+            "_: AcceptGuard, query: Query<TagListFilterParams>, ) -> Result<Response, ErrorObject> {",
+            "let ontogen_filter: ListTagsQuery = query.filter()?;",
+            "refuse_sort(&query, \"tags\")?;",
+            "refuse_include(&query, \"tags\")?;",
+            "let link_query = query.link_query()?;",
+            "let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;",
+            "let items = tag::list(&ontogen_store, ontogen_filter).await.map_err(ontogen_app_error)?;",
+            "Ok(response::ok(&Document::new(data, Links::new(link_query.href(collection)))))",
+        ],
+    );
+    assert!(!list.contains("count("), "an unpaginated list has no total:\n{list}");
+    assert!(!list.contains(".clone()"), "nothing reads the filter after the list:\n{list}");
+    assert!(http.contains("    filter_fields,\n"), "the runtime's member probe is imported:\n{http}");
+    assert!(flat.contains(&compact("get(tag_get_by_id).patch(tag_update)")), "the rest is served:\n{http}");
+}
+
+/// A paginated list reads its `*Query` struct, then its bare filters in byte
+/// order of name, then `sort`, `include` and the page (§13.2 step 5), and
+/// hands `list` and `count` the same filter in declaration order. Its links
+/// carry the filter beside the page.
+#[test]
+fn a_paginated_filtered_resource_list_reads_struct_then_bare_filters_in_byte_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
+    let flat = compact(&http);
+
+    assert!(
+        flat.contains(&compact(
+            "struct EpicListFilterParams; impl RouteQuery for EpicListFilterParams { const SPEC: QuerySpec = \
+             QuerySpec { filter: &[\"owner\", \"title\"], filter_fields: Some(filter_fields::<ListEpicsQuery>), \
+             sort: true, include: true, page: true, ..QuerySpec::NONE }; }"
+        )),
+        "{http}"
+    );
+    assert_in_order(
+        "epic_list",
+        &handler_body(&http, "epic_list"),
+        &[
+            "query: Query<EpicListFilterParams>)",
+            "let ontogen_filter: ListEpicsQuery = query.filter()?;",
+            "let ontogen_filter_owner = query.required_filter_member::<String>(\"owner\")?;",
+            "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
+            "refuse_sort(&query, \"epics\")?;",
+            "refuse_include(&query, \"epics\")?;",
+            "let (offset, limit) = page(&query, 20, 100)?;",
+            "let link_query = query.link_query()?;",
+            "let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;",
+            "let items = epic::list(&ontogen_store, ontogen_filter.clone(), ontogen_filter_title.as_deref(), \
+             &ontogen_filter_owner, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;",
+            "let total = epic::count(&ontogen_store, ontogen_filter, ontogen_filter_title.as_deref(), \
+             &ontogen_filter_owner).await.map_err(ontogen_app_error)?;",
+            "let collection = \"/api/epics\";",
+            "let links = pagination_links(collection, &link_query, offset, limit, total);",
+            "Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))",
+        ],
+    );
+    // An unfiltered list beside it keeps its shared spec.
+    assert!(handler_body(&http, "task_list").contains(&compact("query: Query<PagedListParams>")), "{http}");
+}
+
+/// Under a route prefix the filtered list is the same handler, reading the
+/// prefix first and linking under it (§11.1).
+#[test]
+fn a_scoped_filtered_resource_list_reads_its_filter_as_the_unscoped_one_does() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), true));
+    let flat = compact(&http);
+
+    assert!(
+        flat.contains(&compact(
+            "impl RouteQuery for EpicListScopedFilterParams { const SPEC: QuerySpec = QuerySpec { filter: \
+             &[\"owner\", \"title\"], filter_fields: Some(filter_fields::<ListEpicsQuery>), sort: true, include: \
+             true, page: true, ..QuerySpec::NONE }; }"
+        )),
+        "{http}"
+    );
+    assert_in_order(
+        "epic_list_scoped",
+        &handler_body(&http, "epic_list_scoped"),
+        &[
+            "Path(ontogen_scope): Path<uuid::Uuid>, query: Query<EpicListScopedFilterParams>",
+            "let ontogen_filter: ListEpicsQuery = query.filter()?;",
+            "let ontogen_filter_owner = query.required_filter_member::<String>(\"owner\")?;",
+            "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
+            "refuse_sort(&query, \"epics\")?;",
+            "let (offset, limit) = page(&query, 20, 100)?;",
+            "let link_query = query.link_query()?;",
+            "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;",
+            "epic::list(&ontogen_store, ontogen_filter.clone(), ontogen_filter_title.as_deref(), &ontogen_filter_owner,",
+            "epic::count(&ontogen_store, ontogen_filter, ontogen_filter_title.as_deref(), &ontogen_filter_owner)",
+            "let collection = &format!(\"/api/projects/{}/epics\", encode_path_segment(&ontogen_scope.to_string()));",
+            "let links = pagination_links(collection, &link_query, offset, limit, total);",
+        ],
+    );
+    assert!(flat.contains(&compact(".route(\"/api/projects/{project_id}/epics\", get(epic_list_scoped)")), "{http}");
+}
+
+/// A resource list binds `query`, `items`, `collection`, `links` and others
+/// of its own, so its filters are bound as `ontogen_filter_{name}`: a filter
+/// may take any of those names. An owned filter `count` reads after `list`
+/// is cloned into `list`; a copied one is not.
+#[test]
+fn a_resource_list_filter_may_be_named_like_a_handler_binding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let filter = "query: Option<&str>, items: Option<u32>, collection: &str, links: Option<bool>, total: String, \
+                  link_query: u64";
+    let http = generate_http(tmp.path(), filtered_tag_fixture(tmp.path(), filter, true));
+
+    let bound = handler_bindings(&http, "tag_list");
+    let mut unique = bound.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), bound.len(), "tag_list binds a name twice: {bound:?}");
+    for name in ["query", "items", "collection", "links", "total", "link_query"] {
+        assert!(bound.contains(&format!("ontogen_filter_{name}")), "{name}: {bound:?}");
+    }
+    assert!(http.contains("filter: &[\"collection\", \"items\", \"link_query\", \"links\", \"query\", \"total\"],"));
+    assert!(!http.contains("filter_fields"), "no struct, no member probe:\n{http}");
+    let list = handler_body(&http, "tag_list");
+    assert!(
+        list.contains(&compact(
+            "tag::list(&ontogen_store, ontogen_filter_query.as_deref(), ontogen_filter_items, \
+             &ontogen_filter_collection, ontogen_filter_links, ontogen_filter_total.clone(), \
+             ontogen_filter_link_query, Some(u64::from(limit)), Some(u64::from(offset)))"
+        )),
+        "{list}"
+    );
+    assert!(
+        list.contains(&compact(
+            "tag::count(&ontogen_store, ontogen_filter_query.as_deref(), ontogen_filter_items, \
+             &ontogen_filter_collection, ontogen_filter_links, ontogen_filter_total, ontogen_filter_link_query)"
+        )),
+        "{list}"
+    );
+}
+
+/// A list in a module with no entity is served as a custom op (§10.4): its
+/// filter is read from `filter[…]` before its `opArg` page, and the page and
+/// the total come from the store's `list` and `count`, which take the same
+/// filter, answered as `meta.result`.
+#[test]
+fn an_entityless_filtered_list_reads_its_filter_then_its_op_arg_page() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), ops_fixture(tmp.path(), false));
+    let flat = compact(&http);
+
+    assert!(
+        flat.contains(&compact(
+            "struct AgentListFilterParams; impl RouteQuery for AgentListFilterParams { const SPEC: QuerySpec = \
+             QuerySpec { filter: &[\"skill_id\"], filter_fields: Some(filter_fields::<AgentQuery>), op_args: \
+             &[\"limit\", \"offset\"], ..QuerySpec::NONE }; }"
+        )),
+        "{http}"
+    );
+    assert_in_order(
+        "agent_list",
+        &handler_body(&http, "agent_list"),
+        &[
+            "_: AcceptGuard, ontogen_query: Query<AgentListFilterParams>, ) -> Result<Response, ErrorObject> {",
+            "let ontogen_filter: AgentQuery = ontogen_query.filter()?;",
+            "let ontogen_filter_skill_id = ontogen_query.filter_member::<String>(\"skill_id\")?;",
+            "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
+            "let ontogen_offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);",
+            "let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;",
+            "let ontogen_items = agent::list(&ontogen_store, ontogen_filter.clone(), ontogen_filter_skill_id.clone(), \
+             Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset))).await.map_err(ontogen_app_error)?;",
+            "let ontogen_total = agent::count(&ontogen_store, ontogen_filter, ontogen_filter_skill_id)\
+             .await.map_err(ontogen_app_error)?;",
+            "let ontogen_result = PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, \
+             offset: ontogen_offset };",
+            "Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))",
+        ],
+    );
+    assert!(flat.contains(&compact(".route(\"/api/agents\", get(agent_list)")), "{http}");
+    assert!(!handler_body(&http, "agent_list").contains("Links"), "a meta.result page has no links:\n{http}");
+}
+
+/// Unpaginated, the entity-less filtered list accepts its filter and no
+/// `opArg`, and answers the whole list, unscoped and under a prefix alike.
+/// A fn that takes the page on a surface that does not paginate is passed
+/// no page.
+#[test]
+fn an_unpaginated_entityless_filtered_list_answers_the_whole_list() {
+    let source = "pub async fn list(store: &Store, kind: &str, verbose: Option<bool>, limit: Option<u64>, \
+                  offset: Option<u64>) -> Result<Vec<String>, anyhow::Error> { todo!() }\n";
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let api_dir = tmp.path().join("api");
+        write_synthetic_api(&api_dir, "feed.rs", source);
+        let config = if scoped { test_config_with_prefix(api_dir) } else { test_config(api_dir) };
+        let http = generate_http(tmp.path(), config);
+        let (handler, spec) = if scoped {
+            ("feed_list_scoped", "FeedListScopedFilterParams")
+        } else {
+            ("feed_list", "FeedListFilterParams")
+        };
+        assert!(
+            compact(&http).contains(&compact(&format!(
+                "impl RouteQuery for {spec} {{ const SPEC: QuerySpec = QuerySpec {{ filter: &[\"kind\", \"verbose\"], \
+                 ..QuerySpec::NONE }}; }}"
+            ))),
+            "{http}"
+        );
+        let open = if scoped {
+            "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;"
+        } else {
+            "let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;"
+        };
+        assert_in_order(
+            handler,
+            &handler_body(&http, handler),
+            &[
+                &format!("ontogen_query: Query<{spec}>"),
+                "let ontogen_filter_kind = ontogen_query.required_filter_member::<String>(\"kind\")?;",
+                "let ontogen_filter_verbose = ontogen_query.filter_member::<bool>(\"verbose\")?;",
+                open,
+                "let ontogen_result = feed::list(&ontogen_store, &ontogen_filter_kind, ontogen_filter_verbose, None, \
+                 None).await.map_err(ontogen_internal_error)?;",
+                "Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))",
+            ],
+        );
+        let body = handler_body(&http, handler);
+        assert!(!body.contains("count(") && !body.contains("page_op_arg"), "{body}");
+        assert_bindings_shadow_nothing(&http, handler, &[]);
+    }
+}
+
+/// No generated route reads its query with Axum's own `Query`: every list
+/// reads the JSON:API families. Only an event stream, which is no JSON:API
+/// route (§12), still does.
+#[test]
+fn no_list_speaks_the_flat_query_dialect() {
+    let tmp = tempfile::tempdir().unwrap();
+    let files = [
+        generate_http(tmp.path(), filtered_tag_fixture(tmp.path(), "title: &str, query: ListTagsQuery", false)),
+        generate_http(tmp.path(), filtered_tag_fixture(tmp.path(), "title: &str, query: ListTagsQuery", true)),
+        generate_http(tmp.path(), resource_fixture(tmp.path(), true)),
+    ];
+    for http in &files {
+        for flat in ["axum::extract::Query", "QueryRejection", "ontogen_query_rejection", "PaginationParams", "Json"] {
+            assert!(!http.contains(flat), "{flat}:\n{http}");
+        }
+    }
+    for scoped in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let http = generate_http(tmp.path(), ops_fixture(tmp.path(), scoped));
+        assert!(!http.contains("PaginationParams") && !http.contains("Json"), "{http}");
+        for chunk in http.split("\nasync fn ").skip(1) {
+            let name = chunk.split('(').next().unwrap();
+            if !name.contains("_sse") {
+                assert!(!chunk.contains("axum::extract::Query"), "{name} reads a flat query:\n{chunk}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -6365,9 +6681,16 @@ fn scoped_ops_have_the_unscoped_wire() {
         "agent_list_scoped",
         &handler_body(&http, "agent_list_scoped"),
         &[
-            "Path(ontogen_scope): Path<uuid::Uuid>,",
-            "agent::list(&ontogen_store, ontogen_filter.clone(), Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))",
-            "let ontogen_total = agent::count(&ontogen_store, ontogen_filter).await.map_err(ontogen_app_error)?;",
+            "Path(ontogen_scope): Path<uuid::Uuid>, ontogen_query: Query<AgentListScopedFilterParams>",
+            "let ontogen_filter: AgentQuery = ontogen_query.filter()?;",
+            "let ontogen_filter_skill_id = ontogen_query.filter_member::<String>(\"skill_id\")?;",
+            "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
+            "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;",
+            "agent::list(&ontogen_store, ontogen_filter.clone(), ontogen_filter_skill_id.clone(), \
+             Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))",
+            "let ontogen_total = agent::count(&ontogen_store, ontogen_filter, ontogen_filter_skill_id)\
+             .await.map_err(ontogen_app_error)?;",
+            "Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))",
         ],
     );
     for list in ["report_list_scoped", "agent_list_scoped"] {
@@ -6666,6 +6989,93 @@ fn an_op_arg_that_one_value_cannot_carry_is_a_codegen_error() {
                   -> Result<String, anyhow::Error> { todo!() }\n";
     let (server, _) = pipelines(tmp.path(), source, "stats", true);
     assert_eq!(server, Ok(()));
+}
+
+/// A list's filter is read from `filter[…]` (§7.3): every member of one
+/// `*Query` struct, taken by value, and each other filter argument from one
+/// value. Anything else is a codegen error naming the argument, on the server
+/// and the client alike.
+#[test]
+fn a_list_filter_the_filter_family_cannot_carry_is_a_codegen_error() {
+    let list = |filter: &str| {
+        format!("pub fn list(state: &AppState, {filter}) -> Result<Vec<String>, anyhow::Error> {{ todo!() }}\n")
+    };
+    for (filter, wants) in [
+        (
+            "a: ListAQuery, b: ListBQuery",
+            &["takes two `*Query` filter structs, `a: ListAQuery` and `b: ListBQuery`", "merge them into one"][..],
+        ),
+        (
+            "query: &ListThingsQuery",
+            &["takes its filter struct as `query: &ListThingsQuery`", "take it by value (`query: ListThingsQuery`)"],
+        ),
+        (
+            "query: Option<ListThingsQuery>",
+            &["as `query: Option<ListThingsQuery>`", "take it by value (`query: ListThingsQuery`)"],
+        ),
+        ("tags: Vec<String>", &["reads `tags: Vec<String>` from the query parameter `filter[tags]`"]),
+        ("tags: Option<Vec<String>>", &["reads `tags: Option<Vec<String>>`", "`filter[tags]`"]),
+        ("ids: &[String]", &["reads `ids: &[String]` from the query parameter `filter[ids]`"]),
+        ("range: (u32, u32)", &["`filter[range]`", "take a type one value can carry"]),
+        ("by: HashMap<String, String>", &["`filter[by]`"]),
+        (
+            "input: ThingFilterInput",
+            &[
+                "`settings::list` is served without a request body, so it cannot take `input: ThingFilterInput`",
+                "`*Query` struct",
+            ],
+        ),
+    ] {
+        let (server, client) = both_pipelines(&list(filter), "settings");
+        for err in [&server, &client] {
+            assert!(err.contains("`settings::list`"), "{filter}: {err}");
+            for want in wants {
+                assert!(err.contains(want), "{filter}: {want}\n{err}");
+            }
+        }
+    }
+    // One value each: strings, numbers, bools and unit enums, required or
+    // optional, owned or borrowed, beside one by-value struct.
+    let tmp = tempfile::tempdir().unwrap();
+    let source = list(
+        "kind: &str, owner: String, label: Option<&str>, n: Option<u32>, done: bool, status: Option<Status>, \
+         mode: InputMode, query: ListThingsQuery",
+    );
+    let (server, _) = pipelines(tmp.path(), &source, "settings", true);
+    assert_eq!(server, Ok(()));
+}
+
+/// A schema entity is no one value either, as a bare filter of a resource
+/// list or of any other.
+#[test]
+fn an_entity_as_a_bare_filter_is_a_codegen_error() {
+    for filter in ["epic: &Epic", "epic: Option<Epic>"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = filtered_tag_fixture(tmp.path(), filter, false);
+        let mut config = config;
+        config.generators = vec![ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
+        let err = crate::servers::generate_transport(&config).unwrap_err();
+        assert!(err.contains("`tag::list` reads `epic: "), "{err}");
+        assert!(err.contains("`filter[epic]`"), "{err}");
+    }
+}
+
+/// A list that takes a filter is still served as its resource, so it must
+/// return the entity's rows.
+#[test]
+fn a_filtered_resource_list_that_does_not_return_its_entity_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = filtered_tag_fixture(tmp.path(), "title: &str", false);
+    let tag = std::fs::read_to_string(config.api_dir.join("tag.rs")).unwrap();
+    write_synthetic_api(
+        &config.api_dir,
+        "tag.rs",
+        &tag.replace("Result<Vec<Tag>, AppError>", "Result<Vec<TagRow>, AppError>"),
+    );
+    config.generators = vec![ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
+    let err = crate::servers::generate_transport(&config).unwrap_err();
+    assert!(err.contains("`tag::list` is served as the JSON:API resource `tags`"), "{err}");
+    assert!(err.contains("must return `Vec<Tag>`"), "{err}");
 }
 
 /// A paginated module's `count` backs its list's total, so no server serves

@@ -531,8 +531,9 @@ fn servers_jsonapi_resources_http() {
 
 /// Every kind of op served as a custom op (§10, §10.4): custom GET with
 /// `opArg`s, custom POSTs reading `meta.args`, junction ops, a module with
-/// no entity, a filtered list, and event ops with an entity item and with
-/// other items (§12).
+/// no entity and its filtered list, and event ops with an entity item and
+/// with other items (§12). Beside them, a resource list that takes a
+/// `*Query` struct and bare filters (§7.3).
 #[test]
 fn servers_jsonapi_ops_http() {
     let tmp = tempfile::tempdir().expect("tempdir");
