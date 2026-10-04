@@ -17,7 +17,7 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::persistence::dto::{create_field_required, field_to_create_type};
-use crate::resource::{Arity, Resource, member_name};
+use crate::resource::{Arity, Resource, list_takes_filter, member_name};
 use crate::servers::classify::classify_op;
 use crate::servers::config::{Config, RoutePrefix};
 use crate::servers::error_map::VariantShape;
@@ -498,7 +498,7 @@ fn is_junction(f: &ApiFn) -> bool {
 /// A `list` that takes anything but its page: a filter. No filter is read
 /// from the wire as JSON:API (§7.3), so this list keeps its flat handler.
 fn is_filtered_list(f: &ApiFn) -> bool {
-    classify_op(f) == OpKind::List && f.params.iter().any(|p| !(f.takes_page() && is_page_param(p)))
+    classify_op(f) == OpKind::List && list_takes_filter(f)
 }
 
 /// Every resource an event op's item type names, with the item type as the
@@ -506,7 +506,7 @@ fn is_filtered_list(f: &ApiFn) -> bool {
 fn event_resources<'a>(modules: &'a [ApiModule], config: &'a Config) -> Vec<(&'a Resource, &'a str)> {
     let mut found: Vec<(&Resource, &str)> = Vec::new();
     for ev in modules.iter().flat_map(|m| &m.events) {
-        if let Some(resource) = config.resources.by_type(&ev.item_type)
+        if let Some(resource) = config.resources.by_item_type(&ev.item_type_ast)
             && !found.iter().any(|(r, _)| r.module == resource.module)
         {
             found.push((resource, &ev.item_type));
@@ -1842,7 +1842,7 @@ fn generate_sse_handler(
     };
     let await_str = if ev.is_async { ".await" } else { "" };
     let id_fn = if resumable { "ontogen_core::events::seq_id" } else { "ontogen_core::events::no_id" };
-    let data_fn = match config.resources.by_type(&ev.item_type) {
+    let data_fn = match config.resources.by_item_type(&ev.item_type_ast) {
         Some(resource) => resource_names(&resource.module).frame,
         None => "result_frame".to_string(),
     };

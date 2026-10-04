@@ -211,16 +211,6 @@ pub(crate) fn check_http_ops(modules: &[ApiModule]) -> Result<(), String> {
     Ok(())
 }
 
-/// Returns true if a classified op should use HTTP `GET`.
-///
-/// Drives method selection in the HTTP server emitter, the TS client
-/// emitter, and the api-layer IR. Single source of truth — replaces the
-/// older name-based `is_read_operation` heuristic that diverged from
-/// classification once the classifier became AST-aware (OF-016).
-pub fn is_read_op(op: &OpKind) -> bool {
-    matches!(op, OpKind::List | OpKind::GetById | OpKind::CustomGet | OpKind::JunctionList { .. })
-}
-
 /// Returns true when the param type carries a body (JSON-extractable struct
 /// shape) rather than fitting in a URL path segment or query string.
 ///

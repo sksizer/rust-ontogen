@@ -11,7 +11,7 @@ use ontogen_core::ir::OpKind;
 
 use crate::clients::ClientGenerator;
 use crate::clients::config::Config as ClientsInternalConfig;
-use crate::servers::classify::{classify_op, is_read_op};
+use crate::servers::classify::classify_op;
 use crate::servers::config::{Config, PrefixParam, RoutePrefix, ServerGenerator};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, ForcedMethod, Param};
 use crate::servers::types::{
@@ -1140,27 +1140,7 @@ fn test_classify_zero_param_prefix_matrix() {
             "name=`{name}` got op={op:?} (expected {})",
             if *expect_get { "CustomGet" } else { "CustomPost" }
         );
-        // Cross-check: is_read_op must agree with the classifier.
-        assert_eq!(is_read_op(&op), *expect_get, "is_read_op must agree with classifier for `{name}`");
     }
-}
-
-/// `is_read_op` checks an already-classified `OpKind`. Single source of
-/// truth replaces the name-based `is_read_operation` heuristic.
-#[test]
-fn test_is_read_op() {
-    assert!(is_read_op(&OpKind::List));
-    assert!(is_read_op(&OpKind::GetById));
-    assert!(is_read_op(&OpKind::CustomGet));
-    assert!(is_read_op(&OpKind::JunctionList { child_segment: "skills".into() }));
-
-    assert!(!is_read_op(&OpKind::Create));
-    assert!(!is_read_op(&OpKind::Update));
-    assert!(!is_read_op(&OpKind::Delete));
-    assert!(!is_read_op(&OpKind::CustomPost));
-    assert!(!is_read_op(&OpKind::JunctionAdd { child_segment: "skills".into() }));
-    assert!(!is_read_op(&OpKind::JunctionRemove { child_segment: "skills".into() }));
-    assert!(!is_read_op(&OpKind::EventStream));
 }
 
 /// Regression test for OF-016.
@@ -1216,8 +1196,6 @@ fn test_of016_classify_get_with_first_param_ast() {
         let op = classify_op(&f);
         let got_get = matches!(op, OpKind::CustomGet);
         assert_eq!(got_get, *expect_get, "OF-016: name=`{name}` first_param=`{ty_str}` got op={op:?}");
-        // Cross-check: is_read_op must agree with the classifier.
-        assert_eq!(is_read_op(&op), *expect_get, "is_read_op must agree with classifier for `{name}`/`{ty_str}`");
     }
 
     // Zero-param `get_*` stays CustomGet — no body to extract.
@@ -1274,10 +1252,6 @@ fn test_force_method_post_overrides_classifier() {
     // no-op because the result is the same.
     let switch_forced = make_fn("switch_project", vec![param("path", "&str")], Some(ForcedMethod::Post));
     assert!(matches!(classify_op(&switch_forced), OpKind::CustomPost));
-
-    // `is_read_op` agrees: forcing POST makes the op non-read.
-    assert!(!is_read_op(&classify_op(&pause_forced)));
-    assert!(!is_read_op(&classify_op(&get_forced)));
 }
 
 /// `force_method: Some(ForcedMethod::Get)` short-circuits the classifier and
@@ -1327,10 +1301,6 @@ fn test_force_method_get_overrides_classifier() {
     // No-op where the result already matches.
     let already = make_fn("get_state", vec![], Some(ForcedMethod::Get));
     assert!(matches!(classify_op(&already), OpKind::CustomGet));
-
-    // `is_read_op` agrees: forcing GET makes the op a read.
-    assert!(is_read_op(&classify_op(&count_forced)));
-    assert!(is_read_op(&classify_op(&create_forced)));
 }
 
 /// The two overrides are independent and each wins outright, so a handler
