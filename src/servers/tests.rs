@@ -7080,7 +7080,7 @@ fn an_op_arg_that_one_value_cannot_carry_is_a_codegen_error() {
 }
 
 /// A list's filter is read from `filter[…]` (§7.3): every member of one
-/// `*Query` struct, taken by value, and each other filter argument from one
+/// `*Query` struct, taken by value or by `&`, and each other filter argument from one
 /// value. Anything else is a codegen error naming the argument, on the server
 /// and the client alike.
 #[test]
@@ -7094,13 +7094,14 @@ fn a_list_filter_the_filter_family_cannot_carry_is_a_codegen_error() {
             &["takes two `*Query` filter structs, `a: ListAQuery` and `b: ListBQuery`", "merge them into one"][..],
         ),
         (
-            "query: &ListThingsQuery",
-            &["takes its filter struct as `query: &ListThingsQuery`", "take it by value (`query: ListThingsQuery`)"],
-        ),
-        (
             "query: Option<ListThingsQuery>",
-            &["as `query: Option<ListThingsQuery>`", "take it by value (`query: ListThingsQuery`)"],
+            &[
+                "takes its filter struct as `query: Option<ListThingsQuery>`",
+                "take it by value (`query: ListThingsQuery`) or borrowed (`query: &ListThingsQuery`)",
+            ],
         ),
+        ("query: Option<&ListThingsQuery>", &["as `query: Option<&ListThingsQuery>`", "take it by value"]),
+        ("query: &mut ListThingsQuery", &["as `query: &mut ListThingsQuery`", "or borrowed"]),
         ("tags: Vec<String>", &["reads `tags: Vec<String>` from the query parameter `filter[tags]`"]),
         ("tags: Option<Vec<String>>", &["reads `tags: Option<Vec<String>>`", "`filter[tags]`"]),
         ("ids: &[String]", &["reads `ids: &[String]` from the query parameter `filter[ids]`"]),
@@ -7123,14 +7124,58 @@ fn a_list_filter_the_filter_family_cannot_carry_is_a_codegen_error() {
         }
     }
     // One value each: strings, numbers, bools and unit enums, required or
-    // optional, owned or borrowed, beside one by-value struct.
+    // optional, owned or borrowed, beside one struct, owned or borrowed.
+    for query in ["query: ListThingsQuery", "query: &ListThingsQuery"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = list(&format!(
+            "kind: &str, owner: String, label: Option<&str>, n: Option<u32>, done: bool, status: Option<Status>, \
+             mode: InputMode, {query}"
+        ));
+        let (server, _) = pipelines(tmp.path(), &source, "settings", true);
+        assert_eq!(server, Ok(()), "{query}");
+    }
+}
+
+/// A borrowed filter struct is read as the struct it names and lent to both
+/// `list` and `count`, so neither needs a clone of it.
+#[test]
+fn a_borrowed_filter_struct_is_lent_to_list_and_count() {
     let tmp = tempfile::tempdir().unwrap();
-    let source = list(
-        "kind: &str, owner: String, label: Option<&str>, n: Option<u32>, done: bool, status: Option<Status>, \
-         mode: InputMode, query: ListThingsQuery",
+    let config = filtered_tag_fixture(tmp.path(), "query: &ListTagsQuery", true);
+    let http = generate_http(tmp.path(), config.clone());
+
+    assert!(http.contains("filter_fields: Some(filter_fields::<ListTagsQuery>)"), "{http}");
+    let list = handler_body(&http, "tag_list");
+    assert_in_order(
+        "tag_list",
+        &list,
+        &[
+            "let ontogen_filter: ListTagsQuery = query.filter()?;",
+            "let (offset, limit) = page(&query, 20, 100)?;",
+            "tag::list(&ontogen_store, &ontogen_filter, Some(u64::from(limit)), Some(u64::from(offset)))",
+            "tag::count(&ontogen_store, &ontogen_filter)",
+        ],
     );
-    let (server, _) = pipelines(tmp.path(), &source, "settings", true);
-    assert_eq!(server, Ok(()));
+    assert!(!list.contains(".clone()"), "a lent filter is not cloned:\n{list}");
+
+    // Both TS clients send it as the struct it names, as they do an owned one.
+    let mut clients = client_test_config(config.api_dir.clone());
+    clients.resources = config.resources.clone();
+    clients.pagination = config.pagination.clone();
+    let modules = crate::servers::parse::scan_surfaces(&clients.surfaces(), &clients.state_type).unwrap().modules;
+    let bindings = tmp.path().join("bindings.ts");
+    std::fs::write(&bindings, "export type Tag = { id: string; title: string };\n").unwrap();
+    let (transport, http_ts) = (tmp.path().join("transport.ts"), tmp.path().join("http.ts"));
+    crate::clients::generators::transport::generate(&transport, &bindings, &modules, &clients);
+    crate::clients::generators::ts_client::generate(&http_ts, &bindings, &modules, &clients);
+    for ts in [transport, http_ts] {
+        let ts = std::fs::read_to_string(ts).unwrap();
+        assert!(
+            ts.contains("async tagList(query?: ListTagsQuery, limit?: number, offset?: number)"),
+            "the client sends the struct a `&ListTagsQuery` names:\n{ts}"
+        );
+        assert!(ts.contains("toQueryString({ filter: query, page: { offset, limit } })"), "{ts}");
+    }
 }
 
 /// A schema entity is no one value either, as a bare filter of a resource

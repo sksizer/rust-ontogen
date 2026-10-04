@@ -183,7 +183,7 @@ pub fn classify_by_name_and_params(name: &str, params: &[Param]) -> OpKind {
 ///   of a `GET` must read from one: a type with no generic arguments that
 ///   names no schema entity.
 /// - A list's filter is read from `filter[…]` (§7.3): each field of at most
-///   one `*Query` struct, taken by value, is a member, and so is every
+///   one `*Query` struct, taken by value or by `&`, is a member, and so is every
 ///   other filter argument, which must read from one value as an `opArg`
 ///   does, optional or not.
 ///
@@ -273,7 +273,7 @@ fn entityless_crud_route(op: &OpKind) -> Option<(&'static str, &'static [&'stati
 }
 
 /// The `filter[…]` rules of a `list` (§7.3): at most one `*Query` struct,
-/// taken by value, and every other filter argument read from one value.
+/// taken by value or by `&`, and every other filter argument read from one value.
 fn check_list_filter(m: &ApiModule, f: &ApiFn, resources: &ResourceModel) -> Result<(), String> {
     let structs: Vec<&Param> = f.filter().iter().filter(|p| p.is_filter_struct()).collect();
     if let [first, second, ..] = structs.as_slice() {
@@ -284,17 +284,14 @@ fn check_list_filter(m: &ApiModule, f: &ApiFn, resources: &ResourceModel) -> Res
         ));
     }
     if let Some(p) = structs.first()
-        && (p.ty.starts_with('&') || p.is_option())
+        && !reads_struct_whole(p)
     {
+        let inner = inner_struct_type(&p.ty);
         return Err(format!(
-            "ontogen: `{}::{}` takes its filter struct as `{}: {}`, but the struct is read from `filter[…]` into a \
-             value the list owns; take it by value (`{}: {}`), with an `Option` field for each optional member",
-            m.name,
-            f.name,
-            p.name,
-            p.ty,
-            p.name,
-            inner_struct_type(&p.ty)
+            "ontogen: `{}::{}` takes its filter struct as `{}: {}`, but the struct is read from `filter[…]` whole, \
+             absent members included; take it by value (`{}: {inner}`) or borrowed (`{}: &{inner}`), with an \
+             `Option` field for each optional member",
+            m.name, f.name, p.name, p.ty, p.name, p.name,
         ));
     }
     if let Some(p) = f.bare_filters().into_iter().find(|p| !filter_reads_from_one_value(p, resources)) {
@@ -305,6 +302,20 @@ fn check_list_filter(m: &ApiModule, f: &ApiFn, resources: &ResourceModel) -> Res
         ));
     }
     Ok(())
+}
+
+/// True when the filter struct `p` is taken as the struct or a shared borrow
+/// of it, which the handler reads into an owned value and hands over or
+/// lends. An `Option` would never be `None`, since every request yields the
+/// struct with its absent members `None`; a `&mut` would let `list` change
+/// the filter `count` reads after it.
+fn reads_struct_whole(p: &Param) -> bool {
+    let ty = match &p.ty_ast {
+        Type::Reference(r) if r.mutability.is_none() => &*r.elem,
+        Type::Reference(_) => return false,
+        ty => ty,
+    };
+    !matches!(ty, Type::Path(tp) if tp.path.segments.last().is_some_and(|s| s.ident == "Option"))
 }
 
 /// The struct a filter struct type names, without its `&` or `Option`.
