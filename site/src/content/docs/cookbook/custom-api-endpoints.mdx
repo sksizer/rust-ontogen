@@ -163,7 +163,7 @@ A custom endpoint's success body is unchanged, but its errors are not. A failure
 
 ## Recipe: Filtered lists
 
-The store takes no filter, so a filtered list is hand-written. Put it in the module named after the entity, and it replaces the generated `list`:
+The store takes no filter, so a filtered list is hand-written. Put it in the module named after the entity, and it replaces the generated `list`. This recipe assumes the module is paginated: it is named in `.api_paginated(..)` and its surface sets `pagination` (here `PaginationConfig { default_limit: 20, max_limit: 100 }`, as in the tasks-tracker example), so the `list` takes `limit` and `offset` and has a `count` beside it:
 
 ```rust
 // src/api/v1/task.rs
@@ -238,7 +238,11 @@ GET /api/tasks?filter[status]=closed/done&filter[epic_id]=markdown-backend
 }
 ```
 
-`meta.total` is `count` with the same filter. An unknown member (`filter[colour]`), a repeated one, or a value the struct rejects is `400 invalid_query_parameter`. The generated TypeScript client keeps its signature, `taskList(query?, limit?, offset?)`, and sends `filter[...]`. See the [upgrade notes](/reference/upgrading/#filtered-lists) for the full list of errors.
+`meta.total` is `count` with the same filter.
+
+In an unpaginated module the `list` takes no `limit` or `offset` and needs no `count`. It answers every matching task in `data`, with no `meta` and no pagination links; `links.self` carries the filter, e.g. `/api/tasks?filter%5Bstatus%5D=closed%2Fdone`.
+
+An unknown member (`filter[colour]`), a repeated one, or a value the struct rejects is `400 invalid_query_parameter`. The generated TypeScript client keeps its signature, `taskList(query?, limit?, offset?)`, and sends `filter[...]`. See the [upgrade notes](/reference/upgrading/#filtered-lists) for the full list of errors.
 
 ## Organizing custom endpoints
 

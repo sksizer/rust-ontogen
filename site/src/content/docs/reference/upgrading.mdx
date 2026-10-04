@@ -5,7 +5,7 @@ description: Every breaking change in 0.9 and how to migrate, grouped by area.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Version 0.9 is still in progress. This page lists the breaking changes that have landed so far: the store and runtime changes, and the HTTP wire change, where CRUD routes, custom ops, junction ops, event frames and every error move to JSON:API. Filtered lists have landed too. Sorting and relationship endpoints arrive in later releases, and their sections will be added here. Work through the sections that apply to your project.
+Version 0.9 is still in progress. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API. Sorting and relationship endpoints arrive in later releases, and their sections will be added here. Work through the sections that apply to your project.
 
 ## Build configuration
 
@@ -146,6 +146,26 @@ In a module named after an entity, a hand-written `list` now replaces the genera
 - The HTTP generator refuses, as a build error, a list whose filter it cannot serve: a second `*Query` struct, a `*Query` struct that is not taken by value (`&ListTasksQuery`, `Option<ListTasksQuery>`), a bare filter whose type one value cannot carry (`Vec<_>`, a tuple, a schema entity), and an `*Input` parameter on a `list`, which has no body. IPC and MCP generation does not apply these checks.
 
 If you call the runtime crate directly, `ontogen-jsonapi` changed: `QuerySpec` has a new field `filter_fields`, so a struct literal must set it or end with `..QuerySpec::NONE`; `QuerySpec` no longer implements `PartialEq` or `Eq`; and the crate no longer depends on `serde_urlencoded`. `QueryParams` gained `filter`, `filter_member`, `required_filter_member` and `link_query`, and the crate exports `filter_fields::<T>()`.
+
+### A list's `*Query` struct is named through `types_import_path`
+
+The generated HTTP and MCP handlers name every type an op takes through `types_import_path`. Before, a hand-written `list` in a module named after an entity was dropped, so its `*Query` filter struct could live in the hand-written API module alone. Now that list is served, and a struct defined only there fails to build with `unresolved import crate::schema::ListTasksQuery`. Re-export it from the module `types_import_path` names.
+
+Before, in `src/api/v1/task.rs` only:
+
+```rust
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct ListTasksQuery {
+    pub status: Option<String>,
+    pub epic_id: Option<String>,
+}
+```
+
+After, the same struct, and in `src/schema/mod.rs`:
+
+```rust
+pub use crate::api::v1::task::ListTasksQuery;
+```
 
 ### Depend on `ontogen-jsonapi`, `ontogen-core` and `serde_json`
 
@@ -375,7 +395,7 @@ GET /api/reports?filter[status]=open&opArg[limit]=20&opArg[offset]=0
 }
 ```
 
-An unpaginated list answers the bare array as `meta.result`. The page goes to the store, and `count` gets the same filter. A scoped list (`route_prefix`) behaves the same under its prefix.
+An unpaginated list with no entity behind it answers the bare array as `meta.result`. The page goes to the store, and `count` gets the same filter. A scoped list (`route_prefix`) behaves the same under its prefix.
 
 **Errors.** Each of these is `400 invalid_query_parameter` with `source.parameter` naming the parameter:
 

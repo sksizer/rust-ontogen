@@ -727,10 +727,8 @@ The read order, after the unaccepted names, is:
 3. then the bare filters in byte order of name: a repeat, a bad value or a
    missing required filter is `400`.
 
-Bare parameters fix a defect: before, a bare parameter was extracted as
-`Query<String>`, which cannot deserialize from a query map, so every such
-request failed (`?skill_id=abc` returned `400 invalid type: map, expected a
-string`). A bare parameter is now `filter[skill_id]`.
+A bare parameter is read from its own `filter[…]` member: `skill_id: &str`
+is `filter[skill_id]`.
 
 With tasks-tracker's hand-written `ListTasksQuery { status: Option<String>, epic_id: Option<String> }`:
 
