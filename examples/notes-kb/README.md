@@ -6,6 +6,7 @@ a graph edge, and an Obsidian link.
 
 ```sh
 cargo run            # http://127.0.0.1:3003 — the graph IS the index page
+PORT=39103 cargo run # the same, on another port
 ```
 
 The index page is a deliberately framework-free SVG graph fed by the

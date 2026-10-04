@@ -6,7 +6,7 @@ matters — the store backend. Workouts live as editable markdown files under
 `data/vault/` instead of SQLite rows.
 
 ```sh
-cargo run
+cargo run              # PORT=39101 cargo run serves on another port
 # in another shell:
 curl -s localhost:3001/api/workouts | jq   # a JSON:API collection
 curl -s -X POST localhost:3001/api/workouts -H 'content-type: application/vnd.api+json' \

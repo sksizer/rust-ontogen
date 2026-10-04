@@ -17,7 +17,7 @@ It replaces the generated `list` and `count`; the rest of the task module is
 generated.
 
 ```sh
-cargo run
+cargo run              # PORT=39102 cargo run serves on another port
 curl -s localhost:3002/api/tasks | jq
 # -g keeps curl from reading the brackets as a URL glob
 curl -sg 'localhost:3002/api/tasks?page[offset]=0&page[limit]=5' | jq '.meta, .links'
