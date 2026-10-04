@@ -9,18 +9,22 @@
 //! consumer panics at startup.
 //!
 //! The pilot paginates every module with `default_limit: 2, max_limit: 3`.
+//! `scoped_routes` is the same API generated under the route prefix
+//! `projects/:project_id`, whose one project is `PROJECT`.
 
 use std::sync::Arc;
 
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::{Body, BodyDataStream, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use futures::StreamExt;
 use markdown_pilot::api::transport::http::generated::entity_routes;
+use markdown_pilot::api::transport::http_scoped::generated::entity_routes as scoped_routes;
 use markdown_pilot::persistence::markdown::generated::open_vault;
-use markdown_pilot::schema::{Note, Tag, Task};
-use markdown_pilot::{AppState, Store};
+use markdown_pilot::schema::{Note, Section, Tag, Task};
+use markdown_pilot::{AppState, PROJECT, Store};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
 
@@ -31,6 +35,7 @@ fn entity_routes_constructs_router() {
     // A panic here means the emitted route syntax is invalid for the axum
     // version this crate compiles against.
     let _router = entity_routes();
+    let _scoped = scoped_routes();
 }
 
 /// A response: status, headers, the body parsed, and the body as sent.
@@ -59,7 +64,11 @@ impl Server {
     }
 
     async fn send(&self, request: Request<Body>) -> Reply {
-        let response = entity_routes().with_state(Arc::clone(&self.state)).oneshot(request).await.expect("infallible");
+        self.send_to(entity_routes(), request).await
+    }
+
+    async fn send_to(&self, router: Router<Arc<AppState>>, request: Request<Body>) -> Reply {
+        let response = router.with_state(Arc::clone(&self.state)).oneshot(request).await.expect("infallible");
         let (parts, body) = response.into_parts();
         let bytes = to_bytes(body, usize::MAX).await.expect("body");
         let raw = String::from_utf8(bytes.to_vec()).expect("UTF-8 body");
@@ -69,6 +78,12 @@ impl Server {
 
     async fn get(&self, uri: &str) -> Reply {
         self.send(Request::get(uri).header(header::ACCEPT, MEDIA_TYPE).body(Body::empty()).unwrap()).await
+    }
+
+    /// A `GET` to the router generated under `projects/:project_id`.
+    async fn get_scoped(&self, uri: &str) -> Reply {
+        let request = Request::get(uri).header(header::ACCEPT, MEDIA_TYPE).body(Body::empty()).unwrap();
+        self.send_to(scoped_routes(), request).await
     }
 
     async fn write(&self, method: &str, uri: &str, body: Value) -> Reply {
@@ -121,6 +136,17 @@ impl Server {
 
     async fn tag(&self, id: &str, title: &str) {
         self.store().create_tag(Tag { id: id.into(), title: title.into() }).await.expect("create tag");
+    }
+
+    async fn section(&self, id: &str, title: &str, parent_id: &str) {
+        let section = Section { id: id.into(), title: title.into(), parent_id: parent_id.into(), children: vec![] };
+        self.store().create_section(section).await.expect("create section");
+    }
+
+    async fn bookmark(&self, url: &str, title: &str) {
+        let input = json!({ "url": url, "title": title });
+        let reply = self.op("POST", "/api/bookmarks", &args(json!({ "input": input }))).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
     }
 
     async fn note(&self, title: &str) -> Note {
@@ -219,7 +245,7 @@ async fn list_query_parameters_are_checked() {
     assert_eq!(error["source"], json!({ "parameter": "foo" }));
 
     // The generated list takes no filter.
-    server.get("/api/notes?filter[title]=x").await.error(StatusCode::BAD_REQUEST, "invalid_query_parameter");
+    assert_eq!(server.get("/api/notes?filter[title]=x").await.parameter("invalid_query_parameter"), "filter[title]");
 
     // `sort` and `include` are accepted names that no route honours, and
     // `sort` is checked first (§13.2 step 5).
@@ -830,6 +856,281 @@ async fn crud_in_a_module_without_an_entity_is_served_as_custom_ops() {
     let reply =
         server.raw("POST", "/api/bookmarks", &[(header::CONTENT_TYPE, "application/json")], &args(json!({}))).await;
     reply.error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type");
+}
+
+// ── Filtered lists (§7.3, §10.4) ──
+//
+// `section::list` takes a `ListSectionsQuery` and a required bare
+// `parent_id`, `tag::list` two optional bare filters, `bookmark::list` (no
+// entity) a `BookmarkQuery`, and `outline::list` (no entity, takes the
+// store) an optional bare filter. Each is hand-written beside the generated
+// module and replaces its `list` and `count`.
+
+/// An outline: `root` is its own parent, `usage` has two children.
+async fn seed_sections(server: &Server) {
+    server.section("root", "Root", "root").await;
+    server.section("intro", "Introduction", "root").await;
+    server.section("usage", "Usage", "root").await;
+    server.section("install", "Install it", "usage").await;
+    server.section("cli", "Usage on the CLI", "usage").await;
+}
+
+/// The ids of a collection document's resources, in order.
+fn ids(body: &Value) -> Vec<&str> {
+    body["data"].as_array().expect("data").iter().map(|r| r["id"].as_str().expect("id")).collect()
+}
+
+#[tokio::test]
+async fn a_list_filtered_by_a_query_struct_and_a_bare_filter() {
+    let server = Server::new();
+    seed_sections(&server).await;
+
+    // The required bare filter alone; `meta.total` counts the filtered set.
+    let reply = server.get("/api/sections?filter[parent_id]=root").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(reply.headers[header::CONTENT_TYPE], MEDIA_TYPE);
+    assert_eq!(ids(&reply.body), ["intro", "root"]);
+    assert_eq!(reply.body["meta"], json!({ "total": 3, "limit": 2, "offset": 0 }));
+    let page =
+        |offset: u32| format!("/api/sections?filter%5Bparent_id%5D=root&page%5Boffset%5D={offset}&page%5Blimit%5D=2");
+    assert_eq!(
+        reply.body["links"],
+        json!({ "self": page(0), "first": page(0), "prev": null, "next": page(2), "last": page(2) })
+    );
+    let reply = server.get("/api/sections?filter[parent_id]=root&page[offset]=2").await;
+    assert_eq!(ids(&reply.body), ["usage"]);
+    assert_eq!(reply.body["links"]["prev"], page(0));
+
+    // A struct member with the bare filter: links write the members in byte
+    // order of name whatever order they came in, and encoded brackets read
+    // the same as raw ones.
+    let reply = server.get("/api/sections?filter[parent_id]=root&filter[min_children]=1").await;
+    assert_eq!(ids(&reply.body), ["root", "usage"]);
+    assert_eq!(reply.body["meta"], json!({ "total": 2, "limit": 2, "offset": 0 }));
+    assert_eq!(
+        reply.body["links"]["self"],
+        "/api/sections?filter%5Bmin_children%5D=1&filter%5Bparent_id%5D=root&page%5Boffset%5D=0&page%5Blimit%5D=2"
+    );
+    assert_eq!(reply.body["links"]["next"], Value::Null);
+    let encoded = server.get("/api/sections?filter%5Bparent_id%5D=root&filter%5Bmin_children%5D=1").await;
+    assert_eq!(encoded.raw, reply.raw);
+
+    // Every struct member at once; a value is percent-encoded in links.
+    let reply = server
+        .get("/api/sections?filter[title_contains]=on%20the&filter[max_children]=0&filter[parent_id]=usage&filter[min_children]=0")
+        .await;
+    assert_eq!(ids(&reply.body), ["cli"]);
+    assert_eq!(reply.body["meta"]["total"], 1);
+    assert_eq!(
+        reply.body["links"]["self"],
+        concat!(
+            "/api/sections?filter%5Bmax_children%5D=0&filter%5Bmin_children%5D=0&filter%5Bparent_id%5D=usage",
+            "&filter%5Btitle_contains%5D=on%20the&page%5Boffset%5D=0&page%5Blimit%5D=2",
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_list_filtered_by_optional_bare_filters() {
+    let server = Server::new();
+    for (id, title) in [("al", "Alpha"), ("alp", "Alpine Lake"), ("be", "Beta"), ("ga", "Gamma ray")] {
+        server.tag(id, title).await;
+    }
+
+    // No filter: every tag, as the generated list served them.
+    let reply = server.get("/api/tags").await;
+    assert_eq!(ids(&reply.body), ["al", "alp"]);
+    assert_eq!(reply.body["meta"], json!({ "total": 4, "limit": 2, "offset": 0 }));
+    assert_eq!(reply.body["links"]["self"], "/api/tags?page%5Boffset%5D=0&page%5Blimit%5D=2");
+
+    let reply = server.get("/api/tags?filter[title_prefix]=Al").await;
+    assert_eq!(ids(&reply.body), ["al", "alp"]);
+    assert_eq!(reply.body["meta"]["total"], 2);
+    let reply = server.get("/api/tags?filter[min_title_len]=6").await;
+    assert_eq!(ids(&reply.body), ["alp", "ga"]);
+    assert_eq!(reply.body["meta"]["total"], 2);
+
+    let reply = server.get("/api/tags?filter[title_prefix]=Al&filter[min_title_len]=6").await;
+    assert_eq!(ids(&reply.body), ["alp"]);
+    assert_eq!(reply.body["meta"], json!({ "total": 1, "limit": 2, "offset": 0 }));
+    let page = "/api/tags?filter%5Bmin_title_len%5D=6&filter%5Btitle_prefix%5D=Al&page%5Boffset%5D=0&page%5Blimit%5D=2";
+    assert_eq!(reply.body["links"], json!({ "self": page, "first": page, "prev": null, "next": null, "last": page }));
+
+    // An empty value is `Some("")`, which every title starts with, and the
+    // link keeps the member.
+    let reply = server.get("/api/tags?filter[title_prefix]=").await;
+    assert_eq!(reply.body["meta"]["total"], 4);
+    assert_eq!(reply.body["links"]["self"], "/api/tags?filter%5Btitle_prefix%5D=&page%5Boffset%5D=0&page%5Blimit%5D=2");
+}
+
+#[tokio::test]
+async fn a_list_without_an_entity_takes_its_filter_and_op_arg_page() {
+    let server = Server::new();
+    server.bookmark("https://example.com/1", "One").await;
+    server.bookmark("https://rust-lang.org/2", "Two").await;
+    server.bookmark("https://example.com/3", "Three").await;
+
+    // The page and the filter both reach the fn; `total` is its filtered
+    // `count`, and a `meta.result` page has no links.
+    server.get("/api/bookmarks?filter[url_contains]=example&opArg[limit]=1&opArg[offset]=1").await.ok_result(
+        r#"{"items":[{"id":"bm-3","url":"https://example.com/3","title":"Three"}],"total":2,"limit":1,"offset":1}"#,
+    );
+    server.get("/api/bookmarks?opArg%5Blimit%5D=5&filter%5Burl_contains%5D=rust").await.ok_result(
+        r#"{"items":[{"id":"bm-2","url":"https://rust-lang.org/2","title":"Two"}],"total":1,"limit":3,"offset":0}"#,
+    );
+    server
+        .get("/api/bookmarks?filter[url_contains]=example&opArg[limit]=0")
+        .await
+        .ok_result(r#"{"items":[],"total":2,"limit":0,"offset":0}"#);
+
+    // An optional bare filter on a list without an entity.
+    seed_sections(&server).await;
+    let reply = server.get("/api/outlines?filter[title_contains]=Us").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    let items = reply.body["meta"]["result"]["items"].as_array().expect("items");
+    assert_eq!(items.iter().map(|s| s["id"].as_str().unwrap()).collect::<Vec<_>>(), ["cli", "usage"]);
+    assert_eq!(reply.body["meta"]["result"]["total"], 2);
+    assert!(reply.body.get("links").is_none());
+}
+
+#[tokio::test]
+async fn filter_parameters_are_checked() {
+    let server = Server::new();
+    seed_sections(&server).await;
+    let parameter = async |uri: &str| server.get(uri).await.parameter("invalid_query_parameter");
+
+    // A member that is not a field of the struct or a bare filter.
+    assert_eq!(parameter("/api/sections?filter[parent_id]=root&filter[colour]=red").await, "filter[colour]");
+    assert_eq!(parameter("/api/tags?filter[title]=A").await, "filter[title]");
+    assert_eq!(parameter("/api/bookmarks?filter[url]=x").await, "filter[url]");
+    assert_eq!(parameter("/api/outlines?filter[title]=x").await, "filter[title]");
+    // A value serde rejects, in the struct and as a bare filter.
+    assert_eq!(
+        parameter("/api/sections?filter[parent_id]=root&filter[min_children]=many").await,
+        "filter[min_children]"
+    );
+    assert_eq!(parameter("/api/tags?filter[min_title_len]=-1").await, "filter[min_title_len]");
+    // A missing required bare filter.
+    assert_eq!(parameter("/api/sections").await, "filter[parent_id]");
+    assert_eq!(parameter("/api/sections?filter[min_children]=1").await, "filter[parent_id]");
+    // Nested and array forms, and a dotted member.
+    assert_eq!(parameter("/api/sections?filter[parent_id][]=root").await, "filter[parent_id][]");
+    assert_eq!(parameter("/api/sections?filter[parent_id][x]=root").await, "filter[parent_id][x]");
+    assert_eq!(parameter("/api/sections?filter[parent.id]=root").await, "filter[parent.id]");
+    assert_eq!(parameter("/api/tags?filter%5Btitle_prefix%5D%5B%5D=A").await, "filter[title_prefix][]");
+    // A repeated member, struct or bare, and in a list without an entity.
+    assert_eq!(
+        parameter("/api/sections?filter[parent_id]=root&filter[min_children]=1&filter[min_children]=1").await,
+        "filter[min_children]"
+    );
+    assert_eq!(parameter("/api/sections?filter[parent_id]=root&filter[parent_id]=usage").await, "filter[parent_id]");
+    assert_eq!(parameter("/api/bookmarks?filter[url_contains]=a&filter[url_contains]=b").await, "filter[url_contains]");
+    // Any `filter[…]` on a list that takes none: a resource list, and a
+    // junction list served as a custom op.
+    assert_eq!(parameter("/api/notes?filter[title]=x").await, "filter[title]");
+    server.task("Alpha", "open").await;
+    assert_eq!(parameter("/api/tasks/alpha/tags?filter[id]=x").await, "filter[id]");
+}
+
+#[tokio::test]
+async fn filter_checks_run_in_the_contract_order() {
+    let server = Server::new();
+    let parameter = async |uri: &str| server.get(uri).await.parameter("invalid_query_parameter");
+
+    // Step 5, first half: a name the route does not accept beats a bad
+    // filter value, wherever each stands in the request.
+    assert_eq!(parameter("/api/sections?filter[min_children]=x&foo=1").await, "foo");
+    assert_eq!(parameter("/api/sections?filter[min_children]=x&filter[colour]=1").await, "filter[colour]");
+    assert_eq!(parameter("/api/bookmarks?filter[url_contains]=a&filter[url_contains]=b&opArg[x]=1").await, "opArg[x]");
+
+    // The filter comes before `sort`, `include` and the page.
+    assert_eq!(
+        parameter("/api/sections?page[limit]=0&filter[min_children]=x&filter[parent_id]=root").await,
+        "filter[min_children]"
+    );
+    assert_eq!(parameter("/api/sections?page[limit]=0").await, "filter[parent_id]");
+    assert_eq!(parameter("/api/tags?page[offset]=-1&filter[min_title_len]=x").await, "filter[min_title_len]");
+    let error = server.get("/api/sections?sort=title&filter[parent_id]=a&filter[parent_id]=b").await;
+    assert_eq!(error.parameter("invalid_query_parameter"), "filter[parent_id]");
+    let error = server.get("/api/sections?sort=title&filter[parent_id]=root").await;
+    assert_eq!(error.parameter("invalid_sort_field"), "sort");
+    assert_eq!(
+        parameter("/api/bookmarks?opArg[limit]=-1&filter[url_contains]=a&filter[url_contains]=b").await,
+        "filter[url_contains]"
+    );
+    assert_eq!(
+        parameter("/api/outlines?opArg[offset]=x&filter[title_contains]=a&filter[title_contains]=b").await,
+        "filter[title_contains]"
+    );
+
+    // The struct's members before the bare filters, though `parent_id`
+    // sorts before `title_contains`.
+    assert_eq!(
+        parameter("/api/sections?filter[title_contains]=a&filter[title_contains]=b").await,
+        "filter[title_contains]"
+    );
+    assert_eq!(
+        parameter("/api/sections?filter[parent_id]=a&filter[parent_id]=b&filter[min_children]=x").await,
+        "filter[min_children]"
+    );
+
+    // Among the struct's members, byte order of name: not request order,
+    // and not the declaration order (`min_children` before `max_children`).
+    assert_eq!(
+        parameter("/api/sections?filter[min_children]=x&filter[max_children]=y&filter[parent_id]=root").await,
+        "filter[max_children]"
+    );
+    // Among bare filters too (`title_prefix` is declared first).
+    assert_eq!(
+        parameter("/api/tags?filter[title_prefix]=a&filter[title_prefix]=b&filter[min_title_len]=x").await,
+        "filter[min_title_len]"
+    );
+}
+
+#[tokio::test]
+async fn a_scoped_filtered_list_answers_as_the_unscoped_one() {
+    let server = Server::new();
+    seed_sections(&server).await;
+    for (id, title) in [("al", "Alpha"), ("alp", "Alpine Lake"), ("be", "Beta")] {
+        server.tag(id, title).await;
+    }
+
+    // Successes and failures alike, resource lists and a list without an
+    // entity: the scoped reply is the unscoped one with the prefix in its
+    // links.
+    for uri in [
+        "/api/sections?filter[parent_id]=root",
+        "/api/sections?filter[parent_id]=root&filter[min_children]=1&page[offset]=1&page[limit]=1",
+        "/api/sections?filter%5Bparent_id%5D=usage&filter%5Btitle_contains%5D=on%20the",
+        "/api/sections",
+        "/api/sections?filter[colour]=red",
+        "/api/sections?filter[min_children]=x&filter[max_children]=y&filter[parent_id]=root",
+        "/api/sections?filter[parent_id][]=root",
+        "/api/tags?filter[title_prefix]=Al&filter[min_title_len]=6",
+        "/api/tags?filter[min_title_len]=-1",
+        "/api/outlines?filter[title_contains]=Us&opArg[limit]=1",
+        "/api/outlines?filter[title]=x",
+        "/api/notes?filter[title]=x",
+    ] {
+        let unscoped = server.get(uri).await;
+        let scoped = server.get_scoped(&uri.replacen("/api/", &format!("/api/{}/", project_path()), 1)).await;
+        assert_eq!(scoped.status, unscoped.status, "{uri}: {}", scoped.raw);
+        assert_eq!(scoped.raw, unscoped.raw.replace("\"/api/", &format!("\"/api/{}/", project_path())), "{uri}");
+    }
+    let reply = server.get_scoped("/api/projects/pilot/sections?filter[parent_id]=root").await;
+    assert_eq!(
+        reply.body["links"]["self"],
+        "/api/projects/pilot/sections?filter%5Bparent_id%5D=root&page%5Boffset%5D=0&page%5Blimit%5D=2"
+    );
+    assert_eq!(reply.body["data"][0]["links"]["self"], "/api/projects/pilot/sections/intro");
+
+    // The scope accessor refuses an unknown project.
+    let reply = server.get_scoped("/api/projects/nope/sections?filter[parent_id]=root").await;
+    reply.error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error");
+}
+
+fn project_path() -> String {
+    format!("projects/{PROJECT}")
 }
 
 // ── Event streams (§12) ──

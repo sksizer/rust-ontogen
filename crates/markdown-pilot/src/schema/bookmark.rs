@@ -22,3 +22,9 @@ pub struct UpdateBookmarkInput {
     #[serde(default)]
     pub title: Option<String>,
 }
+
+/// The filter of the bookmark list; an absent field matches every bookmark.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BookmarkQuery {
+    pub url_contains: Option<String>,
+}
