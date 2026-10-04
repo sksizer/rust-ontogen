@@ -6190,7 +6190,7 @@ fn a_filtered_resource_list_reads_its_filter_from_the_filter_family() {
 
     assert!(
         flat.contains(&compact(
-            "struct TagListFilterParams; impl RouteQuery for TagListFilterParams { const SPEC: QuerySpec = \
+            "struct OntogenTagListFilterParams; impl RouteQuery for OntogenTagListFilterParams { const SPEC: QuerySpec = \
              QuerySpec { filter: &[], filter_fields: Some(filter_fields::<ListTagsQuery>), sort: true, \
              include: true, ..QuerySpec::NONE }; }"
         )),
@@ -6201,7 +6201,7 @@ fn a_filtered_resource_list_reads_its_filter_from_the_filter_family() {
         "tag_list",
         &list,
         &[
-            "_: AcceptGuard, query: Query<TagListFilterParams>, ) -> Result<Response, ErrorObject> {",
+            "_: AcceptGuard, query: Query<OntogenTagListFilterParams>, ) -> Result<Response, ErrorObject> {",
             "let ontogen_filter: ListTagsQuery = query.filter()?;",
             "refuse_sort(&query, \"tags\")?;",
             "refuse_include(&query, \"tags\")?;",
@@ -6229,7 +6229,7 @@ fn a_paginated_filtered_resource_list_reads_struct_then_bare_filters_in_byte_ord
 
     assert!(
         flat.contains(&compact(
-            "struct EpicListFilterParams; impl RouteQuery for EpicListFilterParams { const SPEC: QuerySpec = \
+            "struct OntogenEpicListFilterParams; impl RouteQuery for OntogenEpicListFilterParams { const SPEC: QuerySpec = \
              QuerySpec { filter: &[\"owner\", \"title\"], filter_fields: Some(filter_fields::<ListEpicsQuery>), \
              sort: true, include: true, page: true, ..QuerySpec::NONE }; }"
         )),
@@ -6239,7 +6239,7 @@ fn a_paginated_filtered_resource_list_reads_struct_then_bare_filters_in_byte_ord
         "epic_list",
         &handler_body(&http, "epic_list"),
         &[
-            "query: Query<EpicListFilterParams>)",
+            "query: Query<OntogenEpicListFilterParams>)",
             "let ontogen_filter: ListEpicsQuery = query.filter()?;",
             "let ontogen_filter_owner = query.required_filter_member::<String>(\"owner\")?;",
             "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
@@ -6271,7 +6271,7 @@ fn a_scoped_filtered_resource_list_reads_its_filter_as_the_unscoped_one_does() {
 
     assert!(
         flat.contains(&compact(
-            "impl RouteQuery for EpicListScopedFilterParams { const SPEC: QuerySpec = QuerySpec { filter: \
+            "impl RouteQuery for OntogenEpicListScopedFilterParams { const SPEC: QuerySpec = QuerySpec { filter: \
              &[\"owner\", \"title\"], filter_fields: Some(filter_fields::<ListEpicsQuery>), sort: true, include: \
              true, page: true, ..QuerySpec::NONE }; }"
         )),
@@ -6281,7 +6281,7 @@ fn a_scoped_filtered_resource_list_reads_its_filter_as_the_unscoped_one_does() {
         "epic_list_scoped",
         &handler_body(&http, "epic_list_scoped"),
         &[
-            "Path(ontogen_scope): Path<uuid::Uuid>, query: Query<EpicListScopedFilterParams>",
+            "Path(ontogen_scope): Path<uuid::Uuid>, query: Query<OntogenEpicListScopedFilterParams>",
             "let ontogen_filter: ListEpicsQuery = query.filter()?;",
             "let ontogen_filter_owner = query.required_filter_member::<String>(\"owner\")?;",
             "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
@@ -6349,7 +6349,7 @@ fn an_entityless_filtered_list_reads_its_filter_then_its_op_arg_page() {
 
     assert!(
         flat.contains(&compact(
-            "struct AgentListFilterParams; impl RouteQuery for AgentListFilterParams { const SPEC: QuerySpec = \
+            "struct OntogenAgentListFilterParams; impl RouteQuery for OntogenAgentListFilterParams { const SPEC: QuerySpec = \
              QuerySpec { filter: &[\"skill_id\"], filter_fields: Some(filter_fields::<AgentQuery>), op_args: \
              &[\"limit\", \"offset\"], ..QuerySpec::NONE }; }"
         )),
@@ -6359,7 +6359,7 @@ fn an_entityless_filtered_list_reads_its_filter_then_its_op_arg_page() {
         "agent_list",
         &handler_body(&http, "agent_list"),
         &[
-            "_: AcceptGuard, ontogen_query: Query<AgentListFilterParams>, ) -> Result<Response, ErrorObject> {",
+            "_: AcceptGuard, ontogen_query: Query<OntogenAgentListFilterParams>, ) -> Result<Response, ErrorObject> {",
             "let ontogen_filter: AgentQuery = ontogen_query.filter()?;",
             "let ontogen_filter_skill_id = ontogen_query.filter_member::<String>(\"skill_id\")?;",
             "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
@@ -6393,9 +6393,9 @@ fn an_unpaginated_entityless_filtered_list_answers_the_whole_list() {
         let config = if scoped { test_config_with_prefix(api_dir) } else { test_config(api_dir) };
         let http = generate_http(tmp.path(), config);
         let (handler, spec) = if scoped {
-            ("feed_list_scoped", "FeedListScopedFilterParams")
+            ("feed_list_scoped", "OntogenFeedListScopedFilterParams")
         } else {
-            ("feed_list", "FeedListFilterParams")
+            ("feed_list", "OntogenFeedListFilterParams")
         };
         assert!(
             compact(&http).contains(&compact(&format!(
@@ -6609,7 +6609,7 @@ fn a_custom_get_reads_its_options_as_op_args_in_byte_order() {
         &[
             "_: AcceptGuard,",
             "Path(id): Path<String>,",
-            "ontogen_query: Query<WorkoutGetSummaryOpArgs>",
+            "ontogen_query: Query<OntogenWorkoutGetSummaryOpArgs>",
             // `label` sorts before `verbose`.
             "let label = ontogen_query.op_arg::<String>(\"label\")?;",
             "let verbose = ontogen_query.op_arg::<bool>(\"verbose\")?;",
@@ -6806,7 +6806,7 @@ fn scoped_ops_have_the_unscoped_wire() {
         "agent_list_scoped",
         &handler_body(&http, "agent_list_scoped"),
         &[
-            "Path(ontogen_scope): Path<uuid::Uuid>, ontogen_query: Query<AgentListScopedFilterParams>",
+            "Path(ontogen_scope): Path<uuid::Uuid>, ontogen_query: Query<OntogenAgentListScopedFilterParams>",
             "let ontogen_filter: AgentQuery = ontogen_query.filter()?;",
             "let ontogen_filter_skill_id = ontogen_query.filter_member::<String>(\"skill_id\")?;",
             "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
@@ -6846,7 +6846,7 @@ fn scoped_ops_have_the_unscoped_wire() {
         ],
     );
     assert!(flat.contains(&compact(
-        "Path((ontogen_scope, id)): Path<(uuid::Uuid, String)>, ontogen_query: Query<WorkoutGetSummaryOpArgs>"
+        "Path((ontogen_scope, id)): Path<(uuid::Uuid, String)>, ontogen_query: Query<OntogenWorkoutGetSummaryOpArgs>"
     )));
     // Scoped junction ops are action-style routes, served as custom ops.
     assert!(flat.contains(&compact(

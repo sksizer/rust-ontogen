@@ -1154,9 +1154,10 @@ fn write_steps(op: &ResourceOp<'_>) -> (String, String) {
 }
 
 /// The query-spec type of a list that takes a filter, named for its
-/// handler, which is unique in the file.
+/// handler, which is unique in the file. The prefix keeps it apart from
+/// the user types the file imports.
 fn filter_spec_name(handler_name: &str) -> String {
-    format!("{}FilterParams", to_pascal_case(handler_name))
+    format!("Ontogen{}FilterParams", to_pascal_case(handler_name))
 }
 
 /// Emit `spec`, the query parameters a list that takes a filter accepts
@@ -1591,7 +1592,8 @@ fn op_handler(
     } else if shape.query_args.is_empty() {
         None
     } else {
-        let spec = format!("{}{}OpArgs", to_pascal_case(&m.name), to_pascal_case(&f.name));
+        // Prefixed to keep it apart from the user types the file imports.
+        let spec = format!("Ontogen{}{}OpArgs", to_pascal_case(&m.name), to_pascal_case(&f.name));
         let declared: Vec<String> = shape.query_args.iter().map(|p| format!("\"{}\"", p.name)).collect();
         out.push_str(&format!(
             "struct {spec};\n\nimpl RouteQuery for {spec} {{\n    const SPEC: QuerySpec = QuerySpec {{ op_args: \
