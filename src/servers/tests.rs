@@ -5248,6 +5248,43 @@ fn ipc_and_mcp_clone_only_the_filters_list_consumes() {
     );
 }
 
+/// The MCP list tool's input schema names every argument it reads: its bare
+/// filters as their owned types, required unless `Option`, beside the
+/// `*Query` struct's fields and the page. A filter struct `args` cannot
+/// deserialize into is the tool's error, not an empty filter.
+#[test]
+fn the_mcp_list_tool_advertises_its_bare_filters_and_refuses_a_malformed_filter() {
+    let [_, (_, mcp, mcp_code)] = typed_filter_transports("query: &ListWorkoutQuery, title: Option<&str>, owner: &str");
+    assert!(
+        mcp.contains(&compact(
+            "#[derive(JsonSchema)] pub struct WorkoutListFilter { pub title: Option<String>, pub owner: String, \
+             #[serde(flatten)] pub ontogen_query: ListWorkoutQuery, }"
+        )),
+        "{mcp_code}"
+    );
+    assert!(
+        mcp.contains(&compact("schema_fn: || with_pagination_schema(schema_for::<WorkoutListFilter>()),")),
+        "{mcp_code}"
+    );
+    assert!(
+        mcp.contains(&compact(
+            "let query: ListWorkoutQuery = serde_json::from_value(args.clone()).map_err(|e| format!(\"Invalid filter: \
+             {e}\"))?;"
+        )),
+        "{mcp_code}"
+    );
+    assert!(!mcp.contains("unwrap_or_default"), "{mcp_code}");
+    assert!(mcp.contains(&compact("workout::count(&store, &query, title.as_deref(), owner)")), "{mcp_code}");
+
+    // A struct alone is its own schema; a list with no filter takes none.
+    let [_, (_, mcp, mcp_code)] = typed_filter_transports("query: ListWorkoutQuery");
+    assert!(!mcp.contains("WorkoutListFilter"), "{mcp_code}");
+    assert!(
+        mcp.contains(&compact("schema_fn: || with_pagination_schema(schema_for::<ListWorkoutQuery>()),")),
+        "{mcp_code}"
+    );
+}
+
 /// A `count` that ignores the filter would report the whole table as the total
 /// of a filtered page, so the two parameter lists must agree.
 #[test]

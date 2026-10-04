@@ -273,6 +273,16 @@ fn with_pagination_schema(mut schema: Value) -> Value {
         }
     }
 
+    // A list's input schema names each bare filter beside its `*Query`
+    // struct's fields, so the tool advertises every argument it reads.
+    for m in modules {
+        for f in &m.functions {
+            if classify_op(f) == OpKind::List && !f.bare_filters().is_empty() {
+                out.push_str(&list_filter_schema_struct(m, f));
+            }
+        }
+    }
+
     let hp = mcp_handler_prefix(config);
 
     out.push_str(
@@ -310,12 +320,16 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                     // from `args` below — not tool arguments to extract.
                     let pushes_page = paginate && f.takes_page();
                     let schema_wrap = if paginate { wrap_schema_for_list } else { wrap_schema };
-                    let mut schema_fn = schema_wrap("schema_for::<EmptyInput>", config);
+                    let schema_input = match f.filter_struct() {
+                        _ if !f.bare_filters().is_empty() => list_filter_schema_name(m, f),
+                        Some(qp) => extract_input_type(&qp.ty),
+                        None => "EmptyInput".to_string(),
+                    };
+                    let schema_fn = schema_wrap(&format!("schema_for::<{schema_input}>"), config);
                     let mut extraction = String::new();
                     if let Some(qp) = f.filter_struct() {
                         let qt = extract_input_type(&qp.ty);
-                        schema_fn = schema_wrap(&format!("schema_for::<{qt}>"), config);
-                        extraction.push_str(&format!("                    let query: {qt} = serde_json::from_value(args.clone()).unwrap_or_default();\n"));
+                        extraction.push_str(&format!("                    let query: {qt} = serde_json::from_value(args.clone()).map_err(|e| format!(\"Invalid filter: {{e}}\"))?;\n"));
                     }
                     for pp in f.bare_filters() {
                         extraction.push_str(&bare_filter_extraction(pp));
@@ -392,7 +406,7 @@ fn with_pagination_schema(mut schema: Value) -> Value {
                         // store-construction snippets read `args.get("project_id")`).
                         let args_param =
                             if extraction.is_empty() && config.route_prefix.is_none() { "_args" } else { "args" };
-                        // This surface does not paginate: a list that takes the page gets the whole table.
+                        // A surface with no pagination passes no page, so a list that takes one gets the whole table.
                         let page_args = if f.takes_page() { ", None, None" } else { "" };
                         out.push_str(&format!(
                             "\
@@ -821,6 +835,31 @@ fn generate_generic_mcp_tool(out: &mut String, m: &ApiModule, f: &ApiFn, config:
             ));
         }
     }
+}
+
+/// The struct whose schema is a filtered list's tool input: `{Module}ListFilter`.
+fn list_filter_schema_name(m: &ApiModule, f: &ApiFn) -> String {
+    format!("{}{}Filter", to_pascal_case(&m.name), to_pascal_case(&f.name))
+}
+
+/// The schema-only struct of a list's filter: each bare filter as its owned
+/// type, so an `Option` one is optional and any other required, with the
+/// `*Query` struct's fields flattened beside them. The handler reads each
+/// argument on its own; this struct only describes them.
+fn list_filter_schema_struct(m: &ApiModule, f: &ApiFn) -> String {
+    let mut out = format!(
+        "/// The arguments the `{}` list tool reads as its filter.\n#[derive(JsonSchema)]\npub struct {} {{\n",
+        m.name,
+        list_filter_schema_name(m, f)
+    );
+    for p in f.bare_filters() {
+        out.push_str(&format!("    pub {}: {},\n", p.name, param_to_owned_type(&p.ty_ast)));
+    }
+    if let Some(qp) = f.filter_struct() {
+        out.push_str(&format!("    #[serde(flatten)]\n    pub ontogen_query: {},\n", extract_input_type(&qp.ty)));
+    }
+    out.push_str("}\n\n");
+    out
 }
 
 /// The lines reading a list's bare filter `p` from a tool's `args`, bound
