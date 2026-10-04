@@ -24,6 +24,14 @@ pub struct Task {
     #[ontology(relation(many_to_many, target = "Tag"))]
     pub tags: Vec<String>,
 
+    /// The task this one is a subtask of.
+    #[ontology(relation(belongs_to, target = "Task"))]
+    pub parent_id: Option<String>,
+
+    /// The tasks whose `parent_id` is this one, read from them.
+    #[ontology(relation(has_many, target = "Task", foreign_key = "parent_id"))]
+    pub subtasks: Vec<String>,
+
     #[ontology(body)]
     pub body: String,
 }

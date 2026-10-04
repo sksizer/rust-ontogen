@@ -148,7 +148,7 @@ For what an update does to children the list drops, the `ParentRequired` error, 
 
 ### On the HTTP wire
 
-Over HTTP, a relation field is not an attribute. The generated JSON:API server moves every relation field into the resource's `relationships` object, with linkage in `data` only:
+Over HTTP, a relation field is not an attribute. The generated JSON:API server moves every relation field into the resource's `relationships` object, with its linkage in `data`:
 
 | Relation | Field | Relationship | `data` |
 |----------|-------|--------------|--------|
@@ -161,7 +161,51 @@ A `belongs_to` field name that ends in `_id` loses the suffix; every other relat
 
 Writes use the same shape. A create or update body sets a to-one with `"data": {"type": "epics", "id": "…"}` (or `null` for an `Option` field, `403 relationship_required` for a required one) and a to-many with a `data` array that replaces the stored list. A `has_many` array goes through the children's foreign keys with the rules above, and a dropped child whose key is required is `403` with the `{child}_parent_required` code. Every linked id is checked first: a missing one is `404 related_resource_not_found`, and nothing is written. A relation field sent as an attribute (`epic_id`) is `400 unknown_attribute`.
 
-Relationship `links` and the relationship and related-resource endpoints (`/api/tasks/{id}/relationships/tags`) are not generated yet; they arrive in a later release. Junction ops keep their current routes until then, and answer with the custom op wire: the list under `meta.result`, and the child id of `add_*` in `meta.args`.
+#### Relationship endpoints
+
+When the entity's module serves `get_by_id`, each relationship also gets its own routes, and its object in the resource carries `links` to them:
+
+```json
+"epic": {
+  "links": {
+    "self": "/api/tasks/ship-the-emitter/relationships/epic",
+    "related": "/api/tasks/ship-the-emitter/epic"
+  },
+  "data": { "type": "epics", "id": "markdown-backend" }
+}
+```
+
+| Route | Methods | What it does |
+|-------|---------|--------------|
+| `/api/tasks/{id}/relationships/{rel}` | `GET` | the linkage: an identifier, `null`, or an array |
+| | `PATCH` | set or clear a to-one, replace a to-many (`{"data": []}` clears it) |
+| | `POST`, `DELETE` | add or remove one member of a to-many: `{"data": [{"type": "tags", "id": "release"}]}` |
+| `/api/tasks/{id}/{rel}` | `GET` | the related resource (or `null`), or the related resources in linkage order |
+
+- Writes go through the module's `update`, so they follow the rules above, hooks and `ParentRequired` included, and answer `204`. Adding a member that is already there, or removing one that is not, is `204` and writes nothing.
+- A body with more than one identifier on `POST` or `DELETE` is `403 relationship_batch_unsupported`. `POST` or `DELETE` on a to-one, and any write when the module has no `update`, is `403 relationship_update_unsupported`.
+- The related route reads each resource with the target module's `get_by_id`, so every target needs one (the build fails otherwise). A dangling id is skipped; a to-one whose target is gone is `null`.
+- An unknown `{rel}` is `404 relationship_not_found`, and a missing parent `404` with its `{entity}_not_found` code.
+- An entity whose module serves no `get_by_id` gets no relationship routes, and its relationships carry `data` only.
+
+#### Junction ops
+
+A relationship can also be defined by functions instead of a field. In an API module named after an entity, `list_X(parent_id)` with `add_Y(parent_id, child_id)` and/or `remove_Y(parent_id, child_id)` define a to-many relationship named `X`, served on the same endpoints:
+
+```rust
+// src/api/v1/task.rs: the relationship `labels`, whose target is `tags`.
+pub async fn list_labels(store: &Store, id: &str) -> Result<Vec<Tag>, AppError> { /* … */ }
+pub async fn add_label(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> { /* … */ }
+pub async fn remove_label(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> { /* … */ }
+```
+
+- `GET /api/tasks/{id}/labels` lists the tags, `GET /api/tasks/{id}/relationships/labels` their linkage, and `POST` and `DELETE /api/tasks/{id}/relationships/labels` call `add_label` and `remove_label`. `PATCH` is `403`, and so is `POST` without an `add_Y` or `DELETE` without a `remove_Y`.
+- Add and remove call `list_X` first and skip your function when the tag is already a member, or is not one. An add checks that the tag exists; a remove does not.
+- On a paginated surface the two `GET`s page `list_X`'s result in memory with `page[offset]` and `page[limit]`.
+- The resource object lists the relationship after the relation fields, with `links` only. It cannot be included or sent in a create or update body.
+- The target is `list_X`'s element type, or for a `Vec<String>` list of ids, the entity whose plural is `X`. Each id parameter is a `&str`, `String` or `&String`, the module must serve `get_by_id`, and the name must not clash with an attribute or another relationship: `list_tags` beside the `tags` field fails the build. A `list_X` with no `add_Y` or `remove_Y` beside it is not a junction op but a custom `GET`.
+
+Junction ops in a module with no entity behind it are served as custom ops instead, at `/api/{module}/{parent_id}/{segment}`; see [Operations that are not CRUD](/guides/server-transports/#operations-that-are-not-crud).
 
 ## many_to_many
 

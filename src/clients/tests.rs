@@ -741,6 +741,31 @@ pub async fn reset(store: &Store) -> Result<(), anyhow::Error> { todo!() }
 pub async fn task_changes(state: &AppState, resume: Option<String>) -> Result<tokio::sync::broadcast::Receiver<Task>, anyhow::Error> { todo!() }
 ";
 
+/// Junction ops appended to the generated resource modules, each a
+/// relationship of its module's resource (§9.1) but `list_drafts`, which
+/// has no add or remove beside it and is a custom GET. `task`'s `labels`
+/// lists the `Tag` entities; `workout_set`'s `tags` lists ids, its target
+/// named by the relationship.
+const RELATIONSHIP_OPS: [(&str, &str); 2] = [
+    (
+        "task.rs",
+        "
+pub async fn list_labels(store: &Store, task_id: &str) -> Result<Vec<crate::schema::Tag>, anyhow::Error> { todo!() }
+pub async fn add_label(store: &Store, task_id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }
+pub async fn remove_label(store: &Store, task_id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }
+pub async fn list_drafts(store: &Store, task_id: &str) -> Result<Vec<Task>, anyhow::Error> { todo!() }
+",
+    ),
+    (
+        "workout_set.rs",
+        "
+pub async fn list_tags(store: &Store, set_id: &str) -> Result<Vec<String>, anyhow::Error> { todo!() }
+pub async fn add_tag(store: &Store, set_id: &str, tag_id: String) -> Result<(), anyhow::Error> { todo!() }
+pub async fn remove_tag(store: &Store, set_id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }
+",
+    ),
+];
+
 /// `tag`, written by hand over the `tags` resource: CRUD whose `list` takes
 /// the `ListTagsQuery` struct and a bare `title_prefix`, paged when
 /// `paginated` beside a `count` taking the same filter (§7.3).
@@ -836,8 +861,8 @@ struct JsonApiClients {
     bindings: String,
 }
 
-/// The `HttpTauriIpcSplit` and `HttpTs` output for [`JSONAPI_SCHEMA`] and
-/// [`BOARD_MODULE`], through
+/// The `HttpTauriIpcSplit` and `HttpTs` output for [`JSONAPI_SCHEMA`],
+/// [`RELATIONSHIP_OPS`] and [`BOARD_MODULE`], through
 /// the public `gen_api` → `gen_clients` path. With `paginated`, every list
 /// pages. `adjust` edits the clients config before generation.
 fn jsonapi_clients(paginated: bool, adjust: impl FnOnce(&mut crate::ClientsConfig)) -> JsonApiClients {
@@ -890,6 +915,18 @@ fn generate_jsonapi(
     adjust: impl FnOnce(&mut crate::ClientsConfig),
     server: bool,
 ) -> (Option<Servers>, JsonApiClients) {
+    let (servers, clients) = try_generate_jsonapi(paginated, extra, adjust, server);
+    (servers.map(Result::unwrap), clients.unwrap())
+}
+
+/// [`generate_jsonapi`] with each stage's error kept: `gen_servers` runs
+/// (with `server`) whether or not `gen_clients` failed.
+fn try_generate_jsonapi(
+    paginated: bool,
+    extra: &[(&str, &str)],
+    adjust: impl FnOnce(&mut crate::ClientsConfig),
+    server: bool,
+) -> (Option<Result<Servers, String>>, Result<JsonApiClients, String>) {
     let tmp = tempfile::tempdir().unwrap();
     let entities =
         crate::schema::parse::parse_schema_source(JSONAPI_SCHEMA, std::path::Path::new("schema.rs")).unwrap();
@@ -912,6 +949,10 @@ fn generate_jsonapi(
     )
     .unwrap();
     fs::write(api_dir.join("board.rs"), BOARD_MODULE).unwrap();
+    for (file, ops) in RELATIONSHIP_OPS {
+        let generated = fs::read_to_string(api_dir.join(file)).unwrap();
+        fs::write(api_dir.join(file), generated + ops).unwrap();
+    }
     for (file, source) in extra {
         fs::write(api_dir.join(file), source).unwrap();
     }
@@ -937,14 +978,13 @@ fn generate_jsonapi(
     fs::write(filters.join("lib.rs"), FILTER_STRUCTS).unwrap();
     config.pool_extra_roots.push(filters);
     adjust(&mut config);
-    crate::gen_clients(&entities, Some(&api), &[], &config).unwrap();
-
     let read = |path: &std::path::Path| fs::read_to_string(path).unwrap();
-    let clients = JsonApiClients {
-        transport: read(&ts.join("transport.ts")),
-        http: read(&ts.join("http.ts")),
-        bindings: read(&bindings_path),
-    };
+    let clients =
+        crate::gen_clients(&entities, Some(&api), &[], &config).map_err(|e| e.to_string()).map(|()| JsonApiClients {
+            transport: read(&ts.join("transport.ts")),
+            http: read(&ts.join("http.ts")),
+            bindings: read(&bindings_path),
+        });
     if !server {
         return (None, clients);
     }
@@ -970,8 +1010,10 @@ fn generate_jsonapi(
         extra_surfaces: Vec::new(),
         error_source_dir: None,
     };
-    crate::gen_servers(&entities, Some(&api), &[], &servers).unwrap();
-    (Some(Servers { http: read(&server_out), ipc: read(&ipc_out) }), clients)
+    let servers = crate::gen_servers(&entities, Some(&api), &[], &servers)
+        .map_err(|e| e.to_string())
+        .map(|_| Servers { http: read(&server_out), ipc: read(&ipc_out) });
+    (Some(servers), clients)
 }
 
 /// A `route_prefix` scoping every store-scoped op under `projects/{project_id}`.
@@ -1320,59 +1362,459 @@ fn http_call<'a>(http: &'a str, name: &str) -> &'a str {
     ts_method(http, name).lines().nth(1).unwrap().trim()
 }
 
+/// A junction op outside a resource module keeps its nested route under the
+/// prefix: the transport calls it through `scopedPath` with no branch, and
+/// the HTTP-only client calls the same path unscoped.
 #[test]
-fn a_scoped_junction_op_calls_its_action_route_given_the_prefix_argument() {
+fn a_scoped_junction_op_outside_a_resource_calls_its_nested_route_under_the_prefix() {
     let clients = jsonapi_clients(true, scope_under_projects);
-    let parent = "${encodeURIComponent(boardId)}";
+    let parent = "`/boards/${encodeURIComponent(boardId)}/tags";
     let page = "${toQueryString({ opArg: { limit, offset } })}";
-    for (name, signature, scoped, unscoped) in [
+    for (name, signature, method, path, args) in [
         (
             "boardListTags",
             "boardId: string, limit?: number, offset?: number, projectId?: string): Promise<PaginatedResult<Tag>>",
-            format!(
-                "return callOp<PaginatedResult<Tag>>('GET', scopedPath(projectId, `/boards/list-tags/{parent}{page}`));"
-            ),
-            format!("return callOp<PaginatedResult<Tag>>('GET', `/boards/{parent}/tags{page}`);"),
+            "callOp<PaginatedResult<Tag>>('GET'",
+            format!("{parent}{page}`"),
+            "",
         ),
         (
             "boardAddTag",
             "boardId: string, tagId: string, projectId?: string): Promise<null>",
-            "return callOp<null>('POST', scopedPath(projectId, '/boards/add-tag'), { board_id: boardId, tag_id: tagId });"
-                .to_string(),
-            format!("return callOp<null>('POST', `/boards/{parent}/tags`, {{ tag_id: tagId }});"),
+            "callOp<null>('POST'",
+            format!("{parent}`"),
+            ", { tag_id: tagId }",
         ),
         (
             "boardRemoveTag",
             "boardId: string, tagId: string, projectId?: string): Promise<null>",
-            "return callOp<null>('POST', scopedPath(projectId, '/boards/remove-tag'), { board_id: boardId, tag_id: tagId \
-             });"
-                .to_string(),
-            format!("return callOp<null>('DELETE', `/boards/{parent}/tags/${{encodeURIComponent(tagId)}}`);"),
+            "callOp<null>('DELETE'",
+            format!("{parent}/${{encodeURIComponent(tagId)}}`"),
+            "",
         ),
     ] {
         assert_eq!(
             ts_method(&clients.transport, name),
             format!(
-                "async {name}({signature} {{\n      if (projectId) {{\n        {scoped}\n      }}\n      {unscoped}\n    \
-                 }},\n"
+                "async {name}({signature} {{\n      return {method}, scopedPath(projectId, {path}){args});\n    }},\n"
             )
         );
-        // The HTTP-only client calls unscoped routes alone, as the transport
-        // does without the prefix argument.
-        assert_eq!(http_call(&clients.http, name), unscoped, "{}", clients.http);
+        assert_eq!(http_call(&clients.http, name), format!("return {method}, {path}{args});"), "{}", clients.http);
     }
-    // An op whose scoped route shares its unscoped shape needs no branch.
+    let http = &clients.transport[clients.transport.find("export function createHttpTransport").unwrap()..];
+    assert!(!http.contains("if (projectId)"), "no call branches on the prefix argument:\n{http}");
+}
+
+/// The statements of `taskListLabels`, whose relationship lists entities,
+/// as [`method_statements`] gives them.
+fn labels_list(paginated: bool, scoped: bool) -> String {
+    let path = "`/tasks/${encodeURIComponent(taskId)}/labels";
+    let fetch = |path: String| if scoped { format!("scopedPath(projectId, {path})") } else { path };
+    if paginated {
+        format!(
+            "const {{ data, meta }} = await httpGet<JsonApiPageDocument>({});\nreturn {{ items: data.map(flattenTag), \
+             total: meta.total, limit: meta.limit, offset: meta.offset }};",
+            fetch(format!("{path}${{toQueryString({{ page: {{ offset, limit }} }})}}`"))
+        )
+    } else {
+        format!(
+            "const {{ data }} = await httpGet<JsonApiCollectionDocument>({});\nreturn data.map(flattenTag);",
+            fetch(format!("{path}`"))
+        )
+    }
+}
+
+/// The statements of the method `name` of the object literal `ts`, without
+/// their indent.
+fn method_statements(ts: &str, name: &str) -> String {
+    let method = ts_method(ts, name);
+    let body = &method[method.find("{\n").unwrap() + 2..method.rfind("\n").unwrap()];
+    let body = &body[..body.rfind('\n').unwrap()];
+    body.lines().map(str::trim).collect::<Vec<_>>().join("\n")
+}
+
+/// A junction op of a resource module calls its relationship's routes
+/// (§14.2): a list of entities reads the related resources and flattens the
+/// target, a list of ids reads the linkage, each paged with the `page`
+/// family when the module paginates; an add or remove sends one identifier
+/// to the linkage and resolves `null`. The `Transport` signatures are the
+/// junction ops' own.
+#[test]
+fn a_resource_junction_op_calls_its_relationship_route() {
+    for paginated in [false, true] {
+        let clients = jsonapi_clients(paginated, |_| {});
+        let (page, labels, tags) = if paginated {
+            (", limit?: number, offset?: number", "PaginatedResult<Tag>", "PaginatedResult<string>")
+        } else {
+            ("", "Tag[]", "string[]")
+        };
+        let ts = &clients.transport;
+        for (signature, interface) in [
+            (format!("taskListLabels(taskId: string{page})"), labels),
+            (format!("workoutSetListTags(setId: string{page})"), tags),
+            ("taskAddLabel(taskId: string, tagId: string)".to_string(), "null"),
+            ("taskRemoveLabel(taskId: string, tagId: string)".to_string(), "null"),
+            ("workoutSetAddTag(setId: string, tagId: string)".to_string(), "null"),
+            ("workoutSetRemoveTag(setId: string, tagId: string)".to_string(), "null"),
+        ] {
+            assert!(ts.contains(&format!("  {signature}: Promise<{interface}>;\n")), "{signature}:\n{ts}");
+        }
+
+        let ids = if paginated {
+            "const { data, meta } = await httpGet<JsonApiPageDocument<JsonApiResourceIdentifier>>(\
+             `/workout-sets/${encodeURIComponent(setId)}/relationships/tags${toQueryString({ page: { offset, limit } \
+             })}`);\nreturn { items: data.map((i) => i.id), total: meta.total, limit: meta.limit, offset: meta.offset };"
+        } else {
+            "const { data } = await httpGet<JsonApiCollectionDocument<JsonApiResourceIdentifier>>(\
+             `/workout-sets/${encodeURIComponent(setId)}/relationships/tags`);\nreturn data.map((i) => i.id);"
+        };
+        let labels_linkage = "`/tasks/${encodeURIComponent(taskId)}/relationships/labels`";
+        let tags_linkage = "`/workout-sets/${encodeURIComponent(setId)}/relationships/tags`";
+        let label = "{ data: [{ type: 'tags', id: tagId }] }";
+        for ts in [&clients.transport, &clients.http] {
+            assert_eq!(method_statements(ts, "taskListLabels"), labels_list(paginated, false));
+            assert_eq!(method_statements(ts, "workoutSetListTags"), ids);
+            for (name, call) in [
+                ("taskAddLabel", format!("httpPost({labels_linkage}, {label})")),
+                ("taskRemoveLabel", format!("httpDelete({labels_linkage}, {label})")),
+                ("workoutSetAddTag", format!("httpPost({tags_linkage}, {label})")),
+                ("workoutSetRemoveTag", format!("httpDelete({tags_linkage}, {label})")),
+            ] {
+                assert_eq!(method_statements(ts, name), format!("await {call};\nreturn null;"));
+            }
+        }
+    }
+}
+
+/// Scoped, a relationship's calls take the same paths through `scopedPath`.
+#[test]
+fn a_scoped_resource_junction_op_calls_its_relationship_route_under_the_prefix() {
+    let clients = jsonapi_clients(true, scope_under_projects);
+    let ts = &clients.transport;
+    assert!(ts_method(ts, "taskListLabels").starts_with(
+        "async taskListLabels(taskId: string, limit?: number, offset?: number, projectId?: string): \
+         Promise<PaginatedResult<Tag>> {"
+    ));
+    assert_eq!(method_statements(ts, "taskListLabels"), labels_list(true, true));
     assert_eq!(
-        ts_method(&clients.transport, "boardArchive").lines().nth(1).unwrap().trim(),
-        "return callOp<Task>('POST', scopedPath(projectId, '/boards/archive'), { task_id: taskId, reason });"
+        method_statements(ts, "taskRemoveLabel"),
+        "await httpDelete(scopedPath(projectId, `/tasks/${encodeURIComponent(taskId)}/relationships/labels`), { data: \
+         [{ type: 'tags', id: tagId }] });\nreturn null;"
     );
+    assert_eq!(method_statements(&clients.http, "taskListLabels"), labels_list(true, false));
+}
+
+/// `workout_set` whose junction ops take the state rather than a store,
+/// beside a store-scoped `get_by_id`.
+const STATE_JUNCTION_MODULE: &str = "\
+use crate::schema::WorkoutSet;
+use crate::store::Store;
+use crate::AppState;
+
+pub async fn get_by_id(store: &Store, id: &str) -> Result<WorkoutSet, anyhow::Error> { todo!() }
+pub async fn list_tags(state: &AppState, set_id: &str) -> Result<Vec<String>, anyhow::Error> { todo!() }
+pub async fn add_tag(state: &AppState, set_id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }
+";
+
+/// A relationship's routes are its resource's, served under the prefix when
+/// its `get_by_id` is, whatever its junction ops take.
+#[test]
+fn a_relationship_is_scoped_as_its_resources_get_by_id() {
+    let clients = jsonapi_clients_with(false, &[("workout_set.rs", STATE_JUNCTION_MODULE)], scope_under_projects);
+    let ts = &clients.transport;
+    assert_eq!(
+        ts_method(ts, "workoutSetAddTag"),
+        "async workoutSetAddTag(setId: string, tagId: string, projectId?: string): Promise<null> {\n      await \
+         httpPost(scopedPath(projectId, `/workout-sets/${encodeURIComponent(setId)}/relationships/tags`), { data: [{ \
+         type: 'tags', id: tagId }] });\n      return null;\n    },\n"
+    );
+    assert!(ts_method(ts, "workoutSetListTags").contains("(scopedPath(projectId, `/workout-sets/"), "{ts}");
+}
+
+const STORE: &str = "store: &Store";
+const STATE: &str = "state: &AppState";
+
+/// `tag`, its `list`, `get_by_id`, `create`, `update` and `delete` taking
+/// [`STORE`] or [`STATE`] as given, in that order.
+fn tag_module([list, get, create, update, delete]: [&str; 5]) -> String {
+    format!(
+        "use crate::schema::{{CreateTagInput, Tag, UpdateTagInput}};\nuse crate::store::Store;\nuse \
+         crate::AppState;\n\npub async fn list({list}) -> Result<Vec<Tag>, anyhow::Error> {{ todo!() }}\npub async fn \
+         get_by_id({get}, id: &str) -> Result<Tag, anyhow::Error> {{ todo!() }}\npub async fn create({create}, input: \
+         CreateTagInput) -> Result<Tag, anyhow::Error> {{ todo!() }}\npub async fn update({update}, id: &str, input: \
+         UpdateTagInput) -> Result<Tag, anyhow::Error> {{ todo!() }}\npub async fn delete({delete}, id: &str) -> \
+         Result<(), anyhow::Error> {{ todo!() }}\n"
+    )
+}
+
+/// `workout_set` with an unscoped `get_by_id` and `others`.
+fn unscoped_workout_set(others: &str) -> String {
+    format!(
+        "use crate::schema::{{UpdateWorkoutSetInput, WorkoutSet}};\nuse crate::store::Store;\nuse \
+         crate::AppState;\n\npub async fn get_by_id(state: &AppState, id: &str) -> Result<WorkoutSet, anyhow::Error> \
+         {{ todo!() }}\n{others}"
+    )
+}
+
+/// The errors `gen_servers` and `gen_clients` each fail with for `extra`
+/// under the route prefix; with no prefix, both accept it.
+fn scoping_errors(extra: &[(&str, &str)]) -> [String; 2] {
+    let (servers, clients) = try_generate_jsonapi(false, extra, |_| {}, true);
+    assert!(servers.unwrap().is_ok() && clients.is_ok(), "with no route prefix nothing is scoped");
+    let (servers, clients) = try_generate_jsonapi(false, extra, scope_under_projects, true);
+    [servers.unwrap().err().expect("gen_servers refuses it"), clients.err().expect("gen_clients refuses it")]
+}
+
+/// Under a route prefix, a resource's `list`, `create` and `update` are
+/// served in its `get_by_id`'s scope: each resource they answer links to
+/// itself in their own scope, where only that `get_by_id` could serve it.
+/// `delete` answers no document, so its scope is free.
+#[test]
+fn under_a_route_prefix_a_resource_links_only_to_routes_its_scope_serves() {
+    for (fns, culprit) in [
+        ([STORE, STATE, STORE, STORE, STORE], "list"),
+        ([STATE, STORE, STORE, STORE, STORE], "list"),
+        ([STORE, STORE, STATE, STORE, STORE], "create"),
+        ([STORE, STORE, STORE, STATE, STORE], "update"),
+    ] {
+        for err in scoping_errors(&[("tag.rs", &tag_module(fns))]) {
+            assert!(err.contains(&format!("`tag::{culprit}` is served ")), "{culprit}: {err}");
+            assert!(err.contains("take a store in both fns or in neither"), "{culprit}: {err}");
+        }
+    }
+    let [err, _] = scoping_errors(&[("tag.rs", &tag_module([STATE, STORE, STORE, STORE, STORE]))]);
+    assert!(
+        err.ends_with(
+            "ontogen: `tag::list` is served outside the route prefix `projects/:project_id` (it takes no store) and \
+             `tag::get_by_id` only under it (it takes a store), but every resource `tag::list` answers links to \
+             itself in `tag::list`'s scope, where no `get_by_id` route is served; take a store in both fns or in \
+             neither"
+        ),
+        "{err}"
+    );
+    let (servers, clients) = try_generate_jsonapi(
+        false,
+        &[("tag.rs", &tag_module([STORE, STORE, STORE, STORE, STATE]))],
+        scope_under_projects,
+        true,
+    );
+    assert!(servers.unwrap().is_ok() && clients.is_ok(), "a scope apart for `delete` is fine");
+}
+
+/// Under a route prefix, a resource whose `get_by_id` takes no store serves
+/// its relationship routes outside the prefix, so they may neither link to a
+/// target served only under it nor call a junction op or `update` that takes
+/// a store, which no unscoped handler can open.
+#[test]
+fn under_a_route_prefix_unscoped_relationship_routes_reach_nothing_scoped() {
+    let [server, client] = scoping_errors(&[("workout_set.rs", &unscoped_workout_set(""))]);
+    for err in [&server, &client] {
+        assert!(
+            err.ends_with(
+                "ontogen: `workout_set::get_by_id` takes no store, so the relationship routes of the JSON:API \
+                 resource `workout-sets` are served outside the route prefix `projects/:project_id`, but its \
+                 relationship `tag` links `tags` resources, which `tag::get_by_id` serves only under the prefix (it \
+                 takes a store); take a store in `workout_set::get_by_id`, or the state in `tag::get_by_id`"
+            ),
+            "{err}"
+        );
+    }
+
+    let unscoped_tags = tag_module([STATE; 5]);
+    for (ops, culprit) in [
+        (
+            "pub async fn list_tags(store: &Store, set_id: &str) -> Result<Vec<String>, anyhow::Error> { todo!() }\n\
+             pub async fn add_tag(state: &AppState, set_id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }\n",
+            "list_tags",
+        ),
+        (
+            "pub async fn list_tags(state: &AppState, set_id: &str) -> Result<Vec<String>, anyhow::Error> { todo!() }\n\
+             pub async fn remove_tag(store: &Store, set_id: &str, tag_id: &str) -> Result<(), anyhow::Error> { todo!() }\n",
+            "remove_tag",
+        ),
+    ] {
+        let module = unscoped_workout_set(ops);
+        for err in scoping_errors(&[("workout_set.rs", &module), ("tag.rs", &unscoped_tags)]) {
+            assert!(
+                err.ends_with(&format!(
+                    "ontogen: `workout_set::{culprit}` takes a store, which only a handler under the route prefix \
+                     `projects/:project_id` opens, but it serves the relationship `tags` of the JSON:API resource \
+                     `workout-sets`, whose routes are served outside the prefix because `workout_set::get_by_id` \
+                     takes no store; take a store in `workout_set::get_by_id`, or the state in \
+                     `workout_set::{culprit}`"
+                )),
+                "{culprit}: {err}"
+            );
+        }
+    }
+
+    let update = unscoped_workout_set(
+        "pub async fn update(store: &Store, id: &str, input: UpdateWorkoutSetInput) -> Result<WorkoutSet, \
+         anyhow::Error> { todo!() }\n",
+    );
+    for err in scoping_errors(&[("workout_set.rs", &update), ("tag.rs", &unscoped_tags)]) {
+        assert!(
+            err.ends_with(
+                "ontogen: `workout_set::update` is served under the route prefix `projects/:project_id` (it takes a \
+                 store) and `workout_set::get_by_id` only outside it (it takes no store), but every resource \
+                 `workout_set::update` answers links to itself in `workout_set::update`'s scope, where no \
+                 `get_by_id` route is served; take a store in both fns or in neither"
+            ),
+            "{err}"
+        );
+    }
+}
+
+/// Scoped relationship routes may reach what is served outside the prefix:
+/// a target whose `get_by_id` takes no store is linked at its unscoped
+/// collection, and junction ops taking the state are called with it.
+#[test]
+fn scoped_relationship_routes_reach_unscoped_targets_and_junction_ops() {
+    let unscoped_tags = tag_module([STATE; 5]);
+    let (servers, clients) = try_generate_jsonapi(
+        false,
+        &[("workout_set.rs", STATE_JUNCTION_MODULE), ("tag.rs", &unscoped_tags)],
+        scope_under_projects,
+        true,
+    );
+    assert!(clients.is_ok(), "{:?}", clients.err());
+    let http = servers.unwrap().unwrap().http;
+    let related = &http[http.find("async fn ontogen_workout_set_related_get_scoped(").expect(&http)..];
+    let related = &related[..related.find("\n}\n").unwrap()];
+    assert!(related.contains("\"/api/tags\""), "the tags are linked where they are served:\n{related}");
+    assert!(!related.contains("/tags\", encode_path_segment(&ontogen_scope"), "{related}");
+    let post = &http[http.find("async fn ontogen_workout_set_relationship_post_scoped(").unwrap()..];
+    let post = &post[..post.find("\n}\n").unwrap()];
+    assert!(post.contains("add_tag(&ontogen_state, "), "the junction op takes the state:\n{post}");
+}
+
+/// `workout_set` with a `get_by_id`, a `create` and an `update` taking the
+/// given first arguments, each left out when `None`.
+fn workout_set_module(get: Option<&str>, create: Option<&str>, update: Option<&str>) -> String {
+    let get = get
+        .map(|a| format!("pub async fn get_by_id({a}, id: &str) -> Result<WorkoutSet, anyhow::Error> {{ todo!() }}\n"));
+    let create = create.map(|a| {
+        format!("pub async fn create({a}, input: CreateWorkoutSetInput) -> Result<WorkoutSet, anyhow::Error> {{ todo!() }}\n")
+    });
+    let update = update.map(|a| {
+        format!(
+            "pub async fn update({a}, id: &str, input: UpdateWorkoutSetInput) -> Result<WorkoutSet, anyhow::Error> \
+             {{ todo!() }}\n"
+        )
+    });
+    format!(
+        "use crate::schema::{{CreateWorkoutSetInput, UpdateWorkoutSetInput, WorkoutSet}};\nuse \
+         crate::store::Store;\nuse crate::AppState;\n\n{}{}{}",
+        get.unwrap_or_default(),
+        create.unwrap_or_default(),
+        update.unwrap_or_default()
+    )
+}
+
+/// Under a route prefix, a create or update that takes no store is served
+/// outside the prefix, where it checks each id it links with its target's
+/// `get_by_id`: a target whose `get_by_id` takes a store is out of its
+/// reach, whether or not its own module serves `get_by_id`.
+#[test]
+fn under_a_route_prefix_an_unscoped_write_links_nothing_scoped() {
+    for (module, culprit) in [
+        (workout_set_module(None, Some(STATE), None), "create"),
+        (workout_set_module(None, None, Some(STATE)), "update"),
+        (workout_set_module(Some(STATE), Some(STATE), None), "create"),
+    ] {
+        for err in scoping_errors(&[("workout_set.rs", &module)]) {
+            assert!(
+                err.ends_with(&format!(
+                    "ontogen: `workout_set::{culprit}` takes no store, so it is served outside the route prefix \
+                     `projects/:project_id`, but it checks that the `tags` resources its relationship `tag` links \
+                     exist with `tag::get_by_id`, which takes a store that only a handler under the prefix opens; \
+                     take a store in `workout_set::{culprit}`, or the state in `tag::get_by_id`"
+                )),
+                "{culprit}: {err}"
+            );
+        }
+    }
+
+    let unscoped_tags = tag_module([STATE; 5]);
+    let (servers, clients) = try_generate_jsonapi(
+        false,
+        &[("workout_set.rs", &workout_set_module(Some(STATE), Some(STATE), Some(STATE))), ("tag.rs", &unscoped_tags)],
+        scope_under_projects,
+        true,
+    );
+    assert!(clients.is_ok(), "{:?}", clients.err());
+    let http = servers.unwrap().unwrap().http;
+    assert!(http.contains("tag::get_by_id(state, &linked.id)"), "an unscoped target is read with the state:\n{http}");
+    assert!(!http.contains("state.store()"), "no store is opened outside a scope:\n{http}");
+}
+
+/// The reverse is fine: a create or update under the prefix checks a target
+/// whose `get_by_id` takes no store with the state, as an unscoped one
+/// checks a target served outside the prefix.
+#[test]
+fn under_a_route_prefix_a_scoped_write_links_unscoped_targets() {
+    let unscoped_tags = tag_module([STATE; 5]);
+    let (servers, clients) = try_generate_jsonapi(
+        false,
+        &[("workout_set.rs", &workout_set_module(Some(STORE), Some(STORE), Some(STORE))), ("tag.rs", &unscoped_tags)],
+        scope_under_projects,
+        true,
+    );
+    assert!(clients.is_ok(), "{:?}", clients.err());
+    let http = servers.unwrap().unwrap().http;
+    let check = &http[http.find("async fn workout_set_check_linked_scoped(").expect(&http)..];
+    let check = &check[..check.find("\n}\n").unwrap()];
+    assert!(check.contains("tag::get_by_id(state, &linked.id)"), "{check}");
+    assert!(!check.contains("store_for"), "the state reaches an unscoped target:\n{check}");
+    assert!(!http.contains("async fn workout_set_check_linked("), "no write is unscoped:\n{http}");
+}
+
+/// A `list_X` with no add or remove beside it is a custom GET at its action
+/// route, unpaged and returning its plain array, on every transport (§15).
+#[test]
+fn a_lone_list_x_is_a_custom_get_returning_its_plain_array() {
+    let clients = jsonapi_clients(true, |_| {});
+    let ts = &clients.transport;
+    assert!(ts.contains("  taskListDrafts(taskId: string): Promise<Task[]>;\n"), "{ts}");
+    for ts in [&clients.transport, &clients.http] {
+        assert_eq!(
+            method_statements(ts, "taskListDrafts"),
+            "return callOp<Task[]>('GET', `/tasks/list-drafts/${encodeURIComponent(taskId)}`);"
+        );
+    }
+    let ipc = &ts[ts.find("export function createIpcTransport").unwrap()..];
+    assert_eq!(method_statements(ipc, "taskListDrafts"), "return invoke('task_list_drafts', { taskId });");
+}
+
+/// A junction list of entities flattens its target's resources, so the
+/// target's flattener is emitted even when none of the target's own methods
+/// is.
+#[test]
+fn a_junction_list_of_entities_emits_its_targets_flattener() {
+    let skip_tags = |config: &mut crate::ClientsConfig| {
+        config.ts_skip_commands =
+            ["list", "get_by_id", "create", "update", "delete"].iter().map(|op| format!("tag_{op}")).collect();
+    };
+    let clients = jsonapi_clients_with(false, &[], skip_tags);
+    for ts in [&clients.transport, &clients.http] {
+        assert!(!ts.contains("async tagGetById("), "{ts}");
+        assert!(ts.contains("function flattenTag(r: JsonApiResource): Tag {"), "{ts}");
+        assert!(ts_method(ts, "taskListLabels").contains("data.map(flattenTag)"), "{ts}");
+    }
+    let skip_labels = |config: &mut crate::ClientsConfig| {
+        skip_tags(config);
+        config.ts_skip_commands.push("task_list_labels".to_string());
+    };
+    let clients = jsonapi_clients_with(false, &[], skip_labels);
+    assert!(!clients.transport.contains("function flattenTag("), "{}", clients.transport);
 }
 
 /// An HTTP call: its method and its path, each path parameter written `{}`.
 type Call = (String, String);
 
 /// Every `(METHOD, path)` the generated Axum router `server` registers, each
-/// path parameter written `{}`, with the handler serving it.
+/// path parameter written `{}` but a relationship name, `{rel}`, with the
+/// handler serving it.
 fn server_routes(server: &str) -> BTreeMap<Call, String> {
     let flat = crate::servers::tests::compact(server);
     let mut routes = BTreeMap::new();
@@ -1422,6 +1864,11 @@ fn server_args(server: &str, handler: &str) -> (ArgNames, BTreeSet<String>) {
         list.split(',').filter(|s| !s.is_empty()).map(|s| s.trim_matches('"').to_string()).collect()
     };
     let mut names = ArgNames::default();
+    // A relationship GET parses its raw query per relationship; it reads the
+    // `page` family when any relationship it serves pages.
+    if body.contains("QueryParams::parse(") {
+        names.page = body.contains("page:true");
+    }
     // The JSON:API `Query<Spec>` it extracts, not Axum's own.
     for (at, _) in signature.match_indices("Query<").filter(|(at, _)| !signature[..*at].ends_with("::")) {
         let spec = &signature[at + "Query<".len()..];
@@ -1456,8 +1903,8 @@ fn server_args(server: &str, handler: &str) -> (ArgNames, BTreeSet<String>) {
     (names, required)
 }
 
-/// `path` with every `{name}` or `${…}` parameter written `{}` and its query
-/// string dropped.
+/// `path` with every `{name}` or `${…}` parameter written `{}`, but a
+/// server route's `{rel}`, and its query string dropped.
 fn route_template(path: &str) -> String {
     let path = path.find("${toQueryString(").or_else(|| path.find('?')).map_or(path, |end| &path[..end]);
     let mut out = String::new();
@@ -1465,11 +1912,77 @@ fn route_template(path: &str) -> String {
     while let Some(start) = rest.find('{') {
         let open = if rest[..start].ends_with('$') { start - 1 } else { start };
         out.push_str(&rest[..open]);
-        out.push_str("{}");
-        rest = &rest[start + rest[start..].find('}').unwrap() + 1..];
+        let end = start + rest[start..].find('}').unwrap() + 1;
+        out.push_str(if &rest[open..end] == "{rel}" { "{rel}" } else { "{}" });
+        rest = &rest[end..];
     }
     out.push_str(rest);
     out
+}
+
+/// The handler of `routes` that serves `call`, and the relationship name
+/// the call puts where the route captures `{rel}`, if it does: a
+/// relationship route serves every name of its type, so the call's literal
+/// segment stands in for `{rel}`.
+fn route_for<'r>(routes: &'r BTreeMap<Call, String>, (method, path): &Call) -> Option<(&'r str, Option<String>)> {
+    if let Some(handler) = routes.get(&(method.clone(), path.clone())) {
+        return Some((handler, None));
+    }
+    let segments: Vec<&str> = path.split('/').collect();
+    routes.iter().filter(|((m, _), _)| m == method).find_map(|((_, route), handler)| {
+        let route: Vec<&str> = route.split('/').collect();
+        if route.len() != segments.len() {
+            return None;
+        }
+        let mut rel = None;
+        for (r, s) in route.iter().zip(&segments) {
+            match *r {
+                "{rel}" if *s != "{}" => rel = Some((*s).to_string()),
+                r if r == *s => {}
+                _ => return None,
+            }
+        }
+        rel.map(|rel| (handler.as_str(), Some(rel)))
+    })
+}
+
+/// The pair tests' reading of relationship routes: `{rel}` stands for the
+/// name a call puts there, never for a path parameter, and a relationship
+/// GET's raw query pages when it says so.
+#[test]
+fn the_route_parser_matches_a_relationship_name_against_rel() {
+    let server = r#"
+        .route(
+            "/api/tasks/{id}/relationships/{rel}",
+            get(ontogen_task_relationship_get).post(ontogen_task_relationship_post).fallback(allow([Method::GET])),
+        )
+        .route("/api/tasks/{id}/{rel}", get(ontogen_task_related_get).fallback(allow([Method::GET])))
+        .route("/api/tasks/list-drafts/{task_id}", get(task_list_drafts).fallback(allow([Method::GET])))
+async fn ontogen_task_related_get(path: Path<(LookupKey, LookupKey)>, raw: RawQuery) -> Response {
+    let spec = match rel.as_str() {
+        "labels" => QuerySpec { page: true, ..QuerySpec::NONE },
+        _ => QuerySpec::NONE,
+    };
+    let query = QueryParams::parse(raw.as_deref(), &spec);
+}
+"#;
+    let routes = server_routes(server);
+    let call = |method: &str, path: &str| (method.to_string(), path.to_string());
+    let found = |method: &str, path: &str| {
+        route_for(&routes, &call(method, path)).map(|(handler, rel)| (handler.to_string(), rel))
+    };
+    assert_eq!(
+        found("POST", "/api/tasks/{}/relationships/labels"),
+        Some(("ontogen_task_relationship_post".to_string(), Some("labels".to_string())))
+    );
+    assert_eq!(
+        found("GET", "/api/tasks/{}/labels"),
+        Some(("ontogen_task_related_get".to_string(), Some("labels".to_string())))
+    );
+    assert_eq!(found("GET", "/api/tasks/list-drafts/{}"), Some(("task_list_drafts".to_string(), None)));
+    assert_eq!(found("GET", "/api/tasks/{}/{}"), None, "a path parameter is no relationship name");
+    assert_eq!(found("DELETE", "/api/tasks/{}/relationships/labels"), None);
+    assert!(server_args(server, "ontogen_task_related_get").0.page);
 }
 
 /// The keys of the TS object literal `members` (`{ a, b: c }` without its
@@ -1482,19 +1995,12 @@ fn literal_keys(members: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// The `(METHOD, path under /api)` a generated HTTP method `method` (its
-/// name, signature and body) calls, with its route-prefix argument
+/// The `(METHOD, path under /api)` a generated HTTP method `body` (its
+/// name, signature and statements) calls, with its route-prefix argument
 /// `projectId` given or not, and the argument names the call sends outside
 /// its path.
-fn client_call_and_args(method: &str, prefix_given: bool) -> Option<(Call, ArgNames)> {
-    let signature = &method[..method.find("): ").unwrap()];
-    let body = match method.split_once("if (projectId) {") {
-        Some((_, branches)) => {
-            let (scoped, unscoped) = branches.split_once("\n      }\n").unwrap();
-            if prefix_given { scoped } else { unscoped }
-        }
-        None => method,
-    };
+fn client_call_and_args(body: &str, prefix_given: bool) -> Option<(Call, ArgNames)> {
+    let signature = &body[..body.find("): ").unwrap()];
     let (method, args, op_call) = if let Some((_, call)) = body.split_once("callOp<") {
         let call = &call[call.find(">('").unwrap() + 3..];
         let (method, args) = call.split_once("', ").unwrap();
@@ -1578,9 +2084,11 @@ fn assert_calls_are_served(
         if !checked(who) {
             return;
         }
-        let handler = routes
-            .get(call)
+        let (handler, rel) = route_for(&routes, call)
             .unwrap_or_else(|| panic!("{who} calls {call:?}, which the server does not serve:\n{routes:#?}"));
+        if let Some(rel) = rel {
+            assert!(server.contains(&format!("\"{rel}\"")), "{who} calls {call:?}; the server names no `{rel}`");
+        }
         let (declared, required) = server_args(server, handler);
         assert_eq!(
             (&sent.filter, &sent.filter_struct),
@@ -1621,22 +2129,37 @@ fn assert_calls_are_served(
     calls
 }
 
+/// Every junction call reaches a server route, paginated and not, scoped
+/// and not, at the same shape either way: outside a resource module the
+/// nested custom-op routes (§10.4), inside one the relationship routes, the
+/// related link for a list of entities and the linkage for a list of ids
+/// and for every write (§14.2). A lone `list_X` is a custom GET.
 #[test]
 fn every_junction_call_reaches_a_server_route() {
-    let junction = |name: &str| name.ends_with("Tags") || name.ends_with("Tag");
-    let (server, clients) = jsonapi_stack(true, &[], scope_under_projects);
-    let calls = assert_calls_are_served(&server, &clients, true, &junction);
-    let call = |method: &str, path: &str| Some((method.to_string(), path.to_string()));
-    assert_eq!(calls["boardListTags"].0, call("GET", "/api/projects/{}/boards/list-tags/{}"));
-    assert_eq!(calls["boardAddTag"].0, call("POST", "/api/projects/{}/boards/add-tag"));
-    assert_eq!(calls["boardRemoveTag"].0, call("POST", "/api/projects/{}/boards/remove-tag"));
-
-    // Unscoped, the same methods call the nested routes.
-    let (server, clients) = jsonapi_stack(true, &[], |_| {});
-    let calls = assert_calls_are_served(&server, &clients, false, &junction);
-    assert_eq!(calls["boardListTags"].1, call("GET", "/api/boards/{}/tags"));
-    assert_eq!(calls["boardAddTag"].1, call("POST", "/api/boards/{}/tags"));
-    assert_eq!(calls["boardRemoveTag"].1, call("DELETE", "/api/boards/{}/tags/{}"));
+    let junction = |name: &str| ["Tags", "Tag", "Labels", "Label", "Drafts"].iter().any(|end| name.ends_with(end));
+    let expected = [
+        ("boardListTags", "GET", "/boards/{}/tags"),
+        ("boardAddTag", "POST", "/boards/{}/tags"),
+        ("boardRemoveTag", "DELETE", "/boards/{}/tags/{}"),
+        ("taskListLabels", "GET", "/tasks/{}/labels"),
+        ("taskAddLabel", "POST", "/tasks/{}/relationships/labels"),
+        ("taskRemoveLabel", "DELETE", "/tasks/{}/relationships/labels"),
+        ("taskListDrafts", "GET", "/tasks/list-drafts/{}"),
+        ("workoutSetListTags", "GET", "/workout-sets/{}/relationships/tags"),
+        ("workoutSetAddTag", "POST", "/workout-sets/{}/relationships/tags"),
+        ("workoutSetRemoveTag", "DELETE", "/workout-sets/{}/relationships/tags"),
+    ];
+    for paginated in [false, true] {
+        let (server, clients) = jsonapi_stack(paginated, &[], scope_under_projects);
+        let calls = assert_calls_are_served(&server, &clients, true, &junction);
+        for (name, method, path) in expected {
+            let scoped = Some((method.to_string(), format!("/api/projects/{{}}{path}")));
+            let unscoped = Some((method.to_string(), format!("/api{path}")));
+            assert_eq!(calls[name], (scoped, unscoped), "{name}");
+        }
+        let (server, clients) = jsonapi_stack(paginated, &[], |_| {});
+        assert_calls_are_served(&server, &clients, false, &junction);
+    }
 }
 
 /// `status`: a custom GET taking the state rather than a store, and a

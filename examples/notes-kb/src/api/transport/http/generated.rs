@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::State,
+    extract::{RawQuery, State},
     http::{Method, StatusCode},
     response::Response,
     routing::get,
@@ -15,7 +15,7 @@ use axum::{
 use ontogen_jsonapi::{
     Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, QueryParams, QuerySpec, Relationship,
     ResourceIdentifier, ResourceObject,
-    error::method_not_allowed,
+    error::{method_not_allowed, relationship_not_found},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::encode_path_segment,
     request::{self, Endpoint, LinkedId, ResourceData},
@@ -50,6 +50,20 @@ fn allow<const N: usize>(
     allowed: [Method; N],
 ) -> impl Fn(Method) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
     move |method| std::future::ready(method_not_allowed(&method, &allowed))
+}
+
+/// `ids` with each id of `linked` it lacks appended, or `None` when it lacks
+/// none: a relationship `POST` that adds nothing writes nothing.
+fn ontogen_added(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
+    let added: Vec<String> = linked.iter().map(|l| l.id.clone()).filter(|id| !ids.contains(id)).collect();
+    (!added.is_empty()).then(|| [ids, added.as_slice()].concat())
+}
+
+/// `ids` without the ids of `linked`, or `None` when it holds none of them: a
+/// relationship `DELETE` that removes nothing writes nothing.
+fn ontogen_removed(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
+    let kept: Vec<String> = ids.iter().filter(|id| !linked.iter().any(|l| l.id == **id)).cloned().collect();
+    (kept.len() != ids.len()).then_some(kept)
 }
 
 // ── JSON:API resources ──
@@ -137,12 +151,14 @@ impl Serialize for NoteResourceAttributes<'_> {
 /// under `collection`.
 fn note_as_resource<'a>(entity: &'a Note, collection: &str) -> ResourceObject<NoteResourceAttributes<'a>> {
     let self_link = format!("{collection}/{}", encode_path_segment(&entity.id));
-    ResourceObject::new("notes", entity.id.clone(), NoteResourceAttributes(entity), self_link).with_relationship(
-        "links",
-        Relationship::from_data(Linkage::ToMany(
-            entity.links.iter().map(|id| ResourceIdentifier::new("notes", id.as_str())).collect(),
-        )),
-    )
+    ResourceObject::new("notes", entity.id.clone(), NoteResourceAttributes(entity), self_link.clone())
+        .with_relationship(
+            "links",
+            Relationship::new(
+                Links::new(format!("{self_link}/relationships/links")).with_related(format!("{self_link}/links")),
+                Linkage::ToMany(entity.links.iter().map(|id| ResourceIdentifier::new("notes", id.as_str())).collect()),
+            ),
+        )
 }
 
 /// The id an `{id}` path segment names.
@@ -187,6 +203,56 @@ fn note_request_fields(
 async fn note_check_linked(state: &AppState, linked: &NoteLinkedIds) -> Result<(), ErrorObject> {
     let store = state.store().await.map_err(ontogen_internal_error)?;
     for linked in &linked.links {
+        match note::get_by_id(&store, &linked.id).await {
+            Ok(_) => {}
+            Err(crate::schema::AppError::NoteNotFound(..)) => return Err(linked.not_found("notes")),
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(())
+}
+
+/// The `notes` resource `id` names, read as its `GET` reads it: the
+/// parent of a relationship route.
+async fn ontogen_note_read(state: &AppState, id: &LookupKey) -> Result<Note, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    note::get_by_id(&store, note_lookup_key(id)?).await.map_err(ontogen_app_error)
+}
+
+/// Sets the relation field `field` of the `notes` resource `id` to
+/// `value` through `note::update`, as a resource `PATCH` naming only that
+/// relationship does.
+async fn ontogen_note_write_field(
+    state: &AppState,
+    id: &str,
+    field: &str,
+    value: serde_json::Value,
+) -> Result<(), ErrorObject> {
+    let input: UpdateNoteInput = from_fields(serde_json::Map::from_iter([(field.to_owned(), value)]))?;
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    note::update(&store, id, input).await.map_err(ontogen_app_error)?;
+    Ok(())
+}
+
+/// The `notes` resources `ids` name, in order, without the ids that
+/// name none.
+async fn ontogen_note_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Note>, ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    let mut found = Vec::with_capacity(ids.len());
+    for id in ids {
+        match note::get_by_id(&store, id).await {
+            Ok(entity) => found.push(entity),
+            Err(crate::schema::AppError::NoteNotFound(..)) => {}
+            Err(e) => return Err(ontogen_app_error(e)),
+        }
+    }
+    Ok(found)
+}
+
+/// Checks, in order, that each of `ids` names a resource of type `notes`.
+async fn ontogen_note_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
+    let store = state.store().await.map_err(ontogen_internal_error)?;
+    for linked in ids {
         match note::get_by_id(&store, &linked.id).await {
             Ok(_) => {}
             Err(crate::schema::AppError::NoteNotFound(..)) => return Err(linked.not_found("notes")),
@@ -289,6 +355,132 @@ async fn note_delete(
     Ok(response::no_content())
 }
 
+async fn ontogen_note_relationship_get(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((id, rel)): Path<(LookupKey, LookupKey)>,
+    RawQuery(ontogen_raw_query): RawQuery,
+) -> Result<Response, ErrorObject> {
+    let ontogen_collection = "/api/notes";
+    match rel.as_str() {
+        Some("links") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_note_read(&ontogen_state, &id).await?;
+            let ontogen_base = format!("{ontogen_collection}/{}", encode_path_segment(&ontogen_entity.id));
+            let ontogen_links =
+                Links::new(format!("{ontogen_base}/relationships/links")).with_related(format!("{ontogen_base}/links"));
+            let ontogen_data = Linkage::ToMany(
+                ontogen_entity
+                    .links
+                    .iter()
+                    .map(|ontogen_member| ResourceIdentifier::new("notes", ontogen_member.as_str()))
+                    .collect(),
+            );
+            Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
+        }
+        _ => Err(relationship_not_found("notes", &rel)),
+    }
+}
+
+async fn ontogen_note_relationship_patch(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((id, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("links") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "notes", None)?;
+            let ontogen_entity = ontogen_note_read(&ontogen_state, &id).await?;
+            ontogen_note_check_ids(&ontogen_state, &ontogen_linked).await?;
+            ontogen_note_write_field(
+                &ontogen_state,
+                &ontogen_entity.id,
+                "links",
+                ontogen_linked.into_iter().map(|ontogen_member| ontogen_member.id).collect(),
+            )
+            .await?;
+            Ok(response::no_content())
+        }
+        _ => Err(relationship_not_found("notes", &rel)),
+    }
+}
+
+async fn ontogen_note_relationship_post(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((id, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("links") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "notes", Some(1))?;
+            let ontogen_entity = ontogen_note_read(&ontogen_state, &id).await?;
+            ontogen_note_check_ids(&ontogen_state, &ontogen_linked).await?;
+            if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.links, &ontogen_linked) {
+                ontogen_note_write_field(&ontogen_state, &ontogen_entity.id, "links", ontogen_ids.into()).await?;
+            }
+            Ok(response::no_content())
+        }
+        _ => Err(relationship_not_found("notes", &rel)),
+    }
+}
+
+async fn ontogen_note_relationship_delete(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_path: Result<Path<(LookupKey, LookupKey)>, ErrorObject>,
+    ontogen_query: Result<Query<NoParams>, ErrorObject>,
+    ontogen_body: Body,
+) -> Result<Response, ErrorObject> {
+    let Path((id, rel)) = ontogen_path?;
+    match rel.as_str() {
+        Some("links") => {
+            ontogen_query?;
+            let ontogen_bytes = ontogen_body.into_bytes()?;
+            let ontogen_linked =
+                request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "notes", Some(1))?;
+            let ontogen_entity = ontogen_note_read(&ontogen_state, &id).await?;
+            if let Some(ontogen_ids) = ontogen_removed(&ontogen_entity.links, &ontogen_linked) {
+                ontogen_note_write_field(&ontogen_state, &ontogen_entity.id, "links", ontogen_ids.into()).await?;
+            }
+            Ok(response::no_content())
+        }
+        _ => Err(relationship_not_found("notes", &rel)),
+    }
+}
+
+async fn ontogen_note_related_get(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    Path((id, rel)): Path<(LookupKey, LookupKey)>,
+    RawQuery(ontogen_raw_query): RawQuery,
+) -> Result<Response, ErrorObject> {
+    let ontogen_collection = "/api/notes";
+    match rel.as_str() {
+        Some("links") => {
+            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;
+            let ontogen_entity = ontogen_note_read(&ontogen_state, &id).await?;
+            let ontogen_related = ontogen_note_fetch(&ontogen_state, &ontogen_entity.links).await?;
+            let ontogen_data: Vec<_> =
+                ontogen_related.iter().map(|ontogen_member| note_as_resource(ontogen_member, "/api/notes")).collect();
+            let ontogen_self = format!("{ontogen_collection}/{}/links", encode_path_segment(&ontogen_entity.id));
+            Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
+        }
+        _ => Err(relationship_not_found("notes", &rel)),
+    }
+}
+
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -301,4 +493,13 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
+        .route(
+            "/api/notes/{id}/relationships/{rel}",
+            get(ontogen_note_relationship_get)
+                .patch(ontogen_note_relationship_patch)
+                .post(ontogen_note_relationship_post)
+                .delete(ontogen_note_relationship_delete)
+                .fallback(allow([Method::GET, Method::PATCH, Method::POST, Method::DELETE])),
+        )
+        .route("/api/notes/{id}/{rel}", get(ontogen_note_related_get).fallback(allow([Method::GET])))
 }

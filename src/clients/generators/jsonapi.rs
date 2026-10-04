@@ -11,7 +11,7 @@ use ontogen_core::naming::to_snake_case;
 
 use crate::clients::config::Config;
 use crate::clients::generators::{command_name, ts_params_in_declaration_order};
-use crate::resource::{Arity, Resource, member_name};
+use crate::resource::{Arity, JunctionRelationship, Resource, member_name};
 use crate::servers::classify::classify_op;
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
@@ -119,8 +119,8 @@ async function httpPatch<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
-async function httpDelete(path: string): Promise<void> {
-  await httpRequest('DELETE', path);
+async function httpDelete(path: string, body?: unknown): Promise<void> {
+  await httpRequest('DELETE', path, body);
 }
 
 /**
@@ -192,12 +192,13 @@ interface JsonApiResourceDocument {
   data: JsonApiResource;
 }
 
-interface JsonApiCollectionDocument {
-  data: JsonApiResource[];
+/** `T` is `JsonApiResourceIdentifier` for a relationship's linkage. */
+interface JsonApiCollectionDocument<T = JsonApiResource> {
+  data: T[];
 }
 
-interface JsonApiPageDocument {
-  data: JsonApiResource[];
+interface JsonApiPageDocument<T = JsonApiResource> {
+  data: T[];
   meta: { total: number; limit: number; offset: number };
 }
 
@@ -331,19 +332,28 @@ fn is_emitted(module: &str, f: &ApiFn, config: &Config) -> bool {
 pub(crate) enum Served<'a> {
     /// As its resource (§5–§8), a filtered `list` included (§7.3).
     Resource(&'a Resource),
+    /// As a relationship of its module's resource (§9): a junction op of a
+    /// resource module, which has no route of its own.
+    Relationship(&'a Resource, JunctionRelationship<'a>),
     /// As a custom op (§10): arguments in `meta.args`, the result in
-    /// `meta.result`. Custom ops, junction ops, and CRUD ops with no
-    /// resource behind them (§10.4), a filtered `list` included.
+    /// `meta.result`. Custom ops, junction ops outside a resource module,
+    /// and CRUD ops with no resource behind them (§10.4), a filtered `list`
+    /// included.
     Op,
 }
 
-/// How `f` of `module` is served, by the predicate the server's routes
-/// follow ([`ResourceModel::serving`]).
+/// How `f` of `module` is served, by the predicates the server's routes
+/// follow ([`ResourceModel::serving`] and [`ResourceModel::junctions`]).
 ///
 /// [`ResourceModel::serving`]: crate::resource::ResourceModel::serving
-pub(crate) fn served<'a>(module: &ApiModule, f: &ApiFn, config: &'a Config) -> Served<'a> {
-    match config.resources.serving(&module.name, f) {
-        Some(resource) => Served::Resource(resource),
+/// [`ResourceModel::junctions`]: crate::resource::ResourceModel::junctions
+pub(crate) fn served<'a>(module: &'a ApiModule, f: &ApiFn, config: &'a Config) -> Served<'a> {
+    if let Some(resource) = config.resources.serving(module, f) {
+        return Served::Resource(resource);
+    }
+    let Some(resource) = config.resources.by_module(&module.name) else { return Served::Op };
+    match config.resources.junction_of(module, f) {
+        Some(junction) => Served::Relationship(resource, junction),
         None => Served::Op,
     }
 }
@@ -355,23 +365,32 @@ pub(crate) fn event_resource<'a>(ev: &EventFn, config: &'a Config) -> Option<&'a
 }
 
 /// Every resource that needs a flatten/unflatten pair, in module order: each
-/// with at least one emitted method served as it and, with `events`, each an
-/// event op's frames carry.
-pub(crate) fn served_resources<'a>(modules: &[ApiModule], config: &'a Config, events: bool) -> Vec<&'a Resource> {
+/// with at least one emitted method served as it or as one of its
+/// relationships; then each target a junction list of entities reads; then,
+/// with `events`, each an event op's frames carry.
+pub(crate) fn served_resources<'a>(modules: &'a [ApiModule], config: &'a Config, events: bool) -> Vec<&'a Resource> {
+    let emitted = |m: &'a ApiModule| {
+        m.functions.iter().filter(move |f| is_emitted(&m.name, f, config)).map(move |f| (f, served(m, f, config)))
+    };
     let mut resources: Vec<&Resource> = modules
         .iter()
         .filter_map(|m| {
-            m.functions.iter().filter(|f| is_emitted(&m.name, f, config)).find_map(|f| match served(m, f, config) {
-                Served::Resource(r) => Some(r),
+            emitted(m).find_map(|(_, served)| match served {
+                Served::Resource(r) | Served::Relationship(r, _) => Some(r),
                 Served::Op => None,
             })
         })
         .collect();
-    if events {
-        for r in modules.iter().flat_map(|m| &m.events).filter_map(|ev| event_resource(ev, config)) {
-            if !resources.iter().any(|known| known.module == r.module) {
-                resources.push(r);
-            }
+    let targets = modules.iter().flat_map(emitted).filter_map(|(f, served)| match served {
+        Served::Relationship(_, j) if j.lists_entities && j.list.name == f.name => {
+            config.resources.by_module(&j.target_module)
+        }
+        _ => None,
+    });
+    let events = modules.iter().flat_map(|m| &m.events).filter(|_| events).filter_map(|ev| event_resource(ev, config));
+    for r in targets.chain(events).collect::<Vec<_>>() {
+        if !resources.iter().any(|known| known.module == r.module) {
+            resources.push(r);
         }
     }
     resources
@@ -412,15 +431,16 @@ pub(crate) struct Method {
 /// client that calls scoped routes through `scopedPath`, and is `None` for
 /// one that calls only unscoped routes.
 pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -> Option<Method> {
-    let scope = scope_of(f, scope);
+    let scope = scope_of(m, f, config, scope);
     let base = config.naming.url_for_module(m);
     let fetch = |p: &str| fetch(p, scope);
     let ret = if f.return_type == "()" { "null".to_string() } else { rust_type_to_ts(&f.return_type) };
     let input_type = |i: usize| rust_type_to_ts(&extract_input_type(&f.params[i].ty));
     let id_path = format!("/{base}/${{encodeURIComponent(id)}}");
-    let op = classify_op(f);
+    let op = classify_op(m, f);
     let resource = match served(m, f, config) {
         Served::Resource(r) => r,
+        Served::Relationship(_, junction) => return Some(relationship_method(m, f, &junction, config, scope)),
         Served::Op if op == OpKind::List => return Some(list_method(m, f, config, scope)),
         Served::Op => {
             let (params, return_type) = match op {
@@ -442,7 +462,7 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&s
                     (ts_params_in_declaration_order(f), ret)
                 }
             };
-            let body = op_body(m, f, config, &return_type, scope);
+            let body = vec![op_call(&return_type, &op_route(m, f, config), scope)];
             return Some(Method { params, return_type, body });
         }
     };
@@ -491,10 +511,92 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&s
     Some(method)
 }
 
-/// The scope `f`'s calls take from a client's `scope`: only a store-scoped
-/// op is served under the route prefix; any other keeps its unscoped route.
-pub(crate) fn scope_of<'a>(f: &ApiFn, scope: Option<&'a str>) -> Option<&'a str> {
-    scope.filter(|_| f.first_param_is_store)
+/// The scope `f` of `m`'s calls take from a client's `scope`: only a
+/// store-scoped op is served under the route prefix; any other keeps its
+/// unscoped route. A relationship's routes are its resource's, scoped as
+/// the `get_by_id` that reads its parent is.
+pub(crate) fn scope_of<'a>(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&'a str>) -> Option<&'a str> {
+    let routed_by = match served(m, f, config) {
+        Served::Relationship(..) => {
+            config.resources.get_by_id(m).expect("a junction relationship's module serves get_by_id")
+        }
+        _ => f,
+    };
+    scope.filter(|_| routed_by.first_param_is_store)
+}
+
+/// The method of a junction op of a resource module, which calls its
+/// relationship's routes (§14.2). Its list reads the related resources, or
+/// the linkage when it lists ids, paged with the `page` family when
+/// paginated; its add and remove send the one identifier to the linkage.
+fn relationship_method(
+    m: &ApiModule,
+    f: &ApiFn,
+    junction: &JunctionRelationship,
+    config: &Config,
+    scope: Option<&str>,
+) -> Method {
+    let mut params = ts_params_in_declaration_order(f);
+    let parent = format!("/{}{}", config.naming.url_for_module(m), path_segment(&snake_to_camel(&f.params[0].name)));
+    let rel = ontogen_jsonapi::links::encode_path_segment(&junction.name);
+    let linkage = format!("{parent}/relationships/{rel}");
+    if f.name != junction.list.name {
+        let verb = if junction.add.is_some_and(|add| add.name == f.name) { "httpPost" } else { "httpDelete" };
+        let child = snake_to_camel(&f.params[1].name);
+        let body = format!("{{ data: [{{ type: '{}', id: {child} }}] }}", junction.target_type);
+        return Method {
+            params,
+            return_type: "null".to_string(),
+            body: vec![format!("await {verb}({}, {body});", fetch(&linkage, scope)), "return null;".to_string()],
+        };
+    }
+
+    let paginated = is_paginated(m, f, config);
+    let ret = rust_type_to_ts(&f.return_type);
+    let (path, item, doc) = if junction.lists_entities {
+        let target = config.resources.by_module(&junction.target_module).expect("a junction target is a resource");
+        (format!("{parent}/{rel}"), flatten_fn(target), "")
+    } else {
+        (linkage, "(i) => i.id".to_string(), "<JsonApiResourceIdentifier>")
+    };
+    let return_type = if paginated {
+        params.push("limit?: number".to_string());
+        params.push("offset?: number".to_string());
+        paginated_result(&ret)
+    } else {
+        ret
+    };
+    Method { params, return_type, body: read_collection(&path, Vec::new(), scope, &item, doc, paginated) }
+}
+
+/// The statements that read the collection at `path`, sending the query
+/// parameter `families`, and return its items, each mapped by `item`: a
+/// `PaginatedResult` from `data` and `meta` when `paginated`, paged with the
+/// `page` family. `doc` is the documents' type argument, empty for
+/// resources.
+fn read_collection(
+    path: &str,
+    mut families: Vec<(&str, String)>,
+    scope: Option<&str>,
+    item: &str,
+    doc: &str,
+    paginated: bool,
+) -> Vec<String> {
+    if paginated {
+        families.push(("page", "{ offset, limit }".to_string()));
+    }
+    let path = fetch(&format!("{path}{}", query_string(&families)), scope);
+    if paginated {
+        vec![
+            format!("const {{ data, meta }} = await httpGet<JsonApiPageDocument{doc}>({path});"),
+            format!("return {{ items: data.map({item}), total: meta.total, limit: meta.limit, offset: meta.offset }};"),
+        ]
+    } else {
+        vec![
+            format!("const {{ data }} = await httpGet<JsonApiCollectionDocument{doc}>({path});"),
+            format!("return data.map({item});"),
+        ]
+    }
 }
 
 /// The path expression a call fetches: `path` as a template literal when it
@@ -513,7 +615,6 @@ fn fetch(path: &str, scope: Option<&str>) -> String {
 /// under `/api`), a list's `filter` family ([`filter_family`]), the `opArg`
 /// members and the `meta.args` members, each member a
 /// `(Rust name, TS expression)` pair.
-#[derive(PartialEq, Eq)]
 struct OpRoute<'a> {
     method: &'static str,
     path: String,
@@ -522,17 +623,10 @@ struct OpRoute<'a> {
     args: Vec<(&'a str, String)>,
 }
 
-/// The route `f` of `m` is called at, `scoped` when it is served under the
-/// route prefix (§11.1). There a junction op is an action-style custom op:
-/// its list a GET taking every argument in the path, its add and remove
-/// POSTs taking both in `meta.args`. Unscoped, it keeps its nested route.
-fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> OpRoute<'a> {
-    let classified = classify_op(f);
-    let op = match &classified {
-        OpKind::JunctionList { .. } if scoped => OpKind::CustomGet,
-        OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } if scoped => OpKind::CustomPost,
-        op => op.clone(),
-    };
+/// The route `f` of `m` is called at, scoped or not: the route prefix
+/// (§11.1) only goes in front of it.
+fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config) -> OpRoute<'a> {
+    let op = classify_op(m, f);
     let base = format!("/{}", config.naming.url_for_module(m));
     let value = |p: &Param| if p.is_input() { "input".to_string() } else { snake_to_camel(&p.name) };
     let segment = |p: &Param| path_segment(&value(p));
@@ -576,10 +670,6 @@ fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
             op_args = page();
         }
         OpKind::JunctionList { .. } => op_args = page(),
-        OpKind::CustomGet if matches!(classified, OpKind::JunctionList { .. }) => {
-            path.extend(rest.iter().map(segment));
-            op_args = page();
-        }
         _ if matches!(method, "POST" | "PATCH") => args = rest.iter().map(|p| (p.name.as_str(), value(p))).collect(),
         _ => {
             for p in rest {
@@ -592,23 +682,6 @@ fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
         }
     }
     OpRoute { method, path, filter, op_args, args }
-}
-
-/// The statements of an op served as a custom op. A client with a `scope`
-/// calls the scoped route when given the prefix argument and the unscoped
-/// one otherwise: through `scopedPath` alone when both share a shape, else
-/// by branching on the argument.
-fn op_body(m: &ApiModule, f: &ApiFn, config: &Config, return_type: &str, scope: Option<&str>) -> Vec<String> {
-    let unscoped = op_route(m, f, config, false);
-    let Some(prefix_arg) = scope else { return vec![op_call(return_type, &unscoped, None)] };
-    let scoped = op_route(m, f, config, true);
-    if scoped == unscoped {
-        return vec![op_call(return_type, &unscoped, scope)];
-    }
-    vec![
-        format!("if ({prefix_arg}) {{\n  {}\n}}", op_call(return_type, &scoped, scope)),
-        op_call(return_type, &unscoped, None),
-    ]
 }
 
 /// `/${encodeURIComponent(parentId)}`: the TS expression `value` as one path
@@ -701,7 +774,7 @@ pub(crate) fn query_required(f: &ApiFn, config: &Config) -> bool {
 /// list is an op (§10.4), sending the same `filter` family and paging with
 /// the `opArg` family. Every paginated list returns `PaginatedResult`.
 fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -> Method {
-    let scope = scope_of(f, scope);
+    let scope = scope_of(m, f, config, scope);
     let base = config.naming.url_for_module(m);
     let paginated = is_paginated(m, f, config);
 
@@ -725,31 +798,11 @@ fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -
     let ret = rust_type_to_ts(&f.return_type);
     let return_type = if paginated { paginated_result(&ret) } else { ret };
 
-    let resource = match served(m, f, config) {
-        Served::Resource(r) => r,
-        Served::Op => {
-            let body = op_body(m, f, config, &return_type, scope);
-            return Method { params, return_type, body };
-        }
+    let Served::Resource(resource) = served(m, f, config) else {
+        let body = vec![op_call(&return_type, &op_route(m, f, config), scope)];
+        return Method { params, return_type, body };
     };
-    let mut families: Vec<(&str, String)> = filter_family(f).map(|filter| ("filter", filter)).into_iter().collect();
-    if paginated {
-        families.push(("page", "{ offset, limit }".to_string()));
-    }
-    let path = fetch(&format!("/{base}{}", query_string(&families)), scope);
-    let body = if paginated {
-        vec![
-            format!("const {{ data, meta }} = await httpGet<JsonApiPageDocument>({path});"),
-            format!(
-                "return {{ items: data.map({}), total: meta.total, limit: meta.limit, offset: meta.offset }};",
-                flatten_fn(resource)
-            ),
-        ]
-    } else {
-        vec![
-            format!("const {{ data }} = await httpGet<JsonApiCollectionDocument>({path});"),
-            format!("return data.map({});", flatten_fn(resource)),
-        ]
-    };
+    let families = filter_family(f).map(|filter| ("filter", filter)).into_iter().collect();
+    let body = read_collection(&format!("/{base}"), families, scope, &flatten_fn(resource), "", paginated);
     Method { params, return_type, body }
 }

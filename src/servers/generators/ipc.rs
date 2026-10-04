@@ -119,7 +119,7 @@ pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<
     for m in modules {
         for f in &m.functions {
             let command = command_name(&m.name, f, config);
-            match classify_op(f) {
+            match classify_op(m, f) {
                 OpKind::List if f.filter_struct().is_some() => {
                     if let Some(p) = f.bare_filters().into_iter().find(|p| p.name == "query") {
                         return refuse(m, &f.name, &command, &p.name, "the list's `*Query` filter struct");
@@ -136,7 +136,9 @@ pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<
             }
             if let Some(prefix) = &config.route_prefix {
                 let scope = &prefix.params[0].name;
-                if command_arg_names(f, config.pagination_for(&m.name, f.surface).is_some()).contains(&scope.as_str()) {
+                if command_arg_names(m, f, config.pagination_for(&m.name, f.surface).is_some())
+                    .contains(&scope.as_str())
+                {
                     return refuse(m, &f.name, &command, scope, "the route prefix parameter");
                 }
             }
@@ -155,8 +157,8 @@ pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<
 /// the generator emits them: `id` and `input` for CRUD ops, `query` for a
 /// list's `*Query` struct, `limit` and `offset` for a paginated junction
 /// list's page, and each other argument under its own name.
-fn command_arg_names(f: &ApiFn, paginated: bool) -> Vec<&str> {
-    match classify_op(f) {
+fn command_arg_names<'a>(m: &ApiModule, f: &'a ApiFn, paginated: bool) -> Vec<&'a str> {
+    match classify_op(m, f) {
         OpKind::GetById | OpKind::Delete => vec!["id"],
         OpKind::Create => vec!["input"],
         OpKind::Update => vec!["id", "input"],
@@ -243,7 +245,7 @@ pub struct PaginatedResult<T: Serialize> {
         out.push_str(&format!("// ── {} IPC Commands ──\n\n", capitalize(module)));
 
         for f in &m.functions {
-            let op = classify_op(f);
+            let op = classify_op(m, f);
             let svc = m.service_ident(f.surface);
             let is_async = f.is_async;
             let ret_type = &f.return_type;

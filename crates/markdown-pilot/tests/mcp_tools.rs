@@ -1,6 +1,7 @@
 //! Proof that the generated MCP tool registry compiles and behaves: each
-//! kind of tool the pilot's API has (CRUD, custom GET and POST, junction
-//! ops, CRUD in a module without an entity, and filtered lists) is called
+//! kind of tool the pilot's API has (CRUD, custom GET and POST, a lone
+//! `list_X`, junction ops listing entities or ids, in a resource module or
+//! not, CRUD in a module without an entity, and filtered lists) is called
 //! through its generated handler over a real temp vault.
 //!
 //! The pilot paginates every module with `default_limit: 2, max_limit: 3`.
@@ -179,9 +180,13 @@ async fn every_tool_refuses_an_argument_it_does_not_read() {
         ("task_set_state", json!({ "id": "write-docs", "state": "blocked" })),
         ("task_complete", json!({ "id": "write-docs" })),
         ("task_purge_done", json!({})),
-        ("task_add_tag", json!({ "id": "write-docs", "tag_id": "docs" })),
-        ("task_remove_tag", json!({ "id": "write-docs", "tag_id": "docs" })),
-        ("task_list_tags", json!({ "id": "write-docs" })),
+        ("task_add_label", json!({ "id": "write-docs", "tag_id": "docs" })),
+        ("task_remove_label", json!({ "id": "write-docs", "tag_id": "docs" })),
+        ("task_list_labels", json!({ "id": "write-docs" })),
+        ("task_list_by_status", json!({ "status": "open" })),
+        ("note_list_tags", json!({ "id": "write-docs" })),
+        ("note_add_tag", json!({ "id": "write-docs", "tag_id": "docs" })),
+        ("board_add_task", json!({ "tag_id": "docs", "task_id": "write-docs" })),
     ] {
         assert_eq!(server.err(tool, with(args, "extra")).await, "Unknown argument: extra", "{tool}");
     }
@@ -191,7 +196,8 @@ async fn every_tool_refuses_an_argument_it_does_not_read() {
     let stored = server.ok("task_get_by_id", json!({ "id": "write-docs" })).await;
     assert_eq!((stored["title"].as_str(), stored["status"].as_str()), (Some("Write docs"), Some("open")));
     assert_eq!(server.ok("task_list", json!({})).await["total"], 1);
-    assert_eq!(server.ok("task_list_tags", json!({ "id": "write-docs" })).await["total"], 0);
+    assert_eq!(server.ok("task_list_labels", json!({ "id": "write-docs" })).await["total"], 0);
+    assert_eq!(server.ok("note_list_tags", json!({ "id": "write-docs" })).await["total"], 0);
     assert_eq!(server.ok("bookmark_list", json!({})).await["total"], 0);
 
     // The body's own fields stay nested under it: one at the top level is
@@ -341,17 +347,67 @@ async fn junction_tools() {
         server.ok("tag_create", json!({ "title": title })).await;
     }
     for tag in ["docs", "urgent", "later"] {
-        server.ok("task_add_tag", json!({ "id": "write-docs", "tag_id": tag })).await;
+        server.ok("task_add_label", json!({ "id": "write-docs", "tag_id": tag })).await;
     }
 
     // A junction list pages in memory.
-    let page = server.ok("task_list_tags", json!({ "id": "write-docs" })).await;
+    let page = server.ok("task_list_labels", json!({ "id": "write-docs" })).await;
     assert_eq!(ids(&page), ["docs", "urgent"]);
     assert_eq!(page["total"], 3);
-    server.ok("task_remove_tag", json!({ "id": "write-docs", "tag_id": "urgent" })).await;
-    let page = server.ok("task_list_tags", json!({ "id": "write-docs", "offset": 1 })).await;
+    server.ok("task_remove_label", json!({ "id": "write-docs", "tag_id": "urgent" })).await;
+    let page = server.ok("task_list_labels", json!({ "id": "write-docs", "offset": 1 })).await;
     assert_eq!(ids(&page), ["later"]);
     assert_eq!(page["total"], 2);
+}
+
+/// A junction list of ids pages its strings in memory. The tools call the
+/// ops as written, with no membership read: `note_add_tag` lists a tag
+/// twice when called twice.
+#[tokio::test]
+async fn junction_tools_listing_ids() {
+    let server = Server::new();
+    for tag in ["a", "b", "c", "a"] {
+        assert_eq!(
+            server.ok("note_add_tag", json!({ "id": "alpha", "tag_id": tag })).await,
+            json!({ "success": true })
+        );
+    }
+    let page = server.ok("note_list_tags", json!({ "id": "alpha" })).await;
+    assert_eq!(page, json!({ "items": ["a", "b"], "total": 4, "limit": 2, "offset": 0 }));
+    server.ok("note_remove_tag", json!({ "id": "alpha", "tag_id": "a" })).await;
+    let page = server.ok("note_list_tags", json!({ "id": "alpha", "limit": 5 })).await;
+    assert_eq!(page, json!({ "items": ["b", "c"], "total": 2, "limit": 3, "offset": 0 }));
+}
+
+/// Junction ops in a module with no entity page their list as any other.
+#[tokio::test]
+async fn junction_tools_outside_a_resource_module() {
+    let server = Server::new();
+    server.ok("tag_create", json!({ "title": "Docs" })).await;
+    for title in ["One", "Two", "Three"] {
+        server.ok("task_create", json!({ "title": title, "status": "open", "body": "" })).await;
+        server.ok("board_add_task", json!({ "tag_id": "docs", "task_id": title.to_lowercase() })).await;
+    }
+    server.ok("board_remove_task", json!({ "tag_id": "docs", "task_id": "two" })).await;
+    let page = server.ok("board_list_tasks", json!({ "tag_id": "docs" })).await;
+    assert_eq!(ids(&page), ["one", "three"]);
+    assert_eq!(page["total"], 2);
+    assert_eq!(server.err("board_list_tasks", json!({ "tag_id": "nope" })).await, "Tag not found: nope");
+}
+
+/// A lone `list_X` is a plain read: its whole `Vec`, with no page.
+#[tokio::test]
+async fn a_lone_list_answers_its_plain_array() {
+    let server = Server::new();
+    for (title, status) in [("One", "open"), ("Two", "done"), ("Three", "open"), ("Four", "open")] {
+        server.ok("task_create", json!({ "title": title, "status": status, "body": "" })).await;
+    }
+    let tasks = server.ok("task_list_by_status", json!({ "status": "open" })).await;
+    assert!(tasks.is_array(), "{tasks}");
+    assert_eq!(ids(&tasks), ["four", "one", "three"]);
+    assert_eq!(properties("task_list_by_status"), names(&["status"]));
+    let e = server.err("task_list_by_status", json!({ "status": "open", "limit": 1 })).await;
+    assert_eq!(e, "Unknown argument: limit");
 }
 
 /// Event ops have no MCP tool: a tool call answers once.

@@ -45,7 +45,9 @@ fn main() {
     println!("cargo:rerun-if-changed=src/schema/task_summary.rs");
     println!("cargo:rerun-if-changed=src/schema/mod.rs");
     // The hand-written API modules the servers stage scans beside generated/.
+    println!("cargo:rerun-if-changed=src/api/board.rs");
     println!("cargo:rerun-if-changed=src/api/bookmark.rs");
+    println!("cargo:rerun-if-changed=src/api/note.rs");
     println!("cargo:rerun-if-changed=src/api/outline.rs");
     println!("cargo:rerun-if-changed=src/api/section.rs");
     println!("cargo:rerun-if-changed=src/api/tag.rs");

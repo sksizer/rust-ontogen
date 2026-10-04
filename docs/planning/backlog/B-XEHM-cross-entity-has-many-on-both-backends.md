@@ -26,4 +26,4 @@ To support it:
 - Validate at build time that the target exists and has a `belongs_to` field named `foreign_key` pointing back at the declaring entity.
 - Add a runtime parity pair in `crates/parity` (a parent and a child entity, optional and required foreign keys) covering create, update with dropped children, `{Child}NotFound`, `{Child}ParentRequired` and child order, and run it on both backends.
 
-This is independent of E0004 phase 3a (`docs/planning/epics/jsonapi-http-transport.md`), which serves `has_many` relationship endpoints from the generated store for the self-referential shape only. Once this lands, the same endpoints serve the cross-entity shape too.
+This is independent of E0004 phase 3a (`docs/planning/epics/jsonapi-http-transport.md`), which serves `has_many` relationship endpoints through the module's `get_by_id` and `update` for the self-referential shape only. Once this lands, the same endpoints serve the cross-entity shape too.

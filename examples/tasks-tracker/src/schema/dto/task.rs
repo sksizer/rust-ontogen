@@ -15,6 +15,10 @@ pub struct CreateTaskInput {
     pub epic_id: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub subtasks: Vec<String>,
     pub body: String,
 }
 
@@ -32,6 +36,10 @@ pub struct UpdateTaskInput {
     pub epic_id: Option<Option<String>>,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub parent_id: Option<Option<String>>,
+    #[serde(default)]
+    pub subtasks: Option<Vec<String>>,
     #[serde(default)]
     pub body: Option<String>,
 }

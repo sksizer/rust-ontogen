@@ -120,7 +120,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         .iter()
         .any(|g| matches!(g, ClientGenerator::HttpTs { .. } | ClientGenerator::HttpTauriIpcSplit { .. }))
     {
-        crate::servers::classify::check_http_ops(&modules, &config.resources)?;
+        crate::servers::classify::check_http_ops(&modules, &config.resources, config.route_prefix.as_ref())?;
     }
     if modules.is_empty() {
         return Ok(modules);

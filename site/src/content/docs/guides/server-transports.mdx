@@ -84,7 +84,7 @@ Client-side fields (`client_generators`, `ts_skip_commands`) used to live on thi
 
 ## HTTP/Axum generation
 
-The HTTP generator produces Axum route handlers and an `entity_routes()` function. Every generated route speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/). CRUD routes for every module backed by a schema entity carry resource documents. Custom ops, junction ops and the CRUD ops of a module with no entity behind it carry meta-only documents, described under [Operations that are not CRUD](#operations-that-are-not-crud).
+The HTTP generator produces Axum route handlers and an `entity_routes()` function. Every generated route speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/). CRUD routes for every module backed by a schema entity carry resource documents, and its relationships get [relationship endpoints](#relationship-endpoints), which also serve its junction ops. Custom ops, and the junction and CRUD ops of a module with no entity behind it, carry meta-only documents, described under [Operations that are not CRUD](#operations-that-are-not-crud).
 
 The generated server depends on the `ontogen-jsonapi` runtime crate, which holds the document types, link building, error documents and request extractors. It also calls `ontogen_core::id::validate_id` to check a client-supplied id, and builds request fields with `serde_json`. Add all three to the crate that contains the generated HTTP file, the way you add `markdown-store` (the examples use path dependencies):
 
@@ -113,20 +113,24 @@ Each `OpKind` maps to a specific HTTP method and path pattern:
 | `Delete` | DELETE | `/api/{entities}/{id}` | `DELETE /api/tasks/{id}` |
 | `CustomGet` | GET | `/api/{entities}/{action}` | `GET /api/tasks/overdue` |
 | `CustomPost` | POST | `/api/{entities}/{action}` | `POST /api/tasks/close-by-project` |
-| `JunctionList` | GET | `/api/{parents}/{id}/{children}` | `GET /api/agents/{id}/roles` |
-| `JunctionAdd` | POST | `/api/{parents}/{id}/{children}` | `POST /api/agents/{id}/roles` |
-| `JunctionRemove` | DELETE | `/api/{parents}/{id}/{children}/{child_id}` | `DELETE /api/agents/{id}/roles/{child_id}` |
+| Relationship | GET, PATCH, POST, DELETE | `/api/{entities}/{id}/relationships/{rel}` | `POST /api/tasks/{id}/relationships/tags` |
+| Related resource | GET | `/api/{entities}/{id}/{rel}` | `GET /api/tasks/{id}/epic` |
+| `JunctionList`, no entity | GET | `/api/{m}/{parent_id}/{children}` | `GET /api/agents/{id}/roles` |
+| `JunctionAdd`, no entity | POST | `/api/{m}/{parent_id}/{children}` | `POST /api/agents/{id}/roles` |
+| `JunctionRemove`, no entity | DELETE | `/api/{m}/{parent_id}/{children}/{child_id}` | `DELETE /api/agents/{id}/roles/{child_id}` |
 | `EventStream` | GET (SSE) | `/api/events/{name}[/{param}]` | `GET /api/events/vault-changes/{vault_id}` |
+
+The relationship and related routes exist for each entity whose module serves `get_by_id` and that has a relationship. In such a module, junction ops (`list_X`, `add_Y`, `remove_Y`) have no route of their own: they define the relationship `X` and are reached through these two routes. A one-parameter `list_X` with no `add_Y` or `remove_Y` beside it is a `CustomGet`, at `/api/{entities}/{action}/{param}`.
 
 Entity names in URLs are pluralized and kebab-cased automatically: `work_session` becomes `work-sessions`, `unit_of_work` becomes `units-of-work`. The same string is the resource `type` in documents.
 
-`PUT` is not routed on a resource: a `PUT` to `/api/tasks/{id}` answers `405` with `Allow: GET, HEAD, PATCH, DELETE`. A method a route does not serve is a `405` with an `Allow` header and a `method_not_allowed` error document: every generated route carries its own method fallback. There is no fallback for paths: unmatched paths fall through to your own router.
+`PUT` is not routed on a resource: a `PUT` to `/api/tasks/{id}` answers `405` with `Allow: GET, HEAD, PATCH, DELETE`, and on a relationship route with `Allow: GET, HEAD, PATCH, POST, DELETE`. A method a route does not serve is a `405` with an `Allow` header and a `method_not_allowed` error document: every generated route carries its own method fallback. There is no fallback for paths: unmatched paths fall through to your own router.
 
 ### Media type
 
 Every response from a generated route that carries a body has `Content-Type: application/vnd.api+json`, and every response carries `Vary: Accept`.
 
-- A request with a body (`POST`, `PATCH`; for a custom op, only when it sends one) must send `Content-Type: application/vnd.api+json`. Anything else, including `application/json`, is `415` with `source.header: "Content-Type"`. A `ext` parameter, or any parameter other than `profile`, is also `415`.
+- A request with a body (`POST`, `PATCH`, a relationship `DELETE`; for a custom op, only when it sends one) must send `Content-Type: application/vnd.api+json`. Anything else, including `application/json`, is `415` with `source.header: "Content-Type"`. A `ext` parameter, or any parameter other than `profile`, is also `415`.
 - A request whose `Accept` lists `application/vnd.api+json` only with parameters other than `profile` and `q`, or with `q=0`, is `406`. A missing `Accept`, `*/*` and `application/*` are acceptable.
 - `204` responses have no body and no `Content-Type`.
 
@@ -148,8 +152,20 @@ A success response is a document with `jsonapi`, `links`, optional `meta` and `d
       "body": "## Goal\n\nEmit markdown CRUD matching the golden spec.\n"
     },
     "relationships": {
-      "epic": { "data": { "type": "epics", "id": "markdown-backend" } },
-      "tags": { "data": [ { "type": "tags", "id": "codegen" } ] }
+      "epic": {
+        "links": {
+          "self": "/api/tasks/ship-the-emitter/relationships/epic",
+          "related": "/api/tasks/ship-the-emitter/epic"
+        },
+        "data": { "type": "epics", "id": "markdown-backend" }
+      },
+      "tags": {
+        "links": {
+          "self": "/api/tasks/ship-the-emitter/relationships/tags",
+          "related": "/api/tasks/ship-the-emitter/tags"
+        },
+        "data": [ { "type": "tags", "id": "codegen" } ]
+      }
     },
     "links": { "self": "/api/tasks/ship-the-emitter" }
   }
@@ -158,7 +174,7 @@ A success response is a document with `jsonapi`, `links`, optional `meta` and `d
 
 - `id` is the entity's `#[ontology(id)]` field, which must be a `String`.
 - `attributes` holds every other non-relation field under its Rust field name. `Option` fields that are `None` are `null`.
-- Each relation field becomes a relationship. A `belongs_to` field named `epic_id` becomes `epic`; other relation fields keep their name. Relationship objects carry `data` only for now. Relationship links and relationship endpoints arrive in a later release.
+- Each relation field becomes a relationship. A `belongs_to` field named `epic_id` becomes `epic`; other relation fields keep their name. A relationship object carries `links` to its [relationship endpoints](#relationship-endpoints) and its `data`. The relationships of the module's junction ops follow the relation fields, with `links` only. When the module serves no `get_by_id` there are no relationship endpoints, and relationship objects carry `data` only.
 - Links are relative paths. Ids in links are percent-encoded.
 
 | Operation | Success |
@@ -172,6 +188,33 @@ A success response is a document with `jsonapi`, `links`, optional `meta` and `d
 A create body is `{"data": {"type": "tasks", "attributes": {...}, "relationships": {...}}}`. A client `data.id` is honoured under every `IdStrategy`; without one the store derives it. A `PATCH` body must carry `data.type` and a `data.id` equal to the URL id. An attribute or relationship that is absent is left unchanged on update; `null` clears an `Option` field or an optional to-one; a to-many `data` array replaces the whole list.
 
 Before it creates or updates, the handler checks that every linked resource exists and answers `404 related_resource_not_found` otherwise, so a markdown vault never receives a dangling wikilink.
+
+### Relationship endpoints
+
+An entity whose module serves `get_by_id` and that has at least one relationship gets two more routes, for every relationship `{rel}`:
+
+| Method | `/api/tasks/{id}/relationships/{rel}` | `/api/tasks/{id}/{rel}` |
+|--------|---------------------------------------|-------------------------|
+| `GET` | the linkage, with `links.self` and `links.related` | the related resource (or `null`), or the related resources in linkage order |
+| `PATCH` | set or clear a to-one, replace a to-many; `204` | — |
+| `POST`, `DELETE` | add or remove one identifier of a to-many; `204` | — |
+
+```http
+DELETE /api/tasks/ship-the-emitter/relationships/tags
+Content-Type: application/vnd.api+json
+
+{ "data": [ { "type": "tags", "id": "codegen" } ] }
+```
+
+- **Relation fields** are read through the module's `get_by_id` and written through its `update`, with the same rules, hooks and errors as a resource `PATCH` of that one field. Adding a member already present, or removing an absent one, writes nothing. A module with no `update` answers every write `403 relationship_update_unsupported`, as does `POST` or `DELETE` on a to-one.
+- **Junction ops** of the module (`list_X` with `add_Y` and/or `remove_Y`) define the to-many relationship `X`. `GET` calls `list_X`, paged in memory with `page[offset]` and `page[limit]` on a paginated surface. `POST` and `DELETE` call `add_Y` and `remove_Y`, after a `list_X` membership check that makes a repeated add or remove a `204` that calls nothing. `PATCH` is `403`, as is `POST` without `add_Y` and `DELETE` without `remove_Y`. Such a relationship appears in resource objects with `links` only. The build checks are in the [Relationships guide](/guides/relationships/#junction-ops).
+- **One identifier** per `POST` or `DELETE`; more is `403 relationship_batch_unsupported`, and `{"data": []}` is a no-op.
+- **Related resources** are read with the target module's `get_by_id`, which every target must serve. A dangling id is skipped.
+- An unknown `{rel}` is `404 relationship_not_found`. A missing parent is the parent's `404`, and a linked id that does not exist on `PATCH` or `POST` is `404 related_resource_not_found`.
+
+<Aside type="caution">
+The two routes capture every `/api/{type}/{id}/{segment}` and `/api/{type}/{id}/relationships/{segment}` path of such an entity. A route in your own router with the same shape (`/api/tasks/{task_id}/{view}`) conflicts with them, and Axum panics when the routers are merged. A route with a fixed last segment (`/api/tasks/{id}/history`) still registers and takes that segment.
+</Aside>
 
 ### Pagination support
 
@@ -213,7 +256,7 @@ A list that is not paginated rejects `page[...]` with `400 invalid_query_paramet
 
 ### Query parameters
 
-A generated route accepts a fixed set of query parameters. Anything else is `400 invalid_query_parameter` with `source.parameter` naming it: an unknown name, a repeated name, a malformed name, `fields[...]`, and `page[...]` on a route that is not paginated. `[` and `]` are accepted raw or percent-encoded. `filter[...]` is accepted on a list that takes filter parameters and refused on any other route. `sort` and `include` are recognised on a list (`include` also on a get) but nothing can be sorted or included yet, so they are `400 invalid_sort_field` and `400 invalid_include_path` with `source.parameter` naming the parameter; they are not `invalid_query_parameter`.
+A generated route accepts a fixed set of query parameters. Anything else is `400 invalid_query_parameter` with `source.parameter` naming it: an unknown name, a repeated name, a malformed name, `fields[...]`, and `page[...]` on a route that is not paginated. `[` and `]` are accepted raw or percent-encoded. `filter[...]` is accepted on a list that takes filter parameters and refused on any other route. Relationship and related routes take no query parameters, except `page[offset]` and `page[limit]` for a junction op's relationship on a paginated surface. `sort` and `include` are recognised on a list (`include` also on a get) but nothing can be sorted or included yet, so they are `400 invalid_sort_field` and `400 invalid_include_path` with `source.parameter` naming the parameter; they are not `invalid_query_parameter`.
 
 ### Errors
 
@@ -233,7 +276,7 @@ Every error the generated HTTP server returns is a JSON:API error document with 
 
 - `status` is the HTTP status as a string and `title` is its reason phrase. `code` is stable and `detail` is the human text (for an `AppError` it is the error's `Display` output). Do not parse `detail`.
 - `source` is present for request problems and has one member: `pointer` into the body, `parameter` for a query parameter, or `header`.
-- The server reports the first failure it finds. Checks run in a fixed order: routing (`405`), `Accept` (`406`), `Content-Type` (`415`), query parameters, then the body, then related-resource existence, then the store call.
+- The server reports the first failure it finds. Checks run in a fixed order: routing (`405`), `Accept` (`406`), `Content-Type` (`415`), path parameters (a bad prefix value, an unknown `{rel}`), query parameters, refusals decided by the route alone (the relationship `403`s), then the body, then the parent and related-resource existence, then the store call.
 
 **`AppError` mapping.** The generator scans `error_source_dir` for `enum AppError` and maps each variant by the suffix of its name. The `code` is the variant name in snake_case.
 
@@ -245,7 +288,7 @@ Every error the generated HTTP server returns is a JSON:API error document with 
 | `{Child}ParentRequired` | 403 | `task_parent_required` |
 | any other variant | 500 | `db_error` |
 
-A variant whose snake_case name equals one of ontogen's own codes (for example an `InvalidDocument` variant), including the codes reserved for later phases (`relationship_update_unsupported`, `relationship_batch_unsupported`, `relationship_not_found`), fails the build, so a code always means one thing. Two `enum AppError` declarations in the scanned directory also fail it. With no `AppError` in the directory, every `AppError`-typed site answers `500 internal_error`.
+A variant whose snake_case name equals one of ontogen's own codes (for example an `InvalidDocument` or `RelationshipNotFound` variant) fails the build, so a code always means one thing. Two `enum AppError` declarations in the scanned directory also fail it. With no `AppError` in the directory, every `AppError`-typed site answers `500 internal_error`.
 
 **Ontogen's own codes.** Errors raised by the generated server itself, independent of your `AppError`:
 
@@ -259,7 +302,10 @@ A variant whose snake_case name equals one of ontogen's own codes (for example a
 | 400 | `unknown_attribute`, `missing_attribute`, `invalid_attribute` | attribute problems in a create or update body |
 | 400 | `unknown_relationship`, `missing_relationship` | relationship problems in a create body |
 | 403 | `relationship_required` | `null` for a non-`Option` to-one |
+| 403 | `relationship_update_unsupported` | a relationship write the relationship does not support: `POST` or `DELETE` on a to-one, `PATCH` on a junction op's relationship, `POST` without `add_Y` or `DELETE` without `remove_Y`, any write when the module has no `update`, or a junction op's relationship in a create or update body |
+| 403 | `relationship_batch_unsupported` | a relationship `POST` or `DELETE` with more than one identifier |
 | 404 | `related_resource_not_found` | a linked id that does not exist |
+| 404 | `relationship_not_found` | a `{rel}` that is not a relationship of the type |
 | 405 | `method_not_allowed` | a method the route does not serve |
 | 406 | `not_acceptable` | `Accept` cannot be satisfied |
 | 409 | `type_mismatch` | a `type` that is not the endpoint's, or a linked identifier whose `type` is not the relationship's target |
@@ -272,7 +318,7 @@ Axum's own extractor rejections never reach the client in plain text: the genera
 
 ### Operations that are not CRUD
 
-Custom ops, junction ops, and the CRUD ops of a module with no entity behind them are served as custom ops: documents with `meta` and no `data`.
+Custom ops, and the junction and CRUD ops of a module with no entity behind it, are served as custom ops: documents with `meta` and no `data`.
 
 **Responses.** A custom op answers `200` with `meta.result` holding the value the function returned, serialized by serde. It is a plain value even when it is an entity or a list of entities. A function that returns `()` answers `204` with no body. The status is never `201`. There are no `links`.
 
@@ -319,7 +365,7 @@ An `*Input` parameter on an op served without a body is a build error (`CodegenE
 
 `opArg[limit]` and `opArg[offset]` are unsigned 32-bit integers. An absent `limit` is `default_limit`, a larger one is clamped to `max_limit` (`opArg[limit]=0` is a zero-size page, not an error), and an absent `offset` is `0`. A malformed value is `400 invalid_query_parameter`. The page goes to the store's page-taking `list`, and `count` supplies `total`.
 
-**Junction ops** keep their routes and use the same wire in every module, entity-backed or not:
+**Junction ops in a module with no entity behind it** are custom ops at these routes, scoped or not. (In a module named after an entity they define a relationship instead; see [Relationship endpoints](#relationship-endpoints).)
 
 | Op | Route | Request | Response |
 |----|-------|---------|----------|
@@ -355,7 +401,7 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
 }
 ```
 
-Handlers are named `{module}_{op}` (`task_list`, `task_get_by_id`, `task_create`, `task_update`, `task_delete`). The file also holds two error helpers, `ontogen_app_error` (an `AppError` to its status and `code`) and `ontogen_internal_error` (every other failure, `500 internal_error`).
+Handlers are named `{module}_{op}` (`task_list`, `task_get_by_id`, `task_create`, `task_update`, `task_delete`). The relationship routes are served by `ontogen_task_relationship_get`, `…_patch`, `…_post` and `…_delete`, and the related route by `ontogen_task_related_get` (with a `_scoped` suffix under a prefix). The file also holds two error helpers, `ontogen_app_error` (an `AppError` to its status and `code`) and `ontogen_internal_error` (every other failure, `500 internal_error`).
 
 ## Tauri IPC generation
 
@@ -513,7 +559,7 @@ route_prefix: Some(ontogen::servers::RoutePrefix {
 }),
 ```
 
-This generates scoped routes like `/api/projects/{project_id}/tasks` alongside the entity handlers. Every kind of route exists under the prefix with the same wire behaviour, with one difference: scoped junction ops are action-style routes (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/tasks/add-tag`, `…/tasks/remove-tag`) that follow the custom op rules. The `state_accessor` method is called to construct a project-scoped Store from the extracted path parameter. Scoped CRUD routes speak JSON:API like unscoped ones, with the prefix in every link and `Location`; the resource `type` does not carry it. A prefix parameter that fails to parse is `400 invalid_path_parameter`. A scoped list that is not served as a resource passes the page to the store's `list` and calls `count`, like an unscoped one, so a hand-written scoped `list` must honour its `limit` and `offset`.
+This generates scoped routes like `/api/projects/{project_id}/tasks` alongside the entity handlers. Every kind of route exists under the prefix with the same shape and wire behaviour as its unscoped one: relationship routes (`/api/projects/{project_id}/tasks/{id}/relationships/tags`) wherever the entity's scoped `get_by_id` exists, and the junction ops of a module with no entity at `/api/projects/{project_id}/{m}/{parent_id}/{children}`. The `state_accessor` method is called to construct a project-scoped Store from the extracted path parameter. Scoped CRUD routes speak JSON:API like unscoped ones, with the prefix in every link and `Location`; the resource `type` does not carry it. A prefix parameter that fails to parse is `400 invalid_path_parameter`. A scoped list that is not served as a resource passes the page to the store's `list` and calls `count`, like an unscoped one, so a hand-written scoped `list` must honour its `limit` and `offset`.
 
 <Aside type="note" title="Colons in config, braces in output">
 `RoutePrefix::segments` and the values in `sse_route_overrides` take **colon-style** parameters (`projects/:project_id`), while every generated axum route uses axum 0.8's **brace style** (`/api/projects/{project_id}/tasks`).

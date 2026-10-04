@@ -163,7 +163,8 @@ only.
 - SeaORM inserts whatever id the client sends, including `""`. Phase 1a
   (decision 4 and the shared id-validity rule).
 - Scoped routes diverge from unscoped ones. Phase 1c fixes in-memory
-  pagination, and phase 3a fixes action-style junction routes.
+  pagination, and phase 3a removes the action-style junction routes (scoped junction ops take
+  their unscoped shape).
 - Axum's extractor rejections reach clients as plain text. Phase 1b.
 
 ## Consequences

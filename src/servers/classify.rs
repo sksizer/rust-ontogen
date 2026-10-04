@@ -4,7 +4,8 @@ use ontogen_core::ir::OpKind;
 use ontogen_core::naming::pluralize;
 use syn::{PathArguments, Type};
 
-use crate::resource::ResourceModel;
+use crate::resource::{JunctionRelationship, ResourceModel};
+use crate::servers::config::RoutePrefix;
 use crate::servers::parse::{ApiFn, ApiModule, ForcedMethod, Param};
 
 /// Classify a function into an operation kind.
@@ -35,12 +36,36 @@ use crate::servers::parse::{ApiFn, ApiModule, ForcedMethod, Param};
 /// body-carrying-first-param check the `get_*` branch applies, for the same
 /// reason `Post` does not re-run anything — an explicit override that
 /// second-guesses the author is not an override.
-pub fn classify_op(func: &ApiFn) -> OpKind {
-    match func.force_method {
+///
+/// # Junction lists need a partner
+///
+/// A one-parameter `list_X` is a junction list only when `m` also has an
+/// unforced `add_Y` or `remove_Y` with the same child segment (wire contract
+/// §9.1). Alone it is a [`OpKind::CustomGet`]: the name marks it a read and
+/// its one argument is a path segment, as for any custom read. Without the
+/// partner rule a plain `list_by_status(status)` would become a relationship
+/// named `by_status`. That is why classification takes the module: the rule
+/// looks at the fn's siblings.
+pub fn classify_op(m: &ApiModule, f: &ApiFn) -> OpKind {
+    match f.force_method {
         Some(ForcedMethod::Post) => OpKind::CustomPost,
         Some(ForcedMethod::Get) => OpKind::CustomGet,
-        None => classify_by_name_and_params(&func.name, &func.params),
+        None => match classify_by_name_and_params(&f.name, &f.params) {
+            OpKind::JunctionList { child_segment } if !has_junction_write(m, &child_segment) => OpKind::CustomGet,
+            op => op,
+        },
     }
+}
+
+/// True when `m` has an unforced `add_Y` or `remove_Y` whose child segment
+/// is `segment`: the partner that makes a `list_X` a junction list.
+fn has_junction_write(m: &ApiModule, segment: &str) -> bool {
+    m.functions.iter().filter(|g| g.force_method.is_none()).any(|g| {
+        matches!(
+            classify_by_name_and_params(&g.name, &g.params),
+            OpKind::JunctionAdd { child_segment } | OpKind::JunctionRemove { child_segment } if child_segment == segment
+        )
+    })
 }
 
 /// Allowlist of name prefixes that classify a custom function as a read
@@ -83,8 +108,9 @@ fn name_implies_read(name: &str) -> bool {
 
 /// Classify a function by name and parameters.
 ///
-/// Lower-level entry point used when an `ApiFn` is not available
-/// (e.g., the API layer's IR conversion).
+/// The per-fn heuristic behind [`classify_op`], which adds the overrides and
+/// the module-wide junction-list rule. On its own it classifies every
+/// one-parameter `list_X` as a [`OpKind::JunctionList`].
 ///
 /// # Default for zero-user-param functions
 ///
@@ -186,14 +212,26 @@ pub fn classify_by_name_and_params(name: &str, params: &[Param]) -> OpKind {
 ///   one `*Query` struct, taken by value or by `&`, is a member, and so is every
 ///   other filter argument, which must read from one value as an `opArg`
 ///   does, optional or not.
+/// - A resource module's junction ops define relationships
+///   ([`ResourceModel::junctions`], §9.1), served at the relationship routes.
+/// - A module that serves those routes reads each related resource with its
+///   target module's `get_by_id` (§9.1, §9.3), so every target module must
+///   serve one.
+/// - Under `route_prefix`, every link a resource module emits names a route
+///   it serves, and no handler opens a store outside a scope (§5.4, §11.1):
+///   see [`check_one_scope`].
 ///
 /// # Errors
 ///
 /// The first op that breaks a rule, named `module::fn`.
-pub(crate) fn check_http_ops(modules: &[ApiModule], resources: &ResourceModel) -> Result<(), String> {
+pub(crate) fn check_http_ops(
+    modules: &[ApiModule],
+    resources: &ResourceModel,
+    route_prefix: Option<&RoutePrefix>,
+) -> Result<(), String> {
     for m in modules {
         for f in &m.functions {
-            let op = classify_op(f);
+            let op = classify_op(m, f);
             let crud_or_junction = matches!(
                 op,
                 OpKind::List
@@ -254,6 +292,134 @@ pub(crate) fn check_http_ops(modules: &[ApiModule], resources: &ResourceModel) -
                     m.name, f.name, p.name, p.ty, p.name
                 ));
             }
+        }
+        let junctions = resources.junctions(m)?;
+        if resources.serves_relationships(m)
+            && let Some(resource) = resources.by_module(&m.name)
+        {
+            let fields =
+                resource.relationships.iter().map(|r| ("get_by_id", &r.name, &r.target_module, &r.target_type));
+            let junctions = junctions.iter().map(|j| (j.list.name.as_str(), &j.name, &j.target_module, &j.target_type));
+            for (fn_name, rel, target_module, target_type) in fields.chain(junctions) {
+                if !modules.iter().any(|t| t.name == *target_module && resources.serves_get_by_id(t)) {
+                    return Err(format!(
+                        "ontogen: `{}::{fn_name}` serves the relationship `{rel}` of the JSON:API resource `{}`, \
+                         whose related link reads every `{target_type}` it links with `{target_module}::get_by_id`, \
+                         which no module serves",
+                        m.name, resource.resource_type
+                    ));
+                }
+            }
+        }
+        if let Some(prefix) = route_prefix {
+            check_one_scope(m, modules, resources, &junctions, prefix)?;
+        }
+    }
+    Ok(())
+}
+
+/// Under a route prefix, a store-scoped op is served only under it and any
+/// other op only outside it (§11.1). A resource's `links.self` and its
+/// relationship links name the routes of its module's `get_by_id`, in the
+/// scope of the handler that emits them, and a relationship route reads
+/// through its target modules' `get_by_id` and its junction ops in the
+/// scope of that `get_by_id`. A create or update checks each id it links
+/// with the target module's `get_by_id` in its own scope (§13.2). So, for
+/// resource module `m`:
+///
+/// - its `create` and `update` take a store when the `get_by_id` of any
+///   type they link to does: outside the prefix no store can be opened;
+///
+/// and when `m` serves `get_by_id`:
+///
+/// - its `list`, `create` and `update`, whose documents carry those links,
+///   take a store exactly when its `get_by_id` does;
+/// - when its `get_by_id` takes no store, neither does any junction op of
+///   its relationships nor any target module's `get_by_id`: outside the
+///   prefix no store can be opened, and a related resource's links would
+///   name the target's unscoped routes, which are not served.
+///
+/// A scoped `get_by_id` with unscoped targets or junction ops is fine: those
+/// are served outside the prefix and reached from any handler.
+fn check_one_scope(
+    m: &ApiModule,
+    modules: &[ApiModule],
+    resources: &ResourceModel,
+    junctions: &[JunctionRelationship<'_>],
+    prefix: &RoutePrefix,
+) -> Result<(), String> {
+    let Some(resource) = resources.by_module(&m.name) else { return Ok(()) };
+    let segments = &prefix.segments;
+    let target_get =
+        |target_module: &str| modules.iter().find(|t| t.name == target_module).and_then(|t| resources.get_by_id(t));
+    for f in &m.functions {
+        let writes = matches!(classify_op(m, f), OpKind::Create | OpKind::Update);
+        if !writes || f.first_param_is_store || resources.serving(m, f).is_none() {
+            continue;
+        }
+        let scoped_target = resource
+            .relationships
+            .iter()
+            .find(|r| target_get(&r.target_module).is_some_and(|t| t.first_param_is_store));
+        if let Some(rel) = scoped_target {
+            return Err(format!(
+                "ontogen: `{}::{}` takes no store, so it is served outside the route prefix `{segments}`, but it \
+                 checks that the `{}` resources its relationship `{}` links exist with `{}::get_by_id`, which takes \
+                 a store that only a handler under the prefix opens; take a store in `{}::{}`, or the state in `{}::get_by_id`",
+                m.name, f.name, rel.target_type, rel.name, rel.target_module, m.name, f.name, rel.target_module,
+            ));
+        }
+    }
+    let Some(get) = resources.get_by_id(m) else { return Ok(()) };
+    let takes = |f: &ApiFn| if f.first_param_is_store { "a store" } else { "no store" };
+    let place = |f: &ApiFn| if f.first_param_is_store { "under" } else { "outside" };
+    for f in &m.functions {
+        let linking = matches!(classify_op(m, f), OpKind::List | OpKind::Create | OpKind::Update);
+        if linking && resources.serving(m, f).is_some() && f.first_param_is_store != get.first_param_is_store {
+            return Err(format!(
+                "ontogen: `{}::{}` is served {} the route prefix `{segments}` (it takes {}) and `{}::get_by_id` only \
+                 {} it (it takes {}), but every resource `{}::{}` answers links to itself in `{}::{}`'s scope, \
+                 where no `get_by_id` route is served; take a store in both fns or in neither",
+                m.name,
+                f.name,
+                place(f),
+                takes(f),
+                m.name,
+                place(get),
+                takes(get),
+                m.name,
+                f.name,
+                m.name,
+                f.name,
+            ));
+        }
+    }
+    if get.first_param_is_store || !resources.serves_relationships(m) {
+        return Ok(());
+    }
+    let type_name = &resource.resource_type;
+    for j in junctions {
+        if let Some(f) = j.ops().find(|f| f.first_param_is_store) {
+            return Err(format!(
+                "ontogen: `{}::{}` takes a store, which only a handler under the route prefix `{segments}` opens, \
+                 but it serves the relationship `{}` of the JSON:API resource `{type_name}`, whose routes are served \
+                 outside the prefix because `{}::get_by_id` takes no store; take a store in `{}::get_by_id`, or the \
+                 state in `{}::{}`",
+                m.name, f.name, j.name, m.name, m.name, m.name, f.name
+            ));
+        }
+    }
+    let fields = resource.relationships.iter().map(|r| (&r.name, &r.target_module, &r.target_type));
+    let junction_targets = junctions.iter().map(|j| (&j.name, &j.target_module, &j.target_type));
+    for (rel, target_module, target_type) in fields.chain(junction_targets) {
+        if target_get(target_module).is_some_and(|t| t.first_param_is_store) {
+            return Err(format!(
+                "ontogen: `{}::get_by_id` takes no store, so the relationship routes of the JSON:API resource \
+                 `{type_name}` are served outside the route prefix `{segments}`, but its relationship `{rel}` links \
+                 `{target_type}` resources, which `{target_module}::get_by_id` serves only under the prefix (it \
+                 takes a store); take a store in `{}::get_by_id`, or the state in `{target_module}::get_by_id`",
+                m.name, m.name
+            ));
         }
     }
     Ok(())

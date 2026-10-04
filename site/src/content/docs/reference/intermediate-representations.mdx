@@ -190,8 +190,8 @@ Returned by `gen_servers()`. Describes all transport endpoints that were generat
 | Field | Type | Description |
 |-------|------|-------------|
 | `method` | `String` | HTTP method (e.g., `"GET"`, `"POST"`, `"PATCH"`, `"DELETE"`). |
-| `path` | `String` | Route path (e.g., `"/api/workouts"`, `"/api/workouts/{id}"`). |
-| `handler_name` | `String` | Handler function name in the generated Rust code. |
+| `path` | `String` | Route path (e.g., `"/api/workouts"`, `"/api/workouts/{id}"`). Relationship routes appear with their `{rel}` template, one row per method: `GET`, `PATCH`, `POST` and `DELETE /api/tasks/{id}/relationships/{rel}` and `GET /api/tasks/{id}/{rel}`. A junction op of a module named after an entity has no row of its own, since it is reached only through those routes. |
+| `handler_name` | `String` | Handler function name in the generated Rust code: the IPC command name (`task_get_by_id`), with `_scoped` for a route served under a route prefix (`task_get_by_id_scoped`). For a relationship route it is the relationship handler (`ontogen_task_relationship_post`, `_scoped` under a route prefix), not the IPC command name of a junction op. |
 | `module_name` | `String` | API module this route belongs to. |
 
 ### `IpcCommandMeta`
@@ -266,7 +266,7 @@ pub enum OpKind {
 | `CustomPost` | `POST` | `/entities/{action}` | Custom write operation with non-standard parameters. |
 | `EventStream` | `GET` (SSE) | `/events/{name}` | Server-Sent Events stream. |
 
-`OpKind` is assigned automatically during API scanning based on function name patterns and parameter shapes. For generated CRUD functions, the mapping is direct. Junction operations are recognized by name prefixes like `list_*`/`add_*`/`remove_*` paired with parent+child id parameters. For other scanned custom functions, the classifier looks at the function name prefix (`get_*` becomes `CustomGet`, others become `CustomPost`) and whether the return type looks like a stream.
+`OpKind` is assigned automatically during API scanning based on function name patterns and parameter shapes. For generated CRUD functions, the mapping is direct. Junction operations are recognized by name prefixes like `list_*`/`add_*`/`remove_*` paired with parent+child id parameters; a one-parameter `list_*` is a `JunctionList` only when its module also has the `add_*` or `remove_*` of the same `child_segment`, and a `CustomGet` otherwise. The routes in the table are those of a module with no entity behind it. In a module named after an entity, junction ops are served on the relationship endpoints instead (see [Server Transports](/guides/server-transports/#relationship-endpoints)). For other scanned custom functions, the classifier looks at the function name prefix (`get_*` becomes `CustomGet`, others become `CustomPost`) and whether the return type looks like a stream.
 
 ### `ParamMeta`
 

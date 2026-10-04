@@ -61,11 +61,18 @@ export interface Transport {
   taskCreate(input: CreateTaskInput): Promise<Task>;
   taskUpdate(id: string, input: UpdateTaskInput): Promise<Task>;
   taskDelete(id: string): Promise<null>;
+  taskListLabels(taskId: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>>;
+  taskAddLabel(taskId: string, tagId: string): Promise<null>;
+  taskRemoveLabel(taskId: string, tagId: string): Promise<null>;
+  taskListDrafts(taskId: string): Promise<Task[]>;
   workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>>;
   workoutSetGetById(id: string): Promise<WorkoutSet>;
   workoutSetCreate(input: CreateWorkoutSetInput): Promise<WorkoutSet>;
   workoutSetUpdate(id: string, input: UpdateWorkoutSetInput): Promise<WorkoutSet>;
   workoutSetDelete(id: string): Promise<null>;
+  workoutSetListTags(setId: string, limit?: number, offset?: number): Promise<PaginatedResult<string>>;
+  workoutSetAddTag(setId: string, tagId: string): Promise<null>;
+  workoutSetRemoveTag(setId: string, tagId: string): Promise<null>;
   subscribeTaskChanges(args: { resume?: string | null }, handlers: SubscriptionHandlers<Task>): Promise<() => void>;
 }
 
@@ -155,8 +162,8 @@ async function httpPatch<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
-async function httpDelete(path: string): Promise<void> {
-  await httpRequest('DELETE', path);
+async function httpDelete(path: string, body?: unknown): Promise<void> {
+  await httpRequest('DELETE', path, body);
 }
 
 /**
@@ -270,12 +277,13 @@ interface JsonApiResourceDocument {
   data: JsonApiResource;
 }
 
-interface JsonApiCollectionDocument {
-  data: JsonApiResource[];
+/** `T` is `JsonApiResourceIdentifier` for a relationship's linkage. */
+interface JsonApiCollectionDocument<T = JsonApiResource> {
+  data: T[];
 }
 
-interface JsonApiPageDocument {
-  data: JsonApiResource[];
+interface JsonApiPageDocument<T = JsonApiResource> {
+  data: T[];
   meta: { total: number; limit: number; offset: number };
 }
 
@@ -486,6 +494,21 @@ export function createHttpTransport(): Transport {
       await httpDelete(`/tasks/${encodeURIComponent(id)}`);
       return null;
     },
+    async taskListLabels(taskId: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {
+      const { data, meta } = await httpGet<JsonApiPageDocument>(`/tasks/${encodeURIComponent(taskId)}/labels${toQueryString({ page: { offset, limit } })}`);
+      return { items: data.map(flattenTag), total: meta.total, limit: meta.limit, offset: meta.offset };
+    },
+    async taskAddLabel(taskId: string, tagId: string): Promise<null> {
+      await httpPost(`/tasks/${encodeURIComponent(taskId)}/relationships/labels`, { data: [{ type: 'tags', id: tagId }] });
+      return null;
+    },
+    async taskRemoveLabel(taskId: string, tagId: string): Promise<null> {
+      await httpDelete(`/tasks/${encodeURIComponent(taskId)}/relationships/labels`, { data: [{ type: 'tags', id: tagId }] });
+      return null;
+    },
+    async taskListDrafts(taskId: string): Promise<Task[]> {
+      return callOp<Task[]>('GET', `/tasks/list-drafts/${encodeURIComponent(taskId)}`);
+    },
     async workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>> {
       const { data, meta } = await httpGet<JsonApiPageDocument>(`/workout-sets${toQueryString({ page: { offset, limit } })}`);
       return { items: data.map(flattenWorkoutSet), total: meta.total, limit: meta.limit, offset: meta.offset };
@@ -507,6 +530,18 @@ export function createHttpTransport(): Transport {
     },
     async workoutSetDelete(id: string): Promise<null> {
       await httpDelete(`/workout-sets/${encodeURIComponent(id)}`);
+      return null;
+    },
+    async workoutSetListTags(setId: string, limit?: number, offset?: number): Promise<PaginatedResult<string>> {
+      const { data, meta } = await httpGet<JsonApiPageDocument<JsonApiResourceIdentifier>>(`/workout-sets/${encodeURIComponent(setId)}/relationships/tags${toQueryString({ page: { offset, limit } })}`);
+      return { items: data.map((i) => i.id), total: meta.total, limit: meta.limit, offset: meta.offset };
+    },
+    async workoutSetAddTag(setId: string, tagId: string): Promise<null> {
+      await httpPost(`/workout-sets/${encodeURIComponent(setId)}/relationships/tags`, { data: [{ type: 'tags', id: tagId }] });
+      return null;
+    },
+    async workoutSetRemoveTag(setId: string, tagId: string): Promise<null> {
+      await httpDelete(`/workout-sets/${encodeURIComponent(setId)}/relationships/tags`, { data: [{ type: 'tags', id: tagId }] });
       return null;
     },
     async subscribeTaskChanges(args: { resume?: string | null }, handlers: SubscriptionHandlers<Task>): Promise<() => void> {
@@ -617,6 +652,20 @@ export function createIpcTransport(): Transport {
       await invoke('task_delete', { id });
       return null;
     },
+    async taskListLabels(taskId: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {
+      return invoke('task_list_labels', { taskId, limit: limit ?? null, offset: offset ?? null });
+    },
+    async taskAddLabel(taskId: string, tagId: string): Promise<null> {
+      await invoke('task_add_label', { taskId, tagId });
+      return null;
+    },
+    async taskRemoveLabel(taskId: string, tagId: string): Promise<null> {
+      await invoke('task_remove_label', { taskId, tagId });
+      return null;
+    },
+    async taskListDrafts(taskId: string): Promise<Task[]> {
+      return invoke('task_list_drafts', { taskId });
+    },
     async workoutSetList(limit?: number, offset?: number): Promise<PaginatedResult<WorkoutSet>> {
       return invoke('workout_set_list', { limit: limit ?? null, offset: offset ?? null });
     },
@@ -631,6 +680,17 @@ export function createIpcTransport(): Transport {
     },
     async workoutSetDelete(id: string): Promise<null> {
       await invoke('workout_set_delete', { id });
+      return null;
+    },
+    async workoutSetListTags(setId: string, limit?: number, offset?: number): Promise<PaginatedResult<string>> {
+      return invoke('workout_set_list_tags', { setId, limit: limit ?? null, offset: offset ?? null });
+    },
+    async workoutSetAddTag(setId: string, tagId: string): Promise<null> {
+      await invoke('workout_set_add_tag', { setId, tagId });
+      return null;
+    },
+    async workoutSetRemoveTag(setId: string, tagId: string): Promise<null> {
+      await invoke('workout_set_remove_tag', { setId, tagId });
       return null;
     },
     async subscribeTaskChanges(args: { resume?: string | null }, handlers: SubscriptionHandlers<Task>): Promise<() => void> {

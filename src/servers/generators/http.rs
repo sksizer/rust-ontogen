@@ -4,19 +4,21 @@
 //!
 //! Every route speaks JSON:API through the `ontogen-jsonapi` runtime crate:
 //! a resource module's CRUD ops are served as its resource (wire contract
-//! §7, §8), and every other op as a custom op with a meta-only document
-//! (§10), at the routes §10.4 gives CRUD-named ops with no resource and
-//! junction ops. A list reads its filter from the `filter[…]` family
-//! (§7.3). Event streams send resource objects or `meta.result` frames
-//! (§12).
+//! §7, §8), and its relationships, its junction ops' included, at
+//! relationship and related routes (§9). Every other op is served as a
+//! custom op with a meta-only document (§10), at the routes §10.4 gives
+//! CRUD-named ops with no resource and junction ops outside a resource
+//! module. A list reads its filter from the `filter[…]` family (§7.3).
+//! Event streams send resource objects or `meta.result` frames (§12).
 
 use std::fs;
 use std::path::Path;
 
 use ontogen_core::ir::OpKind;
+use ontogen_jsonapi::links::encode_path_segment;
 
 use crate::persistence::dto::{create_field_required, field_to_create_type};
-use crate::resource::{Arity, Resource, member_name};
+use crate::resource::{Arity, JunctionRelationship, Relationship, Resource, member_name};
 use crate::servers::classify::classify_op;
 use crate::servers::config::{Config, RoutePrefix};
 use crate::servers::error_map::VariantShape;
@@ -25,6 +27,10 @@ use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param, is_resume_param};
 use crate::servers::types::{
     capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type, to_pascal_case,
 };
+
+mod relationship;
+
+pub(in crate::servers) use relationship::route_table as relationship_route_table;
 
 /// Convert colon-style path params (`:name`) to axum 0.8's `{name}` form.
 ///
@@ -45,7 +51,7 @@ pub(in crate::servers) fn axum_path(path: &str) -> String {
 ///
 /// [`ResourceModel::serving`]: crate::resource::ResourceModel::serving
 pub(in crate::servers) fn served_resource<'a>(m: &ApiModule, f: &ApiFn, config: &'a Config) -> Option<&'a Resource> {
-    config.resources.serving(&m.name, f)
+    config.resources.serving(m, f)
 }
 
 /// Check that every op [`served_resource`] picks can be served as its
@@ -57,7 +63,7 @@ pub(in crate::servers) fn check_resource_ops(modules: &[ApiModule], config: &Con
     for m in modules {
         for f in &m.functions {
             let Some(resource) = served_resource(m, f, config) else { continue };
-            let op = classify_op(f);
+            let op = classify_op(m, f);
             let entity = resource.entity.name.as_str();
             let refuse = |why: String| -> Result<(), String> {
                 Err(format!(
@@ -323,10 +329,11 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
     for (resource, item_type) in &frames {
         if !with_object.contains(&resource.module.as_str()) {
             out.push_str(&format!("// ── `{}` ──\n\n", resource.resource_type));
-            emit_resource_object(&mut out, resource, item_type);
+            emit_resource_object(&mut out, resource, item_type, None);
         }
         emit_frame_data(&mut out, resource, item_type);
     }
+    relationship::emit_helpers(&mut out, modules, config);
 
     // Unscoped junction routes go last, in path order. `BTreeMap` keeps the
     // bytes stable across runs, which `write_if_changed` relies on (a
@@ -338,19 +345,26 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
     for m in modules {
         // With a `route_prefix`, a store-scoped fn is served under the prefix
         // only (below); a state-scoped or stateless fn keeps its unscoped
-        // route. Decided per fn: a merged module may mix both kinds.
-        let functions: Vec<&ApiFn> = m.functions.iter().filter(|f| !is_scoped(f, config)).collect();
-        if functions.is_empty() {
+        // route. Decided per fn: a merged module may mix both kinds. A
+        // resource module's junction ops have no route of their own: they
+        // serve its relationship routes.
+        let functions: Vec<&ApiFn> =
+            m.functions.iter().filter(|f| !is_scoped(f, config) && !is_relationship_op(m, f, config)).collect();
+        let relationships = relationship_routes(m, config).filter(|get| !is_scoped(get, config));
+        if functions.is_empty() && relationships.is_none() {
             continue;
         }
         out.push_str(&format!("// ── {} Handlers ──\n\n", capitalize(&m.name)));
         for f in functions {
             let (method, path, handler_name) = emit_fn(&mut out, m, f, config, None);
-            if is_junction(f) {
+            if is_junction(m, f) {
                 junction_routes.entry(path).or_default().push((method, handler_name));
             } else {
                 routes.add(&path, method, &handler_name);
             }
+        }
+        if relationships.is_some() {
+            relationship::emit(&mut out, &mut routes, m, modules, config);
         }
     }
     for (path, methods) in &junction_routes {
@@ -368,9 +382,12 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
     if let Some(prefix) = &config.route_prefix {
         out.push_str("\n// ── Project-Scoped Handlers ──\n\n");
         for m in modules {
-            for f in m.functions.iter().filter(|f| is_scoped(f, config)) {
+            for f in m.functions.iter().filter(|f| is_scoped(f, config) && !is_relationship_op(m, f, config)) {
                 let (method, path, handler_name) = emit_fn(&mut out, m, f, config, Some(prefix));
                 routes.add(&path, method, &handler_name);
+            }
+            if relationship_routes(m, config).is_some_and(|get| is_scoped(get, config)) {
+                relationship::emit(&mut out, &mut routes, m, modules, config);
             }
         }
         for m in modules {
@@ -462,14 +479,15 @@ fn emit_fn(
         let op = ResourceOp { m, f, resource, handler_name: &handler_name, config };
         resource_handler(out, &op, access.expect("a resource op takes the state or a store"), scope);
     } else {
-        op_handler(out, m, f, &op_shape(m, f, config, scope.is_some()), &handler_name, access, scope, config);
+        op_handler(out, m, f, &op_shape(m, f, config), &handler_name, access, scope, config);
     }
     (method, path, handler_name)
 }
 
 /// The handler name: the IPC command's name, which is unique in the file,
-/// and for a scoped handler that name with `_scoped`.
-fn handler_name(m: &ApiModule, f: &ApiFn, config: &Config, scoped: bool) -> String {
+/// and for a scoped handler that name with `_scoped`. The generator and the
+/// server metadata both read it.
+pub(in crate::servers) fn handler_name(m: &ApiModule, f: &ApiFn, config: &Config, scoped: bool) -> String {
     let name = crate::servers::generators::ipc::command_name(&m.name, f, config);
     if scoped { format!("{name}_scoped") } else { name }
 }
@@ -477,31 +495,58 @@ fn handler_name(m: &ApiModule, f: &ApiFn, config: &Config, scoped: bool) -> Stri
 /// The method and route `f` is served at: under the route prefix when `f`
 /// is store-scoped and one is configured. The generator and the server
 /// metadata both read it, so they cannot disagree.
+///
+/// Not for a junction op of a resource module ([`is_relationship_op`]),
+/// which has no route of its own: it is reached through its module's
+/// [`relationship::route_table`].
 pub(in crate::servers) fn route_of(m: &ApiModule, f: &ApiFn, config: &Config) -> (&'static str, String) {
-    let scope = config.route_prefix.as_ref().filter(|_| f.first_param_is_store);
     let url = config.naming.url_for_module(m);
-    let base = match scope {
+    let base = match config.route_prefix.as_ref().filter(|_| f.first_param_is_store) {
         None => format!("/api/{url}"),
         Some(prefix) => format!("/api/{}/{url}", axum_path(&prefix.segments)),
     };
-    let (method, path) = if served_resource(m, f, config).is_some() {
-        match classify_op(f) {
-            OpKind::List => ("get", ""),
-            OpKind::GetById => ("get", "/{id}"),
-            OpKind::Create => ("post", ""),
-            OpKind::Update => ("patch", "/{id}"),
-            OpKind::Delete => ("delete", "/{id}"),
+    let path = if served_resource(m, f, config).is_some() {
+        match classify_op(m, f) {
+            OpKind::List | OpKind::Create => String::new(),
+            OpKind::GetById | OpKind::Update | OpKind::Delete => "/{id}".to_string(),
             _ => unreachable!("served_resource picks CRUD ops only"),
         }
     } else {
-        let shape = op_shape(m, f, config, scope.is_some());
-        return (shape.method, format!("{base}{}", shape.path));
+        op_shape(m, f, config).path
     };
-    (method, format!("{base}{path}"))
+    (route_method(m, f, config), format!("{base}{path}"))
 }
 
-fn is_junction(f: &ApiFn) -> bool {
-    matches!(classify_op(f), OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. })
+/// The HTTP method `f` is served with, at [`route_of`].
+fn route_method(m: &ApiModule, f: &ApiFn, config: &Config) -> &'static str {
+    if served_resource(m, f, config).is_none() {
+        return op_shape(m, f, config).method;
+    }
+    match classify_op(m, f) {
+        OpKind::List | OpKind::GetById => "get",
+        OpKind::Create => "post",
+        OpKind::Update => "patch",
+        _ => "delete",
+    }
+}
+
+fn is_junction(m: &ApiModule, f: &ApiFn) -> bool {
+    matches!(
+        classify_op(m, f),
+        OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }
+    )
+}
+
+/// Whether `f` is a junction op of a resource module, which defines one of
+/// its relationships rather than serving a route of its own (§9.1).
+pub(in crate::servers) fn is_relationship_op(m: &ApiModule, f: &ApiFn, config: &Config) -> bool {
+    is_junction(m, f) && config.resources.by_module(&m.name).is_some()
+}
+
+/// The `get_by_id` of resource module `m` when `m` serves relationship routes
+/// (§9): they read the parent with it, under its scope.
+fn relationship_routes<'a>(m: &'a ApiModule, config: &Config) -> Option<&'a ApiFn> {
+    config.resources.get_by_id(m).filter(|_| config.resources.serves_relationships(m))
 }
 
 /// Every resource an event op's item type names, with the item type as the
@@ -549,7 +594,7 @@ fn runtime_imports(body: &str, routes: &Routes) -> String {
     };
     let strings = |names: Vec<&str>| names.into_iter().map(str::to_string).collect::<Vec<_>>();
 
-    let mut extract = strings(used(&["State"]));
+    let mut extract = strings(used(&["RawQuery", "State"]));
     extract.extend(tree("rejection", strings(used(&["QueryRejection"]))));
     let mut axum = vec!["Router".to_string()];
     axum.extend(tree("extract", extract));
@@ -574,7 +619,10 @@ fn runtime_imports(body: &str, routes: &Routes) -> String {
         "ResultMeta",
         "filter_fields",
     ]));
-    jsonapi.extend(tree("error", strings(used(&["method_not_allowed"]))));
+    jsonapi.extend(tree(
+        "error",
+        strings(used(&["method_not_allowed", "relationship_not_found", "relationship_update_unsupported"])),
+    ));
     jsonapi.extend(tree("extract", strings(used(&["AcceptGuard", "Body", "NoParams", "Path", "Query", "RouteQuery"]))));
     jsonapi.extend(tree("links", strings(used(&["CanonicalQuery", "encode_path_segment", "pagination_links"]))));
     let mut request = Vec::new();
@@ -700,6 +748,30 @@ fn ontogen_result_frame<T: Serialize>(event: Event, item: &T) -> Result<Event, a
 ",
     ),
     (
+        "ontogen_added",
+        "\
+/// `ids` with each id of `linked` it lacks appended, or `None` when it lacks
+/// none: a relationship `POST` that adds nothing writes nothing.
+fn ontogen_added(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
+    let added: Vec<String> = linked.iter().map(|l| l.id.clone()).filter(|id| !ids.contains(id)).collect();
+    (!added.is_empty()).then(|| [ids, added.as_slice()].concat())
+}
+
+",
+    ),
+    (
+        "ontogen_removed",
+        "\
+/// `ids` without the ids of `linked`, or `None` when it holds none of them: a
+/// relationship `DELETE` that removes nothing writes nothing.
+fn ontogen_removed(ids: &[String], linked: &[LinkedId]) -> Option<Vec<String>> {
+    let kept: Vec<String> = ids.iter().filter(|id| !linked.iter().any(|l| l.id == **id)).cloned().collect();
+    (kept.len() != ids.len()).then_some(kept)
+}
+
+",
+    ),
+    (
         "PageOpArgs",
         "\
 /// A paginated list that is not served as a resource takes its page as
@@ -786,7 +858,7 @@ fn from_fields<T: serde::de::DeserializeOwned>(
 
 /// The Rust type a module's CRUD fns read and return, as this file names it.
 fn entity_type(m: &ApiModule) -> Option<String> {
-    m.functions.iter().find_map(|f| match classify_op(f) {
+    m.functions.iter().find_map(|f| match classify_op(m, f) {
         OpKind::List if f.return_type.starts_with("Vec<") => Some(inner_type(&f.return_type)),
         OpKind::GetById | OpKind::Create | OpKind::Update => Some(f.return_type.clone()),
         _ => None,
@@ -818,7 +890,18 @@ fn resource_names(module: &str) -> ResourceNames {
 
 /// The attributes serializer and the resource builder of `resource`, whose
 /// entity this file names `entity_ty` (§5).
-fn emit_resource_object(out: &mut String, resource: &Resource, entity_ty: &str) {
+///
+/// With `junctions`, the module serves its relationship routes (§9), so every
+/// relationship carries the `links` that point at them and each junction
+/// relationship follows the field ones with `links` alone. Without, the
+/// relationships carry linkage only: a server must serve every link it
+/// emits.
+fn emit_resource_object(
+    out: &mut String,
+    resource: &Resource,
+    entity_ty: &str,
+    junctions: Option<&[JunctionRelationship<'_>]>,
+) {
     let names = resource_names(&resource.module);
     let type_name = &resource.resource_type;
     let entity = &resource.entity.name;
@@ -837,32 +920,56 @@ fn emit_resource_object(out: &mut String, resource: &Resource, entity_ty: &str) 
     }
     out.push_str("        attributes.end()\n    }\n}\n\n");
 
+    let self_link = if junctions.is_some() { "self_link.clone()" } else { "self_link" };
     out.push_str(&format!(
         "/// `entity` as a resource object of type `{type_name}`, its `links.self`\n/// under `collection`.\nfn \
          {}<'a>(entity: &'a {entity_ty}, collection: &str) -> ResourceObject<{attrs}<'a>> {{\n    let self_link \
          = format!(\"{{collection}}/{{}}\", encode_path_segment(&entity.{id_field}));\n    \
-         ResourceObject::new(\"{type_name}\", entity.{id_field}.clone(), {attrs}(entity), self_link)",
+         ResourceObject::new(\"{type_name}\", entity.{id_field}.clone(), {attrs}(entity), {self_link})",
         names.resource
     ));
+    let links = |name: &str| {
+        let rel = encode_path_segment(name);
+        format!(
+            "Links::new(format!(\"{{self_link}}/relationships/{rel}\")).with_related(format!(\"{{self_link}}/{rel}\"))"
+        )
+    };
     for rel in &resource.relationships {
-        let target = &rel.target_type;
-        let field = &rel.field;
-        let linkage = match rel.arity {
-            Arity::ToOne { nullable: true } => format!(
-                "Linkage::ToOne(entity.{field}.as_ref().map(|id| ResourceIdentifier::new(\"{target}\", \
-                 id.as_str())))"
-            ),
-            Arity::ToOne { nullable: false } => {
-                format!("Linkage::ToOne(Some(ResourceIdentifier::new(\"{target}\", entity.{field}.as_str())))")
-            }
-            Arity::ToMany => format!(
-                "Linkage::ToMany(entity.{field}.iter().map(|id| ResourceIdentifier::new(\"{target}\", \
-                 id.as_str())).collect())"
-            ),
+        let linkage = linkage_expr(rel, "entity", "id");
+        let relationship = match junctions {
+            Some(_) => format!("Relationship::new({}, {linkage})", links(&rel.name)),
+            None => format!("Relationship::from_data({linkage})"),
         };
-        out.push_str(&format!("\n        .with_relationship(\"{}\", Relationship::from_data({linkage}))", rel.name));
+        out.push_str(&format!("\n        .with_relationship(\"{}\", {relationship})", rel.name));
+    }
+    for j in junctions.unwrap_or_default() {
+        out.push_str(&format!(
+            "\n        .with_relationship(\"{}\", Relationship::from_links({}))",
+            j.name,
+            links(&j.name)
+        ));
     }
     out.push_str("\n}\n\n");
+}
+
+/// The linkage of field relationship `rel` of the entity `entity`, each
+/// linked id bound as `id` where a closure reads it.
+fn linkage_expr(rel: &Relationship, entity: &str, id: &str) -> String {
+    let target = &rel.target_type;
+    let field = &rel.field;
+    match rel.arity {
+        Arity::ToOne { nullable: true } => format!(
+            "Linkage::ToOne({entity}.{field}.as_ref().map(|{id}| ResourceIdentifier::new(\"{target}\", \
+             {id}.as_str())))"
+        ),
+        Arity::ToOne { nullable: false } => {
+            format!("Linkage::ToOne(Some(ResourceIdentifier::new(\"{target}\", {entity}.{field}.as_str())))")
+        }
+        Arity::ToMany => format!(
+            "Linkage::ToMany({entity}.{field}.iter().map(|{id}| ResourceIdentifier::new(\"{target}\", \
+             {id}.as_str())).collect())"
+        ),
+    }
 }
 
 /// The writer of an event frame's `data:` for an item of `resource`'s
@@ -893,7 +1000,7 @@ fn emit_resource_helpers(
     frames: &[(&Resource, &str)],
 ) -> bool {
     let served: Vec<OpKind> =
-        m.functions.iter().filter(|f| served_resource(m, f, config).is_some()).map(classify_op).collect();
+        m.functions.iter().filter(|f| served_resource(m, f, config).is_some()).map(|f| classify_op(m, f)).collect();
     if served.is_empty() {
         return false;
     }
@@ -908,8 +1015,13 @@ fn emit_resource_helpers(
     let entity_ty = entity_type(m).or_else(|| {
         frames.iter().find(|(r, _)| r.module == resource.module).map(|(_, item_type)| item_type.to_string())
     });
+    let junctions = config
+        .resources
+        .junctions(m)
+        .expect("`check_http_ops` refuses a module whose junction relationships do not build");
     if let Some(entity_ty) = &entity_ty {
-        emit_resource_object(out, resource, entity_ty);
+        let links = config.resources.serves_relationships(m).then_some(junctions.as_slice());
+        emit_resource_object(out, resource, entity_ty, links);
     }
     let emitted_object = entity_ty.is_some();
 
@@ -976,20 +1088,43 @@ fn emit_resource_helpers(
             ty = field_to_create_type(field),
         ));
     }
-    if !has_relationships {
+    // A junction relationship is a member name of the type, so naming one is
+    // not `unknown_relationship`; it is written only through its own route.
+    let rel_names: Vec<String> = resource
+        .relationships
+        .iter()
+        .map(|r| &r.name)
+        .chain(junctions.iter().map(|j| &j.name))
+        .map(|name| format!("\"{name}\""))
+        .collect();
+    let refuse_junctions: String = junctions
+        .iter()
+        .map(|j| {
+            format!(
+                "    if relationships.is_some_and(|r| r.contains_key(\"{name}\")) {{\n        return \
+                 Err(relationship_update_unsupported(\"{type_name}\", \"{name}\", \"a create or update\")\n            \
+                 .with_pointer(\"/data/relationships/{name}\"));\n    }}\n",
+                name = j.name
+            )
+        })
+        .collect();
+    if rel_names.is_empty() {
         out.push_str(&format!(
             "    request::check_relationship_names(data.relationships()?, \"{type_name}\", &[])?;\n    \
              Ok(fields)\n}}\n\n"
         ));
         return emitted_object;
     }
-    let rel_names: Vec<String> = resource.relationships.iter().map(|r| format!("\"{}\"", r.name)).collect();
     out.push_str(&format!(
         "    let relationships = data.relationships()?;\n    request::check_relationship_names(relationships, \
-         \"{type_name}\", &[{}])?;\n    let mut linked = {}::default();\n",
-        rel_names.join(", "),
-        names.linked
+         \"{type_name}\", &[{}])?;\n",
+        rel_names.join(", ")
     ));
+    if !has_relationships {
+        out.push_str(&format!("{refuse_junctions}    Ok(fields)\n}}\n\n"));
+        return emitted_object;
+    }
+    out.push_str(&format!("    let mut linked = {}::default();\n", names.linked));
     for rel in &resource.relationships {
         let name = &rel.name;
         let target = &rel.target_type;
@@ -1023,7 +1158,7 @@ fn emit_resource_helpers(
             )),
         }
     }
-    out.push_str("    Ok((fields, linked))\n}\n\n");
+    out.push_str(&format!("{refuse_junctions}    Ok((fields, linked))\n}}\n\n"));
     emit_check_linked(out, m, resource, modules, config);
     emitted_object
 }
@@ -1040,7 +1175,7 @@ struct ResourceOp<'a> {
 
 /// Whether `f`'s handler is the scoped one: a store-scoped fn under a
 /// `route_prefix` has no other.
-fn is_scoped(f: &ApiFn, config: &Config) -> bool {
+pub(in crate::servers) fn is_scoped(f: &ApiFn, config: &Config) -> bool {
     f.first_param_is_store && config.route_prefix.is_some()
 }
 
@@ -1059,7 +1194,7 @@ fn check_linked_fn(module: &str, scoped: bool) -> String {
 /// store is opened twice, which costs one accessor call.
 fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modules: &[ApiModule], config: &Config) {
     let writes = m.functions.iter().filter(|f| {
-        matches!(classify_op(f), OpKind::Create | OpKind::Update) && served_resource(m, f, config).is_some()
+        matches!(classify_op(m, f), OpKind::Create | OpKind::Update) && served_resource(m, f, config).is_some()
     });
     let mut kinds: Vec<bool> = writes.map(|f| is_scoped(f, config)).collect();
     kinds.sort_unstable();
@@ -1141,7 +1276,7 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
 /// checks every id it links (§13.2).
 fn write_steps(op: &ResourceOp<'_>) -> (String, String) {
     let fields_fn = resource_names(&op.m.name).fields;
-    let create = classify_op(op.f) == OpKind::Create;
+    let create = classify_op(op.m, op.f) == OpKind::Create;
     if op.resource.relationships.is_empty() {
         return (format!("    let fields = {fields_fn}(&data, {create})?;\n"), String::new());
     }
@@ -1222,6 +1357,28 @@ fn filter_args(f: &ApiFn, counted: bool) -> Vec<String> {
     f.filter().iter().map(|p| filter_arg(p, &filter_binding(p), counted)).collect()
 }
 
+/// The path of the collection `url_plural` as a `&str` expression: a literal,
+/// or under `scope` a `format!` of the prefix with its parameter bound as
+/// [`SCOPE`] (§11.1).
+fn collection_expr(url_plural: &str, scope: Option<&RoutePrefix>) -> String {
+    let Some(prefix) = scope else { return format!("\"/api/{url_plural}\"") };
+    let pp = &prefix.params[0];
+    let mut args = Vec::new();
+    let template: Vec<String> = prefix
+        .segments
+        .split('/')
+        .map(|segment| match segment.strip_prefix(':') {
+            Some(name) => {
+                let ident = if name == pp.name { SCOPE } else { name };
+                args.push(format!("encode_path_segment(&{ident}.to_string())"));
+                "{}".to_string()
+            }
+            None => segment.to_string(),
+        })
+        .collect();
+    format!("&format!(\"/api/{}/{url_plural}\", {})", template.join("/"), args.join(", "))
+}
+
 /// Emit the JSON:API handler of one CRUD op (§7, §8), served at
 /// [`route_of`].
 ///
@@ -1244,36 +1401,12 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
 
     // The collection's and the item's path parameters, as a pattern and the
     // type `Path` reads.
-    let (collection, collection_path, item_path) = match scope {
-        None => (
-            format!("    let collection = \"/api/{url_plural}\";\n"),
-            None,
-            ("id".to_string(), "LookupKey".to_string()),
-        ),
+    let collection = format!("    let collection = {};\n", collection_expr(&url_plural, scope));
+    let (collection_path, item_path) = match scope {
+        None => (None, ("id".to_string(), "LookupKey".to_string())),
         Some(prefix) => {
-            let pp = &prefix.params[0];
-            let mut args = Vec::new();
-            let template: Vec<String> = prefix
-                .segments
-                .split('/')
-                .map(|segment| match segment.strip_prefix(':') {
-                    Some(name) => {
-                        let ident = if name == pp.name { SCOPE } else { name };
-                        args.push(format!("encode_path_segment(&{ident}.to_string())"));
-                        "{}".to_string()
-                    }
-                    None => segment.to_string(),
-                })
-                .collect();
-            (
-                format!(
-                    "    let collection = &format!(\"/api/{}/{url_plural}\", {});\n",
-                    template.join("/"),
-                    args.join(", ")
-                ),
-                Some((SCOPE.to_string(), pp.rust_type.clone())),
-                (format!("({SCOPE}, id)"), format!("({}, LookupKey)", pp.rust_type)),
-            )
+            let ty = &prefix.params[0].rust_type;
+            (Some((SCOPE.to_string(), ty.clone())), (format!("({SCOPE}, id)"), format!("({ty}, LookupKey)")))
         }
     };
     let extract = |(pattern, ty): &(String, String)| format!("    Path({pattern}): Path<{ty}>,\n");
@@ -1303,7 +1436,7 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
          Links::new(resource.links().self_link());\n    Ok(response::ok(&Document::new(resource, links)))\n}}\n\n"
     );
 
-    match classify_op(f) {
+    match classify_op(m, f) {
         OpKind::List => {
             let paging = config.pagination_for(&m.name, f.surface);
             let params = if f.takes_filter() {
@@ -1459,22 +1592,14 @@ enum Paging {
 
 /// The request and response shape of `f`, served as a custom op (§10.2):
 /// a `CustomGet` or `CustomPost` at `/{action}`, or a CRUD-named or junction
-/// op at its §10.4 route. A scoped junction op is served as the custom op
-/// its read-ness makes it, at `/{action}`; only that route differs, so a
-/// scoped `JunctionList` pages like an unscoped one (§11.1).
+/// op at its §10.4 route, the same under a route prefix as without one.
 ///
 /// Past the arguments a route names, a route that reads a body reads every
 /// other argument from `meta.args`; one that does not reads an `Option`
 /// from `opArg[…]` and anything else from one more path segment, as a
 /// `CustomGet` does.
-fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> OpShape<'a> {
-    let classified = classify_op(f);
-    let scoped_junction_list = scoped && matches!(classified, OpKind::JunctionList { .. });
-    let op = match &classified {
-        OpKind::JunctionList { .. } if scoped => OpKind::CustomGet,
-        OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } if scoped => OpKind::CustomPost,
-        op => op.clone(),
-    };
+fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config) -> OpShape<'a> {
+    let op = classify_op(m, f);
     let paging = config.pagination_for(&m.name, f.surface).filter(|_| f.return_type.starts_with("Vec<"));
     let (method, mut path, named) = match &op {
         OpKind::CustomGet | OpKind::CustomPost => {
@@ -1503,10 +1628,8 @@ fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
         body_args: None,
         page: None,
         takes_filter: false,
-        // From the op as classified: a scoped junction add or remove is
-        // served as a custom op but answers as its unscoped route does.
         no_content: f.return_type == "()"
-            || matches!(classified, OpKind::Delete | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }),
+            || matches!(op, OpKind::Delete | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }),
     };
     match op {
         // A list's parameters are its filter, then its page.
@@ -1515,11 +1638,6 @@ fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
             shape.takes_filter = f.takes_filter();
         }
         OpKind::JunctionList { .. } => {
-            shape.page = paging.map(|pg| Paging::InMemory { default_limit: pg.default_limit, max_limit: pg.max_limit });
-        }
-        OpKind::CustomGet if scoped_junction_list => {
-            shape.path_args.extend(rest);
-            path.extend(rest.iter().map(|p| format!("/{{{}}}", p.name)));
             shape.page = paging.map(|pg| Paging::InMemory { default_limit: pg.default_limit, max_limit: pg.max_limit });
         }
         _ if matches!(method, "post" | "patch") => shape.body_args = Some(rest.iter().collect()),
@@ -1671,7 +1789,7 @@ fn op_handler(
     };
     let first_arg: Vec<String> = first_arg.map(str::to_string).into_iter().collect();
     let store_paged = matches!(shape.page, Some(Paging::Store { .. }));
-    let args: Vec<String> = if classify_op(f) == OpKind::List {
+    let args: Vec<String> = if classify_op(m, f) == OpKind::List {
         // A list's filter, then its page: from the store when it pages,
         // and none when it does not.
         let page = f.params[f.filter().len()..]

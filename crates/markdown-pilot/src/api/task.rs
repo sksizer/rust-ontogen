@@ -34,6 +34,13 @@ pub async fn capture(store: &Store, input: CreateTaskInput, status: Option<Strin
     store.create_task(task).await
 }
 
+// No `add_by_status` or `remove_by_status` partners it, so it is a plain
+// read served as a custom GET, not a relationship.
+/// The tasks in `status`, in id order.
+pub async fn list_by_status(store: &Store, status: &str) -> Result<Vec<Task>, AppError> {
+    Ok(store.list_tasks(None, None).await?.into_iter().filter(|t| t.status == status).collect())
+}
+
 /// Mark a task done.
 pub async fn complete(store: &Store, id: &str) -> Result<(), AppError> {
     let updates = TaskUpdate { status: Some("done".into()), ..TaskUpdate::default() };
@@ -60,8 +67,8 @@ pub async fn purge_done(store: &Store) -> Result<u64, AppError> {
     Ok(purged)
 }
 
-/// A task's tags, in the order the task lists them.
-pub async fn list_tags(store: &Store, id: &str) -> Result<Vec<Tag>, AppError> {
+/// A task's labels: the tags it lists, in its order.
+pub async fn list_labels(store: &Store, id: &str) -> Result<Vec<Tag>, AppError> {
     let task = store.get_task(id).await?;
     let mut tags = Vec::with_capacity(task.tags.len());
     for tag_id in &task.tags {
@@ -70,8 +77,8 @@ pub async fn list_tags(store: &Store, id: &str) -> Result<Vec<Tag>, AppError> {
     Ok(tags)
 }
 
-/// Tag a task. Tagging it twice changes nothing.
-pub async fn add_tag(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> {
+/// Label a task with a tag. Labelling it twice changes nothing.
+pub async fn add_label(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> {
     store.get_tag(tag_id).await?;
     let mut tags = store.get_task(id).await?.tags;
     if !tags.iter().any(|t| t == tag_id) {
@@ -80,8 +87,8 @@ pub async fn add_tag(store: &Store, id: &str, tag_id: &str) -> Result<(), AppErr
     store.update_task(id, TaskUpdate { tags: Some(tags), ..TaskUpdate::default() }).await.map(drop)
 }
 
-/// Untag a task.
-pub async fn remove_tag(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> {
+/// Take a tag off a task's labels.
+pub async fn remove_label(store: &Store, id: &str, tag_id: &str) -> Result<(), AppError> {
     let mut tags = store.get_task(id).await?.tags;
     tags.retain(|t| t != tag_id);
     store.update_task(id, TaskUpdate { tags: Some(tags), ..TaskUpdate::default() }).await.map(drop)

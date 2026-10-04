@@ -16,11 +16,13 @@ pub struct TaskFrontmatter {
     pub epic_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 /// The frontmatter keys this type owns — the full field set, so
 /// `merge_serialize` removes cleared options and preserves hand-added keys.
-pub const TASK_FM_FIELDS: &[&str] = &["title", "status", "created", "epic_id", "tags"];
+pub const TASK_FM_FIELDS: &[&str] = &["title", "status", "created", "epic_id", "tags", "parent_id"];
 
 impl TaskFrontmatter {
     pub fn from_task(value: &Task) -> Self {
@@ -30,6 +32,7 @@ impl TaskFrontmatter {
             created: value.created.clone(),
             epic_id: value.epic_id.as_deref().map(markdown_store::wikilink::encode),
             tags: value.tags.iter().map(|v| markdown_store::wikilink::encode(v)).collect(),
+            parent_id: value.parent_id.as_deref().map(markdown_store::wikilink::encode),
         }
     }
 
@@ -42,6 +45,9 @@ impl TaskFrontmatter {
             created: self.created,
             epic_id: markdown_store::wikilink::strip_opt(self.epic_id),
             tags: markdown_store::wikilink::strip_vec(self.tags),
+            parent_id: markdown_store::wikilink::strip_opt(self.parent_id),
+            // derived has_many view — reconstructed by populate_task_relations
+            subtasks: Vec::new(),
         }
     }
 }

@@ -30,6 +30,19 @@ cat data/vault/tasks/review-the-stack.md
 # Filter the list (-g keeps curl from reading the brackets as a URL glob)
 curl -sg 'localhost:3002/api/tasks?filter[status]=closed/done&filter[epic_id]=markdown-backend' \
   -H 'accept: application/vnd.api+json' | jq
+
+# Add a tag through the relationship endpoint, then read the related tags
+curl -si -X POST localhost:3002/api/tasks/ship-the-emitter/relationships/tags \
+  -H 'content-type: application/vnd.api+json' \
+  -d '{"data":[{"type":"tags","id":"release"}]}'
+curl -s localhost:3002/api/tasks/ship-the-emitter/tags -H 'accept: application/vnd.api+json' | jq
+
+# Make review-the-stack a subtask of ship-the-emitter
+curl -si -X PATCH localhost:3002/api/tasks/review-the-stack/relationships/parent \
+  -H 'content-type: application/vnd.api+json' \
+  -d '{"data":{"type":"tasks","id":"ship-the-emitter"}}'
+curl -s localhost:3002/api/tasks/ship-the-emitter/relationships/subtasks \
+  -H 'accept: application/vnd.api+json' | jq
 ```
 
 Lists page 20 at a time (`GET /api/tasks?page[offset]=0&page[limit]=5` answers with `meta.total` and `links.next`), because `build.rs` sets `pagination` and `.api_paginated(..)` for `task`, `epic` and `tag`. The MCP list tools take `limit` and `offset` and return `{items, total, limit, offset}`; `task_list` also takes the filter's fields as arguments.
@@ -42,7 +55,7 @@ The task list is hand-written. `src/api/v1/task.rs` re-exports the generated tas
 
 An unknown member such as `filter[colour]` is `400 invalid_query_parameter`. The generated handlers import the struct from `types_import_path`, so `src/schema/mod.rs` re-exports it. See the [filtered lists recipe](/cookbook/custom-api-endpoints/#recipe-filtered-lists).
 
-The `POST` response is `201` with a `Location: /api/tasks/review-the-stack` header and the new task as a JSON:API resource: the fields are under `attributes`, and `epic` and `tags` are under `relationships`. The filename came from the title. The store's `IdStrategy::SlugFromField("title")` (set with `.store_id_strategy(..)` in `build.rs`) slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
+The `POST` response is `201` with a `Location: /api/tasks/review-the-stack` header and the new task as a JSON:API resource: the fields are under `attributes`, and `epic`, `tags`, `parent` and `subtasks` are under `relationships`, each with `links` to its relationship endpoint (`/api/tasks/review-the-stack/relationships/epic`) and its related resource (`/api/tasks/review-the-stack/epic`). The relationship endpoints change one relationship at a time and answer `204`; `parent` and `subtasks` are two views of one foreign key, so setting a task's `parent` adds it to the parent's `subtasks`. The filename came from the title. The store's `IdStrategy::SlugFromField("title")` (set with `.store_id_strategy(..)` in `build.rs`) slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
 
 ## Over MCP
 
@@ -85,6 +98,12 @@ pub struct Task {
 
     #[ontology(relation(many_to_many, target = "Tag"))]
     pub tags: Vec<String>,
+
+    #[ontology(relation(belongs_to, target = "Task"))]
+    pub parent_id: Option<String>,
+
+    #[ontology(relation(has_many, target = "Task", foreign_key = "parent_id"))]
+    pub subtasks: Vec<String>,
 
     #[ontology(body)]
     pub body: String,
