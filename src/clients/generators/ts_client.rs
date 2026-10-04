@@ -105,14 +105,13 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
     out.push_str("export const httpCommands = {\n");
 
-    let quote = |p: &str, template: bool| if template { format!("`{p}`") } else { format!("'{p}'") };
     for m in modules {
         for f in &m.functions {
             let cmd_name = command_name(&m.name, f, config);
             if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
                 continue;
             }
-            let Some(method) = jsonapi::method(m, f, config, &quote) else { continue };
+            let Some(method) = jsonapi::method(m, f, config, None) else { continue };
             out.push_str(&format!(
                 "  async {}({}): Promise<{}> {{\n    {}\n  }},\n\n",
                 snake_to_camel(&cmd_name),
