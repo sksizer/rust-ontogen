@@ -156,8 +156,8 @@ each of its sections to a phase.
 **Phase 1b — CRUD over JSON:API.**
 
 - The parsed schema as an explicit input of `gen_servers` and
-  `gen_clients` (contract §5.1). Modules with no entity behind them kept
-  their handlers until 1c.
+  `gen_clients` (contract §5.1). Modules with no entity behind them were
+  served as custom ops from 1c.
 - Media type, documents, and resource objects with relationship `data`.
 - Query-parameter rules, list and pagination (`page[]`, `meta`, `self` plus
   the four pagination links).
@@ -175,7 +175,8 @@ each of its sections to a phase.
   `opArg[…]` (decisions 1 and 7), and the singleton CRUD check.
 - Ops served as custom ops (contract §10.4): CRUD ops with no entity
   behind them, and junction ops until 3a.
-- Event frames as resource objects (decision 2).
+- Event frames as resource objects (decision 2); non-entity items are
+  `{"meta":{"result":…}}`.
 - Scoped pagination made identical to unscoped.
 - TS custom, junction and subscription methods.
 
@@ -188,6 +189,9 @@ each of its sections to a phase.
 - TS `toQueryString` emits the bracketed form.
 - `meta.total` comes from the filter-aware count.
 - tasks-tracker gains a hand-written `list` with `ListTasksQuery`.
+- A filtered list in a module with no entity moves its filter parameters to
+  the `filter[…]` family and answers `meta.result`, like the other ops served
+  as custom ops.
 
 **Phase 3 — relationships, inclusion and sorting.**
 

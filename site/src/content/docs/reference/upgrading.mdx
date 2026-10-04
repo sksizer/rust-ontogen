@@ -128,10 +128,12 @@ Also refused at build time: an id field that is not a `String`, an attribute or 
 
 ### Ops the generator now refuses
 
-Two more shapes fail `gen_servers` and `gen_clients` with a `CodegenError` that names the module and the function.
+These shapes fail `gen_servers` and `gen_clients` with a `CodegenError` that names the module and the function. The checks run only when the build generates an HTTP server (`HttpAxum`) or an HTTP TypeScript client; IPC-only and MCP-only builds are unaffected.
 
 - **A CRUD or junction op in a singleton module.** A module marked `// ontogen:singleton` (or listed in `NamingConfig::singleton_modules`) has no resource, so every op in it is a custom op. A function there that classifies as `list`, `get_by_id`, `create`, `update`, `delete`, or as a junction op (`list_X`, `add_Y`, `remove_Y`) is refused. Rename it so it classifies as a custom op, or move it to a module that is not a singleton.
-- **An `*Input` parameter on an op served without a body.** An `#[ontogen::http::get]` op, `get_by_id`, `delete`, `list_X` and `remove_Y` carry no request body, so a parameter whose type ends in `Input` has nowhere to arrive. Change the op to a `POST`, or pass the fields as separate parameters.
+- **A parameter whose type name ends in `Input` on an op served without a body.** An `#[ontogen::http::get]` op, `get_by_id`, `delete`, `list_X` and `remove_Y` carry no request body, so such a parameter has nowhere to arrive. Change the op to a `POST`, or pass the fields as separate parameters.
+- **A CRUD-named op in a module with no entity that takes arguments beyond its route's.** Such an op takes exactly `get_by_id(id)`, `delete(id)`, `create(input)` or `update(id, input)`. Rename it, or drop the extra parameters. A `list` with extra arguments is a filtered list instead, not an error.
+- **An `Option` argument of a bodyless op whose type is not a scalar.** On a custom `GET`, an entity-less `get_by_id` or `delete`, or a junction list or remove, an argument such as `Option<Vec<String>>` or an `Option` struct cannot be read from one `opArg` value. Take it in a `POST` body instead.
 
 ### Depend on `ontogen-jsonapi`, `ontogen-core` and `serde_json`
 
@@ -465,16 +467,16 @@ data: {"type":"tasks","id":"ship-the-emitter","attributes":{"title":"Ship the em
 
 ```text
 event: activity-for-kind
-id: 4
 data: {"seq":4,"kind":"workout","id":"w1"}
+id: 4
 ```
 
 After:
 
 ```text
 event: activity-for-kind
-id: 4
 data: {"meta":{"result":{"seq":4,"kind":"workout","id":"w1"}}}
+id: 4
 ```
 
 IPC frames stay flat.
@@ -483,7 +485,7 @@ A subscribe call that fails before the stream opens now answers an error documen
 
 ### Route prefix
 
-A scoped list (`route_prefix`) that is not served as a resource, meaning a list in a module with no entity behind it or a filtered list, used to fetch every record and slice the page in memory. It now passes the page to the store's `list` and calls `count`, like an unscoped one. A hand-written scoped `list` must therefore honour its `limit` and `offset`. Scoped custom ops and junction ops follow the rules above, under the prefix. Scoped junction ops keep their action-style routes (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`, `…/remove-tag`), but a scoped junction list on a paginated surface now pages like an unscoped one: it takes `opArg[limit]` and `opArg[offset]` and answers the `{items, total, limit, offset}` object, where it used to return the whole list.
+A scoped list (`route_prefix`) that is not served as a resource, meaning a list in a module with no entity behind it or a filtered list, used to fetch every record and slice the page in memory. It now passes the page to the store's `list` and calls `count`, like an unscoped one. A hand-written scoped `list` must therefore honour its `limit` and `offset`. Scoped custom ops and junction ops follow the rules above, under the prefix. The split transport now calls the action-style scoped junction routes when a `projectId` is given (`POST …/add-tag` with `{"meta":{"args":{"task_id":…,"tag_id":…}}}`, and likewise for list and remove); before, it called nested routes that the server does not serve under a prefix. Scoped junction ops keep their action-style routes (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`, `…/remove-tag`), but a scoped junction list on a paginated surface now pages like an unscoped one: it takes `opArg[limit]` and `opArg[offset]` and answers the `{items, total, limit, offset}` object, where it used to return the whole list.
 
 ## TypeScript clients
 
@@ -502,6 +504,8 @@ async workoutStart(input: StartWorkoutInput, note: string | null): Promise<Worko
 Before, the same method posted `input` bare and put `note` on the query string.
 
 A custom `GET` sends its `Option` arguments as `opArg[name]`, and a paginated entity-less or junction list sends `opArg[limit]` and `opArg[offset]`. `subscribeX` hands the callback a flat entity for an entity item and the `meta.result` value for any other item, and the legacy `on{Event}` listeners decode frames the same way. `SubscriptionHandlers.onEvent` still receives flat items.
+
+For a module whose list is paginated, the generated `xCount()` method is removed from the `Transport` interface and from the clients (both HTTP clients and the IPC transport). The server never served it: there was no HTTP route and no IPC command, because the count is the `total` of the paginated list. Read `PaginatedResult.total` instead.
 
 The HTTP-only client (`HttpTs`) changes in two ways. Its custom op methods now call the server's actual paths, kebab-cased and singleton-aware, where some used the module's Rust name. Its paginated lists, including junction lists, take `limit?` and `offset?` and return `PaginatedResult<T>`; before, they took no page arguments and returned the server's default first page.
 

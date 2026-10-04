@@ -151,7 +151,7 @@ The server responds:
 | anything else, including `application/json`, or the header absent while a body is present | `415` |
 
 Every `415` carries `source.header: "Content-Type"`. A body on `GET` or on
-a resource `DELETE` is ignored, and its `Content-Type` is not checked.
+any generated `DELETE` is ignored, and its `Content-Type` is not checked.
 
 **Accept.** Media types, parameter names and the `q` parameter are
 compared case-insensitively. A range with `q=0` is "not acceptable", as
@@ -1605,6 +1605,10 @@ An op in a singleton module that classifies as `List`, `GetById`,
 singleton module is opted into explicitly, so a CRUD op there is a
 mistake. A module with no entity behind it is the case §10.4 serves.
 
+This check, and the `*Input` rule of §10.2 and §10.4, apply to builds that
+generate an HTTP server or an HTTP TypeScript client. IPC-only and MCP-only
+builds are unaffected.
+
 ### 10.4 Ops served as custom ops
 
 Three kinds of op have no resource to serve and are served as custom ops,
@@ -1629,19 +1633,30 @@ The §10.1 and §10.2 rules apply, with these routes:
 
 `update` uses `PATCH` here too, so that no generated route uses `PUT`.
 
-Parameters beyond the ones a row's route names follow §10.2:
+A CRUD-named op in a module with no entity takes exactly its row's
+arguments: `get_by_id(id)`, `delete(id)`, `create(input)`,
+`update(id, input)`, and `list()` or `list(limit, offset)`. Any other
+parameter is a `CodegenError`, because the generated clients call these ops
+with those arguments only. The exception is `list`, where an extra parameter
+makes the list a filtered list (§7.3). Junction rows keep their fixed
+arguments.
 
-- On `POST` and `PATCH` rows they are members of `meta.args`.
-- On `GET` and `DELETE` rows, `Option` ones are `opArg[…]` query parameters
-  and required ones are appended as path segments, as for a custom `GET`.
-  The `*Input` rule of §10.2 applies, so such a parameter is a
-  `CodegenError`.
+A body on a `DELETE` row (`delete`, `JunctionRemove`), and its
+`Content-Type`, is ignored, as for a resource `DELETE` (§3.2).
+
+An `Option` argument of a bodyless row (a custom `GET`, entity-less
+`get_by_id` or `delete`, `JunctionList`, `JunctionRemove`) must be a
+scalar, because it is read from a single `opArg` value.
 
 On a paginated row, `opArg[limit]` and `opArg[offset]` are unsigned 32-bit
 integers. An absent `limit` is `default_limit` and an absent `offset` is
 `0`. `limit` is clamped to `max_limit`; `opArg[limit]=0` is not an error and
-yields a page of zero items, as the pre-JSON:API `limit=0` did. A malformed value is
-`400 invalid_query_parameter` with `source.parameter` naming it. A list
+yields a page of zero items. A `meta.result` page has no links, so an empty
+page needs no `next` or `last`, and the IPC list command takes `limit: 0`
+the same way. The values use the grammar of `page[…]` (§7.2): one or more
+ASCII digits, at most 4294967295. `+5`, `-1`, an empty value and `1.5` are
+`400 invalid_query_parameter`, with `source.parameter` naming the
+parameter. A list
 that is not paginated accepts no query parameters.
 
 ## 11. Route prefix and extra surfaces
@@ -1679,7 +1694,11 @@ scoped `list` must honour its page. The one remaining divergence:
   (`/api/projects/{project_id}/tasks/list-tags/{task_id}`, `…/add-tag`,
   `…/remove-tag`) instead of the `{parent_id}/{child}` form. Only the route
   differs: a scoped `JunctionList` pages with `opArg[limit]`/`opArg[offset]`
-  like the unscoped one. Phase 3a removes this.
+  like the unscoped one. Relationship endpoints (§9, phase 3a) replace these
+  routes.
+
+A client calling a scoped junction op uses that action route with both
+arguments in `meta.args`: `{"<parent param>":…, "<child param>":…}`.
 
 ### 11.2 Extra API surfaces
 
@@ -1710,8 +1729,8 @@ no event ops. For illustration, a resumable `task_changed` op yielding
 
 ```text
 event: task-changed
-id: 0:17
 data: {"type":"tasks","id":"ship-the-emitter","attributes":{"title":"Ship the emitter","status":"closed/done","created":"2026-06-06","body":"## Goal\n…"},"relationships":{"epic":{"data":{"type":"epics","id":"markdown-backend"}},"tags":{"data":[{"type":"tags","id":"codegen"}]}}}
+id: 0:17
 ```
 
 When the event's item type `T` is an entity (known from the schema, §5.1),
@@ -1729,8 +1748,8 @@ rule as custom ops (§10.1). An example is iron-log's `Activity`, whose
 
 ```text
 event: activity-for-kind
-id: 4
 data: {"meta":{"result":{"seq":4,"kind":"workout","id":"w1"}}}
+id: 4
 ```
 
 These are unchanged:
@@ -2008,8 +2027,10 @@ no source change.
 | `subscribeX(args, handlers)` | unchanged URL, `?resume=` and lag | entity `T`: `flatten(JSON.parse(data))`; other `T`: `.meta.result` |
 | legacy `on{Event}(callback)` | as `subscribeX` | the same decoding; the callback gets the flat item |
 
-The junction rows describe phase 3a. Between phases 1c and 3a, junction
-methods call the §10.4 forms and read `meta.result`.
+Junction methods call the §10.4 forms and read `meta.result`; the junction
+rows above describe the relationship endpoints of phase 3a. When a prefix
+value is given, the TS client calls the scoped action route with both
+arguments in `meta.args` (§11.1).
 
 **Sort** (decision 8). Every list method whose Rust fn takes an `order`
 argument gains a trailing optional argument, after every existing
@@ -2154,6 +2175,8 @@ the section that states each and its reason.
 | Links and `Location` are relative | 4.2 | The server cannot know its public origin behind proxies, dev servers and tunnels |
 | Canonical link query order and encoding | 4.3 | Byte-stable links for snapshots and caches |
 | The schema is an explicit input of the servers and clients stages | 5.1 | Nearly every rule needs it, and today neither stage sees it |
+| `opArg[limit]=0` is an empty page, not `400` | 10.4 | A link-less `meta.result` page needs no `next` or `last`, and the IPC list command takes `limit: 0` the same way |
+| A CRUD-named op with no entity behind it takes exactly its row's arguments | 10.4 | The generated clients call these ops with those arguments only, so extra parameters would be routes no client can reach. `list` with extra parameters is a filtered list instead |
 | CRUD ops with no entity behind them are served as custom ops | 5.1, 10.4 | Keeps the scan-dirs-only use case working, and without a schema there is no resource to build |
 | `links.self` on every resource object | 5.2 | `Location` must match it, and clients can refetch without building URLs |
 | `relationships` omitted when a type has none | 5.2 | Avoids an empty object on every `tags` and `epics` resource |

@@ -189,7 +189,7 @@ Returned by `gen_servers()`. Describes all transport endpoints that were generat
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `method` | `String` | HTTP method (e.g., `"GET"`, `"POST"`, `"PATCH"`, `"PUT"`, `"DELETE"`). |
+| `method` | `String` | HTTP method (e.g., `"GET"`, `"POST"`, `"PATCH"`, `"DELETE"`). |
 | `path` | `String` | Route path (e.g., `"/api/workouts"`, `"/api/workouts/{id}"`). |
 | `handler_name` | `String` | Handler function name in the generated Rust code. |
 | `module_name` | `String` | API module this route belongs to. |
@@ -257,7 +257,7 @@ pub enum OpKind {
 | `List` | `GET` | `/entities` | Returns all entities. |
 | `GetById` | `GET` | `/entities/{id}` | Returns one entity by ID. |
 | `Create` | `POST` | `/entities` | Creates a new entity. |
-| `Update` | `PATCH` | `/entities/{id}` | Updates an existing entity. (`PUT` only on a module with no schema entity behind it.) |
+| `Update` | `PATCH` | `/entities/{id}` | Updates an existing entity. |
 | `Delete` | `DELETE` | `/entities/{id}` | Deletes an entity. |
 | `JunctionList { child_segment }` | `GET` | `/parents/{parent_id}/{child_segment}` | List child entities of a parent through a junction. |
 | `JunctionAdd { child_segment }` | `POST` | `/parents/{parent_id}/{child_segment}` | Add a child to a parent through a junction. |
