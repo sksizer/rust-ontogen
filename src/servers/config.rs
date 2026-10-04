@@ -160,6 +160,9 @@ pub struct ApiSurface {
     pub api_dir: PathBuf,
     /// Import path for this surface's service modules
     /// (e.g., `"determined_fitness::api"`).
+    /// A surface scanned from a sibling crate must name its service path by
+    /// that crate's own name, not through a `crate::` re-export: `crate::`
+    /// paths in its files resolve against the crate this path names.
     pub service_import_path: String,
     /// Import path for the types this surface's handlers reference
     /// (e.g., `"determined_fitness::schema"`).
