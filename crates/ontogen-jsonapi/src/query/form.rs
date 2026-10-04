@@ -2,7 +2,7 @@
 //! reads a field, a struct read from the members of one family, and the
 //! field names a struct declares.
 
-use std::fmt;
+use std::{cell::Cell, fmt};
 
 use serde::{
     de::{
@@ -21,6 +21,9 @@ pub(super) enum Error {
     MissingField(&'static str),
     /// The member is given more than once.
     Repeated(String),
+    /// serde saw one field twice, as two members that name it (a serde
+    /// alias); not yet tied to a member.
+    Duplicate(&'static str),
     /// serde rejected the member's value.
     Member { member: String, message: String },
 }
@@ -31,6 +34,7 @@ impl fmt::Display for Error {
             Error::Custom(message) | Error::Member { message, .. } => f.write_str(message),
             Error::MissingField(field) => write!(f, "missing field `{field}`"),
             Error::Repeated(member) => write!(f, "`{member}` is given more than once"),
+            Error::Duplicate(field) => write!(f, "duplicate field `{field}`"),
         }
     }
 }
@@ -46,6 +50,11 @@ impl de::Error for Error {
     // lets the error name the member the request lacks.
     fn missing_field(field: &'static str) -> Self {
         Error::MissingField(field)
+    }
+
+    // A field reached through two members, which only an alias allows.
+    fn duplicate_field(field: &'static str) -> Self {
+        Error::Duplicate(field)
     }
 }
 
@@ -162,16 +171,28 @@ where
     T: DeserializeOwned,
     I: Iterator<Item = Member<'a>>,
 {
-    T::deserialize(MapAccessDeserializer::new(Members { members, pending: None }))
+    // serde's derive raises a duplicate field after reading the later
+    // member's name and before its value, so the member whose name was
+    // handed out last is the one that triggered it.
+    let last = Cell::new(None);
+    T::deserialize(MapAccessDeserializer::new(Members { members, pending: None, last: &last })).map_err(|err| match err
+    {
+        Error::Duplicate(field) => match last.get() {
+            Some(member) => Error::Member { member: member.to_owned(), message: format!("duplicate field `{field}`") },
+            None => Error::Custom(format!("duplicate field `{field}`")),
+        },
+        other => other,
+    })
 }
 
-struct Members<'a, I> {
+struct Members<'a, 'r, I> {
     members: I,
+    last: &'r Cell<Option<&'a str>>,
     /// The member whose name was handed out and whose value is next.
     pending: Option<(&'a str, &'a str)>,
 }
 
-impl<'a, I: Iterator<Item = Member<'a>>> MapAccess<'a> for Members<'a, I> {
+impl<'a, I: Iterator<Item = Member<'a>>> MapAccess<'a> for Members<'a, '_, I> {
     type Error = Error;
 
     fn next_key_seed<K: DeserializeSeed<'a>>(&mut self, seed: K) -> Result<Option<K::Value>, Error> {
@@ -180,6 +201,7 @@ impl<'a, I: Iterator<Item = Member<'a>>> MapAccess<'a> for Members<'a, I> {
             return Err(Error::Repeated(member.to_owned()));
         }
         self.pending = Some((member, value));
+        self.last.set(Some(member));
         seed.deserialize(BorrowedStrDeserializer::new(member)).map(Some)
     }
 
@@ -244,5 +266,181 @@ impl<'de> de::Deserializer<'de> for Probe {
     forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit
         unit_struct newtype_struct seq tuple tuple_struct map enum identifier ignored_any
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Mode {
+        Fast,
+        Slow,
+    }
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct Newtype(u8);
+
+    /// The old reader: `serde_urlencoded` reading one pair into a field.
+    fn urlencoded<T: DeserializeOwned>(value: &str) -> Result<T, String> {
+        #[derive(Deserialize)]
+        struct One<T> {
+            v: T,
+        }
+        let pair = format!("v={}", encode(value));
+        serde_urlencoded::from_str::<One<T>>(&pair).map(|one| one.v).map_err(|err| err.to_string())
+    }
+
+    fn encode(value: &str) -> String {
+        let mut out = String::new();
+        for byte in value.bytes() {
+            match byte {
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+                _ => out.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        out
+    }
+
+    fn ours<T: DeserializeOwned>(value: &str) -> Result<T, String> {
+        T::deserialize(Value(value)).map_err(|err| err.to_string())
+    }
+
+    fn agree<T: DeserializeOwned + Debug>(value: &str) {
+        let (a, b) = (urlencoded::<T>(value), ours::<T>(value));
+        match (&a, &b) {
+            // Compared as text so that NaN agrees with itself.
+            (Ok(x), Ok(y)) => {
+                assert_eq!(format!("{x:?}"), format!("{y:?}"), "{value:?} as {}", std::any::type_name::<T>())
+            }
+            (Err(_), Err(_)) => {}
+            _ => panic!("{value:?} as {}: urlencoded {a:?}, ours {b:?}", std::any::type_name::<T>()),
+        }
+    }
+
+    const VALUES: &[&str] = &[
+        "",
+        "0",
+        "1",
+        "-1",
+        "+1",
+        "+",
+        "-",
+        "--1",
+        "007",
+        "255",
+        "256",
+        "-129",
+        "128",
+        "65536",
+        "4294967296",
+        "9223372036854775807",
+        "9223372036854775808",
+        "-9223372036854775808",
+        "-9223372036854775809",
+        "18446744073709551615",
+        "18446744073709551616",
+        "true",
+        "false",
+        "True",
+        "TRUE",
+        "1.5",
+        "-1.5",
+        "+1.5",
+        ".5",
+        "5.",
+        "1e3",
+        "1E-3",
+        "inf",
+        "-inf",
+        "NaN",
+        "nan",
+        "infinity",
+        "1.7976931348623157e309",
+        "fast",
+        "slow",
+        "Fast",
+        "other",
+        "a b",
+        "a+b",
+        "a%2Bb",
+        "a%20b",
+        "%",
+        "%zz",
+        "caf\u{e9}",
+        "x",
+        " 1",
+        "1 ",
+    ];
+
+    #[test]
+    fn the_value_reader_agrees_with_serde_urlencoded() {
+        for value in VALUES {
+            agree::<bool>(value);
+            agree::<u8>(value);
+            agree::<u16>(value);
+            agree::<u32>(value);
+            agree::<u64>(value);
+            agree::<i8>(value);
+            agree::<i16>(value);
+            agree::<i32>(value);
+            agree::<i64>(value);
+            agree::<f32>(value);
+            agree::<f64>(value);
+            agree::<String>(value);
+            agree::<Mode>(value);
+            agree::<Option<String>>(value);
+            agree::<Option<u32>>(value);
+            agree::<Option<bool>>(value);
+            agree::<Option<Mode>>(value);
+            agree::<Newtype>(value);
+        }
+    }
+
+    #[test]
+    fn an_empty_value_is_some_for_a_string_and_an_error_for_a_number() {
+        assert_eq!(ours::<Option<String>>(""), Ok(Some(String::new())));
+        assert!(ours::<Option<u32>>("").is_err());
+        assert!(ours::<u32>("").is_err());
+        assert_eq!(ours::<Option<String>>(""), urlencoded::<Option<String>>(""));
+    }
+
+    #[test]
+    fn plus_and_percent_encoding_decode_before_the_reader_sees_them() {
+        // The reader takes decoded text: `a+b` arrives as `a b`.
+        let decoded: Vec<(String, String)> = serde_urlencoded::from_str("v=a+b%2Bc%20d").unwrap();
+        assert_eq!(decoded[0].1, "a b+c d");
+        assert_eq!(ours::<String>(&decoded[0].1), Ok("a b+c d".to_owned()));
+        assert_eq!(urlencoded::<String>("a b+c d"), Ok("a b+c d".to_owned()));
+    }
+
+    #[test]
+    fn leading_signs_and_overflow_are_parsed_as_from_str_does() {
+        assert_eq!(ours::<i32>("+7"), Ok(7));
+        assert_eq!(ours::<i32>("-7"), Ok(-7));
+        assert!(ours::<u8>("-1").is_err());
+        assert!(ours::<u8>("256").is_err());
+        assert!(ours::<i8>("-129").is_err());
+    }
+
+    // Intentional differences: serde_urlencoded's value deserializer has no
+    // 128-bit or `char` support, so those fields cannot be read from a
+    // query at all there. They read here through `FromStr`, which accepts
+    // a superset and breaks nothing.
+    #[test]
+    fn the_reader_also_reads_128_bit_integers_and_chars() {
+        assert!(urlencoded::<u128>("5").is_err());
+        assert!(urlencoded::<i128>("-5").is_err());
+        assert_eq!(ours::<u128>("5"), Ok(5));
+        assert_eq!(ours::<i128>("-5"), Ok(-5));
+        assert!(ours::<u128>("-5").is_err());
+        assert_eq!(ours::<char>("x"), Ok('x'));
+        assert!(ours::<char>("xy").is_err());
     }
 }
