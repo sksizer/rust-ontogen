@@ -103,7 +103,10 @@ pub fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
 ///   `parse::check_paginated_lists` holds it to, so it has no other `limit`
 ///   or `offset`);
 /// - an event subscription takes its channel as `channel`, so no argument of
-///   the event fn may be named `channel`.
+///   the event fn may be named `channel`;
+/// - under a route prefix, every fn's command takes the prefix parameter
+///   (`project_id`) under its name, so no other parameter of the command may
+///   be named like it.
 pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<(), String> {
     let refuse = |m: &ApiModule, fn_name: &str, command: &str, arg: &str, use_: &str| {
         Err(format!(
@@ -131,6 +134,12 @@ pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<
                 }
                 _ => {}
             }
+            if let Some(prefix) = &config.route_prefix {
+                let scope = &prefix.params[0].name;
+                if command_arg_names(f, config.pagination_for(&m.name, f.surface).is_some()).contains(&scope.as_str()) {
+                    return refuse(m, &f.name, &command, scope, "the route prefix parameter");
+                }
+            }
         }
         for ev in &m.events {
             if let Some(p) = ev.params.iter().find(|p| p.name == "channel") {
@@ -140,6 +149,23 @@ pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<
         }
     }
     Ok(())
+}
+
+/// The names of the parameters a fn's command takes for its arguments, as
+/// the generator emits them: `id` and `input` for CRUD ops, `query` for a
+/// list's `*Query` struct, `limit` and `offset` for a paginated junction
+/// list's page, and each other argument under its own name.
+fn command_arg_names(f: &ApiFn, paginated: bool) -> Vec<&str> {
+    match classify_op(f) {
+        OpKind::GetById | OpKind::Delete => vec!["id"],
+        OpKind::Create => vec!["input"],
+        OpKind::Update => vec!["id", "input"],
+        OpKind::List => f.params.iter().map(|p| if p.is_filter_struct() { "query" } else { p.name.as_str() }).collect(),
+        OpKind::JunctionList { .. } if paginated && f.return_type.starts_with("Vec<") => {
+            f.params.iter().map(|p| p.name.as_str()).chain(["limit", "offset"]).collect()
+        }
+        _ => f.params.iter().map(|p| p.name.as_str()).collect(),
+    }
 }
 
 /// Generate IPC command handlers and write to the output file.

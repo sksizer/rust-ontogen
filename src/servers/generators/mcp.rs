@@ -682,6 +682,41 @@ fn tool_schema_fn(base: &str, config: &Config, paginate: bool) -> String {
     }
 }
 
+/// Refuses, under a route prefix, a fn whose MCP tool would read an
+/// argument under the prefix parameter's name (`project_id`). Every scoped
+/// tool reads that argument itself to pick the store, so the op's own
+/// argument and the scope would share one key. The keys checked are the
+/// ones a tool reads by name: `id` for get, update and delete, each bare
+/// filter of a list, and each parameter of a custom op or junction tool
+/// (other than an `*Input` taken as the whole argument object). The fields
+/// of an `*Input` or `*Query` struct read flat are not known here.
+pub(crate) fn check_scope_key(modules: &[ApiModule], config: &Config) -> Result<(), String> {
+    let Some(scope) = scope_key(config) else {
+        return Ok(());
+    };
+    for m in modules {
+        for f in &m.functions {
+            let keys: Vec<&str> = match classify_op(f) {
+                OpKind::GetById | OpKind::Update | OpKind::Delete => vec!["id"],
+                OpKind::Create | OpKind::EventStream => vec![],
+                OpKind::List => f.bare_filters().into_iter().map(|p| p.name.as_str()).collect(),
+                _ if sole_body_param(f).is_some() => vec![],
+                _ => f.params.iter().map(|p| p.name.as_str()).collect(),
+            };
+            if keys.contains(&scope.as_str()) {
+                let tool = crate::servers::generators::ipc::command_name(&m.name, f, config);
+                return Err(format!(
+                    "ontogen: the MCP tool `{tool}` cannot be generated: `{}::{}` takes an argument named `{scope}`, \
+                     which is the argument the tool itself reads for the route prefix parameter, so the two would \
+                     share one key. Rename the argument.",
+                    m.name, f.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The argument naming the scope, which the handler prefix reads itself.
 fn scope_key(config: &Config) -> Option<String> {
     config.route_prefix.as_ref().map(|prefix| prefix.params[0].name.clone())

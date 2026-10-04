@@ -2214,8 +2214,12 @@ A Tauri command names each parameter after the function's argument, since
 that name is the `invoke` key, and prefixes its own bindings with
 `ontogen_`. An argument named after a key the command itself uses is a
 build error naming the argument: `query` beside a list's `*Query` struct,
-`limit` or `offset` on a paginated junction list's parent id, and
-`channel` on an event op.
+`limit` or `offset` on a paginated junction list's parent id, `channel`
+on an event op, and, under a route prefix, the prefix parameter's name
+(`project_id`) on any op. A scoped MCP tool reads the prefix parameter
+from its arguments, so an op argument it would read under the same name
+(a custom op's or junction tool's parameter, a list's bare filter, or
+`id`) is a build error too.
 
 - **Tauri IPC**: same commands, same `invoke` argument objects, same flat
   entities, `PaginatedResult` for paginated lists, `String` errors, and the

@@ -6724,6 +6724,89 @@ pub fn thing_changes(state: &AppState, channel: String) -> tokio::sync::broadcas
     );
 }
 
+/// The error generating `files` scoped under `project_id`, with `generator`
+/// as the one transport.
+fn scoped_generation_error(files: &[(&str, &str)], generator: fn(PathBuf) -> ServerGenerator) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    for (file, source) in files {
+        write_synthetic_api(&api_dir, file, source);
+    }
+    let mut config = test_config_with_prefix(api_dir);
+    config.generators = vec![generator(tmp.path().join("out.rs"))];
+    crate::servers::generate_transport(&config).expect_err("the scoped transport cannot be generated")
+}
+
+/// Every scoped IPC command takes the route prefix parameter under its
+/// name, so a fn argument named like it fails the build, for a custom op
+/// and a list's bare filter alike; unscoped, the same fns generate.
+#[test]
+fn a_scoped_ipc_command_refuses_an_argument_named_like_the_route_prefix() {
+    let ipc = |output| ServerGenerator::TauriIpc { output };
+    let archive = "\
+pub async fn archive(store: &Store, project_id: &str) -> Result<(), AppError> { todo!() }
+";
+    assert_eq!(
+        scoped_generation_error(&[("gadget.rs", archive)], ipc),
+        "ontogen: the IPC command `gadget_archive` cannot be generated: `gadget::archive` takes an argument named \
+         `project_id`, which is the IPC wire key the command itself uses for the route prefix parameter, so the two \
+         would collide. Rename the argument."
+    );
+    let list = "\
+pub async fn list(store: &Store, project_id: Option<String>) -> Result<Vec<Gadget>, AppError> { todo!() }
+";
+    assert!(
+        scoped_generation_error(&[("gadget.rs", list)], ipc)
+            .contains("`gadget::list` takes an argument named `project_id`")
+    );
+
+    for source in [archive, list] {
+        let tmp = tempfile::tempdir().unwrap();
+        let api_dir = tmp.path().join("api");
+        write_synthetic_api(&api_dir, "gadget.rs", source);
+        let mut config = test_config(api_dir);
+        config.generators = vec![ServerGenerator::TauriIpc { output: tmp.path().join("ipc.rs") }];
+        crate::servers::generate_transport(&config).unwrap_or_else(|e| panic!("unscoped: {e}"));
+    }
+}
+
+/// A scoped MCP tool reads the route prefix parameter from its arguments
+/// to pick the store, so an op argument named like it would share that
+/// key: the build fails for a custom op and a list's bare filter. An
+/// `*Input` taken as the whole argument object names no key, so it is not
+/// refused.
+#[test]
+fn a_scoped_mcp_tool_refuses_an_argument_named_like_the_route_prefix() {
+    let mcp = |output| ServerGenerator::Mcp { output };
+    let archive = "\
+pub async fn archive(store: &Store, project_id: &str) -> Result<(), AppError> { todo!() }
+";
+    assert_eq!(
+        scoped_generation_error(&[("gadget.rs", archive)], mcp),
+        "ontogen: the MCP tool `gadget_archive` cannot be generated: `gadget::archive` takes an argument named \
+         `project_id`, which is the argument the tool itself reads for the route prefix parameter, so the two would \
+         share one key. Rename the argument."
+    );
+    let list = "\
+pub async fn list(store: &Store, project_id: Option<String>) -> Result<Vec<Gadget>, AppError> { todo!() }
+";
+    assert!(
+        scoped_generation_error(&[("gadget.rs", list)], mcp)
+            .contains("`gadget::list` takes an argument named `project_id`")
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "gadget.rs",
+        "pub async fn capture(store: &Store, project_id: CaptureGadgetInput) -> Result<(), AppError> { todo!() }\n",
+    );
+    let mut config = test_config_with_prefix(api_dir);
+    config.generators = vec![ServerGenerator::Mcp { output: tmp.path().join("mcp.rs") }];
+    crate::servers::generate_transport(&config).unwrap_or_else(|e| panic!("a sole body: {e}"));
+}
+
 #[test]
 fn server_metadata_routes_a_resource_update_as_patch() {
     let tmp = tempfile::tempdir().unwrap();
