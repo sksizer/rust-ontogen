@@ -485,8 +485,9 @@ fn emit_fn(
 }
 
 /// The handler name: the IPC command's name, which is unique in the file,
-/// and for a scoped handler that name with `_scoped`.
-fn handler_name(m: &ApiModule, f: &ApiFn, config: &Config, scoped: bool) -> String {
+/// and for a scoped handler that name with `_scoped`. The generator and the
+/// server metadata both read it.
+pub(in crate::servers) fn handler_name(m: &ApiModule, f: &ApiFn, config: &Config, scoped: bool) -> String {
     let name = crate::servers::generators::ipc::command_name(&m.name, f, config);
     if scoped { format!("{name}_scoped") } else { name }
 }
@@ -1174,7 +1175,7 @@ struct ResourceOp<'a> {
 
 /// Whether `f`'s handler is the scoped one: a store-scoped fn under a
 /// `route_prefix` has no other.
-fn is_scoped(f: &ApiFn, config: &Config) -> bool {
+pub(in crate::servers) fn is_scoped(f: &ApiFn, config: &Config) -> bool {
     f.first_param_is_store && config.route_prefix.is_some()
 }
 

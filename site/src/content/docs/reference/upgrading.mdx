@@ -120,6 +120,10 @@ ServersConfig {
 
 `Pipeline` sets it to its schema directory when it is `None`, so Pipeline users can leave it `None`. With `None` and no `Pipeline`, no scan happens and every error from an `AppError`-typed function is `500 internal_error`. A directory that cannot be read or parsed fails the build.
 
+### `HttpRouteMeta.handler_name` names the scoped handler
+
+Under a `route_prefix`, a row of `ServersOutput.http_routes` for a route served under the prefix now names the handler that serves it, `task_get_by_id_scoped`, as the event and relationship rows already did. Before, a CRUD or custom-op row named `task_get_by_id`, a function the generated file does not define. A build script that matched those names, or appended `_scoped` itself, reads `handler_name` as it is.
+
 ### Entity structs may not carry shape-changing serde attributes
 
 The HTTP wire builds a resource's `attributes` from the entity's serde shape, so a struct or field with an attribute that changes that shape is now a schema error. The refused attributes are `rename`, `rename_all`, `alias`, `flatten`, `skip`, `skip_serializing`, `skip_serializing_if`, `serialize_with` and `with`. `#[serde(default)]` and `deserialize_with` change only deserialization and stay allowed. Remove the attribute, or rename the Rust field.
