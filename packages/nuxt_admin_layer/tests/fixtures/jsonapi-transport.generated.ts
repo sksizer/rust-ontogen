@@ -182,9 +182,8 @@ function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
   const push = (key: string, value: unknown) => {
     if (value == null) return;
-    for (const v of Array.isArray(value) ? value : [value]) {
-      parts.push(`${key}=${encodeURIComponent(String(v))}`);
-    }
+    const values = Array.isArray(value) ? value : [value];
+    if (values.length > 0) parts.push(`${key}=${values.map((v) => encodeURIComponent(String(v))).join(',')}`);
   };
   for (const [key, value] of Object.entries(params)) {
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {

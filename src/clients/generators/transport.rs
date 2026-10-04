@@ -14,7 +14,7 @@ use ontogen_core::ir::OpKind;
 
 use crate::clients::config::Config;
 use crate::clients::generators::jsonapi;
-use crate::clients::generators::{FallbackRecord, command_name};
+use crate::clients::generators::{FallbackRecord, command_name, typed_params};
 use crate::servers::classify::classify_op;
 use crate::servers::parse::{ApiModule, EventFn, is_resume_param};
 use crate::servers::types::{
@@ -30,6 +30,11 @@ fn ts_trailing_prefix_param(config: &Config) -> String {
         }
         None => String::new(),
     }
+}
+
+/// `projectId?: string` when a route prefix is configured.
+fn ts_prefix_param(config: &Config) -> Option<String> {
+    Some(ts_prefix_param_only(config)).filter(|p| !p.is_empty())
 }
 
 /// Returns `"projectId?: string"` when route_prefix is configured, else `""`.
@@ -124,7 +129,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
             }
             let ts_ret = rust_type_to_ts(&f.return_type);
             collect_ts_import(&ts_ret, &mut import_types);
-            for p in &f.params {
+            for p in typed_params(f) {
                 let ty = extract_input_type(&p.ty);
                 let ts_ty = rust_type_to_ts(&ty);
                 collect_ts_import(&ts_ty, &mut import_types);
@@ -195,6 +200,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
     if config.any_pagination() {
         out.push_str(jsonapi::PAGINATED_RESULT);
     }
+    out.push_str(&jsonapi::sort_types(modules, config));
 
     if has_events {
         out.push_str(SUBSCRIPTION_TYPES);
@@ -237,7 +243,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 /// Generate the `Transport` interface.
 fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config: &Config) {
     let pp_trailing = ts_trailing_prefix_param(config);
-    let pp_only = ts_prefix_param_only(config);
+    let prefix = ts_prefix_param(config);
 
     out.push_str("// ── Transport Interface ──\n\n");
     out.push_str("export interface Transport {\n");
@@ -250,14 +256,10 @@ fn generate_transport_interface(out: &mut String, modules: &[ApiModule], config:
             }
             // The HTTP impl's own signature, so the two cannot drift.
             let Some(method) = jsonapi::method(m, f, config, None) else { continue };
-            let mut params = method.params;
-            if !pp_only.is_empty() {
-                params.push(pp_only.clone());
-            }
             out.push_str(&format!(
                 "  {}({}): Promise<{}>;\n",
                 snake_to_camel(&cmd_name),
-                params.join(", "),
+                method.signature(prefix.clone()),
                 method.return_type
             ));
         }
@@ -315,7 +317,6 @@ fn generate_http_helpers(out: &mut String, config: &Config) {
 /// Generate `createHttpTransport()`.
 fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Config) {
     let pp_trailing = ts_trailing_prefix_param(config);
-    let pp_only = ts_prefix_param_only(config);
     let scope = config.route_prefix.as_ref().map(|p| snake_to_camel(&p.params[0].name));
 
     out.push_str("// ── HTTP Transport ──\n\n");
@@ -329,17 +330,14 @@ fn generate_http_transport(out: &mut String, modules: &[ApiModule], config: &Con
                 continue;
             }
             let Some(method) = jsonapi::method(m, f, config, scope.as_deref()) else { continue };
-            let mut params = method.params;
-            if !pp_only.is_empty() {
-                // An op served unscoped only takes the prefix argument to
-                // match the interface, and ignores it.
-                let unused = jsonapi::scope_of(m, f, config, scope.as_deref()).is_none();
-                params.push(if unused { format!("_{pp_only}") } else { pp_only.clone() });
-            }
+            // An op served unscoped only takes the prefix argument to match
+            // the interface, and ignores it.
+            let unused = jsonapi::scope_of(m, f, config, scope.as_deref()).is_none();
+            let prefix = ts_prefix_param(config).map(|p| if unused { format!("_{p}") } else { p });
             out.push_str(&format!(
                 "    async {}({}): Promise<{}> {{\n      {}\n    }},\n",
                 snake_to_camel(&cmd_name),
-                params.join(", "),
+                method.signature(prefix),
                 method.return_type,
                 method.body.join("\n").replace('\n', "\n      "),
             ));
@@ -473,10 +471,6 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                     // ipc.rs): the `*Query` struct as `query`, each bare
                     // filter under its own name, which Tauri reads camelCased.
                     let method = jsonapi::method(m, f, config, None).expect("a list is not an event op");
-                    let mut params = method.params;
-                    if !pp_only.is_empty() {
-                        params.push(pp_only.clone());
-                    }
                     let mut invoke_args: Vec<String> =
                         f.bare_filters().into_iter().map(|p| snake_to_camel(&p.name)).collect();
                     if f.filter_struct().is_some() {
@@ -485,6 +479,11 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                         invoke_args.push(
                             if jsonapi::query_required(f, config) { "query" } else { "query: query ?? {}" }.to_string(),
                         );
+                    }
+                    // An absent `sort` is dropped from the invoke payload,
+                    // which the command reads as `None`.
+                    if method.options.is_some() {
+                        invoke_args.push("sort: options?.sort".to_string());
                     }
                     if jsonapi::is_paginated(m, f, config) {
                         invoke_args.push("limit: limit ?? null".to_string());
@@ -502,7 +501,7 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                         "    async {camel}({}): Promise<{}> {{\n\
                          \x20     return {invoke};\n\
                          \x20   }},\n",
-                        params.join(", "),
+                        method.signature(ts_prefix_param(config)),
                         method.return_type,
                     ));
                 }
