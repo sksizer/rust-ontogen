@@ -16,6 +16,20 @@ It starts with an empty in-memory database (`IRON_LOG_DB=iron-log.sqlite` keeps 
 
 The four resource types are `exercises`, `tags`, `workouts` and `workout-sets`. Iron Log configures no pagination, so its lists are not paged; they sort and include. Its id strategy is `IdStrategy::Provided`: the client supplies every id. Beside the resources it serves one custom op, `GET /api/stats/workout`, and two event streams under `/api/events/`, which publish every store change. [Iron Log MD](/examples/iron-log-md-wire/) serves the same four resources from a markdown vault, with documents of the same shape.
 
+**Contents**
+
+- [Create an exercise](#create-an-exercise)
+- [Create a workout with a tag](#create-a-workout-with-a-tag)
+- [Create a set](#create-a-set)
+- [List sets, heaviest first, with their exercise](#list-sets-heaviest-first-with-their-exercise)
+- [One workout with its tags](#one-workout-with-its-tags)
+- [Update an attribute and a relationship](#update-an-attribute-and-a-relationship)
+- [Read a relationship](#read-a-relationship)
+- [Delete a set](#delete-a-set)
+- [A custom op](#a-custom-op)
+- [Watch set changes as they happen](#watch-set-changes-as-they-happen)
+- [Errors](#errors)
+
 ## Create an exercise
 
 The client sends the `id`. An exercise has no relationships, so the resource object has no `relationships` member.
@@ -496,6 +510,8 @@ vary: Accept
 
 ## Read a relationship
 
+The relationship endpoint answers with linkage only: the tag identifiers the `PATCH` above wrote, in order, plus `self` and `related` links.
+
 ```http title="Request"
 GET /api/workouts/w-2026-06-03/relationships/tags HTTP/1.1
 Accept: application/vnd.api+json
@@ -525,6 +541,20 @@ vary: Accept
     }
   ]
 }
+```
+
+## Delete a set
+
+A `DELETE` removes the second set and answers `204` with no body.
+
+```http title="Request"
+DELETE /api/workout-sets/w-2026-06-03-squat-2 HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+```http title="Response"
+HTTP/1.1 204 No Content
+vary: Accept
 ```
 
 ## A custom op
@@ -558,7 +588,7 @@ vary: Accept
 
 `GET /api/events/activity-for-kind/{kind}` is an event stream of the store changes to one kind of entity. Each frame is an `event:` line naming the op, a `data:` line holding the `Activity` as `{"meta":{"result":…}}` (it is not an entity, so it gets the custom-op envelope), and an `id:` line, because this op is resumable: a client that reconnects sends the last `id` back as `Last-Event-ID` (or `?resume=`); this example keeps no history, so nothing is replayed.
 
-This stream was held open for three seconds (`curl -N --max-time 3`) while the next requests ran: a `PATCH` of one set, a `PATCH` of the workout's `duration_minutes` (pair omitted), and a `DELETE` of the other set. `seq` counts every store change since the server started, so the workout update is the missing `9`; this stream carries only `workout_set` changes. `GET /api/events/activity-feed` carries every kind, with no `id:` lines.
+This stream was held open for three seconds (`curl -N --max-time 3`) while the next requests ran: a `PATCH` of the remaining set, a `PATCH` of the workout's `duration_minutes` (pair omitted), and a `DELETE` of the set. `seq` counts every store change since the server started, so the workout update is the missing `10`; this stream carries only `workout_set` changes. `GET /api/events/activity-feed` carries every kind, with no `id:` lines.
 
 ```http title="Request"
 GET /api/events/activity-for-kind/workout_set HTTP/1.1
@@ -571,12 +601,12 @@ content-type: text/event-stream
 cache-control: no-cache
 
 event: activity-for-kind
-data: {"meta":{"result":{"seq":8,"kind":"workout_set","id":"w-2026-06-03-squat-1"}}}
-id: 8
+data: {"meta":{"result":{"seq":9,"kind":"workout_set","id":"w-2026-06-03-squat-1"}}}
+id: 9
 
 event: activity-for-kind
-data: {"meta":{"result":{"seq":10,"kind":"workout_set","id":"w-2026-06-03-squat-2"}}}
-id: 10
+data: {"meta":{"result":{"seq":11,"kind":"workout_set","id":"w-2026-06-03-squat-1"}}}
+id: 11
 ```
 
 ```http title="Request"
@@ -647,7 +677,7 @@ vary: Accept
 ```
 
 ```http title="Request"
-DELETE /api/workout-sets/w-2026-06-03-squat-2 HTTP/1.1
+DELETE /api/workout-sets/w-2026-06-03-squat-1 HTTP/1.1
 Accept: application/vnd.api+json
 ```
 
@@ -657,6 +687,8 @@ vary: Accept
 ```
 
 ## Errors
+
+Every error is an `errors[]` document with `status`, `code`, `title` and `detail`, plus `source` when one part of the request is to blame.
 
 A subscription that fails before the stream opens is answered with an error document instead of a stream. An unknown kind is the example's `ActivityKindNotFound` error, so `404`:
 
