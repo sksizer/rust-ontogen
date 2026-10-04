@@ -5,7 +5,7 @@
 //! generators. Client-side test cases were relocated here as part of the
 //! servers→clients split.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 
 use ontogen_core::utils::TsFormatter;
@@ -1233,20 +1233,74 @@ fn a_scoped_junction_op_calls_its_action_route_given_the_prefix_argument() {
 type Call = (String, String);
 
 /// Every `(METHOD, path)` the generated Axum router `server` registers, each
-/// path parameter written `{}`.
-fn server_routes(server: &str) -> std::collections::BTreeSet<Call> {
+/// path parameter written `{}`, with the handler serving it.
+fn server_routes(server: &str) -> BTreeMap<Call, String> {
     let flat = crate::servers::tests::compact(server);
-    let mut routes = std::collections::BTreeSet::new();
+    let mut routes = BTreeMap::new();
     for route in flat.split(".route(\"").skip(1) {
         let (path, rest) = route.split_once("\",").unwrap();
         let handlers = &rest[..rest.find(".fallback(").unwrap_or_else(|| panic!("no fallback on {path}"))];
         for method in ["get", "post", "put", "patch", "delete"] {
-            if handlers.starts_with(&format!("{method}(")) || handlers.contains(&format!(".{method}(")) {
-                routes.insert((method.to_uppercase(), route_template(path)));
+            let at = if handlers.starts_with(&format!("{method}(")) {
+                Some(0)
+            } else {
+                handlers.find(&format!(".{method}(")).map(|at| at + 1)
+            };
+            if let Some(at) = at {
+                let handler = &handlers[at + method.len() + 1..];
+                let handler = &handler[..handler.find(')').unwrap()];
+                routes.insert((method.to_uppercase(), route_template(path)), handler.to_string());
             }
         }
     }
     routes
+}
+
+/// The argument names a request carries outside its path: its `opArg[…]`
+/// members and its `meta.args` keys.
+#[derive(Debug, Default, PartialEq)]
+struct ArgNames {
+    op_args: BTreeSet<String>,
+    meta_args: BTreeSet<String>,
+}
+
+/// What the generated handler `handler` in `server` reads outside its path:
+/// the `op_args` of its `RouteQuery` spec, and the `meta.args` keys it
+/// checks (`request::check_op_arg_names`), with those it requires.
+fn server_args(server: &str, handler: &str) -> (ArgNames, BTreeSet<String>) {
+    let flat = crate::servers::tests::compact(server);
+    let code =
+        &server[server.find(&format!("async fn {handler}(")).unwrap_or_else(|| panic!("no {handler} in:\n{server}"))..];
+    let code = crate::servers::tests::compact(&code[..code.find("\n}\n").unwrap()]);
+    let (signature, body) = code.split_once(")->").unwrap();
+    let strings = |list: &str| -> BTreeSet<String> {
+        list.split(',').filter(|s| !s.is_empty()).map(|s| s.trim_matches('"').to_string()).collect()
+    };
+    let mut names = ArgNames::default();
+    // The JSON:API `Query<Spec>` it extracts, not Axum's own.
+    for (at, _) in signature.match_indices("Query<").filter(|(at, _)| !signature[..*at].ends_with("::")) {
+        let spec = &signature[at + "Query<".len()..];
+        let spec = &spec[..spec.find('>').unwrap()];
+        let Some(spec_impl) = flat.split_once(&format!("implRouteQueryfor{spec}{{")).map(|(_, rest)| rest) else {
+            continue;
+        };
+        let spec_impl = &spec_impl[..spec_impl.find('}').unwrap()];
+        if let Some((_, list)) = spec_impl.split_once("op_args:&[") {
+            names.op_args = strings(&list[..list.find(']').unwrap()]);
+        }
+    }
+    let mut required = BTreeSet::new();
+    if let Some((_, list)) = body.split_once("request::check_op_arg_names(&ontogen_args,&[") {
+        names.meta_args = strings(&list[..list.find(']').unwrap()]);
+        for read in body.split("request::op_arg::<").skip(1) {
+            let (_, read) = read.split_once("(&ontogen_args,\"").unwrap();
+            let (name, read) = read.split_once("\",").unwrap();
+            if read.starts_with("true") {
+                required.insert(name.to_string());
+            }
+        }
+    }
+    (names, required)
 }
 
 /// `path` with every `{name}` or `${…}` parameter written `{}` and its query
@@ -1265,9 +1319,20 @@ fn route_template(path: &str) -> String {
     out
 }
 
+/// The keys of the TS object literal `members` (`{ a, b: c }` without its
+/// braces).
+fn literal_keys(members: &str) -> BTreeSet<String> {
+    members
+        .split(',')
+        .map(|member| member.split(':').next().unwrap().trim().to_string())
+        .filter(|key| !key.is_empty())
+        .collect()
+}
+
 /// The `(METHOD, path under /api)` a generated HTTP method's `body` calls,
-/// with its route-prefix argument `projectId` given or not.
-fn client_call(body: &str, prefix_given: bool) -> Option<Call> {
+/// with its route-prefix argument `projectId` given or not, and the
+/// argument names the call sends outside its path.
+fn client_call_and_args(body: &str, prefix_given: bool) -> Option<(Call, ArgNames)> {
     let body = match body.split_once("if (projectId) {") {
         Some((_, branches)) => {
             let (scoped, unscoped) = branches.split_once("\n      }\n").unwrap();
@@ -1275,24 +1340,34 @@ fn client_call(body: &str, prefix_given: bool) -> Option<Call> {
         }
         None => body,
     };
-    let (method, args) = if let Some((_, call)) = body.split_once("callOp<") {
+    let (method, args, op_call) = if let Some((_, call)) = body.split_once("callOp<") {
         let call = &call[call.find(">('").unwrap() + 3..];
         let (method, args) = call.split_once("', ").unwrap();
-        (method.to_string(), args)
+        (method.to_string(), args, true)
     } else {
         let (verb, call) = ["Get", "Post", "Patch", "Delete"]
             .iter()
             .find_map(|verb| body.split_once(&format!("http{verb}")).map(|(_, call)| (verb, call)))?;
-        (verb.to_uppercase(), call[call.find('(').unwrap() + 1..].trim_start())
+        (verb.to_uppercase(), call[call.find('(').unwrap() + 1..].trim_start(), false)
     };
     let (scoped, literal) = match args.strip_prefix("scopedPath(projectId, ") {
         Some(literal) => (prefix_given, literal),
         None => (false, args),
     };
     let quote = literal.chars().next().unwrap();
-    let path = &literal[1..literal[1..].find(quote).unwrap() + 1];
+    let path_end = literal[1..].find(quote).unwrap() + 1;
+    let path = &literal[1..path_end];
     let prefix = if scoped { "/projects/{}" } else { "" };
-    Some((method, format!("/api{prefix}{}", route_template(path))))
+    let mut names = ArgNames::default();
+    if let Some((_, members)) = path.split_once("opArg: {") {
+        names.op_args = literal_keys(&members[..members.find('}').unwrap()]);
+    }
+    // `callOp`'s third argument is the request's `meta.args`.
+    let after_path = literal[path_end + 1..].trim_start_matches(')');
+    if op_call && let Some(members) = after_path.strip_prefix(", {") {
+        names.meta_args = literal_keys(&members[..members.find('}').unwrap()]);
+    }
+    Some(((method, format!("/api{prefix}{}", route_template(path))), names))
 }
 
 /// `(name, body)` of every method of the object literal in `ts` that starts
@@ -1310,8 +1385,11 @@ fn object_methods<'a>(ts: &'a str, head: &str, indent: &str) -> Vec<(&'a str, &'
 /// Asserts that every call the `checked` methods of `clients` make reaches a
 /// route `server` serves: the transport's, given the prefix argument when
 /// `scoped` (under a `route_prefix` a store-scoped op is served scoped
-/// only), and, unscoped, the HTTP-only client's. Returns the transport's
-/// calls by method name, with the prefix argument given and not.
+/// only), and, unscoped, the HTTP-only client's. Each such call sends the
+/// `opArg[…]` members its handler's query spec declares, no more and no
+/// fewer, and `meta.args` keys the handler checks, each one it requires
+/// among them. Returns the transport's calls by method name, with the
+/// prefix argument given and not.
 fn assert_calls_are_served(
     server: &str,
     clients: &JsonApiClients,
@@ -1319,25 +1397,40 @@ fn assert_calls_are_served(
     checked: &dyn Fn(&str) -> bool,
 ) -> BTreeMap<String, (Option<Call>, Option<Call>)> {
     let routes = server_routes(server);
-    let served = |call: &Call, who: &str| {
+    let served = |(call, sent): &(Call, ArgNames), who: &str| {
+        if !checked(who) {
+            return;
+        }
+        let handler = routes
+            .get(call)
+            .unwrap_or_else(|| panic!("{who} calls {call:?}, which the server does not serve:\n{routes:#?}"));
+        let (declared, required) = server_args(server, handler);
+        assert_eq!(sent.op_args, declared.op_args, "{who} sends these opArg members, {handler} reads those");
         assert!(
-            !checked(who) || routes.contains(call),
-            "{who} calls {call:?}, which the server does not serve:\n{routes:#?}"
+            sent.meta_args.is_subset(&declared.meta_args),
+            "{who} sends meta.args {:?}, {handler} takes {:?}",
+            sent.meta_args,
+            declared.meta_args
+        );
+        assert!(
+            required.is_subset(&sent.meta_args),
+            "{who} sends meta.args {:?}, {handler} requires {required:?}",
+            sent.meta_args
         );
     };
     let mut calls = BTreeMap::new();
     for (name, body) in object_methods(&clients.transport, "export function createHttpTransport", "    ") {
-        let (given, absent) = (client_call(body, true), client_call(body, false));
+        let (given, absent) = (client_call_and_args(body, true), client_call_and_args(body, false));
         if let Some(call) = if scoped { &given } else { &absent } {
             served(call, name);
         }
-        calls.insert(name.to_string(), (given, absent));
+        calls.insert(name.to_string(), (given.map(|(call, _)| call), absent.map(|(call, _)| call)));
     }
     for (name, body) in object_methods(&clients.http, "export const httpCommands", "  ") {
-        let call = client_call(body, false);
+        let call = client_call_and_args(body, false);
         // The HTTP-only client has no prefix argument: it calls what the
         // transport calls without one.
-        assert_eq!(call, calls[name].1, "{name}");
+        assert_eq!(call.as_ref().map(|(call, _)| call), calls[name].1.as_ref(), "{name}");
         if !scoped && let Some(call) = &call {
             served(call, name);
         }
@@ -1386,6 +1479,15 @@ fn every_call_of_every_op_kind_reaches_a_server_route() {
         for (name, (given, absent)) in &calls {
             assert_eq!(given.is_some() && absent.is_some(), !name.starts_with("subscribe"), "{name}");
         }
+        // The server's argument names are read, not missed.
+        let suffix = if scoped { "_scoped" } else { "" };
+        let set = |names: &[&str]| names.iter().map(ToString::to_string).collect::<BTreeSet<_>>();
+        let (summary, _) = server_args(&server, &format!("board_get_summary{suffix}"));
+        assert_eq!(summary.op_args, set(&["include_done"]));
+        let (archive, required) = server_args(&server, &format!("board_archive{suffix}"));
+        assert_eq!((archive.meta_args, required), (set(&["reason", "task_id"]), set(&["task_id"])));
+        let (list, _) = server_args(&server, &format!("board_list{suffix}"));
+        assert_eq!(list.op_args, if paginated { set(&["limit", "offset"]) } else { set(&[]) });
         if scoped {
             assert_eq!(
                 ts_method(&clients.transport, "statusGetVersion"),

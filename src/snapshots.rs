@@ -489,7 +489,7 @@ fn servers_two_surfaces_http() {
     // from the fitness surface; the fitness handlers open `fitness_store()`,
     // call through the `workout_1` alias, and qualify the shared `Workout`.
     // Each surface has a fn failing with its own bare `AppError`: only the
-    // primary one maps through `app_error`, which takes `crate::schema`'s.
+    // primary one maps through `ontogen_app_error`, which takes `crate::schema`'s.
     let code = generate_two_surface_file(
         |output| crate::servers::ServerGenerator::HttpAxum { output },
         Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 }),
