@@ -15,7 +15,7 @@ use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType};
 use crate::store::gen_order::sort_field_type;
 use crate::store::has_many::{self, has_many_writes};
 use crate::store::helpers::{pluralize, to_snake_case};
-use crate::store::nan::{FloatSource, emit_nan_checks};
+use crate::store::nan::{FloatSource, Skipped, emit_nan_checks};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -190,7 +190,7 @@ fn generate_create(code: &mut String, entity: &EntityDef, id_strategy: &IdStrate
     }
     has_many::emit_missing_children_check(code, entity, &writes, |f| format!("&{f}"));
     emit_integer_range_checks(code, entity, IntegerSource::Record(&snake));
-    emit_nan_checks(code, entity, FloatSource::Record(&snake), serialize_error);
+    emit_nan_checks(code, entity, FloatSource::Record(&snake), Skipped::NotStored, serialize_error);
 
     code.push_str("        let mut doc = markdown_store::Document::new();\n");
     code.push_str(&format!(
@@ -264,7 +264,7 @@ fn generate_update(code: &mut String, entity: &EntityDef) {
     has_many::emit_missing_children_check(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
     has_many::emit_dropped_children(code, &writes);
     emit_integer_range_checks(code, entity, IntegerSource::Updates);
-    emit_nan_checks(code, entity, FloatSource::Updates, serialize_error);
+    emit_nan_checks(code, entity, FloatSource::Updates, Skipped::NotStored, serialize_error);
 
     code.push_str("        self.vault()\n");
     code.push_str(&format!("            .{records}\n"));
@@ -648,7 +648,10 @@ mod tests {
         let mut entity = node(FieldType::OptionString);
         entity.fields.push(FieldDef::new("weight", FieldType::F64, FieldRole::Plain));
         entity.fields.push(FieldDef::new("low", FieldType::OptionF32, FieldRole::Plain));
+        // Never written to the file, so never checked.
+        entity.fields.push(FieldDef::new("cached", FieldType::F64, FieldRole::Skip));
         let code = crud(&entity);
+        assert!(!code.contains("cached.is_nan"), "{code}");
         let refusal = r#"return Err(AppError::from(markdown_store::Error::Serialize { message: "Node.weight: NaN cannot be stored".to_string() }));"#;
 
         let create = method(&code, "create_node");

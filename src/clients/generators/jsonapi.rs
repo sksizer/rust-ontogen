@@ -885,3 +885,62 @@ fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -
     let body = read_collection(&format!("/{base}"), families, scope, &flatten_fn(resource), "", paginated);
     Method { params, options, return_type, body }
 }
+
+/// Refuses a list whose TS method would take two parameters under one name,
+/// which TypeScript rejects. The generator names every parameter but a bare
+/// filter: `query` for the `*Query` struct, `limit` and `offset` for the
+/// page, `options` for the sort keys of a list that sorts and, on the
+/// `Transport` methods (`transport`), the route prefix parameter
+/// camelCased. A bare filter is camelCased too, so it may land on any of
+/// these or on another bare filter, and so may the prefix parameter.
+///
+/// # Errors
+///
+/// The first list whose method would collide, naming its TS method, its fn
+/// and the argument or prefix parameter to rename.
+pub(crate) fn check_list_params(modules: &[ApiModule], config: &Config, transport: bool) -> Result<(), String> {
+    for m in modules {
+        for f in m.functions.iter().filter(|f| classify_op(m, f) == OpKind::List && is_emitted(&m.name, f, config)) {
+            let method = snake_to_camel(&command_name(&m.name, f, config));
+            let collide = |named: &str, ts: &str, use_: &str, rename: &str| {
+                Err(format!(
+                    "ontogen: the TypeScript method `{method}` cannot be generated: `{}::{}` {named}, which the \
+                     method takes as `{ts}`, the parameter name it uses for {use_}, so the two would collide. \
+                     Rename the {rename}.",
+                    m.name, f.name
+                ))
+            };
+            // (TS name, what the method takes under it), in signature order.
+            let mut taken: Vec<(String, String)> = Vec::new();
+            if f.filter_struct().is_some() {
+                taken.push(("query".into(), "the list's `*Query` filter struct".into()));
+            }
+            if is_paginated(m, f, config) {
+                for page in ["limit", "offset"] {
+                    taken.push((page.into(), "the page's `limit` and `offset`".into()));
+                }
+            }
+            if list_method(m, f, config, None).options.is_some() {
+                taken.push(("options".into(), "the list's sort keys".into()));
+            }
+            if transport && let Some(prefix) = &config.route_prefix {
+                let param = &prefix.params[0].name;
+                let ts = snake_to_camel(param);
+                if let Some((_, use_)) = taken.iter().find(|(name, _)| *name == ts) {
+                    let named = format!("is called with the route prefix parameter `{param}`");
+                    return collide(&named, &ts, use_, "route prefix parameter");
+                }
+                taken.push((ts, "the route prefix parameter".into()));
+            }
+            for p in f.bare_filters() {
+                let ts = snake_to_camel(&p.name);
+                if let Some((_, use_)) = taken.iter().find(|(name, _)| *name == ts) {
+                    let named = format!("takes an argument named `{}`", p.name);
+                    return collide(&named, &ts, use_, "argument");
+                }
+                taken.push((ts, format!("the argument `{}`", p.name)));
+            }
+        }
+    }
+    Ok(())
+}

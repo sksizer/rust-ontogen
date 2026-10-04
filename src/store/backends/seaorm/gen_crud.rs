@@ -24,7 +24,7 @@ use crate::store::has_many::{self, has_many_writes};
 use crate::store::helpers::{
     junction_source_col, junction_table_name, junction_target_col, pluralize, to_pascal_case, to_snake_case,
 };
-use crate::store::nan::{FloatSource, emit_nan_checks};
+use crate::store::nan::{FloatSource, Skipped, emit_nan_checks};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -218,7 +218,7 @@ fn generate_create(code: &mut String, entity: &EntityDef, has_relations: bool, i
         code.push('\n');
     }
     has_many::emit_missing_children_check(code, entity, &has_many_writes(entity), |f| format!("&{f}"));
-    emit_nan_checks(code, entity, FloatSource::Record(&snake), |m| format!("AppError::DbError({m})"));
+    emit_nan_checks(code, entity, FloatSource::Record(&snake), Skipped::Stored, |m| format!("AppError::DbError({m})"));
 
     generate_insert_with_id(code, entity, id_strategy);
 
@@ -364,7 +364,7 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let writes = has_many_writes(entity);
     has_many::emit_missing_children_check(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
     has_many::emit_dropped_children(code, &writes);
-    emit_nan_checks(code, entity, FloatSource::Updates, |m| format!("AppError::DbError({m})"));
+    emit_nan_checks(code, entity, FloatSource::Updates, Skipped::Stored, |m| format!("AppError::DbError({m})"));
 
     // Apply updates
     code.push_str("        updates.apply(&mut current);\n\n");
@@ -797,6 +797,25 @@ mod tests {
         assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
         assert!(check < update.find(".update(self.db())").unwrap(), "before the record write: {update}");
         assert!(!crud(&make_role_entity(), &IdStrategy::Provided).contains("is_nan"), "no float, no check");
+    }
+
+    /// A skipped field has a column, so a create refuses a NaN in a skipped
+    /// float as in any other; `NodeUpdate` has no skipped field, so an
+    /// update has none to check.
+    #[test]
+    fn a_nan_in_a_skipped_float_is_refused_on_create() {
+        let mut entity = make_node_entity();
+        entity.fields.push(FieldDef::new("cached", FieldType::F64, FieldRole::Skip));
+        entity.fields.push(FieldDef::new("maybe_cached", FieldType::OptionF32, FieldRole::Skip));
+        let code = crud(&entity, &IdStrategy::Provided);
+        let create = method(&code, "create_node");
+        assert!(create.contains("if node.cached.is_nan() {"), "{create}");
+        assert!(create.contains("if node.maybe_cached.is_some_and(f32::is_nan) {"), "{create}");
+        assert!(
+            create.contains(r#"return Err(AppError::DbError("Node.cached: NaN cannot be stored".to_string()));"#),
+            "{create}"
+        );
+        assert!(!method(&code, "update_node").contains("cached"), "{code}");
     }
 
     #[test]

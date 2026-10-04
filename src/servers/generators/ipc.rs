@@ -8,11 +8,11 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::servers::classify::classify_op;
-use crate::servers::config::Config;
+use crate::servers::config::{ApiSurface, Config, PaginationConfig, RoutePrefix, pagination_for};
 use crate::servers::generators::{filter_arg, surface_use_stmts};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{
-    capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
+    NamingConfig, capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
 };
 
 /// Returns the generated prefix param line for IPC commands (e.g., `project_id: Option<String>,`).
@@ -84,10 +84,44 @@ fn store_construction_line(config: &Config, f: &ApiFn) -> String {
 /// [`NamingConfig::command_overrides`](crate::servers::types::NamingConfig::command_overrides)),
 /// that value is returned verbatim and the default scheme is skipped.
 pub fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
-    f.command_override.clone().unwrap_or_else(|| {
-        let entity = config.naming.url_singular(module);
-        format!("{}_{}", entity, f.name)
-    })
+    command_name_in(&config.naming, module, f)
+}
+
+/// [`command_name`] under `naming`, for the stages that name commands
+/// without the servers' [`Config`].
+pub(crate) fn command_name_in(naming: &NamingConfig, module: &str, f: &ApiFn) -> String {
+    f.command_override.clone().unwrap_or_else(|| format!("{}_{}", naming.url_singular(module), f.name))
+}
+
+/// What the IPC wire-key rules ([`check_wire_keys`]) read of a stage's
+/// configuration. The servers stage checks the commands it generates; the
+/// clients stage checks the ones its TS transport invokes, which may be
+/// served by a build that is not this one.
+pub(crate) struct WireKeyScope<'a> {
+    pub naming: &'a NamingConfig,
+    pub pagination: &'a Option<PaginationConfig>,
+    pub extra_surfaces: &'a [ApiSurface],
+    pub route_prefix: Option<&'a RoutePrefix>,
+    /// Commands the stage does not emit (the clients' `ts_skip_commands`),
+    /// which cannot collide.
+    pub skip_commands: &'a [String],
+}
+
+impl WireKeyScope<'_> {
+    /// The servers stage's scope: every command it emits.
+    pub(crate) fn of(config: &Config) -> WireKeyScope<'_> {
+        WireKeyScope {
+            naming: &config.naming,
+            pagination: &config.pagination,
+            extra_surfaces: &config.extra_surfaces,
+            route_prefix: config.route_prefix.as_ref(),
+            skip_commands: &[],
+        }
+    }
+
+    fn paginated(&self, m: &ApiModule, f: &ApiFn) -> bool {
+        pagination_for(self.pagination, self.extra_surfaces, &m.name, f.surface).is_some()
+    }
 }
 
 /// Refuses a fn whose IPC command would take an argument under a name the
@@ -109,7 +143,7 @@ pub fn command_name(module: &str, f: &ApiFn, config: &Config) -> String {
 /// - under a route prefix, every fn's command takes the prefix parameter
 ///   (`project_id`) under its name, so no other parameter of the command may
 ///   be named like it.
-pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<(), String> {
+pub(crate) fn check_wire_keys(modules: &[ApiModule], scope: &WireKeyScope<'_>) -> Result<(), String> {
     let refuse = |m: &ApiModule, fn_name: &str, command: &str, arg: &str, use_: &str| {
         Err(format!(
             "ontogen: the IPC command `{command}` cannot be generated: `{}::{fn_name}` takes an argument named \
@@ -120,7 +154,10 @@ pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<
     };
     for m in modules {
         for f in &m.functions {
-            let command = command_name(&m.name, f, config);
+            let command = command_name_in(scope.naming, &m.name, f);
+            if command.is_empty() || scope.skip_commands.contains(&command) {
+                continue;
+            }
             match classify_op(m, f) {
                 OpKind::List => {
                     let bare = f.bare_filters();
@@ -135,21 +172,17 @@ pub(crate) fn check_wire_keys(modules: &[ApiModule], config: &Config) -> Result<
                         return refuse(m, &f.name, &command, &p.name, "the list's sort keys");
                     }
                 }
-                OpKind::JunctionList { .. }
-                    if config.pagination_for(&m.name, f.surface).is_some() && f.return_type.starts_with("Vec<") =>
-                {
+                OpKind::JunctionList { .. } if scope.paginated(m, f) && f.return_type.starts_with("Vec<") => {
                     if let Some(p) = f.params.iter().find(|p| p.name == "limit" || p.name == "offset") {
                         return refuse(m, &f.name, &command, &p.name, "the page's `limit` and `offset`");
                     }
                 }
                 _ => {}
             }
-            if let Some(prefix) = &config.route_prefix {
-                let scope = &prefix.params[0].name;
-                if command_arg_names(m, f, config.pagination_for(&m.name, f.surface).is_some())
-                    .contains(&scope.as_str())
-                {
-                    return refuse(m, &f.name, &command, scope, "the route prefix parameter");
+            if let Some(prefix) = scope.route_prefix {
+                let param = &prefix.params[0].name;
+                if command_arg_names(m, f, scope.paginated(m, f)).contains(&param.as_str()) {
+                    return refuse(m, &f.name, &command, param, "the route prefix parameter");
                 }
             }
         }
