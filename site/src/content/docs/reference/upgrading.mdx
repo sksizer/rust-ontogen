@@ -5,7 +5,7 @@ description: Every breaking change in 0.9 and how to migrate, grouped by area.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Version 0.9 is still in progress. This page lists the breaking changes that have landed so far: the store and runtime changes, and the HTTP wire change, where CRUD routes, custom ops, junction ops, event frames and every error move to JSON:API. Filtering, sorting and relationship endpoints arrive in later versions of 0.9, and their sections will be added here. Work through the sections that apply to your project.
+Version 0.9 is still in progress. This page lists the breaking changes that have landed so far: the store and runtime changes, and the HTTP wire change, where CRUD routes, custom ops, junction ops, event frames and every error move to JSON:API. Filtering, sorting and relationship endpoints arrive in later releases, and their sections will be added here. Work through the sections that apply to your project.
 
 ## Build configuration
 
@@ -190,7 +190,7 @@ A variant whose snake_case name equals one of ontogen's own error codes fails th
 
 ## HTTP wire
 
-Every generated HTTP route speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/), with one exception: a hand-written `list` that takes filter parameters (a `*Query` struct or bare parameters besides the page) keeps its pre-JSON:API query extraction and body until filters arrive in a later version of 0.9. CRUD routes of a module backed by a schema entity carry resource documents. Custom ops, junction ops and the CRUD ops of a module with no entity behind it carry meta-only documents, described under [Custom op responses](#custom-op-responses) and the sections after it. The examples use the tasks-tracker example and iron-log.
+Every generated HTTP route speaks [JSON:API 1.1](https://jsonapi.org/format/1.1/), with one exception: a hand-written `list` that takes filter parameters (a `*Query` struct or bare parameters besides the page) keeps its pre-JSON:API query extraction and body until filters arrive in a later release. CRUD routes of a module backed by a schema entity carry resource documents. Custom ops, junction ops and the CRUD ops of a module with no entity behind it carry meta-only documents, described under [Custom op responses](#custom-op-responses) and the sections after it. The examples use the tasks-tracker example and iron-log.
 
 ### Media type
 
@@ -240,7 +240,7 @@ After:
 
 - `type` is the module's kebab-case plural, the same string as the URL segment.
 - A `belongs_to` field named `epic_id` becomes the relationship `epic`; other relation fields keep their name. A to-one is an identifier or `null`; a to-many is an array of identifiers.
-- Relationship objects carry `data` only. Relationship `links` and the relationship endpoints arrive in a later version of 0.9.
+- Relationship objects carry `data` only. Relationship `links` and the relationship endpoints arrive in a later release.
 - A list is `{"jsonapi": …, "links": {"self": …}, "data": [ … ]}`, with `[]` when empty, ordered by id.
 
 ### Create
@@ -487,7 +487,7 @@ A scoped list (`route_prefix`) that is not served as a resource, meaning a list 
 
 ## TypeScript clients
 
-The generated `Transport` interface is unchanged: the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A list that takes a query struct still sends its fields flat until filters arrive in a later version of 0.9. The changes to the client's custom, junction and subscription methods follow below.
+The generated `Transport` interface is unchanged: the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A list that takes a query struct still sends its fields flat until filters arrive in a later release. The changes to the client's custom, junction and subscription methods follow below.
 
 One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone, because no generated route uses `PUT` any more; updates use `httpPatch`. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript; the IPC transport and MCP payloads are unchanged.
 
