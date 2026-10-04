@@ -99,8 +99,11 @@ pub fn generate(
 ///
 /// HTTP routes mirror the path/method decisions made by the HTTP generator
 /// (including project-scoping for store-based modules when `route_prefix`
-/// is set). IPC commands and MCP tools are 1:1 with API functions -
-/// `route_prefix` does not affect them.
+/// is set), one row per method of each route it registers. A junction op of
+/// a resource module has no route of its own: its module's relationship
+/// routes are reported instead, with their `{rel}` capture. IPC commands
+/// and MCP tools are 1:1 with API functions - `route_prefix` does not
+/// affect them.
 fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config) -> ServersOutput {
     let mut http_routes = Vec::new();
     let mut ipc_commands = Vec::new();
@@ -112,13 +115,15 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
             let params: Vec<ParamMeta> =
                 f.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
 
-            let (method, path) = generators::http::route_of(m, f, config);
-            http_routes.push(HttpRouteMeta {
-                method: method.to_ascii_uppercase(),
-                path,
-                handler_name: generators::http::route_handler(m, f, config),
-                module_name: m.name.clone(),
-            });
+            if !generators::http::is_relationship_op(m, f, config) {
+                let (method, path) = generators::http::route_of(m, f, config);
+                http_routes.push(HttpRouteMeta {
+                    method: method.to_ascii_uppercase(),
+                    path,
+                    handler_name: handler_name.clone(),
+                    module_name: m.name.clone(),
+                });
+            }
 
             ipc_commands.push(IpcCommandMeta {
                 command_name: handler_name.clone(),
@@ -127,6 +132,15 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
             });
 
             mcp_tools.push(McpToolMeta { tool_name: handler_name, description: f.doc.clone(), params });
+        }
+
+        for (method, path, handler_name) in generators::http::relationship_route_table(m, config) {
+            http_routes.push(HttpRouteMeta {
+                method: method.to_ascii_uppercase(),
+                path,
+                handler_name,
+                module_name: m.name.clone(),
+            });
         }
 
         // Event ops: an SSE route (plus a prefix-scoped one when route_prefix

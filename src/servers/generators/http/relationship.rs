@@ -51,8 +51,10 @@ impl<'a> Served<'a> {
             resource,
             get,
             update,
-            // Checked by `check_http_ops`.
-            junctions: config.resources.junctions(m).unwrap_or_default(),
+            junctions: config
+                .resources
+                .junctions(m)
+                .expect("`check_http_ops` refuses a module whose junction relationships do not build"),
             scope: config.route_prefix.as_ref().filter(|_| is_scoped(get, config)),
         })
     }
@@ -255,7 +257,6 @@ impl Rel<'_, '_> {
 /// the scope of its `get_by_id`, and register their routes.
 pub(super) fn emit(out: &mut String, routes: &mut Routes, m: &ApiModule, modules: &[ApiModule], config: &Config) {
     let Some(served) = Served::new(m, modules, config) else { return };
-    let scope = served.scope;
     let rels: Vec<Rel<'_, '_>> = served
         .resource
         .relationships
@@ -263,8 +264,7 @@ pub(super) fn emit(out: &mut String, routes: &mut Routes, m: &ApiModule, modules
         .map(Rel::Field)
         .chain(served.junctions.iter().map(Rel::Junction))
         .collect();
-    let suffix = if scope.is_some() { "_scoped" } else { "" };
-    let handler = |kind: &str| format!("ontogen_{}_{kind}{suffix}", m.name);
+    let handler = |kind: &str| handler_name(m, kind, served.scope.is_some());
 
     out.push_str(&get_handler(&served, &rels, &handler("relationship_get"), false));
     for method in [Method::Patch, Method::Post, Method::Delete] {
@@ -272,17 +272,39 @@ pub(super) fn emit(out: &mut String, routes: &mut Routes, m: &ApiModule, modules
     }
     out.push_str(&get_handler(&served, &rels, &handler("related_get"), true));
 
+    for (method, path, handler) in route_table(m, config) {
+        routes.add(&path, method, &handler);
+    }
+}
+
+/// The relationship and related routes of resource module `m`, each as its
+/// routing method, path and handler, in registration order: under the
+/// prefix when its `get_by_id` is scoped, and none when it serves no
+/// relationship routes. The generator registers exactly these and the
+/// server metadata reports them, so the two cannot disagree.
+pub(in crate::servers) fn route_table(m: &ApiModule, config: &Config) -> Vec<(&'static str, String, String)> {
+    let Some(get) = relationship_routes(m, config) else { return Vec::new() };
+    let scope = config.route_prefix.as_ref().filter(|_| is_scoped(get, config));
+    let handler = |kind: &str| handler_name(m, kind, scope.is_some());
     let url = config.naming.url_for_module(m);
     let base = match scope {
         None => format!("/api/{url}"),
         Some(prefix) => format!("/api/{}/{url}", axum_path(&prefix.segments)),
     };
     let relationship = format!("{base}/{{id}}/relationships/{{rel}}");
-    routes.add(&relationship, "get", &handler("relationship_get"));
+    let mut table = vec![("get", relationship.clone(), handler("relationship_get"))];
     for method in [Method::Patch, Method::Post, Method::Delete] {
-        routes.add(&relationship, method.routing(), &handler(method.handler()));
+        table.push((method.routing(), relationship.clone(), handler(method.handler())));
     }
-    routes.add(&format!("{base}/{{id}}/{{rel}}"), "get", &handler("related_get"));
+    table.push(("get", format!("{base}/{{id}}/{{rel}}"), handler("related_get")));
+    table
+}
+
+/// The name of `m`'s relationship handler of `kind`, `_scoped` for the
+/// scoped one.
+fn handler_name(m: &ApiModule, kind: &str, scoped: bool) -> String {
+    let suffix = if scoped { "_scoped" } else { "" };
+    format!("ontogen_{}_{kind}{suffix}", m.name)
 }
 
 /// The path extractor's pattern and type: the prefix parameter as
@@ -510,7 +532,8 @@ fn junction_get(served: &Served<'_>, j: &JunctionRelationship<'_>, related: bool
         }
         None => "Links::new(ontogen_self)",
     };
-    // A relationship document links its related resources too.
+    // A relationship document carries the spec's `related` link beside
+    // `self`, so a client holding the linkage reaches the resources it names.
     let (self_line, links) = if related {
         (
             format!(
