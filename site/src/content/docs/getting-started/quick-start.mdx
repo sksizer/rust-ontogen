@@ -195,7 +195,12 @@ After building, you get:
 
 ```rust
 impl Store {
-    pub async fn list_tasks(&self) -> Result<Vec<Task>, AppError> { ... }
+    pub async fn list_tasks(
+        &self,
+        order: &[OrderBy<TaskSortField>],
+        limit: Option<u64>,
+        offset: Option<u64>,
+    ) -> Result<Vec<Task>, AppError> { ... }
     pub async fn get_task(&self, id: &str) -> Result<Task, AppError> { ... }
     pub async fn create_task(&self, task: Task) -> Result<Task, AppError> { ... }
     pub async fn update_task(&self, id: &str, updates: TaskUpdate) -> Result<Task, AppError> { ... }

@@ -427,7 +427,7 @@ From these three structs, Ontogen generates:
 - `tag.rs` entity: columns for `id` and `name`, no relations on this side
 
 The store layer generates:
-- `list_workouts()`/`get_workout()` calls `populate_workout_relations()` which loads `tags` via `load_junction_ids("workout_tags", ...)`
+- `list_workouts(order, limit, offset)`/`get_workout()` calls `populate_workout_relations()` which loads `tags` via `load_junction_ids("workout_tags", ...)`
 - `create_workout()` calls `sync_junction("workout_tags", ...)` to insert junction rows
 - `update_workout()` conditionally re-syncs if `tags` was included in the update
 - `WorkoutSet` CRUD has no extra relation handling -- `belongs_to` fields are just regular columns

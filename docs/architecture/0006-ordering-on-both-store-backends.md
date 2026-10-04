@@ -2,7 +2,11 @@
 
 ## Status
 
-**proposed** (2026-10-03).
+**accepted** (2026-10-04). Implemented by E0004 phases 1a, 2 and 3c:
+[#197](https://github.com/sksizer/rust-ontogen/pull/197) and
+[#198](https://github.com/sksizer/rust-ontogen/pull/198) (phase 1a),
+[#202](https://github.com/sksizer/rust-ontogen/pull/202) (phase 2) and
+[#206](https://github.com/sksizer/rust-ontogen/pull/206) (phase 3c).
 
 This ADR revisits [ADR 0001](0001-markdown-as-store-backend.md) contract
 item 3 and amendment 4, which left `OrderBy` out of the store until "a
@@ -740,7 +744,8 @@ Phase 3c landed with these differences from §1. The decision is unchanged.
 6. **A sorted list's rules are checked at build time.** The servers stage
    refuses an `order` parameter that is not on a module's `list`, is not
    immediately before the page (or last when there is no page), is
-   repeated, or names another entity's sort field. The clients stage
+   repeated, names another entity's sort field, or sits in a module with no
+   entity. The clients stage
    refuses one on a fn it cannot send (wire contract §7.3).
 7. **The markdown NaN error goes through the catch-all.** §5 names
    `AppError::Md`, but `AppError` is the consumer's type, so the generated
