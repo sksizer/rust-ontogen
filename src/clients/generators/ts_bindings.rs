@@ -343,6 +343,7 @@ mod tests {
     fn empty_config() -> Config {
         Config {
             api_dir: std::path::PathBuf::from("/tmp/does-not-matter"),
+            required_query_structs: Default::default(),
             state_type: String::new(),
             service_import_path: String::new(),
             types_import_path: String::new(),

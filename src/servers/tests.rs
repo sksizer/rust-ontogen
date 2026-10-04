@@ -49,6 +49,7 @@ fn test_config(api_dir: PathBuf) -> Config {
 fn client_test_config(api_dir: PathBuf) -> ClientsInternalConfig {
     ClientsInternalConfig {
         api_dir,
+        required_query_structs: Default::default(),
         state_type: "AppState".to_string(),
         service_import_path: "crate::api::v1".to_string(),
         types_import_path: "crate::schema".to_string(),
@@ -3348,6 +3349,7 @@ fn test_e2e_generate_transport_with_real_api() {
     // (TS transport + admin registry outputs) still apply post-split.
     let client_config = ClientsInternalConfig {
         api_dir: api_dir.clone(),
+        required_query_structs: Default::default(),
         state_type: "AppState".to_string(),
         service_import_path: "crate::api::v1".to_string(),
         types_import_path: "crate::schema".to_string(),

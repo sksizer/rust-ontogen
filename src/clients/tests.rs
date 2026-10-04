@@ -309,6 +309,7 @@ fn admin_test_crud_module(name: &str, list_has_query: bool) -> ApiModule {
 fn admin_test_config() -> ClientsConfig {
     ClientsConfig {
         api_dir: StdPathBuf::from("src/api/v1"),
+        required_query_structs: Default::default(),
         state_type: "AppState".to_string(),
         service_import_path: "crate::api::v1".to_string(),
         types_import_path: "crate::schema".to_string(),
@@ -372,6 +373,7 @@ fn two_surface_client_config(surfaces: Vec<ApiSurface>) -> Config {
     let primary = surfaces.next().expect("at least one surface");
     Config {
         api_dir: primary.api_dir,
+        required_query_structs: Default::default(),
         state_type: "AppState".to_string(),
         service_import_path: primary.service_import_path,
         types_import_path: primary.types_import_path,
@@ -798,6 +800,12 @@ pub struct ListTagsQuery {
 pub struct DigestQuery {
     pub since: Option<String>,
     pub done: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct StrictQuery {
+    pub owner: String,
+    pub since: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2144,6 +2152,47 @@ fn a_list_filter_structs_option_fields_are_optional_in_ts() {
     ] {
         assert!(bindings.contains(expected), "no `{expected}` in:\n{bindings}");
     }
+}
+
+/// A list whose filter struct has a required field (`owner: String`) takes
+/// its `query` as a required parameter on both transports, the interface and
+/// the HTTP-only client, and the IPC command always receives it. A list whose
+/// filter is all `Option` keeps `query?` and the `?? {}` default.
+#[test]
+fn a_list_whose_filter_struct_has_a_required_field_requires_its_query() {
+    for paginated in [false, true] {
+        let filtered = filtered_list_modules(paginated);
+        let mut extra: Vec<(&str, &str)> = filtered.iter().map(|(file, source)| (*file, source.as_str())).collect();
+        let strict = filtered_op_list_module("StrictQuery, Task", "Task", "query: StrictQuery", paginated);
+        extra.push(("strict.rs", strict.as_str()));
+        let clients = jsonapi_clients_with(paginated, &extra, |_| {});
+        let paged = if paginated { ", limit?: number, offset?: number" } else { "" };
+        let required = format!("async strictList(query: StrictQuery{paged})");
+        let interface = format!("  strictList(query: StrictQuery{paged}):");
+        assert!(clients.transport.contains(&interface), "{}", clients.transport);
+        for ts in [&clients.transport, &clients.http] {
+            assert!(ts_method(ts, "strictList").starts_with(&required), "{}", ts_method(ts, "strictList"));
+            // The all-`Option` filter is unchanged.
+            assert!(ts_method(ts, "digestList").starts_with("async digestList(query?: DigestQuery"));
+        }
+        let ipc = &clients.transport[clients.transport.find("export function createIpcTransport").unwrap()..];
+        let strict_ipc = ts_method(ipc, "strictList");
+        assert!(strict_ipc.contains("invoke('strict_list', { query"), "{strict_ipc}");
+        assert!(!strict_ipc.contains("query ??"), "{strict_ipc}");
+        assert!(ts_method(ipc, "digestList").contains("query: query ?? {}"));
+        assert!(
+            clients.bindings.contains("export type StrictQuery = {\n  owner: string;\n  since?: string | null;\n};")
+        );
+    }
+}
+
+/// The `HttpTs` client imports the bindings file it was configured with, by
+/// its path from the client.
+#[test]
+fn the_http_ts_client_imports_its_configured_bindings_file() {
+    let clients = jsonapi_clients(false, |_| {});
+    assert!(clients.http.contains("} from './jsonapi-bindings';"), "{}", clients.http);
+    assert!(!clients.http.contains("from './bindings'"), "{}", clients.http);
 }
 
 const LABEL_MODULE: &str = "\

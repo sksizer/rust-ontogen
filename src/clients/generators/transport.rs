@@ -73,6 +73,18 @@ fn ts_ipc_prefix_arg_only(config: &Config) -> String {
     }
 }
 
+/// The module specifier a client at `output` imports the bindings file at
+/// `bindings_path` by: relative, with no `.ts` extension.
+pub(super) fn bindings_import_path(output: &Path, bindings_path: &Path) -> String {
+    let output_dir = output.parent().unwrap_or(Path::new("."));
+    let bindings_abs = fs::canonicalize(bindings_path).unwrap_or_else(|_| bindings_path.to_path_buf());
+    let output_abs = fs::canonicalize(output_dir).unwrap_or_else(|_| output_dir.to_path_buf());
+    let rel = crate::utils::relative_path(&output_abs, &bindings_abs);
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    let rel_str = rel_str.strip_suffix(".ts").unwrap_or(&rel_str);
+    if rel_str.starts_with('.') { rel_str.to_string() } else { format!("./{rel_str}") }
+}
+
 /// Generate the unified transport layer and write to the output file.
 ///
 /// Returns a [`FallbackRecord`] for every type referenced by the generated TS
@@ -140,16 +152,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
 
     let (available, missing): (Vec<_>, Vec<_>) = import_types.iter().partition(|t| exported_types.contains(t));
 
-    // Compute relative import path from output file to bindings file
-    let bindings_import_path = {
-        let output_dir = output.parent().unwrap_or(Path::new("."));
-        let bindings_abs = fs::canonicalize(bindings_path).unwrap_or_else(|_| bindings_path.to_path_buf());
-        let output_abs = fs::canonicalize(output_dir).unwrap_or_else(|_| output_dir.to_path_buf());
-        let rel = crate::utils::relative_path(&output_abs, &bindings_abs);
-        let rel_str = rel.to_string_lossy().replace('\\', "/");
-        let rel_str = rel_str.strip_suffix(".ts").unwrap_or(&rel_str);
-        if rel_str.starts_with('.') { rel_str.to_string() } else { format!("./{}", rel_str) }
-    };
+    let bindings_import_path = bindings_import_path(output, bindings_path);
 
     if !available.is_empty() {
         out.push_str("import type {\n");
@@ -477,7 +480,11 @@ fn generate_ipc_transport(out: &mut String, modules: &[ApiModule], config: &Conf
                     let mut invoke_args: Vec<String> =
                         f.bare_filters().into_iter().map(|p| snake_to_camel(&p.name)).collect();
                     if f.filter_struct().is_some() {
-                        invoke_args.push("query: query ?? {}".to_string());
+                        // A required `query` is always sent; an optional one
+                        // defaults to the empty filter the command reads.
+                        invoke_args.push(
+                            if jsonapi::query_required(f, config) { "query" } else { "query: query ?? {}" }.to_string(),
+                        );
                     }
                     if jsonapi::is_paginated(m, f, config) {
                         invoke_args.push("limit: limit ?? null".to_string());

@@ -683,6 +683,15 @@ fn paginated_result(array: &str) -> String {
     format!("PaginatedResult<{}>", array.strip_suffix("[]").unwrap_or(array))
 }
 
+/// Whether `f`'s `*Query` struct has a field a client must send, so the
+/// `query` parameter is required. A struct the clients stage could not
+/// resolve (no type pool, or not found in it) is not known to have one, and
+/// keeps today's optional `query?`.
+pub(crate) fn query_required(f: &ApiFn, config: &Config) -> bool {
+    f.filter_struct()
+        .is_some_and(|q| config.required_query_structs.contains(&rust_type_to_ts(&extract_input_type(&q.ty))))
+}
+
 /// The `list` method for `f`, its collection at `/{base}`: its bare
 /// filters first, then `query?` for its `*Query` struct, then `limit?` and
 /// `offset?` when paginated.
@@ -702,7 +711,11 @@ fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -
         .map(|p| format!("{}: {}", snake_to_camel(&p.name), rust_type_to_ts(&strip_ref(&p.ty))))
         .collect();
     if let Some(query) = f.filter_struct() {
-        params.push(format!("query?: {}", rust_type_to_ts(&extract_input_type(&query.ty))));
+        let ts = rust_type_to_ts(&extract_input_type(&query.ty));
+        // Bare filters are required and `limit`/`offset` follow, so a
+        // required `query` never follows an optional parameter.
+        let optional = if query_required(f, config) { "" } else { "?" };
+        params.push(format!("query{optional}: {ts}"));
     }
     if paginated {
         params.push("limit?: number".to_string());
