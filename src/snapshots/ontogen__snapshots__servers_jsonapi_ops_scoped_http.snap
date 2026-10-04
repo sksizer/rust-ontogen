@@ -1,5 +1,6 @@
 ---
 source: src/snapshots.rs
+assertion_line: 550
 expression: "crate::servers::tests::generate_http(tmp.path(), config)"
 ---
 #![allow(dead_code, unused_imports, clippy::pedantic, clippy::needless_borrow)]
@@ -474,7 +475,7 @@ async fn ontogen_epic_fetch_scoped(
     Ok(found)
 }
 
-/// Checks that a `epics` resource exists for each of `ids`, in order.
+/// Checks, in order, that each of `ids` names a resource of type `epics`.
 async fn ontogen_epic_check_ids_scoped(
     state: &AppState,
     ontogen_scope: &uuid::Uuid,
@@ -510,7 +511,7 @@ async fn ontogen_tag_fetch_scoped(
     Ok(found)
 }
 
-/// Checks that a `tags` resource exists for each of `ids`, in order.
+/// Checks, in order, that each of `ids` names a resource of type `tags`.
 async fn ontogen_tag_check_ids_scoped(
     state: &AppState,
     ontogen_scope: &uuid::Uuid,

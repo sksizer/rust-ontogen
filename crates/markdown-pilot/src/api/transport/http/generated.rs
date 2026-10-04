@@ -574,22 +574,7 @@ async fn ontogen_note_read(state: &AppState, id: &LookupKey) -> Result<Note, Err
     note::get_by_id(&store, note_lookup_key(id)?).await.map_err(ontogen_app_error)
 }
 
-/// Sets the relation field `field` of the `notes` resource `id` to
-/// `value` through `note::update`, as a resource `PATCH` naming only that
-/// relationship does.
-async fn ontogen_note_write_field(
-    state: &AppState,
-    id: &str,
-    field: &str,
-    value: serde_json::Value,
-) -> Result<(), ErrorObject> {
-    let input: UpdateNoteInput = from_fields(serde_json::Map::from_iter([(field.to_owned(), value)]))?;
-    let store = state.store().await.map_err(ontogen_internal_error)?;
-    note::update(&store, id, input).await.map_err(ontogen_app_error)?;
-    Ok(())
-}
-
-/// Checks that a `tags` resource exists for each of `ids`, in order.
+/// Checks, in order, that each of `ids` names a resource of type `tags`.
 async fn ontogen_tag_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
     let store = state.store().await.map_err(ontogen_internal_error)?;
     for linked in ids {
@@ -654,7 +639,7 @@ async fn ontogen_section_fetch(state: &AppState, ids: &[String]) -> Result<Vec<S
     Ok(found)
 }
 
-/// Checks that a `sections` resource exists for each of `ids`, in order.
+/// Checks, in order, that each of `ids` names a resource of type `sections`.
 async fn ontogen_section_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
     let store = state.store().await.map_err(ontogen_internal_error)?;
     for linked in ids {
@@ -704,7 +689,7 @@ async fn ontogen_task_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Task
     Ok(found)
 }
 
-/// Checks that a `tasks` resource exists for each of `ids`, in order.
+/// Checks, in order, that each of `ids` names a resource of type `tasks`.
 async fn ontogen_task_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
     let store = state.store().await.map_err(ontogen_internal_error)?;
     for linked in ids {

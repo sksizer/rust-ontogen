@@ -112,7 +112,7 @@ pub(super) fn emit_helpers(out: &mut String, modules: &[ApiModule], config: &Con
     for m in modules {
         let Some(served) = Served::new(m, modules, config) else { continue };
         let mut uses = vec![(Helper::Read, m, served.get)];
-        if let Some(update) = served.update {
+        if let Some(update) = served.update.filter(|_| !served.resource.relationships.is_empty()) {
             uses.push((Helper::WriteField, m, update));
         }
         for rel in &served.resource.relationships {
@@ -212,7 +212,7 @@ fn emit_helper(out: &mut String, kind: Helper, m: &ApiModule, f: &ApiFn, config:
                 None => format!("        {svc}::{}({arg}, &linked.id){aw}{map_err}?;\n", f.name),
             };
             out.push_str(&format!(
-                "/// Checks that a `{type_name}` resource exists for each of `ids`, in order.\nasync fn \
+                "/// Checks, in order, that each of `ids` names a resource of type `{type_name}`.\nasync fn \
                  {name}(state: &{state_type}, {scope_param}ids: &[LinkedId]) -> Result<(), ErrorObject> \
                  {{\n{open}    for linked in ids {{\n{check}    }}\n    Ok(())\n}}\n\n"
             ));

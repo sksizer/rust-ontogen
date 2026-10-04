@@ -422,7 +422,7 @@ async fn ontogen_epic_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Epic
     Ok(found)
 }
 
-/// Checks that a `epics` resource exists for each of `ids`, in order.
+/// Checks, in order, that each of `ids` names a resource of type `epics`.
 async fn ontogen_epic_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
     let store = state.store().await.map_err(ontogen_internal_error)?;
     for linked in ids {
@@ -450,7 +450,7 @@ async fn ontogen_tag_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Tag>,
     Ok(found)
 }
 
-/// Checks that a `tags` resource exists for each of `ids`, in order.
+/// Checks, in order, that each of `ids` names a resource of type `tags`.
 async fn ontogen_tag_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
     let store = state.store().await.map_err(ontogen_internal_error)?;
     for linked in ids {
@@ -478,7 +478,7 @@ async fn ontogen_task_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Task
     Ok(found)
 }
 
-/// Checks that a `tasks` resource exists for each of `ids`, in order.
+/// Checks, in order, that each of `ids` names a resource of type `tasks`.
 async fn ontogen_task_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
     let store = state.store().await.map_err(ontogen_internal_error)?;
     for linked in ids {

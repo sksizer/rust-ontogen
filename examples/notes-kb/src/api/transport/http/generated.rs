@@ -249,7 +249,7 @@ async fn ontogen_note_fetch(state: &AppState, ids: &[String]) -> Result<Vec<Note
     Ok(found)
 }
 
-/// Checks that a `notes` resource exists for each of `ids`, in order.
+/// Checks, in order, that each of `ids` names a resource of type `notes`.
 async fn ontogen_note_check_ids(state: &AppState, ids: &[LinkedId]) -> Result<(), ErrorObject> {
     let store = state.store().await.map_err(ontogen_internal_error)?;
     for linked in ids {
