@@ -390,3 +390,45 @@ fn builder_requires_the_default_even_when_every_entity_overrides_it() {
         .expect_err("the default is required");
     assert!(format!("{err}").contains("call Pipeline::store_id_strategy("), "got: {err}");
 }
+
+#[test]
+fn builder_api_scans_the_transports_api_dirs_unless_told_otherwise() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let api = tmp.path().join("api");
+    std::fs::create_dir_all(&api).unwrap();
+    std::fs::write(
+        api.join("workout.rs"),
+        "use crate::schema::{AppError, Workout};\nuse crate::store::Store;\n\n\
+         pub async fn list(store: &Store, name: Option<String>) -> Result<Vec<Workout>, AppError> { todo!() }\n",
+    )
+    .unwrap();
+    let generated = api.join("generated");
+
+    Pipeline::new(fixture_schema_dir())
+        .api(&generated, "AppState")
+        .api_store_type(Some("Store".into()))
+        .servers(ontogen::ServersConfig {
+            api_dir: api.clone(),
+            state_type: "AppState".into(),
+            service_import_path: "crate::api".into(),
+            types_import_path: "crate::schema".into(),
+            state_import: "crate::AppState".into(),
+            naming: Default::default(),
+            generators: vec![],
+            sse_route_overrides: Default::default(),
+            route_prefix: None,
+            store_type: Some("Store".into()),
+            store_import: None,
+            pagination: None,
+            extra_surfaces: vec![],
+            error_source_dir: Some(tmp.path().to_path_buf()),
+        })
+        .build()
+        .expect("pipeline failed");
+
+    let workout = std::fs::read_to_string(generated.join("workout.rs")).unwrap();
+    assert!(!workout.contains("fn list("), "the hand-written list replaces it:\n{workout}");
+    assert!(workout.contains("fn get_by_id("), "{workout}");
+    let tag = std::fs::read_to_string(generated.join("tag.rs")).unwrap();
+    assert!(tag.contains("fn list("), "other entities keep their list:\n{tag}");
+}

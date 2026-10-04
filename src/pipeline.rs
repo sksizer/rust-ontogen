@@ -351,7 +351,13 @@ impl Pipeline {
     /// Add directories to scan for hand-written API modules.
     ///
     /// Scanned modules are merged with generated CRUD modules into a unified
-    /// `ApiOutput`. Has no effect unless [`Pipeline::api`] has been called.
+    /// `ApiOutput`, and a hand-written `list` or `count` replaces the
+    /// generated one. Files under the API stage's `output_dir` are never
+    /// scanned. When this is not called (or given nothing), the stage scans
+    /// the servers stage's `api_dir`, each of its `extra_surfaces`' `api_dir`,
+    /// then the clients stage's `api_dir`, without repeats, so the directories
+    /// the transports read are the ones the generated CRUD module defers to.
+    /// Has no effect unless [`Pipeline::api`] has been called.
     #[must_use]
     pub fn api_scan_dirs(mut self, scan_dirs: Vec<PathBuf>) -> Self {
         if let Some(stage) = self.api.as_mut() {
@@ -577,8 +583,25 @@ impl Pipeline {
         }
 
         // Stage 4: API (depends on schema; consumes nothing structured upstream)
+        let implicit_scan_dirs = {
+            let mut dirs: Vec<PathBuf> = Vec::new();
+            let mut add = |dir: &PathBuf| {
+                if !dirs.contains(dir) {
+                    dirs.push(dir.clone());
+                }
+            };
+            if let Some(stage) = &self.servers {
+                add(&stage.config.api_dir);
+                stage.config.extra_surfaces.iter().for_each(|s| add(&s.api_dir));
+            }
+            if let Some(stage) = &self.clients {
+                add(&stage.config.api_dir);
+            }
+            dirs
+        };
         let api_out: Option<ApiOutput> = match self.api {
             Some(stage) => {
+                let scan_dirs = if stage.scan_dirs.is_empty() { implicit_scan_dirs } else { stage.scan_dirs };
                 // If store stage was registered and the user didn't override store_type,
                 // default to Some("Store") so generated API can call store methods.
                 let resolved_store_type = match (store_enabled, stage.store_type) {
@@ -592,7 +615,7 @@ impl Pipeline {
                     &ApiConfig {
                         output_dir: stage.output_dir,
                         exclude: stage.exclude,
-                        scan_dirs: stage.scan_dirs,
+                        scan_dirs,
                         state_type: stage.state_type,
                         store_type: resolved_store_type,
                         schema_module_path: self.schema_module_path.clone(),

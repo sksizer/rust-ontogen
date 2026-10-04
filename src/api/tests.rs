@@ -318,4 +318,107 @@ mod tests {
         assert!(fn_names.contains(&"switch_project"), "Missing switch_project");
         assert!(fn_names.contains(&"open_project"), "Missing open_project");
     }
+
+    // ─── Hand-written list and count take the generated ones' place ──────────
+
+    const SCANNED_FILTERED_LIST: &str = "use crate::schema::{AppError, Workout};\nuse crate::store::Store;\n\n\
+        pub struct WorkoutFilterQuery { pub status: Option<String> }\n\n\
+        pub async fn list(store: &Store, query: WorkoutFilterQuery, limit: Option<u64>, offset: Option<u64>) \
+        -> Result<Vec<Workout>, AppError> { todo!() }\n\n\
+        pub async fn count(store: &Store, query: WorkoutFilterQuery) -> Result<u64, AppError> { todo!() }\n";
+
+    /// The scan dir holds a hand-written `workout.rs`; the output dir sits inside it.
+    fn generate_with_scanned(scanned_source: &str, paginated: bool) -> (tempfile::TempDir, ir::ApiOutput, String) {
+        let entities = parse_schema_dir(&schema_dir()).expect("parse failed");
+        let workout = entities.iter().find(|e| e.name == "Workout").expect("Workout").clone();
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let scan = tmp.path().join("api");
+        std::fs::create_dir_all(&scan).unwrap();
+        std::fs::write(scan.join("workout.rs"), scanned_source).unwrap();
+
+        let mut config = base_config(scan.join("generated"));
+        config.scan_dirs = vec![scan.clone()];
+        if paginated {
+            config.paginated = vec!["workout".to_string()];
+        }
+        let output = api::generate(&[workout], &config).expect("gen_api failed");
+        let code = std::fs::read_to_string(scan.join("generated/workout.rs")).unwrap();
+        (tmp, output, code)
+    }
+
+    fn fn_source(output: &ir::ApiOutput, name: &str) -> ir::Source {
+        let module = output.modules.iter().find(|m| m.name == "workout").expect("workout module");
+        module.fns.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no `{name}`")).source.clone()
+    }
+
+    #[test]
+    fn a_hand_written_filtered_paginated_list_and_count_replace_the_generated_ones() {
+        let (_tmp, output, code) = generate_with_scanned(SCANNED_FILTERED_LIST, true);
+        assert!(!code.contains("fn list("), "{code}");
+        assert!(!code.contains("fn count("), "{code}");
+        assert!(code.contains("fn get_by_id("), "{code}");
+        assert!(matches!(fn_source(&output, "list"), ir::Source::Scanned { .. }));
+        assert!(matches!(fn_source(&output, "count"), ir::Source::Scanned { .. }));
+        assert!(matches!(fn_source(&output, "get_by_id"), ir::Source::Generated { .. }));
+        let module = output.modules.iter().find(|m| m.name == "workout").unwrap();
+        assert_eq!(module.fns.iter().filter(|f| f.name == "list").count(), 1);
+        syn::parse_file(&code).expect("the file stays valid Rust");
+    }
+
+    #[test]
+    fn a_hand_written_list_in_an_unpaginated_module_replaces_only_the_list() {
+        let source = "use crate::schema::{AppError, Workout};\nuse crate::store::Store;\n\n\
+            pub async fn list(store: &Store, status: Option<String>) -> Result<Vec<Workout>, AppError> { todo!() }\n";
+        let (_tmp, output, code) = generate_with_scanned(source, false);
+        assert!(!code.contains("fn list("), "{code}");
+        for kept in ["get_by_id", "create", "update", "delete"] {
+            assert!(code.contains(&format!("fn {kept}(")), "{kept} missing:\n{code}");
+        }
+        assert!(matches!(fn_source(&output, "list"), ir::Source::Scanned { .. }));
+    }
+
+    #[test]
+    fn a_hand_written_count_alone_replaces_only_the_generated_count() {
+        let source = "use crate::schema::AppError;\nuse crate::store::Store;\n\n\
+            pub async fn count(store: &Store) -> Result<u64, AppError> { todo!() }\n";
+        let (_tmp, output, code) = generate_with_scanned(source, true);
+        assert!(!code.contains("fn count("), "{code}");
+        assert!(code.contains("pub async fn list(store: &Store, limit: Option<u64>"), "{code}");
+        assert!(matches!(fn_source(&output, "count"), ir::Source::Scanned { .. }));
+        assert!(matches!(fn_source(&output, "list"), ir::Source::Generated { .. }));
+    }
+
+    #[test]
+    fn a_stateless_list_does_not_replace_the_generated_list() {
+        let source = "use crate::schema::Workout;\n\n#[ontogen(stateless)]\n\
+            pub async fn list() -> Result<Vec<Workout>, crate::schema::AppError> { todo!() }\n";
+        let (_tmp, _output, code) = generate_with_scanned(source, false);
+        assert!(code.contains("fn list("), "{code}");
+    }
+
+    #[test]
+    fn files_under_the_output_dir_are_not_scanned() {
+        let entities = parse_schema_dir(&schema_dir()).expect("parse failed");
+        let workout = entities.iter().find(|e| e.name == "Workout").expect("Workout").clone();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let scan = tmp.path().join("api");
+        let generated = scan.join("generated");
+        std::fs::create_dir_all(&generated).unwrap();
+        // What a previous run left behind: a `list` that must not look hand-written.
+        std::fs::write(
+            generated.join("workout.rs"),
+            "use crate::schema::{AppError, Workout};\nuse crate::store::Store;\n\n\
+             pub async fn list(store: &Store) -> Result<Vec<Workout>, AppError> { todo!() }\n",
+        )
+        .unwrap();
+
+        let mut config = base_config(generated.clone());
+        config.scan_dirs = vec![scan];
+        let output = api::generate(&[workout], &config).expect("gen_api failed");
+
+        let code = std::fs::read_to_string(generated.join("workout.rs")).unwrap();
+        assert!(code.contains("fn list("), "{code}");
+        assert!(matches!(fn_source(&output, "list"), ir::Source::Generated { .. }));
+    }
 }

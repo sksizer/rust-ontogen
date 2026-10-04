@@ -1071,10 +1071,28 @@ fn resolve_through_uses(ty: &Type, uses: &HashMap<String, Vec<String>>) -> Strin
 /// function or event) and the union of every per-file [`SkipRecord`] so a
 /// caller can surface skipped functions through `cargo:warning=`.
 pub fn scan_api_dir(api_dir: &Path, state_type: &str, store_type: Option<&str>) -> ScanResult {
+    scan_api_dir_excluding(api_dir, state_type, store_type, None)
+}
+
+/// [`scan_api_dir`] that leaves out every file under `exclude`.
+///
+/// `gen_api` scans before it writes, and its output directory normally sits
+/// inside a scan directory, so the previous run's generated forwarders must
+/// not be read back as hand-written modules.
+pub fn scan_api_dir_excluding(
+    api_dir: &Path,
+    state_type: &str,
+    store_type: Option<&str>,
+    exclude: Option<&Path>,
+) -> ScanResult {
     let mut result = ScanResult::default();
 
     // Collect .rs files from api_dir and its immediate subdirectories (e.g. generated/)
     let mut entries: Vec<_> = collect_rs_files(api_dir);
+    if let Some(exclude) = exclude {
+        let exclude = fs::canonicalize(exclude).unwrap_or_else(|_| exclude.to_path_buf());
+        entries.retain(|p| !fs::canonicalize(p).unwrap_or_else(|_| p.clone()).starts_with(&exclude));
+    }
     entries.sort();
 
     for path in entries {
@@ -1424,8 +1442,15 @@ pub fn check_paginated_lists(
                     "ontogen: module `{}` is paginated, so `{}::list` must take `limit: Option<u64>, offset: Option<u64>` as \
                      its last two parameters and the module must define `count(store)` or `count(state)` returning \
                      `Result<u64, _>` and taking nothing else; a generated CRUD module gets both from \
-                     `ApiConfig::paginated`",
-                    m.name, m.name
+                     `ApiConfig::paginated`{}",
+                    m.name,
+                    m.name,
+                    if f.takes_page() {
+                        "; a hand-written `list` replaces the generated `count`, so the module needs a `count` taking \
+                         the same filter as the list"
+                    } else {
+                        ""
+                    }
                 ));
             }
             // The total has to describe the rows the page is drawn from, so
@@ -1554,5 +1579,22 @@ mod tests {
         assert_eq!(event("for_kind").error_type.as_deref(), Some("crate::schema::AppError"));
         assert!(event("for_kind").returns_result);
         assert_eq!((event("plain").returns_result, event("plain").error_type.clone()), (true, None));
+    }
+
+    #[test]
+    fn a_paginated_filtered_list_without_a_count_says_the_hand_written_list_replaced_the_generated_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("task.rs"),
+            "pub async fn list(store: &Store, status: Option<String>, limit: Option<u64>, offset: Option<u64>) \
+             -> Result<Vec<Task>, AppError> { todo!() }\n",
+        )
+        .unwrap();
+        let mut modules = scan_api_dir(tmp.path(), "AppState", Some("Store")).modules;
+        let pagination = Some(crate::servers::config::PaginationConfig { default_limit: 20, max_limit: 100 });
+        let err = check_paginated_lists(&mut modules, &pagination, &[]).unwrap_err();
+        assert!(err.contains("module `task` is paginated"), "{err}");
+        assert!(err.contains("a hand-written `list` replaces the generated `count`"), "{err}");
+        assert!(err.contains("a `count` taking the same filter as the list"), "{err}");
     }
 }

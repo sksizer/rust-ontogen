@@ -617,7 +617,9 @@ pub struct StoreConfig {
 /// Drives generation of CRUD forwarding functions and metadata collection.
 /// Hand-written API modules under [`scan_dirs`](Self::scan_dirs) are parsed
 /// with `syn` and merged with generated modules so transports get a unified
-/// view of the API surface.
+/// view of the API surface. A hand-written `list` or `count` replaces the
+/// generated one of the same module: the store has no filter, so a filtered
+/// list and the count that matches it can only be written by hand.
 pub struct ApiConfig {
     /// Output directory for generated API modules (e.g., `src/api/v1/generated/`).
     pub output_dir: PathBuf,
@@ -626,7 +628,16 @@ pub struct ApiConfig {
     pub exclude: Vec<String>,
     /// Directories to scan for hand-written API modules (e.g., `["src/api/v1"]`).
     /// Scanned modules are merged with generated CRUD modules into a unified
-    /// [`ApiOutput`]. When empty, only generated CRUD modules are included.
+    /// [`ApiOutput`]. For an entity whose scanned module defines a `list`, the
+    /// generated `list` is not written, and neither is the generated `count`
+    /// when the module is in [`paginated`](Self::paginated); a scanned `count`
+    /// replaces the generated one. Files under `output_dir` are not scanned,
+    /// so `output_dir` may sit inside a scan directory.
+    ///
+    /// Through [`Pipeline`], an empty list means the servers stage's
+    /// `api_dir`, its `extra_surfaces`' `api_dir`s and the clients stage's
+    /// `api_dir`, without repeats. Called directly, an empty list scans
+    /// nothing and only generated CRUD modules are included.
     pub scan_dirs: Vec<PathBuf>,
     /// The application state type name used as the first parameter of every
     /// generated handler (e.g., `"AppState"`).
