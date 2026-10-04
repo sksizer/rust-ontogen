@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::api::{bookmark, note, outline, section, tag, task};
+use crate::api::{board, bookmark, note, outline, section, tag, task};
 use crate::schema::{
     Bookmark, BookmarkQuery, CreateBookmarkInput, CreateNoteInput, CreateSectionInput, CreateTagInput, CreateTaskInput,
     ListSectionsQuery, Note, Section, Tag, Task, TaskSummary, UpdateBookmarkInput, UpdateNoteInput, UpdateSectionInput,
@@ -150,6 +150,46 @@ fn with_pagination_schema(mut schema: Value) -> Value {
     schema
 }
 
+/// The arguments of the `list_tasks` tool.
+#[derive(JsonSchema)]
+pub struct OntogenBoardListTasksInput {
+    pub tag_id: String,
+}
+
+/// The arguments of the `add_task` tool.
+#[derive(JsonSchema)]
+pub struct OntogenBoardAddTaskInput {
+    pub tag_id: String,
+    pub task_id: String,
+}
+
+/// The arguments of the `remove_task` tool.
+#[derive(JsonSchema)]
+pub struct OntogenBoardRemoveTaskInput {
+    pub tag_id: String,
+    pub task_id: String,
+}
+
+/// The arguments of the `list_tags` tool.
+#[derive(JsonSchema)]
+pub struct OntogenNoteListTagsInput {
+    pub id: String,
+}
+
+/// The arguments of the `add_tag` tool.
+#[derive(JsonSchema)]
+pub struct OntogenNoteAddTagInput {
+    pub id: String,
+    pub tag_id: String,
+}
+
+/// The arguments of the `remove_tag` tool.
+#[derive(JsonSchema)]
+pub struct OntogenNoteRemoveTagInput {
+    pub id: String,
+    pub tag_id: String,
+}
+
 /// The arguments of the `get_summary` tool.
 #[derive(JsonSchema)]
 pub struct OntogenTaskGetSummaryInput {
@@ -163,6 +203,12 @@ pub struct OntogenTaskGetSummaryInput {
 pub struct OntogenTaskCaptureInput {
     pub input: CreateTaskInput,
     pub status: Option<String>,
+}
+
+/// The arguments of the `list_by_status` tool.
+#[derive(JsonSchema)]
+pub struct OntogenTaskListByStatusInput {
+    pub status: String,
 }
 
 /// The arguments of the `complete` tool.
@@ -223,6 +269,69 @@ pub struct OntogenOutlineListFilter {
 /// Generated MCP tool definitions.
 pub fn generated_tool_registry() -> Vec<McpToolDef> {
     vec![
+        McpToolDef {
+            name: "board_list_tasks",
+            description: "The tasks carrying the tag `tag_id`, which must exist.",
+            schema_fn: || with_pagination_schema(schema_for::<OntogenBoardListTasksInput>()),
+            handler: |ontogen_state, ontogen_args| {
+                Box::pin(async move {
+                    refuse_unknown_args(
+                        ontogen_args,
+                        with_pagination_schema(schema_for::<OntogenBoardListTasksInput>()),
+                    )?;
+                    let tag_id = required_str(ontogen_args, "tag_id")?;
+                    let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
+                    let ontogen_all = board::list_tasks(&ontogen_store, tag_id).await.map_err(|e| e.to_string())?;
+                    let ontogen_total = ontogen_all.len();
+                    let ontogen_limit = ontogen_args
+                        .get("limit")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as usize)
+                        .unwrap_or(2_usize)
+                        .min(3_usize);
+                    let ontogen_offset =
+                        ontogen_args.get("offset").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+                    let ontogen_items: Vec<_> =
+                        ontogen_all.into_iter().skip(ontogen_offset).take(ontogen_limit).collect();
+                    Ok(json!({
+                        "items": serde_json::to_value(&ontogen_items).map_err(|e| format!("Serialize error: {e}"))?,
+                        "total": ontogen_total,
+                        "limit": ontogen_limit,
+                        "offset": ontogen_offset
+                    }))
+                })
+            },
+        },
+        McpToolDef {
+            name: "board_add_task",
+            description: "Put a task on the tag's board. Putting it there twice changes nothing.",
+            schema_fn: schema_for::<OntogenBoardAddTaskInput>,
+            handler: |ontogen_state, ontogen_args| {
+                Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<OntogenBoardAddTaskInput>())?;
+                    let tag_id = required_str(ontogen_args, "tag_id")?;
+                    let task_id = required_str(ontogen_args, "task_id")?;
+                    let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
+                    board::add_task(&ontogen_store, tag_id, task_id).await.map_err(|e| e.to_string())?;
+                    Ok(json!({"success": true}))
+                })
+            },
+        },
+        McpToolDef {
+            name: "board_remove_task",
+            description: "Take a task off the tag's board.",
+            schema_fn: schema_for::<OntogenBoardRemoveTaskInput>,
+            handler: |ontogen_state, ontogen_args| {
+                Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<OntogenBoardRemoveTaskInput>())?;
+                    let tag_id = required_str(ontogen_args, "tag_id")?;
+                    let task_id = required_str(ontogen_args, "task_id")?;
+                    let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
+                    board::remove_task(&ontogen_store, tag_id, task_id).await.map_err(|e| e.to_string())?;
+                    Ok(json!({"success": true}))
+                })
+            },
+        },
         McpToolDef {
             name: "bookmark_list",
             description: "One page of the bookmarks `query` selects, oldest first.",
@@ -387,6 +496,66 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let id = required_str(ontogen_args, "id")?.to_string();
                     note::delete(&ontogen_store, &id).await.map_err(|e| e.to_string())?;
+                    Ok(json!({"success": true}))
+                })
+            },
+        },
+        McpToolDef {
+            name: "note_list_tags",
+            description: "The ids of the tags on a note, in the order they were added. A tag deleted since is still listed: nothing here watches the store.",
+            schema_fn: || with_pagination_schema(schema_for::<OntogenNoteListTagsInput>()),
+            handler: |ontogen_state, ontogen_args| {
+                Box::pin(async move {
+                    refuse_unknown_args(
+                        ontogen_args,
+                        with_pagination_schema(schema_for::<OntogenNoteListTagsInput>()),
+                    )?;
+                    let id = required_str(ontogen_args, "id")?;
+                    let ontogen_all = note::list_tags(ontogen_state, id).await.map_err(|e| e.to_string())?;
+                    let ontogen_total = ontogen_all.len();
+                    let ontogen_limit = ontogen_args
+                        .get("limit")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as usize)
+                        .unwrap_or(2_usize)
+                        .min(3_usize);
+                    let ontogen_offset =
+                        ontogen_args.get("offset").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+                    let ontogen_items: Vec<_> =
+                        ontogen_all.into_iter().skip(ontogen_offset).take(ontogen_limit).collect();
+                    Ok(json!({
+                        "items": serde_json::to_value(&ontogen_items).map_err(|e| format!("Serialize error: {e}"))?,
+                        "total": ontogen_total,
+                        "limit": ontogen_limit,
+                        "offset": ontogen_offset
+                    }))
+                })
+            },
+        },
+        McpToolDef {
+            name: "note_add_tag",
+            description: "Tag a note. Tagging it twice lists the tag twice.",
+            schema_fn: schema_for::<OntogenNoteAddTagInput>,
+            handler: |ontogen_state, ontogen_args| {
+                Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<OntogenNoteAddTagInput>())?;
+                    let id = required_str(ontogen_args, "id")?;
+                    let tag_id = required_str(ontogen_args, "tag_id")?;
+                    note::add_tag(ontogen_state, id, tag_id).await.map_err(|e| e.to_string())?;
+                    Ok(json!({"success": true}))
+                })
+            },
+        },
+        McpToolDef {
+            name: "note_remove_tag",
+            description: "Take a tag off a note.",
+            schema_fn: schema_for::<OntogenNoteRemoveTagInput>,
+            handler: |ontogen_state, ontogen_args| {
+                Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<OntogenNoteRemoveTagInput>())?;
+                    let id = required_str(ontogen_args, "id")?;
+                    let tag_id = required_str(ontogen_args, "tag_id")?;
+                    note::remove_tag(ontogen_state, id, tag_id).await.map_err(|e| e.to_string())?;
                     Ok(json!({"success": true}))
                 })
             },
@@ -723,6 +892,21 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let ontogen_result =
                         task::capture(&ontogen_store, input, status).await.map_err(|e| e.to_string())?;
+                    serde_json::to_value(ontogen_result).map_err(|e| format!("Serialize error: {e}"))
+                })
+            },
+        },
+        McpToolDef {
+            name: "task_list_by_status",
+            description: "The tasks in `status`, in id order.",
+            schema_fn: schema_for::<OntogenTaskListByStatusInput>,
+            handler: |ontogen_state, ontogen_args| {
+                Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<OntogenTaskListByStatusInput>())?;
+                    let status = required_str(ontogen_args, "status")?;
+                    let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
+                    let ontogen_result =
+                        task::list_by_status(&ontogen_store, status).await.map_err(|e| e.to_string())?;
                     serde_json::to_value(ontogen_result).map_err(|e| format!("Serialize error: {e}"))
                 })
             },

@@ -209,9 +209,11 @@ async fn a_list_is_a_paginated_collection_document() {
             r#""last":"/api/notes?page%5Boffset%5D=2&page%5Blimit%5D=2"},"#,
             r#""meta":{"total":3,"limit":2,"offset":0},"data":["#,
             r#"{"type":"notes","id":"alpha","attributes":{"title":"Alpha","body":"About Alpha.\n"},"#,
-            r#""links":{"self":"/api/notes/alpha"}},"#,
+            r#""relationships":{"tags":{"links":{"self":"/api/notes/alpha/relationships/tags","#,
+            r#""related":"/api/notes/alpha/tags"}}},"links":{"self":"/api/notes/alpha"}},"#,
             r#"{"type":"notes","id":"beta","attributes":{"title":"Beta","body":"About Beta.\n"},"#,
-            r#""links":{"self":"/api/notes/beta"}}]}"#,
+            r#""relationships":{"tags":{"links":{"self":"/api/notes/beta/relationships/tags","#,
+            r#""related":"/api/notes/beta/tags"}}},"links":{"self":"/api/notes/beta"}}]}"#,
         )
     );
 
@@ -269,7 +271,8 @@ async fn get_and_its_missing_case() {
             r#"{"jsonapi":{"version":"1.1"},"links":{"self":"/api/notes/hello-vault"},"#,
             r#""data":{"type":"notes","id":"hello-vault","#,
             r#""attributes":{"title":"Hello Vault","body":"About Hello Vault.\n"},"#,
-            r#""links":{"self":"/api/notes/hello-vault"}}}"#,
+            r#""relationships":{"tags":{"links":{"self":"/api/notes/hello-vault/relationships/tags","#,
+            r#""related":"/api/notes/hello-vault/tags"}}},"links":{"self":"/api/notes/hello-vault"}}}"#,
         )
     );
 
