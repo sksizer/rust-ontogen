@@ -690,10 +690,12 @@ and `count` (§15).
 **Filter parameters.** The filter of a `list` is every parameter after the
 store except the trailing `limit` and `offset`. Each is one of:
 
-- at most one `*Query` struct, taken by value (`ListTasksQuery`, not
-  `&ListTasksQuery` or `Option<ListTasksQuery>`). Each serde field of the
-  struct is a member `filter[field]`. A second struct, or one not taken by
-  value, is a `CodegenError`. The generated handlers name it through
+- at most one `*Query` struct, taken by value (`ListTasksQuery`) or
+  borrowed (`&ListTasksQuery`), not `&mut` or in an `Option`. Each serde
+  field of the struct is a member `filter[field]`. A second struct, or one
+  taken another way, is a `CodegenError`. A borrowed struct is lent to both
+  `list` and `count`; one taken by value is cloned into `list`, so it must
+  be `Clone`. The generated handlers name it through
   `types_import_path`, as they name every type an op takes, so it must be
   reachable there (a `pub use` in the schema module will do);
 - a bare parameter, which is the member `filter[{param name}]`. Its type,
@@ -2220,7 +2222,11 @@ Payloads stay flat. JSON:API exists only at the HTTP boundary.
 
 A filtered list's filter parameters are forwarded to `list` and `count` on
 both transports since https://github.com/sksizer/rust-ontogen/pull/172; the
-payloads are unchanged.
+payloads are unchanged. A bare filter keeps its declared type on both (an
+`Option` one is optional). The MCP list tool's input schema lists the bare
+filters beside the `*Query` struct's fields and the page, and an argument
+object the struct cannot be read from is the tool's error
+(`Invalid filter: …`), not an empty filter.
 
 Five changes reach them, none of which changes a payload's shape:
 
