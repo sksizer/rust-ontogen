@@ -693,7 +693,9 @@ store except the trailing `limit` and `offset`. Each is one of:
 - at most one `*Query` struct, taken by value (`ListTasksQuery`, not
   `&ListTasksQuery` or `Option<ListTasksQuery>`). Each serde field of the
   struct is a member `filter[field]`. A second struct, or one not taken by
-  value, is a `CodegenError`;
+  value, is a `CodegenError`. The generated handlers name it through
+  `types_import_path`, as they name every type an op takes, so it must be
+  reachable there (a `pub use` in the schema module will do);
 - a bare parameter, which is the member `filter[{param name}]`. Its type,
   under `&` and at most one `Option`, must be one a single value can carry:
   `&str`, `String`, numbers, `bool`, unit enums. `Vec<_>`, tuples and schema
