@@ -5,6 +5,8 @@ name = "iron-log"
 version = "0.1.0"
 edition = "2024"
 publish = false
+# `cargo run` starts the Tauri app; the headless HTTP server is `--bin iron-log-http`.
+default-run = "iron-log"
 
 [lib]
 name = "iron_log"

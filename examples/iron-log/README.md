@@ -38,6 +38,21 @@ This generates all code from the 4 schema entity files. The generated TypeScript
 client uses `HttpTauriIpcSplit` - it auto-switches between Tauri IPC (desktop) and
 HTTP fetch (browser) at runtime.
 
+## Serve the HTTP API without Tauri
+
+`src/bin/iron-log-http.rs` serves the generated Axum routes on their own,
+over SQLite with a table created from each generated SeaORM entity:
+
+```bash
+cd src-tauri
+cargo run --bin iron-log-http                   # http://127.0.0.1:3004, in-memory SQLite
+PORT=39104 cargo run --bin iron-log-http        # any other port
+IRON_LOG_DB=iron-log.sqlite cargo run --bin iron-log-http   # keep the data in a file
+curl -s localhost:3004/api/workouts | jq
+```
+
+`cargo run` on its own still starts the Tauri app.
+
 ## Project Structure
 
 ```
@@ -61,8 +76,12 @@ iron-log/
 
 ## Known Limitations
 
-- No database initialization or migrations are included. SeaORM 2 will handle
-  schema creation from entity definitions.
+- The Tauri app does not initialize its database and no migrations are
+  included. Only the headless HTTP server creates its tables, from the
+  generated entities.
+- Nothing publishes an `Activity` yet, so the event routes
+  (`/api/events/activity-feed`, `/api/events/activity-for-kind/{kind}`)
+  accept a subscription that carries only keep-alive comments.
 
 ## See also
 
