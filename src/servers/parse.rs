@@ -201,6 +201,20 @@ impl Param {
         let name = ty.rsplit("::").next().unwrap_or(&ty);
         !name.contains(['<', '(', '[']) && name.ends_with("Input")
     }
+
+    /// True for a list's `*Query` filter struct: the type it names, under any
+    /// `&` and one `Option`, is a single path whose last segment ends in
+    /// `Query` (`ListTasksQuery`, `crate::api::TaskQuery`). Each of its fields
+    /// is one `filter[…]` member on HTTP (wire contract §7.3).
+    pub fn is_filter_struct(&self) -> bool {
+        let unref = |ty: &str| ty.trim_start_matches('&').trim_start_matches("mut ").to_string();
+        let mut ty = unref(&self.ty);
+        if let Some(inner) = ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')) {
+            ty = unref(inner);
+        }
+        let name = ty.rsplit("::").next().unwrap_or(&ty);
+        !name.contains(['<', '(', '[']) && name.ends_with("Query")
+    }
 }
 
 /// An event function: returns `broadcast::Receiver<T>` or
@@ -344,11 +358,6 @@ pub const PAGE_PARAMS: [&str; 2] = ["limit", "offset"];
 /// The type each page parameter must have.
 pub const PAGE_PARAM_TYPE: &str = "Option<u64>";
 
-/// True for the `limit`/`offset` parameter of a paginated `list`.
-pub fn is_page_param(p: &Param) -> bool {
-    PAGE_PARAMS.contains(&p.name.as_str())
-}
-
 /// The function names that make up a module's CRUD surface.
 pub const CRUD_FN_NAMES: [&str; 5] = ["list", "get_by_id", "create", "update", "delete"];
 
@@ -371,9 +380,34 @@ impl ApiFn {
     /// This function's parameters other than the page, as `name: type` — the
     /// filter a paginated `list` applies and its `count` must apply too.
     pub fn filter_params(&self) -> Vec<String> {
+        self.filter().iter().map(|p| format!("{}: {}", p.name, p.ty)).collect()
+    }
+
+    /// This function's parameters other than the page: the filter of a
+    /// `list` (wire contract §7.3), in declaration order.
+    pub fn filter(&self) -> &[Param] {
         let n = self.params.len();
         let end = if self.takes_page() { n - PAGE_PARAMS.len() } else { n };
-        self.params[..end].iter().map(|p| format!("{}: {}", p.name, p.ty)).collect()
+        &self.params[..end]
+    }
+
+    /// True when this function, a `list`, takes a filter: any parameter but
+    /// its page.
+    pub fn takes_filter(&self) -> bool {
+        !self.filter().is_empty()
+    }
+
+    /// The list's `*Query` filter struct ([`Param::is_filter_struct`]), if it
+    /// takes one.
+    pub fn filter_struct(&self) -> Option<&Param> {
+        self.filter().iter().find(|p| p.is_filter_struct())
+    }
+
+    /// The list's bare filter parameters (`skill_id: &str`): every filter
+    /// parameter that is not a `*Query` struct, each one `filter[{name}]` on
+    /// HTTP.
+    pub fn bare_filters(&self) -> Vec<&Param> {
+        self.filter().iter().filter(|p| !p.is_filter_struct()).collect()
     }
 }
 
@@ -1032,10 +1066,28 @@ fn resolve_through_uses(ty: &Type, uses: &HashMap<String, Vec<String>>) -> Strin
 /// function or event) and the union of every per-file [`SkipRecord`] so a
 /// caller can surface skipped functions through `cargo:warning=`.
 pub fn scan_api_dir(api_dir: &Path, state_type: &str, store_type: Option<&str>) -> ScanResult {
+    scan_api_dir_excluding(api_dir, state_type, store_type, None)
+}
+
+/// [`scan_api_dir`] that leaves out every file under `exclude`.
+///
+/// `gen_api` scans before it writes, and its output directory normally sits
+/// inside a scan directory, so the previous run's generated forwarders must
+/// not be read back as hand-written modules.
+pub fn scan_api_dir_excluding(
+    api_dir: &Path,
+    state_type: &str,
+    store_type: Option<&str>,
+    exclude: Option<&Path>,
+) -> ScanResult {
     let mut result = ScanResult::default();
 
     // Collect .rs files from api_dir and its immediate subdirectories (e.g. generated/)
     let mut entries: Vec<_> = collect_rs_files(api_dir);
+    if let Some(exclude) = exclude {
+        let exclude = fs::canonicalize(exclude).unwrap_or_else(|_| exclude.to_path_buf());
+        entries.retain(|p| !fs::canonicalize(p).unwrap_or_else(|_| p.clone()).starts_with(&exclude));
+    }
     entries.sort();
 
     for path in entries {
@@ -1083,6 +1135,26 @@ pub fn scan_surfaces(surfaces: &[ApiSurface], state_type: &str) -> Result<ScanRe
     Ok(result)
 }
 
+/// The error for a fn name defined by two files of one surface's directory.
+///
+/// The usual cause is a generated `list`/`count` beside a hand-written one the
+/// api stage did not scan, so the message states that rule.
+fn same_surface_duplicate(module: &str, name: &str, dir: &str) -> String {
+    if matches!(name, "list" | "count") {
+        format!(
+            "ontogen: fn `{module}::{name}` is defined twice in API directory `{dir}` (the generated module and a \
+             hand-written one). A hand-written `list` or `count` replaces the generated one only when the api stage \
+             scans this directory (`Pipeline::api_scan_dirs`, or `ApiConfig::scan_dirs` when calling `gen_api` \
+             directly; `Pipeline` already scans the transports' `api_dir`s), and a `#[ontogen::stateless]` `{name}` \
+             never replaces it"
+        )
+    } else {
+        format!(
+            "ontogen: fn `{module}::{name}` is defined twice in API directory `{dir}`; a function name may be defined once per module"
+        )
+    }
+}
+
 /// Merge per-surface module lists into one, folding same-named modules together.
 ///
 /// Module order is the primary surface's, with modules only later surfaces
@@ -1104,6 +1176,9 @@ pub fn merge_surfaces(per_surface: Vec<Vec<ApiModule>>, surfaces: &[ApiSurface])
             existing.has_count |= incoming.has_count;
             for f in incoming.functions {
                 if let Some(prior) = existing.functions.iter().find(|p| p.name == f.name) {
+                    if prior.surface == surface {
+                        return Err(same_surface_duplicate(module, &f.name, &dir(surface).to_string()));
+                    }
                     return Err(format!(
                         "ontogen: fn `{}::{}` is defined by both API surfaces `{}` and `{}`; a function name may come \
                          from one surface only",
@@ -1117,6 +1192,14 @@ pub fn merge_surfaces(per_surface: Vec<Vec<ApiModule>>, surfaces: &[ApiSurface])
             }
             for ev in incoming.events {
                 if let Some(prior) = existing.events.iter().find(|p| p.name == ev.name) {
+                    if prior.surface == surface {
+                        return Err(format!(
+                            "ontogen: event `{}::{}` is defined twice in API directory `{}`",
+                            module,
+                            ev.name,
+                            dir(surface),
+                        ));
+                    }
                     return Err(format!(
                         "ontogen: event `{}::{}` is defined by both API surfaces `{}` and `{}`",
                         module,
@@ -1385,8 +1468,15 @@ pub fn check_paginated_lists(
                     "ontogen: module `{}` is paginated, so `{}::list` must take `limit: Option<u64>, offset: Option<u64>` as \
                      its last two parameters and the module must define `count(store)` or `count(state)` returning \
                      `Result<u64, _>` and taking nothing else; a generated CRUD module gets both from \
-                     `ApiConfig::paginated`",
-                    m.name, m.name
+                     `ApiConfig::paginated`{}",
+                    m.name,
+                    m.name,
+                    if f.takes_page() {
+                        "; a hand-written `list` replaces the generated `count`, so the module needs a `count` taking \
+                         the same filter as the list"
+                    } else {
+                        ""
+                    }
                 ));
             }
             // The total has to describe the rows the page is drawn from, so
@@ -1515,5 +1605,64 @@ mod tests {
         assert_eq!(event("for_kind").error_type.as_deref(), Some("crate::schema::AppError"));
         assert!(event("for_kind").returns_result);
         assert_eq!((event("plain").returns_result, event("plain").error_type.clone()), (true, None));
+    }
+
+    #[test]
+    fn a_paginated_filtered_list_without_a_count_says_the_hand_written_list_replaced_the_generated_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("task.rs"),
+            "pub async fn list(store: &Store, status: Option<String>, limit: Option<u64>, offset: Option<u64>) \
+             -> Result<Vec<Task>, AppError> { todo!() }\n",
+        )
+        .unwrap();
+        let mut modules = scan_api_dir(tmp.path(), "AppState", Some("Store")).modules;
+        let pagination = Some(crate::servers::config::PaginationConfig { default_limit: 20, max_limit: 100 });
+        let err = check_paginated_lists(&mut modules, &pagination, &[]).unwrap_err();
+        assert!(err.contains("module `task` is paginated"), "{err}");
+        assert!(err.contains("a hand-written `list` replaces the generated `count`"), "{err}");
+        assert!(err.contains("a `count` taking the same filter as the list"), "{err}");
+    }
+
+    fn one_surface(dir: &Path) -> Vec<crate::servers::ApiSurface> {
+        vec![crate::servers::ApiSurface {
+            api_dir: dir.to_path_buf(),
+            service_import_path: "crate::api".to_string(),
+            types_import_path: "crate::schema".to_string(),
+            store_accessor: None,
+            store_type: Some("Store".to_string()),
+            pagination: None,
+            paginated_modules: Vec::new(),
+            schema_dir: None,
+        }]
+    }
+
+    fn write_task_files(dir: &Path, generated: &str, hand_written: &str) {
+        std::fs::create_dir_all(dir.join("generated")).unwrap();
+        std::fs::write(dir.join("generated/task.rs"), generated).unwrap();
+        std::fs::write(dir.join("task.rs"), hand_written).unwrap();
+    }
+
+    const LIST: &str = "pub async fn list(store: &Store) -> Result<Vec<Task>, AppError> { todo!() }\n";
+
+    #[test]
+    fn a_list_in_the_generated_and_the_hand_written_file_names_the_scan_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_task_files(tmp.path(), LIST, LIST);
+        let err = scan_surfaces(&one_surface(tmp.path()), "AppState").unwrap_err();
+        assert!(err.contains("fn `task::list` is defined twice in API directory"), "{err}");
+        assert!(err.contains("`Pipeline::api_scan_dirs`") && err.contains("`ApiConfig::scan_dirs`"), "{err}");
+        assert!(err.contains("`#[ontogen::stateless]` `list` never replaces it"), "{err}");
+        assert!(!err.contains("both API surfaces"), "{err}");
+    }
+
+    #[test]
+    fn another_duplicated_fn_in_one_surface_says_it_is_defined_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let publish = "pub async fn publish(store: &Store) -> Result<(), AppError> { todo!() }\n";
+        write_task_files(tmp.path(), publish, publish);
+        let err = scan_surfaces(&one_surface(tmp.path()), "AppState").unwrap_err();
+        assert!(err.contains("fn `task::publish` is defined twice in API directory"), "{err}");
+        assert!(!err.contains("api_scan_dirs"), "{err}");
     }
 }

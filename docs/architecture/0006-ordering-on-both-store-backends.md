@@ -273,14 +273,15 @@ its backend. The parity guarantee covers a hand-written list only when it
 orders through one of these two helpers.
 
 **A hand-written `list` replaces the generated one.** A hand-written `list`
-in `api_dir/{module}.rs` replaces the generated `list`, and the generated
-`count`, for that module. Today the merge does the opposite: when a scanned
-function has the same name as a generated one, the generated one is kept
-and the scanned one is dropped (`merge_scanned_module`,
-`src/api/mod.rs:165-170`). E0004 phase 2 reverses that precedence for
-`list` and `count`, and `gen_api` stops emitting either for such a module.
-Without this, a filtered list could not be the module's list, and the
-generated unfiltered `count` would disagree with it.
+in `api_dir/{module}.rs` replaces the generated `list` for that module, and
+the generated `count` too when the module is paginated. The API stage scans
+the hand-written fns before it emits, so `gen_api` does not emit them, and
+the merge keeps a scanned `list` or `count` over a generated one of the same
+name. Only `list` and `count` may be hand-written beside the generated
+module: any other name it defines, written again by hand, fails the build
+as defined twice in that API directory. A filtered list can therefore be
+the module's list, and the unfiltered generated `count` never disagrees
+with it.
 
 ### 2. Sortable fields
 

@@ -72,7 +72,7 @@ pub fn generate(output: &Path, bindings_path: &Path, modules: &[ApiModule], conf
         for t in &available {
             out.push_str(&format!("  {},\n", t));
         }
-        out.push_str("} from './bindings';\n\n");
+        out.push_str(&format!("}} from '{}';\n\n", super::transport::bindings_import_path(output, bindings_path)));
     }
 
     let fallbacks: Vec<FallbackRecord> = missing

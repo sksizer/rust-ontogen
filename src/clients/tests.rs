@@ -309,6 +309,7 @@ fn admin_test_crud_module(name: &str, list_has_query: bool) -> ApiModule {
 fn admin_test_config() -> ClientsConfig {
     ClientsConfig {
         api_dir: StdPathBuf::from("src/api/v1"),
+        required_query_structs: Default::default(),
         state_type: "AppState".to_string(),
         service_import_path: "crate::api::v1".to_string(),
         types_import_path: "crate::schema".to_string(),
@@ -372,6 +373,7 @@ fn two_surface_client_config(surfaces: Vec<ApiSurface>) -> Config {
     let primary = surfaces.next().expect("at least one surface");
     Config {
         api_dir: primary.api_dir,
+        required_query_structs: Default::default(),
         state_type: "AppState".to_string(),
         service_import_path: primary.service_import_path,
         types_import_path: primary.types_import_path,
@@ -739,6 +741,94 @@ pub async fn reset(store: &Store) -> Result<(), anyhow::Error> { todo!() }
 pub async fn task_changes(state: &AppState, resume: Option<String>) -> Result<tokio::sync::broadcast::Receiver<Task>, anyhow::Error> { todo!() }
 ";
 
+/// `tag`, written by hand over the `tags` resource: CRUD whose `list` takes
+/// the `ListTagsQuery` struct and a bare `title_prefix`, paged when
+/// `paginated` beside a `count` taking the same filter (§7.3).
+fn filtered_tag_module(paginated: bool) -> String {
+    let (page, count) = if paginated {
+        (
+            ", limit: Option<u64>, offset: Option<u64>",
+            "pub async fn count(store: &Store, query: ListTagsQuery, title_prefix: &str) -> Result<u64, anyhow::Error> \
+             { todo!() }\n",
+        )
+    } else {
+        ("", "")
+    };
+    format!(
+        "use crate::schema::{{CreateTagInput, ListTagsQuery, Tag, UpdateTagInput}};
+use crate::store::Store;
+
+pub async fn list(store: &Store, query: ListTagsQuery, title_prefix: &str{page}) -> Result<Vec<Tag>, anyhow::Error> {{ todo!() }}
+{count}pub async fn get_by_id(store: &Store, id: &str) -> Result<Tag, anyhow::Error> {{ todo!() }}
+pub async fn create(store: &Store, input: CreateTagInput) -> Result<Tag, anyhow::Error> {{ todo!() }}
+pub async fn update(store: &Store, id: &str, input: UpdateTagInput) -> Result<Tag, anyhow::Error> {{ todo!() }}
+pub async fn delete(store: &Store, id: &str) -> Result<(), anyhow::Error> {{ todo!() }}
+"
+    )
+}
+
+/// A module with no entity whose `list` of `item`s takes the parameters
+/// `filter` (§10.4), paged when `paginated` beside a `count` taking the
+/// same filter. `imports` are the schema types it names.
+fn filtered_op_list_module(imports: &str, item: &str, filter: &str, paginated: bool) -> String {
+    let (page, count) = if paginated {
+        (
+            ", limit: Option<u64>, offset: Option<u64>".to_string(),
+            format!("pub async fn count(store: &Store, {filter}) -> Result<u64, anyhow::Error> {{ todo!() }}\n"),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    format!(
+        "use crate::schema::{{{imports}}};
+use crate::store::Store;
+
+pub async fn list(store: &Store, {filter}{page}) -> Result<Vec<{item}>, anyhow::Error> {{ todo!() }}
+{count}"
+    )
+}
+
+/// The filter structs [`filtered_list_modules`] name, in a source root the
+/// type pool reads.
+const FILTER_STRUCTS: &str = "\
+#[derive(serde::Deserialize)]
+pub struct ListTagsQuery {
+    pub title: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct DigestQuery {
+    pub since: Option<String>,
+    pub done: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct StrictQuery {
+    pub owner: String,
+    pub since: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub enum QueryMode {
+    Open,
+    Closed,
+}
+";
+
+/// The filtered lists beside [`BOARD_MODULE`]: `tag`'s, served as its
+/// resource ([`filtered_tag_module`]), and three in modules with no entity,
+/// served as ops: `digest`'s takes only the `DigestQuery` struct, `inbox`'s
+/// only a bare `owner_id`, `queue`'s only a bare `mode` whose unit enum type
+/// has `Query` in its name but is no filter struct.
+fn filtered_list_modules(paginated: bool) -> [(&'static str, String); 4] {
+    [
+        ("tag.rs", filtered_tag_module(paginated)),
+        ("digest.rs", filtered_op_list_module("DigestQuery, Task", "Task", "query: DigestQuery", paginated)),
+        ("inbox.rs", filtered_op_list_module("Tag", "Tag", "owner_id: &str", paginated)),
+        ("queue.rs", filtered_op_list_module("QueryMode, Tag", "Tag", "mode: QueryMode", paginated)),
+    ]
+}
+
 /// What [`jsonapi_clients`] generated.
 struct JsonApiClients {
     transport: String,
@@ -762,6 +852,44 @@ fn jsonapi_stack(
     extra: &[(&str, &str)],
     adjust: impl FnOnce(&mut crate::ClientsConfig),
 ) -> (String, JsonApiClients) {
+    let (servers, clients) = generate_jsonapi(paginated, extra, adjust, true);
+    (servers.unwrap().http, clients)
+}
+
+/// [`jsonapi_stack`] with the Tauri IPC commands, generated beside the Axum
+/// server, in place of the server.
+fn ipc_stack(
+    paginated: bool,
+    extra: &[(&str, &str)],
+    adjust: impl FnOnce(&mut crate::ClientsConfig),
+) -> (String, JsonApiClients) {
+    let (servers, clients) = generate_jsonapi(paginated, extra, adjust, true);
+    (servers.unwrap().ipc, clients)
+}
+
+/// The servers [`generate_jsonapi`] generates: Axum's and the Tauri IPC
+/// commands.
+struct Servers {
+    http: String,
+    ipc: String,
+}
+
+/// [`jsonapi_stack`]'s clients alone, with no server generated beside them.
+fn jsonapi_clients_with(
+    paginated: bool,
+    extra: &[(&str, &str)],
+    adjust: impl FnOnce(&mut crate::ClientsConfig),
+) -> JsonApiClients {
+    generate_jsonapi(paginated, extra, adjust, false).1
+}
+
+/// [`jsonapi_stack`], generating the servers only with `server`.
+fn generate_jsonapi(
+    paginated: bool,
+    extra: &[(&str, &str)],
+    adjust: impl FnOnce(&mut crate::ClientsConfig),
+    server: bool,
+) -> (Option<Servers>, JsonApiClients) {
     let tmp = tempfile::tempdir().unwrap();
     let entities =
         crate::schema::parse::parse_schema_source(JSONAPI_SCHEMA, std::path::Path::new("schema.rs")).unwrap();
@@ -804,10 +932,25 @@ fn jsonapi_stack(
         pagination: paginated.then_some(PaginationConfig { default_limit: 20, max_limit: 100 }),
         ..crate::ClientsConfig::new(api_dir.clone(), "AppState", "crate::api", "crate::schema", "crate::AppState")
     };
+    let filters = tmp.path().join("filters").join("src");
+    fs::create_dir_all(&filters).unwrap();
+    fs::write(filters.join("lib.rs"), FILTER_STRUCTS).unwrap();
+    config.pool_extra_roots.push(filters);
     adjust(&mut config);
     crate::gen_clients(&entities, Some(&api), &[], &config).unwrap();
 
+    let read = |path: &std::path::Path| fs::read_to_string(path).unwrap();
+    let clients = JsonApiClients {
+        transport: read(&ts.join("transport.ts")),
+        http: read(&ts.join("http.ts")),
+        bindings: read(&bindings_path),
+    };
+    if !server {
+        return (None, clients);
+    }
+
     let server_out = tmp.path().join("http.rs");
+    let ipc_out = tmp.path().join("ipc.rs");
     let servers = crate::ServersConfig {
         api_dir,
         state_type: config.state_type.clone(),
@@ -815,7 +958,10 @@ fn jsonapi_stack(
         types_import_path: config.types_import_path.clone(),
         state_import: config.state_import.clone(),
         naming: config.naming.clone(),
-        generators: vec![crate::servers::ServerGenerator::HttpAxum { output: server_out.clone() }],
+        generators: vec![
+            crate::servers::ServerGenerator::HttpAxum { output: server_out.clone() },
+            crate::servers::ServerGenerator::TauriIpc { output: ipc_out.clone() },
+        ],
         sse_route_overrides: config.sse_route_overrides.clone(),
         route_prefix: config.route_prefix.clone(),
         store_type: config.store_type.clone(),
@@ -825,14 +971,7 @@ fn jsonapi_stack(
         error_source_dir: None,
     };
     crate::gen_servers(&entities, Some(&api), &[], &servers).unwrap();
-
-    let read = |path: &std::path::Path| fs::read_to_string(path).unwrap();
-    let clients = JsonApiClients {
-        transport: read(&ts.join("transport.ts")),
-        http: read(&ts.join("http.ts")),
-        bindings: read(&bindings_path),
-    };
-    (read(&server_out), clients)
+    (Some(Servers { http: read(&server_out), ipc: read(&ipc_out) }), clients)
 }
 
 /// A `route_prefix` scoping every store-scoped op under `projects/{project_id}`.
@@ -1256,17 +1395,23 @@ fn server_routes(server: &str) -> BTreeMap<Call, String> {
     routes
 }
 
-/// The argument names a request carries outside its path: its `opArg[…]`
-/// members and its `meta.args` keys.
+/// The argument names a request carries outside its path: its bare
+/// `filter[…]` members, the `*Query` struct whose fields are its other
+/// `filter[…]` members (named by its type's last segment), whether it pages
+/// with the `page` family, its `opArg[…]` members and its `meta.args` keys.
 #[derive(Debug, Default, PartialEq)]
 struct ArgNames {
+    filter: BTreeSet<String>,
+    filter_struct: Option<String>,
+    page: bool,
     op_args: BTreeSet<String>,
     meta_args: BTreeSet<String>,
 }
 
 /// What the generated handler `handler` in `server` reads outside its path:
-/// the `op_args` of its `RouteQuery` spec, and the `meta.args` keys it
-/// checks (`request::check_op_arg_names`), with those it requires.
+/// the `filter`, `filter_fields`, `page` and `op_args` of its `RouteQuery`
+/// spec, and the `meta.args` keys it checks (`request::check_op_arg_names`),
+/// with those it requires.
 fn server_args(server: &str, handler: &str) -> (ArgNames, BTreeSet<String>) {
     let flat = crate::servers::tests::compact(server);
     let code =
@@ -1285,6 +1430,14 @@ fn server_args(server: &str, handler: &str) -> (ArgNames, BTreeSet<String>) {
             continue;
         };
         let spec_impl = &spec_impl[..spec_impl.find('}').unwrap()];
+        if let Some((_, list)) = spec_impl.split_once("filter:&[") {
+            names.filter = strings(&list[..list.find(']').unwrap()]);
+        }
+        if let Some((_, ty)) = spec_impl.split_once("filter_fields::<") {
+            let ty = &ty[..ty.find('>').unwrap()];
+            names.filter_struct = ty.rsplit("::").next().map(ToString::to_string);
+        }
+        names.page = spec_impl.contains("page:true");
         if let Some((_, list)) = spec_impl.split_once("op_args:&[") {
             names.op_args = strings(&list[..list.find(']').unwrap()]);
         }
@@ -1329,16 +1482,18 @@ fn literal_keys(members: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// The `(METHOD, path under /api)` a generated HTTP method's `body` calls,
-/// with its route-prefix argument `projectId` given or not, and the
-/// argument names the call sends outside its path.
-fn client_call_and_args(body: &str, prefix_given: bool) -> Option<(Call, ArgNames)> {
-    let body = match body.split_once("if (projectId) {") {
+/// The `(METHOD, path under /api)` a generated HTTP method `method` (its
+/// name, signature and body) calls, with its route-prefix argument
+/// `projectId` given or not, and the argument names the call sends outside
+/// its path.
+fn client_call_and_args(method: &str, prefix_given: bool) -> Option<(Call, ArgNames)> {
+    let signature = &method[..method.find("): ").unwrap()];
+    let body = match method.split_once("if (projectId) {") {
         Some((_, branches)) => {
             let (scoped, unscoped) = branches.split_once("\n      }\n").unwrap();
             if prefix_given { scoped } else { unscoped }
         }
-        None => body,
+        None => method,
     };
     let (method, args, op_call) = if let Some((_, call)) = body.split_once("callOp<") {
         let call = &call[call.find(">('").unwrap() + 3..];
@@ -1359,6 +1514,26 @@ fn client_call_and_args(body: &str, prefix_given: bool) -> Option<(Call, ArgName
     let path = &literal[1..path_end];
     let prefix = if scoped { "/projects/{}" } else { "" };
     let mut names = ArgNames::default();
+    // `filter: query`, `filter: { a, b: c }` or `filter: { ...query, a }`,
+    // `query` being the `query?: X` parameter.
+    if let Some((_, filter)) = path.split_once("toQueryString({ filter: ") {
+        let members = match filter.strip_prefix('{') {
+            Some(literal) => &literal[..literal.find('}').unwrap()],
+            None => &filter[..filter.find([',', ' ']).unwrap()],
+        };
+        for member in members.split(',').map(str::trim).filter(|m| !m.is_empty()) {
+            match member.trim_start_matches("...") {
+                "query" => {
+                    let (_, ty) = signature.split_once("query?: ").unwrap_or_else(|| panic!("no query in {signature}"));
+                    names.filter_struct = Some(ty.split(',').next().unwrap().trim().to_string());
+                }
+                member => {
+                    names.filter.insert(member.split(':').next().unwrap().trim().to_string());
+                }
+            }
+        }
+    }
+    names.page = path.contains("page: {");
     if let Some((_, members)) = path.split_once("opArg: {") {
         names.op_args = literal_keys(&members[..members.find('}').unwrap()]);
     }
@@ -1386,7 +1561,9 @@ fn object_methods<'a>(ts: &'a str, head: &str, indent: &str) -> Vec<(&'a str, &'
 /// route `server` serves: the transport's, given the prefix argument when
 /// `scoped` (under a `route_prefix` a store-scoped op is served scoped
 /// only), and, unscoped, the HTTP-only client's. Each such call sends the
-/// `opArg[…]` members its handler's query spec declares, no more and no
+/// `filter[…]` members its handler's query spec declares (its bare
+/// members, and the struct whose fields the rest are), the `page` family
+/// when the spec reads it, and its `opArg[…]` members, no more and no
 /// fewer, and `meta.args` keys the handler checks, each one it requires
 /// among them. Returns the transport's calls by method name, with the
 /// prefix argument given and not.
@@ -1405,6 +1582,12 @@ fn assert_calls_are_served(
             .get(call)
             .unwrap_or_else(|| panic!("{who} calls {call:?}, which the server does not serve:\n{routes:#?}"));
         let (declared, required) = server_args(server, handler);
+        assert_eq!(
+            (&sent.filter, &sent.filter_struct),
+            (&declared.filter, &declared.filter_struct),
+            "{who} sends these filter members, {handler} reads those"
+        );
+        assert_eq!(sent.page, declared.page, "{who} and {handler} disagree on the page family");
         assert_eq!(sent.op_args, declared.op_args, "{who} sends these opArg members, {handler} reads those");
         assert!(
             sent.meta_args.is_subset(&declared.meta_args),
@@ -1469,12 +1652,16 @@ pub fn get_version() -> Result<String, anyhow::Error> { todo!() }
 
 /// Both clients, scoped and not, against the server generated beside them:
 /// resource CRUD, CRUD with no entity, junction ops, custom GETs and POSTs,
-/// and ops that are not store-scoped.
+/// ops that are not store-scoped, and filtered lists served as a resource
+/// and as ops ([`filtered_list_modules`]).
 #[test]
 fn every_call_of_every_op_kind_reaches_a_server_route() {
     let configs = [(false, (|_| {}) as fn(&mut crate::ClientsConfig)), (true, scope_under_projects)];
     for (paginated, (scoped, adjust)) in [false, true].into_iter().flat_map(|p| configs.map(|c| (p, c))) {
-        let (server, clients) = jsonapi_stack(paginated, &[("status.rs", STATUS_MODULE)], adjust);
+        let filtered = filtered_list_modules(paginated);
+        let mut extra = vec![("status.rs", STATUS_MODULE)];
+        extra.extend(filtered.iter().map(|(file, source)| (*file, source.as_str())));
+        let (server, clients) = jsonapi_stack(paginated, &extra, adjust);
         let calls = assert_calls_are_served(&server, &clients, scoped, &|_| true);
         for (name, (given, absent)) in &calls {
             assert_eq!(given.is_some() && absent.is_some(), !name.starts_with("subscribe"), "{name}");
@@ -1486,14 +1673,110 @@ fn every_call_of_every_op_kind_reaches_a_server_route() {
         assert_eq!(summary.op_args, set(&["include_done"]));
         let (archive, required) = server_args(&server, &format!("board_archive{suffix}"));
         assert_eq!((archive.meta_args, required), (set(&["reason", "task_id"]), set(&["task_id"])));
+        let page = if paginated { set(&["limit", "offset"]) } else { set(&[]) };
         let (list, _) = server_args(&server, &format!("board_list{suffix}"));
-        assert_eq!(list.op_args, if paginated { set(&["limit", "offset"]) } else { set(&[]) });
+        assert_eq!(list.op_args, page);
+        let (tag, _) = server_args(&server, &format!("tag_list{suffix}"));
+        assert_eq!(
+            (tag.filter, tag.filter_struct, tag.page, tag.op_args),
+            (set(&["title_prefix"]), Some("ListTagsQuery".to_string()), paginated, set(&[]))
+        );
+        let (digest, _) = server_args(&server, &format!("digest_list{suffix}"));
+        assert_eq!(
+            (digest.filter, digest.filter_struct, digest.page, digest.op_args),
+            (set(&[]), Some("DigestQuery".to_string()), false, page.clone())
+        );
+        let (inbox, _) = server_args(&server, &format!("inbox_list{suffix}"));
+        assert_eq!((inbox.filter, inbox.filter_struct, inbox.op_args), (set(&["owner_id"]), None, page.clone()));
+        let (queue, _) = server_args(&server, &format!("queue_list{suffix}"));
+        assert_eq!((queue.filter, queue.filter_struct, queue.op_args), (set(&["mode"]), None, page));
         if scoped {
             assert_eq!(
                 ts_method(&clients.transport, "statusGetVersion"),
                 "async statusGetVersion(_projectId?: string): Promise<string> {\n      return callOp<string>('GET', \
                  '/statuses/version');\n    },\n"
             );
+        }
+    }
+}
+
+/// `(command, argument keys)` of every `invoke` the IPC transport in `ts`
+/// makes, by method name.
+fn ipc_invokes(ts: &str) -> BTreeMap<String, (String, BTreeSet<String>)> {
+    object_methods(ts, "export function createIpcTransport", "    ")
+        .into_iter()
+        .filter_map(|(name, body)| {
+            let (_, call) = body.split_once("invoke('")?;
+            let (command, rest) = call.split_once('\'').unwrap();
+            let args = &rest[..rest.find(");").unwrap()];
+            let keys = match args.strip_prefix(", {") {
+                Some(members) => literal_keys(members.strip_suffix('}').unwrap()),
+                None => BTreeSet::new(),
+            };
+            Some((name.to_string(), (command.to_string(), keys)))
+        })
+        .collect()
+}
+
+/// The arguments the generated Tauri command `command` in `ipc` takes from
+/// its caller, as the caller names them: camelCased, Tauri's default for a
+/// command's arguments. Its state and event channel come from Tauri.
+fn ipc_command_args(ipc: &str, command: &str) -> BTreeSet<String> {
+    let start = ipc
+        .find(&format!("pub async fn {command}("))
+        .or_else(|| ipc.find(&format!("pub fn {command}(")))
+        .unwrap_or_else(|| panic!("no command {command} in:\n{ipc}"));
+    let params = &ipc[start..];
+    let params = &params[params.find('(').unwrap() + 1..params.find(") ->").unwrap()];
+    // A parameter's type may hold commas (`State<'_, Arc<AppState>>`), so
+    // each name is the one that follows a comma outside any `<…>`.
+    let mut depth = 0usize;
+    let mut names = vec![String::new()];
+    for c in params.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => names.push(String::new()),
+            _ => {}
+        }
+        names.last_mut().unwrap().push(c);
+    }
+    names
+        .iter()
+        .filter_map(|param| param.trim_start_matches(',').split_once(':').map(|(name, _)| name.trim()))
+        .filter(|name| !name.is_empty() && !["ontogen_state", "channel"].contains(name))
+        .map(crate::servers::types::snake_to_camel)
+        .collect()
+}
+
+/// Every `invoke` of the IPC transport, paged and not, scoped and not, names
+/// a generated Tauri command and sends exactly the arguments it takes: a
+/// list's bare filters under their own names and its `*Query` struct as
+/// `query`, whatever the filter's type is called.
+#[test]
+fn every_ipc_call_sends_its_commands_arguments() {
+    let configs = [(false, (|_| {}) as fn(&mut crate::ClientsConfig)), (true, scope_under_projects)];
+    for (paginated, (scoped, adjust)) in [false, true].into_iter().flat_map(|p| configs.map(|c| (p, c))) {
+        let filtered = filtered_list_modules(paginated);
+        let mut extra = vec![("status.rs", STATUS_MODULE)];
+        extra.extend(filtered.iter().map(|(file, source)| (*file, source.as_str())));
+        let (ipc, clients) = ipc_stack(paginated, &extra, adjust);
+        let invokes = ipc_invokes(&clients.transport);
+        for (name, (command, sent)) in &invokes {
+            assert_eq!(sent, &ipc_command_args(&ipc, command), "{name} invokes {command}");
+        }
+        let page = if paginated { ", limit: limit ?? null, offset: offset ?? null" } else { "" };
+        let prefix = if scoped { ", projectId: projectId ?? null" } else { "" };
+        let ipc_methods: BTreeMap<_, _> =
+            object_methods(&clients.transport, "export function createIpcTransport", "    ").into_iter().collect();
+        for (name, command, args) in [
+            ("queueList", "queue_list", format!("mode{page}")),
+            ("inboxList", "inbox_list", format!("ownerId{page}")),
+            ("digestList", "digest_list", format!("query: query ?? {{}}{page}")),
+            ("tagList", "tag_list", format!("titlePrefix, query: query ?? {{}}{page}")),
+        ] {
+            let invoke = format!("invoke('{command}', {{ {args}{prefix} }});");
+            assert!(ipc_methods[name].contains(&invoke), "{name} should {invoke}:\n{}", ipc_methods[name]);
         }
     }
 }
@@ -1637,16 +1920,17 @@ fn ts_jsonapi_transport_fixture_is_current() {
     }
 }
 
-/// `tag::list(store, title: &str)`, with the page when `paginated`, in the
-/// resource fixture: the server's handlers, and the `HttpTauriIpcSplit` and
-/// `HttpTs` output for the same modules.
-fn filtered_tag_list(paginated: bool) -> (String, JsonApiClients) {
+/// `tag::list(store, {filter})`, with the page and a `count` taking the
+/// same filter when `paginated`, in the resource fixture: the server's
+/// handlers, and the `HttpTauriIpcSplit` and `HttpTs` output for the same
+/// modules.
+fn filtered_tag_list(filter: &str, paginated: bool) -> (String, JsonApiClients) {
     let tmp = tempfile::tempdir().unwrap();
     let mut server = crate::servers::tests::resource_fixture(tmp.path(), true);
     let page = if paginated { ", limit: Option<u64>, offset: Option<u64>" } else { "" };
     let mut tag = crate::servers::tests::app_error_crud_source("tag")
-        .replace("store: &Store, limit: Option<u64>, offset: Option<u64>", &format!("store: &Store, title: &str{page}"))
-        .replace("count(store: &Store)", "count(store: &Store, title: &str)");
+        .replace("store: &Store, limit: Option<u64>, offset: Option<u64>", &format!("store: &Store, {filter}{page}"))
+        .replace("count(store: &Store)", &format!("count(store: &Store, {filter})"));
     if !paginated {
         server.pagination = None;
         tag = tag.lines().filter(|l| !l.contains("fn count(")).map(|l| format!("{l}\n")).collect();
@@ -1694,58 +1978,221 @@ fn assert_tag_crud_is_a_resource(http: &str, clients: &JsonApiClients) {
     }
 }
 
-#[test]
-fn a_filtered_resource_list_keeps_its_flat_shape_on_server_and_clients() {
-    let (http, clients) = filtered_tag_list(false);
-
-    let list = &http[http.find("async fn tag_list(").unwrap()..];
-    let list = &list[..list.find("\n}\n").unwrap()];
-    assert!(list.contains("title: Result<axum::extract::Query<String>, QueryRejection>,"), "{list}");
-    assert!(list.contains("-> Result<Json<Vec<Tag>>, ErrorObject>"), "a bare array, no document:\n{list}");
-    assert!(crate::servers::tests::compact(list).contains("tag::list(&ontogen_store,&title)"), "{list}");
-
+/// The filtered `tag_list` is served at the `tags` collection, reading its
+/// filter from the `filter` family: no handler of `http` reads a flat query.
+fn assert_tag_list_reads_the_filter_family(http: &str, clients: &JsonApiClients) -> ArgNames {
     assert_eq!(
-        ts_method(&clients.transport, "tagList"),
-        "async tagList(title: string): Promise<Tag[]> {\n      return \
-         httpGet(`/tags?title=${encodeURIComponent(title)}`);\n    },\n"
+        server_routes(http).get(&("GET".to_string(), "/api/tags".to_string())).map(String::as_str),
+        Some("tag_list")
     );
-    assert_eq!(
-        ts_method(&clients.http, "tagList"),
-        "async tagList(title: string): Promise<Tag[]> {\n    return \
-         httpGet(`/tags?title=${encodeURIComponent(title)}`);\n  },\n"
-    );
-    assert_tag_crud_is_a_resource(&http, &clients);
+    for flat in ["PaginationParams", "QueryRejection"] {
+        assert!(!http.contains(flat), "no route reads a flat query, but `{flat}` is in:\n{http}");
+    }
+    assert_tag_crud_is_a_resource(http, clients);
+    let (spec, _) = server_args(http, "tag_list");
+    for ts in [&clients.transport, &clients.http] {
+        let (call, sent) = client_call_and_args(ts_method(ts, "tagList"), false).unwrap();
+        assert_eq!(call, ("GET".to_string(), "/api/tags".to_string()));
+        assert_eq!(sent, spec, "the client sends what the handler reads");
+    }
+    spec
 }
 
 #[test]
-fn a_filtered_paginated_resource_list_keeps_its_flat_page_on_server_and_clients() {
-    let (http, clients) = filtered_tag_list(true);
+fn a_filtered_resource_list_sends_its_filter_family_on_server_and_clients() {
+    let (http, clients) = filtered_tag_list("title: &str", false);
+    let spec = assert_tag_list_reads_the_filter_family(&http, &clients);
+    assert_eq!((spec.filter, spec.filter_struct, spec.page), (BTreeSet::from(["title".to_string()]), None, false));
 
-    let list = &http[http.find("async fn tag_list(").unwrap()..];
-    let list = &list[..list.find("\n}\n").unwrap()];
-    assert!(list.contains("ontogen_page: Result<axum::extract::Query<PaginationParams>, QueryRejection>,"), "{list}");
-    assert!(list.contains("-> Result<Json<PaginatedResult<Tag>>, ErrorObject>"), "{list}");
-    assert!(list.contains("items: ontogen_items,"), "{list}");
-    assert!(http.contains("pub struct PaginatedResult<T: Serialize> {"), "{http}");
-
-    let call = "httpGet(`/tags?title=${encodeURIComponent(title)}&${toQueryString({ limit, offset }).slice(1)}`);";
+    let call = "const { data } = await httpGet<JsonApiCollectionDocument>(`/tags${toQueryString({ filter: { title } \
+                })}`);";
     assert_eq!(
         ts_method(&clients.transport, "tagList"),
         format!(
-            "async tagList(title: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {{\n      \
-             return {call}\n    }},\n"
+            "async tagList(title: string): Promise<Tag[]> {{\n      {call}\n      return data.map(flattenTag);\n    \
+             }},\n"
         )
     );
     assert_eq!(
         ts_method(&clients.http, "tagList"),
         format!(
-            "async tagList(title: string, limit?: number, offset?: number): Promise<PaginatedResult<Tag>> {{\n    \
-             return {call}\n  }},\n"
+            "async tagList(title: string): Promise<Tag[]> {{\n    {call}\n    return data.map(flattenTag);\n  }},\n"
         )
     );
-    // The paginated `tasks` list beside it is served as a resource.
-    assert!(ts_method(&clients.transport, "taskList").contains("httpGet<JsonApiPageDocument>"));
-    assert_tag_crud_is_a_resource(&http, &clients);
+}
+
+#[test]
+fn a_filtered_paginated_resource_list_sends_its_filter_and_page_families_on_server_and_clients() {
+    let (http, clients) = filtered_tag_list("query: ListTagsQuery, title_prefix: &str", true);
+    let spec = assert_tag_list_reads_the_filter_family(&http, &clients);
+    assert_eq!(
+        (spec.filter, spec.filter_struct, spec.page),
+        (BTreeSet::from(["title_prefix".to_string()]), Some("ListTagsQuery".to_string()), true)
+    );
+
+    let signature = "async tagList(titlePrefix: string, query?: ListTagsQuery, limit?: number, offset?: number): \
+                     Promise<PaginatedResult<Tag>> {";
+    let call = "const { data, meta } = await httpGet<JsonApiPageDocument>(`/tags${toQueryString({ filter: { ...query, \
+                title_prefix: titlePrefix }, page: { offset, limit } })}`);";
+    let page = "return { items: data.map(flattenTag), total: meta.total, limit: meta.limit, offset: meta.offset };";
+    assert_eq!(ts_method(&clients.transport, "tagList"), format!("{signature}\n      {call}\n      {page}\n    }},\n"));
+    assert_eq!(ts_method(&clients.http, "tagList"), format!("{signature}\n    {call}\n    {page}\n  }},\n"));
+    // The unfiltered `tasks` list beside it pages as it always has.
+    assert!(
+        ts_method(&clients.transport, "taskList")
+            .contains("httpGet<JsonApiPageDocument>(`/tasks${toQueryString({ page: { offset, limit } })}`);")
+    );
+}
+
+/// Both HTTP clients send a list's filter as the `filter` family (§14.2):
+/// its `*Query` struct as `query`, its bare filters keyed by their Rust
+/// names, or the struct spread under them. A list served as a resource
+/// pages with the `page` family; one served as an op (§10.4) with `opArg`.
+/// The IPC transport passes the same arguments flat.
+#[test]
+fn both_http_clients_send_a_list_filter_as_the_filter_family() {
+    let tag_filter = "filter: { ...query, title_prefix: titlePrefix }";
+    for paginated in [false, true] {
+        let filtered = filtered_list_modules(paginated);
+        let extra: Vec<(&str, &str)> = filtered.iter().map(|(file, source)| (*file, source.as_str())).collect();
+        let (page, op_page, paged) = if paginated {
+            (", page: { offset, limit }", ", opArg: { limit, offset }", ", limit?: number, offset?: number")
+        } else {
+            ("", "", "")
+        };
+        let (tag_ret, digest_ret, inbox_ret) = if paginated {
+            ("PaginatedResult<Tag>", "PaginatedResult<Task>", "PaginatedResult<Tag>")
+        } else {
+            ("Tag[]", "Task[]", "Tag[]")
+        };
+        let queue_ret = inbox_ret;
+        let document = if paginated {
+            "{ data, meta } = await httpGet<JsonApiPageDocument>"
+        } else {
+            "{ data } = await httpGet<JsonApiCollectionDocument>"
+        };
+        let expected = [
+            (
+                "tagList",
+                format!("titlePrefix: string, query?: ListTagsQuery{paged}): Promise<{tag_ret}>"),
+                format!("const {document}(`/tags${{toQueryString({{ {tag_filter}{page} }})}}`);"),
+                format!(
+                    "const {document}(scopedPath(projectId, `/tags${{toQueryString({{ {tag_filter}{page} }})}}`));"
+                ),
+            ),
+            (
+                "digestList",
+                format!("query?: DigestQuery{paged}): Promise<{digest_ret}>"),
+                format!(
+                    "return callOp<{digest_ret}>('GET', `/digests${{toQueryString({{ filter: query{op_page} }})}}`);"
+                ),
+                format!(
+                    "return callOp<{digest_ret}>('GET', scopedPath(projectId, `/digests${{toQueryString({{ filter: \
+                     query{op_page} }})}}`));"
+                ),
+            ),
+            (
+                "inboxList",
+                format!("ownerId: string{paged}): Promise<{inbox_ret}>"),
+                format!(
+                    "return callOp<{inbox_ret}>('GET', `/inboxes${{toQueryString({{ filter: {{ owner_id: ownerId \
+                     }}{op_page} }})}}`);"
+                ),
+                format!(
+                    "return callOp<{inbox_ret}>('GET', scopedPath(projectId, `/inboxes${{toQueryString({{ filter: {{ \
+                     owner_id: ownerId }}{op_page} }})}}`));"
+                ),
+            ),
+            (
+                "queueList",
+                format!("mode: QueryMode{paged}): Promise<{queue_ret}>"),
+                format!(
+                    "return callOp<{queue_ret}>('GET', `/queues${{toQueryString({{ filter: {{ mode }}{op_page} }})}}`);"
+                ),
+                format!(
+                    "return callOp<{queue_ret}>('GET', scopedPath(projectId, `/queues${{toQueryString({{ filter: {{ \
+                     mode }}{op_page} }})}}`));"
+                ),
+            ),
+        ];
+
+        let unscoped = jsonapi_clients_with(paginated, &extra, |_| {});
+        let scoped = jsonapi_clients_with(paginated, &extra, scope_under_projects);
+        for (name, signature, call, scoped_call) in &expected {
+            for ts in [&unscoped.transport, &unscoped.http] {
+                let method = ts_method(ts, name);
+                assert!(method.starts_with(&format!("async {name}({signature} {{")), "{method}");
+                assert_eq!(method.lines().nth(1).unwrap().trim(), call, "{method}");
+            }
+            let method = ts_method(&scoped.transport, name);
+            let signature = signature.replace("): ", ", projectId?: string): ");
+            assert!(method.starts_with(&format!("async {name}({signature} {{")), "{method}");
+            assert_eq!(method.lines().nth(1).unwrap().trim(), scoped_call, "{method}");
+            // The HTTP-only client has no prefix argument.
+            assert_eq!(http_call(&scoped.http, name), call);
+        }
+        for ts in [&unscoped.transport, &scoped.transport] {
+            let ipc = &ts[ts.find("export function createIpcTransport").unwrap()..];
+            assert!(!ipc.contains("filter:"), "IPC payloads stay flat:\n{ipc}");
+        }
+    }
+}
+
+/// A list's filter struct is only ever sent, and serde reads each of its
+/// `Option` fields as `None` when absent, so the TS type lets a caller leave
+/// any of them out (`digestList({ done: true })`).
+#[test]
+fn a_list_filter_structs_option_fields_are_optional_in_ts() {
+    let filtered = filtered_list_modules(false);
+    let extra: Vec<(&str, &str)> = filtered.iter().map(|(file, source)| (*file, source.as_str())).collect();
+    let bindings = jsonapi_clients_with(false, &extra, |_| {}).bindings;
+    for expected in [
+        "export type DigestQuery = {\n  since?: string | null;\n  done?: boolean | null;\n};",
+        "export type ListTagsQuery = {\n  title?: string | null;\n};",
+    ] {
+        assert!(bindings.contains(expected), "no `{expected}` in:\n{bindings}");
+    }
+}
+
+/// A list whose filter struct has a required field (`owner: String`) takes
+/// its `query` as a required parameter on both transports, the interface and
+/// the HTTP-only client, and the IPC command always receives it. A list whose
+/// filter is all `Option` keeps `query?` and the `?? {}` default.
+#[test]
+fn a_list_whose_filter_struct_has_a_required_field_requires_its_query() {
+    for paginated in [false, true] {
+        let filtered = filtered_list_modules(paginated);
+        let mut extra: Vec<(&str, &str)> = filtered.iter().map(|(file, source)| (*file, source.as_str())).collect();
+        let strict = filtered_op_list_module("StrictQuery, Task", "Task", "query: StrictQuery", paginated);
+        extra.push(("strict.rs", strict.as_str()));
+        let clients = jsonapi_clients_with(paginated, &extra, |_| {});
+        let paged = if paginated { ", limit?: number, offset?: number" } else { "" };
+        let required = format!("async strictList(query: StrictQuery{paged})");
+        let interface = format!("  strictList(query: StrictQuery{paged}):");
+        assert!(clients.transport.contains(&interface), "{}", clients.transport);
+        for ts in [&clients.transport, &clients.http] {
+            assert!(ts_method(ts, "strictList").starts_with(&required), "{}", ts_method(ts, "strictList"));
+            // The all-`Option` filter is unchanged.
+            assert!(ts_method(ts, "digestList").starts_with("async digestList(query?: DigestQuery"));
+        }
+        let ipc = &clients.transport[clients.transport.find("export function createIpcTransport").unwrap()..];
+        let strict_ipc = ts_method(ipc, "strictList");
+        assert!(strict_ipc.contains("invoke('strict_list', { query"), "{strict_ipc}");
+        assert!(!strict_ipc.contains("query ??"), "{strict_ipc}");
+        assert!(ts_method(ipc, "digestList").contains("query: query ?? {}"));
+        assert!(
+            clients.bindings.contains("export type StrictQuery = {\n  owner: string;\n  since?: string | null;\n};")
+        );
+    }
+}
+
+/// The `HttpTs` client imports the bindings file it was configured with, by
+/// its path from the client.
+#[test]
+fn the_http_ts_client_imports_its_configured_bindings_file() {
+    let clients = jsonapi_clients(false, |_| {});
+    assert!(clients.http.contains("} from './jsonapi-bindings';"), "{}", clients.http);
+    assert!(!clients.http.contains("from './bindings'"), "{}", clients.http);
 }
 
 const LABEL_MODULE: &str = "\

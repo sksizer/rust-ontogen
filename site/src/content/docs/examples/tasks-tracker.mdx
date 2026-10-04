@@ -26,11 +26,23 @@ curl -s -X POST localhost:3002/api/tasks \
   -d '{"data":{"type":"tasks","attributes":{"title":"Review the stack","status":"open/ready","created":"2026-06-06","body":"## Goal\n\nReview.\n"},"relationships":{"epic":{"data":{"type":"epics","id":"markdown-backend"}},"tags":{"data":[{"type":"tags","id":"codegen"}]}}}}'
 
 cat data/vault/tasks/review-the-stack.md
+
+# Filter the list (-g keeps curl from reading the brackets as a URL glob)
+curl -sg 'localhost:3002/api/tasks?filter[status]=closed/done&filter[epic_id]=markdown-backend' \
+  -H 'accept: application/vnd.api+json' | jq
 ```
 
-Lists page 20 at a time (`GET /api/tasks?page[offset]=0&page[limit]=5` answers with `meta.total` and `links.next`), because `build.rs` sets `pagination` and `.api_paginated(..)` for `task`, `epic` and `tag`. The MCP list tools take `limit` and `offset` and return `{items, total, limit, offset}`.
+Lists page 20 at a time (`GET /api/tasks?page[offset]=0&page[limit]=5` answers with `meta.total` and `links.next`), because `build.rs` sets `pagination` and `.api_paginated(..)` for `task`, `epic` and `tag`. The MCP list tools take `limit` and `offset` and return `{items, total, limit, offset}`; `task_list` also takes the filter's fields as arguments.
 
-The response is `201` with a `Location: /api/tasks/review-the-stack` header and the new task as a JSON:API resource: the fields are under `attributes`, and `epic` and `tags` are under `relationships`. The filename came from the title. The store's `IdStrategy::SlugFromField("title")` (set with `.store_id_strategy(..)` in `build.rs`) slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
+The task list is hand-written. `src/api/v1/task.rs` re-exports the generated task module and defines its own `list` and `count`, which take a `ListTasksQuery { status, epic_id }`. The generated `list` and `count` are then left out, the HTTP route reads `filter[status]` and `filter[epic_id]`, and `meta.total` is the hand-written `count` of the filtered set. The links repeat the filter in canonical order:
+
+```json
+"self": "/api/tasks?filter%5Bepic_id%5D=markdown-backend&filter%5Bstatus%5D=closed%2Fdone&page%5Boffset%5D=0&page%5Blimit%5D=20"
+```
+
+An unknown member such as `filter[colour]` is `400 invalid_query_parameter`. The generated handlers import the struct from `types_import_path`, so `src/schema/mod.rs` re-exports it. See the [filtered lists recipe](/cookbook/custom-api-endpoints/#recipe-filtered-lists).
+
+The `POST` response is `201` with a `Location: /api/tasks/review-the-stack` header and the new task as a JSON:API resource: the fields are under `attributes`, and `epic` and `tags` are under `relationships`. The filename came from the title. The store's `IdStrategy::SlugFromField("title")` (set with `.store_id_strategy(..)` in `build.rs`) slugifies the configured field when the caller omits an id, de-duplicating with `-2`, `-3`, … suffixes -- atomically with the write, so two concurrent creates can't collide on a filename.
 
 ## Over MCP
 
@@ -39,6 +51,7 @@ The same pipeline emits an MCP tool registry:
 ```sh
 cargo run -- mcp-tools                 # every entity op as a tool, with JSON schemas
 cargo run -- mcp-call task_list '{}'   # agent-shaped reads over the vault
+cargo run -- mcp-call task_list '{"status":"closed/done"}'   # the list's filter, as tool arguments
 cargo run -- mcp-call task_create '{"title":"From an agent","status":"open","created":"2026-06-06","body":"…"}'
 ```
 

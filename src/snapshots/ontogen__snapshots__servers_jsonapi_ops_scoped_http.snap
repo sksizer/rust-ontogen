@@ -13,7 +13,7 @@ use axum::{
     Router,
     extract::{State, rejection::QueryRejection},
     http::{Method, StatusCode},
-    response::{Json, Response},
+    response::Response,
     routing::{get, post},
 };
 use ontogen_jsonapi::{
@@ -21,6 +21,7 @@ use ontogen_jsonapi::{
     ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
     error::method_not_allowed,
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
+    filter_fields,
     links::{CanonicalQuery, encode_path_segment, pagination_links},
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
@@ -30,8 +31,8 @@ use serde::{Deserialize, Serialize};
 use crate::AppState;
 use crate::api::v1::{activity, agent, epic, report, tag, task, workout};
 use crate::schema::{
-    Agent, AgentQuery, CreateEpicInput, CreateReportInput, CreateTagInput, CreateTaskInput, Epic, StartWorkoutInput,
-    Tag, Task, UpdateEpicInput, UpdateReportInput, UpdateTagInput, UpdateTaskInput,
+    AgentQuery, CreateEpicInput, CreateReportInput, CreateTagInput, CreateTaskInput, Epic, ListEpicsQuery,
+    StartWorkoutInput, Tag, Task, UpdateEpicInput, UpdateReportInput, UpdateTagInput, UpdateTaskInput,
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use ontogen_core::events::EventFrame;
@@ -64,9 +65,9 @@ fn allow<const N: usize>(
     move |method| std::future::ready(method_not_allowed(&method, &allowed))
 }
 
-/// The error document for a rejection of Axum's own `Query`. A list that
-/// takes a filter and an event stream read their query parameters with it,
-/// not with the JSON:API `Query`.
+/// The error document for a rejection of Axum's own `Query`. An event
+/// stream is no JSON:API route, so it reads its plain query parameters with
+/// it.
 fn ontogen_query_rejection(e: QueryRejection) -> ErrorObject {
     ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
 }
@@ -78,13 +79,6 @@ pub struct PaginatedResult<T: Serialize> {
     pub total: u64,
     pub limit: u32,
     pub offset: u32,
-}
-
-/// The page of a list that takes a filter, beside its filter.
-#[derive(Deserialize)]
-pub struct PaginationParams {
-    pub limit: Option<u32>,
-    pub offset: Option<u32>,
 }
 
 /// Writes an event item that is not an entity as `{"meta":{"result":…}}`.
@@ -464,50 +458,87 @@ async fn log_lines_sse(
 
 // ── Project-Scoped Handlers ──
 
+struct OntogenAgentListScopedFilterParams;
+
+impl RouteQuery for OntogenAgentListScopedFilterParams {
+    const SPEC: QuerySpec = QuerySpec {
+        filter: &["skill_id"],
+        filter_fields: Some(filter_fields::<AgentQuery>),
+        op_args: &["limit", "offset"],
+        ..QuerySpec::NONE
+    };
+}
+
 async fn agent_list_scoped(
     State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
     Path(ontogen_scope): Path<uuid::Uuid>,
-    ontogen_filter: Result<axum::extract::Query<AgentQuery>, QueryRejection>,
-    ontogen_page: Result<axum::extract::Query<PaginationParams>, QueryRejection>,
-) -> Result<Json<PaginatedResult<Agent>>, ErrorObject> {
-    let axum::extract::Query(ontogen_filter) = ontogen_filter.map_err(ontogen_query_rejection)?;
-    let axum::extract::Query(ontogen_page) = ontogen_page.map_err(ontogen_query_rejection)?;
+    ontogen_query: Query<OntogenAgentListScopedFilterParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_filter: AgentQuery = ontogen_query.filter()?;
+    let ontogen_filter_skill_id = ontogen_query.filter_member::<String>("skill_id")?;
+    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(20).min(100);
+    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
-    let ontogen_limit = ontogen_page.limit.unwrap_or(20).min(100);
-    let ontogen_offset = ontogen_page.offset.unwrap_or(0);
     let ontogen_items = agent::list(
         &ontogen_store,
         ontogen_filter.clone(),
+        ontogen_filter_skill_id.clone(),
         Some(u64::from(ontogen_limit)),
         Some(u64::from(ontogen_offset)),
     )
     .await
     .map_err(ontogen_app_error)?;
-    let ontogen_total = agent::count(&ontogen_store, ontogen_filter).await.map_err(ontogen_app_error)?;
-    Ok(Json(PaginatedResult {
-        items: ontogen_items,
-        total: ontogen_total,
-        limit: ontogen_limit,
-        offset: ontogen_offset,
-    }))
+    let ontogen_total =
+        agent::count(&ontogen_store, ontogen_filter, ontogen_filter_skill_id).await.map_err(ontogen_app_error)?;
+    let ontogen_result =
+        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
+struct OntogenEpicListScopedFilterParams;
+
+impl RouteQuery for OntogenEpicListScopedFilterParams {
+    const SPEC: QuerySpec = QuerySpec {
+        filter: &["owner", "title"],
+        filter_fields: Some(filter_fields::<ListEpicsQuery>),
+        sort: true,
+        include: true,
+        page: true,
+        ..QuerySpec::NONE
+    };
 }
 
 async fn epic_list_scoped(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(ontogen_scope): Path<uuid::Uuid>,
-    query: Query<PagedListParams>,
+    query: Query<OntogenEpicListScopedFilterParams>,
 ) -> Result<Response, ErrorObject> {
+    let ontogen_filter: ListEpicsQuery = query.filter()?;
+    let ontogen_filter_owner = query.required_filter_member::<String>("owner")?;
+    let ontogen_filter_title = query.filter_member::<String>("title")?;
     refuse_sort(&query, "epics")?;
     refuse_include(&query, "epics")?;
     let (offset, limit) = page(&query, 20, 100)?;
+    let link_query = query.link_query()?;
     let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;
-    let items =
-        epic::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
-    let total = epic::count(&ontogen_store).await.map_err(ontogen_app_error)?;
+    let items = epic::list(
+        &ontogen_store,
+        ontogen_filter.clone(),
+        ontogen_filter_title.as_deref(),
+        &ontogen_filter_owner,
+        Some(u64::from(limit)),
+        Some(u64::from(offset)),
+    )
+    .await
+    .map_err(ontogen_app_error)?;
+    let total = epic::count(&ontogen_store, ontogen_filter, ontogen_filter_title.as_deref(), &ontogen_filter_owner)
+        .await
+        .map_err(ontogen_app_error)?;
     let collection = &format!("/api/projects/{}/epics", encode_path_segment(&ontogen_scope.to_string()));
     let data: Vec<_> = items.iter().map(|entity| epic_as_resource(entity, collection)).collect();
-    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
+    let links = pagination_links(collection, &link_query, offset, limit, total);
     Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
 }
 
@@ -903,9 +934,9 @@ async fn task_remove_tag_scoped(
     Ok(response::no_content())
 }
 
-struct WorkoutGetSummaryOpArgs;
+struct OntogenWorkoutGetSummaryOpArgs;
 
-impl RouteQuery for WorkoutGetSummaryOpArgs {
+impl RouteQuery for OntogenWorkoutGetSummaryOpArgs {
     const SPEC: QuerySpec = QuerySpec { op_args: &["verbose", "label"], ..QuerySpec::NONE };
 }
 
@@ -913,7 +944,7 @@ async fn workout_get_summary_scoped(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path((ontogen_scope, id)): Path<(uuid::Uuid, String)>,
-    ontogen_query: Query<WorkoutGetSummaryOpArgs>,
+    ontogen_query: Query<OntogenWorkoutGetSummaryOpArgs>,
 ) -> Result<Response, ErrorObject> {
     let label = ontogen_query.op_arg::<String>("label")?;
     let verbose = ontogen_query.op_arg::<bool>("verbose")?;

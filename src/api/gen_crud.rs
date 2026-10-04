@@ -2,18 +2,20 @@
 //!
 //! Each generated module delegates to the Store methods:
 //! - `list` → `store.list_{entities}()`, or `list_{entities}(limit, offset)` plus
-//!   `count` → `store.count_{entities}()` for a paginated entity
+//!   `count` → `store.count_{entities}()` for a paginated entity; either is left
+//!   out when a hand-written module of the same name defines it (see [`Omissions`])
 //! - `get_by_id` → `store.get_{entity}(id)`
 //! - `create` → `input.into()` + `store.create_{entity}(entity)`
 //! - `update` → `input.into()` + `store.update_{entity}(id, updates)`
 //! - `delete` → `store.delete_{entity}(id)`
 
+use super::Omissions;
 use crate::ApiConfig;
 use crate::schema::model::EntityDef;
 use crate::store::helpers::{pluralize, to_snake_case};
 
 /// Generate the complete API module source for one entity.
-pub fn generate_crud_module(entity: &EntityDef, config: &ApiConfig) -> String {
+pub(super) fn generate_crud_module(entity: &EntityDef, config: &ApiConfig, omit: Omissions) -> String {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let plural = pluralize(&snake);
@@ -32,21 +34,26 @@ pub fn generate_crud_module(entity: &EntityDef, config: &ApiConfig) -> String {
     code.push('\n');
 
     // list (+ count when paginated)
-    if config.paginated.iter().any(|m| m == &snake) {
-        code.push_str(&format!("/// One page of {plural}\n"));
-        code.push_str(&format!(
-            "pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
-        ));
-        code.push_str(&format!("    store.list_{plural}(limit, offset).await\n"));
-        code.push_str("}\n\n");
+    let paginated = config.paginated.iter().any(|m| m == &snake);
+    if !omit.list {
+        if paginated {
+            code.push_str(&format!("/// One page of {plural}\n"));
+            code.push_str(&format!(
+                "pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
+            ));
+            code.push_str(&format!("    store.list_{plural}(limit, offset).await\n"));
+            code.push_str("}\n\n");
+        } else {
+            code.push_str(&format!("/// List all {plural}\n"));
+            code.push_str(&format!("pub async fn list(store: &Store) -> Result<Vec<{name}>, AppError> {{\n"));
+            code.push_str(&format!("    store.list_{plural}(None, None).await\n"));
+            code.push_str("}\n\n");
+        }
+    }
+    if paginated && !omit.count {
         code.push_str(&format!("/// How many {plural} there are — the total behind a page of `list`\n"));
         code.push_str("pub async fn count(store: &Store) -> Result<u64, AppError> {\n");
         code.push_str(&format!("    store.count_{plural}().await\n"));
-        code.push_str("}\n\n");
-    } else {
-        code.push_str(&format!("/// List all {plural}\n"));
-        code.push_str(&format!("pub async fn list(store: &Store) -> Result<Vec<{name}>, AppError> {{\n"));
-        code.push_str(&format!("    store.list_{plural}(None, None).await\n"));
         code.push_str("}\n\n");
     }
 
@@ -121,7 +128,7 @@ mod tests {
     #[test]
     fn generated_code_is_valid_rust() {
         let config = make_config();
-        let code = generate_crud_module(&make_role_entity(), &config);
+        let code = generate_crud_module(&make_role_entity(), &config, Omissions::default());
         syn::parse_file(&code).unwrap_or_else(|e| {
             panic!("api::gen_crud::generate_crud_module produced invalid Rust: {e}\n--- code ---\n{code}")
         });
@@ -141,7 +148,7 @@ mod tests {
         };
         let mut config = make_config();
         config.paginated = vec!["workout".to_string()];
-        let code = generate_crud_module(&entity, &config);
+        let code = generate_crud_module(&entity, &config, Omissions::default());
         assert!(code.contains(
             "pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Workout>, AppError>"
         ));
@@ -149,7 +156,7 @@ mod tests {
         assert!(code.contains("pub async fn count(store: &Store) -> Result<u64, AppError>"));
         assert!(code.contains("store.count_workouts().await"));
 
-        let plain = generate_crud_module(&entity, &make_config());
+        let plain = generate_crud_module(&entity, &make_config(), Omissions::default());
         assert!(plain.contains("pub async fn list(store: &Store) -> Result<Vec<Workout>, AppError>"));
         assert!(!plain.contains("fn count("));
     }

@@ -74,13 +74,56 @@ fn gen_store_with(entities: &[EntityDef], backend: Backend, id_strategy: &IdStra
     .expect("gen_store failed")
 }
 
-fn gen_api_into(entities: &[EntityDef], out: &Path) -> ApiOutput {
+/// A hand-written `task` module beside the generated CRUD, as a consumer
+/// writes one: it re-exports the generated functions and replaces `list` and
+/// `count` with a filtered page and the total that filter implies, which the
+/// store cannot offer on its own.
+const HAND_WRITTEN_TASK: &str = "\
+//! Hand-written task ops beside the generated CRUD.
+
+pub use super::generated::task::*;
+use crate::schema::{AppError, Task};
+use crate::store::Store;
+
+/// The filter of `list` and `count`.
+#[derive(Clone, serde::Deserialize)]
+pub struct TaskFilterQuery {
+    pub status: Option<String>,
+}
+
+/// One page of the tasks matching `query`.
+pub async fn list(
+    store: &Store,
+    query: TaskFilterQuery,
+    limit: Option<u64>,
+    offset: Option<u64>,
+) -> Result<Vec<Task>, AppError> {
+    let tasks = store.list_tasks(None, None).await?;
+    let _ = (query, limit, offset);
+    Ok(tasks)
+}
+
+/// How many tasks match `query`.
+pub async fn count(store: &Store, query: TaskFilterQuery) -> Result<u64, AppError> {
+    let _ = query;
+    store.count_tasks().await
+}
+";
+
+/// Generate the API layer into `api_dir`: the generated CRUD under
+/// `api_dir/generated`, scanned alongside whatever hand-written modules
+/// `api_dir` holds. The pilot schema's `task` gets [`HAND_WRITTEN_TASK`].
+fn gen_api_into(entities: &[EntityDef], api_dir: &Path) -> ApiOutput {
+    std::fs::create_dir_all(api_dir).expect("api dir");
+    if entities.iter().any(|e| e.name == "Task") {
+        std::fs::write(api_dir.join("task.rs"), HAND_WRITTEN_TASK).expect("hand-written task");
+    }
     ontogen::gen_api(
         entities,
         &ApiConfig {
-            output_dir: out.to_path_buf(),
+            output_dir: api_dir.join("generated"),
             exclude: Vec::new(),
-            scan_dirs: Vec::new(),
+            scan_dirs: vec![api_dir.to_path_buf()],
             state_type: "AppState".into(),
             store_type: Some("Store".into()),
             schema_module_path: "crate::schema".into(),
@@ -145,6 +188,9 @@ fn gen_stack_with(
         },
         ClientGenerator::AdminRegistry { output: above.join("clients/admin-registry.ts") },
     ];
+    // The hand-written filter struct lives in the API directory, outside the
+    // crate's own `src/` the type pool is built from.
+    clients.pool_extra_roots = vec![above.join("api")];
     clients.store_type = Some("Store".into());
     clients.store_import = Some("crate::store::Store".into());
     ontogen::gen_clients(entities, Some(&api), &[], &clients).expect("gen_clients failed");
@@ -314,10 +360,24 @@ fn downstream_output_is_byte_identical_across_backends() {
             &markdown.join("above"),
         );
         let above = tree(&seaorm.join("above"));
-        for expected in ["api/task.rs", "servers/http.rs", "servers/ipc.rs", "servers/mcp.rs", "clients/http.ts"] {
+        for expected in [
+            "api/task.rs",
+            "api/generated/note.rs",
+            "servers/http.rs",
+            "servers/ipc.rs",
+            "servers/mcp.rs",
+            "clients/http.ts",
+        ] {
             assert!(above.contains_key(expected), "{strategy:?}: {expected} was generated: {:?}", above.keys());
         }
-        assert!(above["api/task.rs"].contains("count_tasks"), "the paginated module calls the store's count");
+        assert!(above["api/task.rs"].contains("TaskFilterQuery"), "the hand-written filtered list is part of the tree");
+        assert!(
+            !above["api/generated/task.rs"].contains("fn list(")
+                && !above["api/generated/task.rs"].contains("fn count("),
+            "a hand-written list and count replace the generated ones"
+        );
+        assert!(above["clients/http.ts"].contains("TaskFilterQuery"), "the client takes the hand-written filter");
+        assert!(above["api/generated/note.rs"].contains("count_notes"), "a paginated module calls the store's count");
 
         // Sanity: the store layers themselves DID diverge — identical stores
         // would mean the markdown backend isn't actually being exercised.
@@ -386,7 +446,7 @@ fn parity_comparison_detects_a_perturbation() {
     gen_api_into(&entities, &b);
 
     // Perturb one byte in one generated file of tree B.
-    let victim = b.join("note.rs");
+    let victim = b.join("generated/note.rs");
     let mut content = std::fs::read_to_string(&victim).expect("read victim");
     content.push_str("// perturbed\n");
     std::fs::write(&victim, content).expect("write victim");

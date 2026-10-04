@@ -21,103 +21,112 @@ use fitness::schema::{CreateExerciseInput, CreateWorkoutInput, Exercise, UpdateE
 // ── Athlete IPC Commands ──
 
 #[tauri::command]
-pub async fn athlete_list(state: State<'_, Arc<AppState>>) -> Result<Vec<Athlete>, String> {
-    let store = state.store().await.map_err(|e| e.to_string())?;
-    athlete::list(&store).await.map_err(|e| e.to_string())
+pub async fn athlete_list(ontogen_state: State<'_, Arc<AppState>>) -> Result<Vec<Athlete>, String> {
+    let ontogen_store = ontogen_state.store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    athlete::list(&ontogen_store).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 // ── Workout IPC Commands ──
 
 #[tauri::command]
-pub async fn workout_start(input: StartWorkoutInput, state: State<'_, Arc<AppState>>) -> Result<Workout, String> {
-    workout::start(&state, input).await.map_err(|e| e.to_string())
+pub async fn workout_start(
+    input: StartWorkoutInput,
+    ontogen_state: State<'_, Arc<AppState>>,
+) -> Result<Workout, String> {
+    workout::start(&ontogen_state, input).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
-pub async fn workout_get_summary(id: String, state: State<'_, Arc<AppState>>) -> Result<WorkoutSummary, String> {
-    workout::get_summary(&state, &id).await.map_err(|e| e.to_string())
+pub async fn workout_get_summary(
+    id: String,
+    ontogen_state: State<'_, Arc<AppState>>,
+) -> Result<WorkoutSummary, String> {
+    workout::get_summary(&ontogen_state, &id).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
-pub async fn workout_list(state: State<'_, Arc<AppState>>) -> Result<Vec<fitness::schema::Workout>, String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    workout_1::list(&store).await.map_err(|e| e.to_string())
+pub async fn workout_list(ontogen_state: State<'_, Arc<AppState>>) -> Result<Vec<fitness::schema::Workout>, String> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    workout_1::list(&ontogen_store).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
 pub async fn workout_get_by_id(
     id: String,
-    state: State<'_, Arc<AppState>>,
+    ontogen_state: State<'_, Arc<AppState>>,
 ) -> Result<fitness::schema::Workout, String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    workout_1::get_by_id(&store, &id).await.map_err(|e| e.to_string())
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    workout_1::get_by_id(&ontogen_store, &id).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
 pub async fn workout_create(
     input: CreateWorkoutInput,
-    state: State<'_, Arc<AppState>>,
+    ontogen_state: State<'_, Arc<AppState>>,
 ) -> Result<fitness::schema::Workout, String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    workout_1::create(&store, input).await.map_err(|e| e.to_string())
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    workout_1::create(&ontogen_store, input).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
 pub async fn workout_update(
     id: String,
     input: UpdateWorkoutInput,
-    state: State<'_, Arc<AppState>>,
+    ontogen_state: State<'_, Arc<AppState>>,
 ) -> Result<fitness::schema::Workout, String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    workout_1::update(&store, &id, input).await.map_err(|e| e.to_string())
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    workout_1::update(&ontogen_store, &id, input).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
-pub async fn workout_delete(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    workout_1::delete(&store, &id).await.map_err(|e| e.to_string())
+pub async fn workout_delete(id: String, ontogen_state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    workout_1::delete(&ontogen_store, &id).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 // ── Exercise IPC Commands ──
 
 #[tauri::command]
-pub async fn exercise_list(state: State<'_, Arc<AppState>>) -> Result<Vec<Exercise>, String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    exercise::list(&store, None, None).await.map_err(|e| e.to_string())
+pub async fn exercise_list(ontogen_state: State<'_, Arc<AppState>>) -> Result<Vec<Exercise>, String> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    exercise::list(&ontogen_store, None, None).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
-pub async fn exercise_count(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    exercise::count(&store).await.map_err(|e| e.to_string())
+pub async fn exercise_count(ontogen_state: State<'_, Arc<AppState>>) -> Result<u64, String> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    exercise::count(&ontogen_store).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
-pub async fn exercise_get_by_id(id: String, state: State<'_, Arc<AppState>>) -> Result<Exercise, String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    exercise::get_by_id(&store, &id).await.map_err(|e| e.to_string())
+pub async fn exercise_get_by_id(id: String, ontogen_state: State<'_, Arc<AppState>>) -> Result<Exercise, String> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    exercise::get_by_id(&ontogen_store, &id).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
-pub async fn exercise_create(input: CreateExerciseInput, state: State<'_, Arc<AppState>>) -> Result<Exercise, String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    exercise::create(&store, input).await.map_err(|e| e.to_string())
+pub async fn exercise_create(
+    input: CreateExerciseInput,
+    ontogen_state: State<'_, Arc<AppState>>,
+) -> Result<Exercise, String> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    exercise::create(&ontogen_store, input).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
 pub async fn exercise_update(
     id: String,
     input: UpdateExerciseInput,
-    state: State<'_, Arc<AppState>>,
+    ontogen_state: State<'_, Arc<AppState>>,
 ) -> Result<Exercise, String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    exercise::update(&store, &id, input).await.map_err(|e| e.to_string())
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    exercise::update(&ontogen_store, &id, input).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 #[tauri::command]
-pub async fn exercise_delete(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let store = state.fitness_store().await.map_err(|e| e.to_string())?;
-    exercise::delete(&store, &id).await.map_err(|e| e.to_string())
+pub async fn exercise_delete(id: String, ontogen_state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let ontogen_store = ontogen_state.fitness_store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
+    exercise::delete(&ontogen_store, &id).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
 /// Generated IPC handler. Wire this into `tauri::Builder::invoke_handler()`.

@@ -17,6 +17,7 @@ use ontogen_jsonapi::{
     ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
     error::method_not_allowed,
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
+    filter_fields,
     links::{CanonicalQuery, encode_path_segment, pagination_links},
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
@@ -24,10 +25,11 @@ use ontogen_jsonapi::{
 use serde::Serialize;
 
 use crate::AppState;
-use crate::api::{bookmark, note, section, tag, task};
+use crate::api::{bookmark, note, outline, section, tag, task};
 use crate::schema::{
-    CreateBookmarkInput, CreateNoteInput, CreateSectionInput, CreateTagInput, CreateTaskInput, Note, Section, Tag,
-    Task, UpdateBookmarkInput, UpdateNoteInput, UpdateSectionInput, UpdateTagInput, UpdateTaskInput,
+    BookmarkQuery, CreateBookmarkInput, CreateNoteInput, CreateSectionInput, CreateTagInput, CreateTaskInput,
+    ListSectionsQuery, Note, Section, Tag, Task, UpdateBookmarkInput, UpdateNoteInput, UpdateSectionInput,
+    UpdateTagInput, UpdateTaskInput,
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use ontogen_core::events::EventFrame;
@@ -524,17 +526,34 @@ fn ontogen_task_frame_data(event: Event, entity: &Task) -> Result<Event, axum::E
 
 // ── Bookmark Handlers ──
 
+struct OntogenBookmarkListFilterParams;
+
+impl RouteQuery for OntogenBookmarkListFilterParams {
+    const SPEC: QuerySpec = QuerySpec {
+        filter: &[],
+        filter_fields: Some(filter_fields::<BookmarkQuery>),
+        op_args: &["limit", "offset"],
+        ..QuerySpec::NONE
+    };
+}
+
 async fn bookmark_list(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    ontogen_query: Query<PageOpArgs>,
+    ontogen_query: Query<OntogenBookmarkListFilterParams>,
 ) -> Result<Response, ErrorObject> {
+    let ontogen_filter: BookmarkQuery = ontogen_query.filter()?;
     let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
     let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
-    let ontogen_items = bookmark::list(&ontogen_state, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))
-        .await
-        .map_err(ontogen_app_error)?;
-    let ontogen_total = bookmark::count(&ontogen_state).await.map_err(ontogen_app_error)?;
+    let ontogen_items = bookmark::list(
+        &ontogen_state,
+        ontogen_filter.clone(),
+        Some(u64::from(ontogen_limit)),
+        Some(u64::from(ontogen_offset)),
+    )
+    .await
+    .map_err(ontogen_app_error)?;
+    let ontogen_total = bookmark::count(&ontogen_state, ontogen_filter).await.map_err(ontogen_app_error)?;
     let ontogen_result =
         PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
     Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
@@ -689,25 +708,6 @@ async fn note_delete(
 
 // ── Section Handlers ──
 
-async fn section_list(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    query: Query<PagedListParams>,
-) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "sections")?;
-    refuse_include(&query, "sections")?;
-    let (offset, limit) = page(&query, 2, 3)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items = section::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset)))
-        .await
-        .map_err(ontogen_app_error)?;
-    let total = section::count(&ontogen_store).await.map_err(ontogen_app_error)?;
-    let collection = "/api/sections";
-    let data: Vec<_> = items.iter().map(|entity| section_as_resource(entity, collection)).collect();
-    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
-    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
-}
-
 async fn section_get_by_id(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
@@ -785,25 +785,49 @@ async fn section_delete(
     Ok(response::no_content())
 }
 
-// ── Tag Handlers ──
+struct OntogenSectionListFilterParams;
 
-async fn tag_list(
+impl RouteQuery for OntogenSectionListFilterParams {
+    const SPEC: QuerySpec = QuerySpec {
+        filter: &["parent_id"],
+        filter_fields: Some(filter_fields::<ListSectionsQuery>),
+        sort: true,
+        include: true,
+        page: true,
+        ..QuerySpec::NONE
+    };
+}
+
+async fn section_list(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
-    query: Query<PagedListParams>,
+    query: Query<OntogenSectionListFilterParams>,
 ) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "tags")?;
-    refuse_include(&query, "tags")?;
+    let ontogen_filter: ListSectionsQuery = query.filter()?;
+    let ontogen_filter_parent_id = query.required_filter_member::<String>("parent_id")?;
+    refuse_sort(&query, "sections")?;
+    refuse_include(&query, "sections")?;
     let (offset, limit) = page(&query, 2, 3)?;
+    let link_query = query.link_query()?;
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items =
-        tag::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
-    let total = tag::count(&ontogen_store).await.map_err(ontogen_app_error)?;
-    let collection = "/api/tags";
-    let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
-    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
+    let items = section::list(
+        &ontogen_store,
+        ontogen_filter.clone(),
+        &ontogen_filter_parent_id,
+        Some(u64::from(limit)),
+        Some(u64::from(offset)),
+    )
+    .await
+    .map_err(ontogen_app_error)?;
+    let total =
+        section::count(&ontogen_store, ontogen_filter, &ontogen_filter_parent_id).await.map_err(ontogen_app_error)?;
+    let collection = "/api/sections";
+    let data: Vec<_> = items.iter().map(|entity| section_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &link_query, offset, limit, total);
     Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
 }
+
+// ── Tag Handlers ──
 
 async fn tag_get_by_id(
     State(ontogen_state): State<Arc<AppState>>,
@@ -878,6 +902,48 @@ async fn tag_delete(
     let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
     tag::delete(&ontogen_store, tag_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
     Ok(response::no_content())
+}
+
+struct OntogenTagListFilterParams;
+
+impl RouteQuery for OntogenTagListFilterParams {
+    const SPEC: QuerySpec = QuerySpec {
+        filter: &["min_title_len", "title_prefix"],
+        sort: true,
+        include: true,
+        page: true,
+        ..QuerySpec::NONE
+    };
+}
+
+async fn tag_list(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    query: Query<OntogenTagListFilterParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_filter_min_title_len = query.filter_member::<u32>("min_title_len")?;
+    let ontogen_filter_title_prefix = query.filter_member::<String>("title_prefix")?;
+    refuse_sort(&query, "tags")?;
+    refuse_include(&query, "tags")?;
+    let (offset, limit) = page(&query, 2, 3)?;
+    let link_query = query.link_query()?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let items = tag::list(
+        &ontogen_store,
+        ontogen_filter_title_prefix.as_deref(),
+        ontogen_filter_min_title_len,
+        Some(u64::from(limit)),
+        Some(u64::from(offset)),
+    )
+    .await
+    .map_err(ontogen_app_error)?;
+    let total = tag::count(&ontogen_store, ontogen_filter_title_prefix.as_deref(), ontogen_filter_min_title_len)
+        .await
+        .map_err(ontogen_app_error)?;
+    let collection = "/api/tags";
+    let data: Vec<_> = items.iter().map(|entity| tag_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &link_query, offset, limit, total);
+    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
 }
 
 // ── Task Handlers ──
@@ -977,9 +1043,9 @@ async fn task_delete(
     Ok(response::no_content())
 }
 
-struct TaskGetSummaryOpArgs;
+struct OntogenTaskGetSummaryOpArgs;
 
-impl RouteQuery for TaskGetSummaryOpArgs {
+impl RouteQuery for OntogenTaskGetSummaryOpArgs {
     const SPEC: QuerySpec = QuerySpec { op_args: &["verbose", "limit"], ..QuerySpec::NONE };
 }
 
@@ -987,7 +1053,7 @@ async fn task_get_summary(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
     Path(status): Path<String>,
-    ontogen_query: Query<TaskGetSummaryOpArgs>,
+    ontogen_query: Query<OntogenTaskGetSummaryOpArgs>,
 ) -> Result<Response, ErrorObject> {
     let limit = ontogen_query.op_arg::<u32>("limit")?;
     let verbose = ontogen_query.op_arg::<bool>("verbose")?;
@@ -1108,6 +1174,38 @@ async fn task_remove_tag(
     Ok(response::no_content())
 }
 
+// ── Outline Handlers ──
+
+struct OntogenOutlineListFilterParams;
+
+impl RouteQuery for OntogenOutlineListFilterParams {
+    const SPEC: QuerySpec = QuerySpec { filter: &["title_contains"], op_args: &["limit", "offset"], ..QuerySpec::NONE };
+}
+
+async fn outline_list(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    ontogen_query: Query<OntogenOutlineListFilterParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_filter_title_contains = ontogen_query.filter_member::<String>("title_contains")?;
+    let ontogen_limit = ontogen_query.page_op_arg("limit")?.unwrap_or(2).min(3);
+    let ontogen_offset = ontogen_query.page_op_arg("offset")?.unwrap_or(0);
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let ontogen_items = outline::list(
+        &ontogen_store,
+        ontogen_filter_title_contains.clone(),
+        Some(u64::from(ontogen_limit)),
+        Some(u64::from(ontogen_offset)),
+    )
+    .await
+    .map_err(ontogen_app_error)?;
+    let ontogen_total =
+        outline::count(&ontogen_store, ontogen_filter_title_contains).await.map_err(ontogen_app_error)?;
+    let ontogen_result =
+        PaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset };
+    Ok(response::ok(&Document::meta_only(ResultMeta { result: ontogen_result })))
+}
+
 // ── bookmark_feed SSE Handler ──
 
 async fn bookmark_feed_sse(
@@ -1157,7 +1255,6 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
-        .route("/api/sections", get(section_list).post(section_create).fallback(allow([Method::GET, Method::POST])))
         .route(
             "/api/sections/{id}",
             get(section_get_by_id).patch(section_update).delete(section_delete).fallback(allow([
@@ -1166,7 +1263,7 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
-        .route("/api/tags", get(tag_list).post(tag_create).fallback(allow([Method::GET, Method::POST])))
+        .route("/api/sections", post(section_create).get(section_list).fallback(allow([Method::POST, Method::GET])))
         .route(
             "/api/tags/{id}",
             get(tag_get_by_id).patch(tag_update).delete(tag_delete).fallback(allow([
@@ -1175,6 +1272,7 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
+        .route("/api/tags", post(tag_create).get(tag_list).fallback(allow([Method::POST, Method::GET])))
         .route("/api/tasks", get(task_list).post(task_create).fallback(allow([Method::GET, Method::POST])))
         .route(
             "/api/tasks/{id}",
@@ -1189,6 +1287,7 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
         .route("/api/tasks/complete", post(task_complete).fallback(allow([Method::POST])))
         .route("/api/tasks/set-state", post(task_set_state).fallback(allow([Method::POST])))
         .route("/api/tasks/purge-done", post(task_purge_done).fallback(allow([Method::POST])))
+        .route("/api/outlines", get(outline_list).fallback(allow([Method::GET])))
         .route(
             "/api/tasks/{parent_id}/tags",
             get(task_list_tags).post(task_add_tag).fallback(allow([Method::GET, Method::POST])),

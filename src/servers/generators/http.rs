@@ -6,10 +6,9 @@
 //! a resource module's CRUD ops are served as its resource (wire contract
 //! §7, §8), and every other op as a custom op with a meta-only document
 //! (§10), at the routes §10.4 gives CRUD-named ops with no resource and
-//! junction ops. Event streams send resource objects or `meta.result`
-//! frames (§12). The one exception is a list that takes a filter, which
-//! keeps its flat query and flat success shape; its errors are `errors[]`
-//! documents (§13) like every other route's.
+//! junction ops. A list reads its filter from the `filter[…]` family
+//! (§7.3). Event streams send resource objects or `meta.result` frames
+//! (§12).
 
 use std::fs;
 use std::path::Path;
@@ -17,12 +16,12 @@ use std::path::Path;
 use ontogen_core::ir::OpKind;
 
 use crate::persistence::dto::{create_field_required, field_to_create_type};
-use crate::resource::{Arity, Resource, list_takes_filter, member_name};
+use crate::resource::{Arity, Resource, member_name};
 use crate::servers::classify::classify_op;
 use crate::servers::config::{Config, RoutePrefix};
 use crate::servers::error_map::VariantShape;
-use crate::servers::generators::surface_use_stmts_where;
-use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param, is_page_param, is_resume_param};
+use crate::servers::generators::{filter_arg, surface_use_stmts_where};
+use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param, is_resume_param};
 use crate::servers::types::{
     capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type, to_pascal_case,
 };
@@ -462,8 +461,6 @@ fn emit_fn(
     if let Some(resource) = served_resource(m, f, config) {
         let op = ResourceOp { m, f, resource, handler_name: &handler_name, config };
         resource_handler(out, &op, access.expect("a resource op takes the state or a store"), scope);
-    } else if is_filtered_list(f) {
-        legacy_list_handler(out, m, f, &handler_name, access, scope, config);
     } else {
         op_handler(out, m, f, &op_shape(m, f, config, scope.is_some()), &handler_name, access, scope, config);
     }
@@ -496,8 +493,6 @@ pub(in crate::servers) fn route_of(m: &ApiModule, f: &ApiFn, config: &Config) ->
             OpKind::Delete => ("delete", "/{id}"),
             _ => unreachable!("served_resource picks CRUD ops only"),
         }
-    } else if is_filtered_list(f) {
-        ("get", "")
     } else {
         let shape = op_shape(m, f, config, scope.is_some());
         return (shape.method, format!("{base}{}", shape.path));
@@ -507,12 +502,6 @@ pub(in crate::servers) fn route_of(m: &ApiModule, f: &ApiFn, config: &Config) ->
 
 fn is_junction(f: &ApiFn) -> bool {
     matches!(classify_op(f), OpKind::JunctionList { .. } | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. })
-}
-
-/// A `list` that takes anything but its page: a filter. No filter is read
-/// from the wire as JSON:API (§7.3), so this list keeps its flat handler.
-fn is_filtered_list(f: &ApiFn) -> bool {
-    classify_op(f) == OpKind::List && list_takes_filter(f)
 }
 
 /// Every resource an event op's item type names, with the item type as the
@@ -565,7 +554,7 @@ fn runtime_imports(body: &str, routes: &Routes) -> String {
     let mut axum = vec!["Router".to_string()];
     axum.extend(tree("extract", extract));
     axum.extend(tree("http", strings(used(&["Method", "StatusCode"]))));
-    axum.extend(tree("response", strings(used(&["Json", "Response"]))));
+    axum.extend(tree("response", strings(used(&["Response"]))));
     axum.extend(tree("routing", strings(routes.methods())));
 
     let mut jsonapi = strings(used(&[
@@ -583,6 +572,7 @@ fn runtime_imports(body: &str, routes: &Routes) -> String {
         "ResourceObject",
         "ResultFrame",
         "ResultMeta",
+        "filter_fields",
     ]));
     jsonapi.extend(tree("error", strings(used(&["method_not_allowed"]))));
     jsonapi.extend(tree("extract", strings(used(&["AcceptGuard", "Body", "NoParams", "Path", "Query", "RouteQuery"]))));
@@ -676,9 +666,9 @@ const ON_DEMAND_HELPERS: &[(&str, &str)] = &[
     (
         "ontogen_query_rejection",
         "\
-/// The error document for a rejection of Axum's own `Query`. A list that
-/// takes a filter and an event stream read their query parameters with it,
-/// not with the JSON:API `Query`.
+/// The error document for a rejection of Axum's own `Query`. An event
+/// stream is no JSON:API route, so it reads its plain query parameters with
+/// it.
 fn ontogen_query_rejection(e: QueryRejection) -> ErrorObject {
     ErrorObject::new(ErrorCode::InvalidQueryParameter, e.body_text())
 }
@@ -695,18 +685,6 @@ pub struct PaginatedResult<T: Serialize> {
     pub total: u64,
     pub limit: u32,
     pub offset: u32,
-}
-
-",
-    ),
-    (
-        "PaginationParams",
-        "\
-/// The page of a list that takes a filter, beside its filter.
-#[derive(Deserialize)]
-pub struct PaginationParams {
-    pub limit: Option<u32>,
-    pub offset: Option<u32>,
 }
 
 ",
@@ -1092,7 +1070,12 @@ fn emit_check_linked(out: &mut String, m: &ApiModule, resource: &Resource, modul
     let linked_ty = resource_names(&m.name).linked;
     for scoped in kinds {
         let prefix = config.route_prefix.as_ref().filter(|_| scoped);
-        let scope_param = prefix.map(|p| format!("{SCOPE}: &{}, ", p.params[0].rust_type));
+        // A `String` prefix is borrowed as `&str`, which clippy's `ptr_arg`
+        // asks of a consumer's code.
+        let scope_param = prefix.map(|p| {
+            let ty = &p.params[0].rust_type;
+            format!("{SCOPE}: &{}, ", if ty == "String" { "str" } else { ty.as_str() })
+        });
         let mut opens: Vec<String> = Vec::new();
         let mut checks = String::new();
         for rel in &resource.relationships {
@@ -1168,6 +1151,75 @@ fn write_steps(op: &ResourceOp<'_>) -> (String, String) {
         format!("    let (fields, linked) = {fields_fn}(&data, {create})?;\n"),
         format!("    {}(&ontogen_state, {scope_arg}&linked).await?;\n", check_linked_fn(&op.m.name, scoped)),
     )
+}
+
+/// The query-spec type of a list that takes a filter, named for its
+/// handler, which is unique in the file. The prefix keeps it apart from
+/// the user types the file imports.
+fn filter_spec_name(handler_name: &str) -> String {
+    format!("Ontogen{}FilterParams", to_pascal_case(handler_name))
+}
+
+/// Emit `spec`, the query parameters a list that takes a filter accepts
+/// (§6, §7.3): each bare filter by name, in byte order, and the members of
+/// its `*Query` struct as serde declares them, beside `rest` (`sort`,
+/// `include` and the page of a resource list, or the `opArg` page of one
+/// served as a custom op).
+fn emit_filter_spec(out: &mut String, f: &ApiFn, spec: &str, rest: &str) {
+    let bare: Vec<String> = by_name(f.bare_filters()).iter().map(|p| format!("\"{}\"", p.name)).collect();
+    let fields = f
+        .filter_struct()
+        .map(|p| format!("filter_fields: Some(filter_fields::<{}>), ", param_to_owned_type(&p.ty_ast)))
+        .unwrap_or_default();
+    out.push_str(&format!(
+        "struct {spec};\n\nimpl RouteQuery for {spec} {{\n    const SPEC: QuerySpec = QuerySpec {{ filter: &[{}], \
+         {fields}{rest}..QuerySpec::NONE }};\n}}\n\n",
+        bare.join(", ")
+    ));
+}
+
+/// `params` in byte order of name, the order a query's members are checked
+/// in (§13.2 step 5).
+fn by_name(mut params: Vec<&Param>) -> Vec<&Param> {
+    params.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+    params
+}
+
+/// The local a list's filter parameter `p` is read into: `ontogen_filter`
+/// for its `*Query` struct, `ontogen_filter_{name}` for a bare filter. A
+/// resource list handler binds `query`, `items`, `collection` and others
+/// of its own, which a filter bound under its own name could shadow.
+fn filter_binding(p: &Param) -> String {
+    if p.is_filter_struct() { "ontogen_filter".to_string() } else { format!("ontogen_filter_{}", p.name) }
+}
+
+/// The reads of a list's filter from `query` (§7.3), in §13.2 step 5's
+/// order: its `*Query` struct, then each bare filter in byte order of name.
+/// A bare `Option` filter is optional and any other is required.
+fn filter_reads(f: &ApiFn, query: &str) -> String {
+    let mut steps = String::new();
+    if let Some(p) = f.filter_struct() {
+        steps.push_str(&format!(
+            "    let {}: {} = {query}.filter()?;\n",
+            filter_binding(p),
+            param_to_owned_type(&p.ty_ast)
+        ));
+    }
+    for p in by_name(f.bare_filters()) {
+        let owned = param_to_owned_type(&p.ty_ast);
+        let read = match owned.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')) {
+            Some(inner) => format!("filter_member::<{inner}>"),
+            None => format!("required_filter_member::<{owned}>"),
+        };
+        steps.push_str(&format!("    let {} = {query}.{read}(\"{}\")?;\n", filter_binding(p), p.name));
+    }
+    steps
+}
+
+/// The arguments a list's filter is passed as, in declaration order, each
+/// as [`filter_arg`] decides.
+fn filter_args(f: &ApiFn, counted: bool) -> Vec<String> {
+    f.filter().iter().map(|p| filter_arg(p, &filter_binding(p), counted)).collect()
 }
 
 /// Emit the JSON:API handler of one CRUD op (§7, §8), served at
@@ -1253,33 +1305,64 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
 
     match classify_op(f) {
         OpKind::List => {
-            let (params, page, call, document) = match config.pagination_for(&m.name, f.surface) {
-                Some(pg) => (
-                    "PagedListParams",
-                    format!("    let (offset, limit) = page(&query, {}, {})?;\n", pg.default_limit, pg.max_limit),
-                    format!(
-                        "    let items = {svc}::list({arg}, Some(u64::from(limit)), \
-                         Some(u64::from(offset))){aw}{map_err}?;\n    let total = \
-                         {svc}::count({arg}){aw}{map_err}?;\n"
-                    ),
-                    "    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);\n    \
-                     Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))\n"
-                        .to_string(),
-                ),
-                None => {
-                    let page_args = if f.takes_page() { ", None, None" } else { "" };
+            let paging = config.pagination_for(&m.name, f.surface);
+            let params = if f.takes_filter() {
+                let spec = filter_spec_name(handler_name);
+                let page = if paging.is_some() { "page: true, " } else { "" };
+                emit_filter_spec(out, f, &spec, &format!("sort: true, include: true, {page}"));
+                spec
+            } else if paging.is_some() {
+                "PagedListParams".to_string()
+            } else {
+                "ListParams".to_string()
+            };
+            // The links repeat the filter the request sent (§4.3). An
+            // unfiltered list accepts no member to repeat, so its links carry
+            // no query but the page.
+            let (filter, link_query, links_query, self_link) = if f.takes_filter() {
+                (
+                    filter_reads(f, "query"),
+                    "    let link_query = query.link_query()?;\n",
+                    "&link_query",
+                    "link_query.href(collection)",
+                )
+            } else {
+                (String::new(), "", "&CanonicalQuery::new()", "collection")
+            };
+            let (page, call, document) = match paging {
+                Some(pg) => {
+                    let list_args = [vec![arg.to_string()], filter_args(f, true)].concat().join(", ");
+                    let count_args = [vec![arg.to_string()], filter_args(f, false)].concat().join(", ");
                     (
-                        "ListParams",
+                        format!("    let (offset, limit) = page(&query, {}, {})?;\n", pg.default_limit, pg.max_limit),
+                        format!(
+                            "    let items = {svc}::list({list_args}, Some(u64::from(limit)), \
+                             Some(u64::from(offset))){aw}{map_err}?;\n    let total = \
+                             {svc}::count({count_args}){aw}{map_err}?;\n"
+                        ),
+                        format!(
+                            "    let links = pagination_links(collection, {links_query}, offset, limit, total);\n    \
+                             Ok(response::ok(&Document::new(data, links).with_meta(PageMeta {{ total, limit, offset \
+                             }})))\n"
+                        ),
+                    )
+                }
+                None => {
+                    let mut args = [vec![arg.to_string()], filter_args(f, false)].concat();
+                    if f.takes_page() {
+                        args.extend(["None".to_string(), "None".to_string()]);
+                    }
+                    (
                         String::new(),
-                        format!("    let items = {svc}::list({arg}{page_args}){aw}{map_err}?;\n"),
-                        "    Ok(response::ok(&Document::new(data, Links::new(collection))))\n".to_string(),
+                        format!("    let items = {svc}::list({}){aw}{map_err}?;\n", args.join(", ")),
+                        format!("    Ok(response::ok(&Document::new(data, Links::new({self_link}))))\n"),
                     )
                 }
             };
             out.push_str(&format!(
-                "{head}{collection_extract}    query: Query<{params}>,\n{tail}    refuse_sort(&query, \
-                 \"{type_name}\")?;\n    refuse_include(&query, \"{type_name}\")?;\n{page}{open}{call}{collection}    \
-                 let data: Vec<_> = items.iter().map(|entity| {as_resource}(entity, \
+                "{head}{collection_extract}    query: Query<{params}>,\n{tail}{filter}    refuse_sort(&query, \
+                 \"{type_name}\")?;\n    refuse_include(&query, \"{type_name}\")?;\n{page}{link_query}{open}{call}\
+                 {collection}    let data: Vec<_> = items.iter().map(|entity| {as_resource}(entity, \
                  collection)).collect();\n{document}}}\n\n"
             ));
         }
@@ -1342,121 +1425,6 @@ fn resource_handler(out: &mut String, op: &ResourceOp<'_>, access: Access, scope
     }
 }
 
-/// Emit a list that takes a filter: its query keeps Axum's flat `Query`, and
-/// its success its flat shape. Under `scope` it is the same handler with the
-/// prefix parameter first, paging through the store as the unscoped one does.
-fn legacy_list_handler(
-    out: &mut String,
-    m: &ApiModule,
-    f: &ApiFn,
-    handler_name: &str,
-    access: Option<Access>,
-    scope: Option<&RoutePrefix>,
-    config: &Config,
-) {
-    let svc = m.service_ident(f.surface);
-    let ret_type = &f.return_type;
-    let state_type = &config.state_type;
-    let await_str = if f.is_async { "\n        .await" } else { "" };
-    let err_map = err_map(f, config);
-    let (store_let, first_arg) = match access {
-        Some(Access { open, arg }) => (open, vec![arg.to_string()]),
-        None => (String::new(), Vec::new()),
-    };
-    let pagination = config.pagination_for(&m.name, f.surface);
-    let paginated = pagination.is_some() && ret_type.starts_with("Vec<");
-    // A `*Query` struct, or plain params (`skill_id: &str`). A list that
-    // takes the page owns its `limit`/`offset`: they are never filters.
-    let query_param = f.params.iter().find(|p| p.ty.contains("Query"));
-    let plain_params: Vec<_> = f
-        .params
-        .iter()
-        .filter(|p| !p.ty.contains("Query") && !p.is_input() && (!f.takes_page() || !is_page_param(p)))
-        .collect();
-
-    let mut extractors = String::new();
-    if !f.is_stateless {
-        extractors.push_str(&format!("\n    State(ontogen_state): State<Arc<{state_type}>>,"));
-    }
-    if let Some(prefix) = scope {
-        extractors.push_str(&format!("\n    Path({SCOPE}): Path<{}>,", prefix.params[0].rust_type));
-    }
-    let mut unwraps = String::new();
-    let mut filter_args: Vec<String> = Vec::new();
-    if let Some(qp) = query_param {
-        let qt = extract_input_type(&qp.ty);
-        extractors.push_str(&format!("\n    ontogen_filter: Result<axum::extract::Query<{qt}>, QueryRejection>,"));
-        unwraps.push_str(
-            "    let axum::extract::Query(ontogen_filter) = ontogen_filter.map_err(ontogen_query_rejection)?;\n",
-        );
-        filter_args.push("ontogen_filter".to_string());
-    }
-    for pp in &plain_params {
-        let name = &pp.name;
-        extractors.push_str(&format!("\n    {name}: Result<axum::extract::Query<String>, QueryRejection>,"));
-        unwraps
-            .push_str(&format!("    let axum::extract::Query({name}) = {name}.map_err(ontogen_query_rejection)?;\n"));
-        filter_args.push(format!("&{name}"));
-    }
-
-    if let Some(pg) = pagination
-        && paginated
-    {
-        let item_type = inner_type(ret_type);
-        let default_limit = pg.default_limit;
-        let max_limit = pg.max_limit;
-        // `count` takes the same filter after `list` has consumed it, so a
-        // by-value filter is cloned into the list call.
-        let count_args = [first_arg.clone(), filter_args.clone()].concat().join(", ");
-        let mut list_args: Vec<String> = first_arg.clone();
-        list_args
-            .extend(filter_args.iter().map(|a| if a == "ontogen_filter" { format!("{a}.clone()") } else { a.clone() }));
-        list_args.extend(["Some(u64::from(ontogen_limit))".to_string(), "Some(u64::from(ontogen_offset))".to_string()]);
-        let list_args = list_args.join(", ");
-        extractors.push_str("\n    ontogen_page: Result<axum::extract::Query<PaginationParams>, QueryRejection>,");
-        unwraps
-            .push_str("    let axum::extract::Query(ontogen_page) = ontogen_page.map_err(ontogen_query_rejection)?;\n");
-        out.push_str(&format!(
-            "\
-async fn {handler_name}({extractors}
-) -> Result<Json<PaginatedResult<{item_type}>>, ErrorObject> {{
-{unwraps}{store_let}    let ontogen_limit = ontogen_page.limit.unwrap_or({default_limit}).min({max_limit});
-    let ontogen_offset = ontogen_page.offset.unwrap_or(0);
-    let ontogen_items = {svc}::list({list_args}){await_str}
-        {err_map}?;
-    let ontogen_total = {svc}::count({count_args}){await_str}
-        {err_map}?;
-    Ok(Json(PaginatedResult {{
-        items: ontogen_items,
-        total: ontogen_total,
-        limit: ontogen_limit,
-        offset: ontogen_offset,
-    }}))
-}}
-
-"
-        ));
-    } else {
-        // This surface does not paginate: a list that takes the page gets the whole table.
-        let mut args: Vec<String> = [first_arg, filter_args].concat();
-        if f.takes_page() {
-            args.extend(["None".to_string(), "None".to_string()]);
-        }
-        out.push_str(&format!(
-            "\
-async fn {handler_name}({extractors}
-) -> Result<Json<{ret_type}>, ErrorObject> {{
-{unwraps}{store_let}    {svc}::list({}){await_str}
-        .map(Json)
-        {err_map}
-}}
-
-",
-            args.join(", ")
-        ));
-    }
-}
-
 /// How a custom op, or an op served as one (§10.4), reads its request and
 /// answers.
 struct OpShape<'a> {
@@ -1473,6 +1441,9 @@ struct OpShape<'a> {
     /// The page of a paginated list, read from `opArg[limit]` and
     /// `opArg[offset]`.
     page: Option<Paging>,
+    /// Whether the op is a list that takes a filter, read from `filter[…]`
+    /// ahead of its page (§7.3, §10.4).
+    takes_filter: bool,
     /// Whether success is `204` whatever the fn returns.
     no_content: bool,
 }
@@ -1531,15 +1502,17 @@ fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config, scoped: bool) -> O
         query_args: Vec::new(),
         body_args: None,
         page: None,
+        takes_filter: false,
         // From the op as classified: a scoped junction add or remove is
         // served as a custom op but answers as its unscoped route does.
         no_content: f.return_type == "()"
             || matches!(classified, OpKind::Delete | OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. }),
     };
     match op {
-        // An unfiltered list's only parameters are its page.
+        // A list's parameters are its filter, then its page.
         OpKind::List => {
             shape.page = paging.map(|pg| Paging::Store { default_limit: pg.default_limit, max_limit: pg.max_limit });
+            shape.takes_filter = f.takes_filter();
         }
         OpKind::JunctionList { .. } => {
             shape.page = paging.map(|pg| Paging::InMemory { default_limit: pg.default_limit, max_limit: pg.max_limit });
@@ -1609,12 +1582,18 @@ fn op_handler(
         _ => Some((format!("({})", names.join(", ")), format!("({})", types.join(", ")))),
     };
 
-    let query_spec = if shape.page.is_some() {
+    let query_spec = if shape.takes_filter {
+        let spec = filter_spec_name(handler_name);
+        let page = if shape.page.is_some() { "op_args: &[\"limit\", \"offset\"], " } else { "" };
+        emit_filter_spec(out, f, &spec, page);
+        Some(spec)
+    } else if shape.page.is_some() {
         Some("PageOpArgs".to_string())
     } else if shape.query_args.is_empty() {
         None
     } else {
-        let spec = format!("{}{}OpArgs", to_pascal_case(&m.name), to_pascal_case(&f.name));
+        // Prefixed to keep it apart from the user types the file imports.
+        let spec = format!("Ontogen{}{}OpArgs", to_pascal_case(&m.name), to_pascal_case(&f.name));
         let declared: Vec<String> = shape.query_args.iter().map(|p| format!("\"{}\"", p.name)).collect();
         out.push_str(&format!(
             "struct {spec};\n\nimpl RouteQuery for {spec} {{\n    const SPEC: QuerySpec = QuerySpec {{ op_args: \
@@ -1662,6 +1641,9 @@ fn op_handler(
                 Some(spec) => extractors.push_str(&format!("    ontogen_query: Query<{spec}>,\n")),
                 None => extractors.push_str("    _: Query<NoParams>,\n"),
             }
+            if shape.takes_filter {
+                steps.push_str(&filter_reads(f, "ontogen_query"));
+            }
             // `opArg[…]` in byte order of name (§13.2 step 5).
             if let Some(Paging::Store { default_limit, max_limit } | Paging::InMemory { default_limit, max_limit }) =
                 shape.page
@@ -1672,9 +1654,7 @@ fn op_handler(
                      let ontogen_offset = ontogen_query.page_op_arg(\"offset\")?.unwrap_or(0);\n"
                 ));
             }
-            let mut by_name = shape.query_args.clone();
-            by_name.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
-            for p in by_name {
+            for p in by_name(shape.query_args.clone()) {
                 let owned = param_to_owned_type(&p.ty_ast);
                 let inner = owned.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')).unwrap_or(&owned);
                 steps.push_str(&format!(
@@ -1689,22 +1669,25 @@ fn op_handler(
         Some(Access { open, arg }) => (open, Some(arg)),
         None => (String::new(), None),
     };
-    let args: Vec<String> = first_arg
-        .map(str::to_string)
-        .into_iter()
-        .chain(f.params.iter().map(|p| match shape.page {
-            Some(Paging::Store { .. }) => format!("Some(u64::from(ontogen_{}))", p.name),
-            None if classify_op(f) == OpKind::List => "None".to_string(),
-            _ => forward_arg_expr(&p.name, &p.ty_ast),
-        }))
-        .collect();
+    let first_arg: Vec<String> = first_arg.map(str::to_string).into_iter().collect();
+    let store_paged = matches!(shape.page, Some(Paging::Store { .. }));
+    let args: Vec<String> = if classify_op(f) == OpKind::List {
+        // A list's filter, then its page: from the store when it pages,
+        // and none when it does not.
+        let page = f.params[f.filter().len()..]
+            .iter()
+            .map(|p| if store_paged { format!("Some(u64::from(ontogen_{}))", p.name) } else { "None".to_string() });
+        [first_arg.clone(), filter_args(f, store_paged), page.collect()].concat()
+    } else {
+        first_arg.iter().cloned().chain(f.params.iter().map(|p| forward_arg_expr(&p.name, &p.ty_ast))).collect()
+    };
     let call = format!("{svc}::{}({}){aw}{map_err}?", f.name, args.join(", "));
     let respond = match shape.page {
         _ if shape.no_content => format!("    {call};\n    Ok(response::no_content())\n"),
         Some(Paging::Store { .. }) => {
-            let count_arg = first_arg.unwrap_or_default();
+            let count_args = [first_arg, filter_args(f, false)].concat().join(", ");
             format!(
-                "    let ontogen_items = {call};\n    let ontogen_total = {svc}::count({count_arg}){aw}{map_err}?;\n\
+                "    let ontogen_items = {call};\n    let ontogen_total = {svc}::count({count_args}){aw}{map_err}?;\n\
                  {PAGE_RESULT}{OK_RESULT}"
             )
         }

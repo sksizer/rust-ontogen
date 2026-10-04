@@ -32,6 +32,12 @@ pub(crate) struct Config {
     /// Directory containing API source files (e.g., `src/api/v1`).
     pub api_dir: PathBuf,
 
+    /// TS names of the list filter structs that have a field a client must
+    /// send, so a `list` taking one requires its `query`. Filled by the
+    /// clients stage once it has resolved the structs; a struct that could
+    /// not be resolved is absent, and its `query` stays optional.
+    pub required_query_structs: std::collections::HashSet<String>,
+
     /// The state type name that service functions take as their first parameter
     /// (e.g., `"AppState"`).
     pub state_type: String,

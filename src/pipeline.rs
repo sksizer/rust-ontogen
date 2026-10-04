@@ -351,7 +351,14 @@ impl Pipeline {
     /// Add directories to scan for hand-written API modules.
     ///
     /// Scanned modules are merged with generated CRUD modules into a unified
-    /// `ApiOutput`. Has no effect unless [`Pipeline::api`] has been called.
+    /// `ApiOutput`, and a hand-written `list` or `count` replaces the
+    /// generated one. Files under the API stage's `output_dir` are never
+    /// scanned. These directories add to the ones the stage always scans: the
+    /// servers stage's `api_dir`, each of its `extra_surfaces`' `api_dir`, then
+    /// the clients stage's `api_dir`, without repeats, so the directories the
+    /// transports read are the ones the generated CRUD module defers to. A
+    /// directory given here must exist.
+    /// Has no effect unless [`Pipeline::api`] has been called.
     #[must_use]
     pub fn api_scan_dirs(mut self, scan_dirs: Vec<PathBuf>) -> Self {
         if let Some(stage) = self.api.as_mut() {
@@ -577,8 +584,37 @@ impl Pipeline {
         }
 
         // Stage 4: API (depends on schema; consumes nothing structured upstream)
+        let transport_api_dirs = {
+            let mut dirs: Vec<PathBuf> = Vec::new();
+            if let Some(stage) = &self.servers {
+                dirs.push(stage.config.api_dir.clone());
+                dirs.extend(stage.config.extra_surfaces.iter().map(|s| s.api_dir.clone()));
+            }
+            if let Some(stage) = &self.clients {
+                dirs.push(stage.config.api_dir.clone());
+            }
+            dirs
+        };
         let api_out: Option<ApiOutput> = match self.api {
             Some(stage) => {
+                // Explicit directories come first and add to the transports' ones. A
+                // missing explicit directory is an error in `gen_api`; a transport's
+                // directory that does not exist is skipped here, because the
+                // servers or clients stage reports it with its own message.
+                let mut scan_dirs = stage.scan_dirs;
+                for dir in transport_api_dirs {
+                    if scan_dirs.contains(&dir) {
+                        continue;
+                    }
+                    if dir.is_dir() {
+                        scan_dirs.push(dir);
+                    } else {
+                        println!(
+                            "cargo:warning=ontogen: API directory {} does not exist; the api stage skips it",
+                            dir.display()
+                        );
+                    }
+                }
                 // If store stage was registered and the user didn't override store_type,
                 // default to Some("Store") so generated API can call store methods.
                 let resolved_store_type = match (store_enabled, stage.store_type) {
@@ -592,7 +628,7 @@ impl Pipeline {
                     &ApiConfig {
                         output_dir: stage.output_dir,
                         exclude: stage.exclude,
-                        scan_dirs: stage.scan_dirs,
+                        scan_dirs,
                         state_type: stage.state_type,
                         store_type: resolved_store_type,
                         schema_module_path: self.schema_module_path.clone(),

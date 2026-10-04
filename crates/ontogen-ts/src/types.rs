@@ -14,7 +14,7 @@
 //! - [`RenameAll`] enumerates the eight serde `rename_all` modes. PR 2
 //!   implements the actual transforms; PR 1 just declares the shape.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Fully-qualified canonical path to a type in the user's crate (or an
 /// external crate).
@@ -199,6 +199,17 @@ pub struct EmitConfig {
     /// Defaults to [`QuoteStyle::Single`] for byte-identical output with
     /// pre-knob consumers.
     pub quote_style: QuoteStyle,
+    /// Structs the caller reads only from what a client sends, such as a
+    /// list's filter. Serde reads an `Option<T>` field absent from the input
+    /// as `None` (unless the field has `deserialize_with` or `with`), so each
+    /// such field of these structs is TS-optional: `field?: T | null`.
+    ///
+    /// Membership is the caller's choice; the emitter does not check that
+    /// the struct is never serialized. ontogen's clients stage puts every
+    /// list filter struct here, so a filter struct that is also returned
+    /// somewhere gets optional `Option` fields there too, which only loosens
+    /// that type.
+    pub deserialize_only: BTreeSet<TypePath>,
 }
 
 /// Every way emission can fail.

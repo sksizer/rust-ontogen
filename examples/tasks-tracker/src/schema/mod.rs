@@ -12,6 +12,10 @@ pub use dto::epic::{CreateEpicInput, UpdateEpicInput};
 pub use dto::tag::{CreateTagInput, UpdateTagInput};
 pub use dto::task::{CreateTaskInput, UpdateTaskInput};
 
+// The generated handlers import every type an api fn names from here, the
+// list filter included.
+pub use crate::api::v1::task::ListTasksQuery;
+
 // ── Error type (the markdown consumer contract) ─────────────────────────────
 
 #[derive(Debug)]

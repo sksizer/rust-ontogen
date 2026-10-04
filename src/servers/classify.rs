@@ -173,7 +173,7 @@ pub fn classify_by_name_and_params(name: &str, params: &[Param]) -> OpKind {
 ///   §10.3): ops named for a collection belong in a module that is not a
 ///   singleton.
 /// - A `GET` or `DELETE` carries no body, so an op served with either cannot
-///   take an `*Input` argument (§10.2).
+///   take an `*Input` argument (§10.2). Nor can a `list`, which is a `GET`.
 /// - A CRUD-named op in a module with no resource behind it is served at
 ///   its collection's route (§10.4), which carries the route's own
 ///   arguments and no others, and the TypeScript clients call it with
@@ -182,6 +182,10 @@ pub fn classify_by_name_and_params(name: &str, params: &[Param]) -> OpKind {
 /// - An `opArg[…]` value is one query-string value, so an optional argument
 ///   of a `GET` must read from one: a type with no generic arguments that
 ///   names no schema entity.
+/// - A list's filter is read from `filter[…]` (§7.3): each field of at most
+///   one `*Query` struct, taken by value or by `&`, is a member, and so is every
+///   other filter argument, which must read from one value as an `opArg`
+///   does, optional or not.
 ///
 /// # Errors
 ///
@@ -209,11 +213,15 @@ pub(crate) fn check_http_ops(modules: &[ApiModule], resources: &ResourceModel) -
                 ));
             }
             let bodyless = matches!(op, OpKind::CustomGet | OpKind::GetById | OpKind::JunctionList { .. })
-                || matches!(op, OpKind::Delete | OpKind::JunctionRemove { .. });
+                || matches!(op, OpKind::List | OpKind::Delete | OpKind::JunctionRemove { .. });
             if bodyless && let Some(input) = f.params.iter().find(|p| p.is_input()) {
+                let instead = if op == OpKind::List {
+                    "take its filter as a `*Query` struct or as plain arguments, each read from `filter[…]`"
+                } else {
+                    "serve it as a POST (`#[ontogen::http::post]`) or pass the input's fields as arguments"
+                };
                 return Err(format!(
-                    "ontogen: `{}::{}` is served without a request body, so it cannot take `{}: {}`; serve it \
-                     as a POST (`#[ontogen::http::post]`) or pass the input's fields as arguments",
+                    "ontogen: `{}::{}` is served without a request body, so it cannot take `{}: {}`; {instead}",
                     m.name, f.name, input.name, input.ty
                 ));
             }
@@ -232,6 +240,9 @@ pub(crate) fn check_http_ops(modules: &[ApiModule], resources: &ResourceModel) -
                     m.name,
                     takes.join(" and "),
                 ));
+            }
+            if op == OpKind::List {
+                check_list_filter(m, f, resources)?;
             }
             if op == OpKind::CustomGet
                 && let Some(p) = f.params.iter().find(|p| p.is_option() && !reads_from_one_value(p, resources))
@@ -261,24 +272,103 @@ fn entityless_crud_route(op: &OpKind) -> Option<(&'static str, &'static [&'stati
     }
 }
 
+/// The `filter[…]` rules of a `list` (§7.3): at most one `*Query` struct,
+/// taken by value or by `&`, and every other filter argument read from one value.
+fn check_list_filter(m: &ApiModule, f: &ApiFn, resources: &ResourceModel) -> Result<(), String> {
+    let structs: Vec<&Param> = f.filter().iter().filter(|p| p.is_filter_struct()).collect();
+    if let [first, second, ..] = structs.as_slice() {
+        return Err(format!(
+            "ontogen: `{}::{}` takes two `*Query` filter structs, `{}: {}` and `{}: {}`, but every `filter[…]` \
+             member is read into one struct; merge them into one, or take `{}`'s fields as plain arguments",
+            m.name, f.name, first.name, first.ty, second.name, second.ty, second.name
+        ));
+    }
+    if let Some(p) = structs.first()
+        && !reads_struct_whole(p)
+    {
+        let inner = inner_struct_type(&p.ty);
+        return Err(format!(
+            "ontogen: `{}::{}` takes its filter struct as `{}: {}`, but the struct is read from `filter[…]` whole, \
+             absent members included; take it by value (`{}: {inner}`) or borrowed (`{}: &{inner}`), with an \
+             `Option` field for each optional member",
+            m.name, f.name, p.name, p.ty, p.name, p.name,
+        ));
+    }
+    if let Some(p) = f.bare_filters().into_iter().find(|p| !filter_reads_from_one_value(p, resources)) {
+        return Err(format!(
+            "ontogen: `{}::{}` reads `{}: {}` from the query parameter `filter[{}]`, which carries one string, \
+             number, bool or unit enum value; take a type one value can carry, optional or not",
+            m.name, f.name, p.name, p.ty, p.name
+        ));
+    }
+    Ok(())
+}
+
+/// True when the filter struct `p` is taken as the struct or a shared borrow
+/// of it, which the handler reads into an owned value and hands over or
+/// lends. An `Option` would never be `None`, since every request yields the
+/// struct with its absent members `None`; a `&mut` would let `list` change
+/// the filter `count` reads after it.
+fn reads_struct_whole(p: &Param) -> bool {
+    let ty = match &p.ty_ast {
+        Type::Reference(r) if r.mutability.is_none() => &*r.elem,
+        Type::Reference(_) => return false,
+        ty => ty,
+    };
+    !matches!(ty, Type::Path(tp) if tp.path.segments.last().is_some_and(|s| s.ident == "Option"))
+}
+
+/// The struct a filter struct type names, without its `&` or `Option`.
+fn inner_struct_type(ty: &str) -> &str {
+    fn unref(ty: &str) -> &str {
+        ty.trim_start_matches('&').trim_start_matches("mut ").trim_start()
+    }
+    let ty = unref(ty);
+    ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')).map_or(ty, unref)
+}
+
 /// True when the `Option` argument `p` can be read from one query-string
-/// value: its inner type, under any `&`, is a path with no generic
-/// arguments that names no schema entity. Whether such a path is a struct
-/// cannot be told from its name, so only an entity is refused.
+/// value: its inner type passes [`is_one_value`].
 fn reads_from_one_value(p: &Param, resources: &ResourceModel) -> bool {
     let Ok(Type::Path(outer)) = syn::parse_str::<Type>(&p.ty) else { return false };
     let Some(PathArguments::AngleBracketed(args)) = outer.path.segments.last().map(|s| &s.arguments) else {
         return false;
     };
     let Some(syn::GenericArgument::Type(inner)) = args.args.first() else { return false };
-    let inner = match inner {
+    is_one_value(inner, resources)
+}
+
+/// True when the bare filter `p` can be read from one query-string value:
+/// its type, under any `&` and one `Option`, passes [`is_one_value`].
+fn filter_reads_from_one_value(p: &Param, resources: &ResourceModel) -> bool {
+    let Ok(ty) = syn::parse_str::<Type>(&p.ty) else { return false };
+    let ty = match ty {
+        Type::Reference(r) => *r.elem,
+        ty => ty,
+    };
+    if let Type::Path(outer) = &ty
+        && outer.qself.is_none()
+        && let Some(last) = outer.path.segments.last()
+        && last.ident == "Option"
+        && let PathArguments::AngleBracketed(args) = &last.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        return is_one_value(inner, resources);
+    }
+    is_one_value(&ty, resources)
+}
+
+/// True when `ty`, under any `&`, is a path with no generic arguments that
+/// names no schema entity: a type serde reads from one string. Whether such
+/// a path is a struct cannot be told from its name, so only an entity is
+/// refused.
+fn is_one_value(ty: &Type, resources: &ResourceModel) -> bool {
+    let ty = match ty {
         Type::Reference(r) => &*r.elem,
         ty => ty,
     };
-    let Type::Path(tp) = inner else { return false };
-    tp.qself.is_none()
-        && tp.path.segments.iter().all(|s| s.arguments.is_none())
-        && resources.by_item_type(inner).is_none()
+    let Type::Path(tp) = ty else { return false };
+    tp.qself.is_none() && tp.path.segments.iter().all(|s| s.arguments.is_none()) && resources.by_item_type(ty).is_none()
 }
 
 /// Returns true when the param type carries a body (JSON-extractable struct

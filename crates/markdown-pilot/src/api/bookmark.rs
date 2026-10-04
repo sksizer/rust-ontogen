@@ -4,19 +4,29 @@
 use tokio::sync::broadcast;
 
 use crate::AppState;
-use crate::schema::{AppError, Bookmark, CreateBookmarkInput, UpdateBookmarkInput};
+use crate::schema::{AppError, Bookmark, BookmarkQuery, CreateBookmarkInput, UpdateBookmarkInput};
 
-/// One page of bookmarks, oldest first.
-pub async fn list(state: &AppState, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Bookmark>, AppError> {
+fn matches(bookmark: &Bookmark, query: &BookmarkQuery) -> bool {
+    query.url_contains.as_deref().is_none_or(|u| bookmark.url.contains(u))
+}
+
+/// One page of the bookmarks `query` selects, oldest first.
+pub async fn list(
+    state: &AppState,
+    query: BookmarkQuery,
+    limit: Option<u64>,
+    offset: Option<u64>,
+) -> Result<Vec<Bookmark>, AppError> {
     let bookmarks = state.bookmarks.lock().expect("bookmarks lock");
     let offset = offset.unwrap_or(0) as usize;
     let limit = limit.map_or(usize::MAX, |l| l as usize);
-    Ok(bookmarks.iter().skip(offset).take(limit).cloned().collect())
+    Ok(bookmarks.iter().filter(|b| matches(b, &query)).skip(offset).take(limit).cloned().collect())
 }
 
-/// How many bookmarks there are: the total behind a page of `list`.
-pub async fn count(state: &AppState) -> Result<u64, AppError> {
-    Ok(state.bookmarks.lock().expect("bookmarks lock").len() as u64)
+/// How many bookmarks the same filter selects: the total behind a page of
+/// `list`.
+pub async fn count(state: &AppState, query: BookmarkQuery) -> Result<u64, AppError> {
+    Ok(state.bookmarks.lock().expect("bookmarks lock").iter().filter(|b| matches(b, &query)).count() as u64)
 }
 
 pub async fn get_by_id(state: &AppState, id: &str) -> Result<Bookmark, AppError> {

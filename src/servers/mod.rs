@@ -218,6 +218,13 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
         }
     }
 
+    if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::TauriIpc { .. })) {
+        generators::ipc::check_wire_keys(&modules, config)?;
+    }
+    if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::Mcp { .. })) {
+        generators::mcp::check_scope_key(&modules, config)?;
+    }
+
     for generator in &config.generators {
         match generator {
             config::ServerGenerator::HttpAxum { output } => {

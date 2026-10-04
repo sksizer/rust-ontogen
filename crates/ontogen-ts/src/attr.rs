@@ -79,6 +79,10 @@ pub(crate) struct FieldAttrs {
     /// its type's keys are spliced into the parent object — so the emitter
     /// renders it as a TS intersection member rather than a property.
     pub flatten: bool,
+    /// `#[serde(deserialize_with = "...")]` or `#[serde(with = "...")]`.
+    /// Serde then reports an absent field as missing even when its type is
+    /// `Option<T>`, so only `default` makes it optional.
+    pub deserialize_with: bool,
 }
 
 /// Attributes on an enum variant.
@@ -270,7 +274,7 @@ pub(crate) fn extract_container_attrs(
                            declaration"
                         .to_string(),
                 }),
-                MetaKind::Skip => Ok(()), // ignore at container level
+                MetaKind::Skip | MetaKind::DeserializeWith => Ok(()), // ignore at container level
                 // Container-level `#[serde(default)]` fills every absent field
                 // from the struct's `Default`, so the whole body is optional
                 // on the wire. Record it; `emit_struct_named` marks each field
@@ -313,6 +317,10 @@ pub(crate) fn extract_field_attrs(attrs: &[syn::Attribute], referenced_by: &Type
                 }
                 MetaKind::Flatten => {
                     out.flatten = true;
+                    Ok(())
+                }
+                MetaKind::DeserializeWith => {
+                    out.deserialize_with = true;
                     Ok(())
                 }
                 MetaKind::SplitRename => Err(EmitError::UnsupportedSerdeAttr {
@@ -383,9 +391,11 @@ pub(crate) fn extract_variant_attrs(
             }
             // `rename_all_fields` is an enum-container attr; serde doesn't
             // accept it on a variant.
-            MetaKind::RenameAllFieldsLit(_) | MetaKind::SplitRenameAll | MetaKind::Default | MetaKind::Unknown => {
-                Ok(())
-            }
+            MetaKind::RenameAllFieldsLit(_)
+            | MetaKind::SplitRenameAll
+            | MetaKind::Default
+            | MetaKind::DeserializeWith
+            | MetaKind::Unknown => Ok(()),
         })?;
     }
     Ok(out)
@@ -412,6 +422,9 @@ enum MetaKind {
     Skip,
     /// `default` or `default = "path::to::fn"` — field is optional on the wire.
     Default,
+    /// `deserialize_with = "path"` or `with = "module"` — a field's own
+    /// deserializer, which serde never asks to read an absent field.
+    DeserializeWith,
     /// Anything we don't recognize is silently ignored.
     Unknown,
 }
@@ -502,6 +515,13 @@ where
                     let _: syn::LitStr = value.parse().map_err(|_| meta.error("expected string literal"))?;
                 }
                 callbacks.push(MetaKind::Default);
+                Ok(())
+            }
+            "deserialize_with" | "with" => {
+                if let Ok(value) = meta.value() {
+                    let _: syn::LitStr = value.parse().map_err(|_| meta.error("expected string literal"))?;
+                }
+                callbacks.push(MetaKind::DeserializeWith);
                 Ok(())
             }
             "flatten" => {

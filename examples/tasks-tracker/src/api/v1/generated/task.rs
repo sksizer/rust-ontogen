@@ -6,16 +6,6 @@ use crate::schema::{CreateTaskInput, UpdateTaskInput};
 use crate::store::Store;
 use crate::store::task::TaskUpdate;
 
-/// One page of tasks
-pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Task>, AppError> {
-    store.list_tasks(limit, offset).await
-}
-
-/// How many tasks there are — the total behind a page of `list`
-pub async fn count(store: &Store) -> Result<u64, AppError> {
-    store.count_tasks().await
-}
-
 /// Get a single task by ID
 pub async fn get_by_id(store: &Store, id: &str) -> Result<Task, AppError> {
     store.get_task(id).await

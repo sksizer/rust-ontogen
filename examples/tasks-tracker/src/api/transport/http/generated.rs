@@ -10,13 +10,14 @@ use axum::{
     extract::State,
     http::{Method, StatusCode},
     response::Response,
-    routing::get,
+    routing::{get, post},
 };
 use ontogen_jsonapi::{
     Document, ErrorCode, ErrorObject, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec, Relationship,
     ResourceIdentifier, ResourceObject,
     error::method_not_allowed,
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
+    filter_fields,
     links::{CanonicalQuery, encode_path_segment, pagination_links},
     request::{self, Endpoint, LinkedId, ResourceData},
     response,
@@ -26,7 +27,8 @@ use serde::Serialize;
 use crate::AppState;
 use crate::api::v1::{epic, tag, task};
 use crate::schema::{
-    CreateEpicInput, CreateTagInput, CreateTaskInput, Epic, Tag, Task, UpdateEpicInput, UpdateTagInput, UpdateTaskInput,
+    CreateEpicInput, CreateTagInput, CreateTaskInput, Epic, ListTasksQuery, Tag, Task, UpdateEpicInput, UpdateTagInput,
+    UpdateTaskInput,
 };
 
 /// An `AppError` as an error object: the status its variant's name gives,
@@ -517,24 +519,6 @@ async fn tag_delete(
 
 // ── Task Handlers ──
 
-async fn task_list(
-    State(ontogen_state): State<Arc<AppState>>,
-    _: AcceptGuard,
-    query: Query<PagedListParams>,
-) -> Result<Response, ErrorObject> {
-    refuse_sort(&query, "tasks")?;
-    refuse_include(&query, "tasks")?;
-    let (offset, limit) = page(&query, 20, 100)?;
-    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
-    let items =
-        task::list(&ontogen_store, Some(u64::from(limit)), Some(u64::from(offset))).await.map_err(ontogen_app_error)?;
-    let total = task::count(&ontogen_store).await.map_err(ontogen_app_error)?;
-    let collection = "/api/tasks";
-    let data: Vec<_> = items.iter().map(|entity| task_as_resource(entity, collection)).collect();
-    let links = pagination_links(collection, &CanonicalQuery::new(), offset, limit, total);
-    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
-}
-
 async fn task_get_by_id(
     State(ontogen_state): State<Arc<AppState>>,
     _: AcceptGuard,
@@ -612,6 +596,40 @@ async fn task_delete(
     Ok(response::no_content())
 }
 
+struct OntogenTaskListFilterParams;
+
+impl RouteQuery for OntogenTaskListFilterParams {
+    const SPEC: QuerySpec = QuerySpec {
+        filter: &[],
+        filter_fields: Some(filter_fields::<ListTasksQuery>),
+        sort: true,
+        include: true,
+        page: true,
+        ..QuerySpec::NONE
+    };
+}
+
+async fn task_list(
+    State(ontogen_state): State<Arc<AppState>>,
+    _: AcceptGuard,
+    query: Query<OntogenTaskListFilterParams>,
+) -> Result<Response, ErrorObject> {
+    let ontogen_filter: ListTasksQuery = query.filter()?;
+    refuse_sort(&query, "tasks")?;
+    refuse_include(&query, "tasks")?;
+    let (offset, limit) = page(&query, 20, 100)?;
+    let link_query = query.link_query()?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let items = task::list(&ontogen_store, ontogen_filter.clone(), Some(u64::from(limit)), Some(u64::from(offset)))
+        .await
+        .map_err(ontogen_app_error)?;
+    let total = task::count(&ontogen_store, ontogen_filter).await.map_err(ontogen_app_error)?;
+    let collection = "/api/tasks";
+    let data: Vec<_> = items.iter().map(|entity| task_as_resource(entity, collection)).collect();
+    let links = pagination_links(collection, &link_query, offset, limit, total);
+    Ok(response::ok(&Document::new(data, links).with_meta(PageMeta { total, limit, offset })))
+}
+
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -633,7 +651,6 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
-        .route("/api/tasks", get(task_list).post(task_create).fallback(allow([Method::GET, Method::POST])))
         .route(
             "/api/tasks/{id}",
             get(task_get_by_id).patch(task_update).delete(task_delete).fallback(allow([
@@ -642,4 +659,5 @@ pub fn entity_routes() -> Router<Arc<AppState>> {
                 Method::DELETE,
             ])),
         )
+        .route("/api/tasks", post(task_create).get(task_list).fallback(allow([Method::POST, Method::GET])))
 }

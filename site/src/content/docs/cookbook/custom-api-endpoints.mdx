@@ -161,6 +161,90 @@ If you need to force a method regardless of name or param shape, use the source-
 
 A custom endpoint's success body is unchanged, but its errors are not. A failure from a generated route, custom ones included, is a JSON:API error document (`application/vnd.api+json`, an `errors` array with one object). If the function returns your `AppError`, the variant decides the status and `code` through the same suffix rule as the CRUD routes (`*NotFound` 404, `*IdRequired` 400, `*AlreadyExists` 409, `*ParentRequired` 403, otherwise 500, `code` the variant name in snake_case); `detail` is the error's `Display` text. A function whose error type is not `AppError` answers `500 internal_error`. "Your `AppError`" means `{types_import_path}::AppError`, read through the file's `use` items; one reached by another path (a re-export such as `crate::schema::error::AppError`, or a type alias) is not recognized, answers `500 internal_error`, and a type named `AppError` there gets a build warning. A malformed query parameter, or a method the route does not serve (`405` with `Allow`), is also an `errors` document. The scan reads `ServersConfig::error_source_dir`; see the [upgrade notes](/reference/upgrading/#apperror).
 
+## Recipe: Filtered lists
+
+The store takes no filter, so a filtered list is hand-written. Put it in the module named after the entity, and it replaces the generated `list`. This recipe assumes the module is paginated: it is named in `.api_paginated(..)` and its surface sets `pagination` (here `PaginationConfig { default_limit: 20, max_limit: 100 }`, as in the tasks-tracker example), so the `list` takes `limit` and `offset` and has a `count` beside it:
+
+```rust
+// src/api/v1/task.rs
+
+pub use super::generated::task::*;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::schema::{AppError, Task};
+use crate::store::Store;
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct ListTasksQuery {
+    pub status: Option<String>,
+    pub epic_id: Option<String>,
+}
+
+fn matches(task: &Task, query: &ListTasksQuery) -> bool {
+    query.status.as_deref().is_none_or(|s| task.status == s)
+        && query.epic_id.as_deref().is_none_or(|e| task.epic_id.as_deref() == Some(e))
+}
+
+/// List tasks, optionally filtered by status and epic
+pub async fn list(
+    store: &Store,
+    query: ListTasksQuery,
+    limit: Option<u64>,
+    offset: Option<u64>,
+) -> Result<Vec<Task>, AppError> {
+    let tasks = store.list_tasks(None, None).await?;
+    Ok(tasks
+        .into_iter()
+        .filter(|t| matches(t, &query))
+        .skip(offset.unwrap_or(0) as usize)
+        .take(limit.map_or(usize::MAX, |l| l as usize))
+        .collect())
+}
+
+/// Count the tasks the same filter selects
+pub async fn count(store: &Store, query: ListTasksQuery) -> Result<u64, AppError> {
+    let tasks = store.list_tasks(None, None).await?;
+    Ok(tasks.iter().filter(|t| matches(t, &query)).count() as u64)
+}
+```
+
+- **`pub use super::generated::task::*;`** keeps `get_by_id`, `create`, `update` and `delete` available from the same module. The hand-written `list` and `count` take precedence over the generated ones of the same name.
+- **The api stage must scan this directory.** `Pipeline` scans the servers' and clients' `api_dir`s (and any `api_scan_dirs` you add), so `src/api/v1/task.rs` is found there. A direct `gen_api` caller lists the directory in `ApiConfig::scan_dirs`; otherwise the generated `list` is still emitted and the build fails, naming the fn as defined twice. A `#[ontogen::stateless]` `list` never replaces the generated one.
+- **A paginated module needs its own `count`.** A hand-written `list` drops the generated `count`, because the generated one counts the whole table, so the total would be wrong. Without a `count` that takes the same filter, the build fails.
+- **Re-export the query struct from `types_import_path`.** The generated handlers import every type an API function names from that path, so with `types_import_path: "crate::schema"` add `pub use crate::api::v1::task::ListTasksQuery;` to `src/schema/mod.rs` (or define the struct there).
+- **The query struct** is taken by value or borrowed (`query: &ListTasksQuery`), and at most one is allowed per list. It needs `Deserialize`; the MCP list tool publishes its schema, so it needs `JsonSchema`, and refuses arguments it cannot be read from. Taken by value, it is cloned into `list` so `count` can read it after, so it needs `Clone`; a borrowed struct is lent to both and needs neither. `Default` is not needed.
+- **Bare parameters** work too: `list(store, skill_id: &str, limit, offset)` is `filter[skill_id]`, required unless it is an `Option`. A bare parameter's type must be one a single value can carry (`&str`, `String`, numbers, `bool`, unit enums). An `*Input` parameter on a `list` is refused.
+- **Without an entity.** A `list` in a module with no entity behind it is a custom op at `GET /api/{module}`, with `filter[...]` and `opArg[limit]`/`opArg[offset]`, answering `meta.result`.
+
+Over HTTP the list above answers:
+
+```http
+GET /api/tasks?filter[status]=closed/done&filter[epic_id]=markdown-backend
+```
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "links": {
+    "self":  "/api/tasks?filter%5Bepic_id%5D=markdown-backend&filter%5Bstatus%5D=closed%2Fdone&page%5Boffset%5D=0&page%5Blimit%5D=20",
+    "first": "/api/tasks?filter%5Bepic_id%5D=markdown-backend&filter%5Bstatus%5D=closed%2Fdone&page%5Boffset%5D=0&page%5Blimit%5D=20",
+    "prev":  null,
+    "next":  null,
+    "last":  "/api/tasks?filter%5Bepic_id%5D=markdown-backend&filter%5Bstatus%5D=closed%2Fdone&page%5Boffset%5D=0&page%5Blimit%5D=20"
+  },
+  "meta": { "total": 1, "limit": 20, "offset": 0 },
+  "data": [ … ]
+}
+```
+
+`meta.total` is `count` with the same filter.
+
+In an unpaginated module the `list` takes no `limit` or `offset` and needs no `count`. It answers every matching task in `data`, with no `meta` and no pagination links; `links.self` carries the filter, e.g. `/api/tasks?filter%5Bstatus%5D=closed%2Fdone`.
+
+An unknown member (`filter[colour]`), a repeated one, or a value the struct rejects is `400 invalid_query_parameter`. The generated TypeScript client keeps its signature, `taskList(query?, limit?, offset?)`, and sends `filter[...]`. See the [upgrade notes](/reference/upgrading/#filtered-lists) for the full list of errors.
+
 ## Organizing custom endpoints
 
 There's no enforced file structure -- the scanner just reads `.rs` files from your scan directories. But here are patterns that work well:

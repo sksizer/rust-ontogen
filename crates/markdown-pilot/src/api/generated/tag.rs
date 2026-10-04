@@ -6,16 +6,6 @@ use crate::schema::{CreateTagInput, UpdateTagInput};
 use crate::store::Store;
 use crate::store::tag::TagUpdate;
 
-/// One page of tags
-pub async fn list(store: &Store, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Tag>, AppError> {
-    store.list_tags(limit, offset).await
-}
-
-/// How many tags there are — the total behind a page of `list`
-pub async fn count(store: &Store) -> Result<u64, AppError> {
-    store.count_tags().await
-}
-
 /// Get a single tag by ID
 pub async fn get_by_id(store: &Store, id: &str) -> Result<Tag, AppError> {
     store.get_tag(id).await

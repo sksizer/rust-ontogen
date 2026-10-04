@@ -9,10 +9,12 @@
 
 use std::collections::HashSet;
 
+use ontogen_core::ir::OpKind;
 use ontogen_core::model::{EntityDef, FieldRole, FieldType};
 
 use crate::clients::config::Config;
 use crate::clients::generators::command_name;
+use crate::servers::classify::classify_op;
 use crate::servers::parse::ApiModule;
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts};
 
@@ -60,6 +62,25 @@ pub fn module_referenced_ts_types(m: &ApiModule, config: &Config) -> Vec<String>
         }
     }
     import_types
+}
+
+/// The TS names of the `*Query` filter structs the emitted `list`s take.
+/// A client only ever sends one, so each of its `Option` fields may be left
+/// out (`ontogen_ts::EmitConfig::deserialize_only`).
+pub fn filter_struct_names(modules: &[ApiModule], config: &Config) -> HashSet<String> {
+    let mut names = Vec::new();
+    for m in modules {
+        for f in &m.functions {
+            let cmd_name = command_name(&m.name, f, config);
+            if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) || classify_op(f) != OpKind::List {
+                continue;
+            }
+            if let Some(p) = f.filter_struct() {
+                collect_ts_import(&rust_type_to_ts(&extract_input_type(&p.ty)), &mut names);
+            }
+        }
+    }
+    names.into_iter().collect()
 }
 
 /// Names that the schema-known emitter (this module's `emit`) writes to
@@ -322,6 +343,7 @@ mod tests {
     fn empty_config() -> Config {
         Config {
             api_dir: std::path::PathBuf::from("/tmp/does-not-matter"),
+            required_query_structs: Default::default(),
             state_type: String::new(),
             service_import_path: String::new(),
             types_import_path: String::new(),

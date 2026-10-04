@@ -72,6 +72,7 @@ pub fn generate(
     // Convert public ClientsConfig → internal Config
     let internal = config::Config {
         api_dir: config.api_dir.clone(),
+        required_query_structs: Default::default(),
         state_type: config.state_type.clone(),
         service_import_path: config.service_import_path.clone(),
         types_import_path: config.types_import_path.clone(),
@@ -153,6 +154,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
     // directly — no cargo invocation, no side-car binary, no target-dir
     // contention, no recursion guard.
     let long_tail = generators::ts_bindings::long_tail(&modules, config, &config.entities);
+    let mut required_query_structs: std::collections::HashSet<String> = Default::default();
     if !long_tail.is_empty() && !written_bindings.is_empty() {
         let manifest_dir = std::path::PathBuf::from(
             std::env::var("CARGO_MANIFEST_DIR")
@@ -284,6 +286,8 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
             }
         }
 
+        let filter_structs = generators::ts_bindings::filter_struct_names(&modules, config);
+        let mut emit_config = ontogen_ts::EmitConfig::default();
         let mut roots: Vec<ontogen_ts::TypePath> = Vec::with_capacity(long_tail.len());
         let mut missing: Vec<String> = Vec::new();
         let mut ambiguous: Vec<(String, Vec<ontogen_ts::TypePath>)> = Vec::new();
@@ -294,7 +298,17 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         for name in &long_tail {
             let module: &[String] = name_module.get(name).map_or(&crate_root[..], Vec::as_slice);
             match ontogen_ts::resolve_reference(std::slice::from_ref(name), module, &pool, &imports) {
-                ontogen_ts::Resolution::Resolved(key) => roots.push(key),
+                ontogen_ts::Resolution::Resolved(key) => {
+                    if filter_structs.contains(name) {
+                        emit_config.deserialize_only.insert(key.clone());
+                        if pool.get(&key).and_then(|item| ontogen_ts::struct_has_required_field(item, &emit_config))
+                            == Some(true)
+                        {
+                            required_query_structs.insert(name.clone());
+                        }
+                    }
+                    roots.push(key);
+                }
                 ontogen_ts::Resolution::NotInPool => missing.push(name.clone()),
                 ontogen_ts::Resolution::Ambiguous(candidates) => ambiguous.push((name.clone(), candidates)),
             }
@@ -321,7 +335,6 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         //    the full punch-list, not just the first issue. Pass the
         //    per-module `use` tables so bare field-type references resolve
         //    through their actual imports (including re-export chains).
-        let emit_config = ontogen_ts::EmitConfig::default();
         let ts = match ontogen_ts::emit_with_imports(&roots, &pool, &imports, &emit_config) {
             Ok(ts) => ts,
             Err(errors) => {
@@ -343,6 +356,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         //    over-includes but never misses.
         rerun_if_changed_under(&src_dir);
     }
+    let config = &config::Config { required_query_structs, ..config.clone() };
 
     for generator in &config.generators {
         match generator {
