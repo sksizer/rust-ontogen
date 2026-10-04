@@ -68,8 +68,17 @@ describe('HTTP subscribeX', () => {
     const onEvent = vi.fn()
     await createHttpTransport().subscribeVaultNoteChanges({ vaultId: 'v 1', classes: 'note' }, { onEvent })
     expect(latest().url).toBe('/api/events/vault-note-changes/v%201?classes=note')
-    latest().emit('vault-note-changes', { seq: 1, kind: 'note' }, '0:1')
+    latest().emit('vault-note-changes', { meta: { result: { seq: 1, kind: 'note' } } }, '0:1')
     expect(onEvent).toHaveBeenCalledWith({ seq: 1, kind: 'note' }, '0:1')
+  })
+
+  it('reports a frame that is not a meta document through onError', async () => {
+    const onEvent = vi.fn()
+    const onError = vi.fn()
+    await createHttpTransport().subscribeVaultNoteChanges({ vaultId: 'v' }, { onEvent, onError })
+    latest().emit('vault-note-changes', null)
+    expect(onEvent).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledTimes(1)
   })
 
   it('reports a lag frame through onLag', async () => {
@@ -85,7 +94,7 @@ describe('HTTP subscribeX', () => {
     await createHttpTransport().subscribeVaultNoteChanges({ vaultId: 'v' }, { onEvent: vi.fn(), onOpen, onError })
     const first = latest()
     first.open()
-    first.emit('vault-note-changes', { seq: 4, kind: 'note' }, '0:4')
+    first.emit('vault-note-changes', { meta: { result: { seq: 4, kind: 'note' } } }, '0:4')
     first.fail()
     expect(first.closed).toBe(true)
     expect(onError).toHaveBeenCalledTimes(1)

@@ -238,3 +238,132 @@ describe('errors', () => {
     expect(err.message).toBe('Bad Gateway')
   })
 })
+
+describe('ops served as custom ops', () => {
+  const result = (value: unknown) => ({ jsonapi: { version: '1.1' }, meta: { result: value } })
+
+  it('sends a custom GET its required args in the path and optional ones as opArg, and reads meta.result', async () => {
+    reply(200, result(flatShipIt))
+    reply(200, result(flatShipIt))
+    const transport = createHttpTransport()
+
+    expect(await transport.boardGetSummary('ship it', false)).toEqual(flatShipIt)
+    await transport.boardGetSummary('ship-it', null)
+    expect(calls[0]).toMatchObject({
+      url: '/api/boards/summary/ship%20it?opArg%5Binclude_done%5D=false',
+      method: 'GET',
+      body: undefined,
+    })
+    expect(calls[0]?.headers).toEqual({ Accept: MEDIA_TYPE })
+    expect(calls[1]?.url).toBe('/api/boards/summary/ship-it')
+  })
+
+  it('sends every custom POST arg as meta.args under its Rust name, with no query string', async () => {
+    reply(200, result(flatShipIt))
+    reply(200, result(3))
+    const transport = createHttpTransport()
+
+    expect(await transport.boardArchive('ship-it', null)).toEqual(flatShipIt)
+    expect(await transport.boardImport({ ...flatShipIt, id: '' }, true)).toBe(3)
+    expect(calls[0]).toMatchObject({ url: '/api/boards/archive', method: 'POST' })
+    expect(calls[0]?.headers).toEqual({ Accept: MEDIA_TYPE, 'Content-Type': MEDIA_TYPE })
+    expect(calls[0]?.body).toEqual({ meta: { args: { task_id: 'ship-it', reason: null } } })
+    expect(calls[1]?.url).toBe('/api/boards/import')
+    expect(calls[1]?.body).toEqual({ meta: { args: { input: { ...flatShipIt, id: '' }, dry_run: true } } })
+  })
+
+  it('sends no body for a custom POST without args and resolves null on 204', async () => {
+    reply(204)
+    expect(await createHttpTransport().boardReset()).toBeNull()
+    expect(calls[0]).toMatchObject({ url: '/api/boards/reset', method: 'POST', body: undefined })
+    expect(calls[0]?.headers).toEqual({ Accept: MEDIA_TYPE })
+  })
+
+  it('serves CRUD with no entity behind it as custom ops', async () => {
+    const page = { items: [flatShipIt], total: 1, limit: 5, offset: 0 }
+    reply(200, result(page))
+    reply(200, result(flatShipIt))
+    reply(200, result(flatShipIt))
+    reply(204)
+    const transport = createHttpTransport()
+
+    expect(await transport.boardList(5)).toEqual(page)
+    expect(await transport.boardCreate({ ...flatShipIt })).toEqual(flatShipIt)
+    expect(await transport.boardUpdate('b 1', { title: 'Ship it' })).toEqual(flatShipIt)
+    expect(await transport.boardDelete('b 1')).toBeNull()
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['GET', '/api/boards?opArg%5Blimit%5D=5'],
+      ['POST', '/api/boards'],
+      ['PATCH', '/api/boards/b%201'],
+      ['DELETE', '/api/boards/b%201'],
+    ])
+    expect(calls[1]?.body).toEqual({ meta: { args: { input: flatShipIt } } })
+    expect(calls[2]?.body).toEqual({ meta: { args: { input: { title: 'Ship it' } } } })
+    expect(calls[3]?.body).toBeUndefined()
+  })
+
+  it('calls junction ops at their nested routes', async () => {
+    const page = { items: [{ slug: 'codegen', title: 'Codegen' }], total: 1, limit: 10, offset: 0 }
+    reply(200, result(page))
+    reply(204)
+    reply(204)
+    const transport = createHttpTransport()
+
+    expect(await transport.boardListTags('b1', 10, 0)).toEqual(page)
+    expect(await transport.boardAddTag('b1', 'codegen')).toBeNull()
+    expect(await transport.boardRemoveTag('b1', 'code gen')).toBeNull()
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['GET', '/api/boards/b1/tags?opArg%5Blimit%5D=10&opArg%5Boffset%5D=0'],
+      ['POST', '/api/boards/b1/tags'],
+      ['DELETE', '/api/boards/b1/tags/code%20gen'],
+    ])
+    expect(calls[1]?.body).toEqual({ meta: { args: { tag_id: 'codegen' } } })
+    expect(calls[2]?.body).toBeUndefined()
+  })
+
+  it('throws JsonApiError for an op error document', async () => {
+    reply(404, { errors: [{ status: '404', code: 'not_found', detail: 'no board b9' }] }, 'Not Found')
+    const err = (await createHttpTransport().boardGetById('b9').catch((e: unknown) => e)) as JsonApiError
+
+    expect(err).toBeInstanceOf(JsonApiError)
+    expect(err.status).toBe(404)
+    expect(err.message).toBe('no board b9')
+  })
+})
+
+describe('subscriptions', () => {
+  class FakeEventSource {
+    static latest: FakeEventSource | null = null
+    readonly url: string
+    onopen: (() => void) | null = null
+    onerror: ((err: Event) => void) | null = null
+    private listeners = new Map<string, ((event: MessageEvent) => void)[]>()
+
+    constructor(url: string) {
+      this.url = url
+      FakeEventSource.latest = this
+    }
+
+    addEventListener(name: string, fn: (event: MessageEvent) => void): void {
+      this.listeners.set(name, [...(this.listeners.get(name) ?? []), fn])
+    }
+
+    close(): void {}
+
+    emit(name: string, data: unknown, lastEventId = ''): void {
+      const event = { data: JSON.stringify(data), lastEventId } as MessageEvent
+      for (const fn of this.listeners.get(name) ?? []) fn(event)
+    }
+  }
+
+  it('flattens a frame whose item is an entity', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    const onEvent = vi.fn()
+    await createHttpTransport().subscribeTaskChanges({ resume: '0:6' }, { onEvent })
+    const { links: _links, ...frame } = shipIt
+
+    expect(FakeEventSource.latest?.url).toBe('/api/events/task-changes?resume=0%3A6')
+    FakeEventSource.latest?.emit('task-changes', frame, '0:7')
+    expect(onEvent).toHaveBeenCalledWith(flatShipIt, '0:7')
+  })
+})

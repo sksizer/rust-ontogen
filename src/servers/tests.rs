@@ -2508,10 +2508,14 @@ fn test_ts_transport_generator_crud_module() {
 
     // HTTP transport
     assert!(content.contains("export function createHttpTransport(): Transport"));
-    assert!(content.contains("httpGet("));
-    assert!(content.contains("httpPost<"));
-    assert!(content.contains("httpPut<"));
-    assert!(content.contains("httpDelete("));
+    // `node` has no entity behind it, so its CRUD ops are custom ops.
+    assert!(content.contains("callOp<Node>('GET', scopedPath(projectId, `/nodes/${encodeURIComponent(id)}`))"));
+    assert!(content.contains("callOp<Node>('POST', scopedPath(projectId, '/nodes'), { input })"));
+    assert!(
+        content.contains("callOp<Node>('PATCH', scopedPath(projectId, `/nodes/${encodeURIComponent(id)}`), { input })")
+    );
+    assert!(content.contains("callOp<null>('DELETE', scopedPath(projectId, `/nodes/${encodeURIComponent(id)}`))"));
+    assert!(!content.contains("httpPut"), "no generated route takes a PUT");
 
     // IPC transport
     assert!(content.contains("export function createIpcTransport(): Transport"));
@@ -2567,16 +2571,12 @@ fn test_transport_returns_fallback_record_for_missing_type() {
 
 /// A POST whose parameters are all `Option<T>` must still send them.
 ///
-/// This is the regression that motivated the fix. `http.rs` emits a
-/// `Query(...)` extractor whenever any param is `Option<T>`, regardless of the
-/// route's method — but the transport's POST arms only ever sent a body, and
-/// an all-optional signature produces no body fields at all. Server read from
-/// a query string; client sent none; every argument arrived `None`.
-///
-/// Nothing failed loudly. No compile error, no runtime error, no 4xx — the
-/// call just quietly did nothing, which is why it survived review and shipped.
+/// An all-optional signature once produced no body fields at all, while the
+/// server read the arguments from elsewhere, so every argument arrived `None`
+/// and the call quietly did nothing. A custom POST now reads every argument,
+/// optional ones included, from `meta.args`, and takes no query string.
 #[test]
-fn test_transport_post_with_only_optional_params_sends_them_as_query() {
+fn test_transport_post_with_only_optional_params_sends_them_as_meta_args() {
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("generated.ts");
     let bindings = tmp.path().join("bindings.ts");
@@ -2610,12 +2610,11 @@ fn test_transport_post_with_only_optional_params_sends_them_as_query() {
     let content = std::fs::read_to_string(&output).unwrap();
 
     assert!(
-        content.contains("collection_path=") && content.contains("glob_pattern="),
-        "both optional params must reach the query string; emitted:\n{content}"
-    );
-    assert!(
-        content.contains("${params}"),
-        "the POST path must interpolate the built query string; emitted:\n{content}"
+        content.contains(
+            "callOp<number>('POST', '/docs/count-matching-files', { collection_path: collectionPath, glob_pattern: \
+             globPattern });"
+        ),
+        "both optional params must reach `meta.args`, with no query string; emitted:\n{content}"
     );
 }
 
@@ -3250,14 +3249,15 @@ fn test_custom_get_mixed_path_and_query_cross_transport() {
     assert!(http.contains("\"/api/jobs/log/{app}\""), "http.rs should register the path param after the action");
     assert!(http.contains("lines: Option<u64>"), "http.rs query struct should keep the numeric inner type");
 
-    // Both TS emitters must keep the path segment ahead of the query string.
+    // Both TS emitters must keep the path segment ahead of the query string,
+    // where the optional param is an `opArg`.
     for (name, content) in [("transport.ts", &transport), ("ts_client.ts", &client)] {
         assert!(
-            content.contains("/jobs/log/${encodeURIComponent(app)}${params}"),
+            content.contains("`/jobs/log/${encodeURIComponent(app)}${toQueryString({ opArg: { lines } })}`"),
             "{name} must fetch the path segment the server routes on, got neither in:\n{content}"
         );
         assert!(
-            !content.contains("`/jobs/log${params}`"),
+            !content.contains("`/jobs/log${"),
             "regression: {name} dropped the `:app` path segment from the custom GET URL"
         );
     }
@@ -3274,11 +3274,11 @@ fn test_custom_get_mixed_path_and_query_cross_transport() {
     }
     assert!(!transport.contains("null | null"), "IPC transport should not double-append `| null` to Option params");
 
-    // `0` is a valid value for a numeric query param - the emitted guard must
-    // be a null check, not a truthiness check that drops it.
+    // `0` is a valid value for a numeric query param - the query builder must
+    // skip only null and undefined, not every falsy value.
     for (name, content) in [("transport.ts", &transport), ("ts_client.ts", &client)] {
         assert!(
-            content.contains("lines != null"),
+            content.contains("if (value == null) return;"),
             "{name} should null-check the numeric query param so `0` still serializes"
         );
     }
