@@ -1645,8 +1645,11 @@ A body on a `DELETE` row (`delete`, `JunctionRemove`), and its
 `Content-Type`, is ignored, as for a resource `DELETE` (§3.2).
 
 An `Option` argument of a bodyless row (a custom `GET`, entity-less
-`get_by_id` or `delete`, `JunctionList`, `JunctionRemove`) must be a
-scalar, because it is read from a single `opArg` value.
+`get_by_id` or `delete`, `JunctionList`, `JunctionRemove`) is read from a
+single `opArg` value, so its inner type must be a plain path: one with
+generic arguments (`Option<Vec<String>>`), a tuple, or a schema entity is a
+`CodegenError`. A struct the schema does not declare cannot be told from its
+name and is not refused; serde rejects its value at request time.
 
 On a paginated row, `opArg[limit]` and `opArg[offset]` are unsigned 32-bit
 integers. An absent `limit` is `default_limit` and an absent `offset` is
