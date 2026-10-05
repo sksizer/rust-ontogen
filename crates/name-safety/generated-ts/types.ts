@@ -20,7 +20,7 @@ export type Document = {
   title: string;
   match_id: string | null;
   ref_id: string | null;
-  r#loop: string[];
+  loop: string[];
   body: string;
 };
 
@@ -29,7 +29,7 @@ export type CreateDocumentInput = {
   title: string;
   match_id: string | null;
   ref_id: string | null;
-  r#loop: string[];
+  loop: string[];
   body: string;
 };
 
@@ -37,7 +37,7 @@ export type UpdateDocumentInput = {
   title?: string | null;
   match_id?: string | null | null;
   ref_id?: string | null | null;
-  r#loop?: string[] | null;
+  loop?: string[] | null;
   body?: string | null;
 };
 
@@ -86,20 +86,20 @@ export type UpdateLinksInput = {
 export type Map = {
   id: string;
   title: string;
-  r#in: string | null;
+  in: string | null;
   children: string[];
 };
 
 export type CreateMapInput = {
   id: string;
   title: string;
-  r#in: string | null;
+  in: string | null;
   children: string[];
 };
 
 export type UpdateMapInput = {
   title?: string | null;
-  r#in?: string | null | null;
+  in?: string | null | null;
   children?: string[] | null;
 };
 

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use crate::clients::config::Config;
 use crate::servers::parse::{ApiFn, Param};
-use crate::servers::types::{extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
+use crate::servers::types::{extract_input_type, rust_type_to_ts, strip_ref, ts_param};
 
 /// Derive the IPC/TS command name for any function.
 ///
@@ -55,9 +55,9 @@ pub(crate) fn ts_params_in_declaration_order(f: &ApiFn) -> Vec<String> {
             } else if p.ty.starts_with("Option<") {
                 // Type from the Option's inner type: `Option<u64>` → `number |
                 // null`, matching what the IPC handler deserializes.
-                format!("{}: {}", snake_to_camel(&p.name), rust_type_to_ts(&p.ty))
+                format!("{}: {}", ts_param(&p.name), rust_type_to_ts(&p.ty))
             } else {
-                format!("{}: {}", snake_to_camel(&p.name), rust_type_to_ts(&strip_ref(&p.ty)))
+                format!("{}: {}", ts_param(&p.name), rust_type_to_ts(&strip_ref(&p.ty)))
             }
         })
         .collect()

@@ -136,8 +136,15 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
             },
         )?;
     }
-    if config.generators.iter().any(|g| matches!(g, ClientGenerator::HttpTs { .. })) || transport {
+    let http_client = config.generators.iter().any(|g| matches!(g, ClientGenerator::HttpTs { .. }));
+    if http_client || transport {
         generators::jsonapi::check_list_params(&modules, config, transport)?;
+    }
+    if http_client {
+        generators::jsonapi::check_imported_types(&modules, config, false)?;
+    }
+    if transport {
+        generators::jsonapi::check_imported_types(&modules, config, true)?;
     }
     if modules.is_empty() {
         return Ok(modules);

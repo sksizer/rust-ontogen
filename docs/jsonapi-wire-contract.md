@@ -2373,7 +2373,7 @@ function flattenTask(r: JsonApiResource): Task {
 Any non-2xx response throws a `JsonApiError`:
 
 ```ts
-export class JsonApiError extends Error {
+export class JsonApiError extends globalThis.Error {
   readonly name = 'JsonApiError';
   constructor(
     readonly status: number,
@@ -2419,12 +2419,14 @@ when either drifts from the generator.
 Payloads stay flat. JSON:API exists only at the HTTP boundary.
 
 A Tauri command names each parameter after the function's argument, since
-that name is the `invoke` key, and prefixes its own bindings with
-`ontogen_`. An argument named after a key the command itself uses is a
+Tauri reads the argument from the `invoke` payload under a key derived
+from that name (the name without its `r#`, lowerCamelCased with heck:
+`_kind` is `kind`), and prefixes its own bindings with `ontogen_`. An argument named after a key the command itself uses is a
 build error naming the argument: `query` beside a list's `*Query` struct,
 `limit` or `offset` on a paginated junction list's parent id, `channel` on
 an event op, `sort` on a list that takes an order, and, under a route
-prefix, the prefix parameter's name (`project_id`) on any op. The servers
+prefix, the prefix parameter's name (`project_id`) on any op. Names are
+compared by key, so `_sort` and `sort_` collide with `sort`. The servers
 stage refuses these when it generates IPC, and the clients stage when it
 emits the IPC transport (`HttpTauriIpcSplit`), even in a build that
 generates no IPC server, because that transport invokes the commands with
@@ -2438,7 +2440,7 @@ keys from that name. Over HTTP it is not, because it travels as
 `filter[sort]`.
 
 Every generated TS client names a list method's parameters after its bare
-filters (camelCased), then `query`, `limit`, `offset`, the route prefix
+filters (by their invoke keys, a reserved word taking a trailing `_`), then `query`, `limit`, `offset`, the route prefix
 parameter (on `Transport` methods only) and `options` (on a list that
 takes an order). A bare filter, or the route prefix parameter, that would
 take one of those names, or the name of an earlier bare filter, is a build

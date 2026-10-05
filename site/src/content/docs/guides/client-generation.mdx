@@ -147,7 +147,7 @@ The HTTP transports send `sort=-created,title`, between the filter and the page,
 Any non-2xx response, from a CRUD route or any other generated route, throws a `JsonApiError` (the file also exports `JsonApiErrorObject` and `JsonApiResource`):
 
 ```typescript
-export class JsonApiError extends Error {
+export class JsonApiError extends globalThis.Error {
   override readonly name = 'JsonApiError';
   readonly status: number;
   readonly errors: JsonApiErrorObject[]; // [] when the body was not a JSON:API error document
@@ -369,3 +369,17 @@ The client generators discover functions through the same `ApiModule` list that 
 4. Generates a function with matching name, parameters, and return type.
 
 This means custom API endpoints you add through `scan_dirs` automatically get client functions too. You write the Rust function, rebuild, and the TypeScript client has a new typed function ready to call.
+
+### Parameter names and wire keys
+
+A Rust argument's TS parameter is named by the key Tauri reads it from: the name without its `r#`, lowerCamelCased with heck (`project_id` is `projectId`, `_kind` is `kind`, `r#type` is `type`). A name that is a JavaScript reserved word, or that a method body calls (`invoke`, `callOp`, `flattenTask`, …), takes a trailing `_` (`r#in` is `in_`, `new` is `new_`). The keys a call sends are the wire's whatever the parameter is called: over HTTP an argument travels in `meta.args`, `opArg[…]` or `filter[…]` under its serde name (`type`, `in`, `_kind`), and over IPC under its invoke key (`type`, `in`, `kind`):
+
+```typescript
+async lookupFindDocs(type: string | null, in_: string | null, class_: string | null, kind: string | null): Promise<Doc[]> {
+  return invoke('lookup_find_docs', { type, in: in_, class: class_, kind });
+},
+```
+
+Two arguments with one invoke key (`sort` and `_sort`) are refused wherever the IPC server or the split transport is emitted. An event op's arguments are members of its `args` object, named by their invoke keys. The bindings name an entity field as serde writes it, so `r#loop` is `loop`.
+
+An entity may be named after a Web global the clients use: they write `Error`, `Event`, `EventSource`, `Map`, `MessageEvent` and `Response` as `globalThis.…`, and import Tauri's `Channel` as `IpcChannel`. A type the clients import may not take the name of a global they use as it is (`Array`, `JSON`, `Object`, `Promise`, `Record`, `String`, and on the split transport `Math` and `ReturnType`) or of a name a client declares (`PaginatedResult`, `ListOptions`, an `{Entity}SortKey`, a `JsonApi…` type, and on the split transport `Transport`, `SubscriptionHandlers`, `EventFrame` and `IpcChannel`); the build fails naming the type.

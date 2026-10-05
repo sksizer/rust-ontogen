@@ -141,8 +141,8 @@ export interface Transport {
   valueCreate(input: CreateValueInput): Promise<Value>;
   valueUpdate(id: string, input: UpdateValueInput): Promise<Value>;
   valueDelete(id: string): Promise<null>;
-  lookupFindDocs(r#type: string | null, r#in: string | null, class: string | null, Kind: string | null): Promise<Doc[]>;
-  lookupRetitle(id: string, new: string, default: string | null): Promise<Doc>;
+  lookupFindDocs(type: string | null, in_: string | null, class_: string | null, kind: string | null): Promise<Doc[]>;
+  lookupRetitle(id: string, new_: string, default_: string | null): Promise<Doc>;
 }
 
 // ── JSON:API ──
@@ -176,7 +176,7 @@ export interface JsonApiErrorObject {
 }
 
 /** A non-2xx response. `errors` is empty when the body was not a JSON:API error document. */
-export class JsonApiError extends Error {
+export class JsonApiError extends globalThis.Error {
   override readonly name = 'JsonApiError';
   readonly status: number;
   readonly errors: JsonApiErrorObject[];
@@ -193,7 +193,7 @@ export class JsonApiError extends Error {
 const BASE = '/api';
 const JSON_API_MEDIA_TYPE = 'application/vnd.api+json';
 
-async function httpRequest(method: string, path: string, body?: unknown): Promise<Response> {
+async function httpRequest(method: string, path: string, body?: unknown): Promise<globalThis.Response> {
   const headers: Record<string, string> = { Accept: JSON_API_MEDIA_TYPE };
   if (body != null) headers['Content-Type'] = JSON_API_MEDIA_TYPE;
   const res = await fetch(`${BASE}${path}`, {
@@ -205,7 +205,7 @@ async function httpRequest(method: string, path: string, body?: unknown): Promis
   return res;
 }
 
-async function toJsonApiError(res: Response): Promise<JsonApiError> {
+async function toJsonApiError(res: globalThis.Response): Promise<JsonApiError> {
   const body: unknown = await res.json().catch(() => null);
   const errors =
     typeof body === 'object' && body !== null && Array.isArray((body as { errors?: unknown }).errors)
@@ -318,7 +318,7 @@ function unflattenResource(def: JsonApiResourceDef, input: object, id?: string):
   let resourceId = id;
   const attributes: Record<string, unknown> = {};
   const relationships: Record<string, JsonApiRelationship> = {};
-  const relByField = new Map(
+  const relByField = new globalThis.Map(
     Object.entries(def.relationships).map(([name, rel]) => [rel.field, { name, ...rel }] as const),
   );
   for (const [key, value] of Object.entries(input)) {
@@ -845,11 +845,11 @@ export function createHttpTransport(): Transport {
       await httpDelete(`/values/${encodeURIComponent(id)}`);
       return null;
     },
-    async lookupFindDocs(r#type: string | null, r#in: string | null, class: string | null, Kind: string | null): Promise<Doc[]> {
-      return callOp<Doc[]>('POST', '/lookups/find-docs', { r#type, r#in, class, _kind: Kind });
+    async lookupFindDocs(type: string | null, in_: string | null, class_: string | null, kind: string | null): Promise<Doc[]> {
+      return callOp<Doc[]>('POST', '/lookups/find-docs', { type, in: in_, class: class_, _kind: kind });
     },
-    async lookupRetitle(id: string, new: string, default: string | null): Promise<Doc> {
-      return callOp<Doc>('POST', '/lookups/retitle', { id, new, default });
+    async lookupRetitle(id: string, new_: string, default_: string | null): Promise<Doc> {
+      return callOp<Doc>('POST', '/lookups/retitle', { id, new: new_, default: default_ });
     },
   };
 }
@@ -1050,11 +1050,11 @@ export function createIpcTransport(): Transport {
       await invoke('value_delete', { id });
       return null;
     },
-    async lookupFindDocs(r#type: string | null, r#in: string | null, class: string | null, Kind: string | null): Promise<Doc[]> {
-      return invoke('lookup_find_docs', { r#type, r#in, class, Kind });
+    async lookupFindDocs(type: string | null, in_: string | null, class_: string | null, kind: string | null): Promise<Doc[]> {
+      return invoke('lookup_find_docs', { type, in: in_, class: class_, kind });
     },
-    async lookupRetitle(id: string, new: string, default: string | null): Promise<Doc> {
-      return invoke('lookup_retitle', { id, new, default });
+    async lookupRetitle(id: string, new_: string, default_: string | null): Promise<Doc> {
+      return invoke('lookup_retitle', { id, new: new_, default: default_ });
     },
   };
 }

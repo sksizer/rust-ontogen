@@ -45,6 +45,7 @@ fn main() {
                 output: "generated-ts/transport.ts".into(),
                 bindings_path: "generated-ts/types.ts".into(),
             },
+            ClientGenerator::AdminRegistry { output: "generated-ts/admin-registry.ts".into() },
         ],
         store_type: Some("Store".into()),
         store_import: Some("crate::store::Store".into()),

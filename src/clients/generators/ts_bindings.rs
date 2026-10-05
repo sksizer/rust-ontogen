@@ -14,6 +14,7 @@ use ontogen_core::model::{EntityDef, FieldRole, FieldType};
 
 use crate::clients::config::Config;
 use crate::clients::generators::{command_name, typed_params};
+use crate::resource::member_name;
 use crate::servers::classify::classify_op;
 use crate::servers::parse::ApiModule;
 use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts};
@@ -264,7 +265,7 @@ fn emit_entity(entity: &EntityDef) -> String {
         if !include_in_entity(f) {
             continue;
         }
-        out.push_str(&format!("  {}: {};\n", f.name, field_to_ts(&f.field_type)));
+        out.push_str(&format!("  {}: {};\n", member_name(&f.name), field_to_ts(&f.field_type)));
     }
     out.push_str("};\n");
     out
@@ -276,7 +277,7 @@ fn emit_create_dto(entity: &EntityDef) -> String {
         if !include_in_dto(f) {
             continue;
         }
-        out.push_str(&format!("  {}: {};\n", f.name, field_to_ts(&f.field_type)));
+        out.push_str(&format!("  {}: {};\n", member_name(&f.name), field_to_ts(&f.field_type)));
     }
     out.push_str("};\n");
     out
@@ -288,7 +289,7 @@ fn emit_update_dto(entity: &EntityDef) -> String {
         if !include_in_dto(f) || matches!(f.role, FieldRole::Id) {
             continue;
         }
-        out.push_str(&format!("  {}?: {} | null;\n", f.name, field_to_ts(&f.field_type)));
+        out.push_str(&format!("  {}?: {} | null;\n", member_name(&f.name), field_to_ts(&f.field_type)));
     }
     out.push_str("};\n");
     out
