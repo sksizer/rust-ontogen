@@ -23,6 +23,7 @@ pub mod admin;
 pub mod api;
 pub mod clients;
 pub mod docs;
+mod ident;
 pub mod persistence;
 pub mod pipeline;
 pub(crate) mod resource;

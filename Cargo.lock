@@ -959,6 +959,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "name-safety"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "markdown-store",
+ "ontogen",
+ "ontogen-core",
+ "ontogen-jsonapi",
+ "ontogen-macros",
+ "schemars",
+ "serde",
+ "serde_json",
+ "specta",
+ "tokio",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"

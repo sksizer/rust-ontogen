@@ -8,6 +8,7 @@ members = [
     "crates/ontogen-ts",
     "crates/markdown-store",
     "crates/markdown-pilot",
+    "crates/name-safety",
     "crates/parity/markdown",
     "crates/parity/seaorm",
     "crates/parity/check",

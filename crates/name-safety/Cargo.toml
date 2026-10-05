@@ -1,0 +1,27 @@
+[package]
+name = "name-safety"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Compile fixture: a schema whose names collide with everything the generated code imports"
+license = "MIT"
+repository = "https://github.com/sksizer/rust-ontogen"
+# Never published: CI builds this crate so a schema naming entities and
+# relationships after runtime items, std/axum types and Rust keywords still
+# generates code that compiles (and TypeScript that type-checks).
+publish = false
+
+[dependencies]
+axum = "0.8"
+markdown-store = { path = "../markdown-store" }
+ontogen-core = { path = "../ontogen-core" }
+ontogen-jsonapi = { path = "../ontogen-jsonapi" }
+ontogen-macros = { path = "../ontogen-macros" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+specta = { version = "=2.0.0-rc.23", features = ["derive"] }
+tokio = { version = "1", features = ["sync"] }
+
+[build-dependencies]
+ontogen = { path = "../.." }
