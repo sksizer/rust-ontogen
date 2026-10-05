@@ -20,11 +20,19 @@
 //! argument: a pool of one connection would wait forever on `self.db()`
 //! while the transaction holds it.
 //!
+//! The transaction's first statement is a write, and every read the write
+//! needs first (the hooks, the existence checks, the update's current row)
+//! runs before it opens. SQLite answers a transaction that has read and then
+//! wants the write lock another connection holds with an immediate
+//! `SQLITE_BUSY` that no busy timeout waits out; one that writes first waits
+//! for the lock like any other write.
+//!
 //! `create_*` calls `ontogen_core::id` at runtime, so the consumer depends
 //! on `ontogen-core`, with its `uuid` feature under `IdStrategy::Uuid`.
 
 use crate::ident::rust_ident;
 use crate::ir::IdStrategy;
+use crate::persistence::seaorm::gen_entity::column_meta_for;
 use crate::resource::member_name;
 use crate::schema::model::{EntityDef, EnumDef};
 use crate::schema::sort::{SortKind, sort_fields};
@@ -293,12 +301,16 @@ fn db_error(message: &str) -> String {
 /// empty or whitespace-only is absent, so the strategy derives one, probing
 /// `-2`, `-3`, … past ids that are taken or reserved; any other id is
 /// validated and inserted as given, and a duplicate is
-/// `{Entity}AlreadyExists`. A derived id another writer took between the
-/// probe and the insert moves on to the next suffix.
+/// `{Entity}AlreadyExists`.
+///
+/// A derived id probes by inserting: each candidate is inserted, and one
+/// `try_insert_{entity}` finds taken moves on to the next. The insert is the
+/// transaction's first statement (see the module doc), and once it has run
+/// the transaction holds the write lock, so the later candidates see every
+/// committed row and concurrent creates take consecutive suffixes.
 fn generate_insert_with_id(code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
     let name = &entity.name;
     let snake = to_snake_case(name);
-    let module = rust_ident(&snake);
 
     let base = match id_strategy {
         IdStrategy::Provided => None,
@@ -325,14 +337,6 @@ fn generate_insert_with_id(code: &mut String, entity: &EntityDef, id_strategy: &
                 code.push_str("            }\n");
             }
             code.push_str("            for candidate in ontogen_core::id::candidates(&base) {\n");
-            code.push_str(&format!("                let taken = {module}::Entity::find_by_id(candidate.as_str())\n"));
-            code.push_str("                    .one(&txn)\n");
-            code.push_str("                    .await\n");
-            code.push_str("                    .map_err(|e| AppError::DbError(e.to_string()))?\n");
-            code.push_str("                    .is_some();\n");
-            code.push_str("                if taken {\n");
-            code.push_str("                    continue;\n");
-            code.push_str("                }\n");
             code.push_str("                record.id = candidate;\n");
             code.push_str(&format!("                if self.try_insert_{snake}(&txn, &record).await? {{\n"));
             code.push_str("                    break;\n");
@@ -409,14 +413,24 @@ fn generate_update(code: &mut String, entity: &EntityDef, entities: &[EntityDef]
 
     // Apply updates
     code.push_str("        updates.apply(&mut current);\n");
-    code.push_str("        let active = current.to_active_model()?;\n\n");
+    // A row with no column besides its id has nothing to update, and
+    // SeaORM answers such an update with a SELECT: a read as the
+    // transaction's first statement (see the module doc).
+    let row_has_values = entity.fields.iter().filter_map(column_meta_for).any(|column| !column.is_primary_key);
+    if row_has_values {
+        code.push_str("        let active = current.to_active_model()?;\n\n");
+    } else {
+        code.push('\n');
+    }
 
     // Re-persist
     emit_begin(code);
-    code.push_str("        active\n");
-    code.push_str("            .update(&txn)\n");
-    code.push_str("            .await\n");
-    code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?;\n");
+    if row_has_values {
+        code.push_str("        active\n");
+        code.push_str("            .update(&txn)\n");
+        code.push_str("            .await\n");
+        code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?;\n");
+    }
 
     // Conditional junction sync
     for (field, info) in &junctions {
@@ -942,8 +956,11 @@ mod tests {
             "the reason is the markdown runtime's wording: {create}"
         );
         assert!(create.contains("for candidate in ontogen_core::id::candidates(&base) {"), "{create}");
-        assert!(create.contains("role::Entity::find_by_id(candidate.as_str())"), "probes before inserting: {create}");
-        assert!(create.contains("if self.try_insert_role(&txn, &record).await? {"), "{create}");
+        assert!(
+            create.contains("record.id = candidate;\n                if self.try_insert_role(&txn, &record).await? {"),
+            "each candidate is probed by inserting it: {create}"
+        );
+        assert!(!create.contains("find_by_id"), "no lookup before the insert: {create}");
     }
 
     #[test]
@@ -1045,7 +1062,6 @@ mod tests {
             assert!(!between.contains("self.db()"), "{op}: every statement goes through the transaction: {between}");
         }
         let create = method(&code, "create_node");
-        assert!(create.contains(".one(&txn)"), "the probe reads through the transaction: {create}");
         assert!(create.contains("if self.try_insert_node(&txn, &record).await? {"), "{create}");
         assert!(method(&code, "update_node").contains(".update(&txn)"));
         for helper in ["try_insert_node", "set_node_parent"] {
@@ -1111,6 +1127,55 @@ mod tests {
         let check = check.unwrap_or_else(|| panic!("{update}"));
         assert!(check < update.find("updates.apply(&mut current)").unwrap(), "{update}");
         assert!(!update.contains("hidden"), "{update}");
+    }
+
+    /// SQLite fails a transaction that read and then wants the write lock
+    /// another connection holds at once, busy timeout or not, so the first
+    /// statement of every create and update transaction is a write.
+    #[test]
+    fn every_write_transaction_starts_with_a_write() {
+        let first_use = |body: &str| {
+            let begin = body.find("let txn = self.db().begin()").unwrap_or_else(|| panic!("{body}"));
+            let after = &body[begin + body[begin..].find('\n').unwrap()..];
+            let at = after.find("&txn").unwrap_or_else(|| panic!("{body}"));
+            after[after[..at].rfind('\n').unwrap() + 1..at + after[at..].find('\n').unwrap()].trim().to_string()
+        };
+        for strategy in strategies() {
+            let code = crud(&make_node_entity(), &strategy);
+            let create = first_use(method(&code, "create_node"));
+            assert!(create.contains("self.try_insert_node(&txn, &record).await?"), "{strategy:?}: {create}");
+            assert_eq!(first_use(method(&code, "update_node")), ".update(&txn)");
+        }
+
+        // A row that is only its id: SeaORM turns its update into a SELECT,
+        // so the update writes nothing to the row and starts with the junction.
+        let tagged = EntityDef {
+            name: "Pin".to_string(),
+            directory: "pin".to_string(),
+            table: "pins".to_string(),
+            type_name: "pin".to_string(),
+            prefix: "pin".to_string(),
+            id_strategy: None,
+            fields: vec![
+                FieldDef::new("id", FieldType::String, FieldRole::Id),
+                FieldDef::new(
+                    "marks",
+                    FieldType::VecString,
+                    FieldRole::Relation(RelationInfo {
+                        kind: RelationKind::ManyToMany,
+                        target: "Pin".to_string(),
+                        junction: None,
+                        foreign_key: None,
+                    }),
+                ),
+            ],
+            doc: String::new(),
+        };
+        let code = crud(&tagged, &IdStrategy::Uuid);
+        let update = method(&code, "update_pin");
+        assert!(!update.contains("to_active_model") && !update.contains(".update(&txn)"), "{update}");
+        assert!(first_use(update).starts_with("self.sync_junction(&txn, \"pin_marks\""), "{update}");
+        syn::parse_file(&code).unwrap_or_else(|e| panic!("{e}\n{code}"));
     }
 
     /// Syntax check: verify the generated `impl Store` block parses as valid

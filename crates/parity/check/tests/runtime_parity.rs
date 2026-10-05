@@ -1700,6 +1700,68 @@ async fn a_failed_junction_write_rolls_back_the_whole_write() {
     assert_eq!(retried["id"], json!("same"), "no row was left for the retry to probe past");
 }
 
+/// SeaORM only: derived-id creates racing on a file-backed SQLite database
+/// with a pool of several connections all succeed. SQLite answers a
+/// transaction that read first and then wants the write lock another
+/// connection holds with an immediate "database is locked", which the busy
+/// timeout does not wait out; a transaction whose first statement is a write
+/// waits for the lock instead. The pool keeps sqlx's 5 second busy timeout,
+/// far longer than 80 small serialized writes take.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_derived_id_creates_all_succeed_on_a_pooled_database() {
+    use std::sync::Arc;
+    const RACERS: usize = 40;
+    let dir = tempfile::tempdir().expect("tempdir");
+    // sqlite-only: a file-backed SQLite URL; `mode=rwc` creates the file.
+    let url = format!("sqlite://{}?mode=rwc", dir.path().join("parity.db").display());
+    let store = Arc::new(parity_seaorm::Store::open_url(&url, 8).await.expect("sqlite"));
+    let start = Arc::new(tokio::sync::Barrier::new(2 * RACERS));
+
+    let mut slugged = Vec::new();
+    let mut stamped = Vec::new();
+    for _ in 0..RACERS {
+        let (items, gate) = (store.clone(), start.clone());
+        slugged.push(tokio::spawn(async move {
+            let record = serde_json::from_value(item("", json!({ "title": "Same" }))).expect("an Item");
+            gate.wait().await;
+            items.create_item(record).await.map(|created| created.id).map_err(|e| format!("{e:?}"))
+        }));
+        let (stampeds, gate) = (store.clone(), start.clone());
+        stamped.push(tokio::spawn(async move {
+            let record = serde_json::from_value(json!({ "id": "", "title": "Stamped" })).expect("a Stamped");
+            gate.wait().await;
+            stampeds.create_stamped(record).await.map(|created| created.id).map_err(|e| format!("{e:?}"))
+        }));
+    }
+
+    let outcomes = |tasks: Vec<tokio::task::JoinHandle<Result<String, String>>>| async move {
+        let mut ids = std::collections::BTreeSet::new();
+        let mut failures = Vec::new();
+        for task in tasks {
+            match task.await.expect("task") {
+                Ok(id) => assert!(ids.insert(id.clone()), "{id} was handed out twice"),
+                Err(e) => failures.push(e),
+            }
+        }
+        (ids, failures)
+    };
+    let (slug_ids, slug_failures) = outcomes(slugged).await;
+    let (uuid_ids, uuid_failures) = outcomes(stamped).await;
+    assert!(
+        slug_failures.is_empty() && uuid_failures.is_empty(),
+        "{}/{RACERS} slug and {}/{RACERS} uuid creates succeeded; the first failure: {:?}",
+        slug_ids.len(),
+        uuid_ids.len(),
+        slug_failures.first().or(uuid_failures.first()),
+    );
+    let expected: std::collections::BTreeSet<String> =
+        std::iter::once("same".to_string()).chain((2..=RACERS).map(|n| format!("same-{n}"))).collect();
+    assert_eq!(slug_ids, expected, "the slug ids are the base and its first suffixes, none skipped");
+    assert_eq!(uuid_ids.len(), RACERS);
+    assert_eq!(store.count_items().await.expect("count"), RACERS as u64);
+    assert_eq!(store.count_stampeds().await.expect("count"), RACERS as u64);
+}
+
 // ─── Names the generated code could collide with ────────────────────────────
 
 /// `Doc` (the markdown store's own binding), `Order` (SeaORM's
