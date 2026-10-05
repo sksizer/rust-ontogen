@@ -963,6 +963,7 @@ name = "name-safety"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures",
  "markdown-store",
  "ontogen",
  "ontogen-core",

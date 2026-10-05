@@ -9525,6 +9525,8 @@ fn hostile_fixture(root: &std::path::Path, scoped: bool) -> Config {
     );
     let event = std::fs::read_to_string(api_dir.join("event.rs")).unwrap()
         + "pub fn document_changed(state: &AppState, r#type: Option<String>) -> \
+           tokio::sync::broadcast::Receiver<Document> { todo!() }\n\
+           pub fn watch_document(state: &AppState, r#in: String) -> \
            tokio::sync::broadcast::Receiver<Document> { todo!() }\n";
     write_synthetic_api(&api_dir, "event.rs", &event);
     write_synthetic_api(
@@ -9603,6 +9605,7 @@ fn entities_named_after_runtime_items_or_keywords_keep_their_names_over_http() {
 
         // Arguments written as raw idents are named without `r#` on the wire.
         assert!(!http.contains("\"r#"), "a wire key keeps `r#`:\n{http}");
+        assert!(!http.contains("{r#"), "a route path parameter keeps `r#`:\n{http}");
         let find_docs = handler_body(&http, &format!("lookup_find_docs{}", if scoped { "_scoped" } else { "" }));
         for step in [
             "ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"type\", \"in\"])?;",

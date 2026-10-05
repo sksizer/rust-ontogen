@@ -43,7 +43,8 @@ import type {
   Value,
 } from './types';
 
-import { invoke } from '@tauri-apps/api/core';
+import { Channel as IpcChannel, invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -82,6 +83,20 @@ export type ResponseSortKey = 'id' | '-id' | 'title' | '-title';
 export type StateSortKey = 'id' | '-id' | 'title' | '-title';
 
 export type ValueSortKey = 'id' | '-id' | 'title' | '-title';
+
+// ── Event Subscriptions ──
+
+export interface SubscriptionHandlers<T> {
+  /** An event. `id` is its resume id, or null for an op that is not resumable. */
+  onEvent: (data: T, id: string | null) => void;
+  /** The subscription fell behind and `skipped` events were dropped. */
+  onLag?: (skipped: number) => void;
+  /** Fires on the first connect and on every reconnect: the hook for a catch-up read. */
+  onOpen?: () => void;
+  onError?: (err: unknown) => void;
+}
+
+type EventFrame<T> = { kind: 'event'; id: string | null; data: T } | { kind: 'lag'; skipped: number };
 
 // ── Transport Interface ──
 
@@ -153,6 +168,9 @@ export interface Transport {
   valueDelete(id: string): Promise<null>;
   lookupFindDocs(type: string | null, in_: string | null, class_: string | null, kind: string | null): Promise<Doc[]>;
   lookupRetitle(id: string, new_: string, default_: string | null): Promise<Doc>;
+  subscribeEventFeed(args: Record<string, never>, handlers: SubscriptionHandlers<Event>): Promise<() => void>;
+  subscribeWatchDoc(args: { in: string }, handlers: SubscriptionHandlers<Doc>): Promise<() => void>;
+  onEventFeed(callback: (payload: unknown) => void): Promise<() => void>;
 }
 
 // ── JSON:API ──
@@ -274,6 +292,72 @@ function toQueryString(params: Record<string, unknown>): string {
     }
   }
   return parts.length > 0 ? `?${parts.join('&')}` : '';
+}
+
+const SSE_RETRY_BASE_MS = 500;
+const SSE_RETRY_MAX_MS = 30000;
+
+function subscribeSse<T>(
+  url: (resume: string | null) => string,
+  eventName: string,
+  initialResume: string | null,
+  decode: (frame: unknown) => T,
+  handlers: SubscriptionHandlers<T>,
+): () => void {
+  let source: globalThis.EventSource | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let lastId = initialResume;
+  let attempt = 0;
+  let closed = false;
+  function connect() {
+    if (closed) return;
+    const es = new globalThis.EventSource(url(lastId));
+    source = es;
+    es.onopen = () => {
+      attempt = 0;
+      handlers.onOpen?.();
+    };
+    es.addEventListener(eventName, (event: globalThis.MessageEvent) => {
+      const id = event.lastEventId || null;
+      if (id) lastId = id;
+      let data: T;
+      try {
+        data = decode(JSON.parse(event.data));
+      } catch (err) {
+        handlers.onError?.(err);
+        return;
+      }
+      handlers.onEvent(data, id);
+    });
+    es.addEventListener('lag', (event: globalThis.MessageEvent) => {
+      try {
+        handlers.onLag?.(JSON.parse(event.data).skipped);
+      } catch (err) {
+        handlers.onError?.(err);
+      }
+    });
+    es.onerror = (err: globalThis.Event) => {
+      es.close();
+      if (source === es) source = null;
+      if (closed) return;
+      handlers.onError?.(err);
+      const delay = Math.min(SSE_RETRY_MAX_MS, SSE_RETRY_BASE_MS * 2 ** attempt);
+      attempt += 1;
+      timer = setTimeout(connect, delay / 2 + Math.random() * (delay / 2));
+    };
+  }
+  connect();
+  return () => {
+    closed = true;
+    if (timer) clearTimeout(timer);
+    source?.close();
+    source = null;
+  };
+}
+
+/** An event frame whose item is not a resource carries it as `meta.result`. */
+function metaResult<T>(frame: unknown): T {
+  return (frame as { meta: { result: T } }).meta.result;
 }
 
 // ── JSON:API Resources ──
@@ -901,6 +985,66 @@ export function createHttpTransport(): Transport {
     async lookupRetitle(id: string, new_: string, default_: string | null): Promise<Doc> {
       return callOp<Doc>('POST', '/lookups/retitle', { id, new: new_, default: default_ });
     },
+    async subscribeEventFeed(args: Record<string, never>, handlers: SubscriptionHandlers<Event>): Promise<() => void> {
+      return subscribeSse(
+        (_resume) => `${BASE}${`/events/event-feed`}`,
+        'event-feed',
+        null,
+        (frame) => flattenEvent(frame as JsonApiResource),
+        handlers,
+      );
+    },
+    async subscribeWatchDoc(args: { in: string }, handlers: SubscriptionHandlers<Doc>): Promise<() => void> {
+      return subscribeSse(
+        (_resume) => `${BASE}${`/events/watch-doc/${encodeURIComponent(String(args.in))}`}`,
+        'watch-doc',
+        null,
+        (frame) => flattenDoc(frame as JsonApiResource),
+        handlers,
+      );
+    },
+    async onEventFeed(callback: (payload: unknown) => void): Promise<() => void> {
+      let es: globalThis.EventSource | null = null;
+      let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+      function connect() {
+        es = new globalThis.EventSource('/api/events/event-feed');
+        es.addEventListener('event-feed', (event: globalThis.MessageEvent) => {
+          try { callback(flattenEvent(JSON.parse(event.data) as JsonApiResource)); }
+          catch { callback({}); }
+        });
+        es.onerror = () => {
+          es?.close();
+          es = null;
+          reconnectTimer = setTimeout(connect, 3000);
+        };
+      }
+      connect();
+      return () => {
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        es?.close();
+        es = null;
+      };
+    },
+  };
+}
+
+// ── IPC Helpers ──
+
+async function subscribeIpc<T>(
+  command: string,
+  unsubscribeCommand: string,
+  args: Record<string, unknown>,
+  handlers: SubscriptionHandlers<T>,
+): Promise<() => void> {
+  const channel = new IpcChannel<EventFrame<T>>();
+  channel.onmessage = (frame) => {
+    if (frame.kind === 'event') handlers.onEvent(frame.data, frame.id ?? null);
+    else handlers.onLag?.(frame.skipped);
+  };
+  const id = await invoke<number>(command, { ...args, channel });
+  handlers.onOpen?.();
+  return () => {
+    invoke(unsubscribeCommand, { id }).catch((err: unknown) => handlers.onError?.(err));
   };
 }
 
@@ -1121,6 +1265,18 @@ export function createIpcTransport(): Transport {
     },
     async lookupRetitle(id: string, new_: string, default_: string | null): Promise<Doc> {
       return invoke('lookup_retitle', { id, new: new_, default: default_ });
+    },
+    async subscribeEventFeed(_args: Record<string, never>, handlers: SubscriptionHandlers<Event>): Promise<() => void> {
+      return subscribeIpc('event_feed_subscribe', 'event_feed_unsubscribe', {}, handlers);
+    },
+    async subscribeWatchDoc(args: { in: string }, handlers: SubscriptionHandlers<Doc>): Promise<() => void> {
+      return subscribeIpc('watch_doc_subscribe', 'watch_doc_unsubscribe', { in: args.in }, handlers);
+    },
+    async onEventFeed(callback: (payload: unknown) => void): Promise<() => void> {
+      const unlisten = await listen('event-feed', (event: { payload: unknown }) => {
+        callback(event.payload);
+      });
+      return unlisten;
     },
   };
 }

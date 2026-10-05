@@ -3,7 +3,10 @@
 //! with an underscore (`_kind`): every transport and client must still name
 //! them on the wire as Tauri, serde and the HTTP query do.
 
-use crate::schema::{AppError, Doc};
+use tokio::sync::broadcast;
+
+use crate::AppState;
+use crate::schema::{AppError, Doc, Event};
 use crate::store::Store;
 
 /// The docs whose title contains `r#in` (when given) and starts with
@@ -30,4 +33,16 @@ pub async fn retitle(store: &Store, id: &str, new: String, default: Option<Strin
     let title = if new.is_empty() { default.unwrap_or_default() } else { new };
     let updates = crate::store::doc::DocUpdate { title: Some(title) };
     store.update_doc(id, updates).await
+}
+
+/// Every `Event` published to the feed.
+pub fn event_feed(state: &AppState) -> broadcast::Receiver<Event> {
+    state.event_feed.subscribe()
+}
+
+/// The doc feed, for subscribers of one doc that must exist; `r#in` names
+/// it.
+pub async fn watch_doc(state: &AppState, r#in: String) -> Result<broadcast::Receiver<Doc>, AppError> {
+    state.store().await?.get_doc(&r#in).await?;
+    Ok(state.doc_feed.subscribe())
 }

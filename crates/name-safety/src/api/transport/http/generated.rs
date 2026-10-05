@@ -6,6 +6,7 @@
 use axum::extract::{RawQuery as OntogenRawQuery, State as OntogenState};
 use axum::http::{Method as OntogenMethod, StatusCode as OntogenStatusCode};
 use axum::response::Response as OntogenResponse;
+use axum::response::sse::{Event as OntogenEvent, KeepAlive as OntogenKeepAlive, Sse as OntogenSse};
 use ontogen_jsonapi::extract::{
     AcceptGuard as OntogenAcceptGuard, Body as OntogenBody, NoParams as OntogenNoParams, Path as OntogenPath,
     Query as OntogenQuery, RouteQuery as OntogenRouteQuery,
@@ -112,6 +113,49 @@ fn ontogen_added(ids: &[String], linked: &[OntogenLinkedId]) -> Option<Vec<Strin
 fn ontogen_removed(ids: &[String], linked: &[OntogenLinkedId]) -> Option<Vec<String>> {
     let kept: Vec<String> = ids.iter().filter(|id| !linked.iter().any(|l| l.id == **id)).cloned().collect();
     (kept.len() != ids.len()).then_some(kept)
+}
+
+/// How an event op's items are written into their frames' `data:`:
+/// `ontogen_result_frame`, or the item entity's own `ontogen_…_frame_data`.
+type OntogenFrameData<T> = fn(OntogenEvent, &T) -> Result<OntogenEvent, axum::Error>;
+
+/// One frame as an SSE event: an item as event `name`, its `data:` written
+/// by `data`, with its id as `id:` unless the id holds a line break or NUL;
+/// a lag as event `lag` with `{"skipped":n}`.
+fn ontogen_sse_event<T>(
+    name: &'static str,
+    frame: ontogen_core::events::EventFrame<T>,
+    data: OntogenFrameData<T>,
+) -> OntogenEvent {
+    match frame {
+        ontogen_core::events::EventFrame::Event { id, data: item } => {
+            let event = data(OntogenEvent::default().event(name), &item)
+                .unwrap_or_else(|e| OntogenEvent::default().event("error").data(e.to_string()));
+            match id {
+                Some(id) if !id.contains(['\n', '\r', '\0']) => event.id(id),
+                _ => event,
+            }
+        }
+        ontogen_core::events::EventFrame::Lag { skipped } => {
+            OntogenEvent::default().event("lag").data(format!("{{\"skipped\":{skipped}}}"))
+        }
+    }
+}
+
+/// An event op's receiver as an SSE stream of frames, kept alive while idle.
+fn ontogen_sse_stream<T>(
+    name: &'static str,
+    rx: tokio::sync::broadcast::Receiver<T>,
+    id: ontogen_core::events::IdFn<T>,
+    data: OntogenFrameData<T>,
+) -> OntogenSse<impl futures::Stream<Item = Result<OntogenEvent, std::convert::Infallible>>>
+where
+    T: Clone + Send + 'static,
+{
+    let stream = futures::stream::unfold(rx, move |mut rx| async move {
+        ontogen_core::events::next_frame(&mut rx, id).await.map(|frame| (Ok(ontogen_sse_event(name, frame, data)), rx))
+    });
+    OntogenSse::new(stream).keep_alive(OntogenKeepAlive::default())
 }
 
 // ── JSON:API resources ──
@@ -989,6 +1033,18 @@ fn ontogen_value_request_fields(
     );
     ontogen_jsonapi::request::check_relationship_names(data.relationships()?, "values", &[])?;
     Ok(fields)
+}
+
+/// A `Event` event item as its resource object. A frame is not tied to a
+/// request URL, so it carries no links.
+fn ontogen_event_frame_data(event: OntogenEvent, entity: &Event) -> Result<OntogenEvent, axum::Error> {
+    event.json_data(ontogen_event_as_resource(entity, "/api/events").into_unlinked())
+}
+
+/// A `Doc` event item as its resource object. A frame is not tied to a
+/// request URL, so it carries no links.
+fn ontogen_doc_frame_data(event: OntogenEvent, entity: &Doc) -> Result<OntogenEvent, axum::Error> {
+    event.json_data(ontogen_doc_as_resource(entity, "/api/docs").into_unlinked())
 }
 
 /// The `documents` resource `id` names, read as its `GET` reads it: the
@@ -3097,6 +3153,26 @@ async fn lookup_retitle(
     Ok(ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))
 }
 
+// ── event_feed SSE Handler ──
+
+async fn event_feed_sse(
+    OntogenState(ontogen_state): OntogenState<std::sync::Arc<AppState>>,
+) -> OntogenSse<impl futures::Stream<Item = Result<OntogenEvent, std::convert::Infallible>>> {
+    let ontogen_rx = lookup::event_feed(&ontogen_state);
+    ontogen_sse_stream("event-feed", ontogen_rx, ontogen_core::events::no_id, ontogen_event_frame_data)
+}
+
+// ── watch_doc SSE Handler ──
+
+async fn watch_doc_sse(
+    OntogenState(ontogen_state): OntogenState<std::sync::Arc<AppState>>,
+    OntogenPath(r#in): OntogenPath<String>,
+) -> Result<OntogenSse<impl futures::Stream<Item = Result<OntogenEvent, std::convert::Infallible>>>, OntogenErrorObject>
+{
+    let ontogen_rx = lookup::watch_doc(&ontogen_state, r#in).await.map_err(ontogen_app_error)?;
+    Ok(ontogen_sse_stream("watch-doc", ontogen_rx, ontogen_core::events::no_id, ontogen_doc_frame_data))
+}
+
 /// Generated routes. Call this from your main router.
 pub fn entity_routes() -> axum::Router<std::sync::Arc<AppState>> {
     axum::Router::new()
@@ -3318,5 +3394,13 @@ pub fn entity_routes() -> axum::Router<std::sync::Arc<AppState>> {
         .route(
             "/api/lookups/retitle",
             axum::routing::post(lookup_retitle).fallback(ontogen_allow([OntogenMethod::POST])),
+        )
+        .route(
+            "/api/events/event-feed",
+            axum::routing::get(event_feed_sse).fallback(ontogen_allow([OntogenMethod::GET])),
+        )
+        .route(
+            "/api/events/watch-doc/{in}",
+            axum::routing::get(watch_doc_sse).fallback(ontogen_allow([OntogenMethod::GET])),
         )
 }

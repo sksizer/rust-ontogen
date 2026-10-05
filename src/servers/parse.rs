@@ -329,7 +329,7 @@ impl EventFn {
             .cloned()
             .unwrap_or_else(|| format!("/api/events/{}", crate::servers::types::event_name(&self.name)));
         for p in self.path_params() {
-            let segment = format!(":{}", p.name);
+            let segment = format!(":{}", crate::resource::member_name(&p.name));
             if !path.split('/').any(|s| s == segment) {
                 path.push('/');
                 path.push_str(&segment);
