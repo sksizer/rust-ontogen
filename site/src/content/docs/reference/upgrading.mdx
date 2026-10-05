@@ -214,6 +214,7 @@ The MCP tools keep their names and their flat payloads, with these changes:
 - **A custom op reads each argument as its declared type.** Before, an `Option<bool>` or `Option<u32>` argument was read as a string and the generated code did not compile. A custom op that takes an `*Input` beside other arguments takes the input under its parameter name, as the IPC command does: `{"input": {…}, "status": "open"}`. Before, that op did not compile either. An op whose only argument is its input still takes the input's fields flat.
 - **A required string argument of the wrong type** is ``Invalid parameter id: invalid type: integer `5`, expected a string``, not `Missing required parameter: id`, which now means only that the key is absent.
 - Create and update read their input without the route-prefix parameter (and update without `id`), so a `deny_unknown_fields` input works there too.
+- **An argument named after a Rust keyword travels under serde's name for it.** A custom op's `r#type` argument is the key `type`, as its input schema already said; before, the tool read the key `r#type`. Send `type`.
 - The generated schema-only structs are named `Ontogen{Module}{Fn}Filter` and `Ontogen{Module}{Fn}Input` so they cannot collide with your types; the HTTP query-spec types are likewise `Ontogen{Handler}FilterParams` and `Ontogen{Module}{Fn}OpArgs`.
 
 ### A list's `*Query` struct is named through `types_import_path`

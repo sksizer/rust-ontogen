@@ -77,7 +77,8 @@ pub(crate) fn surface_use_stmts_where(
     for m in modules {
         let entry = |surface: usize| {
             let ident = m.service_ident(surface);
-            if ident == m.name { ident } else { format!("{} as {}", m.name, ident) }
+            let module = crate::ident::rust_ident(&m.name);
+            if ident == module { ident } else { format!("{module} as {ident}") }
         };
         for f in &m.functions {
             let surface = &surfaces[f.surface];

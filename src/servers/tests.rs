@@ -535,6 +535,9 @@ fn test_collect_type_import_matrix() {
         ("HashSet<MyType>", &["MyType"]),
         ("BTreeSet<MyType>", &["MyType"]),
         ("Option<HashMap<String, Vec<MyType>>>", &["MyType"]),
+        // A container's name without args is the consumer's type of that name.
+        ("Arc", &["Arc"]),
+        ("Vec<HashMap>", &["HashMap"]),
         ("crate::schema::Foo", &[]),
         ("Vec<crate::schema::Foo>", &[]),
         ("Option<crate::schema::Foo>", &[]),
@@ -2298,12 +2301,14 @@ fn test_ipc_generator_event_subscriptions() {
     let content = std::fs::read_to_string(&output).unwrap();
 
     assert!(content.contains("pub async fn vault_note_changes_subscribe("));
-    assert!(content.contains("channel: tauri::ipc::Channel<ontogen_core::events::EventFrame<LoggedChange>>"));
+    assert!(content.contains("channel: ::tauri::ipc::Channel<::ontogen_core::events::EventFrame<LoggedChange>>"));
     let flat = compact(&content);
     assert!(
         flat.contains(&compact("vault_notes::vault_note_changes(&ontogen_state, vault_id, classes, resume).await"))
     );
-    assert!(flat.contains(&compact(".spawn(ontogen_core::events::forward(ontogen_rx, ontogen_core::events::seq_id")));
+    assert!(
+        flat.contains(&compact(".spawn(::ontogen_core::events::forward(ontogen_rx, ::ontogen_core::events::seq_id"))
+    );
     assert!(content.contains("channel.send(ontogen_frame)"));
     assert!(content.contains("pub fn vault_note_changes_unsubscribe(id: u64) -> bool"));
     assert!(content.contains("EVENT_SUBSCRIPTIONS.cancel(id)"));
@@ -2321,10 +2326,10 @@ fn test_ipc_generator_keeps_global_forwarding_for_legacy_events() {
     let content = std::fs::read_to_string(&output).unwrap();
 
     assert!(content.contains("pub fn start_event_forwarding("));
-    assert!(content.contains("handle.emit(\"graph-updated\", &delta)"));
+    assert!(content.contains("::tauri::Emitter::emit(&handle, \"graph-updated\", &delta)"));
     assert!(content.contains("RecvError::Lagged(skipped)"), "lag is logged and forwarding goes on");
     assert!(content.contains("pub async fn graph_updated_subscribe("), "legacy ops get subscriptions too");
-    assert!(content.contains("ontogen_core::events::no_id"));
+    assert!(content.contains("::ontogen_core::events::no_id"));
 }
 
 #[test]
@@ -2464,7 +2469,7 @@ fn test_ipc_generator_crud_module() {
     assert!(content.contains("pub async fn node_delete("));
 
     // Tauri attributes
-    assert!(content.contains("#[tauri::command]"));
+    assert!(content.contains("#[::tauri::command]"));
     assert!(!content.contains("#[specta::specta]"), "specta annotation should not be generated");
 
     // Store construction for store-based modules
@@ -4376,24 +4381,24 @@ pub async fn file(store: &Store, input: CreateTaskInput) -> Result<Task, AppErro
     let flat = compact(&code);
 
     for line in [
-        "let state: String = serde_json::from_value(ontogen_args.get(\"state\").cloned()\
+        "let state: String = ::serde_json::from_value(ontogen_args.get(\"state\").cloned()\
          .ok_or(\"Missing required parameter: state\")?).map_err(|e| format!(\"Invalid parameter state: {e}\"))?;",
         "let store: Option<String> = ontogen_args.get(\"store\")",
         "task::set_state(&ontogen_store, id, state, store)",
         "let verbose: Option<bool> = ontogen_args.get(\"verbose\").filter(|v| !v.is_null()).cloned()\
-         .map(serde_json::from_value::<bool>)",
+         .map(::serde_json::from_value::<bool>)",
         "task::get_summary(&ontogen_store, status, verbose, limit)",
-        "let input: CreateTaskInput = serde_json::from_value(ontogen_args.get(\"input\").cloned()\
+        "let input: CreateTaskInput = ::serde_json::from_value(ontogen_args.get(\"input\").cloned()\
          .ok_or(\"Missing required parameter: input\")?).map_err(|e| format!(\"Invalid parameter input: {e}\"))?;",
         "task::capture(&ontogen_store, input, status)",
-        "#[derive(JsonSchema)] pub struct OntogenTaskCaptureInput { pub input: CreateTaskInput, pub status: \
+        "#[derive(::schemars::JsonSchema)] pub struct OntogenTaskCaptureInput { pub input: CreateTaskInput, pub status: \
          Option<String>, }",
         // A body alone is the arguments, less the scope's.
-        "let ontogen_input: CreateTaskInput = serde_json::from_value(args_without(ontogen_args, &[\"project_id\"]))\
+        "let ontogen_input: CreateTaskInput = ::serde_json::from_value(args_without(ontogen_args, &[\"project_id\"]))\
          .map_err(|e| format!(\"Invalid input: {e}\"))?;",
         "task::file(&ontogen_store, ontogen_input)",
         "schema_fn: || with_project_id_schema(schema_for::<OntogenTaskCaptureInput>()),",
-        "#[derive(JsonSchema)] pub struct OntogenTaskSetStateInput { pub id: String, pub state: String, pub \
+        "#[derive(::schemars::JsonSchema)] pub struct OntogenTaskSetStateInput { pub id: String, pub state: String, pub \
          store: Option<String>, }",
     ] {
         assert!(flat.contains(&compact(line)), "{line}:\n{code}");
@@ -4519,7 +4524,8 @@ fn mcp_required_str_reports_a_wrong_type_as_invalid() {
         compact(&code).contains(&compact(
             "let value = args.get(key).ok_or_else(|| format!(\"Missing required parameter: {key}\"))?; \
              value.as_str().ok_or_else(|| { \
-                 let e = String::deserialize(value).expect_err(\"a value that is no string is no String\"); \
+                 let e = <String as ::serde::Deserialize>::deserialize(value) \
+                     .expect_err(\"a value that is no string is no String\"); \
                  format!(\"Invalid parameter {key}: {e}\") \
              })"
         )),
@@ -4529,6 +4535,198 @@ fn mcp_required_str_reports_a_wrong_type_as_invalid() {
     // The wording is serde's own for a `String`, which the read reports.
     let e = <String as serde::Deserialize>::deserialize(&serde_json::json!(5)).unwrap_err();
     assert_eq!(e.to_string(), "invalid type: integer `5`, expected a string");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// IPC + MCP - a consumer's names never collide with the generated file's
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// API modules named after the items an IPC or MCP file once imported or
+/// defined (`Value`, `State`, `Arc`, `Future`, `Log`) and after a Rust
+/// keyword (`Match`, module `r#match`), with args named after keywords
+/// (`r#type`, `r#in`), a JS reserved word (`class`) and a doc that quotes.
+/// Paginated, with a parameterless and a parameterized event op, so every
+/// shape of command and tool is emitted.
+pub(crate) fn name_safety_config(root: &std::path::Path) -> Config {
+    let api_dir = root.join("api");
+    for entity in ["value", "state"] {
+        write_synthetic_api(&api_dir, &format!("{entity}.rs"), &paged_crud_module_source(entity, "Store"));
+    }
+    write_synthetic_api(
+        &api_dir,
+        "match.rs",
+        &(paged_crud_module_source("match", "Store")
+            + "pub fn match_changes(state: &AppState) -> broadcast::Receiver<Match> { todo!() }\n"),
+    );
+    write_synthetic_api(
+        &api_dir,
+        "future.rs",
+        "pub async fn list(store: &Store, r#type: Option<&str>, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Future>, anyhow::Error> { todo!() }
+pub async fn count(store: &Store, r#type: Option<&str>) -> Result<u64, anyhow::Error> { todo!() }
+",
+    );
+    write_synthetic_api(
+        &api_dir,
+        "arc.rs",
+        "pub async fn get(store: &Store, r#in: &str) -> Result<Arc, anyhow::Error> { todo!() }
+pub fn arc_changes(state: &AppState, r#in: Option<String>) -> broadcast::Receiver<Arc> { todo!() }
+",
+    );
+    write_synthetic_api(
+        &api_dir,
+        "log.rs",
+        "pub fn log_changes(state: &AppState) -> broadcast::Receiver<Log> { todo!() }\n",
+    );
+    write_synthetic_api(
+        &api_dir,
+        "lookup.rs",
+        "/// Find the docs of a \"type\", in a \\ path.
+pub async fn find_docs(store: &Store, r#type: Option<String>, r#in: &str, class: Option<u32>) -> Result<Vec<Value>, anyhow::Error> { todo!() }
+",
+    );
+    let mut config = test_config(api_dir);
+    config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+    config
+}
+
+/// The `use` paths of a generated file, compacted (`crate::schema::{A,B}`).
+fn use_paths(code: &str) -> Vec<String> {
+    syn::parse_file(code)
+        .expect("the generated file parses")
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Use(u) => Some(compact(&quote::ToTokens::to_token_stream(&u.tree).to_string())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The names of the types a generated file defines itself.
+fn defined_types(code: &str) -> Vec<String> {
+    syn::parse_file(code)
+        .expect("the generated file parses")
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Struct(i) => Some(i.ident.to_string()),
+            syn::Item::Enum(i) => Some(i.ident.to_string()),
+            syn::Item::Type(i) => Some(i.ident.to_string()),
+            syn::Item::Trait(i) => Some(i.ident.to_string()),
+            syn::Item::Union(i) => Some(i.ident.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `line` writes a path into a runtime crate without the leading
+/// `::` that keeps a same-named consumer module from shadowing it.
+fn names_a_crate_rootless(line: &str) -> bool {
+    const CRATES: [&str; 9] =
+        ["std", "serde", "serde_json", "schemars", "tokio", "uuid", "ontogen_core", "tauri", "log"];
+    CRATES.iter().any(|krate| {
+        let path = format!("{krate}::");
+        line.match_indices(&path)
+            .any(|(at, _)| line[..at].chars().next_back().is_none_or(|c| c != ':' && c != '_' && !c.is_alphanumeric()))
+    })
+}
+
+/// IPC and MCP bring into scope bare only the consumer's names: its API
+/// modules, the types its fns name, its state and store. Runtime items are
+/// written by `::`-rooted paths, so an entity `Value` (once
+/// `serde_json::Value` on MCP), `State` (`tauri::State` on IPC), `Arc` or
+/// `Future` collides with nothing and a module `log` shadows no crate. The
+/// file's own types are `Ontogen`-prefixed but for those public in 0.8.0.
+/// A module named after a keyword is written raw (`r#match`).
+#[test]
+fn ipc_and_mcp_import_only_the_consumers_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, generator, public) in [
+        ("ipc", ipc_gen as fn(PathBuf) -> ServerGenerator, &["PaginatedResult"][..]),
+        ("mcp", mcp_gen, &["McpToolDef", "GetByIdInput", "ByIntIdInput", "EmptyInput", "SimpleToolDef"][..]),
+    ] {
+        let config = name_safety_config(tmp.path());
+        let code = generate_one(tmp.path(), config.clone(), generator);
+
+        let mut names = imported_names(&code);
+        let count = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), count, "{name}: a name is imported twice:\n{code}");
+        for entity in ["Arc", "Future", "Log", "Match", "State", "Value"] {
+            assert!(names.contains(&entity.to_string()), "{name} does not import the entity `{entity}`:\n{code}");
+        }
+
+        let consumer = [
+            format!("{}::", config.service_import_path),
+            format!("{}::", config.types_import_path),
+            config.state_import.clone(),
+            config.store_import.clone().unwrap(),
+        ];
+        for path in use_paths(&code) {
+            assert!(consumer.iter().any(|c| path.starts_with(c.as_str())), "{name}: `use {path}` is no consumer path");
+        }
+        let modules = use_paths(&code).into_iter().find(|p| p.starts_with("crate::api::v1::")).unwrap();
+        assert!(modules.contains("r#match"), "{name}: {modules}");
+        assert!(compact(&code).contains("r#match::list(&ontogen_store"), "{name}:\n{code}");
+        if name == "ipc" {
+            assert!(compact(&code).contains("crate::api::v1::r#match::match_changes(state)"), "{code}");
+        }
+
+        for ty in defined_types(&code) {
+            assert!(ty.starts_with("Ontogen") || public.contains(&ty.as_str()), "{name} defines `{ty}`:\n{code}");
+        }
+
+        // The consumer's own `log` module is called bare, as every module is.
+        let found: Vec<&str> = code
+            .lines()
+            .filter(|l| {
+                !l.trim_start().starts_with("//") && names_a_crate_rootless(&l.replace("log::log_changes(", ""))
+            })
+            .collect();
+        assert!(found.is_empty(), "{name}: a runtime path a module can shadow: {found:#?}");
+    }
+}
+
+/// A fn argument named after a keyword is bound raw (`r#type`) but travels
+/// under serde's name for it (`type`): the MCP input schema advertises
+/// `type`, so the tool reads `type`, and its errors name `type`. An IPC
+/// command takes the raw parameter, from which Tauri derives the key
+/// `type` itself.
+#[test]
+fn a_raw_argument_travels_under_its_name_without_r_hash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mcp = generate_one(tmp.path(), name_safety_config(tmp.path()), mcp_gen);
+    assert!(!mcp.contains("\"r#"), "a wire key keeps its `r#`:\n{mcp}");
+    let flat = compact(&mcp);
+    for line in [
+        // A custom op's arguments, as its schema struct names them.
+        "pub struct OntogenLookupFindDocsInput { pub r#type: Option<String>, pub r#in: String, pub class: \
+         Option<u32>, }",
+        "let r#type: Option<String> = ontogen_args.get(\"type\").filter(|v| !v.is_null()).cloned()\
+         .map(::serde_json::from_value::<String>).transpose()\
+         .map_err(|e| format!(\"Invalid parameter type: {e}\"))?;",
+        "let r#in = required_str(ontogen_args, \"in\")?;",
+        "lookup::find_docs(&ontogen_store, r#type, r#in, class)",
+        // A list's bare filter, read beside the page.
+        "let r#type: Option<String> = ontogen_args.get(\"type\")",
+        "future::list(&ontogen_store, r#type.as_deref(), Some(ontogen_limit), Some(ontogen_offset))",
+        // The doc that quotes is an escaped literal.
+        "description: \"Find the docs of a \\\"type\\\", in a \\\\ path.\",",
+    ] {
+        assert!(flat.contains(&compact(line)), "{line}:\n{mcp}");
+    }
+
+    let ipc = generate_one(tmp.path(), name_safety_config(tmp.path()), ipc_gen);
+    let flat = compact(&ipc);
+    for line in [
+        "pub async fn lookup_find_docs(r#type: Option<String>, r#in: String, class: Option<u32>,",
+        "lookup::find_docs(&ontogen_store, r#type, &r#in, class)",
+        "pub async fn arc_changes_subscribe(r#in: Option<String>,",
+        "pub async fn future_list(r#type: Option<String>, limit: Option<u32>, offset: Option<u32>,",
+    ] {
+        assert!(flat.contains(&compact(line)), "{line}:\n{ipc}");
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -5479,11 +5677,11 @@ fn ipc_and_mcp_read_a_typed_bare_filter() {
 
     for line in [
         "let title: Option<String> = ontogen_args.get(\"title\").filter(|v| !v.is_null()).cloned()\
-         .map(serde_json::from_value::<String>).transpose()\
+         .map(::serde_json::from_value::<String>).transpose()\
          .map_err(|e| format!(\"Invalid parameter title: {e}\"))?;",
         "let owner = required_str(ontogen_args, \"owner\")?;",
         "let limit_to: Option<u32> = ontogen_args.get(\"limit_to\").filter(|v| !v.is_null()).cloned()\
-         .map(serde_json::from_value::<u32>).transpose()\
+         .map(::serde_json::from_value::<u32>).transpose()\
          .map_err(|e| format!(\"Invalid parameter limit_to: {e}\"))?;",
         "workout::list(&ontogen_store, title.as_deref(), owner, limit_to, Some(ontogen_limit), Some(ontogen_offset))",
         "workout::count(&ontogen_store, title.as_deref(), owner, limit_to)",
@@ -5514,7 +5712,7 @@ fn ipc_and_mcp_clone_only_the_filters_list_consumes() {
     }
     assert!(
         mcp.contains(&compact(
-            "let n: u32 = serde_json::from_value(ontogen_args.get(\"n\").cloned()\
+            "let n: u32 = ::serde_json::from_value(ontogen_args.get(\"n\").cloned()\
              .ok_or(\"Missing required parameter: n\")?)\
              .map_err(|e| format!(\"Invalid parameter n: {e}\"))?;"
         )),
@@ -5532,7 +5730,7 @@ fn the_mcp_list_tool_advertises_its_bare_filters_and_refuses_a_malformed_filter(
     let [_, (_, mcp, mcp_code)] = typed_filter_transports("query: &ListWorkoutQuery, title: Option<&str>, owner: &str");
     assert!(
         mcp.contains(&compact(
-            "#[derive(JsonSchema)] pub struct OntogenWorkoutListFilter { pub title: Option<String>, pub owner: \
+            "#[derive(::schemars::JsonSchema)] pub struct OntogenWorkoutListFilter { pub title: Option<String>, pub owner: \
              String, #[serde(flatten)] pub ontogen_query: ListWorkoutQuery, }"
         )),
         "{mcp_code}"
@@ -5570,7 +5768,7 @@ fn the_mcp_list_tool_advertises_its_bare_filters_and_refuses_a_malformed_filter(
 fn the_mcp_list_tool_reads_its_filter_struct_without_its_own_arguments() {
     let read = |keys: &str| {
         compact(&format!(
-            "let ontogen_filter: ListWorkoutQuery = serde_json::from_value({keys})\
+            "let ontogen_filter: ListWorkoutQuery = ::serde_json::from_value({keys})\
              .map_err(|e| format!(\"Invalid filter: {{e}}\"))?;"
         ))
     };
@@ -9253,7 +9451,7 @@ fn an_ipc_list_takes_its_sort_keys_as_sort() {
     for scoped in [false, true] {
         let tmp = tempfile::tempdir().unwrap();
         let ipc = compact(&generate_one(tmp.path(), ops_fixture(tmp.path(), scoped), ipc_gen));
-        let parse = "let ontogen_order = ontogen_core::order::parse_sort(sort.unwrap_or_default())\
+        let parse = "let ontogen_order = ::ontogen_core::order::parse_sort(sort.unwrap_or_default())\
                      .map_err(|ontogen_e| ontogen_e.to_string())?;";
         let open = if scoped {
             "let ontogen_store = if let Some(ref ontogen_pid) = project_id"
@@ -9286,7 +9484,7 @@ fn an_ipc_list_takes_its_sort_keys_as_sort() {
         // The order's types are the store's: inferred, never imported.
         assert!(!ipc.contains("SortField") && !ipc.contains("OrderBy"), "{ipc}");
         let tag = &ipc[ipc.find(&compact("pub async fn tag_list(")).unwrap()..];
-        let tag = &tag[..tag.find("#[tauri::command]").unwrap()];
+        let tag = &tag[..tag.find("#[::tauri::command]").unwrap()];
         assert!(
             !tag.contains("sort") && !tag.contains("ontogen_order"),
             "a list with no order takes no `sort`:\n{tag}"
@@ -9398,7 +9596,7 @@ fn an_mcp_list_tool_advertises_and_reads_its_sort_keys() {
     assert_eq!(mcp.matches("fn with_sort_schema(").count(), 1, "{mcp}");
     assert!(
         flat.contains(&compact(
-            "json!({ \"type\": \"array\", \"items\": { \"type\": \"string\", \"enum\": keys }, \"description\": \
+            "::serde_json::json!({ \"type\": \"array\", \"items\": { \"type\": \"string\", \"enum\": keys }, \"description\": \
              \"Sort keys, applied in order: a field name sorts ascending, and `-` before it descending. The id is \
              the final tie-break.\" })"
         )),
@@ -9406,8 +9604,8 @@ fn an_mcp_list_tool_advertises_and_reads_its_sort_keys() {
     );
     assert!(
         flat.contains(&compact(
-            "fn sort_arg(args: &Value) -> Result<Vec<&str>, String> { match args.get(\"sort\") { None | \
-             Some(Value::Null) => Ok(Vec::new()), Some(Value::Array(keys)) => keys .iter() .map(|key| \
+            "fn sort_arg(args: &::serde_json::Value) -> Result<Vec<&str>, String> { match args.get(\"sort\") { None | \
+             Some(::serde_json::Value::Null) => Ok(Vec::new()), Some(::serde_json::Value::Array(keys)) => keys .iter() .map(|key| \
              key.as_str().ok_or_else(|| format!(\"Invalid sort: expected a string, got {key}\"))) .collect(), \
              Some(other) => Err(format!(\"Invalid sort: expected an array of strings, got {other}\")), } }"
         )),
@@ -9428,7 +9626,7 @@ fn an_mcp_list_tool_advertises_and_reads_its_sort_keys() {
         &[
             &format!("schema_fn: || {{ {schema} }},"),
             &format!("refuse_unknown_args( ontogen_args, {schema}, )?;"),
-            "let ontogen_order = ontogen_core::order::parse_sort(sort_arg(ontogen_args)?).map_err(|e| e.to_string())?;",
+            "let ontogen_order = ::ontogen_core::order::parse_sort(sort_arg(ontogen_args)?).map_err(|e| e.to_string())?;",
             "let ontogen_store =",
             "task::list(&ontogen_store, &ontogen_order, Some(ontogen_limit), Some(ontogen_offset))",
             "task::count(&ontogen_store)",

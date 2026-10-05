@@ -55,17 +55,6 @@ pub fn inner_type(ty: &str) -> String {
     if ty.starts_with("Vec<") && ty.ends_with('>') { ty[4..ty.len() - 1].to_string() } else { ty.to_string() }
 }
 
-/// Wrappers we peel through to find the underlying types that need importing.
-///
-/// Single-arg wrappers (`Option<T>`, `Vec<T>`, etc.) and multi-arg containers
-/// (`HashMap<K, V>`, `Result<T, E>`) are *both* in this set. The recursive
-/// walker treats them uniformly: it never imports the head, but always recurses
-/// into every generic argument.
-const KNOWN_CONTAINERS: &[&str] = &[
-    "Option", "Vec", "Box", "Arc", "Rc", "Cow", "Result", "HashMap", "BTreeMap", "HashSet", "BTreeSet", "IndexMap",
-    "IndexSet",
-];
-
 /// Names that should never be added to the import list — primitives, prelude
 /// scalars, and a few path types that occasionally appear in return positions.
 fn is_prelude_scalar(name: &str) -> bool {
@@ -100,14 +89,14 @@ fn is_prelude_scalar(name: &str) -> bool {
 /// - prelude/primitive types (`String`, `i64`, `bool`, …),
 /// - qualified paths (`crate::schema::Foo`, `relation::Model`) — those are
 ///   handled by the entity-import path elsewhere,
-/// - known container heads (`Option`, `Vec`, `HashMap`, …) — recurses into
-///   their generic args instead,
+/// - generic heads (`Option<T>`, `Vec<T>`, `HashMap<K, V>`, …) — recurses
+///   into their generic args instead,
 /// - `dyn Trait` and `impl Trait`.
 ///
-/// Unknown generic heads (e.g., user-defined `MyContainer<T>`) still have their
-/// args walked defensively, but the head itself is not imported — that case is
-/// rare in service-fn returns and the head usually points at a std container we
-/// don't know about yet.
+/// A head with generic args is never imported: it is almost always a std
+/// container, and a user-defined `MyContainer<T>` is rare in service-fn
+/// returns. A name without args is the consumer's own type even when a std
+/// container shares it: an entity `Arc` or `HashMap` is imported.
 pub fn collect_type_import(ty: &Type, imports: &mut Vec<String>) {
     match ty {
         // References: &T, &mut T — peel and recurse.
@@ -138,13 +127,7 @@ pub fn collect_type_import(ty: &Type, imports: &mut Vec<String>) {
             let Some(seg) = tp.path.segments.last() else { return };
             let name = seg.ident.to_string();
 
-            if KNOWN_CONTAINERS.contains(&name.as_str()) {
-                walk_path_args(&seg.arguments, imports);
-                return;
-            }
-
-            // Unknown generic head: still recurse into its args so we don't
-            // miss imports buried inside an unfamiliar wrapper.
+            // A generic head: recurse into its args, which hold the types.
             if !matches!(seg.arguments, PathArguments::None) {
                 walk_path_args(&seg.arguments, imports);
                 return;
