@@ -1774,11 +1774,11 @@ fn under_a_route_prefix_a_scoped_write_links_unscoped_targets() {
     );
     assert!(clients.is_ok(), "{:?}", clients.err());
     let http = servers.unwrap().unwrap().http;
-    let check = &http[http.find("async fn workout_set_check_linked_scoped(").expect(&http)..];
+    let check = &http[http.find("async fn ontogen_workout_set_check_linked_scoped(").expect(&http)..];
     let check = &check[..check.find("\n}\n").unwrap()];
     assert!(check.contains("tag::get_by_id(state, &linked.id)"), "{check}");
     assert!(!check.contains("store_for"), "the state reaches an unscoped target:\n{check}");
-    assert!(!http.contains("async fn workout_set_check_linked("), "no write is unscoped:\n{http}");
+    assert!(!http.contains("async fn ontogen_workout_set_check_linked("), "no write is unscoped:\n{http}");
 }
 
 /// A `list_X` with no add or remove beside it is a custom GET at its action
@@ -1833,6 +1833,7 @@ fn server_routes(server: &str) -> BTreeMap<Call, String> {
     for route in flat.split(".route(\"").skip(1) {
         let (path, rest) = route.split_once("\",").unwrap();
         let handlers = &rest[..rest.find(".fallback(").unwrap_or_else(|| panic!("no fallback on {path}"))];
+        let handlers = handlers.strip_prefix("axum::routing::").unwrap_or(handlers);
         for method in ["get", "post", "put", "patch", "delete"] {
             let at = if handlers.starts_with(&format!("{method}(")) {
                 Some(0)
@@ -1885,10 +1886,11 @@ fn server_args(server: &str, handler: &str) -> (ArgNames, BTreeSet<String>) {
         names.page = body.contains("page:true");
     }
     // The JSON:API `Query<Spec>` it extracts, not Axum's own.
-    for (at, _) in signature.match_indices("Query<").filter(|(at, _)| !signature[..*at].ends_with("::")) {
-        let spec = &signature[at + "Query<".len()..];
+    for (at, _) in signature.match_indices("OntogenQuery<") {
+        let spec = &signature[at + "OntogenQuery<".len()..];
         let spec = &spec[..spec.find('>').unwrap()];
-        let Some(spec_impl) = flat.split_once(&format!("implRouteQueryfor{spec}{{")).map(|(_, rest)| rest) else {
+        let Some(spec_impl) = flat.split_once(&format!("implOntogenRouteQueryfor{spec}{{")).map(|(_, rest)| rest)
+        else {
             continue;
         };
         let spec_impl = &spec_impl[..spec_impl.find('}').unwrap()];
@@ -2507,11 +2509,11 @@ fn assert_tag_crud_is_a_resource(http: &str, clients: &JsonApiClients) {
     let flat = crate::servers::tests::compact(http);
     assert!(
         flat.contains(&crate::servers::tests::compact(
-            ".route(\"/api/tags/{id}\", get(tag_get_by_id).patch(tag_update).delete(tag_delete)"
+            ".route(\"/api/tags/{id}\", axum::routing::get(tag_get_by_id).patch(tag_update).delete(tag_delete)"
         )),
         "{http}"
     );
-    assert!(http.contains("fn tag_as_resource<'a>("), "{http}");
+    assert!(http.contains("fn ontogen_tag_as_resource<'a>("), "{http}");
     for ts in [&clients.transport, &clients.http] {
         assert!(ts_method(ts, "tagGetById").contains("httpGet<JsonApiResourceDocument>(`/tags/"), "{ts}");
         assert!(ts_method(ts, "tagUpdate").contains("httpPatch<JsonApiResourceDocument>("), "{ts}");

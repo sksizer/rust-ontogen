@@ -412,23 +412,38 @@ generators: vec![
 This produces Axum route handlers with proper routing (abridged):
 
 ```rust
-pub fn entity_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/api/tasks", get(task_list).post(task_create).fallback(allow([Method::GET, Method::POST])))
+pub fn entity_routes() -> axum::Router<std::sync::Arc<AppState>> {
+    axum::Router::new()
+        .route(
+            "/api/tasks",
+            axum::routing::get(task_list)
+                .post(task_create)
+                .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])),
+        )
         .route(
             "/api/tasks/{id}",
-            get(task_get_by_id).patch(task_update).delete(task_delete)
-                .fallback(allow([Method::GET, Method::PATCH, Method::DELETE])),
+            axum::routing::get(task_get_by_id)
+                .patch(task_update)
+                .delete(task_delete)
+                .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::PATCH, OntogenMethod::DELETE])),
         )
         .route(
             "/api/tasks/{id}/relationships/{rel}",
-            get(ontogen_task_relationship_get)
+            axum::routing::get(ontogen_task_relationship_get)
                 .patch(ontogen_task_relationship_patch)
                 .post(ontogen_task_relationship_post)
                 .delete(ontogen_task_relationship_delete)
-                .fallback(allow([Method::GET, Method::PATCH, Method::POST, Method::DELETE])),
+                .fallback(ontogen_allow([
+                    OntogenMethod::GET,
+                    OntogenMethod::PATCH,
+                    OntogenMethod::POST,
+                    OntogenMethod::DELETE,
+                ])),
         )
-        .route("/api/tasks/{id}/{rel}", get(ontogen_task_related_get).fallback(allow([Method::GET])))
+        .route(
+            "/api/tasks/{id}/{rel}",
+            axum::routing::get(ontogen_task_related_get).fallback(ontogen_allow([OntogenMethod::GET])),
+        )
         // ... the same for agents and requirements
 }
 ```

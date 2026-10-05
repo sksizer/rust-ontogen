@@ -477,9 +477,14 @@ impl ApiModule {
 
     /// The identifier generated handlers call this module's functions
     /// through, for a function scanned from `surface`: the module name for
-    /// the base surface, `{name}_{surface}` for any other.
+    /// the base surface (`r#match` for `match`), `{name}_{surface}` for any
+    /// other.
     pub fn service_ident(&self, surface: usize) -> String {
-        if surface == self.base_surface() { self.name.clone() } else { format!("{}_{}", self.name, surface) }
+        if surface == self.base_surface() {
+            crate::ident::rust_ident(&self.name)
+        } else {
+            format!("{}_{}", self.name, surface)
+        }
     }
 }
 
