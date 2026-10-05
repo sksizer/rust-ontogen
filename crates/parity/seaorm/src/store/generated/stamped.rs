@@ -121,14 +121,6 @@ impl Store {
         let id = if record.id.trim().is_empty() {
             let base = ontogen_core::id::new_uuid();
             for candidate in ontogen_core::id::candidates(&base) {
-                let taken = stamped::Entity::find_by_id(candidate.as_str())
-                    .one(&txn)
-                    .await
-                    .map_err(|e| AppError::DbError(e.to_string()))?
-                    .is_some();
-                if taken {
-                    continue;
-                }
                 record.id = candidate;
                 if self.try_insert_stamped(&txn, &record).await? {
                     break;

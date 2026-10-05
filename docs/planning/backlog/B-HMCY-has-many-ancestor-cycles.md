@@ -25,6 +25,6 @@ Refusing a cycle needs an ancestor walk on every write that can close one: a `ha
   - for each child a `has_many` write lists, refuse when the child is the record or one of its ancestors;
   - for a `belongs_to` to the same entity, refuse when the new parent is the record or one of its descendants. A required foreign key's root names itself and stays allowed.
 - Bound the walk (by the record count, or a configurable depth) so a cycle already in the data, written before the check existed or by hand into a vault, ends the walk instead of looping.
-- SeaORM: walk inside the write's transaction and take the rows it reads under a lock, or document the isolation level it needs per engine (B-SQLT).
+- SeaORM: walk inside the write's transaction and take the rows it reads under a lock, or document the isolation level it needs per engine (B-SQLT). On SQLite the walk has to come after the transaction's first write: a transaction that reads before it writes fails with `SQLITE_BUSY` when another connection holds the write lock (store-layer guide, "Writes are all or nothing").
 - Markdown: run the walk and the writes under the vault's write lock (the one `create` probes ids under), so two writers in one process cannot interleave. Writers in separate processes stay best-effort, as every multi-record markdown write is (ADR 0001 contract item 2); the contract would say so.
 - Add runtime parity scenarios in `crates/parity` for a two-record and a three-record cycle through `has_many` and through `belongs_to`, on create and update, each refused with nothing written.

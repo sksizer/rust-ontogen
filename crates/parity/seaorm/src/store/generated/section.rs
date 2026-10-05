@@ -149,14 +149,6 @@ impl Store {
                 return Err(AppError::SectionIdRequired("field \"title\" produced an empty slug".to_string()));
             }
             for candidate in ontogen_core::id::candidates(&base) {
-                let taken = section::Entity::find_by_id(candidate.as_str())
-                    .one(&txn)
-                    .await
-                    .map_err(|e| AppError::DbError(e.to_string()))?
-                    .is_some();
-                if taken {
-                    continue;
-                }
                 record.id = candidate;
                 if self.try_insert_section(&txn, &record).await? {
                     break;
