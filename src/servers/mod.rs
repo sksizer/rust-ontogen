@@ -29,19 +29,16 @@ use crate::resource::ResourceModel;
 
 /// Generate server transports (Axum / Tauri IPC / MCP).
 ///
-/// When `api` is `Some`, future versions will use structured metadata.
-/// When `None`, falls back to scanning source files (current behavior).
-///
-/// Client-side TypeScript + admin-registry generation is the sibling
-/// [`crate::gen_clients`] entry point; this function no longer touches
-/// the TS surface.
+/// The API surfaces are always scanned from source; `_api` and `_scan_dirs`
+/// are unused. Client-side TypeScript and the admin registry are generated
+/// by the sibling [`crate::gen_clients`].
 pub fn generate(
     schema: &SchemaOutput,
     _api: Option<&ApiOutput>,
     _scan_dirs: &[PathBuf],
     config: &crate::ServersConfig,
 ) -> Result<ServersOutput, CodegenError> {
-    let resources = ResourceModel::build(&schema.entities, &config.naming).map_err(CodegenError::Server)?;
+    let resources = ResourceModel::build(&schema.entities, &config.naming);
     let error_map = match &config.error_source_dir {
         Some(dir) => error_map::scan(dir).map_err(CodegenError::Server)?,
         None => None,
@@ -228,6 +225,7 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     }
     classify::check_order_params(&modules, &config.resources)?;
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::HttpAxum { .. })) {
+        config.resources.check()?;
         classify::check_http_ops(&modules, &config.resources, config.route_prefix.as_ref())?;
         generators::http::check_resource_ops(&modules, config)?;
         for warning in generators::http::unplaced_app_error_warnings(&modules, config) {

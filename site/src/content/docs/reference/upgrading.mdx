@@ -131,7 +131,7 @@ Under a `route_prefix`, a row of `ServersOutput.http_routes` for a route served 
 
 The HTTP wire builds a resource's `attributes` from the entity's serde shape, so a struct or field with an attribute that changes that shape is now a schema error. The refused attributes are `rename`, `rename_all`, `alias`, `flatten`, `skip`, `skip_serializing`, `skip_serializing_if`, `serialize_with` and `with`. `#[serde(default)]` and `deserialize_with` change only deserialization and stay allowed. Remove the attribute, or rename the Rust field.
 
-Also refused at build time: an id field that is not a `String`, an attribute or relationship name that is not a legal JSON:API member name (for example one that starts or ends with `_`) or is `type` or `id`, a relationship that shares its name with an attribute or another relationship (or is named `relationships`), and a relation whose target is not in the schema.
+Also refused at build time, when the build generates an HTTP server (`HttpAxum`) or an HTTP TypeScript client (`HttpTs`, `HttpTauriIpcSplit`): an id field that is not a `String`, an attribute or relationship name that is not a legal JSON:API member name or is `type` or `id`, a relationship that shares its name with an attribute or another relationship (or is named `relationships`), and a relation whose target is not in the schema. A legal member name has only ASCII letters and digits, non-ASCII characters, `-`, `_` and spaces, and starts and ends with an ASCII letter or digit or a non-ASCII character, so a field named `_draft` or `draft_` is refused. IPC-only and MCP-only builds, with or without the admin registry, are unaffected.
 
 ### Ops the generator now refuses
 

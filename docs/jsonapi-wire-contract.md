@@ -335,8 +335,11 @@ every relation field removed. Concretely:
 
 The generator raises a `CodegenError` when:
 
-- an attribute name is not a legal JSON:API member name (for example, a
-  leading or trailing `_`), or is `type` or `id`;
+- an attribute name is not a legal JSON:API member name, or is `type` or
+  `id`. A legal member name has only ASCII letters and digits, non-ASCII
+  characters, `-`, `_` and spaces, and starts and ends with an ASCII
+  letter or digit or a non-ASCII character, so `_draft` and `draft_` are
+  refused;
 - an entity struct or field carries a serde attribute that changes its
   serialized shape: `rename`, `rename_all`, `alias`, `flatten`, `skip`,
   `skip_serializing`, `skip_serializing_if`, `serialize_with` or `with`.
@@ -373,12 +376,19 @@ declaration order of their `list_X`. A task's relationships are `epic`,
 
 **Collisions.** The generator raises a `CodegenError` when:
 
+- a relationship name is not a legal JSON:API member name (§5.3);
 - a relationship name equals an attribute name, `type`, `id` or
   `relationships`;
 - two relationships share a name.
 
 This applies to junction-op relationships (§9.1) as well. The spec gives
 fields one namespace, and `relationships` is a URL segment.
+
+The build-time rules of §5.2–§5.4 (the id type, legal and distinct member
+names, relation targets in the schema) apply to builds that generate an
+HTTP server or an HTTP TypeScript client. IPC-only and MCP-only builds,
+with or without the admin registry, are unaffected: their payloads are flat
+(§15).
 
 **Writes.** Every relationship is writable on the wire except a junction-op
 relationship (§9.1), which is changed only through its own endpoint.
