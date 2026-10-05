@@ -490,27 +490,27 @@ The IPC generator produces `#[tauri::command]` handlers for desktop applications
 The command iron-log gets for `workout::list`:
 
 ```rust
-#[tauri::command]
+#[::tauri::command]
 pub async fn workout_list(
     sort: Option<Vec<String>>,
-    ontogen_state: State<'_, Arc<AppState>>,
+    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<AppState>>,
 ) -> Result<Vec<Workout>, String> {
     let ontogen_order =
-        ontogen_core::order::parse_sort(sort.unwrap_or_default()).map_err(|ontogen_e| ontogen_e.to_string())?;
+        ::ontogen_core::order::parse_sort(sort.unwrap_or_default()).map_err(|ontogen_e| ontogen_e.to_string())?;
     let ontogen_store = ontogen_state.store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
     workout::list(&ontogen_store, &ontogen_order).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 ```
 
-A command names each parameter after the function's argument, since that name is the `invoke` key, and prefixes its own bindings with `ontogen_`. Payloads are flat: entities in and out with their Rust field names, relation fields as ids, `PaginatedResult` for a paginated list, and errors as strings (an `AppError`'s `Display` text).
+A command names each parameter after the function's argument, since that name is the `invoke` key, and prefixes its own bindings with `ontogen_`. An argument named after a Rust keyword stays raw (`r#type`), and Tauri drops the `r#` from its key (`type`). Payloads are flat: entities in and out with their Rust field names, relation fields as ids, `PaginatedResult` for a paginated list, and errors as strings (an `AppError`'s `Display` text).
 
 A list that takes an order has an optional `sort` argument, an array of the keys `sort` takes over HTTP (`['-created', 'title']`). It is read with `ontogen_core::order::parse_sort`, so a bad key is the string error ``unknown sort field `priority` ``, and it is read before the store opens. A list's filter and page arguments sit beside it. A bare filter named `sort` on such a list is a build error, since it would share the `sort` key.
 
 The generator also produces an `ipc_handler()` function that wraps all commands into a `tauri::generate_handler!` macro call:
 
 ```rust
-pub fn ipc_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
-    tauri::generate_handler![
+pub fn ipc_handler() -> impl Fn(::tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    ::tauri::generate_handler![
         task_list,
         task_get_by_id,
         task_create,
@@ -572,8 +572,8 @@ The MCP (Model Context Protocol) generator produces tool definitions for AI assi
 pub struct McpToolDef {
     pub name: &'static str,
     pub description: &'static str,
-    pub schema_fn: fn() -> Value,
-    pub handler: HandlerFn,
+    pub schema_fn: fn() -> ::serde_json::Value,
+    pub handler: OntogenHandlerFn,
 }
 ```
 
@@ -583,7 +583,7 @@ The generated registry provides three entry points:
 - `tool_definitions()` -- returns `Vec<SimpleToolDef>` with pre-computed schemas, suitable for `tools/list` responses.
 - `handle_tool_call(state, tool_name, args)` -- dispatches a tool call by name. Creates a minimal tokio runtime for sync MCP servers.
 
-MCP tool names follow the same entity-first convention as IPC commands: `task_list`, `task_create`, `agent_add_role`.
+MCP tool names follow the same entity-first convention as IPC commands: `task_list`, `task_create`, `agent_add_role`. A tool reads each argument under the name its input schema gives it, serde's: an argument named after a Rust keyword (`r#type`) is `type`.
 
 A list tool whose list takes an order has an optional `sort` property in its input schema, an array whose items are the sort keys (`id`, `-id`, `title`, `-title`, and so on, enumerated from the entity's fields):
 
@@ -596,6 +596,10 @@ A list tool whose list takes an order has an optional `sort` property in its inp
 <Aside type="note">
   Event streams are not exposed as MCP tools. MCP is request-response only, so there's no equivalent to SSE or Tauri events.
 </Aside>
+
+### Names in the generated files
+
+The IPC and MCP files bring into scope only your names: your API modules (`r#match` for a module named after a keyword), the types your functions name, and your state and store. Every runtime item is written by its `::`-rooted path (`::serde_json::Value`, `::tauri::State`, `::std::sync::Arc`), so an entity may be named `Value`, `State`, `Arc` or `Future`, and a module named `log` does not shadow the `log` crate. The types a file defines itself carry the `Ontogen` prefix (`OntogenHandlerFn`, `Ontogen{Module}{Fn}Input`), except the ones consumers use: `McpToolDef`, `SimpleToolDef`, `GetByIdInput`, `ByIntIdInput`, `EmptyInput` and IPC's `PaginatedResult`.
 
 ## The naming system
 

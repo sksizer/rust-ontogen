@@ -235,21 +235,21 @@ my-app/
 Each entity's CRUD operations become Tauri commands. Here's what the generator produces for an `Exercise` entity:
 
 ```rust
-#[tauri::command]
+#[::tauri::command]
 pub async fn exercise_list(
     sort: Option<Vec<String>>,
-    ontogen_state: State<'_, Arc<AppState>>,
+    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<AppState>>,
 ) -> Result<Vec<Exercise>, String> {
     let ontogen_order =
-        ontogen_core::order::parse_sort(sort.unwrap_or_default()).map_err(|ontogen_e| ontogen_e.to_string())?;
+        ::ontogen_core::order::parse_sort(sort.unwrap_or_default()).map_err(|ontogen_e| ontogen_e.to_string())?;
     let ontogen_store = ontogen_state.store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
     exercise::list(&ontogen_store, &ontogen_order).await.map_err(|ontogen_e| ontogen_e.to_string())
 }
 
-#[tauri::command]
+#[::tauri::command]
 pub async fn exercise_create(
     input: CreateExerciseInput,
-    ontogen_state: State<'_, Arc<AppState>>,
+    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<AppState>>,
 ) -> Result<Exercise, String> {
     let ontogen_store = ontogen_state.store().await.map_err(|ontogen_e| ontogen_e.to_string())?;
     exercise::create(&ontogen_store, input).await.map_err(|ontogen_e| ontogen_e.to_string())
@@ -258,7 +258,7 @@ pub async fn exercise_create(
 
 Key things to notice:
 
-- `State<'_, Arc<AppState>>` is Tauri's state extractor. The `AppState` is the same one you registered with `app.manage()`.
+- `::tauri::State<'_, ::std::sync::Arc<AppState>>` is Tauri's state extractor. The `AppState` is the same one you registered with `app.manage()`. Runtime items are written by their full paths so that none collides with an entity of the same name.
 - Arguments and results are flat: the `Exercise` itself, not a JSON:API document. `sort` takes the same keys as the HTTP `sort` parameter (`name`, `-name`).
 - Errors are mapped to `String` because Tauri IPC requires string-serializable errors.
 - The handler delegates to the API layer (`exercise::list`, `exercise::create`), which delegates to the store.
