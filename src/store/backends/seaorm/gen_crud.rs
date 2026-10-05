@@ -15,6 +15,7 @@
 //! `create_*` calls `ontogen_core::id` at runtime, so the consumer depends
 //! on `ontogen-core`, with its `uuid` feature under `IdStrategy::Uuid`.
 
+use crate::ident::rust_ident;
 use crate::ir::IdStrategy;
 use crate::resource::member_name;
 use crate::schema::model::{EntityDef, EnumDef};
@@ -66,6 +67,7 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, enums: &[EnumDe
 fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let name = &entity.name;
     let snake = to_snake_case(name);
+    let module = rust_ident(&snake);
     let plural = pluralize(&snake);
     let sort_field = sort_field_type(entity);
 
@@ -74,7 +76,7 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     ));
     // The order is applied before the page is cut, or the page is not a
     // slice of that order.
-    code.push_str(&format!("        let mut query = order_{plural}_query({snake}::Entity::find(), order);\n"));
+    code.push_str(&format!("        let mut query = order_{plural}_query({module}::Entity::find(), order);\n"));
     // The engine takes `LIMIT` and `OFFSET` as i64, and sea-query panics
     // binding a larger u64. Clamped, an oversized offset is past the end (an
     // empty page) and an oversized limit is every row, as on markdown.
@@ -96,12 +98,12 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
 
     if has_relations {
         code.push_str(&format!(
-            "        let mut entities: Vec<{name}> = models.iter().map({name}::from_model).collect::<Result<_, _>>()?;\n"
+            "        let mut records: Vec<{name}> = models.iter().map({name}::from_model).collect::<Result<_, _>>()?;\n"
         ));
-        code.push_str("        for entity in &mut entities {\n");
-        code.push_str(&format!("            self.populate_{snake}_relations(entity).await?;\n"));
+        code.push_str("        for record in &mut records {\n");
+        code.push_str(&format!("            self.populate_{snake}_relations(record).await?;\n"));
         code.push_str("        }\n");
-        code.push_str("        Ok(entities)\n");
+        code.push_str("        Ok(records)\n");
     } else {
         code.push_str(&format!("        models.iter().map({name}::from_model).collect()\n"));
     }
@@ -126,6 +128,7 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
 fn generate_order_query(code: &mut String, entity: &EntityDef, enums: &[EnumDef]) {
     let name = &entity.name;
     let snake = to_snake_case(name);
+    let module = rust_ident(&snake);
     let plural = pluralize(&snake);
     let sort_field = sort_field_type(entity);
 
@@ -134,7 +137,7 @@ fn generate_order_query(code: &mut String, entity: &EntityDef, enums: &[EnumDef]
     ));
     code.push_str("/// descending, then the id. A hand-written list that filters in SQL orders through this.\n");
     code.push_str(&format!(
-        "pub fn order_{plural}_query(mut query: Select<{snake}::Entity>, order: &[OrderBy<{sort_field}>]) -> Select<{snake}::Entity> {{\n"
+        "pub fn order_{plural}_query(mut query: sea_orm::Select<{module}::Entity>, order: &[OrderBy<{sort_field}>]) -> sea_orm::Select<{module}::Entity> {{\n"
     ));
     code.push_str("    for key in ontogen_core::order::effective(order) {\n");
     code.push_str("        let column = match key.field {\n");
@@ -143,12 +146,14 @@ fn generate_order_query(code: &mut String, entity: &EntityDef, enums: &[EnumDef]
             SortKind::Id => id_column(entity),
             _ => to_pascal_case(member_name(&spec.field.name)),
         };
-        code.push_str(&format!("            {sort_field}::{} => {snake}::Column::{column},\n", spec.variant));
+        code.push_str(&format!("            {sort_field}::{} => {module}::Column::{column},\n", spec.variant));
     }
     code.push_str("        };\n");
     code.push_str("        let (direction, nulls) = match key.direction {\n");
-    code.push_str("            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),\n");
-    code.push_str("            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),\n");
+    code.push_str(
+        "            ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),\n",
+    );
+    code.push_str("            ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),\n");
     code.push_str("        };\n");
     code.push_str("        // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.\n");
     code.push_str("        query = query.order_by_with_nulls(column, direction, nulls);\n");
@@ -159,10 +164,11 @@ fn generate_order_query(code: &mut String, entity: &EntityDef, enums: &[EnumDef]
 
 fn generate_count(code: &mut String, entity: &EntityDef) {
     let snake = to_snake_case(&entity.name);
+    let module = rust_ident(&snake);
     let plural = pluralize(&snake);
 
     code.push_str(&format!("    pub async fn count_{plural}(&self) -> Result<u64, AppError> {{\n"));
-    code.push_str(&format!("        {snake}::Entity::find()\n"));
+    code.push_str(&format!("        {module}::Entity::find()\n"));
     code.push_str("            .count(self.db())\n");
     code.push_str("            .await\n");
     code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))\n");
@@ -172,19 +178,20 @@ fn generate_count(code: &mut String, entity: &EntityDef) {
 fn generate_get(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let name = &entity.name;
     let snake = to_snake_case(name);
+    let module = rust_ident(&snake);
     let not_found = not_found_variant(name);
 
     code.push_str(&format!("    pub async fn get_{snake}(&self, id: &str) -> Result<{name}, AppError> {{\n"));
-    code.push_str(&format!("        let model = {snake}::Entity::find_by_id(id)\n"));
+    code.push_str(&format!("        let model = {module}::Entity::find_by_id(id)\n"));
     code.push_str("            .one(self.db())\n");
     code.push_str("            .await\n");
     code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?\n");
     code.push_str(&format!("            .ok_or_else(|| AppError::{not_found}(id.to_string()))?;\n\n"));
 
     if has_relations {
-        code.push_str(&format!("        let mut entity = {name}::from_model(&model)?;\n"));
-        code.push_str(&format!("        self.populate_{snake}_relations(&mut entity).await?;\n"));
-        code.push_str("        Ok(entity)\n");
+        code.push_str(&format!("        let mut record = {name}::from_model(&model)?;\n"));
+        code.push_str(&format!("        self.populate_{snake}_relations(&mut record).await?;\n"));
+        code.push_str("        Ok(record)\n");
     } else {
         code.push_str(&format!("        {name}::from_model(&model)\n"));
     }
@@ -198,47 +205,39 @@ fn generate_create(code: &mut String, entity: &EntityDef, has_relations: bool, i
     let entity_kind = entity_kind_variant(name);
 
     code.push_str(&format!(
-        "    pub async fn create_{snake}(&self, mut {snake}: {name}) -> Result<{name}, AppError> {{\n"
+        "    pub async fn create_{snake}(&self, mut record: {name}) -> Result<{name}, AppError> {{\n"
     ));
 
     // Hook: before_create (can modify entity or reject)
-    code.push_str(&format!("        hooks::before_create(self, &mut {snake}).await?;\n\n"));
+    code.push_str("        hooks::before_create(self, &mut record).await?;\n\n");
 
-    // Extract junction/has_many field values before converting to active model
+    // The junction and has_many lists are written from the record once it
+    // has an id; the insert only borrows it.
     let junctions: Vec<_> = entity.junction_relations().collect();
-    let has_manys: Vec<_> = entity.has_many_relations().collect();
-
-    for (field, _info) in &junctions {
-        code.push_str(&format!("        let {fname} = {snake}.{fname}.clone();\n", fname = field.name));
-    }
-    for (field, _info) in &has_manys {
-        code.push_str(&format!("        let {fname} = {snake}.{fname}.clone();\n", fname = field.name));
-    }
-    if has_relations {
-        code.push('\n');
-    }
-    has_many::emit_missing_children_check(code, entity, &has_many_writes(entity), |f| format!("&{f}"));
-    emit_nan_checks(code, entity, FloatSource::Record(&snake), Skipped::Stored, |m| format!("AppError::DbError({m})"));
+    has_many::emit_missing_children_check(code, entity, &has_many_writes(entity), |f| format!("&record.{f}"));
+    emit_nan_checks(code, entity, FloatSource::Record("record"), Skipped::Stored, |m| {
+        format!("AppError::DbError({m})")
+    });
 
     generate_insert_with_id(code, entity, id_strategy);
 
     // Sync junction tables
     for (field, info) in &junctions {
-        let jt = junction_table_name(&snake, &field.name, info.junction.as_deref());
+        let jt = junction_table_name(&snake, member_name(&field.name), info.junction.as_deref());
         let src_col = junction_source_col(&snake);
         let target_snake = to_snake_case(&info.target);
         let is_self_ref = entity.name == info.target;
         let tgt_col = junction_target_col(&snake, &target_snake, is_self_ref);
 
         code.push_str(&format!(
-            "        self.sync_junction(\"{jt}\", \"{src_col}\", \"{tgt_col}\", &id, &{fname}).await?;\n",
-            fname = field.name
+            "        self.sync_junction(\"{jt}\", \"{src_col}\", \"{tgt_col}\", &id, &record.{}).await?;\n",
+            field.name
         ));
     }
 
     // Set parent_id on children (has_many reverse)
     for hm in has_many_writes(entity) {
-        code.push_str(&format!("        for child_id in &{fname} {{\n", fname = hm.field));
+        code.push_str(&format!("        for child_id in &record.{} {{\n", hm.field));
         code.push_str(&format!(
             "            self.set_{snake}_parent(child_id, {}).await?;\n",
             has_many::set_parent_arg(hm.fk_required, "&id")
@@ -269,14 +268,15 @@ fn generate_create(code: &mut String, entity: &EntityDef, has_relations: bool, i
 fn generate_insert_with_id(code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
     let name = &entity.name;
     let snake = to_snake_case(name);
+    let module = rust_ident(&snake);
 
     let base = match id_strategy {
         IdStrategy::Provided => None,
-        IdStrategy::SlugFromField(field) => Some(format!("ontogen_core::id::slugify(&{snake}.{field})")),
+        IdStrategy::SlugFromField(field) => Some(format!("ontogen_core::id::slugify(&record.{})", rust_ident(field))),
         IdStrategy::Uuid => Some("ontogen_core::id::new_uuid()".to_string()),
     };
 
-    code.push_str(&format!("        let id = if {snake}.id.trim().is_empty() {{\n"));
+    code.push_str("        let id = if record.id.trim().is_empty() {\n");
     match (&base, id_strategy) {
         (None, _) => {
             code.push_str(&format!(
@@ -295,7 +295,7 @@ fn generate_insert_with_id(code: &mut String, entity: &EntityDef, id_strategy: &
                 code.push_str("            }\n");
             }
             code.push_str("            for candidate in ontogen_core::id::candidates(&base) {\n");
-            code.push_str(&format!("                let taken = {snake}::Entity::find_by_id(candidate.as_str())\n"));
+            code.push_str(&format!("                let taken = {module}::Entity::find_by_id(candidate.as_str())\n"));
             code.push_str("                    .one(self.db())\n");
             code.push_str("                    .await\n");
             code.push_str("                    .map_err(|e| AppError::DbError(e.to_string()))?\n");
@@ -303,28 +303,29 @@ fn generate_insert_with_id(code: &mut String, entity: &EntityDef, id_strategy: &
             code.push_str("                if taken {\n");
             code.push_str("                    continue;\n");
             code.push_str("                }\n");
-            code.push_str(&format!("                {snake}.id = candidate;\n"));
-            code.push_str(&format!("                if self.try_insert_{snake}(&{snake}).await? {{\n"));
+            code.push_str("                record.id = candidate;\n");
+            code.push_str(&format!("                if self.try_insert_{snake}(&record).await? {{\n"));
             code.push_str("                    break;\n");
             code.push_str("                }\n");
             code.push_str("            }\n");
-            code.push_str(&format!("            {snake}.id.clone()\n"));
+            code.push_str("            record.id.clone()\n");
         }
     }
     code.push_str("        } else {\n");
-    code.push_str(&format!(
-        "            ontogen_core::id::validate_id(&{snake}.id).map_err(|e| AppError::DbError(e.to_string()))?;\n"
-    ));
-    code.push_str(&format!("            if !self.try_insert_{snake}(&{snake}).await? {{\n"));
-    code.push_str(&format!("                return Err(AppError::{name}AlreadyExists({snake}.id));\n"));
+    code.push_str(
+        "            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;\n",
+    );
+    code.push_str(&format!("            if !self.try_insert_{snake}(&record).await? {{\n"));
+    code.push_str(&format!("                return Err(AppError::{name}AlreadyExists(record.id));\n"));
     code.push_str("            }\n");
-    code.push_str(&format!("            {snake}.id.clone()\n"));
+    code.push_str("            record.id.clone()\n");
     code.push_str("        };\n\n");
 }
 
 fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let name = &entity.name;
     let snake = to_snake_case(name);
+    let module = rust_ident(&snake);
     let not_found = not_found_variant(name);
     let entity_kind = entity_kind_variant(name);
 
@@ -333,7 +334,7 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
     ));
 
     // Fetch existing
-    code.push_str(&format!("        let existing_model = {snake}::Entity::find_by_id(id)\n"));
+    code.push_str(&format!("        let existing_model = {module}::Entity::find_by_id(id)\n"));
     code.push_str("            .one(self.db())\n");
     code.push_str("            .await\n");
     code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?\n");
@@ -353,10 +354,18 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
     let has_manys: Vec<_> = entity.has_many_relations().collect();
 
     for (field, _info) in &junctions {
-        code.push_str(&format!("        let {fname}_changed = updates.{fname}.is_some();\n", fname = field.name));
+        code.push_str(&format!(
+            "        let {} = updates.{}.is_some();\n",
+            has_many::local(&field.name, "changed"),
+            field.name
+        ));
     }
     for (field, _info) in &has_manys {
-        code.push_str(&format!("        let {fname}_changed = updates.{fname}.is_some();\n", fname = field.name));
+        code.push_str(&format!(
+            "        let {} = updates.{}.is_some();\n",
+            has_many::local(&field.name, "changed"),
+            field.name
+        ));
     }
     if !junctions.is_empty() || !has_manys.is_empty() {
         code.push('\n');
@@ -378,13 +387,13 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
 
     // Conditional junction sync
     for (field, info) in &junctions {
-        let jt = junction_table_name(&snake, &field.name, info.junction.as_deref());
+        let jt = junction_table_name(&snake, member_name(&field.name), info.junction.as_deref());
         let src_col = junction_source_col(&snake);
         let target_snake = to_snake_case(&info.target);
         let is_self_ref = entity.name == info.target;
         let tgt_col = junction_target_col(&snake, &target_snake, is_self_ref);
 
-        code.push_str(&format!("        if {fname}_changed {{\n", fname = field.name));
+        code.push_str(&format!("        if {} {{\n", has_many::local(&field.name, "changed")));
         code.push_str(&format!(
             "            self.sync_junction(\"{jt}\", \"{src_col}\", \"{tgt_col}\", id, &current.{fname}).await?;\n",
             fname = field.name
@@ -413,6 +422,7 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
 fn generate_delete(code: &mut String, entity: &EntityDef) {
     let name = &entity.name;
     let snake = to_snake_case(name);
+    let module = rust_ident(&snake);
     let not_found = not_found_variant(name);
     let entity_kind = entity_kind_variant(name);
 
@@ -421,12 +431,12 @@ fn generate_delete(code: &mut String, entity: &EntityDef) {
     // Hook: before_delete
     code.push_str("        hooks::before_delete(self, id).await?;\n\n");
 
-    code.push_str(&format!("        let existing = {snake}::Entity::find_by_id(id)\n"));
+    code.push_str(&format!("        let existing = {module}::Entity::find_by_id(id)\n"));
     code.push_str("            .one(self.db())\n");
     code.push_str("            .await\n");
     code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?\n");
     code.push_str(&format!("            .ok_or_else(|| AppError::{not_found}(id.to_string()))?;\n\n"));
-    code.push_str(&format!("        let active: {snake}::ActiveModel = existing.into();\n"));
+    code.push_str(&format!("        let active: {module}::ActiveModel = existing.into();\n"));
     code.push_str("        active\n");
     code.push_str("            .delete(self.db())\n");
     code.push_str("            .await\n");
@@ -448,34 +458,34 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
     let snake = to_snake_case(name);
 
     code.push_str(&format!("    pub(crate) async fn populate_{snake}_relations(\n"));
-    code.push_str(&format!("        &self,\n        {snake}: &mut crate::schema::{name},\n"));
+    code.push_str(&format!("        &self,\n        record: &mut crate::schema::{name},\n"));
     code.push_str("    ) -> Result<(), crate::schema::AppError> {\n");
 
     // has_many fields: load child IDs via SeaORM query
     for (field, info) in entity.has_many_relations() {
         if let Some(ref fk) = info.foreign_key {
-            let target_snake = to_snake_case(&info.target);
-            let fk_col = to_pascal_case(fk);
+            let target_module = rust_ident(&to_snake_case(&info.target));
+            let fk_col = to_pascal_case(member_name(fk));
 
-            code.push_str(&format!("        {snake}.{fname} = {{\n", fname = field.name,));
-            code.push_str(&format!("            use crate::persistence::db::entities::{target_snake};\n"));
+            code.push_str(&format!("        record.{} = {{\n", field.name));
+            code.push_str(&format!("            use crate::persistence::db::entities::{target_module};\n"));
             code.push_str(
                 "            // sqlite-only: child ids sort in byte order under SQLite's default BINARY collation.\n",
             );
-            code.push_str(&format!("            let children = {target_snake}::Entity::find()\n"));
-            code.push_str(&format!("                .filter({target_snake}::Column::{fk_col}.eq(&{snake}.id))\n"));
+            code.push_str(&format!("            let children = {target_module}::Entity::find()\n"));
+            code.push_str(&format!("                .filter({target_module}::Column::{fk_col}.eq(&record.id))\n"));
             // A record is never its own child: a root that is its own parent
             // (a required foreign key has to point somewhere) would otherwise
             // list itself, and an update that left it out would drop it. The
             // markdown backend skips it the same way.
             if info.target == entity.name {
-                code.push_str(&format!("                .filter({target_snake}::Column::Id.ne(&{snake}.id))\n"));
+                code.push_str(&format!("                .filter({target_module}::Column::Id.ne(&record.id))\n"));
             }
             // Same reason the list orders: this is a multi-row SELECT, so
             // without an `ORDER BY` the engine picks the order and a
             // `has_many` field comes back shuffled between calls. The markdown
             // backend returns these in id order too.
-            code.push_str(&format!("                .order_by_asc({target_snake}::Column::Id)\n"));
+            code.push_str(&format!("                .order_by_asc({target_module}::Column::Id)\n"));
             code.push_str("                .all(self.db())\n");
             code.push_str("                .await\n");
             code.push_str("                .map_err(|e| crate::schema::AppError::DbError(e.to_string()))?;\n");
@@ -486,14 +496,14 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
 
     // many_to_many fields: load junction IDs
     for (field, info) in entity.junction_relations() {
-        let jt = junction_table_name(&snake, &field.name, info.junction.as_deref());
+        let jt = junction_table_name(&snake, member_name(&field.name), info.junction.as_deref());
         let src_col = junction_source_col(&snake);
         let target_snake = to_snake_case(&info.target);
         let is_self_ref = entity.name == info.target;
         let tgt_col = junction_target_col(&snake, &target_snake, is_self_ref);
 
         code.push_str(&format!(
-            "        {snake}.{fname} = self\n            .load_junction_ids(\"{jt}\", \"{src_col}\", \"{tgt_col}\", &{snake}.id)\n            .await?;\n",
+            "        record.{fname} = self\n            .load_junction_ids(\"{jt}\", \"{src_col}\", \"{tgt_col}\", &record.id)\n            .await?;\n",
             fname = field.name,
         ));
     }
@@ -511,15 +521,16 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
 fn generate_try_insert_helper(code: &mut String, entity: &EntityDef) {
     let name = &entity.name;
     let snake = to_snake_case(name);
+    let module = rust_ident(&snake);
 
-    code.push_str(&format!("    async fn try_insert_{snake}(&self, {snake}: &{name}) -> Result<bool, AppError> {{\n"));
-    code.push_str(&format!("        let active = {snake}.to_active_model()?;\n"));
+    code.push_str(&format!("    async fn try_insert_{snake}(&self, record: &{name}) -> Result<bool, AppError> {{\n"));
+    code.push_str("        let active = record.to_active_model()?;\n");
     code.push_str("        match active.insert(self.db()).await {\n");
     code.push_str("            Ok(_) => Ok(true),\n");
     code.push_str(
         "            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {\n",
     );
-    code.push_str(&format!("                let taken = {snake}::Entity::find_by_id({snake}.id.as_str())\n"));
+    code.push_str(&format!("                let taken = {module}::Entity::find_by_id(record.id.as_str())\n"));
     code.push_str("                    .one(self.db())\n");
     code.push_str("                    .await\n");
     code.push_str("                    .map_err(|e| AppError::DbError(e.to_string()))?\n");
@@ -536,27 +547,30 @@ fn generate_try_insert_helper(code: &mut String, entity: &EntityDef) {
 /// it.
 fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, fk_required: bool) {
     let snake = to_snake_case(&entity.name);
-    let table = &entity.table;
+    // Quoted, as SeaORM quotes its own queries: a column named after a
+    // keyword (`r#in` is the column `in`) is not an SQL identifier bare.
+    let id = entity.id_field().map_or("id", |f| member_name(&f.name));
+    let sql = format!("UPDATE \"{}\" SET \"{}\" = ? WHERE \"{id}\" = ?", entity.table, member_name(fk));
 
     code.push_str(&format!("    async fn set_{snake}_parent(\n"));
     code.push_str("        &self,\n");
     code.push_str("        child_id: &str,\n");
     code.push_str(&format!("        parent_id: {},\n", has_many::parent_param_type(fk_required)));
     code.push_str("    ) -> Result<(), AppError> {\n");
-    code.push_str("        use sea_orm::{ConnectionTrait, Value};\n");
+    code.push_str("        use sea_orm::ConnectionTrait as _;\n");
     code.push_str("        // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.\n");
     code.push_str("        let stmt = sea_orm::Statement::from_sql_and_values(\n");
     code.push_str("            sea_orm::DatabaseBackend::Sqlite,\n");
-    code.push_str(&format!("            \"UPDATE {table} SET {fk} = ? WHERE id = ?\",\n"));
+    code.push_str(&format!("            {sql:?},\n"));
     code.push_str("            [\n");
     if fk_required {
-        code.push_str("                Value::from(parent_id.to_string()),\n");
+        code.push_str("                sea_orm::Value::from(parent_id.to_string()),\n");
     } else {
         code.push_str("                parent_id\n");
-        code.push_str("                    .map(|p| Value::from(p.to_string()))\n");
-        code.push_str("                    .unwrap_or(Value::String(None)),\n");
+        code.push_str("                    .map(|p| sea_orm::Value::from(p.to_string()))\n");
+        code.push_str("                    .unwrap_or(sea_orm::Value::String(None)),\n");
     }
-    code.push_str("                Value::from(child_id.to_string()),\n");
+    code.push_str("                sea_orm::Value::from(child_id.to_string()),\n");
     code.push_str("            ],\n");
     code.push_str("        );\n");
     code.push_str("        self.db()\n");
@@ -571,12 +585,13 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, f
 /// missing-child check of a `has_many` write.
 fn generate_exists_helper(code: &mut String, entity: &EntityDef) {
     let snake = to_snake_case(&entity.name);
+    let module = rust_ident(&snake);
 
     code.push_str(&format!(
         "    async fn {}(&self, id: &str) -> Result<bool, AppError> {{\n",
         has_many::exists_helper(entity)
     ));
-    code.push_str(&format!("        Ok({snake}::Entity::find_by_id(id)\n"));
+    code.push_str(&format!("        Ok({module}::Entity::find_by_id(id)\n"));
     code.push_str("            .one(self.db())\n");
     code.push_str("            .await\n");
     code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?\n");
@@ -591,7 +606,7 @@ fn generate_exists_helper(code: &mut String, entity: &EntityDef) {
 /// entity with no `#[ontology(id)]` field, so the `Id` fallback is never
 /// emitted.
 fn id_column(entity: &EntityDef) -> String {
-    entity.id_field().map(|f| to_pascal_case(&f.name)).unwrap_or_else(|| "Id".to_string())
+    entity.id_field().map(|f| to_pascal_case(member_name(&f.name))).unwrap_or_else(|| "Id".to_string())
 }
 
 /// Map entity name to its `AppError::*NotFound` variant.
@@ -704,9 +719,10 @@ mod tests {
         let mut code = String::new();
         generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
 
-        // Create should sync junctions
-        assert!(code.contains("let fulfills = node.fulfills.clone()"));
-        assert!(code.contains("let contains = node.contains.clone()"));
+        // Create writes the junction and the children from the record
+        let create = method(&code, "create_node");
+        assert!(create.contains("&id, &record.fulfills).await?;"), "{create}");
+        assert!(create.contains("for child_id in &record.contains {"), "{create}");
     }
 
     #[test]
@@ -757,7 +773,7 @@ mod tests {
         let helper = &code[code.find("pub fn order_nodes_query(").expect("a module-level helper")..];
         assert!(
             helper.starts_with(
-                "pub fn order_nodes_query(mut query: Select<node::Entity>, order: &[OrderBy<NodeSortField>]) -> Select<node::Entity> {"
+                "pub fn order_nodes_query(mut query: sea_orm::Select<node::Entity>, order: &[OrderBy<NodeSortField>]) -> sea_orm::Select<node::Entity> {"
             ),
             "{helper}"
         );
@@ -766,8 +782,8 @@ mod tests {
             "NodeSortField::Id => node::Column::Id,",
             "NodeSortField::Name => node::Column::Name,",
             "NodeSortField::Type => node::Column::Type,",
-            "ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),",
-            "ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),",
+            "ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),",
+            "ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),",
             "string keys sort in byte order under SQLite's default BINARY collation.",
             "query = query.order_by_with_nulls(column, direction, nulls);",
         ] {
@@ -785,11 +801,11 @@ mod tests {
         let refusal = r#"return Err(AppError::DbError("Node.weight: NaN cannot be stored".to_string()));"#;
 
         let create = method(&code, "create_node");
-        let check = create.find("if node.weight.is_nan() {").unwrap_or_else(|| panic!("create checks: {create}"));
-        assert!(create.contains("if node.high.is_some_and(f64::is_nan) {"), "{create}");
+        let check = create.find("if record.weight.is_nan() {").unwrap_or_else(|| panic!("create checks: {create}"));
+        assert!(create.contains("if record.high.is_some_and(f64::is_nan) {"), "{create}");
         assert!(create.contains(refusal), "{create}");
         assert!(check > create.find("hooks::before_create").unwrap(), "after the hook: {create}");
-        assert!(check < create.find("let id = if node.id.trim().is_empty()").unwrap(), "before the insert: {create}");
+        assert!(check < create.find("let id = if record.id.trim().is_empty()").unwrap(), "before the insert: {create}");
 
         let update = method(&code, "update_node");
         let check = update.find("if updates.weight.is_some_and(f32::is_nan) {").unwrap_or_else(|| panic!("{update}"));
@@ -809,8 +825,8 @@ mod tests {
         entity.fields.push(FieldDef::new("maybe_cached", FieldType::OptionF32, FieldRole::Skip));
         let code = crud(&entity, &IdStrategy::Provided);
         let create = method(&code, "create_node");
-        assert!(create.contains("if node.cached.is_nan() {"), "{create}");
-        assert!(create.contains("if node.maybe_cached.is_some_and(f32::is_nan) {"), "{create}");
+        assert!(create.contains("if record.cached.is_nan() {"), "{create}");
+        assert!(create.contains("if record.maybe_cached.is_some_and(f32::is_nan) {"), "{create}");
         assert!(
             create.contains(r#"return Err(AppError::DbError("Node.cached: NaN cannot be stored".to_string()));"#),
             "{create}"
@@ -822,8 +838,8 @@ mod tests {
     fn a_record_is_not_its_own_has_many_child() {
         let code = crud(&make_node_entity(), &IdStrategy::Provided);
         let populate = method(&code, "populate_node_relations");
-        assert!(populate.contains(".filter(node::Column::ParentId.eq(&node.id))"), "{populate}");
-        assert!(populate.contains(".filter(node::Column::Id.ne(&node.id))"), "{populate}");
+        assert!(populate.contains(".filter(node::Column::ParentId.eq(&record.id))"), "{populate}");
+        assert!(populate.contains(".filter(node::Column::Id.ne(&record.id))"), "{populate}");
     }
 
     #[test]
@@ -866,7 +882,7 @@ mod tests {
     fn a_provided_create_requires_an_id_and_refuses_a_duplicate() {
         let code = crud(&make_role_entity(), &IdStrategy::Provided);
         let create = method(&code, "create_role");
-        assert!(create.contains("let id = if role.id.trim().is_empty() {"), "{create}");
+        assert!(create.contains("let id = if record.id.trim().is_empty() {"), "{create}");
         assert!(
             create.contains(
                 "return Err(AppError::RoleIdRequired(\"this store requires the caller to supply an id\".to_string()));"
@@ -874,10 +890,11 @@ mod tests {
             "{create}"
         );
         assert!(
-            create.contains("ontogen_core::id::validate_id(&role.id).map_err(|e| AppError::DbError(e.to_string()))?;"),
+            create
+                .contains("ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;"),
             "{create}"
         );
-        assert!(create.contains("return Err(AppError::RoleAlreadyExists(role.id));"), "{create}");
+        assert!(create.contains("return Err(AppError::RoleAlreadyExists(record.id));"), "{create}");
         assert!(!create.contains("candidates"), "nothing is derived under Provided: {create}");
     }
 
@@ -885,7 +902,7 @@ mod tests {
     fn a_slug_create_derives_and_probes() {
         let code = crud(&make_role_entity(), &IdStrategy::SlugFromField("name".into()));
         let create = method(&code, "create_role");
-        assert!(create.contains("let base = ontogen_core::id::slugify(&role.name);"), "{create}");
+        assert!(create.contains("let base = ontogen_core::id::slugify(&record.name);"), "{create}");
         assert!(
             create.contains(
                 "return Err(AppError::RoleIdRequired(\"field \\\"name\\\" produced an empty slug\".to_string()));"
@@ -894,7 +911,7 @@ mod tests {
         );
         assert!(create.contains("for candidate in ontogen_core::id::candidates(&base) {"), "{create}");
         assert!(create.contains("role::Entity::find_by_id(candidate.as_str())"), "probes before inserting: {create}");
-        assert!(create.contains("if self.try_insert_role(&role).await? {"), "{create}");
+        assert!(create.contains("if self.try_insert_role(&record).await? {"), "{create}");
     }
 
     #[test]
@@ -909,9 +926,9 @@ mod tests {
     fn try_insert_tells_a_taken_id_from_other_unique_violations() {
         let code = crud(&make_role_entity(), &IdStrategy::Provided);
         let helper = method(&code, "try_insert_role");
-        assert!(helper.contains("let active = role.to_active_model()?;"), "{helper}");
+        assert!(helper.contains("let active = record.to_active_model()?;"), "{helper}");
         assert!(helper.contains("Some(sea_orm::SqlErr::UniqueConstraintViolation(_))"), "{helper}");
-        assert!(helper.contains("role::Entity::find_by_id(role.id.as_str())"), "{helper}");
+        assert!(helper.contains("role::Entity::find_by_id(record.id.as_str())"), "{helper}");
         assert!(helper.contains("Err(AppError::DbError(e.to_string()))"), "{helper}");
     }
 
@@ -940,7 +957,7 @@ mod tests {
 
         let helper = method(&code, "set_node_parent");
         assert!(helper.contains("parent_id: &str,"), "{helper}");
-        assert!(helper.contains("Value::from(parent_id.to_string()),"), "{helper}");
+        assert!(helper.contains("sea_orm::Value::from(parent_id.to_string()),"), "{helper}");
         assert!(method(&code, "create_node").contains("self.set_node_parent(child_id, &id).await?;"));
     }
 
@@ -951,10 +968,10 @@ mod tests {
 
             let create = method(&code, "create_node");
             let check = create.find("if !self.node_exists(child_id).await? {").expect("create checks");
-            assert!(create.contains("for child_id in &contains {"), "{create}");
+            assert!(create.contains("for child_id in &record.contains {"), "{create}");
             assert!(check > create.find("hooks::before_create").unwrap(), "after the hook: {create}");
             assert!(
-                check < create.find("let id = if node.id.trim().is_empty()").unwrap(),
+                check < create.find("let id = if record.id.trim().is_empty()").unwrap(),
                 "before the insert: {create}"
             );
 

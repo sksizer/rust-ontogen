@@ -444,7 +444,7 @@ fn override_schema(dir: &Path, task_id: &str) {
 fn builder_entity_id_override_beats_the_store_default() {
     for (task_id, task_needle) in [
         ("uuid", "ontogen_core::id::new_uuid()"),
-        ("slug(summary)", "ontogen_core::id::slugify(&task.summary)"),
+        ("slug(summary)", "ontogen_core::id::slugify(&record.summary)"),
         ("provided", "this store requires the caller to supply an id"),
     ] {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -461,8 +461,8 @@ fn builder_entity_id_override_beats_the_store_default() {
         let task = std::fs::read_to_string(tmp.path().join("store/task.rs")).unwrap();
         let note = std::fs::read_to_string(tmp.path().join("store/note.rs")).unwrap();
         assert!(task.contains(task_needle), "id = {task_id:?}: the override wins:\n{task}");
-        assert!(!task.contains("&task.title"), "id = {task_id:?}: not the default:\n{task}");
-        assert!(note.contains("ontogen_core::id::slugify(&note.title)"), "the default applies to Note:\n{note}");
+        assert!(!task.contains("&record.title"), "id = {task_id:?}: not the default:\n{task}");
+        assert!(note.contains("ontogen_core::id::slugify(&record.title)"), "the default applies to Note:\n{note}");
     }
 }
 

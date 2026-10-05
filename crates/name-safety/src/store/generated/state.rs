@@ -19,9 +19,9 @@ pub struct StateUpdate {
 }
 
 impl StateUpdate {
-    fn apply(&self, state: &mut State) {
-        if let Some(title) = &self.title {
-            state.title.clone_from(title);
+    fn apply(&self, record: &mut State) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<State>, AppError> {
-        let mut states = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(STATES_DIR, STATE_TYPE).read_all().map_err(AppError::from)? {
             let fm: StateFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            states.push(fm.into_state(id));
+            records.push(fm.into_state(id));
         }
-        sort_states(&mut states, order);
+        sort_states(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(states.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_states(&self) -> Result<u64, AppError> {
@@ -112,20 +112,20 @@ impl Store {
         Ok(fm.into_state(id.to_string()))
     }
 
-    pub async fn create_state(&self, mut state: State) -> Result<State, AppError> {
-        hooks::before_create(self, &mut state).await?;
+    pub async fn create_state(&self, mut record: State) -> Result<State, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&StateFrontmatter::from_state(&state), STATE_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&StateFrontmatter::from_state(&record), STATE_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(STATES_DIR, STATE_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(state.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(state.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::StateIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::StateAlreadyExists(state.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::StateAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -143,9 +143,9 @@ impl Store {
             .entity(STATES_DIR, STATE_TYPE)
             .modify(id, |doc| {
                 let fm: StateFrontmatter = doc.deserialize()?;
-                let mut state = fm.into_state(id.to_string());
-                updates.apply(&mut state);
-                doc.merge_serialize(&StateFrontmatter::from_state(&state), STATE_FM_FIELDS)?;
+                let mut record = fm.into_state(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&StateFrontmatter::from_state(&record), STATE_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

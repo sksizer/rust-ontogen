@@ -144,6 +144,15 @@ fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityD
     }
 
     let default_snake = to_snake_case(&name);
+    // Every generated layer names a module after the entity, and these
+    // keywords have no raw form (`r#crate` is not an identifier).
+    if crate::ident::UNRAWABLE.contains(&default_snake.as_str()) {
+        return Err(format!(
+            "entity `{name}` in {}: its snake_case name `{default_snake}` is a Rust keyword that cannot name a module, \
+             not even as a raw identifier; rename the entity (e.g. `{name}Item`)",
+            path.display()
+        ));
+    }
     let directory = struct_attrs.directory.unwrap_or_else(|| default_snake.clone());
     let table = struct_attrs.table.unwrap_or_else(|| default_snake.clone());
     let type_name = struct_attrs.type_name.unwrap_or_else(|| name.clone());
@@ -444,7 +453,8 @@ fn parse_relation_meta(list: &syn::MetaList) -> Result<Option<RelationInfo>, Str
                 junction = expr_to_string(&nv.value);
             }
             Meta::NameValue(nv) if nv.path.is_ident("foreign_key") => {
-                foreign_key = expr_to_string(&nv.value);
+                // Spelled as the field is named, so `"in"` finds `r#in`.
+                foreign_key = expr_to_string(&nv.value).map(|fk| crate::ident::rust_ident(&fk));
             }
             _ => {}
         }
@@ -1514,5 +1524,30 @@ mod tests {
         let entities = parse_schema_source(src, Path::new("note.rs")).expect("allowed attrs parse");
         assert_eq!(entities.len(), 1);
         assert!(entities[0].fields[1].serde_default);
+    }
+
+    #[test]
+    fn an_entity_whose_snake_name_cannot_be_raw_is_refused() {
+        for (name, snake) in [("Crate", "crate"), ("Super", "super")] {
+            let src = format!(
+                "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {name} {{\n    #[ontology(id)]\n    pub id: String,\n}}\n"
+            );
+            let err = parse_schema_source(&src, Path::new("bad.rs")).expect_err("refused");
+            assert!(
+                err.contains(&format!("entity `{name}` in bad.rs: its snake_case name `{snake}` is a Rust keyword")),
+                "{err}"
+            );
+            assert!(err.contains("rename the entity"), "{err}");
+        }
+        let src = "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Match {\n    #[ontology(id)]\n    pub id: String,\n}\n";
+        parse_schema_source(src, Path::new("ok.rs")).expect("a keyword that can be raw is accepted");
+    }
+
+    #[test]
+    fn a_keyword_foreign_key_is_spelled_as_its_field() {
+        let entities = crate::schema::hostile_entities();
+        let doc = entities.iter().find(|e| e.name == "Doc").expect("Doc");
+        let (_, info) = doc.has_many_relations().next().expect("children");
+        assert_eq!(info.foreign_key.as_deref(), Some("r#in"), "`foreign_key = \"in\"` names the field `r#in`");
     }
 }

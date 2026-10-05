@@ -23,21 +23,21 @@ pub struct DocumentUpdate {
 }
 
 impl DocumentUpdate {
-    fn apply(&self, document: &mut Document) {
-        if let Some(title) = &self.title {
-            document.title.clone_from(title);
+    fn apply(&self, record: &mut Document) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(match_id) = &self.match_id {
-            document.match_id.clone_from(match_id);
+        if let Some(value) = &self.match_id {
+            record.match_id.clone_from(value);
         }
-        if let Some(ref_id) = &self.ref_id {
-            document.ref_id.clone_from(ref_id);
+        if let Some(value) = &self.ref_id {
+            record.ref_id.clone_from(value);
         }
-        if let Some(r#loop) = &self.r#loop {
-            document.r#loop.clone_from(r#loop);
+        if let Some(value) = &self.r#loop {
+            record.r#loop.clone_from(value);
         }
-        if let Some(body) = &self.body {
-            document.body.clone_from(body);
+        if let Some(value) = &self.body {
+            record.body.clone_from(value);
         }
     }
 }
@@ -114,19 +114,19 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Document>, AppError> {
-        let mut documents = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(DOCUMENTS_DIR, DOCUMENT_TYPE).read_all().map_err(AppError::from)? {
             let fm: DocumentFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            documents.push(fm.into_document(id, doc.body().to_string()));
+            records.push(fm.into_document(id, doc.body().to_string()));
         }
-        sort_documents(&mut documents, order);
+        sort_documents(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        let mut documents: Vec<Document> = documents.into_iter().skip(offset).take(limit).collect();
-        for entity in &mut documents {
-            self.populate_document_relations(entity).await?;
+        let mut records: Vec<Document> = records.into_iter().skip(offset).take(limit).collect();
+        for record in &mut records {
+            self.populate_document_relations(record).await?;
         }
-        Ok(documents)
+        Ok(records)
     }
 
     pub async fn count_documents(&self) -> Result<u64, AppError> {
@@ -142,29 +142,27 @@ impl Store {
             Err(e) => return Err(AppError::from(e)),
         };
         let fm: DocumentFrontmatter = doc.deserialize().map_err(AppError::from)?;
-        let mut document = fm.into_document(id.to_string(), doc.body().to_string());
-        self.populate_document_relations(&mut document).await?;
-        Ok(document)
+        let mut record = fm.into_document(id.to_string(), doc.body().to_string());
+        self.populate_document_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_document(&self, mut document: Document) -> Result<Document, AppError> {
-        hooks::before_create(self, &mut document).await?;
+    pub async fn create_document(&self, mut record: Document) -> Result<Document, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&DocumentFrontmatter::from_document(&document), DOCUMENT_FM_FIELDS)
+        doc.merge_serialize(&DocumentFrontmatter::from_document(&record), DOCUMENT_FM_FIELDS)
             .map_err(AppError::from)?;
-        doc.set_body(document.body.clone());
+        doc.set_body(record.body.clone());
         let id = match self.vault().entity(DOCUMENTS_DIR, DOCUMENT_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(document.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(document.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::DocumentIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => {
-                return Err(AppError::DocumentAlreadyExists(document.id));
-            }
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::DocumentAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -182,10 +180,10 @@ impl Store {
             .entity(DOCUMENTS_DIR, DOCUMENT_TYPE)
             .modify(id, |doc| {
                 let fm: DocumentFrontmatter = doc.deserialize()?;
-                let mut document = fm.into_document(id.to_string(), doc.body().to_string());
-                updates.apply(&mut document);
-                doc.merge_serialize(&DocumentFrontmatter::from_document(&document), DOCUMENT_FM_FIELDS)?;
-                doc.set_body(document.body);
+                let mut record = fm.into_document(id.to_string(), doc.body().to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&DocumentFrontmatter::from_document(&record), DOCUMENT_FM_FIELDS)?;
+                doc.set_body(record.body);
                 Ok(())
             })
             .map_err(AppError::from)?;
@@ -214,12 +212,11 @@ impl Store {
 
     pub(crate) async fn populate_document_relations(
         &self,
-        document: &mut crate::schema::Document,
+        record: &mut crate::schema::Document,
     ) -> Result<(), crate::schema::AppError> {
         // many_to_many lists are authoritative in this record's own
         // frontmatter and were populated at parse time.
-        let _ = &*self;
-        let _ = &*document;
+        let _ = (self, record);
         Ok(())
     }
 }

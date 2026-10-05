@@ -6,7 +6,7 @@ pub mod endpoint;
 pub mod event;
 pub mod links;
 pub mod map;
-pub mod match;
+pub mod r#match;
 pub mod method;
 pub mod relationship;
 pub mod request;
@@ -23,6 +23,5 @@ pub const VAULT_ROOT: &str = "data/vault";
 /// configured at build time. Pass [`VAULT_ROOT`] to use the configured
 /// location, or any other directory (a test's tempdir, say).
 pub fn open_vault(root: impl Into<std::path::PathBuf>) -> markdown_store::VaultHandle {
-    markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::PerEntityDir)
-        .with_list_cap(10000)
+    markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::PerEntityDir).with_list_cap(10000)
 }

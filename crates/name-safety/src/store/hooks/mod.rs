@@ -7,7 +7,7 @@ pub mod endpoint;
 pub mod event;
 pub mod links;
 pub mod map;
-pub mod match;
+pub mod r#match;
 pub mod method;
 pub mod relationship;
 pub mod request;

@@ -19,9 +19,9 @@ pub struct MethodUpdate {
 }
 
 impl MethodUpdate {
-    fn apply(&self, method: &mut Method) {
-        if let Some(title) = &self.title {
-            method.title.clone_from(title);
+    fn apply(&self, record: &mut Method) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Method>, AppError> {
-        let mut methods = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(METHODS_DIR, METHOD_TYPE).read_all().map_err(AppError::from)? {
             let fm: MethodFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            methods.push(fm.into_method(id));
+            records.push(fm.into_method(id));
         }
-        sort_methods(&mut methods, order);
+        sort_methods(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(methods.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_methods(&self) -> Result<u64, AppError> {
@@ -112,20 +112,20 @@ impl Store {
         Ok(fm.into_method(id.to_string()))
     }
 
-    pub async fn create_method(&self, mut method: Method) -> Result<Method, AppError> {
-        hooks::before_create(self, &mut method).await?;
+    pub async fn create_method(&self, mut record: Method) -> Result<Method, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&MethodFrontmatter::from_method(&method), METHOD_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&MethodFrontmatter::from_method(&record), METHOD_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(METHODS_DIR, METHOD_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(method.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(method.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::MethodIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::MethodAlreadyExists(method.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::MethodAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -143,9 +143,9 @@ impl Store {
             .entity(METHODS_DIR, METHOD_TYPE)
             .modify(id, |doc| {
                 let fm: MethodFrontmatter = doc.deserialize()?;
-                let mut method = fm.into_method(id.to_string());
-                updates.apply(&mut method);
-                doc.merge_serialize(&MethodFrontmatter::from_method(&method), METHOD_FM_FIELDS)?;
+                let mut record = fm.into_method(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&MethodFrontmatter::from_method(&record), METHOD_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

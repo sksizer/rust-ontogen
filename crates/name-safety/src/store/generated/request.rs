@@ -19,9 +19,9 @@ pub struct RequestUpdate {
 }
 
 impl RequestUpdate {
-    fn apply(&self, request: &mut Request) {
-        if let Some(title) = &self.title {
-            request.title.clone_from(title);
+    fn apply(&self, record: &mut Request) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Request>, AppError> {
-        let mut requests = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(REQUESTS_DIR, REQUEST_TYPE).read_all().map_err(AppError::from)? {
             let fm: RequestFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            requests.push(fm.into_request(id));
+            records.push(fm.into_request(id));
         }
-        sort_requests(&mut requests, order);
+        sort_requests(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(requests.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_requests(&self) -> Result<u64, AppError> {
@@ -112,20 +112,20 @@ impl Store {
         Ok(fm.into_request(id.to_string()))
     }
 
-    pub async fn create_request(&self, mut request: Request) -> Result<Request, AppError> {
-        hooks::before_create(self, &mut request).await?;
+    pub async fn create_request(&self, mut record: Request) -> Result<Request, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&RequestFrontmatter::from_request(&request), REQUEST_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&RequestFrontmatter::from_request(&record), REQUEST_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(REQUESTS_DIR, REQUEST_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(request.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(request.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::RequestIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::RequestAlreadyExists(request.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::RequestAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -143,9 +143,9 @@ impl Store {
             .entity(REQUESTS_DIR, REQUEST_TYPE)
             .modify(id, |doc| {
                 let fm: RequestFrontmatter = doc.deserialize()?;
-                let mut request = fm.into_request(id.to_string());
-                updates.apply(&mut request);
-                doc.merge_serialize(&RequestFrontmatter::from_request(&request), REQUEST_FM_FIELDS)?;
+                let mut record = fm.into_request(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&RequestFrontmatter::from_request(&record), REQUEST_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

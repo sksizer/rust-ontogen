@@ -103,8 +103,8 @@ mod tests {
         // Store delegation
         assert!(content.contains("store.list_tags(order, None, None)"));
         assert!(content.contains("store.get_tag(id)"));
-        assert!(content.contains("store.create_tag(tag)"));
-        assert!(content.contains("store.update_tag(id, updates)"));
+        assert!(content.contains("store.create_tag(Tag::from(input))"));
+        assert!(content.contains("store.update_tag(id, TagUpdate::from(input))"));
         assert!(content.contains("store.delete_tag(id)"));
     }
 

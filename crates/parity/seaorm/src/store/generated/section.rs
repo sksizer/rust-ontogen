@@ -2,13 +2,13 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use sea_orm::sea_query;
+use sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::section;
 use crate::schema::Section;
 use crate::schema::{AppError, ChangeOp, EntityKind};
-use sea_orm::{ColumnTrait, QueryFilter};
+use sea_orm::{ColumnTrait as _, QueryFilter as _};
 
 use crate::store::Store;
 use crate::store::hooks::section as hooks;
@@ -22,15 +22,15 @@ pub struct SectionUpdate {
 }
 
 impl SectionUpdate {
-    fn apply(&self, section: &mut Section) {
-        if let Some(title) = &self.title {
-            section.title.clone_from(title);
+    fn apply(&self, record: &mut Section) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(parent_id) = &self.parent_id {
-            section.parent_id.clone_from(parent_id);
+        if let Some(value) = &self.parent_id {
+            record.parent_id.clone_from(value);
         }
-        if let Some(children) = &self.children {
-            section.children.clone_from(children);
+        if let Some(value) = &self.children {
+            record.children.clone_from(value);
         }
     }
 }
@@ -106,11 +106,11 @@ impl Store {
         }
         let models = query.all(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-        let mut entities: Vec<Section> = models.iter().map(Section::from_model).collect::<Result<_, _>>()?;
-        for entity in &mut entities {
-            self.populate_section_relations(entity).await?;
+        let mut records: Vec<Section> = models.iter().map(Section::from_model).collect::<Result<_, _>>()?;
+        for record in &mut records {
+            self.populate_section_relations(record).await?;
         }
-        Ok(entities)
+        Ok(records)
     }
 
     pub async fn count_sections(&self) -> Result<u64, AppError> {
@@ -124,24 +124,22 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::SectionNotFound(id.to_string()))?;
 
-        let mut entity = Section::from_model(&model)?;
-        self.populate_section_relations(&mut entity).await?;
-        Ok(entity)
+        let mut record = Section::from_model(&model)?;
+        self.populate_section_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_section(&self, mut section: Section) -> Result<Section, AppError> {
-        hooks::before_create(self, &mut section).await?;
+    pub async fn create_section(&self, mut record: Section) -> Result<Section, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let children = section.children.clone();
-
-        for child_id in &children {
+        for child_id in &record.children {
             if !self.section_exists(child_id).await? {
                 return Err(AppError::SectionNotFound(child_id.clone()));
             }
         }
 
-        let id = if section.id.trim().is_empty() {
-            let base = ontogen_core::id::slugify(&section.title);
+        let id = if record.id.trim().is_empty() {
+            let base = ontogen_core::id::slugify(&record.title);
             if base.is_empty() {
                 return Err(AppError::SectionIdRequired("field \"title\" produced an empty slug".to_string()));
             }
@@ -154,21 +152,21 @@ impl Store {
                 if taken {
                     continue;
                 }
-                section.id = candidate;
-                if self.try_insert_section(&section).await? {
+                record.id = candidate;
+                if self.try_insert_section(&record).await? {
                     break;
                 }
             }
-            section.id.clone()
+            record.id.clone()
         } else {
-            ontogen_core::id::validate_id(&section.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_section(&section).await? {
-                return Err(AppError::SectionAlreadyExists(section.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_section(&record).await? {
+                return Err(AppError::SectionAlreadyExists(record.id));
             }
-            section.id.clone()
+            record.id.clone()
         };
 
-        for child_id in &children {
+        for child_id in &record.children {
             self.set_section_parent(child_id, &id).await?;
         }
 
@@ -245,14 +243,14 @@ impl Store {
 
     pub(crate) async fn populate_section_relations(
         &self,
-        section: &mut crate::schema::Section,
+        record: &mut crate::schema::Section,
     ) -> Result<(), crate::schema::AppError> {
-        section.children = {
+        record.children = {
             use crate::persistence::db::entities::section;
             // sqlite-only: child ids sort in byte order under SQLite's default BINARY collation.
             let children = section::Entity::find()
-                .filter(section::Column::ParentId.eq(&section.id))
-                .filter(section::Column::Id.ne(&section.id))
+                .filter(section::Column::ParentId.eq(&record.id))
+                .filter(section::Column::Id.ne(&record.id))
                 .order_by_asc(section::Column::Id)
                 .all(self.db())
                 .await
@@ -262,12 +260,12 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_section(&self, section: &Section) -> Result<bool, AppError> {
-        let active = section.to_active_model()?;
+    async fn try_insert_section(&self, record: &Section) -> Result<bool, AppError> {
+        let active = record.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
-                let taken = section::Entity::find_by_id(section.id.as_str())
+                let taken = section::Entity::find_by_id(record.id.as_str())
                     .one(self.db())
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -279,12 +277,12 @@ impl Store {
     }
 
     async fn set_section_parent(&self, child_id: &str, parent_id: &str) -> Result<(), AppError> {
-        use sea_orm::{ConnectionTrait, Value};
+        use sea_orm::ConnectionTrait as _;
         // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.
         let stmt = sea_orm::Statement::from_sql_and_values(
             sea_orm::DatabaseBackend::Sqlite,
-            "UPDATE sections SET parent_id = ? WHERE id = ?",
-            [Value::from(parent_id.to_string()), Value::from(child_id.to_string())],
+            "UPDATE \"sections\" SET \"parent_id\" = ? WHERE \"id\" = ?",
+            [sea_orm::Value::from(parent_id.to_string()), sea_orm::Value::from(child_id.to_string())],
         );
         self.db().execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
         Ok(())
@@ -302,17 +300,17 @@ impl Store {
 /// Applies `order` to `query` as `list_sections` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_sections_query(
-    mut query: Select<section::Entity>,
+    mut query: sea_orm::Select<section::Entity>,
     order: &[OrderBy<SectionSortField>],
-) -> Select<section::Entity> {
+) -> sea_orm::Select<section::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             SectionSortField::Id => section::Column::Id,
             SectionSortField::Title => section::Column::Title,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),
+            ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

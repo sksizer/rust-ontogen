@@ -19,9 +19,9 @@ pub struct EventUpdate {
 }
 
 impl EventUpdate {
-    fn apply(&self, event: &mut Event) {
-        if let Some(title) = &self.title {
-            event.title.clone_from(title);
+    fn apply(&self, record: &mut Event) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Event>, AppError> {
-        let mut events = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(EVENTS_DIR, EVENT_TYPE).read_all().map_err(AppError::from)? {
             let fm: EventFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            events.push(fm.into_event(id));
+            records.push(fm.into_event(id));
         }
-        sort_events(&mut events, order);
+        sort_events(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(events.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_events(&self) -> Result<u64, AppError> {
@@ -112,20 +112,20 @@ impl Store {
         Ok(fm.into_event(id.to_string()))
     }
 
-    pub async fn create_event(&self, mut event: Event) -> Result<Event, AppError> {
-        hooks::before_create(self, &mut event).await?;
+    pub async fn create_event(&self, mut record: Event) -> Result<Event, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&EventFrontmatter::from_event(&event), EVENT_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&EventFrontmatter::from_event(&record), EVENT_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(EVENTS_DIR, EVENT_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(event.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(event.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::EventIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::EventAlreadyExists(event.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::EventAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -143,9 +143,9 @@ impl Store {
             .entity(EVENTS_DIR, EVENT_TYPE)
             .modify(id, |doc| {
                 let fm: EventFrontmatter = doc.deserialize()?;
-                let mut event = fm.into_event(id.to_string());
-                updates.apply(&mut event);
-                doc.merge_serialize(&EventFrontmatter::from_event(&event), EVENT_FM_FIELDS)?;
+                let mut record = fm.into_event(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&EventFrontmatter::from_event(&record), EVENT_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

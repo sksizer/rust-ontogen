@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<State, AppError> {
 
 /// Create a new state
 pub async fn create(store: &Store, input: CreateStateInput) -> Result<State, AppError> {
-    let state: State = input.into();
-    store.create_state(state).await
+    store.create_state(State::from(input)).await
 }
 
 /// Update an existing state
 pub async fn update(store: &Store, id: &str, input: UpdateStateInput) -> Result<State, AppError> {
-    let updates: StateUpdate = input.into();
-    store.update_state(id, updates).await
+    store.update_state(id, StateUpdate::from(input)).await
 }
 
 /// Delete a state by ID

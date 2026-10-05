@@ -8,6 +8,7 @@
 //! their own catch-all error. Only the fields a write sets are checked, so a
 //! NaN hand-written into a vault file does not fail every later update.
 
+use crate::resource::member_name;
 use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType};
 
 /// Where [`emit_nan_checks`] reads the values.
@@ -71,7 +72,7 @@ pub(crate) fn emit_nan_checks(
             (FloatSource::Updates, false) => format!("updates.{f}.is_some_and({ty}::is_nan)"),
             (FloatSource::Updates, true) => format!("updates.{f}.flatten().is_some_and({ty}::is_nan)"),
         };
-        let message = format!("{:?}.to_string()", format!("{}.{f}: NaN cannot be stored", entity.name));
+        let message = format!("{:?}.to_string()", format!("{}.{}: NaN cannot be stored", entity.name, member_name(f)));
         code.push_str(&format!("        if {value} {{\n"));
         code.push_str(&format!("            return Err({});\n", refuse(&message)));
         code.push_str("        }\n");

@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Map, AppError> {
 
 /// Create a new map
 pub async fn create(store: &Store, input: CreateMapInput) -> Result<Map, AppError> {
-    let map: Map = input.into();
-    store.create_map(map).await
+    store.create_map(Map::from(input)).await
 }
 
 /// Update an existing map
 pub async fn update(store: &Store, id: &str, input: UpdateMapInput) -> Result<Map, AppError> {
-    let updates: MapUpdate = input.into();
-    store.update_map(id, updates).await
+    store.update_map(id, MapUpdate::from(input)).await
 }
 
 /// Delete a map by ID

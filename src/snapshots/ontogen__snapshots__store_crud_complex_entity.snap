@@ -6,8 +6,8 @@ expression: code
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use sea_orm::sea_query;
+use sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::article;
 use crate::schema::Article;
@@ -25,15 +25,15 @@ pub struct ArticleUpdate {
 }
 
 impl ArticleUpdate {
-    fn apply(&self, article: &mut Article) {
-        if let Some(title) = &self.title {
-            article.title.clone_from(title);
+    fn apply(&self, record: &mut Article) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(tags) = &self.tags {
-            article.tags.clone_from(tags);
+        if let Some(value) = &self.tags {
+            record.tags.clone_from(value);
         }
-        if let Some(body) = &self.body {
-            article.body.clone_from(body);
+        if let Some(value) = &self.body {
+            record.body.clone_from(value);
         }
     }
 }
@@ -109,11 +109,11 @@ impl Store {
         }
         let models = query.all(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-        let mut entities: Vec<Article> = models.iter().map(Article::from_model).collect::<Result<_, _>>()?;
-        for entity in &mut entities {
-            self.populate_article_relations(entity).await?;
+        let mut records: Vec<Article> = models.iter().map(Article::from_model).collect::<Result<_, _>>()?;
+        for record in &mut records {
+            self.populate_article_relations(record).await?;
         }
-        Ok(entities)
+        Ok(records)
     }
 
     pub async fn count_articles(&self) -> Result<u64, AppError> {
@@ -127,27 +127,25 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::ArticleNotFound(id.to_string()))?;
 
-        let mut entity = Article::from_model(&model)?;
-        self.populate_article_relations(&mut entity).await?;
-        Ok(entity)
+        let mut record = Article::from_model(&model)?;
+        self.populate_article_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_article(&self, mut article: Article) -> Result<Article, AppError> {
-        hooks::before_create(self, &mut article).await?;
+    pub async fn create_article(&self, mut record: Article) -> Result<Article, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let tags = article.tags.clone();
-
-        let id = if article.id.trim().is_empty() {
+        let id = if record.id.trim().is_empty() {
             return Err(AppError::ArticleIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
-            ontogen_core::id::validate_id(&article.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_article(&article).await? {
-                return Err(AppError::ArticleAlreadyExists(article.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_article(&record).await? {
+                return Err(AppError::ArticleAlreadyExists(record.id));
             }
-            article.id.clone()
+            record.id.clone()
         };
 
-        self.sync_junction("article_tags", "article_id", "tag_id", &id, &tags).await?;
+        self.sync_junction("article_tags", "article_id", "tag_id", &id, &record.tags).await?;
 
         let created = self.get_article(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Article, id);
@@ -206,18 +204,18 @@ impl Store {
 
     pub(crate) async fn populate_article_relations(
         &self,
-        article: &mut crate::schema::Article,
+        record: &mut crate::schema::Article,
     ) -> Result<(), crate::schema::AppError> {
-        article.tags = self.load_junction_ids("article_tags", "article_id", "tag_id", &article.id).await?;
+        record.tags = self.load_junction_ids("article_tags", "article_id", "tag_id", &record.id).await?;
         Ok(())
     }
 
-    async fn try_insert_article(&self, article: &Article) -> Result<bool, AppError> {
-        let active = article.to_active_model()?;
+    async fn try_insert_article(&self, record: &Article) -> Result<bool, AppError> {
+        let active = record.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
-                let taken = article::Entity::find_by_id(article.id.as_str())
+                let taken = article::Entity::find_by_id(record.id.as_str())
                     .one(self.db())
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -232,17 +230,17 @@ impl Store {
 /// Applies `order` to `query` as `list_articles` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_articles_query(
-    mut query: Select<article::Entity>,
+    mut query: sea_orm::Select<article::Entity>,
     order: &[OrderBy<ArticleSortField>],
-) -> Select<article::Entity> {
+) -> sea_orm::Select<article::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             ArticleSortField::Id => article::Column::Id,
             ArticleSortField::Title => article::Column::Title,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),
+            ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

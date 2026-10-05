@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Value, AppError> {
 
 /// Create a new value
 pub async fn create(store: &Store, input: CreateValueInput) -> Result<Value, AppError> {
-    let value: Value = input.into();
-    store.create_value(value).await
+    store.create_value(Value::from(input)).await
 }
 
 /// Update an existing value
 pub async fn update(store: &Store, id: &str, input: UpdateValueInput) -> Result<Value, AppError> {
-    let updates: ValueUpdate = input.into();
-    store.update_value(id, updates).await
+    store.update_value(id, ValueUpdate::from(input)).await
 }
 
 /// Delete a value by ID

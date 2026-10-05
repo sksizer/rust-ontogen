@@ -21,15 +21,15 @@ pub struct MapUpdate {
 }
 
 impl MapUpdate {
-    fn apply(&self, map: &mut Map) {
-        if let Some(title) = &self.title {
-            map.title.clone_from(title);
+    fn apply(&self, record: &mut Map) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(r#in) = &self.r#in {
-            map.r#in.clone_from(r#in);
+        if let Some(value) = &self.r#in {
+            record.r#in.clone_from(value);
         }
-        if let Some(children) = &self.children {
-            map.children.clone_from(children);
+        if let Some(value) = &self.children {
+            record.children.clone_from(value);
         }
     }
 }
@@ -102,19 +102,19 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Map>, AppError> {
-        let mut maps = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(MAPS_DIR, MAP_TYPE).read_all().map_err(AppError::from)? {
             let fm: MapFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            maps.push(fm.into_map(id));
+            records.push(fm.into_map(id));
         }
-        sort_maps(&mut maps, order);
+        sort_maps(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        let mut maps: Vec<Map> = maps.into_iter().skip(offset).take(limit).collect();
-        for entity in &mut maps {
-            self.populate_map_relations(entity).await?;
+        let mut records: Vec<Map> = records.into_iter().skip(offset).take(limit).collect();
+        for record in &mut records {
+            self.populate_map_relations(record).await?;
         }
-        Ok(maps)
+        Ok(records)
     }
 
     pub async fn count_maps(&self) -> Result<u64, AppError> {
@@ -130,37 +130,35 @@ impl Store {
             Err(e) => return Err(AppError::from(e)),
         };
         let fm: MapFrontmatter = doc.deserialize().map_err(AppError::from)?;
-        let mut map = fm.into_map(id.to_string());
-        self.populate_map_relations(&mut map).await?;
-        Ok(map)
+        let mut record = fm.into_map(id.to_string());
+        self.populate_map_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_map(&self, mut map: Map) -> Result<Map, AppError> {
-        hooks::before_create(self, &mut map).await?;
+    pub async fn create_map(&self, mut record: Map) -> Result<Map, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let children = map.children.clone();
-
-        for child_id in &children {
+        for child_id in &record.children {
             if !self.map_exists(child_id).await? {
                 return Err(AppError::MapNotFound(child_id.clone()));
             }
         }
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&MapFrontmatter::from_map(&map), MAP_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&MapFrontmatter::from_map(&record), MAP_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(MAPS_DIR, MAP_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(map.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(map.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::MapIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::MapAlreadyExists(map.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::MapAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
-        for child_id in &children {
+        for child_id in &record.children {
             self.set_map_parent(child_id, Some(&id)).await?;
         }
 
@@ -191,9 +189,9 @@ impl Store {
             .entity(MAPS_DIR, MAP_TYPE)
             .modify(id, |doc| {
                 let fm: MapFrontmatter = doc.deserialize()?;
-                let mut map = fm.into_map(id.to_string());
-                updates.apply(&mut map);
-                doc.merge_serialize(&MapFrontmatter::from_map(&map), MAP_FM_FIELDS)?;
+                let mut record = fm.into_map(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&MapFrontmatter::from_map(&record), MAP_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;
@@ -231,19 +229,19 @@ impl Store {
 
     pub(crate) async fn populate_map_relations(
         &self,
-        map: &mut crate::schema::Map,
+        record: &mut crate::schema::Map,
     ) -> Result<(), crate::schema::AppError> {
-        let mut children = Vec::new();
+        let mut ids = Vec::new();
         for (child_id, doc) in self.vault().entity(MAPS_DIR, MAP_TYPE).read_all().map_err(AppError::from)? {
-            if child_id == map.id {
+            if child_id == record.id {
                 continue;
             }
             let child: MapFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            if markdown_store::wikilink::strip_opt(child.r#in).as_deref() == Some(map.id.as_str()) {
-                children.push(child_id);
+            if markdown_store::wikilink::strip_opt(child.r#in).as_deref() == Some(record.id.as_str()) {
+                ids.push(child_id);
             }
         }
-        map.children = children;
+        record.children = ids;
         Ok(())
     }
 

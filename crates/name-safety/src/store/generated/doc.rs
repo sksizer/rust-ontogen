@@ -19,9 +19,9 @@ pub struct DocUpdate {
 }
 
 impl DocUpdate {
-    fn apply(&self, doc: &mut Doc) {
-        if let Some(title) = &self.title {
-            doc.title.clone_from(title);
+    fn apply(&self, record: &mut Doc) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Doc>, AppError> {
-        let mut docs = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(DOCS_DIR, DOC_TYPE).read_all().map_err(AppError::from)? {
             let fm: DocFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            docs.push(fm.into_doc(id));
+            records.push(fm.into_doc(id));
         }
-        sort_docs(&mut docs, order);
+        sort_docs(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(docs.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_docs(&self) -> Result<u64, AppError> {
@@ -112,20 +112,20 @@ impl Store {
         Ok(fm.into_doc(id.to_string()))
     }
 
-    pub async fn create_doc(&self, mut doc: Doc) -> Result<Doc, AppError> {
-        hooks::before_create(self, &mut doc).await?;
+    pub async fn create_doc(&self, mut record: Doc) -> Result<Doc, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&DocFrontmatter::from_doc(&doc), DOC_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&DocFrontmatter::from_doc(&record), DOC_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(DOCS_DIR, DOC_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(doc.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(doc.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::DocIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::DocAlreadyExists(doc.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::DocAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -143,9 +143,9 @@ impl Store {
             .entity(DOCS_DIR, DOC_TYPE)
             .modify(id, |doc| {
                 let fm: DocFrontmatter = doc.deserialize()?;
-                let mut doc = fm.into_doc(id.to_string());
-                updates.apply(&mut doc);
-                doc.merge_serialize(&DocFrontmatter::from_doc(&doc), DOC_FM_FIELDS)?;
+                let mut record = fm.into_doc(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&DocFrontmatter::from_doc(&record), DOC_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

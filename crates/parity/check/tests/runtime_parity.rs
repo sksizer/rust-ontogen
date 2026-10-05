@@ -72,6 +72,14 @@ trait Backend: Sized {
     async fn get_fixed(&self, id: &str) -> R<Value>;
     async fn count_fixeds(&self) -> R<u64>;
 
+    async fn create_doc(&self, doc: Value) -> R<Value>;
+    async fn get_doc(&self, id: &str) -> R<Value>;
+    async fn update_doc(&self, id: &str, patch: Value) -> R<Value>;
+
+    async fn create_match(&self, r#match: Value) -> R<Value>;
+    async fn create_order(&self, order: Value) -> R<Value>;
+    async fn update_order(&self, id: &str, patch: Value) -> R<Value>;
+
     /// Rename a stored item the way an edit made outside the store would
     /// (an SQL `UPDATE`, a file rename), to reach ids no create can make.
     async fn rename_item(&self, from: &str, to: &str);
@@ -154,6 +162,29 @@ macro_rules! store_methods {
         async fn count_fixeds(&self) -> R<u64> {
             self.store.count_fixeds().await.map_err(err)
         }
+        async fn create_doc(&self, doc: Value) -> R<Value> {
+            let doc = serde_json::from_value(doc).expect("a Doc");
+            self.store.create_doc(doc).await.map(to_json).map_err(err)
+        }
+        async fn get_doc(&self, id: &str) -> R<Value> {
+            self.store.get_doc(id).await.map(to_json).map_err(err)
+        }
+        async fn update_doc(&self, id: &str, patch: Value) -> R<Value> {
+            let input: $krate::schema::UpdateDocInput = serde_json::from_value(patch).expect("an UpdateDocInput");
+            self.store.update_doc(id, input.into()).await.map(to_json).map_err(err)
+        }
+        async fn create_match(&self, r#match: Value) -> R<Value> {
+            let r#match = serde_json::from_value(r#match).expect("a Match");
+            self.store.create_match(r#match).await.map(to_json).map_err(err)
+        }
+        async fn create_order(&self, order: Value) -> R<Value> {
+            let order = serde_json::from_value(order).expect("an Order");
+            self.store.create_order(order).await.map(to_json).map_err(err)
+        }
+        async fn update_order(&self, id: &str, patch: Value) -> R<Value> {
+            let input: $krate::schema::UpdateOrderInput = serde_json::from_value(patch).expect("an UpdateOrderInput");
+            self.store.update_order(id, input.into()).await.map(to_json).map_err(err)
+        }
     };
 }
 
@@ -162,6 +193,15 @@ macro_rules! error_mappers {
         fn err(e: $krate::schema::AppError) -> StoreError {
             use $krate::schema::AppError as E;
             match e {
+                E::DocNotFound(id) => StoreError::NotFound("Doc", id),
+                E::DocIdRequired(r) => StoreError::IdRequired("Doc", r),
+                E::DocAlreadyExists(id) => StoreError::AlreadyExists("Doc", id),
+                E::MatchNotFound(id) => StoreError::NotFound("Match", id),
+                E::MatchIdRequired(r) => StoreError::IdRequired("Match", r),
+                E::MatchAlreadyExists(id) => StoreError::AlreadyExists("Match", id),
+                E::OrderNotFound(id) => StoreError::NotFound("Order", id),
+                E::OrderIdRequired(r) => StoreError::IdRequired("Order", r),
+                E::OrderAlreadyExists(id) => StoreError::AlreadyExists("Order", id),
                 E::FixedNotFound(id) => StoreError::NotFound("Fixed", id),
                 E::FixedIdRequired(r) => StoreError::IdRequired("Fixed", r),
                 E::FixedAlreadyExists(id) => StoreError::AlreadyExists("Fixed", id),
@@ -1341,4 +1381,39 @@ async fn missing_children<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 #[tokio::test]
 async fn a_missing_child_is_not_found_and_writes_nothing() {
     parity!(missing_children);
+}
+
+// ─── Names the generated code could collide with ────────────────────────────
+
+/// `Doc` (the markdown store's own binding), `Order` (SeaORM's
+/// `sea_query::Order`), `Match` (a keyword module) and the keyword
+/// relationships `r#in` (an SQL keyword column too) and `r#loop` behave as
+/// any other entity and relationship: the `has_many` tree writes its keyword
+/// foreign key, and the `many_to_many` keeps its written order.
+async fn hostile_names<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let doc =
+        |id: &str, parent: Option<&str>| json!({ "id": id, "title": id, "in": parent, "children": [], "body": "" });
+    t.record("create root", &b.create_doc(doc("root", None)).await).ok();
+    t.record("create a", &b.create_doc(doc("a", Some("root"))).await).ok();
+    t.record("create b", &b.create_doc(doc("b", Some("root"))).await).ok();
+    let children = |r: R<Value>| r.map(|d| d["children"].clone());
+    t.expect("root lists its children", children(b.get_doc("root").await), Ok(json!(["a", "b"])));
+    let updated = b.update_doc("root", json!({ "children": ["a"] })).await;
+    t.expect("an update drops b", children(updated), Ok(json!(["a"])));
+    t.expect("b has no parent", b.get_doc("b").await.map(|d| d["in"].clone()), Ok(Value::Null));
+
+    for id in ["m1", "m2"] {
+        t.record(format!("create {id}"), &b.create_match(json!({ "id": id, "title": id })).await).ok();
+    }
+    let looped = |r: R<Value>| r.map(|o| o["loop"].clone());
+    let created = b.create_order(json!({ "id": "o", "title": "o", "loop": ["m2", "m1"] })).await;
+    t.expect("an order keeps its matches in order", looped(created), Ok(json!(["m2", "m1"])));
+    let updated = b.update_order("o", json!({ "loop": ["m1"] })).await;
+    t.expect("an update replaces them", looped(updated), Ok(json!(["m1"])));
+    t
+}
+
+#[tokio::test]
+async fn entities_and_relationships_named_like_generated_code_work() {
+    parity!(hostile_names);
 }

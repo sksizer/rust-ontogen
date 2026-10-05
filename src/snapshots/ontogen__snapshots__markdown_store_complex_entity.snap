@@ -25,15 +25,15 @@ pub struct ArticleUpdate {
 }
 
 impl ArticleUpdate {
-    fn apply(&self, article: &mut Article) {
-        if let Some(title) = &self.title {
-            article.title.clone_from(title);
+    fn apply(&self, record: &mut Article) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(tags) = &self.tags {
-            article.tags.clone_from(tags);
+        if let Some(value) = &self.tags {
+            record.tags.clone_from(value);
         }
-        if let Some(body) = &self.body {
-            article.body.clone_from(body);
+        if let Some(value) = &self.body {
+            record.body.clone_from(value);
         }
     }
 }
@@ -102,19 +102,19 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Article>, AppError> {
-        let mut articles = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(ARTICLES_DIR, ARTICLE_TYPE).read_all().map_err(AppError::from)? {
             let fm: ArticleFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            articles.push(fm.into_article(id, doc.body().to_string()));
+            records.push(fm.into_article(id, doc.body().to_string()));
         }
-        sort_articles(&mut articles, order);
+        sort_articles(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        let mut articles: Vec<Article> = articles.into_iter().skip(offset).take(limit).collect();
-        for entity in &mut articles {
-            self.populate_article_relations(entity).await?;
+        let mut records: Vec<Article> = records.into_iter().skip(offset).take(limit).collect();
+        for record in &mut records {
+            self.populate_article_relations(record).await?;
         }
-        Ok(articles)
+        Ok(records)
     }
 
     pub async fn count_articles(&self) -> Result<u64, AppError> {
@@ -130,26 +130,26 @@ impl Store {
             Err(e) => return Err(AppError::from(e)),
         };
         let fm: ArticleFrontmatter = doc.deserialize().map_err(AppError::from)?;
-        let mut article = fm.into_article(id.to_string(), doc.body().to_string());
-        self.populate_article_relations(&mut article).await?;
-        Ok(article)
+        let mut record = fm.into_article(id.to_string(), doc.body().to_string());
+        self.populate_article_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_article(&self, mut article: Article) -> Result<Article, AppError> {
-        hooks::before_create(self, &mut article).await?;
+    pub async fn create_article(&self, mut record: Article) -> Result<Article, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&ArticleFrontmatter::from_article(&article), ARTICLE_FM_FIELDS).map_err(AppError::from)?;
-        doc.set_body(article.body.clone());
+        doc.merge_serialize(&ArticleFrontmatter::from_article(&record), ARTICLE_FM_FIELDS).map_err(AppError::from)?;
+        doc.set_body(record.body.clone());
         let id = match self.vault().entity(ARTICLES_DIR, ARTICLE_TYPE).create(
             &markdown_store::IdStrategy::Provided,
-            Some(article.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
             None,
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::ArticleIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::ArticleAlreadyExists(article.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::ArticleAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -167,10 +167,10 @@ impl Store {
             .entity(ARTICLES_DIR, ARTICLE_TYPE)
             .modify(id, |doc| {
                 let fm: ArticleFrontmatter = doc.deserialize()?;
-                let mut article = fm.into_article(id.to_string(), doc.body().to_string());
-                updates.apply(&mut article);
-                doc.merge_serialize(&ArticleFrontmatter::from_article(&article), ARTICLE_FM_FIELDS)?;
-                doc.set_body(article.body);
+                let mut record = fm.into_article(id.to_string(), doc.body().to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&ArticleFrontmatter::from_article(&record), ARTICLE_FM_FIELDS)?;
+                doc.set_body(record.body);
                 Ok(())
             })
             .map_err(AppError::from)?;
@@ -199,12 +199,11 @@ impl Store {
 
     pub(crate) async fn populate_article_relations(
         &self,
-        article: &mut crate::schema::Article,
+        record: &mut crate::schema::Article,
     ) -> Result<(), crate::schema::AppError> {
         // many_to_many lists are authoritative in this record's own
         // frontmatter and were populated at parse time.
-        let _ = &*self;
-        let _ = &*article;
+        let _ = (self, record);
         Ok(())
     }
 }

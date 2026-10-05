@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Endpoint, AppError> {
 
 /// Create a new endpoint
 pub async fn create(store: &Store, input: CreateEndpointInput) -> Result<Endpoint, AppError> {
-    let endpoint: Endpoint = input.into();
-    store.create_endpoint(endpoint).await
+    store.create_endpoint(Endpoint::from(input)).await
 }
 
 /// Update an existing endpoint
 pub async fn update(store: &Store, id: &str, input: UpdateEndpointInput) -> Result<Endpoint, AppError> {
-    let updates: EndpointUpdate = input.into();
-    store.update_endpoint(id, updates).await
+    store.update_endpoint(id, EndpointUpdate::from(input)).await
 }
 
 /// Delete a endpoint by ID

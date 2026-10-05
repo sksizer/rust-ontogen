@@ -18,11 +18,11 @@ The generated CRUD code calls your hooks unconditionally. The scaffolded files s
 
 ```rust
 // Generated code in store/generated/task.rs (DO NOT EDIT)
-pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
-    hooks::before_create(self, &mut task).await?;
+pub async fn create_task(&self, mut record: Task) -> Result<Task, AppError> {
+    hooks::before_create(self, &mut record).await?;
 
-    let id = task.id.clone();
-    let active = task.to_active_model()?;
+    let id = record.id.clone();
+    let active = record.to_active_model()?;
     active.insert(self.db()).await
         .map_err(|e| AppError::DbError(e.to_string()))?;
 

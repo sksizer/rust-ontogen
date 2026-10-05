@@ -125,7 +125,7 @@ fn write_output(entities: &[crate::EntityDef], config: &MarkdownIoConfig) -> Res
     for (name, code) in &modules {
         crate::write_and_format(&output_dir.join(format!("{name}.rs")), code)
             .map_err(|e| format!("write {name}.rs: {e}"))?;
-        mod_rs.push_str(&format!("pub mod {name};\n"));
+        mod_rs.push_str(&format!("pub mod {};\n", crate::ident::rust_ident(name)));
     }
     mod_rs.push('\n');
     mod_rs.push_str(&gen_vault::generate_open_vault(config));
@@ -206,5 +206,20 @@ mod tests {
         let near = vec![entity("Console", "console"), entity("Com10", "com10"), entity("Contact", "con_tacts")];
         let (_tmp, result) = generate_with(near, MarkdownLayout::PerEntityDir);
         result.expect("near misses are ordinary directories");
+    }
+
+    #[test]
+    fn a_keyword_entity_module_is_raw_and_its_methods_bare() {
+        let (tmp, result) = generate_with(crate::schema::hostile_entities(), MarkdownLayout::PerEntityDir);
+        result.expect("generate");
+        let dir = tmp.path().join("generated");
+        for file in ["mod.rs", "doc.rs", "order.rs", "match.rs"] {
+            let code = std::fs::read_to_string(dir.join(file)).expect("read");
+            syn::parse_file(&code).unwrap_or_else(|e| panic!("{file} is not Rust: {e}\n{code}"));
+        }
+        let mod_rs = std::fs::read_to_string(dir.join("mod.rs")).expect("read");
+        assert!(mod_rs.contains("pub mod r#match;"), "{mod_rs}");
+        let r#match = std::fs::read_to_string(dir.join("match.rs")).expect("read");
+        assert!(r#match.contains("pub fn into_match(self, id: String) -> Match {"), "{}", r#match);
     }
 }
