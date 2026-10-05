@@ -36,8 +36,15 @@ pub(crate) fn wide_integer(field: &FieldDef) -> Option<bool> {
     if !matches!(field.role, FieldRole::Plain | FieldRole::EnumField) {
         return None;
     }
+    wide_integer_type(&field.field_type)
+}
+
+/// Whether `field_type` is an integer primitive whose values do not all fit
+/// `i64`, and if so whether it is an `Option` of one. The field's role is
+/// the caller's concern: the stores also check a stored skip field.
+pub(crate) fn wide_integer_type(field_type: &FieldType) -> Option<bool> {
     let wide = |t: &str| is_integer_primitive(t) && !widens_to_i64_losslessly(t);
-    match &field.field_type {
+    match field_type {
         FieldType::Other(t) if wide(t) => Some(false),
         FieldType::OptionEnum(t) if wide(t) => Some(true),
         _ => None,

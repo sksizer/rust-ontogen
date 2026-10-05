@@ -34,7 +34,10 @@ fn task(title: &str, parent: Option<&str>, tags: &[&str]) -> Task {
 /// Create the tags a task lists: a many_to_many id must name a record.
 async fn tags(store: &Store, ids: &[&str]) {
     for id in ids {
-        store.create_tag(Tag { id: id.to_string(), title: id.to_string() }).await.expect("create tag");
+        store
+            .create_tag(Tag { id: id.to_string(), title: id.to_string(), uses: 0, peak_uses: None })
+            .await
+            .expect("create tag");
     }
 }
 

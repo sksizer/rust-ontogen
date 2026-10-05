@@ -10,8 +10,8 @@
 //! The value can arrive over IPC or MCP, whose payloads deserialize any
 //! `u64`; HTTP refuses it earlier, in the body check.
 
-use crate::persistence::seaorm::gen_entity::{is_integer_primitive, widens_to_i64_losslessly};
-use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType};
+use crate::persistence::seaorm::gen_entity::wide_integer_type;
+use crate::schema::model::{EntityDef, FieldDef, FieldRole};
 use crate::store::nan::Skipped;
 
 /// Where [`emit_integer_range_checks`] reads the values.
@@ -40,11 +40,7 @@ fn wide_integer_fields<'a>(
             FieldRole::Skip => skip_set,
             _ => false,
         })
-        .filter_map(|f| match &f.field_type {
-            FieldType::Other(t) if is_integer_primitive(t) && !widens_to_i64_losslessly(t) => Some((f, false)),
-            FieldType::OptionEnum(t) if is_integer_primitive(t) && !widens_to_i64_losslessly(t) => Some((f, true)),
-            _ => None,
-        })
+        .filter_map(|f| wide_integer_type(&f.field_type).map(|optional| (f, optional)))
 }
 
 /// Emit one refusal per wide integer field `source` sets. `refuse` turns the
@@ -80,6 +76,7 @@ pub(crate) fn emit_integer_range_checks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::model::FieldType;
 
     fn entity() -> EntityDef {
         EntityDef {
