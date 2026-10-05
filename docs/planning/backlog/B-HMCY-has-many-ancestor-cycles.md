@@ -7,16 +7,16 @@ tags:
 - relations
 - has-many
 - parity
-last_reviewed: '2026-10-04'
+last_reviewed: '2026-10-05'
 ---
 
 # Refuse ancestor cycles in self-referential has_many writes
 
-A self-referential `has_many` (`Task.subtasks -> Task.parent_id`) describes a tree. The store refuses the one-record cycle: a `has_many` list that names the record itself fails with `{Child}ParentCycle(id)` (`403 {child}_parent_cycle` over HTTP) before anything is written, on both backends (JSON:API wire contract §5.4, `src/store/linked_ids.rs`). Longer cycles are accepted. With `b` a child of `a`, an update that lists `a` in `b`'s subtasks, or sets `a.parent_id` to `b`, succeeds, and `a` and `b` are each other's ancestors. A walk up the parents from either never reaches a root.
+A self-referential `has_many` (`Task.subtasks -> Task.parent_id`) describes a tree. The store refuses the one-record cycle: a `has_many` list that names the record itself fails with `{Child}ParentCycle(id)` before anything is written (over HTTP the server refuses it first, at step 7, as `403 relationship_cycle`), on both backends (JSON:API wire contract §5.4, `src/store/linked_ids.rs`). Longer cycles are accepted. With `b` a child of `a`, an update that lists `a` in `b`'s subtasks, or sets `a.parent_id` to `b`, succeeds, and `a` and `b` are each other's ancestors. A walk up the parents from either never reaches a root.
 
 ## Why it is not refused today
 
-Refusing a cycle needs an ancestor walk on every write that can close one: a `has_many` list (each listed child must not be an ancestor of the record) and a `belongs_to` write (the new parent must not be a descendant of the record). On SeaORM the walk and the write can share the transaction `create_*` and `update_*` already run in, though a concurrent write on another connection can still close a cycle unless the walk locks the rows it reads or runs at a serializable isolation level. The markdown store has no transactions: two concurrent updates (`a.parent_id = b`, `b.parent_id = a`) can each pass the walk and both land. The backends would then disagree under concurrency, which the parity contract does not allow, so the store leaves acyclicity to the consumer for now. A `before_create` or `before_update` hook can walk the ancestors and refuse.
+Cost and scope. Refusing a cycle needs an ancestor walk on every write that can close one: a `has_many` list (each listed child must not be an ancestor of the record) and a `belongs_to` write (the new parent must not be a descendant of the record). That is one read per ancestor on every such write, and on the markdown backend a read of a self-referential entity loads its directory (B-BGMN), so the walk is a per-write cost proportional to tree depth times directory size. It also widens the pre-0.9.0 fix that refused the one-record cycle into a new check on `belongs_to` writes. Neither backend can make the walk airtight cheaply under concurrency either: SeaORM would need row locks or serializable isolation on the walk's reads, and the markdown store has no transactions, so two concurrent updates (`a.parent_id = b`, `b.parent_id = a`) could each pass. Until then acyclicity is the consumer's concern: a `before_create` or `before_update` hook can walk the ancestors and refuse.
 
 ## Design
 

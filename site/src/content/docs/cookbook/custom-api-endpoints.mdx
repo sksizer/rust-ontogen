@@ -64,7 +64,7 @@ The [iron-log example](/examples/iron-log/) has one custom endpoint, a workout s
 
 3. ### Configure scan directories
 
-   The [`Pipeline`](/concepts/pipeline/) builder scans the servers' and clients' `api_dir` (`src/api/v1` in iron-log), so with it there is nothing to add; `.api_scan_dirs(..)` adds more directories. A direct `gen_api` caller lists the directory in `ApiConfig::scan_dirs`:
+   The [`Pipeline`](/concepts/pipeline/) builder scans the servers' and clients' `api_dir` (`src/api/v1` in iron-log), so with it there is nothing to add. `.api_scan_dirs(..)` adds more directories, which matters only for a pipeline without a servers or clients stage: the transports read their own `api_dir`s, so with one configured an extra directory serves nothing. A direct `gen_api` caller lists the directory in `ApiConfig::scan_dirs`:
 
    ```rust
    let api = gen_api(&schema.entities, &ApiConfig {

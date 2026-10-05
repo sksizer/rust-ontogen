@@ -203,8 +203,11 @@ only.
   (ADR 0003): envelope, methods, query parameters, custom-op bodies and the
   error body all change. The 0.9.0 changelog carries the migration.
 - **Breaking for every consumer's `AppError`.** It gains `{Entity}IdRequired`
-  and `{Entity}AlreadyExists` per entity, and `{Child}ParentRequired` where
-  a required-foreign-key `has_many` exists.
+  and `{Entity}AlreadyExists` per entity, `{Child}ParentRequired` where a
+  required-foreign-key `has_many` exists, and `{Child}ParentCycle` for the
+  child of any `has_many`. The upgrading guide
+  (`site/src/content/docs/reference/upgrading.mdx`) lists which entities
+  need which variant.
 - **Breaking for direct callers.** `gen_servers` and `gen_clients` gain a
   parameter, and `VaultHandle::new` loses one.
 - **Breaking for SeaORM data whose ids break the shared id rule**

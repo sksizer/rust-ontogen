@@ -2343,8 +2343,9 @@ so does one a hook or a direct caller supplies.
   code may end in a store suffix (`_not_found`, `_id_required`,
   `_already_exists`, `_parent_required`, `_parent_cycle`), so no
   entity's store variants clash; the test
-  `no_ontogen_code_ends_in_a_store_suffix` holds every new code to this. A new §13.3 code can still equal a consumer's own
-  non-store variant, and the check then refuses that build.
+  `no_ontogen_code_ends_in_a_store_suffix` holds every new code to
+  this. A new §13.3 code can still equal a consumer's own non-store
+  variant, and the check then refuses that build.
 - **`source`.** `AppError`-derived errors carry no `source`, except
   `*AlreadyExists` on a create that carried `data.id` (§8.2).
 - **No `AppError` in the schema directory** (the scan-dirs-only case):

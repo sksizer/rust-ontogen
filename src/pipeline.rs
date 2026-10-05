@@ -359,11 +359,15 @@ impl Pipeline {
     /// transports read are the ones the generated CRUD module defers to. A
     /// directory given here must exist.
     ///
-    /// When a servers or clients stage is enabled, a hand-written `list` or
-    /// `count` that replaces a generated one must sit in a file one of those
-    /// stages reads: the transports scan their own `api_dir`s, so a
-    /// replacement found only here would serve nothing, and the build fails
-    /// with an error naming the file.
+    /// When a servers or clients stage is enabled, these directories have
+    /// no effect on what is served: the transports scan their own
+    /// `api_dir`s, not the API stage's output, and those are scanned here
+    /// anyway. A hand-written `list` or `count` that replaces a generated
+    /// one must therefore sit in a file one of those stages reads; one found
+    /// only through these directories would serve nothing, so the build
+    /// fails with an error naming the file. Set this only for a pipeline
+    /// without a servers or clients stage.
+    ///
     /// Has no effect unless [`Pipeline::api`] has been called.
     #[must_use]
     pub fn api_scan_dirs(mut self, scan_dirs: Vec<PathBuf>) -> Self {
