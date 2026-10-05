@@ -1835,7 +1835,7 @@ fn server_routes(server: &str) -> BTreeMap<Call, String> {
     for route in flat.split(".route(\"").skip(1) {
         let (path, rest) = route.split_once("\",").unwrap();
         let handlers = &rest[..rest.find(".fallback(").unwrap_or_else(|| panic!("no fallback on {path}"))];
-        let handlers = handlers.strip_prefix("axum::routing::").unwrap_or(handlers);
+        let handlers = handlers.strip_prefix("::axum::routing::").unwrap_or(handlers);
         for method in ["get", "post", "put", "patch", "delete"] {
             let at = if handlers.starts_with(&format!("{method}(")) {
                 Some(0)
@@ -2511,7 +2511,7 @@ fn assert_tag_crud_is_a_resource(http: &str, clients: &JsonApiClients) {
     let flat = crate::servers::tests::compact(http);
     assert!(
         flat.contains(&crate::servers::tests::compact(
-            ".route(\"/api/tags/{id}\", axum::routing::get(tag_get_by_id).patch(tag_update).delete(tag_delete)"
+            ".route(\"/api/tags/{id}\", ::axum::routing::get(tag_get_by_id).patch(tag_update).delete(tag_delete)"
         )),
         "{http}"
     );

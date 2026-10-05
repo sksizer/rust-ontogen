@@ -15,9 +15,7 @@ use crate::resource::{Arity, JunctionRelationship, Resource, member_name};
 use crate::schema::sort::{sort_fields, sort_keys};
 use crate::servers::classify::classify_op;
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
-use crate::servers::types::{
-    collect_ts_import, extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref, ts_param,
-};
+use crate::servers::types::{collect_ts_import, snake_to_camel, ts_param};
 
 /// The exported JSON:API types and the error every HTTP call throws (§14.4).
 ///
@@ -463,15 +461,15 @@ pub(crate) fn imported_types(modules: &[ApiModule], config: &Config, events: boo
     let mut types = Vec::new();
     for m in modules {
         for f in m.functions.iter().filter(|f| is_emitted(&m.name, f, config)) {
-            collect_ts_import(&rust_type_to_ts(&f.return_type), &mut types);
+            collect_ts_import(&config.ts_type(&f.return_type), &mut types);
             for p in typed_params(f) {
-                collect_ts_import(&rust_type_to_ts(&extract_input_type(&p.ty)), &mut types);
+                collect_ts_import(&config.ts_type(&p.ty), &mut types);
             }
         }
         for ev in m.events.iter().filter(|_| events) {
-            collect_ts_import(&rust_type_to_ts(&ev.item_type), &mut types);
+            collect_ts_import(&config.ts_type(&ev.item_type), &mut types);
             for p in &ev.params {
-                collect_ts_import(&rust_type_to_ts(&strip_ref(&p.ty)), &mut types);
+                collect_ts_import(&config.ts_type(&p.ty), &mut types);
             }
         }
     }
@@ -548,7 +546,7 @@ pub(crate) fn check_imported_types(modules: &[ApiModule], config: &Config, trans
 pub(crate) fn decode_event_frame(ev: &EventFn, config: &Config, frame: &str) -> String {
     match event_resource(ev, config) {
         Some(r) => format!("{}({frame} as JsonApiResource)", flatten_fn(r)),
-        None => format!("metaResult<{}>({frame})", rust_type_to_ts(&ev.item_type)),
+        None => format!("metaResult<{}>({frame})", config.ts_type(&ev.item_type)),
     }
 }
 
@@ -592,8 +590,8 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&s
     let scope = scope_of(m, f, config, scope);
     let base = config.naming.url_for_module(m);
     let fetch = |p: &str| fetch(p, scope);
-    let ret = if f.return_type == "()" { "null".to_string() } else { rust_type_to_ts(&f.return_type) };
-    let input_type = |i: usize| rust_type_to_ts(&extract_input_type(&f.params[i].ty));
+    let ret = if f.return_type == "()" { "null".to_string() } else { config.ts_type(&f.return_type) };
+    let input_type = |i: usize| config.ts_type(&f.params[i].ty);
     let id_path = format!("/{base}/${{encodeURIComponent(id)}}");
     let op = classify_op(m, f);
     let resource = match served(m, f, config) {
@@ -608,16 +606,16 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&s
                 OpKind::Update => (vec!["id: string".to_string(), format!("input: {}", input_type(1))], ret),
                 OpKind::Delete => (vec!["id: string".to_string()], "null".to_string()),
                 OpKind::JunctionList { .. } if is_paginated(m, f, config) => {
-                    let mut params = ts_params_in_declaration_order(f);
+                    let mut params = ts_params_in_declaration_order(f, config);
                     params.push("limit?: number".to_string());
                     params.push("offset?: number".to_string());
                     (params, paginated_result(&ret))
                 }
                 OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-                    (ts_params_in_declaration_order(f), "null".to_string())
+                    (ts_params_in_declaration_order(f, config), "null".to_string())
                 }
                 OpKind::List | OpKind::JunctionList { .. } | OpKind::CustomGet | OpKind::CustomPost => {
-                    (ts_params_in_declaration_order(f), ret)
+                    (ts_params_in_declaration_order(f, config), ret)
                 }
             };
             let body = vec![op_call(&return_type, &op_route(m, f, config), scope)];
@@ -698,7 +696,7 @@ fn relationship_method(
     config: &Config,
     scope: Option<&str>,
 ) -> Method {
-    let mut params = ts_params_in_declaration_order(f);
+    let mut params = ts_params_in_declaration_order(f, config);
     let parent = format!("/{}{}", config.naming.url_for_module(m), path_segment(&ts_param(&f.params[0].name)));
     let rel = ontogen_jsonapi::links::encode_path_segment(&junction.name);
     let linkage = format!("{parent}/relationships/{rel}");
@@ -715,7 +713,7 @@ fn relationship_method(
     }
 
     let paginated = is_paginated(m, f, config);
-    let ret = rust_type_to_ts(&f.return_type);
+    let ret = config.ts_type(&f.return_type);
     let (path, item, doc) = if junction.lists_entities {
         let target = config.resources.by_module(&junction.target_module).expect("a junction target is a resource");
         (format!("{parent}/{rel}"), flatten_fn(target), "")
@@ -931,8 +929,7 @@ fn paginated_result(array: &str) -> String {
 /// resolve (no type pool, or not found in it) is not known to have one, and
 /// its `query?` parameter stays optional.
 pub(crate) fn query_required(f: &ApiFn, config: &Config) -> bool {
-    f.filter_struct()
-        .is_some_and(|q| config.required_query_structs.contains(&rust_type_to_ts(&extract_input_type(&q.ty))))
+    f.filter_struct().is_some_and(|q| config.required_query_structs.contains(&config.ts_type(&q.ty)))
 }
 
 /// The `list` method for `f`, its collection at `/{base}`: its bare
@@ -950,13 +947,10 @@ fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -
     let base = config.naming.url_for_module(m);
     let paginated = is_paginated(m, f, config);
 
-    let mut params: Vec<String> = f
-        .bare_filters()
-        .into_iter()
-        .map(|p| format!("{}: {}", ts_param(&p.name), rust_type_to_ts(&strip_ref(&p.ty))))
-        .collect();
+    let mut params: Vec<String> =
+        f.bare_filters().into_iter().map(|p| format!("{}: {}", ts_param(&p.name), config.ts_type(&p.ty))).collect();
     if let Some(query) = f.filter_struct() {
-        let ts = rust_type_to_ts(&extract_input_type(&query.ty));
+        let ts = config.ts_type(&query.ty);
         // Bare filters are required and `limit`/`offset` follow, so a
         // required `query` never follows an optional parameter.
         let optional = if query_required(f, config) { "" } else { "?" };
@@ -967,7 +961,7 @@ fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -
         params.push("offset?: number".to_string());
     }
 
-    let ret = rust_type_to_ts(&f.return_type);
+    let ret = config.ts_type(&f.return_type);
     let return_type = if paginated { paginated_result(&ret) } else { ret };
 
     let Served::Resource(resource) = served(m, f, config) else {

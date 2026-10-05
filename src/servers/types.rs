@@ -55,8 +55,10 @@ pub fn inner_type(ty: &str) -> String {
     if ty.starts_with("Vec<") && ty.ends_with('>') { ty[4..ty.len() - 1].to_string() } else { ty.to_string() }
 }
 
-/// Names that should never be added to the import list — primitives, prelude
-/// scalars, and a few path types that occasionally appear in return positions.
+/// Names that should never be added to the import list: primitives and the
+/// prelude's `String`. Any other bare name, `Path` and `PathBuf` included, is
+/// named through the types module like the consumer's own types: the
+/// generated files bring nothing else into scope.
 fn is_prelude_scalar(name: &str) -> bool {
     matches!(
         name,
@@ -78,8 +80,6 @@ fn is_prelude_scalar(name: &str) -> bool {
             | "f64"
             | "String"
             | "str"
-            | "PathBuf"
-            | "Path"
     )
 }
 
@@ -99,6 +99,9 @@ fn is_prelude_scalar(name: &str) -> bool {
 /// container shares it: an entity `Arc` or `HashMap` is imported.
 pub fn collect_type_import(ty: &Type, imports: &mut Vec<String>) {
     match ty {
+        // A `&str`, `&Path`, `&CStr` or `&OsStr` is held as its owned
+        // companion, which [`param_to_owned_type`] names by path.
+        Type::Reference(r) if dst_target(&r.elem).is_some() => {}
         // References: &T, &mut T — peel and recurse.
         Type::Reference(r) => collect_type_import(&r.elem, imports),
 
@@ -210,9 +213,10 @@ pub fn to_pascal_case(s: &str) -> String {
 /// Rules, mirroring [`forward_arg_expr`]'s `.as_deref()` allowlist
 /// ([`owned_form_derefs_to`]):
 ///
-/// - `&str` → `String`, `&[T]` → `Vec<T>`, `&Path` → `PathBuf`,
-///   `&CStr` → `CString`, `&OsStr` → `OsString` — the five DST refs that the
-///   forwarding side handles via `.as_deref()` get their sized companions here.
+/// - `&str` → `String`, `&[T]` → `Vec<T>`, `&Path` → `::std::path::PathBuf`,
+///   `&CStr` → `::std::ffi::CString`, `&OsStr` → `::std::ffi::OsString` — the
+///   five DST refs that the forwarding side handles via `.as_deref()` get
+///   their sized companions here, named by path since nothing imports them.
 /// - `&T` (any other) → `T` — sized targets just lose the ref.
 /// - `Option<U>` → `Option<owned(U)>` (recurse).
 /// - everything else → rendered as-is.
@@ -248,6 +252,17 @@ fn owned_form_of_ref_target(target: &Type) -> String {
     }
 }
 
+/// The sized owned companion of `target` when it is a single-segment path
+/// naming one of the recognized unsized DSTs.
+fn dst_target(target: &Type) -> Option<&'static str> {
+    match target {
+        Type::Group(g) => dst_target(&g.elem),
+        Type::Paren(p) => dst_target(&p.elem),
+        Type::Path(tp) => dst_owned_companion(tp),
+        _ => None,
+    }
+}
+
 /// If `tp` is a single-segment path naming one of the recognized unsized DSTs,
 /// return its sized owned companion. Otherwise None.
 fn dst_owned_companion(tp: &syn::TypePath) -> Option<&'static str> {
@@ -260,9 +275,9 @@ fn dst_owned_companion(tp: &syn::TypePath) -> Option<&'static str> {
     }
     match seg.ident.to_string().as_str() {
         "str" => Some("String"),
-        "Path" => Some("PathBuf"),
-        "CStr" => Some("CString"),
-        "OsStr" => Some("OsString"),
+        "Path" => Some("::std::path::PathBuf"),
+        "CStr" => Some("::std::ffi::CString"),
+        "OsStr" => Some("::std::ffi::OsString"),
         _ => None,
     }
 }
@@ -461,7 +476,7 @@ const TS_CLIENT_CALLEES: &[&str] = &[
 /// [`ipc_arg_key`], with a trailing `_` when that is a reserved word
 /// (`r#in` → `in_`, `new` → `new_`) or a function a method body calls
 /// (`invoke`, `flattenTask`), and a leading `_` when it starts with a digit
-/// (`_1st` → `_1st`).
+/// (`_1st`, whose key is `1st`, → `_1st`).
 ///
 /// Two arguments get one name only when their IPC keys match, which
 /// [`check_wire_keys`](crate::servers::generators::ipc::check_wire_keys)
@@ -569,6 +584,54 @@ pub fn rust_type_to_ts(ty: &str) -> String {
     }
 
     ontogen_ts::render_type_str(ty, &signature_emit_config()).unwrap_or_else(|_| opaque_fallback(ty))
+}
+
+/// [`rust_type_to_ts`] for a schema that declares the entities `is_entity`
+/// accepts. A bare entity name is that entity even where ontogen-ts would
+/// read a std type (an entity `Path` is not `std::path::Path`), as the
+/// servers name it through the types module. Behind a reference a name stays
+/// what ontogen-ts reads, since the servers hold a `&Path` argument as
+/// `std::path::PathBuf` ([`param_to_owned_type`]); so `ty` is the type as
+/// written, `&` included.
+pub fn schema_type_to_ts(ty: &str, is_entity: &dyn Fn(&str) -> bool) -> String {
+    let Ok(mut parsed) = syn::parse_str::<Type>(ty) else { return rust_type_to_ts(ty) };
+    if qualify_entities(&mut parsed, is_entity) { rust_type_to_ts(&norm_type(&parsed)) } else { rust_type_to_ts(ty) }
+}
+
+/// Write each bare entity name in `ty` outside a reference as a path that
+/// ontogen-ts renders as the name itself. Returns whether any was written.
+fn qualify_entities(ty: &mut Type, is_entity: &dyn Fn(&str) -> bool) -> bool {
+    match ty {
+        Type::Path(tp) if tp.qself.is_none() => {
+            let bare = tp.path.leading_colon.is_none()
+                && tp.path.segments.len() == 1
+                && matches!(tp.path.segments[0].arguments, PathArguments::None);
+            if bare && is_entity(&tp.path.segments[0].ident.to_string()) {
+                // Three segments: `crate::X` would read as the relation
+                // spelling `crate::Model` for an entity `Model`.
+                let name = &tp.path.segments[0].ident;
+                *tp = syn::parse_quote!(crate::schema::#name);
+                return true;
+            }
+            let mut any = false;
+            for seg in &mut tp.path.segments {
+                if let PathArguments::AngleBracketed(ab) = &mut seg.arguments {
+                    for arg in &mut ab.args {
+                        if let GenericArgument::Type(t) = arg {
+                            any |= qualify_entities(t, is_entity);
+                        }
+                    }
+                }
+            }
+            any
+        }
+        Type::Tuple(t) => t.elems.iter_mut().fold(false, |any, elem| qualify_entities(elem, is_entity) | any),
+        Type::Array(a) => qualify_entities(&mut a.elem, is_entity),
+        Type::Slice(s) => qualify_entities(&mut s.elem, is_entity),
+        Type::Paren(p) => qualify_entities(&mut p.elem, is_entity),
+        Type::Group(g) => qualify_entities(&mut g.elem, is_entity),
+        _ => false,
+    }
 }
 
 /// Recognize ontogen's entity-relation spelling and render its TS name:

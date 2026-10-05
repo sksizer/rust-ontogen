@@ -17,7 +17,7 @@ use crate::clients::generators::{command_name, typed_params};
 use crate::resource::member_name;
 use crate::servers::classify::classify_op;
 use crate::servers::parse::ApiModule;
-use crate::servers::types::{collect_ts_import, extract_input_type, rust_type_to_ts};
+use crate::servers::types::{collect_ts_import, rust_type_to_ts};
 
 /// Collect every TS type name referenced by the generated client surface
 /// (return types + parameter types of every emitted command, and the item
@@ -44,9 +44,9 @@ pub fn referenced_ts_types(modules: &[ApiModule], config: &Config) -> Vec<String
 pub fn module_referenced_ts_types(m: &ApiModule, config: &Config) -> Vec<String> {
     let mut import_types: Vec<String> = Vec::new();
     for ev in &m.events {
-        collect_ts_import(&rust_type_to_ts(&ev.item_type), &mut import_types);
+        collect_ts_import(&config.ts_type(&ev.item_type), &mut import_types);
         for p in &ev.params {
-            collect_ts_import(&rust_type_to_ts(&p.ty), &mut import_types);
+            collect_ts_import(&config.ts_type(&p.ty), &mut import_types);
         }
     }
     for f in &m.functions {
@@ -54,11 +54,10 @@ pub fn module_referenced_ts_types(m: &ApiModule, config: &Config) -> Vec<String>
         if cmd_name.is_empty() || config.ts_skip_commands.contains(&cmd_name) {
             continue;
         }
-        let ts_ret = rust_type_to_ts(&f.return_type);
+        let ts_ret = config.ts_type(&f.return_type);
         collect_ts_import(&ts_ret, &mut import_types);
         for p in typed_params(f) {
-            let ty = extract_input_type(&p.ty);
-            let ts_ty = rust_type_to_ts(&ty);
+            let ts_ty = config.ts_type(&p.ty);
             collect_ts_import(&ts_ty, &mut import_types);
         }
     }
@@ -77,7 +76,7 @@ pub fn filter_struct_names(modules: &[ApiModule], config: &Config) -> HashSet<St
                 continue;
             }
             if let Some(p) = f.filter_struct() {
-                collect_ts_import(&rust_type_to_ts(&extract_input_type(&p.ty)), &mut names);
+                collect_ts_import(&config.ts_type(&p.ty), &mut names);
             }
         }
     }

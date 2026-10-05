@@ -14,6 +14,12 @@ pub struct CreateDocumentInput {
     #[serde(default)]
     pub ref_id: Option<String>,
     #[serde(default)]
+    pub crate_id: Option<String>,
+    #[serde(default)]
+    pub self_id: Option<String>,
+    #[serde(default)]
+    pub super_id: Option<String>,
+    #[serde(default)]
     pub r#loop: Vec<String>,
     pub body: String,
 }
@@ -28,6 +34,12 @@ pub struct UpdateDocumentInput {
     pub match_id: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     pub ref_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub crate_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub self_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub super_id: Option<Option<String>>,
     #[serde(default)]
     pub r#loop: Option<Vec<String>>,
     #[serde(default)]

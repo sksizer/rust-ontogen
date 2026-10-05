@@ -1,7 +1,10 @@
 //! Custom ops whose arguments are named after Rust keywords (`r#type`,
 //! `r#in`), JavaScript reserved words (`class`, `new`, `default`) or start
 //! with an underscore (`_kind`): every transport and client must still name
-//! them on the wire as Tauri, serde and the HTTP query do.
+//! them on the wire as Tauri, serde and the HTTP query do. `by_path` takes a
+//! `PathBuf` and an `Option<&Path>`, std types outside the prelude.
+
+use std::path::{Path, PathBuf};
 
 use tokio::sync::broadcast;
 
@@ -45,4 +48,14 @@ pub fn event_feed(state: &AppState) -> broadcast::Receiver<Event> {
 pub async fn watch_doc(state: &AppState, r#in: String) -> Result<broadcast::Receiver<Doc>, AppError> {
     state.store().await?.get_doc(&r#in).await?;
     Ok(state.doc_feed.subscribe())
+}
+
+/// The docs titled after the last component of `dir` or `under`.
+pub async fn by_path(store: &Store, dir: PathBuf, under: Option<&Path>) -> Result<Vec<Doc>, AppError> {
+    let names: Vec<String> = [Some(dir.as_path()), under]
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    Ok(store.list_docs(&[], None, None).await?.into_iter().filter(|d| names.contains(&d.title)).collect())
 }

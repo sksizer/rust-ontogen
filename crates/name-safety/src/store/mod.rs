@@ -7,6 +7,9 @@ pub use generated::*;
 
 use crate::schema::{ChangeOp, EntityKind};
 
+// `::markdown_store`: the glob above brings in the entity module
+// `markdown_store`.
+
 #[derive(Debug, Clone)]
 pub struct EntityChange {
     pub op: ChangeOp,
@@ -15,17 +18,17 @@ pub struct EntityChange {
 }
 
 pub struct Store {
-    vault: markdown_store::VaultHandle,
+    vault: ::markdown_store::VaultHandle,
     change_tx: tokio::sync::broadcast::Sender<EntityChange>,
 }
 
 impl Store {
-    pub fn new(vault: markdown_store::VaultHandle) -> Self {
+    pub fn new(vault: ::markdown_store::VaultHandle) -> Self {
         let (change_tx, _) = tokio::sync::broadcast::channel(256);
         Self { vault, change_tx }
     }
 
-    pub fn vault(&self) -> &markdown_store::VaultHandle {
+    pub fn vault(&self) -> &::markdown_store::VaultHandle {
         &self.vault
     }
 

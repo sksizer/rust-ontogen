@@ -18,6 +18,9 @@ pub struct DocumentUpdate {
     pub title: Option<String>,
     pub match_id: Option<Option<String>>,
     pub ref_id: Option<Option<String>>,
+    pub crate_id: Option<Option<String>>,
+    pub self_id: Option<Option<String>>,
+    pub super_id: Option<Option<String>>,
     pub r#loop: Option<Vec<String>>,
     pub body: Option<String>,
 }
@@ -32,6 +35,15 @@ impl DocumentUpdate {
         }
         if let Some(value) = &self.ref_id {
             record.ref_id.clone_from(value);
+        }
+        if let Some(value) = &self.crate_id {
+            record.crate_id.clone_from(value);
+        }
+        if let Some(value) = &self.self_id {
+            record.self_id.clone_from(value);
+        }
+        if let Some(value) = &self.super_id {
+            record.super_id.clone_from(value);
         }
         if let Some(value) = &self.r#loop {
             record.r#loop.clone_from(value);
@@ -48,6 +60,9 @@ impl From<crate::schema::UpdateDocumentInput> for DocumentUpdate {
             title: input.title,
             match_id: input.match_id.map(markdown_store::wikilink::strip_opt),
             ref_id: input.ref_id.map(markdown_store::wikilink::strip_opt),
+            crate_id: input.crate_id.map(markdown_store::wikilink::strip_opt),
+            self_id: input.self_id.map(markdown_store::wikilink::strip_opt),
+            super_id: input.super_id.map(markdown_store::wikilink::strip_opt),
             r#loop: input.r#loop.map(markdown_store::wikilink::strip_vec),
             body: input.body,
         }
@@ -61,6 +76,9 @@ impl From<crate::schema::CreateDocumentInput> for Document {
             title: input.title,
             match_id: markdown_store::wikilink::strip_opt(input.match_id),
             ref_id: markdown_store::wikilink::strip_opt(input.ref_id),
+            crate_id: markdown_store::wikilink::strip_opt(input.crate_id),
+            self_id: markdown_store::wikilink::strip_opt(input.self_id),
+            super_id: markdown_store::wikilink::strip_opt(input.super_id),
             r#loop: markdown_store::wikilink::strip_vec(input.r#loop),
             body: input.body,
         }
