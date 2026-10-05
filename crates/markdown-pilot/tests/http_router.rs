@@ -135,7 +135,10 @@ impl Server {
     }
 
     async fn tag(&self, id: &str, title: &str) {
-        self.store().create_tag(Tag { id: id.into(), title: title.into() }).await.expect("create tag");
+        self.store()
+            .create_tag(Tag { id: id.into(), title: title.into(), uses: 0, peak_uses: None })
+            .await
+            .expect("create tag");
     }
 
     async fn section(&self, id: &str, title: &str, parent_id: &str) {
@@ -296,7 +299,8 @@ async fn get_and_its_missing_case() {
 #[tokio::test]
 async fn relationships_carry_linkage_in_declared_order() {
     let server = Server::new();
-    server.store().create_tag(Tag { id: "codegen".into(), title: "Codegen".into() }).await.expect("tag");
+    let tag = Tag { id: "codegen".into(), title: "Codegen".into(), uses: 0, peak_uses: None };
+    server.store().create_tag(tag).await.expect("tag");
 
     let reply = server
         .write(
@@ -394,6 +398,55 @@ async fn create_documents_are_checked_member_by_member() {
 
     let reply = post(json!({ "data": { "type": "notes", "attributes": {} } })).await;
     assert_eq!(reply.pointer(StatusCode::CONFLICT, "type_mismatch"), "/data/type");
+}
+
+/// A tag's `uses` (`u64`) and `peak_uses` (`Option<u64>`) are stored as
+/// `i64`. A value above `i64::MAX` passes serde as a `u64`, so step 7
+/// refuses it as `invalid_attribute` before the store, whose own refusal is
+/// a `500` (§8.2, §8.3).
+#[tokio::test]
+async fn an_integer_attribute_outside_the_stored_range_is_invalid() {
+    let server = Server::new();
+    let tag = |id: Option<&str>, attributes: Value| {
+        let mut data = json!({ "type": "tags", "attributes": attributes });
+        if let Some(id) = id {
+            data["id"] = json!(id);
+        }
+        json!({ "data": data })
+    };
+    let refused = |reply: Reply, member: &str| {
+        let error = reply.error(StatusCode::BAD_REQUEST, "invalid_attribute");
+        assert_eq!(error["source"]["pointer"], format!("/data/attributes/{member}"));
+        let detail = error["detail"].as_str().expect("detail");
+        assert!(detail.contains("-9223372036854775808") && detail.contains("9223372036854775807"), "{detail}");
+    };
+
+    for member in ["uses", "peak_uses"] {
+        for value in [json!(u64::MAX), json!(i64::MAX as u64 + 1)] {
+            let mut attributes = json!({ "title": "Big" });
+            attributes[member] = value;
+            refused(server.write("POST", "/api/tags", tag(None, attributes)).await, member);
+        }
+    }
+    server.get("/api/tags/big").await.error(StatusCode::NOT_FOUND, "tag_not_found");
+
+    // `i64::MAX` is stored, and `null` stays valid for the `Option`.
+    let reply = server
+        .write("POST", "/api/tags", tag(None, json!({ "title": "Max", "uses": i64::MAX, "peak_uses": i64::MAX })))
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.raw);
+    assert_eq!(reply.body["data"]["attributes"], json!({ "title": "Max", "uses": i64::MAX, "peak_uses": i64::MAX }));
+
+    for member in ["uses", "peak_uses"] {
+        let mut attributes = json!({});
+        attributes[member] = json!(u64::MAX);
+        refused(server.write("PATCH", "/api/tags/max", tag(Some("max"), attributes)).await, member);
+    }
+    let reply = server.get("/api/tags/max").await;
+    assert_eq!(reply.body["data"]["attributes"], json!({ "title": "Max", "uses": i64::MAX, "peak_uses": i64::MAX }));
+    let reply = server.write("PATCH", "/api/tags/max", tag(Some("max"), json!({ "peak_uses": null }))).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(reply.body["data"]["attributes"]["peak_uses"], Value::Null);
 }
 
 #[tokio::test]
@@ -1041,6 +1094,96 @@ async fn a_has_many_relationship_writes_the_childrens_foreign_keys(scope: Scope)
 }
 in_both_scopes!(a_has_many_relationship_writes_the_childrens_foreign_keys);
 
+/// A `has_many` lists children of the resource's own type, so listing the
+/// resource itself would make it its own parent. Every write that lists it
+/// is refused at step 7 as `403 relationship_cycle`, at the identifier's
+/// first occurrence, and writes nothing (§9.2).
+async fn a_has_many_write_listing_the_resource_itself_is_refused(scope: Scope) {
+    let server = Server::new();
+    for title in ["Alpha", "Beta", "Gamma"] {
+        server.task(title, "open").await;
+    }
+    let subtasks = "/api/tasks/alpha/relationships/subtasks";
+    let tasks = |ids: &[&str]| json!(ids.iter().map(|id| identifier("tasks", id)).collect::<Vec<_>>());
+    server.write_in(scope, "PATCH", subtasks, linkage(tasks(&["beta"]))).await.no_content();
+    let before = server.get_in(scope, "/api/tasks/alpha").await.raw;
+    let cycle = |reply: Reply| reply.pointer(StatusCode::FORBIDDEN, "relationship_cycle");
+
+    // The relationship route: a replacement and an addition.
+    let reply = server.write_in(scope, "PATCH", subtasks, linkage(tasks(&["gamma", "alpha", "beta", "alpha"]))).await;
+    assert_eq!(cycle(reply), "/data/1");
+    assert_eq!(cycle(server.write_in(scope, "POST", subtasks, linkage(tasks(&["alpha"]))).await), "/data/0");
+    // A resource update, and a create whose client id the list names.
+    let update = json!({ "data": { "type": "tasks", "id": "alpha",
+        "relationships": { "subtasks": { "data": tasks(&["beta", "alpha"]) } } } });
+    let reply = server.write_in(scope, "PATCH", "/api/tasks/alpha", update).await;
+    assert_eq!(cycle(reply), "/data/relationships/subtasks/data/1");
+    let create = json!({ "data": { "type": "tasks", "id": "delta",
+        "attributes": { "title": "Delta", "status": "open", "body": "" },
+        "relationships": { "subtasks": { "data": tasks(&["delta"]) } } } });
+    let reply = server.write_in(scope, "POST", "/api/tasks", create).await;
+    assert_eq!(cycle(reply), "/data/relationships/subtasks/data/0");
+
+    // Nothing was written.
+    assert_eq!(server.get_in(scope, "/api/tasks/alpha").await.raw, before);
+    assert_eq!(server.task_parent("alpha").await, None);
+    assert_eq!(server.task_parent("beta").await.as_deref(), Some("alpha"));
+    assert_eq!(server.task_parent("gamma").await, None);
+    server.get_in(scope, "/api/tasks/delta").await.error(StatusCode::NOT_FOUND, "task_not_found");
+
+    // A resource is never in its own list, so removing it removes nothing.
+    server.write_in(scope, "DELETE", subtasks, linkage(tasks(&["alpha"]))).await.no_content();
+    assert_eq!(server.get_in(scope, "/api/tasks/alpha").await.raw, before);
+
+    // Its place in step 7: after every identifier's type, after the
+    // relationships declared before it (`parent`), before those declared
+    // after it (`tags`), and before the parent is read at step 8.
+    let mixed = json!([identifier("tasks", "alpha"), identifier("tags", "x")]);
+    let reply = server.write_in(scope, "PATCH", subtasks, linkage(mixed)).await;
+    assert_eq!(reply.pointer(StatusCode::CONFLICT, "type_mismatch"), "/data/1");
+    let update =
+        |relationships: Value| json!({ "data": { "type": "tasks", "id": "alpha", "relationships": relationships } });
+    let reply = server
+        .write_in(
+            scope,
+            "PATCH",
+            "/api/tasks/alpha",
+            update(json!({
+                "subtasks": { "data": tasks(&["alpha"]) },
+                "tags": { "data": [identifier("tasks", "x")] },
+            })),
+        )
+        .await;
+    assert_eq!(cycle(reply), "/data/relationships/subtasks/data/0");
+    let reply = server
+        .write_in(
+            scope,
+            "PATCH",
+            "/api/tasks/alpha",
+            update(json!({
+                "parent": { "data": identifier("tags", "x") },
+                "subtasks": { "data": tasks(&["alpha"]) },
+            })),
+        )
+        .await;
+    assert_eq!(reply.pointer(StatusCode::CONFLICT, "type_mismatch"), "/data/relationships/parent/data");
+    let reply =
+        server.write_in(scope, "PATCH", "/api/tasks/nope/relationships/subtasks", linkage(tasks(&["nope"]))).await;
+    assert_eq!(cycle(reply), "/data/0");
+
+    // A child whose foreign key is required is refused the same way.
+    seed_sections(&server).await;
+    let children = "/api/sections/usage/relationships/children";
+    let body = linkage(json!([
+        identifier("sections", "install"),
+        identifier("sections", "cli"),
+        identifier("sections", "usage"),
+    ]));
+    assert_eq!(cycle(server.write_in(scope, "PATCH", children, body).await), "/data/2");
+    assert_eq!(server.store().get_section("usage").await.expect("usage").parent_id, "root");
+}
+in_both_scopes!(a_has_many_write_listing_the_resource_itself_is_refused);
+
 async fn a_junction_relationship_calls_its_ops(scope: Scope) {
     let server = Server::new();
     server.task("Alpha", "open").await;
@@ -1141,7 +1284,7 @@ async fn related_links_answer_the_related_resources(scope: Scope) {
         .no_content();
     let reply = server.get_in(scope, "/api/tasks/alpha/labels?page[limit]=1&page[offset]=1").await;
     assert_eq!(ids(&reply.body), ["c"]);
-    assert_eq!(reply.body["data"][0]["attributes"], json!({ "title": "C" }));
+    assert_eq!(reply.body["data"][0]["attributes"], json!({ "title": "C", "uses": 0, "peak_uses": null }));
     assert_eq!(reply.body["meta"], json!({ "total": 2, "limit": 1, "offset": 1 }));
     assert_eq!(reply.body["links"]["self"], scope.path("/api/tasks/alpha/labels?page%5Boffset%5D=1&page%5Blimit%5D=1"));
     assert!(reply.body["links"].get("related").is_none(), "{}", reply.raw);
@@ -1405,7 +1548,12 @@ async fn the_related_link_of_a_junction_of_ids_reads_each_target(scope: Scope) {
     assert_eq!(ids(&reply.body), ["a", "c"]);
     assert_eq!(
         reply.body["data"][1],
-        json!({ "type": "tags", "id": "c", "attributes": { "title": "C" }, "links": { "self": scope.path("/api/tags/c") } })
+        json!({
+            "type": "tags",
+            "id": "c",
+            "attributes": { "title": "C", "uses": 0, "peak_uses": null },
+            "links": { "self": scope.path("/api/tags/c") }
+        })
     );
     assert_eq!(reply.body["meta"], json!({ "total": 3, "limit": 3, "offset": 0 }));
     assert_eq!(
@@ -2096,6 +2244,60 @@ async fn a_list_filtered_by_optional_bare_filters() {
     assert_eq!(reply.body["links"]["self"], "/api/tags?filter%5Btitle_prefix%5D=&page%5Boffset%5D=0&page%5Blimit%5D=2");
 }
 
+/// A `Vec` member of the filter struct reads one `filter[…]` value as its
+/// items: the value as sent split at each literal `,`, and each item
+/// percent-decoded and read as the element type, so an item holding a comma
+/// sends it as `%2C` (§7.3). The generated TS client sends exactly that.
+#[tokio::test]
+async fn a_filter_struct_reads_a_sequence_from_comma_separated_items() {
+    let server = Server::new();
+    seed_sections(&server).await;
+    server.section("faq", "Questions, answers", "root").await;
+    let list = async |filter: &str| {
+        let reply = server.get(&format!("/api/sections?filter[parent_id]=root&{filter}&page[limit]=3")).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+        reply
+    };
+
+    // An encoded comma is part of an item; the link keeps it encoded and
+    // each separator literal, so following it reads the same items.
+    let reply = list("filter[title_in]=Usage,Questions%2C%20answers").await;
+    assert_eq!(ids(&reply.body), ["faq", "usage"]);
+    let link = reply.body["links"]["self"].as_str().expect("self").to_owned();
+    assert_eq!(
+        link,
+        "/api/sections?filter%5Bparent_id%5D=root&filter%5Btitle_in%5D=Usage,Questions%2C%20answers\
+         &page%5Boffset%5D=0&page%5Blimit%5D=3"
+    );
+    assert_eq!(server.get(&link).await.raw, reply.raw);
+    // The query the generated TS client's `toQueryString` writes for
+    // `{ filter: { parent_id: 'root', title_in: ['Usage', 'Questions, answers'], children_in: [] }, page: … }`.
+    let sent = server
+        .get(concat!(
+            "/api/sections?filter%5Bparent_id%5D=root&filter%5Btitle_in%5D=Usage,Questions%2C%20answers",
+            "&filter%5Bchildren_in%5D=&page%5Boffset%5D=0&page%5Blimit%5D=3",
+        ))
+        .await;
+    assert_eq!(ids(&sent.body), ["faq", "usage"]);
+    // A literal comma separates: `Questions` and ` answers` name no title.
+    assert_eq!(list("filter[title_in]=Questions,%20answers").await.body["meta"]["total"], 0);
+
+    // Each item is read as the element type.
+    assert_eq!(ids(&list("filter[children_in]=0,2").await.body), ["faq", "intro", "usage"]);
+    for bad in ["1,x", "1,", "-1"] {
+        let reply = server.get(&format!("/api/sections?filter[parent_id]=root&filter[children_in]={bad}")).await;
+        assert_eq!(reply.parameter("invalid_query_parameter"), "filter[children_in]", "{bad}");
+    }
+
+    // An empty value is the empty sequence: `Some([])` selects nothing, and
+    // an empty `children_in` selects every section, as an absent one does
+    // through its `#[serde(default)]`. An absent `title_in` is `None`.
+    assert_eq!(list("filter[title_in]=").await.body["meta"]["total"], 0);
+    let every = list("filter[children_in]=").await;
+    assert_eq!(every.body["meta"]["total"], 4);
+    assert_eq!(ids(&list("").await.body), ids(&every.body));
+}
+
 #[tokio::test]
 async fn a_list_without_an_entity_takes_its_filter_and_op_arg_page() {
     let server = Server::new();
@@ -2331,8 +2533,12 @@ fn task_json(id: &str, parent: Option<&str>, subtasks: &[&str], tags: &[&str]) -
 /// A tag resource object, created as `(id, ID)`.
 fn tag_json(id: &str) -> String {
     format!(
-        r#"{{"type":"tags","id":"{id}","attributes":{{"title":"{}"}},"links":{{"self":"/api/tags/{id}"}}}}"#,
-        id.to_uppercase()
+        concat!(
+            r#"{{"type":"tags","id":"{id}","attributes":{{"title":"{}","uses":0,"peak_uses":null}},"#,
+            r#""links":{{"self":"/api/tags/{id}"}}}}"#
+        ),
+        id.to_uppercase(),
+        id = id,
     )
 }
 

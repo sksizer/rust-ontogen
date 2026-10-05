@@ -337,6 +337,7 @@ fn section_request_fields(
     }
     if let Some(rel) = relationships.and_then(|r| r.get("children")) {
         let ids = request::to_many_linked(rel, "/data/relationships/children", "sections", None)?;
+        request::refuse_cycle(&ids, data.id.as_deref(), "sections", "children")?;
         fields.insert("children".to_owned(), ids.iter().map(|l| serde_json::Value::String(l.id.clone())).collect());
         linked.children = ids;
     }
@@ -377,8 +378,10 @@ struct TagResourceAttributes<'a>(&'a Tag);
 impl Serialize for TagResourceAttributes<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut attributes = serializer.serialize_struct("TagResourceAttributes", 1)?;
+        let mut attributes = serializer.serialize_struct("TagResourceAttributes", 3)?;
         attributes.serialize_field("title", &self.0.title)?;
+        attributes.serialize_field("uses", &self.0.uses)?;
+        attributes.serialize_field("peak_uses", &self.0.peak_uses)?;
         attributes.end()
     }
 }
@@ -402,12 +405,18 @@ fn tag_request_fields(
     create: bool,
 ) -> Result<serde_json::Map<String, serde_json::Value>, ErrorObject> {
     let attributes = data.attributes.as_ref();
-    request::check_attribute_names(attributes, "tags", &["title"], &[])?;
+    request::check_attribute_names(attributes, "tags", &["title", "uses", "peak_uses"], &[])?;
     let mut fields = serde_json::Map::new();
     if create {
         fields.insert("id".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));
     }
     set_field(&mut fields, "title", request::attribute::<String>(attributes, "title", create)?);
+    set_field(&mut fields, "uses", request::wide_integer_attribute::<u64>(attributes, "uses", false)?);
+    set_field(
+        &mut fields,
+        "peak_uses",
+        request::wide_integer_attribute::<Option<u64>>(attributes, "peak_uses", false)?,
+    );
     request::check_relationship_names(data.relationships()?, "tags", &[])?;
     Ok(fields)
 }
@@ -509,6 +518,7 @@ fn task_request_fields(
     }
     if let Some(rel) = relationships.and_then(|r| r.get("subtasks")) {
         let ids = request::to_many_linked(rel, "/data/relationships/subtasks", "tasks", None)?;
+        request::refuse_cycle(&ids, data.id.as_deref(), "tasks", "subtasks")?;
         fields.insert("subtasks".to_owned(), ids.iter().map(|l| serde_json::Value::String(l.id.clone())).collect());
         linked.subtasks = ids;
     }
@@ -1422,6 +1432,7 @@ async fn ontogen_section_relationship_patch_scoped(
             let ontogen_bytes = ontogen_body.into_bytes()?;
             let ontogen_linked =
                 request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "sections", None)?;
+            request::refuse_cycle(&ontogen_linked, id.as_str(), "sections", "children")?;
             let ontogen_entity = ontogen_section_read_scoped(&ontogen_state, &ontogen_scope, &id).await?;
             ontogen_section_check_ids_scoped(&ontogen_state, &ontogen_scope, &ontogen_linked).await?;
             ontogen_section_write_field_scoped(
@@ -1456,6 +1467,7 @@ async fn ontogen_section_relationship_post_scoped(
             let ontogen_bytes = ontogen_body.into_bytes()?;
             let ontogen_linked =
                 request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "sections", Some(1))?;
+            request::refuse_cycle(&ontogen_linked, id.as_str(), "sections", "children")?;
             let ontogen_entity = ontogen_section_read_scoped(&ontogen_state, &ontogen_scope, &id).await?;
             ontogen_section_check_ids_scoped(&ontogen_state, &ontogen_scope, &ontogen_linked).await?;
             if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.children, &ontogen_linked) {
@@ -2006,6 +2018,7 @@ async fn ontogen_task_relationship_patch_scoped(
             let ontogen_bytes = ontogen_body.into_bytes()?;
             let ontogen_linked =
                 request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tasks", None)?;
+            request::refuse_cycle(&ontogen_linked, id.as_str(), "tasks", "subtasks")?;
             let ontogen_entity = ontogen_task_read_scoped(&ontogen_state, &ontogen_scope, &id).await?;
             ontogen_task_check_ids_scoped(&ontogen_state, &ontogen_scope, &ontogen_linked).await?;
             ontogen_task_write_field_scoped(
@@ -2061,6 +2074,7 @@ async fn ontogen_task_relationship_post_scoped(
             let ontogen_bytes = ontogen_body.into_bytes()?;
             let ontogen_linked =
                 request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tasks", Some(1))?;
+            request::refuse_cycle(&ontogen_linked, id.as_str(), "tasks", "subtasks")?;
             let ontogen_entity = ontogen_task_read_scoped(&ontogen_state, &ontogen_scope, &id).await?;
             ontogen_task_check_ids_scoped(&ontogen_state, &ontogen_scope, &ontogen_linked).await?;
             if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.subtasks, &ontogen_linked) {

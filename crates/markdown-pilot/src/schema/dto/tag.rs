@@ -9,6 +9,10 @@ pub struct CreateTagInput {
     #[serde(default)]
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub uses: u64,
+    #[serde(default)]
+    pub peak_uses: Option<u64>,
 }
 
 /// Input for updating an existing Tag.
@@ -17,4 +21,16 @@ pub struct CreateTagInput {
 pub struct UpdateTagInput {
     #[serde(default)]
     pub title: Option<String>,
+    #[serde(default)]
+    pub uses: Option<u64>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub peak_uses: Option<Option<u64>>,
+}
+
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
 }

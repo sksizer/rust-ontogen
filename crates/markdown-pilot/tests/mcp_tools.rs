@@ -117,6 +117,14 @@ async fn a_list_reads_a_strict_filter_struct_beside_a_bare_filter_and_the_page()
     let page = server.ok("section_list", json!({ "parent_id": "root" })).await;
     assert_eq!(ids(&page), ["intro", "root"]);
     assert_eq!(page["total"], 3);
+
+    // Sequence members take arrays, an item holding a comma included: the
+    // same items the HTTP router reads from `filter[title_in]=Usage,Usage%2C%20too`.
+    let args = json!({ "parent_id": "root", "title_in": ["Usage", "Usage, too"], "children_in": [0, 2] });
+    let page = server.ok("section_list", args).await;
+    assert_eq!(ids(&page), ["usage"]);
+    let page = server.ok("section_list", json!({ "parent_id": "root", "title_in": [] })).await;
+    assert_eq!(page["total"], 0);
 }
 
 #[tokio::test]
@@ -155,7 +163,17 @@ async fn a_list_reports_a_missing_or_mistyped_filter() {
 fn a_list_advertises_every_argument_it_reads() {
     assert_eq!(
         properties("section_list"),
-        names(&["parent_id", "title_contains", "min_children", "max_children", "sort", "limit", "offset"])
+        names(&[
+            "parent_id",
+            "title_contains",
+            "min_children",
+            "max_children",
+            "title_in",
+            "children_in",
+            "sort",
+            "limit",
+            "offset"
+        ])
     );
     let definitions = tool_definitions();
     let section_list = definitions.iter().find(|t| t.name == "section_list").unwrap();

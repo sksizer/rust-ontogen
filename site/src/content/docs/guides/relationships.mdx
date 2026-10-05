@@ -184,6 +184,7 @@ When the entity's module serves `get_by_id`, each relationship also gets its own
 
 - Writes go through the module's `update`, so they follow the rules above, hooks and `ParentRequired` included, and answer `204`. Adding a member that is already there, or removing one that is not, is `204` and writes nothing, as is `{"data": []}` on `POST` or `DELETE`.
 - A body with more than one identifier on `POST` or `DELETE` is `403 relationship_batch_unsupported`. `POST` or `DELETE` on a to-one, and any write when the module has no `update`, is `403 relationship_update_unsupported`.
+- A `has_many` lists children of the entity's own type, so a `PATCH` or `POST` naming the resource itself, which would make it its own parent, is `403 relationship_cycle`, and so is a create or update body that does. A `DELETE` naming it writes nothing.
 - The related route reads each resource with the target module's `get_by_id`, so every target needs one (the build fails otherwise). A dangling id is skipped; a to-one whose target is gone is `null`.
 - An unknown `{rel}` is `404 relationship_not_found`, and a missing parent `404` with its `{entity}_not_found` code.
 - An entity whose module serves no `get_by_id` gets no relationship routes, and its relationships carry `data` only.

@@ -16,6 +16,8 @@ const TAG_TYPE: &str = "Tag";
 #[derive(Debug, Clone, Default)]
 pub struct TagUpdate {
     pub title: Option<String>,
+    pub uses: Option<u64>,
+    pub peak_uses: Option<Option<u64>>,
 }
 
 impl TagUpdate {
@@ -23,18 +25,24 @@ impl TagUpdate {
         if let Some(title) = &self.title {
             tag.title.clone_from(title);
         }
+        if let Some(uses) = &self.uses {
+            tag.uses.clone_from(uses);
+        }
+        if let Some(peak_uses) = &self.peak_uses {
+            tag.peak_uses.clone_from(peak_uses);
+        }
     }
 }
 
 impl From<crate::schema::UpdateTagInput> for TagUpdate {
     fn from(input: crate::schema::UpdateTagInput) -> Self {
-        Self { title: input.title }
+        Self { title: input.title, uses: input.uses, peak_uses: input.peak_uses }
     }
 }
 
 impl From<crate::schema::CreateTagInput> for Tag {
     fn from(input: crate::schema::CreateTagInput) -> Self {
-        Self { id: input.id, title: input.title }
+        Self { id: input.id, title: input.title, uses: input.uses, peak_uses: input.peak_uses }
     }
 }
 
@@ -43,16 +51,20 @@ impl From<crate::schema::CreateTagInput> for Tag {
 pub enum TagSortField {
     Id,
     Title,
+    Uses,
+    PeakUses,
 }
 
 impl ontogen_core::order::SortField for TagSortField {
-    const ALL: &'static [Self] = &[Self::Id, Self::Title];
+    const ALL: &'static [Self] = &[Self::Id, Self::Title, Self::Uses, Self::PeakUses];
     const ID: Self = Self::Id;
 
     fn name(self) -> &'static str {
         match self {
             Self::Id => "id",
             Self::Title => "title",
+            Self::Uses => "uses",
+            Self::PeakUses => "peak_uses",
         }
     }
 }
@@ -75,6 +87,8 @@ fn compare_tags(a: &Tag, b: &Tag, field: TagSortField) -> std::cmp::Ordering {
     match field {
         TagSortField::Id => a.id.cmp(&b.id),
         TagSortField::Title => a.title.cmp(&b.title),
+        TagSortField::Uses => a.uses.cmp(&b.uses),
+        TagSortField::PeakUses => a.peak_uses.cmp(&b.peak_uses),
     }
 }
 
@@ -115,6 +129,17 @@ impl Store {
     pub async fn create_tag(&self, mut tag: Tag) -> Result<Tag, AppError> {
         hooks::before_create(self, &mut tag).await?;
 
+        if let Some(v) = Some(tag.uses).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Tag.uses: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = tag.peak_uses.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Tag.peak_uses: value {v} is out of range for i64"),
+            }));
+        }
+
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&TagFrontmatter::from_tag(&tag), TAG_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(TAGS_DIR, TAG_TYPE).create(
@@ -138,6 +163,17 @@ impl Store {
     pub async fn update_tag(&self, id: &str, updates: TagUpdate) -> Result<Tag, AppError> {
         let current = self.get_tag(id).await?;
         hooks::before_update(self, &current, &updates).await?;
+
+        if let Some(v) = updates.uses.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Tag.uses: value {v} is out of range for i64"),
+            }));
+        }
+        if let Some(v) = updates.peak_uses.flatten().filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::from(markdown_store::Error::Serialize {
+                message: format!("Tag.peak_uses: value {v} is out of range for i64"),
+            }));
+        }
 
         self.vault()
             .entity(TAGS_DIR, TAG_TYPE)

@@ -321,6 +321,7 @@ fn task_request_fields(
     }
     if let Some(rel) = relationships.and_then(|r| r.get("subtasks")) {
         let ids = request::to_many_linked(rel, "/data/relationships/subtasks", "tasks", None)?;
+        request::refuse_cycle(&ids, data.id.as_deref(), "tasks", "subtasks")?;
         fields.insert("subtasks".to_owned(), ids.iter().map(|l| serde_json::Value::String(l.id.clone())).collect());
         linked.subtasks = ids;
     }
@@ -968,6 +969,7 @@ async fn ontogen_task_relationship_patch(
             let ontogen_bytes = ontogen_body.into_bytes()?;
             let ontogen_linked =
                 request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tasks", None)?;
+            request::refuse_cycle(&ontogen_linked, id.as_str(), "tasks", "subtasks")?;
             let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
             ontogen_task_check_ids(&ontogen_state, &ontogen_linked).await?;
             ontogen_task_write_field(
@@ -1017,6 +1019,7 @@ async fn ontogen_task_relationship_post(
             let ontogen_bytes = ontogen_body.into_bytes()?;
             let ontogen_linked =
                 request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, "", "tasks", Some(1))?;
+            request::refuse_cycle(&ontogen_linked, id.as_str(), "tasks", "subtasks")?;
             let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
             ontogen_task_check_ids(&ontogen_state, &ontogen_linked).await?;
             if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.subtasks, &ontogen_linked) {

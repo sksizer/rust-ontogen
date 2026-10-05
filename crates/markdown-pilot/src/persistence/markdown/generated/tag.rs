@@ -10,18 +10,21 @@ use crate::schema::Tag;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TagFrontmatter {
     pub title: String,
+    pub uses: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_uses: Option<u64>,
 }
 
 /// The frontmatter keys this type owns — the full field set, so
 /// `merge_serialize` removes cleared options and preserves hand-added keys.
-pub const TAG_FM_FIELDS: &[&str] = &["title"];
+pub const TAG_FM_FIELDS: &[&str] = &["title", "uses", "peak_uses"];
 
 impl TagFrontmatter {
     pub fn from_tag(value: &Tag) -> Self {
-        Self { title: value.title.clone() }
+        Self { title: value.title.clone(), uses: value.uses, peak_uses: value.peak_uses }
     }
 
     pub fn into_tag(self, id: String) -> Tag {
-        Tag { id, title: self.title }
+        Tag { id, title: self.title, uses: self.uses, peak_uses: self.peak_uses }
     }
 }

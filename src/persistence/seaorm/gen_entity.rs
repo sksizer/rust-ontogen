@@ -27,6 +27,23 @@ pub(crate) fn widens_to_i64_losslessly(t: &str) -> bool {
     matches!(t, "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "i64")
 }
 
+/// Whether `field` is a stored integer whose Rust type reaches past the
+/// `i64` column both stores hold it in (`u64`, `usize`, `isize`, `u128`,
+/// `i128`), with whether it is an `Option` of one. The stores refuse such
+/// a value on write, and the HTTP server refuses it in a request body, so
+/// both read the type list here.
+pub(crate) fn wide_integer(field: &FieldDef) -> Option<bool> {
+    if !matches!(field.role, FieldRole::Plain | FieldRole::EnumField) {
+        return None;
+    }
+    let wide = |t: &str| is_integer_primitive(t) && !widens_to_i64_losslessly(t);
+    match &field.field_type {
+        FieldType::Other(t) if wide(t) => Some(false),
+        FieldType::OptionEnum(t) if wide(t) => Some(true),
+        _ => None,
+    }
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /// Generate all entity modules and write them to the output directory.
@@ -483,6 +500,22 @@ mod tests {
         }
         assert!(!is_integer_primitive("f32"));
         assert!(!is_integer_primitive("Count"));
+    }
+
+    #[test]
+    fn wide_integer_fields_are_the_stored_ones_past_i64() {
+        let field = |t: FieldType, role: FieldRole| wide_integer(&FieldDef::new("x", t, role));
+        for t in ["u64", "usize", "isize", "u128", "i128"] {
+            for role in [FieldRole::Plain, FieldRole::EnumField] {
+                assert_eq!(field(FieldType::Other(t.into()), role.clone()), Some(false), "{t}");
+                assert_eq!(field(FieldType::OptionEnum(t.into()), role), Some(true), "Option<{t}>");
+            }
+            assert_eq!(field(FieldType::Other(t.into()), FieldRole::Skip), None, "{t}");
+        }
+        for t in ["u32", "i64", "f64", "Count"] {
+            assert_eq!(field(FieldType::Other(t.into()), FieldRole::Plain), None, "{t}");
+            assert_eq!(field(FieldType::OptionEnum(t.into()), FieldRole::Plain), None, "Option<{t}>");
+        }
     }
 
     #[test]

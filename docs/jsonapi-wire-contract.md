@@ -241,10 +241,15 @@ produce byte-equal links:
    its member name, then `sort`, then `include`, then `page[offset]`, then
    `page[limit]`.
 2. Names: `[` and `]` are written `%5B` and `%5D`.
-3. Values: every byte outside the unreserved set is percent-encoded, except
-   `,`, which stays literal because it separates `sort` and `include`
-   items. The spec allows a value serialization that differs from
-   `application/x-www-form-urlencoded` as long as it parses back.
+3. Values: a value is written item by item, every byte of an item
+   outside the unreserved set percent-encoded and the items joined by a
+   literal `,`, so a comma inside an item is `%2C`. The items of `sort` and
+   `include` are its keys and paths as parsed; those of a `filter[…]`
+   value are the decoded pieces of the value as sent between its literal
+   commas, so a link reads back the sequence a member was sent (§7.3). A
+   value with no literal comma is one item. The spec allows a value
+   serialization that differs from `application/x-www-form-urlencoded` as
+   long as it parses back.
 4. `sort` and `include` are written as parsed: duplicates in `include`
    removed, request order kept.
 5. Paginated collections always carry both `page` parameters, with the
@@ -332,6 +337,11 @@ every relation field removed. Concretely:
 - The `#[ontology(body)]` field is an ordinary attribute named after its
   field (`body`).
 - Fields with role `Skip` are not attributes.
+- Both stores hold an integer field as `i64` (ADR 0006 §4). An attribute
+  whose type reaches past it (`u64`, `usize`, `isize`, `u128`, `i128`, or
+  an `Option` of one) keeps its type, but a request body's value outside
+  `-9223372036854775808..=9223372036854775807` is `400 invalid_attribute`
+  (§8.2).
 
 The generator raises a `CodegenError` when:
 
@@ -391,6 +401,11 @@ relationship (§9.1), which is changed only through its own endpoint.
   - a listed child gets its foreign key set to this resource, and moves
     from any previous parent;
   - a child dropped from the list gets its foreign key cleared;
+  - a list naming the resource itself would make it its own parent. Over
+    HTTP that is refused at step 7 as `403 relationship_cycle`, at the
+    identifier's first occurrence, before anything is read or written
+    (§8.2, §9.2). The resource is never in its own list, so a relationship
+    `DELETE` naming it writes nothing;
   - when the child's foreign key field is not `Option`, a child cannot be
     dropped. The write fails with `403 {child}_parent_required` (§13.4)
     before anything is written. The spec requires `403` when a server
@@ -724,7 +739,8 @@ store except the trailing `limit` and `offset`. Each is one of:
 - a bare parameter, which is the member `filter[{param name}]`. Its type,
   under `&` and at most one `Option`, must be one a single value can carry:
   `&str`, `String`, numbers, `bool`, unit enums. `Vec<_>`, tuples and schema
-  entities are a `CodegenError`. `Option<T>` is optional, and any other
+  entities are a `CodegenError`; a sequence can be a struct member
+  instead (below). `Option<T>` is optional, and any other
   bare parameter is required.
 
 An `*Input` parameter on a `list` is a `CodegenError`, since a list has no
@@ -751,6 +767,26 @@ The paginated-`count` rule ignores it.
 reads one field: `true` is a `bool`, `5` a number, and anything is a string.
 An `Option` that is present is `Some(value)`, so an empty value is
 `Some("")` for a string. An `Option` that is absent is `None`.
+
+**Sequence members.** A struct field serde reads as a sequence
+(`Vec<T>`, `Option<Vec<T>>`) takes one `filter[x]` listing its items:
+
+- The value as sent, still percent-encoded, is split at each literal `,`,
+  and each piece is percent-decoded and read as `T` as above. A comma
+  inside an item is sent as `%2C`, which the split leaves alone:
+  `filter[tags]=a,b%2Cc` is `["a", "b,c"]`. The generated TS client sends
+  exactly that (§14.2), and IPC and MCP read the same items from a JSON
+  array.
+- An item `T` refuses is `400 invalid_query_parameter` naming the member
+  (`filter[sizes]`), as any other bad value is. An empty piece is an
+  item: `a,` is `["a", ""]`, which a number refuses.
+- `filter[x]=` is the empty sequence, so a sequence holding one empty
+  string cannot be sent.
+- An absent member is read as serde reads a missing field, as IPC and MCP
+  read one: `None` for an `Option`, the default under `#[serde(default)]`,
+  and otherwise a missing required filter.
+- Items are not sent as repeats: `filter[x]=a&filter[x]=b` is a repeated
+  member, and `400`.
 
 Unknown members are detected from the struct's serde field names (the names
 serde derive declares, renames and aliases as serde reports them), read at
@@ -1200,7 +1236,7 @@ server can change the resource (the id fill, `before_create` hooks).
 | 7 | `attributes` present but not an object | 400 | `invalid_document` | `pointer: "/data/attributes"` |
 | 7 | an attribute name the type does not have, including a relation field written as an attribute (`epic_id`) | 400 | `unknown_attribute` | `pointer: "/data/attributes/{name}"` |
 | 7 | a required attribute missing | 400 | `missing_attribute` | `pointer: "/data/attributes"`, or `"/data"` when `attributes` is absent |
-| 7 | an attribute value serde rejects | 400 | `invalid_attribute` | `pointer: "/data/attributes/{name}"` |
+| 7 | an attribute value serde rejects, or an integer outside `i64` for a type that reaches past it (§5.3) | 400 | `invalid_attribute` | `pointer: "/data/attributes/{name}"` |
 | 7 | `relationships` present but not an object | 400 | `invalid_document` | `pointer: "/data/relationships"` |
 | 7 | a relationship name the type does not have | 400 | `unknown_relationship` | `pointer: "/data/relationships/{name}"` |
 | 7 | a junction-op relationship present (§9.1) | 403 | `relationship_update_unsupported` | `pointer: "/data/relationships/{name}"` |
@@ -1208,6 +1244,7 @@ server can change the resource (the id fill, `before_create` hooks).
 | 7 | `data: null` on a non-`Option` to-one | 403 | `relationship_required` | `pointer: "/data/relationships/{name}/data"` |
 | 7 | a non-`Option` to-one absent | 400 | `missing_relationship` | `pointer: "/data/relationships"`, or `"/data"` when `relationships` is absent |
 | 7 | an identifier of the wrong type | 409 | `type_mismatch` | `pointer: "/data/relationships/{name}/data"` (or `…/data/{i}`) |
+| 7 | a `has_many` of the type's own type naming the client `data.id` (§5.4) | 403 | `relationship_cycle` | the identifier's first occurrence, `/data/relationships/{name}/data/{i}` |
 | 8 | a linked resource that does not exist | 404 | `related_resource_not_found` | the identifier's pointer |
 | 9 | no id after `before_create` and the `IdStrategy` (`Provided` with no id; a slug source that slugifies to empty) | 400 | `{entity}_id_required` | none |
 | 9 | the id already exists | 409 | `{entity}_already_exists` | `pointer: "/data/id"` when the request carried `data.id`; otherwise none |
@@ -1217,7 +1254,8 @@ Notes:
 
 - **Member order within step 7** follows §13.2 step 7. Within one
   declared relationship the order is its shape, then `null`, then absence,
-  then identifier types.
+  then identifier types, then, for a `has_many` of the type's own type,
+  an identifier naming the resource itself.
 - **Pointers** only ever name a value present in the request, as the spec
   requires. For something missing, a pointer names the nearest enclosing
   member that exists.
@@ -1320,6 +1358,7 @@ fields:
 | to-one `data: null`, field `String` | — | `403 relationship_required` |
 | `many_to_many` `data: [...]` | `tags: Some(vec)` | full replacement; `[]` clears |
 | `has_many` `data: [...]` | `subtasks: Some(vec)` | full replacement through the children's foreign keys (§5.4) |
+| `has_many` `data` naming the resource itself | — | `403 relationship_cycle` |
 
 An update with no `attributes` and no `relationships` is a no-op. It
 returns `200` with the current resource, and the markdown backend performs
@@ -1344,6 +1383,9 @@ may change fields the request did not mention, and the spec then requires
 | 9 | the resource does not exist | 404 | `{entity}_not_found` | none |
 | 9 | a `has_many` replacement drops a child whose foreign key is not `Option` | 403 | `{child}_parent_required` | none |
 | 9 | any other `AppError` | per §13.4 | §13.4 | none |
+
+§8.2's `relationship_cycle` row compares the identifiers with the URL id,
+which `data.id` equals by then.
 
 A body `id` is compared with the URL id exactly. A string that differs is
 `409`, whatever it contains (`""` included), as the spec requires for an id
@@ -1464,6 +1506,10 @@ user code and pass through the same hooks and errors as a resource
   fails with `403 {child}_parent_required` (§5.4).
 - `"data": []` on `POST` or `DELETE` writes nothing. The parent is still
   read, so a missing parent is still `404`.
+- On a `has_many` of the type's own type, a `PATCH` or `POST` naming the
+  parent itself is `403 relationship_cycle` at step 7, before the parent
+  is read (§9.2). A `DELETE` naming it writes nothing, since the parent is
+  never in its own list.
 - When the module serves no `update`, `PATCH`, `POST` and `DELETE` are
   `403 relationship_update_unsupported` (§9).
 
@@ -1631,6 +1677,34 @@ Content-Type: application/vnd.api+json
   `{"data": [...]}` makes exactly those tasks the subtasks. Dropped
   subtasks get `parent_id: null`.
 
+**A `has_many` listing the parent.** A child of `subtasks` is a task, so a
+list naming the parent itself would make it its own parent:
+
+```http
+PATCH /api/tasks/ship-the-emitter/relationships/subtasks HTTP/1.1
+Content-Type: application/vnd.api+json
+
+{ "data": [ { "type": "tasks", "id": "write-docs" },
+            { "type": "tasks", "id": "ship-the-emitter" } ] }
+```
+
+```json
+{
+  "jsonapi": { "version": "1.1" },
+  "errors": [ {
+    "status": "403",
+    "code": "relationship_cycle",
+    "title": "Forbidden",
+    "detail": "`tasks` `ship-the-emitter` cannot be in its own `subtasks`: it would be its own parent",
+    "source": { "pointer": "/data/1" }
+  } ]
+}
+```
+
+Nothing is written. A `POST` naming the parent is refused the same way, at
+`/data/0`. Only the resource itself is refused here: a longer cycle
+through other resources is not detected on the wire.
+
 **Responses.** Every successful relationship mutation is `204 No Content`.
 The server makes no change beyond the request, so the spec allows it.
 
@@ -1651,6 +1725,7 @@ The server makes no change beyond the request, so the spec allows it.
 | 7 | an identifier without string `type` and `id` | 400 | `invalid_document` | `pointer: "/data"` (to-one) or `"/data/{i}"` |
 | 7 | `null` on a non-`Option` to-one | 403 | `relationship_required` | `pointer: "/data"` |
 | 7 | an identifier of the wrong type | 409 | `type_mismatch` | the identifier's pointer |
+| 7 | `PATCH` or `POST` on a `has_many` of `{type}` naming the parent (`{id}`) | 403 | `relationship_cycle` | the identifier's first occurrence, `/data/{i}` |
 | 8 | parent resource missing | 404 | `{entity}_not_found` | none |
 | 8 | a linked resource that does not exist (`PATCH`, `POST`; never `DELETE`) | 404 | `related_resource_not_found` | the identifier's pointer |
 | 9 | a `has_many` write drops a child whose foreign key is not `Option` | 403 | `{child}_parent_required` | none |
@@ -2072,7 +2147,11 @@ is the response:
    1. unknown attribute names, in byte order;
    2. declared attributes, in declaration order;
    3. unknown relationship names, in byte order;
-   4. declared relationships, in declaration order.
+   4. declared relationships, in declaration order. Within one: its
+      shape, then `null`, then absence, then identifier types, then, for
+      a `has_many` of the type's own type, an identifier naming the
+      resource itself (`403 relationship_cycle`). A relationship route's
+      body is one relationship, read in the same order.
 
    Custom-op `meta.args` (§10.2) is one family: unknown names in byte
    order, then declared arguments in declaration order.
@@ -2102,12 +2181,13 @@ consumer's `AppError`:
 | 400 | `invalid_include_path` | a bad `include` on a route that accepts it (§7.5) |
 | 400 | `invalid_path_parameter` | a typed prefix parameter fails to parse (§11.1) |
 | 400 | `invalid_document` | the body is not JSON, or not a valid request document for the route |
-| 400 | `unknown_attribute` / `missing_attribute` / `invalid_attribute` | attribute problems (§8.2, §8.3) |
+| 400 | `unknown_attribute` / `missing_attribute` / `invalid_attribute` | attribute problems, including an integer outside `i64` (§5.3, §8.2, §8.3) |
 | 400 | `unknown_relationship` | a relationship name the type lacks (§8.2) |
 | 400 | `missing_relationship` | a non-`Option` to-one absent from a create body (§8.2) |
 | 403 | `relationship_required` | `null` on a non-`Option` to-one (§8.2, §8.3, §9) |
 | 403 | `relationship_update_unsupported` | a relationship write the relationship does not support: `PATCH` on a junction op, `POST`/`DELETE` on a to-one, a write to a relation field of a type whose module serves no `update`, `POST` on a junction op without `add_Y` or `DELETE` without `remove_Y`, or a junction-op relationship in a create or update body (§8.2, §9) |
 | 403 | `relationship_batch_unsupported` | a relationship `POST` or `DELETE` with more than one identifier (§9) |
+| 403 | `relationship_cycle` | a `has_many` of the type's own type naming the resource itself, which would become its own parent: in a create (its client `data.id`) or update body, or a relationship `PATCH` or `POST` (§5.4, §8.2, §9.2) |
 | 404 | `related_resource_not_found` | a linked id that does not exist (§8.2, §8.3, §9) |
 | 404 | `relationship_not_found` | `{rel}` is not a relationship of the type, or does not percent-decode (§9) |
 | 405 | `method_not_allowed` | a method the route does not serve (§13.5) |
@@ -2161,6 +2241,14 @@ The scan maps variants by name suffix:
 | `{Entity}AlreadyExists(id)` | store `create`, on a duplicate id | 409 |
 | `{Child}ParentRequired(child_id)` | a parent's `has_many` write that would drop a child whose foreign key is not `Option` (§5.4) | 403 |
 | any other variant (`Md`, `DbError`) | — | 500 |
+
+A value no store can hold is refused by the store's catch-all error, a
+`500`: an integer outside `i64`, and on markdown a float NaN. Neither
+arises over HTTP for an integer, because step 7 refuses one outside `i64`
+as `400 invalid_attribute` first (§5.3, §8.2), and JSON cannot carry a
+NaN. IPC and MCP deserialize their payloads straight into the input type,
+so an out-of-range integer sent there reaches the store and is its `500`;
+so does one a hook or a direct caller supplies.
 
 - **`code` is the variant name**, converted to snake_case at generation
   time: `task_not_found`, `task_id_required`, `task_already_exists`,
@@ -2296,10 +2384,14 @@ taskList(query?: ListTasksQuery, limit?: number, offset?: number, options?: List
 **Queries.** `toQueryString` has a family form.
 `toQueryString({ filter: query, page: { offset, limit } })` emits
 `filter%5Bstatus%5D=…` and so on, skipping `null` and `undefined`. An array
-value is one parameter with its items joined by `,`, and is skipped when
-empty: `toQueryString({ sort: ['-created', 'title'] })` is
-`?sort=-created,title`. Arrays are not supported inside a family, so a
-filter takes none (§7.3).
+value is one parameter, each item encoded with `encodeURIComponent` and
+the items joined by a literal `,`: `toQueryString({ sort: ['-created',
+'title'] })` is `?sort=-created,title`, and a filter's sequence member
+`{ filter: { tags: ['a', 'b,c'] } }` is `filter%5Btags%5D=a,b%2Cc`, which
+the server splits back into the same items (§7.3). An empty array is
+skipped at the top level, so an empty `sort` sends nothing, and sent with
+an empty value inside a family, so `tags: []` is `filter%5Btags%5D=`: the
+empty sequence, as IPC and MCP read `[]`.
 
 **Placement.** The `ListOptions<K>` interface and each `{Entity}SortKey`
 union are emitted once, beside `PaginatedResult`, in each generated client
@@ -2547,7 +2639,9 @@ the section that states each and its reason.
 | A bare filter named `sort` on a sorted list is a build error on IPC and MCP | 15 | Both transports read the sort keys from the `sort` argument, so the filter would share its key |
 | IPC and MCP read `sort` before opening the store | 15 | A bad key is the caller's error and should not depend on the store |
 | MCP reads `sort` strictly, and skips it when reading the `*Query` struct | 15 | One rule with the other arguments: a wrong type is a tool error, and a struct field named `sort` cannot be set over MCP |
-| `toQueryString` writes an array as one comma-joined parameter | 14.2 | `sort` takes a comma-separated value, and the server refuses a repeated parameter |
+| `toQueryString` writes an array as one comma-joined parameter | 14.2 | `sort` and a filter's sequence member take a comma-separated value, and the server refuses a repeated parameter |
+| A filter's sequence member is its value as sent split at each literal `,`, each item decoded | 7.3 | It is what the TS client sends; an item's own comma travels as `%2C`, and IPC and MCP read the same items from an array |
+| `filter[x]=` is the empty sequence; an absent member is serde's missing field | 7.3, 14.2 | IPC and MCP read a missing field the same way, and the TS client sends `[]` as an empty value |
 | The clients stage refuses an `order` it cannot send | 7.3 | A client's sort keys are those of the module's resource, so any other order has no `options` type |
 | The clients stage applies the IPC wire-key rules when it emits the IPC transport, and refuses TS method parameter names that collide | 15 | It emits that TypeScript whether or not this build generates the server, and a duplicate key or parameter does not compile |
 | Dangling linkage is skipped in `included` and related links, not an error | 7.5 | Markdown tolerates dangling wikilinks by design |
@@ -2565,6 +2659,8 @@ the section that states each and its reason.
 | A `PATCH` body id is compared exactly; any difference is `409` | 8.3 | The spec requires `409` for an id that does not match the endpoint |
 | Delete and relationship mutations are `204` | 8.4, 9 | Nothing to report, and TS returns `null` |
 | `has_many` is writable; dropping a required-foreign-key child is `403` | 5.4, 9 | Decision 9; the child cannot be orphaned, and the spec requires `403` for a refused removal or replacement |
+| A `has_many` write naming the resource itself is `403 relationship_cycle` at step 7 | 5.4, 9.2 | The resource would become its own parent; the request alone decides it, and the spec requires `403` for a refused relationship update |
+| An integer attribute outside `i64` is `400 invalid_attribute` | 5.3, 8.2 | Both stores hold integers as `i64`, so the value is the client's error, not the store's `500` |
 | Unsupported relationship updates are `403`, not `405` | 9 | The spec requires `403` for an unsupported relationship update |
 | One identifier per relationship `POST`/`DELETE` | 9 | Every write is one call, so no request is partly applied; TS sends one id |
 | A lone `list_X` is a custom op | 9.1 | A plain filtered list must not become a relationship |

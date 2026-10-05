@@ -64,6 +64,10 @@ pub(crate) struct Relationship {
     pub target_module: String,
     /// The target's resource `type` (`epics`).
     pub target_type: String,
+    /// A `has_many` whose children are records of this same entity, as
+    /// every `has_many` is: a write listing the resource itself would make
+    /// it its own parent, which the server refuses (§9.2).
+    pub parents_its_own_type: bool,
 }
 
 /// A to-many relationship a resource module's junction ops define (§9.1):
@@ -448,6 +452,7 @@ fn resource_of(entity: &EntityDef, entities: &[EntityDef], naming: &NamingConfig
                     target_entity: target.name.clone(),
                     target_type: naming.url_plural(&target_module),
                     target_module,
+                    parents_its_own_type: info.kind == RelationKind::HasMany && target.name == entity.name,
                 });
             }
             FieldRole::Body | FieldRole::EnumField | FieldRole::Plain => {

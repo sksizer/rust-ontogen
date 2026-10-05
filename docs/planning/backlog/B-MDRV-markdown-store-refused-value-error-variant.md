@@ -17,7 +17,7 @@ The markdown store refuses two kinds of value before it writes: a float `NaN` ([
 
 Add a variant, for example `Error::Refused { message }` with `Display` `value refused: {message}`, and emit it from both checks instead of `Serialize`. Keep `Serialize` for what it names.
 
-The HTTP status stays `500`. A refused value cannot arrive over a transport (JSON has no `NaN`, and the integer range is the schema's concern), so reaching the check is a server bug: a hook or a direct caller supplied it. The change is to the message and the variant, not to the status mapping.
+The HTTP status stays `500`. A NaN cannot arrive over a transport, since JSON has none. An integer outside `i64` cannot arrive over HTTP, whose step 7 refuses it as `400 invalid_attribute` (wire contract §8.2), but it can over IPC and MCP, which deserialize the payload straight into the input type, and from a hook or a direct caller. The change is to the message and the variant, not to the status mapping.
 
 ## What it touches
 
