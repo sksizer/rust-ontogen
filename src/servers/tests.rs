@@ -9542,7 +9542,7 @@ fn hostile_fixture(root: &std::path::Path, scoped: bool) -> Config {
     let entities = crate::schema::parse::parse_schema_source(&schema, std::path::Path::new("schema.rs")).unwrap();
     let mut config = if scoped { test_config_with_prefix(api_dir) } else { test_config(api_dir) };
     config.types_import_path = "crate::model".to_string();
-    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming).unwrap();
+    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming);
     config.error_map = crate::servers::error_map::scan(&schema_dir).unwrap();
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
     config
