@@ -6,6 +6,8 @@ mod fixed;
 mod item;
 #[path = "../../../schema/section.rs"]
 mod section;
+#[path = "../../../schema/stamped.rs"]
+mod stamped;
 #[path = "../../../schema/tag.rs"]
 mod tag;
 
@@ -14,11 +16,13 @@ pub mod dto;
 pub use fixed::Fixed;
 pub use item::{Item, Kind};
 pub use section::Section;
+pub use stamped::Stamped;
 pub use tag::Tag;
 
 pub use dto::fixed::{CreateFixedInput, UpdateFixedInput};
 pub use dto::item::{CreateItemInput, UpdateItemInput};
 pub use dto::section::{CreateSectionInput, UpdateSectionInput};
+pub use dto::stamped::{CreateStampedInput, UpdateStampedInput};
 pub use dto::tag::{CreateTagInput, UpdateTagInput};
 
 /// The variants the generated store constructs, plus `DbError` for
@@ -38,6 +42,9 @@ pub enum AppError {
     TagNotFound(String),
     TagIdRequired(String),
     TagAlreadyExists(String),
+    StampedNotFound(String),
+    StampedIdRequired(String),
+    StampedAlreadyExists(String),
     DbError(String),
 }
 
@@ -54,4 +61,5 @@ pub enum EntityKind {
     Item,
     Section,
     Tag,
+    Stamped,
 }

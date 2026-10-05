@@ -1,7 +1,8 @@
 //! Generates the shared parity schema (`../schema`) against the SeaORM
 //! backend. parity-markdown generates the same schema against the markdown
-//! backend with the same default `IdStrategy` (`Fixed` overrides it in the
-//! schema); the generated code is committed so diffs are reviewable.
+//! backend with the same default `IdStrategy` (`Fixed` and `Stamped`
+//! override it in the schema); the generated code is committed so diffs are
+//! reviewable.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

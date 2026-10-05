@@ -43,11 +43,14 @@ at a vault people also edit in Obsidian or a text editor.
 | `walk` | gitignore-aware record listing, **sorted** (the backend's stable order) |
 | `store` | `VaultHandle`: create / read / modify / remove / list / id-derivation, with a shared intra-process write lock; `EntityRecords` (`vault.entity(dir, type)`): the typed per-entity view that stamps each record's OKF `type` and filters flat vaults by it |
 
-\* `Uuid` needs the `uuid` cargo feature.
+\* `Uuid` exists only with the `uuid` cargo feature, so code that names it
+without the feature (a generated store with a `Uuid` entity, say) fails to
+compile.
 
 Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
 `fsops`, `walk`, and `store` (default) gate the I/O layers and their deps
-(`tempfile`, `ignore`).
+(`tempfile`, `ignore`); `uuid` (off by default) adds `IdStrategy::Uuid` and
+its `uuid` dependency.
 
 ## Guarantees and limits (read this before depending on it)
 

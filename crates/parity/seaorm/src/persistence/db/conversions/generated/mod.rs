@@ -3,4 +3,5 @@
 pub mod fixed;
 pub mod item;
 pub mod section;
+pub mod stamped;
 pub mod tag;

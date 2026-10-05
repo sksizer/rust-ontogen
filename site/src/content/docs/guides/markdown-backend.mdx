@@ -440,7 +440,9 @@ let state = AppState::new(open_vault(VAULT_ROOT));
   `-3`, … — atomically with the write. The strategy is a store setting
   (`Pipeline::store_id_strategy`, required, with per-entity overrides in the
   schema) shared with the SeaORM backend; [Creating records](/guides/store-layer/#creating-records) has the
-  full rules, including `IdRequired` and `AlreadyExists`.
+  full rules, including `IdRequired` and `AlreadyExists`. `IdStrategy::Uuid`
+  needs the `uuid` feature of `markdown-store`; without it the generated
+  store does not compile.
 - **An id that cannot exist is NotFound.** `get`, `update` and `delete` of an
   id the vault cannot hold (one containing `/`, a reserved name, one over
   252 bytes, and so on) answer `{Entity}NotFound`, as they do for an id that
