@@ -3,7 +3,7 @@ name = "name-safety"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Compile fixture: a schema whose names collide with everything the generated code imports"
+description = "Compile fixture: entity, relationship and argument names that collide with names the generated code uses"
 license = "MIT"
 repository = "https://github.com/sksizer/rust-ontogen"
 # Never published: CI builds this crate so a schema naming entities and
