@@ -460,7 +460,7 @@ A `has_many` list lives on the children, as their foreign keys. An update that s
 
 A listed child that does not exist fails the create or update with `AppError::{Child}NotFound(child_id)`, the first missing id in list order, before anything is written. It is checked before `{Child}ParentRequired`.
 
-Only the self-referential shape is supported: the `has_many` target must be the declaring entity, as in a tree of nodes. A `has_many` whose target is another entity fails the build with a `CodegenError`. To list another entity's records that point at this one, declare the `belongs_to` on that entity and query its records by the foreign key in a hand-written API function (see [Custom API endpoints](/cookbook/custom-api-endpoints/)).
+Only the self-referential shape is supported: the `has_many` target must be the declaring entity, as in a tree of nodes, and its `foreign_key` must name that entity's `belongs_to` to itself, typed `String` or `Option<String>`. A `has_many` whose target is another entity, or whose `foreign_key` is missing or names any other field, fails the build with a `CodegenError`. To list another entity's records that point at this one, declare the `belongs_to` on that entity and query its records by the foreign key in a hand-written API function (see [Custom API endpoints](/cookbook/custom-api-endpoints/)).
 
 ## Simple vs Complex Entities
 

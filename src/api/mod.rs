@@ -40,6 +40,21 @@ use crate::{ApiConfig, CodegenError};
 /// 3. Merges scanned modules with generated ones (same-name → fold, new → add)
 /// 4. Returns unified `ApiOutput` for downstream `gen_servers`
 pub fn generate(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, CodegenError> {
+    generate_for_transports(entities, config, None)
+}
+
+/// [`generate`], knowing which directories the transports read.
+///
+/// `Pipeline` passes its servers and clients stages' `api_dir`s. A
+/// hand-written `list` or `count` in a file none of them reads would drop the
+/// generated one while nothing serves the replacement, so it fails the build
+/// instead. `None` (a direct `gen_api` call, or a `Pipeline` without
+/// transports) cannot tell who reads the scan directories and trusts them all.
+pub(crate) fn generate_for_transports(
+    entities: &[EntityDef],
+    config: &ApiConfig,
+    transport_dirs: Option<&[PathBuf]>,
+) -> Result<ApiOutput, CodegenError> {
     let output_dir = &config.output_dir;
     fs::create_dir_all(output_dir)
         .map_err(|e| CodegenError::Api(format!("Failed to create {}: {e}", output_dir.display())))?;
@@ -58,11 +73,18 @@ pub fn generate(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput,
     let mut scanned: Vec<(PathBuf, parse::ApiModule)> = Vec::new();
     for scan_dir in &config.scan_dirs {
         if !scan_dir.is_dir() {
-            return Err(CodegenError::Api(format!("API scan directory does not exist: {}", scan_dir.display())));
+            return Err(CodegenError::Api(format!(
+                "API scan directory does not exist: {}. Create it, or remove it from `Pipeline::api_scan_dirs` \
+                 (`ApiConfig::scan_dirs` when calling `gen_api` directly)",
+                scan_dir.display()
+            )));
         }
         let result =
             parse::scan_api_dir_excluding(scan_dir, &config.state_type, config.store_type.as_deref(), Some(output_dir));
         scanned.extend(result.modules.into_iter().map(|m| (scan_dir.clone(), m)));
+    }
+    if let Some(transport_dirs) = transport_dirs {
+        check_replacements_are_served(entities, config, transport_dirs)?;
     }
 
     let mut modules: Vec<ApiModule> = Vec::new();
@@ -117,11 +139,73 @@ fn omissions<'a>(snake: &str, config: &ApiConfig, scanned: impl Iterator<Item = 
     let mut has_list = false;
     let mut has_count = false;
     for f in scanned.flat_map(|m| &m.functions) {
-        has_list |= f.name == "list" && !f.is_stateless;
+        has_list |= is_replacing_list(f);
         has_count |= f.is_count();
     }
     let paginated = config.paginated.iter().any(|m| m == snake);
     Omissions { list: has_list, count: has_count || (has_list && paginated) }
+}
+
+/// A hand-written `list` that takes the generated one's place. A stateless
+/// one never does.
+fn is_replacing_list(f: &parse::ApiFn) -> bool {
+    f.name == "list" && !f.is_stateless
+}
+
+/// Refuse a hand-written `list` or `count` that would replace a generated
+/// one from a file no transport reads.
+///
+/// The transports scan their own `api_dir`s, not the api stage's output, so
+/// such a replacement drops the generated fn from every transport and serves
+/// nothing in its place: the entity's collection `GET` would vanish while the
+/// build succeeds.
+fn check_replacements_are_served(
+    entities: &[EntityDef],
+    config: &ApiConfig,
+    transport_dirs: &[PathBuf],
+) -> Result<(), CodegenError> {
+    let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let served: std::collections::HashSet<PathBuf> = transport_dirs
+        .iter()
+        .filter(|d| d.is_dir())
+        .flat_map(|d| parse::api_dir_files(d, None))
+        .map(|p| canonical(&p))
+        .collect();
+    let generated: std::collections::HashSet<String> = entities
+        .iter()
+        .filter(|e| !config.exclude.iter().any(|ex| ex == &e.name))
+        .map(|e| helpers::to_snake_case(&e.name))
+        .collect();
+
+    for scan_dir in &config.scan_dirs {
+        for file in parse::api_dir_files(scan_dir, Some(&config.output_dir)) {
+            if served.contains(&canonical(&file)) {
+                continue;
+            }
+            let Some(module) = parse::parse_api_module(&file, &config.state_type, config.store_type.as_deref()).module
+            else {
+                continue;
+            };
+            if !generated.contains(&module.name) {
+                continue;
+            }
+            let Some(f) = module.functions.iter().find(|f| is_replacing_list(f) || f.is_count()) else {
+                continue;
+            };
+            let transports = transport_dirs.iter().map(|d| format!("`{}`", d.display())).collect::<Vec<_>>();
+            return Err(CodegenError::Api(format!(
+                "ontogen: `{file}` defines `{module}::{name}`, which replaces the generated `{module}::{name}`, but no \
+                 transport reads that file: the api stage scans it only through `Pipeline::api_scan_dirs`, so the \
+                 generated fn would be dropped and nothing would serve this one. Move the file into a directory a \
+                 transport reads ({dirs}), or rename the fn so the generated `{name}` stays.",
+                file = file.display(),
+                module = module.name,
+                name = f.name,
+                dirs = transports.join(", "),
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ─── Scanning → IR conversion ────────────────────────────────────────────────

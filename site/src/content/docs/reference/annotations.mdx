@@ -212,7 +212,7 @@ pub contains: Vec<String>,
 | Attribute | Required | Description |
 |-----------|----------|-------------|
 | `target` | Yes | The target entity name. Must be the declaring entity. |
-| `foreign_key` | Yes | The FK column on the target entity that references this entity's ID. |
+| `foreign_key` | Yes | The FK field on the target entity that references this entity's ID. Since the target is the declaring entity, this is its own `belongs_to` with `target` set to itself, typed `String` or `Option<String>`. Any other field fails the build. |
 
 **Field type:** `Vec<String>`. Populated at read time by querying the target table.
 

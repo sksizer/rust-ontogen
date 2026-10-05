@@ -10,30 +10,72 @@
 //! before anything is written.
 //!
 //! Only the self-referential shape is supported: the children are records
-//! of the declaring entity, whose `set_{snake}_parent` helper rewrites them.
+//! of the declaring entity, whose `set_{snake}_parent` helper rewrites them,
+//! and the `foreign_key` is that entity's `belongs_to` back to itself.
 //! [`validate_targets`] refuses any other `has_many` at build time.
 
-use crate::schema::model::{EntityDef, FieldType};
+use crate::schema::model::{EntityDef, FieldRole, FieldType, RelationKind};
 use crate::store::helpers::to_snake_case;
 
-/// Refuse a `has_many` whose target is not the declaring entity. Both
-/// backends would emit it against the declaring entity's own records (the
-/// SeaORM set-parent rewrites the wrong table; the markdown store does not
-/// compile), so it fails the build instead.
+/// Refuse a `has_many` the store cannot write.
+///
+/// Its target must be the declaring entity: both backends emit it against
+/// the declaring entity's own records (the SeaORM set-parent would rewrite
+/// the wrong table; the markdown store does not compile). Its `foreign_key`
+/// must name that entity's `belongs_to` back to itself, typed `String` or
+/// `Option<String>`: the generated code reads and writes the key as a parent
+/// id (a wikilink in markdown), so any other field either fails to compile
+/// in the generated store or stores an id the field does not hold.
 pub(crate) fn validate_targets(entities: &[EntityDef]) -> Result<(), String> {
     for entity in entities {
         for (field, info) in entity.has_many_relations() {
+            let at = format!("`{}.{}`", entity.name, field.name);
             if info.target != entity.name {
                 return Err(format!(
-                    "`{entity}.{field}`: has_many target `{target}` is not `{entity}`. Only the self-referential \
-                     has_many (target = \"{entity}\") is supported. Declare the belongs_to on `{target}` instead and \
-                     list `{target}` records by that foreign key in a hand-written API function.",
+                    "{at}: has_many target `{target}` is not `{entity}`. Only the self-referential has_many \
+                     (target = \"{entity}\") is supported. Declare the belongs_to on `{target}` instead and list \
+                     `{target}` records by that foreign key in a hand-written API function.",
                     entity = entity.name,
-                    field = field.name,
                     target = info.target,
                 ));
             }
+            validate_foreign_key(entity, &at, info.foreign_key.as_deref())?;
         }
+    }
+    Ok(())
+}
+
+/// Check a self-referential `has_many`'s `foreign_key` (see [`validate_targets`]).
+fn validate_foreign_key(entity: &EntityDef, at: &str, fk: Option<&str>) -> Result<(), String> {
+    let name = &entity.name;
+    let fix = format!(
+        "Set `foreign_key` to a field of `{name}` declared \
+         `#[ontology(relation(belongs_to, target = \"{name}\"))]` and typed `String` or `Option<String>`, \
+         e.g. `parent_id`."
+    );
+    let Some(fk) = fk else {
+        return Err(format!("{at}: has_many has no `foreign_key`. {fix}"));
+    };
+    let Some(fk_field) = entity.fields.iter().find(|f| f.name == fk) else {
+        return Err(format!("{at}: has_many foreign_key `{fk}` names no field of `{name}`. {fix}"));
+    };
+    match &fk_field.role {
+        FieldRole::Relation(rel) if rel.kind == RelationKind::BelongsTo && rel.target == *name => {}
+        FieldRole::Relation(rel) if rel.kind == RelationKind::BelongsTo => {
+            return Err(format!(
+                "{at}: has_many foreign_key `{name}.{fk}` is a belongs_to to `{target}`, not to `{name}`, so it \
+                 cannot hold the parent's id. {fix}",
+                target = rel.target,
+            ));
+        }
+        _ => {
+            return Err(format!("{at}: has_many foreign_key `{name}.{fk}` is not a belongs_to relation. {fix}"));
+        }
+    }
+    if !matches!(fk_field.field_type, FieldType::String | FieldType::OptionString) {
+        return Err(format!(
+            "{at}: has_many foreign_key `{name}.{fk}` is not typed `String` or `Option<String>`. {fix}"
+        ));
     }
     Ok(())
 }
@@ -176,7 +218,7 @@ pub(crate) fn emit_update_children(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::model::{FieldDef, FieldRole, RelationInfo, RelationKind};
+    use crate::schema::model::{FieldDef, RelationInfo};
 
     fn node(fk_type: FieldType) -> EntityDef {
         EntityDef {
@@ -227,6 +269,63 @@ mod tests {
         let err = validate_targets(&[entity]).expect_err("a cross-entity has_many must be refused");
         for needle in ["`Node.children`", "target `Leaf`", "self-referential", "belongs_to on `Leaf`", "hand-written"] {
             assert!(err.contains(needle), "missing {needle}: {err}");
+        }
+    }
+
+    /// `node`, with its `children` has_many's foreign_key set to `fk`.
+    fn node_with_fk(fk: Option<&str>) -> EntityDef {
+        let mut entity = node(FieldType::OptionString);
+        if let FieldRole::Relation(info) = &mut entity.fields[2].role {
+            info.foreign_key = fk.map(str::to_string);
+        }
+        entity
+    }
+
+    fn assert_fk_refused(entity: EntityDef, what: &str) {
+        let err = validate_targets(&[entity]).expect_err("the foreign key must be refused");
+        for needle in ["`Node.children`", what, "relation(belongs_to, target = \"Node\")", "`Option<String>`"] {
+            assert!(err.contains(needle), "missing {needle}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_required_foreign_key_is_accepted() {
+        validate_targets(&[node(FieldType::String)]).expect("a String foreign key is supported");
+    }
+
+    #[test]
+    fn a_missing_foreign_key_fails_the_build() {
+        assert_fk_refused(node_with_fk(None), "has no `foreign_key`");
+    }
+
+    #[test]
+    fn a_foreign_key_naming_no_field_fails_the_build() {
+        assert_fk_refused(node_with_fk(Some("parnet_id")), "foreign_key `parnet_id` names no field of `Node`");
+    }
+
+    #[test]
+    fn a_foreign_key_that_is_not_a_belongs_to_fails_the_build() {
+        let mut entity = node(FieldType::OptionString);
+        entity.fields[1].role = FieldRole::Plain;
+        assert_fk_refused(entity, "foreign_key `Node.parent_id` is not a belongs_to relation");
+
+        // The has_many field itself is a relation, but not a belongs_to.
+        assert_fk_refused(node_with_fk(Some("children")), "foreign_key `Node.children` is not a belongs_to relation");
+    }
+
+    #[test]
+    fn a_foreign_key_to_another_entity_fails_the_build() {
+        let mut entity = node(FieldType::OptionString);
+        if let FieldRole::Relation(info) = &mut entity.fields[1].role {
+            info.target = "Owner".to_string();
+        }
+        assert_fk_refused(entity, "foreign_key `Node.parent_id` is a belongs_to to `Owner`, not to `Node`");
+    }
+
+    #[test]
+    fn a_foreign_key_of_another_type_fails_the_build() {
+        for fk_type in [FieldType::I64, FieldType::OptionI64, FieldType::VecString] {
+            assert_fk_refused(node(fk_type), "foreign_key `Node.parent_id` is not typed `String` or `Option<String>`");
         }
     }
 
