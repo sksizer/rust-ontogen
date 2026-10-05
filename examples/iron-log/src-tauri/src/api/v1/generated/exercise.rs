@@ -20,14 +20,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Exercise, AppError> {
 
 /// Create a new exercise
 pub async fn create(store: &Store, input: CreateExerciseInput) -> Result<Exercise, AppError> {
-    let exercise: Exercise = input.into();
-    store.create_exercise(exercise).await
+    store.create_exercise(Exercise::from(input)).await
 }
 
 /// Update an existing exercise
 pub async fn update(store: &Store, id: &str, input: UpdateExerciseInput) -> Result<Exercise, AppError> {
-    let updates: ExerciseUpdate = input.into();
-    store.update_exercise(id, updates).await
+    store.update_exercise(id, ExerciseUpdate::from(input)).await
 }
 
 /// Delete a exercise by ID

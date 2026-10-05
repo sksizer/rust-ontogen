@@ -26,30 +26,30 @@ pub struct TaskUpdate {
 }
 
 impl TaskUpdate {
-    fn apply(&self, task: &mut Task) {
-        if let Some(title) = &self.title {
-            task.title.clone_from(title);
+    fn apply(&self, record: &mut Task) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(status) = &self.status {
-            task.status.clone_from(status);
+        if let Some(value) = &self.status {
+            record.status.clone_from(value);
         }
-        if let Some(created) = &self.created {
-            task.created.clone_from(created);
+        if let Some(value) = &self.created {
+            record.created.clone_from(value);
         }
-        if let Some(epic_id) = &self.epic_id {
-            task.epic_id.clone_from(epic_id);
+        if let Some(value) = &self.epic_id {
+            record.epic_id.clone_from(value);
         }
-        if let Some(tags) = &self.tags {
-            task.tags.clone_from(tags);
+        if let Some(value) = &self.tags {
+            record.tags.clone_from(value);
         }
-        if let Some(parent_id) = &self.parent_id {
-            task.parent_id.clone_from(parent_id);
+        if let Some(value) = &self.parent_id {
+            record.parent_id.clone_from(value);
         }
-        if let Some(subtasks) = &self.subtasks {
-            task.subtasks.clone_from(subtasks);
+        if let Some(value) = &self.subtasks {
+            record.subtasks.clone_from(value);
         }
-        if let Some(body) = &self.body {
-            task.body.clone_from(body);
+        if let Some(value) = &self.body {
+            record.body.clone_from(value);
         }
     }
 }
@@ -138,19 +138,19 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Task>, AppError> {
-        let mut tasks = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(TASKS_DIR, TASK_TYPE).read_all().map_err(AppError::from)? {
             let fm: TaskFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            tasks.push(fm.into_task(id, doc.body().to_string()));
+            records.push(fm.into_task(id, doc.body().to_string()));
         }
-        sort_tasks(&mut tasks, order);
+        sort_tasks(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        let mut tasks: Vec<Task> = tasks.into_iter().skip(offset).take(limit).collect();
-        for entity in &mut tasks {
-            self.populate_task_relations(entity).await?;
+        let mut records: Vec<Task> = records.into_iter().skip(offset).take(limit).collect();
+        for record in &mut records {
+            self.populate_task_relations(record).await?;
         }
-        Ok(tasks)
+        Ok(records)
     }
 
     pub async fn count_tasks(&self) -> Result<u64, AppError> {
@@ -166,38 +166,36 @@ impl Store {
             Err(e) => return Err(AppError::from(e)),
         };
         let fm: TaskFrontmatter = doc.deserialize().map_err(AppError::from)?;
-        let mut task = fm.into_task(id.to_string(), doc.body().to_string());
-        self.populate_task_relations(&mut task).await?;
-        Ok(task)
+        let mut record = fm.into_task(id.to_string(), doc.body().to_string());
+        self.populate_task_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
-        hooks::before_create(self, &mut task).await?;
+    pub async fn create_task(&self, mut record: Task) -> Result<Task, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let subtasks = task.subtasks.clone();
-
-        for child_id in &subtasks {
+        for child_id in &record.subtasks {
             if !self.task_exists(child_id).await? {
                 return Err(AppError::TaskNotFound(child_id.clone()));
             }
         }
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&TaskFrontmatter::from_task(&task), TASK_FM_FIELDS).map_err(AppError::from)?;
-        doc.set_body(task.body.clone());
+        doc.merge_serialize(&TaskFrontmatter::from_task(&record), TASK_FM_FIELDS).map_err(AppError::from)?;
+        doc.set_body(record.body.clone());
         let id = match self.vault().entity(TASKS_DIR, TASK_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(task.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(task.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::TaskIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TaskAlreadyExists(task.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TaskAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
-        for child_id in &subtasks {
+        for child_id in &record.subtasks {
             self.set_task_parent(child_id, Some(&id)).await?;
         }
 
@@ -228,10 +226,10 @@ impl Store {
             .entity(TASKS_DIR, TASK_TYPE)
             .modify(id, |doc| {
                 let fm: TaskFrontmatter = doc.deserialize()?;
-                let mut task = fm.into_task(id.to_string(), doc.body().to_string());
-                updates.apply(&mut task);
-                doc.merge_serialize(&TaskFrontmatter::from_task(&task), TASK_FM_FIELDS)?;
-                doc.set_body(task.body);
+                let mut record = fm.into_task(id.to_string(), doc.body().to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&TaskFrontmatter::from_task(&record), TASK_FM_FIELDS)?;
+                doc.set_body(record.body);
                 Ok(())
             })
             .map_err(AppError::from)?;
@@ -269,19 +267,19 @@ impl Store {
 
     pub(crate) async fn populate_task_relations(
         &self,
-        task: &mut crate::schema::Task,
+        record: &mut crate::schema::Task,
     ) -> Result<(), crate::schema::AppError> {
-        let mut subtasks = Vec::new();
+        let mut ids = Vec::new();
         for (child_id, doc) in self.vault().entity(TASKS_DIR, TASK_TYPE).read_all().map_err(AppError::from)? {
-            if child_id == task.id {
+            if child_id == record.id {
                 continue;
             }
             let child: TaskFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            if markdown_store::wikilink::strip_opt(child.parent_id).as_deref() == Some(task.id.as_str()) {
-                subtasks.push(child_id);
+            if markdown_store::wikilink::strip_opt(child.parent_id).as_deref() == Some(record.id.as_str()) {
+                ids.push(child_id);
             }
         }
-        task.subtasks = subtasks;
+        record.subtasks = ids;
         Ok(())
     }
 

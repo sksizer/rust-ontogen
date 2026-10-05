@@ -19,9 +19,9 @@ pub struct TagUpdate {
 }
 
 impl TagUpdate {
-    fn apply(&self, tag: &mut Tag) {
-        if let Some(title) = &self.title {
-            tag.title.clone_from(title);
+    fn apply(&self, record: &mut Tag) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Tag>, AppError> {
-        let mut tags = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(TAGS_DIR, TAG_TYPE).read_all().map_err(AppError::from)? {
             let fm: TagFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            tags.push(fm.into_tag(id));
+            records.push(fm.into_tag(id));
         }
-        sort_tags(&mut tags, order);
+        sort_tags(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(tags.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_tags(&self) -> Result<u64, AppError> {
@@ -112,20 +112,20 @@ impl Store {
         Ok(fm.into_tag(id.to_string()))
     }
 
-    pub async fn create_tag(&self, mut tag: Tag) -> Result<Tag, AppError> {
-        hooks::before_create(self, &mut tag).await?;
+    pub async fn create_tag(&self, mut record: Tag) -> Result<Tag, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&TagFrontmatter::from_tag(&tag), TAG_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&TagFrontmatter::from_tag(&record), TAG_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(TAGS_DIR, TAG_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(tag.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(tag.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::TagIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TagAlreadyExists(tag.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TagAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -143,9 +143,9 @@ impl Store {
             .entity(TAGS_DIR, TAG_TYPE)
             .modify(id, |doc| {
                 let fm: TagFrontmatter = doc.deserialize()?;
-                let mut tag = fm.into_tag(id.to_string());
-                updates.apply(&mut tag);
-                doc.merge_serialize(&TagFrontmatter::from_tag(&tag), TAG_FM_FIELDS)?;
+                let mut record = fm.into_tag(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&TagFrontmatter::from_tag(&record), TAG_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

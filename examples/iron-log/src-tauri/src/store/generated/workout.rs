@@ -2,8 +2,8 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use sea_orm::sea_query;
+use sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::workout;
 use crate::schema::Workout;
@@ -24,24 +24,24 @@ pub struct WorkoutUpdate {
 }
 
 impl WorkoutUpdate {
-    fn apply(&self, workout: &mut Workout) {
-        if let Some(name) = &self.name {
-            workout.name.clone_from(name);
+    fn apply(&self, record: &mut Workout) {
+        if let Some(value) = &self.name {
+            record.name.clone_from(value);
         }
-        if let Some(date) = &self.date {
-            workout.date.clone_from(date);
+        if let Some(value) = &self.date {
+            record.date.clone_from(value);
         }
-        if let Some(duration_minutes) = &self.duration_minutes {
-            workout.duration_minutes.clone_from(duration_minutes);
+        if let Some(value) = &self.duration_minutes {
+            record.duration_minutes.clone_from(value);
         }
-        if let Some(notes) = &self.notes {
-            workout.notes.clone_from(notes);
+        if let Some(value) = &self.notes {
+            record.notes.clone_from(value);
         }
-        if let Some(tags) = &self.tags {
-            workout.tags.clone_from(tags);
+        if let Some(value) = &self.tags {
+            record.tags.clone_from(value);
         }
-        if let Some(created_at) = &self.created_at {
-            workout.created_at.clone_from(created_at);
+        if let Some(value) = &self.created_at {
+            record.created_at.clone_from(value);
         }
     }
 }
@@ -145,11 +145,11 @@ impl Store {
         }
         let models = query.all(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-        let mut entities: Vec<Workout> = models.iter().map(Workout::from_model).collect::<Result<_, _>>()?;
-        for entity in &mut entities {
-            self.populate_workout_relations(entity).await?;
+        let mut records: Vec<Workout> = models.iter().map(Workout::from_model).collect::<Result<_, _>>()?;
+        for record in &mut records {
+            self.populate_workout_relations(record).await?;
         }
-        Ok(entities)
+        Ok(records)
     }
 
     pub async fn count_workouts(&self) -> Result<u64, AppError> {
@@ -163,27 +163,25 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::WorkoutNotFound(id.to_string()))?;
 
-        let mut entity = Workout::from_model(&model)?;
-        self.populate_workout_relations(&mut entity).await?;
-        Ok(entity)
+        let mut record = Workout::from_model(&model)?;
+        self.populate_workout_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_workout(&self, mut workout: Workout) -> Result<Workout, AppError> {
-        hooks::before_create(self, &mut workout).await?;
+    pub async fn create_workout(&self, mut record: Workout) -> Result<Workout, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let tags = workout.tags.clone();
-
-        let id = if workout.id.trim().is_empty() {
+        let id = if record.id.trim().is_empty() {
             return Err(AppError::WorkoutIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
-            ontogen_core::id::validate_id(&workout.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_workout(&workout).await? {
-                return Err(AppError::WorkoutAlreadyExists(workout.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_workout(&record).await? {
+                return Err(AppError::WorkoutAlreadyExists(record.id));
             }
-            workout.id.clone()
+            record.id.clone()
         };
 
-        self.sync_junction("workout_tags", "workout_id", "tag_id", &id, &tags).await?;
+        self.sync_junction("workout_tags", "workout_id", "tag_id", &id, &record.tags).await?;
 
         let created = self.get_workout(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Workout, id);
@@ -242,18 +240,18 @@ impl Store {
 
     pub(crate) async fn populate_workout_relations(
         &self,
-        workout: &mut crate::schema::Workout,
+        record: &mut crate::schema::Workout,
     ) -> Result<(), crate::schema::AppError> {
-        workout.tags = self.load_junction_ids("workout_tags", "workout_id", "tag_id", &workout.id).await?;
+        record.tags = self.load_junction_ids("workout_tags", "workout_id", "tag_id", &record.id).await?;
         Ok(())
     }
 
-    async fn try_insert_workout(&self, workout: &Workout) -> Result<bool, AppError> {
-        let active = workout.to_active_model()?;
+    async fn try_insert_workout(&self, record: &Workout) -> Result<bool, AppError> {
+        let active = record.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
-                let taken = workout::Entity::find_by_id(workout.id.as_str())
+                let taken = workout::Entity::find_by_id(record.id.as_str())
                     .one(self.db())
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -268,9 +266,9 @@ impl Store {
 /// Applies `order` to `query` as `list_workouts` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_workouts_query(
-    mut query: Select<workout::Entity>,
+    mut query: sea_orm::Select<workout::Entity>,
     order: &[OrderBy<WorkoutSortField>],
-) -> Select<workout::Entity> {
+) -> sea_orm::Select<workout::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             WorkoutSortField::Id => workout::Column::Id,
@@ -281,8 +279,8 @@ pub fn order_workouts_query(
             WorkoutSortField::CreatedAt => workout::Column::CreatedAt,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),
+            ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

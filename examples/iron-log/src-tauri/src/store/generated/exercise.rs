@@ -2,8 +2,8 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use sea_orm::sea_query;
+use sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::exercise;
 use crate::schema::Exercise;
@@ -22,18 +22,18 @@ pub struct ExerciseUpdate {
 }
 
 impl ExerciseUpdate {
-    fn apply(&self, exercise: &mut Exercise) {
-        if let Some(name) = &self.name {
-            exercise.name.clone_from(name);
+    fn apply(&self, record: &mut Exercise) {
+        if let Some(value) = &self.name {
+            record.name.clone_from(value);
         }
-        if let Some(muscle_group) = &self.muscle_group {
-            exercise.muscle_group.clone_from(muscle_group);
+        if let Some(value) = &self.muscle_group {
+            record.muscle_group.clone_from(value);
         }
-        if let Some(equipment) = &self.equipment {
-            exercise.equipment.clone_from(equipment);
+        if let Some(value) = &self.equipment {
+            record.equipment.clone_from(value);
         }
-        if let Some(notes) = &self.notes {
-            exercise.notes.clone_from(notes);
+        if let Some(value) = &self.notes {
+            record.notes.clone_from(value);
         }
     }
 }
@@ -141,17 +141,17 @@ impl Store {
         Exercise::from_model(&model)
     }
 
-    pub async fn create_exercise(&self, mut exercise: Exercise) -> Result<Exercise, AppError> {
-        hooks::before_create(self, &mut exercise).await?;
+    pub async fn create_exercise(&self, mut record: Exercise) -> Result<Exercise, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let id = if exercise.id.trim().is_empty() {
+        let id = if record.id.trim().is_empty() {
             return Err(AppError::ExerciseIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
-            ontogen_core::id::validate_id(&exercise.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_exercise(&exercise).await? {
-                return Err(AppError::ExerciseAlreadyExists(exercise.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_exercise(&record).await? {
+                return Err(AppError::ExerciseAlreadyExists(record.id));
             }
-            exercise.id.clone()
+            record.id.clone()
         };
 
         let created = self.get_exercise(&id).await?;
@@ -201,12 +201,12 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_exercise(&self, exercise: &Exercise) -> Result<bool, AppError> {
-        let active = exercise.to_active_model()?;
+    async fn try_insert_exercise(&self, record: &Exercise) -> Result<bool, AppError> {
+        let active = record.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
-                let taken = exercise::Entity::find_by_id(exercise.id.as_str())
+                let taken = exercise::Entity::find_by_id(record.id.as_str())
                     .one(self.db())
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -221,9 +221,9 @@ impl Store {
 /// Applies `order` to `query` as `list_exercises` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_exercises_query(
-    mut query: Select<exercise::Entity>,
+    mut query: sea_orm::Select<exercise::Entity>,
     order: &[OrderBy<ExerciseSortField>],
-) -> Select<exercise::Entity> {
+) -> sea_orm::Select<exercise::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             ExerciseSortField::Id => exercise::Column::Id,
@@ -233,8 +233,8 @@ pub fn order_exercises_query(
             ExerciseSortField::Notes => exercise::Column::Notes,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),
+            ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

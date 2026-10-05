@@ -25,27 +25,27 @@ pub struct WorkoutSetUpdate {
 }
 
 impl WorkoutSetUpdate {
-    fn apply(&self, workout_set: &mut WorkoutSet) {
-        if let Some(workout_id) = &self.workout_id {
-            workout_set.workout_id.clone_from(workout_id);
+    fn apply(&self, record: &mut WorkoutSet) {
+        if let Some(value) = &self.workout_id {
+            record.workout_id.clone_from(value);
         }
-        if let Some(exercise_id) = &self.exercise_id {
-            workout_set.exercise_id.clone_from(exercise_id);
+        if let Some(value) = &self.exercise_id {
+            record.exercise_id.clone_from(value);
         }
-        if let Some(set_number) = &self.set_number {
-            workout_set.set_number.clone_from(set_number);
+        if let Some(value) = &self.set_number {
+            record.set_number.clone_from(value);
         }
-        if let Some(weight_grams) = &self.weight_grams {
-            workout_set.weight_grams.clone_from(weight_grams);
+        if let Some(value) = &self.weight_grams {
+            record.weight_grams.clone_from(value);
         }
-        if let Some(reps) = &self.reps {
-            workout_set.reps.clone_from(reps);
+        if let Some(value) = &self.reps {
+            record.reps.clone_from(value);
         }
-        if let Some(rpe) = &self.rpe {
-            workout_set.rpe.clone_from(rpe);
+        if let Some(value) = &self.rpe {
+            record.rpe.clone_from(value);
         }
-        if let Some(notes) = &self.notes {
-            workout_set.notes.clone_from(notes);
+        if let Some(value) = &self.notes {
+            record.notes.clone_from(value);
         }
     }
 }
@@ -138,15 +138,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<WorkoutSet>, AppError> {
-        let mut workout_sets = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(WORKOUT_SETS_DIR, WORKOUT_SET_TYPE).read_all().map_err(AppError::from)? {
             let fm: WorkoutSetFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            workout_sets.push(fm.into_workout_set(id));
+            records.push(fm.into_workout_set(id));
         }
-        sort_workout_sets(&mut workout_sets, order);
+        sort_workout_sets(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(workout_sets.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_workout_sets(&self) -> Result<u64, AppError> {
@@ -165,22 +165,22 @@ impl Store {
         Ok(fm.into_workout_set(id.to_string()))
     }
 
-    pub async fn create_workout_set(&self, mut workout_set: WorkoutSet) -> Result<WorkoutSet, AppError> {
-        hooks::before_create(self, &mut workout_set).await?;
+    pub async fn create_workout_set(&self, mut record: WorkoutSet) -> Result<WorkoutSet, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&WorkoutSetFrontmatter::from_workout_set(&workout_set), WORKOUT_SET_FM_FIELDS)
+        doc.merge_serialize(&WorkoutSetFrontmatter::from_workout_set(&record), WORKOUT_SET_FM_FIELDS)
             .map_err(AppError::from)?;
         let id = match self.vault().entity(WORKOUT_SETS_DIR, WORKOUT_SET_TYPE).create(
             &markdown_store::IdStrategy::Provided,
-            Some(workout_set.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
             None,
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::WorkoutSetIdRequired(reason)),
             Err(markdown_store::Error::AlreadyExists { .. }) => {
-                return Err(AppError::WorkoutSetAlreadyExists(workout_set.id));
+                return Err(AppError::WorkoutSetAlreadyExists(record.id));
             }
             Err(e) => return Err(AppError::from(e)),
         };
@@ -199,9 +199,9 @@ impl Store {
             .entity(WORKOUT_SETS_DIR, WORKOUT_SET_TYPE)
             .modify(id, |doc| {
                 let fm: WorkoutSetFrontmatter = doc.deserialize()?;
-                let mut workout_set = fm.into_workout_set(id.to_string());
-                updates.apply(&mut workout_set);
-                doc.merge_serialize(&WorkoutSetFrontmatter::from_workout_set(&workout_set), WORKOUT_SET_FM_FIELDS)?;
+                let mut record = fm.into_workout_set(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&WorkoutSetFrontmatter::from_workout_set(&record), WORKOUT_SET_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;
