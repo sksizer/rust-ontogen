@@ -555,3 +555,69 @@ fn builder_a_missing_transport_api_dir_is_skipped_by_the_api_stage() {
     assert!(msg.contains("API directory does not exist"), "{msg}");
     assert!(generated.join("workout.rs").exists(), "the api stage ran");
 }
+
+#[test]
+fn builder_a_replacing_list_no_transport_reads_fails_the_build() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let api = tmp.path().join("api");
+    let other = tmp.path().join("other");
+    std::fs::create_dir_all(&api).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("workout.rs"), HAND_WRITTEN_LIST).unwrap();
+    let generated = api.join("generated");
+
+    let err = Pipeline::new(fixture_schema_dir())
+        .api(&generated, "AppState")
+        .api_store_type(Some("Store".into()))
+        .api_scan_dirs(vec![other.clone()])
+        .servers(servers_config(&api, tmp.path()))
+        .build()
+        .expect_err("no transport serves the hand-written list, so it may not drop the generated one");
+    let msg = err.to_string();
+    assert!(matches!(err, ontogen::CodegenError::Api(_)), "{msg}");
+    let file = other.join("workout.rs");
+    assert!(msg.contains(&format!("`{}` defines `workout::list`", file.display())), "{msg}");
+    assert!(msg.contains("no transport reads that file"), "{msg}");
+    assert!(msg.contains(&format!("Move the file into a directory a transport reads (`{}`)", api.display())), "{msg}");
+    assert!(msg.contains("or rename the fn"), "{msg}");
+}
+
+#[test]
+fn builder_a_replacing_list_in_a_subdirectory_the_transports_read_is_served() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let api = tmp.path().join("api");
+    let custom = api.join("custom");
+    std::fs::create_dir_all(&custom).unwrap();
+    std::fs::write(custom.join("workout.rs"), HAND_WRITTEN_LIST).unwrap();
+    let generated = api.join("generated");
+
+    Pipeline::new(fixture_schema_dir())
+        .api(&generated, "AppState")
+        .api_store_type(Some("Store".into()))
+        .api_scan_dirs(vec![custom])
+        .servers(servers_config(&api, tmp.path()))
+        .build()
+        .expect("the servers stage reads one level of subdirectories");
+
+    let workout = std::fs::read_to_string(generated.join("workout.rs")).unwrap();
+    assert!(!workout.contains("fn list("), "the hand-written list replaces it:\n{workout}");
+}
+
+#[test]
+fn builder_without_transports_every_api_scan_dir_may_replace() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let other = tmp.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("workout.rs"), HAND_WRITTEN_LIST).unwrap();
+    let generated = tmp.path().join("api/generated");
+
+    Pipeline::new(fixture_schema_dir())
+        .api(&generated, "AppState")
+        .api_store_type(Some("Store".into()))
+        .api_scan_dirs(vec![other])
+        .build()
+        .expect("no transport stage, so nothing says the directory is not served");
+
+    let workout = std::fs::read_to_string(generated.join("workout.rs")).unwrap();
+    assert!(!workout.contains("fn list("), "the hand-written list replaces it:\n{workout}");
+}
