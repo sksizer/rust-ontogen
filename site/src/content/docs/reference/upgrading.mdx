@@ -252,6 +252,10 @@ serde_json = "1"
 
 Links and `Location` headers are built from the route templates ontogen generated (`/api/...`), not from the request URI. Mount the generated router at the root of your Axum app. If you nest it under another prefix, the links it emits lack that prefix.
 
+### The HTTP server's `PaginatedResult` is private
+
+The generated HTTP file no longer exports `PaginatedResult`. Its page type is now the private `OntogenPaginatedResult`, and the file names nothing else bare but your types and API modules: what it defines is `Ontogen`- or `ontogen_`-prefixed, and what it uses from `axum`, `ontogen-jsonapi`, `serde` and `std` is imported under an `Ontogen` alias or named by its path. So an entity may be called `Document`, `Response` or `State`, and an API module `request`. If your code named the HTTP module's `PaginatedResult`, declare the struct yourself; its wire shape, `{items, total, limit, offset}` in `meta.result`, is unchanged.
+
 ## AppError
 
 Your `AppError` must declare new variants. They are typed on IPC and MCP as well as HTTP.

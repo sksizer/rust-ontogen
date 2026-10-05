@@ -435,31 +435,45 @@ Every error from these routes is the error document described under [Errors](#er
 The generator also produces an `entity_routes()` function that wires all handlers to their routes. Each route installs a method fallback that answers `405` with `Allow`. The `task` routes of tasks-tracker's router:
 
 ```rust
-pub fn entity_routes() -> Router<Arc<AppState>> {
-    Router::new()
+pub fn entity_routes() -> axum::Router<std::sync::Arc<AppState>> {
+    axum::Router::new()
         // ... routes of the other modules
         .route(
             "/api/tasks/{id}",
-            get(task_get_by_id).patch(task_update).delete(task_delete).fallback(allow([
-                Method::GET,
-                Method::PATCH,
-                Method::DELETE,
-            ])),
+            axum::routing::get(task_get_by_id)
+                .patch(task_update)
+                .delete(task_delete)
+                .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::PATCH, OntogenMethod::DELETE])),
         )
-        .route("/api/tasks", post(task_create).get(task_list).fallback(allow([Method::POST, Method::GET])))
+        .route(
+            "/api/tasks",
+            axum::routing::post(task_create)
+                .get(task_list)
+                .fallback(ontogen_allow([OntogenMethod::POST, OntogenMethod::GET])),
+        )
         .route(
             "/api/tasks/{id}/relationships/{rel}",
-            get(ontogen_task_relationship_get)
+            axum::routing::get(ontogen_task_relationship_get)
                 .patch(ontogen_task_relationship_patch)
                 .post(ontogen_task_relationship_post)
                 .delete(ontogen_task_relationship_delete)
-                .fallback(allow([Method::GET, Method::PATCH, Method::POST, Method::DELETE])),
+                .fallback(ontogen_allow([
+                    OntogenMethod::GET,
+                    OntogenMethod::PATCH,
+                    OntogenMethod::POST,
+                    OntogenMethod::DELETE,
+                ])),
         )
-        .route("/api/tasks/{id}/{rel}", get(ontogen_task_related_get).fallback(allow([Method::GET])))
+        .route(
+            "/api/tasks/{id}/{rel}",
+            axum::routing::get(ontogen_task_related_get).fallback(ontogen_allow([OntogenMethod::GET])),
+        )
 }
 ```
 
 Handlers are named `{module}_{op}` (`task_list`, `task_get_by_id`, `task_create`, `task_update`, `task_delete`). The relationship routes are served by `ontogen_task_relationship_get`, `…_patch`, `…_post` and `…_delete`, and the related route by `ontogen_task_related_get` (with a `_scoped` suffix under a prefix). The file also holds two error helpers, `ontogen_app_error` (an `AppError` to its status and `code`) and `ontogen_internal_error` (every other failure, `500 internal_error`).
+
+The only bare names in the file are your types and API modules. Everything the file defines besides its handlers is prefixed (`Ontogen…` types, `ontogen_…` fns), and every item it uses from `axum`, `ontogen-jsonapi`, `serde` or `std` is imported under an `Ontogen` alias (`OntogenDocument`, `OntogenState`) or named by its path. An entity may be called `Document`, `Response` or `State`, and an API module `request` or `match` (written `r#match`).
 
 ## Tauri IPC generation
 
