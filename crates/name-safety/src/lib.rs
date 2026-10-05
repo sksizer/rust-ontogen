@@ -1,12 +1,15 @@
 //! name-safety: a compile fixture whose schema names entities after items
 //! the generated code imports or defines (`Document`, `Request`, `Response`,
 //! `Relationship`, `Links`, `Method`, `Endpoint`, `Event`, `State`, `Value`,
-//! `Doc`, `Map`), one entity after a Rust keyword (`Match`, whose modules are
-//! `r#match`), and its relationships after Rust keywords (`match_id`,
-//! `ref_id`, `r#loop`, `r#in`). `build.rs` runs the whole pipeline (markdown
-//! store, API, HTTP and MCP servers, TypeScript clients): building the crate
-//! is the Rust test, and `just test-ts-clients` type-checks the emitted
-//! TypeScript.
+//! `Doc`, `Map`, `Path`), after crates it names (`Serde`, `Axum`,
+//! `MarkdownStore`, whose modules are `serde`, `axum`, `markdown_store`), one
+//! entity after a Rust keyword (`Match`, whose modules are `r#match`), and its
+//! relationships after Rust keywords (`match_id`, `ref_id`, `r#loop`, `r#in`,
+//! and `crate_id`, `self_id`, `super_id`, whose relationships `crate`, `self`
+//! and `super` have no raw spelling). `build.rs` runs the whole pipeline
+//! (markdown store, API, HTTP and MCP servers, TypeScript clients): building
+//! the crate is the Rust test, and `just test-ts-clients` type-checks the
+//! emitted TypeScript.
 
 pub mod api;
 pub mod persistence;

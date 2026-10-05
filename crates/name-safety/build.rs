@@ -82,6 +82,10 @@ fn main() {
                 "response",
                 "state",
                 "value",
+                "path",
+                "serde",
+                "axum",
+                "markdown_store",
             ]
             .map(String::from)
             .to_vec(),

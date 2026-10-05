@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use crate::clients::config::Config;
 use crate::servers::parse::{ApiFn, Param};
-use crate::servers::types::{extract_input_type, rust_type_to_ts, strip_ref, ts_param};
+use crate::servers::types::ts_param;
 
 /// Derive the IPC/TS command name for any function.
 ///
@@ -46,18 +46,18 @@ pub(crate) fn typed_params(f: &ApiFn) -> impl Iterator<Item = &Param> {
 /// ones, as the HTTP-side emitters used to, left a POST with an optional param
 /// after a required one uncallable: no Rust signature satisfied every
 /// transport at once.
-pub(crate) fn ts_params_in_declaration_order(f: &ApiFn) -> Vec<String> {
+pub(crate) fn ts_params_in_declaration_order(f: &ApiFn, config: &Config) -> Vec<String> {
     f.params
         .iter()
         .map(|p| {
             if p.is_input() {
-                format!("input: {}", rust_type_to_ts(&extract_input_type(&p.ty)))
+                format!("input: {}", config.ts_type(&p.ty))
             } else if p.ty.starts_with("Option<") {
                 // Type from the Option's inner type: `Option<u64>` → `number |
                 // null`, matching what the IPC handler deserializes.
-                format!("{}: {}", ts_param(&p.name), rust_type_to_ts(&p.ty))
+                format!("{}: {}", ts_param(&p.name), config.ts_type(&p.ty))
             } else {
-                format!("{}: {}", ts_param(&p.name), rust_type_to_ts(&strip_ref(&p.ty)))
+                format!("{}: {}", ts_param(&p.name), config.ts_type(&p.ty))
             }
         })
         .collect()

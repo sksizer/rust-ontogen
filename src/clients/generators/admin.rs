@@ -15,7 +15,7 @@ use crate::clients::config::Config;
 use crate::clients::generators::command_name;
 use crate::resource::member_name;
 use crate::servers::parse::ApiModule;
-use crate::servers::types::{extract_input_type, inner_type, rust_type_to_ts, snake_to_camel};
+use crate::servers::types::{inner_type, rust_type_to_ts, snake_to_camel};
 
 /// Generate admin entity registry and write to the output file.
 ///
@@ -52,13 +52,13 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config, entities:
 
         let list_fn = m.functions.iter().find(|f| f.name == "list").unwrap();
         let return_type_raw = inner_type(&list_fn.return_type);
-        let return_type = rust_type_to_ts(&return_type_raw);
+        let return_type = config.ts_type(&return_type_raw);
 
         let create_fn = m.functions.iter().find(|f| f.name == "create").unwrap();
-        let create_input = rust_type_to_ts(&extract_input_type(&create_fn.params[0].ty));
+        let create_input = config.ts_type(&create_fn.params[0].ty);
 
         let update_fn = m.functions.iter().find(|f| f.name == "update").unwrap();
-        let update_input = rust_type_to_ts(&extract_input_type(&update_fn.params[1].ty));
+        let update_input = config.ts_type(&update_fn.params[1].ty);
 
         let label = config.naming.label(module);
         let plural_label = config.naming.plural_label(module);

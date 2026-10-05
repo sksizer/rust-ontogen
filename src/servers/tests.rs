@@ -538,6 +538,16 @@ fn test_collect_type_import_matrix() {
         ("Option<HashMap<String, Vec<MyType>>>", &["MyType"]),
         // A container's name without args is the consumer's type of that name.
         ("Arc", &["Arc"]),
+        // As is a std name outside the prelude: the generated file has no
+        // other way to name it.
+        ("Path", &["Path"]),
+        ("PathBuf", &["PathBuf"]),
+        ("Option<PathBuf>", &["PathBuf"]),
+        // A reference held as its owned companion imports nothing.
+        ("&Path", &[]),
+        ("Option<&Path>", &[]),
+        ("&CStr", &[]),
+        ("&OsStr", &[]),
         ("Vec<HashMap>", &["HashMap"]),
         ("crate::schema::Foo", &[]),
         ("Vec<crate::schema::Foo>", &[]),
@@ -574,8 +584,9 @@ fn test_to_pascal_case() {
 /// with `forward_arg_expr`'s `.as_deref()` allowlist: every `&T` that the
 /// forwarding side calls `.as_deref()` on must have a sized owned companion
 /// here so the dereference target lines up. The DST → sized-companion mappings
-/// (`&str → String`, `&[T] → Vec<T>`, `&Path → PathBuf`, `&CStr → CString`,
-/// `&OsStr → OsString`) cover that allowlist.
+/// (`&str → String`, `&[T] → Vec<T>`, `&Path → ::std::path::PathBuf`,
+/// `&CStr → ::std::ffi::CString`, `&OsStr → ::std::ffi::OsString`) cover that
+/// allowlist.
 #[test]
 fn test_param_to_owned_type_matrix() {
     let cases: &[(&str, &str)] = &[
@@ -593,18 +604,18 @@ fn test_param_to_owned_type_matrix() {
         ("&str", "String"),
         ("&[u8]", "Vec<u8>"),
         ("&[MyStruct]", "Vec<MyStruct>"),
-        ("&Path", "PathBuf"),
-        ("&CStr", "CString"),
-        ("&OsStr", "OsString"),
+        ("&Path", "::std::path::PathBuf"),
+        ("&CStr", "::std::ffi::CString"),
+        ("&OsStr", "::std::ffi::OsString"),
         // Option<U> — recurse into U.
         ("Option<String>", "Option<String>"),
         ("Option<u8>", "Option<u8>"),
         ("Option<MyStruct>", "Option<MyStruct>"),
         ("Option<&str>", "Option<String>"),
         ("Option<&[u8]>", "Option<Vec<u8>>"),
-        ("Option<&Path>", "Option<PathBuf>"),
-        ("Option<&CStr>", "Option<CString>"),
-        ("Option<&OsStr>", "Option<OsString>"),
+        ("Option<&Path>", "Option<::std::path::PathBuf>"),
+        ("Option<&CStr>", "Option<::std::ffi::CString>"),
+        ("Option<&OsStr>", "Option<::std::ffi::OsString>"),
         ("Option<&MyStruct>", "Option<MyStruct>"),
         // A qualified `Path`-like ident that isn't the prelude `Path` is not
         // a recognized DST — strip the `&`, keep the user's path verbatim.
@@ -753,8 +764,31 @@ fn rust_type_to_ts_resolves_external_types() {
     assert_eq!(rust_type_to_ts("chrono::NaiveDate"), "string");
     assert_eq!(rust_type_to_ts("uuid::Uuid"), "string");
     assert_eq!(rust_type_to_ts("url::Url"), "string");
-    assert_eq!(rust_type_to_ts("serde_json::Value"), "unknown");
+    assert_eq!(rust_type_to_ts("::serde_json::Value"), "unknown");
     assert_eq!(rust_type_to_ts("std::path::PathBuf"), "string");
+}
+
+/// An entity named like a std type ontogen-ts reads as a string is that
+/// entity, as the servers import it, except behind a reference, which the
+/// servers hold as the std type's owned companion.
+#[test]
+fn an_entity_named_like_a_std_type_is_the_entity_in_ts() {
+    let is_entity = |name: &str| matches!(name, "Path" | "Model" | "Task");
+    let cases = [
+        ("Path", "Path"),
+        ("Vec<Path>", "Path[]"),
+        ("Option<Path>", "Path | null"),
+        ("&Path", "string"),
+        ("Option<&Path>", "string | null"),
+        ("PathBuf", "string"),
+        ("Model", "Model"),
+        ("&Task", "Task"),
+        ("&str", "string"),
+        ("std::path::Path", "string"),
+    ];
+    for (ty, ts) in cases {
+        assert_eq!(crate::servers::types::schema_type_to_ts(ty, &is_entity), ts, "{ty}");
+    }
 }
 
 #[test]
@@ -868,7 +902,7 @@ fn the_two_ts_emitters_agree_on_shared_shapes() {
         "chrono::NaiveDate",
         "uuid::Uuid",
         "url::Url",
-        "serde_json::Value",
+        "::serde_json::Value",
         "std::path::PathBuf",
         // Unknown user types render as their terminal ident on both sides.
         "Node",
@@ -2153,7 +2187,7 @@ fn test_http_generator_crud_module() {
 
     // Standard Axum imports. A handler opens the store through the state and
     // never names its type, so the store type is not imported.
-    assert!(content.contains("use axum::"));
+    assert!(content.contains("use ::axum::"));
     assert!(content.contains("use crate::AppState"));
     assert!(!content.contains("use crate::store::Store"), "{content}");
 }
@@ -2189,10 +2223,10 @@ fn test_http_generator_events() {
 
     assert!(content.contains("graph_updated_sse"), "should generate SSE handler");
     assert!(content.contains("entity_changed_sse"));
-    assert!(content.contains("OntogenSse<impl futures::Stream"));
+    assert!(content.contains("OntogenSse<impl ::futures::Stream"));
     // No entity is in the schema, so each item is sent as `meta.result`.
     assert!(content.contains(
-        "ontogen_sse_stream(\"graph-updated\", ontogen_rx, ontogen_core::events::no_id, ontogen_result_frame)"
+        "ontogen_sse_stream(\"graph-updated\", ontogen_rx, ::ontogen_core::events::no_id, ontogen_result_frame)"
     ));
     assert!(content.contains("event.json_data(OntogenResultFrame::new(item))"));
     assert!(content.contains("/api/events/graph"), "should use SSE route override");
@@ -2261,7 +2295,7 @@ fn test_http_generator_parameterized_event() {
 
     assert!(compact(&content).contains(&compact(
         ".route(\"/api/events/vault-note-changes/{vault_id}\", \
-         axum::routing::get(vault_note_changes_sse).fallback(ontogen_allow([OntogenMethod::GET])))"
+         ::axum::routing::get(vault_note_changes_sse).fallback(ontogen_allow([OntogenMethod::GET])))"
     )));
     assert!(content.contains("OntogenPath(vault_id): OntogenPath<String>"), "required param rides the path");
     assert!(content.contains("struct OntogenVaultNotesVaultNoteChangesEventQuery"), "optional params ride the query");
@@ -2273,8 +2307,8 @@ fn test_http_generator_parameterized_event() {
         )
     );
     assert!(content.contains(".await"), "async event fn is awaited");
-    assert!(content.contains("Result<OntogenSse<"), "fallible subscribe returns an error response");
-    assert!(content.contains("ontogen_core::events::seq_id"), "resumable op writes ids");
+    assert!(compact(&content).contains("Result<OntogenSse<"), "fallible subscribe returns an error response");
+    assert!(content.contains("::ontogen_core::events::seq_id"), "resumable op writes ids");
     assert!(content.contains("event(\"lag\")"), "lag becomes an explicit frame");
 }
 
@@ -2286,7 +2320,7 @@ fn test_http_generator_scoped_parameterized_event() {
     crate::servers::generators::http::generate(&output, &[make_param_event_module()], &config);
     let content = std::fs::read_to_string(&output).unwrap();
 
-    assert!(content.contains("OntogenPath((ontogen_scope, vault_id)): OntogenPath<(uuid::Uuid, String)>"));
+    assert!(content.contains("OntogenPath((ontogen_scope, vault_id)): OntogenPath<(::uuid::Uuid, String)>"));
     assert!(content.contains(
         ".subscribe_vault_note_changes_for(&ontogen_scope, vault_id, ontogen_query.classes, ontogen_resume)"
     ));
@@ -2316,6 +2350,26 @@ fn test_ipc_generator_event_subscriptions() {
     assert!(content.contains("generate_handler![vault_note_changes_subscribe, vault_note_changes_unsubscribe,]"));
     assert!(!content.contains(".emit("), "a parameterized event op never emits globally");
     assert!(!content.contains("start_event_forwarding"), "no legacy op, no global forwarding");
+}
+
+/// A block doc comment reaches the parser as one string with line breaks:
+/// each of its lines opens its own `///` line on the subscribe command.
+#[test]
+fn a_multi_line_event_doc_is_written_line_by_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "feed.rs",
+        "/** Every change to a task.\n\n    Sent once per write. */\n\
+         pub fn task_changed(state: &AppState) -> tokio::sync::broadcast::Receiver<Task> { todo!() }\n",
+    );
+    let ipc = generate_one(tmp.path(), test_config(api_dir), ipc_gen);
+    assert!(
+        ipc.contains("/// Every change to a task.\n///\n/// Sent once per write.\n#[::tauri::command]\npub async fn task_changed_subscribe("),
+        "{ipc}"
+    );
+    syn::parse_file(&ipc).expect("generated IPC parses");
 }
 
 #[test]
@@ -2518,11 +2572,11 @@ fn test_mcp_generator_crud_module() {
     // itself, so one that refuses unknown fields still reads.
     let flat = compact(&content);
     assert!(
-        flat.contains(&compact(r#"serde_json::from_value(args_without(ontogen_args, &["project_id"]))"#)),
+        flat.contains(&compact(r#"::serde_json::from_value(args_without(ontogen_args, &["project_id"]))"#)),
         "{content}"
     );
     assert!(
-        flat.contains(&compact(r#"serde_json::from_value(args_without(ontogen_args, &["id", "project_id"]))"#)),
+        flat.contains(&compact(r#"::serde_json::from_value(args_without(ontogen_args, &["id", "project_id"]))"#)),
         "{content}"
     );
 
@@ -2965,11 +3019,13 @@ fn test_http_generator_junction_module() {
     let flat = compact(&content);
     assert!(
         flat.contains(&compact(
-            "let skill_id = ontogen_jsonapi::request::op_arg::<String>(&ontogen_args, \"skill_id\", true)?;"
+            "let skill_id = ::ontogen_jsonapi::request::op_arg::<String>(&ontogen_args, \"skill_id\", true)?;"
         )),
         "the child id is read from meta.args:\n{content}"
     );
-    assert!(flat.contains(&compact("ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"skill_id\"])?;")));
+    assert!(
+        flat.contains(&compact("::ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"skill_id\"])?;"))
+    );
     assert!(
         flat.contains(&compact(
             "OntogenPath((destination_id, skill_id)): OntogenPath<(String, String)>, _: OntogenQuery<OntogenNoParams>"
@@ -2977,12 +3033,12 @@ fn test_http_generator_junction_module() {
         "remove takes both ids from the path and no body:\n{content}"
     );
     assert_eq!(
-        content.matches("Ok(ontogen_jsonapi::response::no_content())").count(),
+        content.matches("Ok(::ontogen_jsonapi::response::no_content())").count(),
         2,
         "add and remove are 204s:\n{content}"
     );
     assert!(
-        content.contains("Ok(ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))"),
+        content.contains("Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))"),
         "lists are meta.result"
     );
     assert!(!content.contains("Json"), "no flat bodies remain:\n{content}");
@@ -3852,9 +3908,9 @@ pub async fn case_ref_bytes(store: &Store, payload: &[u8]) -> Result<(), anyhow:
     // `forward_arg_expr`. Both must agree.
     let cases: &[(&str, &str)] = &[
         ("payload: Option<Vec<u8>>", "dst_shapes::case_opt_bytes(&ontogen_store, payload.as_deref())"),
-        ("p: Option<PathBuf>", "dst_shapes::case_opt_path(&ontogen_store, p.as_deref())"),
-        ("s: Option<CString>", "dst_shapes::case_opt_cstr(&ontogen_store, s.as_deref())"),
-        ("s: Option<OsString>", "dst_shapes::case_opt_osstr(&ontogen_store, s.as_deref())"),
+        ("p: Option<::std::path::PathBuf>", "dst_shapes::case_opt_path(&ontogen_store, p.as_deref())"),
+        ("s: Option<::std::ffi::CString>", "dst_shapes::case_opt_cstr(&ontogen_store, s.as_deref())"),
+        ("s: Option<::std::ffi::OsString>", "dst_shapes::case_opt_osstr(&ontogen_store, s.as_deref())"),
         ("s: Option<String>", "dst_shapes::case_opt_str(&ontogen_store, s.as_deref())"),
         ("payload: Vec<u8>", "dst_shapes::case_ref_bytes(&ontogen_store, &payload)"),
     ];
@@ -4029,11 +4085,11 @@ pub async fn get_count(store: &Store) -> Result<i64, anyhow::Error> { todo!() }
     for (route_post, body_extraction) in &[
         (
             "post(export_get_filtered_sessions)",
-            "let filter = ontogen_jsonapi::request::op_arg::<ExportFilterRequest>(&ontogen_args, \"filter\", true)?;",
+            "let filter = ::ontogen_jsonapi::request::op_arg::<ExportFilterRequest>(&ontogen_args, \"filter\", true)?;",
         ),
         (
             "post(export_get_summary)",
-            "let request = ontogen_jsonapi::request::op_arg::<ExportRequest>(&ontogen_args, \"request\", true)?;",
+            "let request = ::ontogen_jsonapi::request::op_arg::<ExportRequest>(&ontogen_args, \"request\", true)?;",
         ),
     ] {
         assert!(
@@ -5180,12 +5236,12 @@ fn test_two_surfaces_merge_same_named_module() {
 
     let http = std::fs::read_to_string(&http_out).unwrap();
     for route in [
-        ".route(\"/api/workouts\", axum::routing::get(workout_list).post(workout_create).fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])))",
-        ".route(\"/api/workouts/{id}\", axum::routing::get(workout_get_by_id).patch(workout_update).delete(workout_delete)\
+        ".route(\"/api/workouts\", ::axum::routing::get(workout_list).post(workout_create).fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])))",
+        ".route(\"/api/workouts/{id}\", ::axum::routing::get(workout_get_by_id).patch(workout_update).delete(workout_delete)\
          .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::PATCH, OntogenMethod::DELETE])))",
-        ".route(\"/api/workouts/start\", axum::routing::post(workout_start).fallback(ontogen_allow([OntogenMethod::POST])))",
-        ".route(\"/api/workouts/summary/{id}\", axum::routing::get(workout_get_summary).fallback(ontogen_allow([OntogenMethod::GET])))",
-        ".route(\"/api/exercises\", axum::routing::get(exercise_list).post(exercise_create).fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])))",
+        ".route(\"/api/workouts/start\", ::axum::routing::post(workout_start).fallback(ontogen_allow([OntogenMethod::POST])))",
+        ".route(\"/api/workouts/summary/{id}\", ::axum::routing::get(workout_get_summary).fallback(ontogen_allow([OntogenMethod::GET])))",
+        ".route(\"/api/exercises\", ::axum::routing::get(exercise_list).post(exercise_create).fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])))",
     ] {
         assert!(compact(&http).contains(&compact(route)), "expected route {route} in:\n{http}");
     }
@@ -5306,7 +5362,9 @@ fn test_mixed_module_routes_are_per_fn_and_order_independent() {
         let http = std::fs::read_to_string(&output).unwrap();
 
         assert!(
-            http.contains(".route(\"/api/workouts/start\", axum::routing::post(workout_start).fallback(ontogen_allow([OntogenMethod::POST])))"),
+            compact(&http).contains(&compact(
+                ".route(\"/api/workouts/start\", ::axum::routing::post(workout_start).fallback(ontogen_allow([OntogenMethod::POST])))"
+            )),
             "state-scoped fn keeps its unscoped route:\n{http}"
         );
         assert!(http.contains("workout::start(&ontogen_state, input)"), "state-scoped fn takes &state:\n{http}");
@@ -5316,7 +5374,7 @@ fn test_mixed_module_routes_are_per_fn_and_order_independent() {
         );
         assert!(
             compact(&http).contains(&compact(
-                ".route(\"/api/projects/{project_id}/workouts\", axum::routing::get(workout_list_scoped)"
+                ".route(\"/api/projects/{project_id}/workouts\", ::axum::routing::get(workout_list_scoped)"
             )),
             "store-scoped CRUD gets scoped routes:\n{http}"
         );
@@ -6173,8 +6231,8 @@ fn a_resource_module_is_served_as_jsonapi() {
     let flat = compact(&http);
 
     for route in [
-        ".route(\"/api/tasks\", axum::routing::get(task_list).post(task_create).fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])))",
-        ".route(\"/api/tasks/{id}\", axum::routing::get(task_get_by_id).patch(task_update).delete(task_delete)\
+        ".route(\"/api/tasks\", ::axum::routing::get(task_list).post(task_create).fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])))",
+        ".route(\"/api/tasks/{id}\", ::axum::routing::get(task_get_by_id).patch(task_update).delete(task_delete)\
          .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::PATCH, OntogenMethod::DELETE])))",
     ] {
         assert!(flat.contains(&compact(route)), "expected {route} in:\n{http}");
@@ -6193,7 +6251,7 @@ fn a_resource_module_is_served_as_jsonapi() {
                 ") -> Result<OntogenResponse, OntogenErrorObject> {",
                 "query?;",
                 "let body = body.into_bytes()?;",
-                "ontogen_jsonapi::request::parse_create(&body,",
+                "::ontogen_jsonapi::request::parse_create(&body,",
             ][..],
         ),
         (
@@ -6207,7 +6265,7 @@ fn a_resource_module_is_served_as_jsonapi() {
                 "let OntogenPath(id) = path_params?;",
                 "query?;",
                 "let body = body.into_bytes()?;",
-                "ontogen_jsonapi::request::parse_update(&body,",
+                "::ontogen_jsonapi::request::parse_update(&body,",
             ][..],
         ),
     ] {
@@ -6223,7 +6281,7 @@ fn a_resource_module_is_served_as_jsonapi() {
     // accepts no `filter[…]`, so its links repeat only `include`.
     assert!(flat.contains(&compact("let link_query = query.link_query(include.as_deref())?;")));
     assert!(flat.contains(&compact(
-        "let links = ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);"
+        "let links = ::ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);"
     )));
     assert!(flat.contains(&compact("with_meta(OntogenPageMeta { total, limit, offset })")));
     assert!(flat.contains(&compact("let (offset, limit) = ontogen_page(&query, 20, 100)?;")));
@@ -6234,10 +6292,10 @@ fn a_resource_module_is_served_as_jsonapi() {
     assert!(flat.contains(&compact(
         "let document = OntogenDocument::resource(ontogen_task_as_resource(&entity, collection), &OntogenCanonicalQuery::new()); \
          let location = document.data().and_then(OntogenResourceObject::links).map(OntogenLinks::self_link); \
-         Ok(ontogen_jsonapi::response::created(location, &document))"
+         Ok(::ontogen_jsonapi::response::created(location, &document))"
     )));
-    assert!(flat.contains(&compact("Ok(ontogen_jsonapi::response::no_content())")));
-    assert!(flat.contains(&compact("ontogen_core::id::validate_id(id).map_err(|e| e.reason)")));
+    assert!(flat.contains(&compact("Ok(::ontogen_jsonapi::response::no_content())")));
+    assert!(flat.contains(&compact("::ontogen_core::id::validate_id(id).map_err(|e| e.reason)")));
 
     // Attributes split from relationships (§5.3, §5.4), each relationship
     // with the links of the routes that serve it (§9).
@@ -6255,11 +6313,11 @@ fn a_resource_module_is_served_as_jsonapi() {
     for (attribute, ty, required) in
         [("title", "String", "create"), ("notes", "Option<String>", "false"), ("done", "bool", "false")]
     {
-        let line = format!("ontogen_jsonapi::request::attribute::<{ty}>(attributes, \"{attribute}\", {required})?");
+        let line = format!("::ontogen_jsonapi::request::attribute::<{ty}>(attributes, \"{attribute}\", {required})?");
         assert!(flat.contains(&compact(&line)), "expected {line} in:\n{http}");
     }
     assert!(flat.contains(&compact(
-        "ontogen_jsonapi::request::check_attribute_names(attributes, \"tasks\", &[\"title\", \"notes\", \"done\", \"body\"], \
+        "::ontogen_jsonapi::request::check_attribute_names(attributes, \"tasks\", &[\"title\", \"notes\", \"done\", \"body\"], \
          &[(\"epic_id\", \"epic\"), (\"tags\", \"tags\")])?;"
     )));
 
@@ -6267,7 +6325,7 @@ fn a_resource_module_is_served_as_jsonapi() {
     // one helper both writes call.
     assert_eq!(http.matches("ontogen_task_check_linked(&ontogen_state, &linked).await?;").count(), 2, "{http}");
     assert!(flat.contains(&compact(
-        "if let Some(linked) = &linked.epic { match epic::get_by_id(&store, &linked.id).await { Ok(_) => {} \
+        "if let Some(linked) = &linked.epic_id { match epic::get_by_id(&store, &linked.id).await { Ok(_) => {} \
          Err(crate::schema::AppError::EpicNotFound(..)) => return Err(linked.not_found(\"epics\")), \
          Err(e) => return Err(ontogen_app_error(e)), } }"
     )));
@@ -6314,7 +6372,7 @@ fn without_an_app_error_every_app_error_site_is_a_500() {
     let http = generate_http(tmp.path(), config);
 
     assert!(http.contains(
-        "fn ontogen_app_error(e: impl std::fmt::Display) -> OntogenErrorObject {\n    OntogenErrorObject::internal("
+        "fn ontogen_app_error(e: impl ::std::fmt::Display) -> OntogenErrorObject {\n    OntogenErrorObject::internal("
     ));
     assert!(!http.contains("AppError::"), "no variant is matched:\n{http}");
     assert!(!http.contains(".not_found(\"epics\")"), "a missing link cannot be told from a failure:\n{http}");
@@ -6330,7 +6388,7 @@ fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
 
     assert!(
         flat.contains(&compact(
-            ".route(\"/api/reports/{id}\", axum::routing::get(report_get_by_id).patch(report_update).delete(report_delete)\
+            ".route(\"/api/reports/{id}\", ::axum::routing::get(report_get_by_id).patch(report_update).delete(report_delete)\
              .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::PATCH, OntogenMethod::DELETE])))"
         )),
         "update is PATCH:\n{http}"
@@ -6351,7 +6409,7 @@ fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
         "report::list(&ontogen_store, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset))).await.map_err(ontogen_app_error)?;",
         "let ontogen_total = report::count(&ontogen_store).await.map_err(ontogen_app_error)?;",
         "let ontogen_result = OntogenPaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset, };",
-        "Ok(ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
+        "Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
     ] {
         assert!(list.contains(&compact(step)), "report_list: {step}\n{list}");
     }
@@ -6360,17 +6418,17 @@ fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
     // `create` and `update`: `meta.args.input`, `200` with `meta.result`.
     let create = handler("report_create");
     assert!(
-        create.contains(&compact("let ontogen_args = ontogen_jsonapi::request::op_args(&ontogen_bytes, true)?;")),
+        create.contains(&compact("let ontogen_args = ::ontogen_jsonapi::request::op_args(&ontogen_bytes, true)?;")),
         "{create}"
     );
     assert!(
         create.contains(&compact(
-            "let input = ontogen_jsonapi::request::op_arg::<CreateReportInput>(&ontogen_args, \"input\", true)?;"
+            "let input = ::ontogen_jsonapi::request::op_arg::<CreateReportInput>(&ontogen_args, \"input\", true)?;"
         )),
         "{create}"
     );
     assert!(create.contains(&compact(
-        "Ok(ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))"
+        "Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))"
     )));
     assert!(!create.contains("created("), "never 201:\n{create}");
     let update = handler("report_update");
@@ -6378,7 +6436,7 @@ fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
         "ontogen_path: Result<OntogenPath<String>, OntogenErrorObject>, ontogen_query: Result<OntogenQuery<OntogenNoParams>, OntogenErrorObject>, \
          ontogen_body: OntogenBody",
         "let OntogenPath(id) = ontogen_path?; ontogen_query?;",
-        "ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"input\"])?;",
+        "::ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"input\"])?;",
         "report::update(&ontogen_store, &id, input).await.map_err(ontogen_app_error)?;",
     ] {
         assert!(update.contains(&compact(step)), "report_update: {step}\n{update}");
@@ -6391,7 +6449,7 @@ fn a_module_with_no_entity_serves_its_crud_ops_as_custom_ops() {
     );
     let delete = handler("report_delete");
     assert!(delete.contains(&compact(
-        "report::delete(&ontogen_store, &id).await.map_err(ontogen_app_error)?; Ok(ontogen_jsonapi::response::no_content())"
+        "report::delete(&ontogen_store, &id).await.map_err(ontogen_app_error)?; Ok(::ontogen_jsonapi::response::no_content())"
     )));
     assert!(!delete.contains("OntogenBody"), "delete ignores a body:\n{delete}");
 
@@ -6408,20 +6466,20 @@ fn scoped_resource_routes_carry_the_prefix() {
     let flat = compact(&http);
 
     assert!(flat.contains(&compact(
-        ".route(\"/api/projects/{project_id}/tasks/{id}\", axum::routing::get(task_get_by_id_scoped)\
+        ".route(\"/api/projects/{project_id}/tasks/{id}\", ::axum::routing::get(task_get_by_id_scoped)\
          .patch(task_update_scoped).delete(task_delete_scoped)\
          .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::PATCH, OntogenMethod::DELETE])))"
     )));
-    assert!(http.contains("OntogenPath((ontogen_scope, id)): OntogenPath<(uuid::Uuid, OntogenLookupKey)>,"));
-    assert!(http.contains("OntogenPath(ontogen_scope): OntogenPath<uuid::Uuid>,"));
+    assert!(http.contains("OntogenPath((ontogen_scope, id)): OntogenPath<(::uuid::Uuid, OntogenLookupKey)>,"));
+    assert!(http.contains("OntogenPath(ontogen_scope): OntogenPath<::uuid::Uuid>,"));
     // A handler reading a body checks its prefix after the media type.
-    assert!(http.contains("path_params: Result<OntogenPath<uuid::Uuid>, OntogenErrorObject>,"));
+    assert!(http.contains("path_params: Result<OntogenPath<::uuid::Uuid>, OntogenErrorObject>,"));
     assert!(http.contains("let OntogenPath(ontogen_scope) = path_params?;"));
-    assert!(http.contains("path_params: Result<OntogenPath<(uuid::Uuid, OntogenLookupKey)>, OntogenErrorObject>,"));
+    assert!(http.contains("path_params: Result<OntogenPath<(::uuid::Uuid, OntogenLookupKey)>, OntogenErrorObject>,"));
     assert!(http.contains("let OntogenPath((ontogen_scope, id)) = path_params?;"));
     // The linked-resource checks open the scoped store, once per resource.
     assert!(flat.contains(&compact(
-        "async fn ontogen_task_check_linked_scoped(state: &AppState, ontogen_scope: &uuid::Uuid, linked: &OntogenTaskLinkedIds) \
+        "async fn ontogen_task_check_linked_scoped(state: &AppState, ontogen_scope: &::uuid::Uuid, linked: &OntogenTaskLinkedIds) \
          -> Result<(), OntogenErrorObject> { let store = state.store_for(ontogen_scope).map_err(ontogen_internal_error)?;"
     )));
     assert_eq!(
@@ -6431,7 +6489,7 @@ fn scoped_resource_routes_carry_the_prefix() {
     );
     assert!(!http.contains("async fn ontogen_task_check_linked("), "no unscoped handler links:\n{http}");
     assert!(flat.contains(&compact(
-        "let collection = &format!(\"/api/projects/{}/tasks\", ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));"
+        "let collection = &format!(\"/api/projects/{}/tasks\", ::ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));"
     )));
     assert!(
         http.contains("let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;")
@@ -6509,14 +6567,14 @@ fn a_prefix_param_may_be_named_like_a_handler_binding() {
         );
         assert!(
             flat.contains(&compact(
-                "let collection = &format!(\"/api/projects/{}/tasks\", ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));"
+                "let collection = &format!(\"/api/projects/{}/tasks\", ::ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));"
             )),
             "{http}"
         );
         // The list and get handlers read the prefix beside their own `query`.
         assert!(
             flat.contains(&compact(
-                "OntogenPath(ontogen_scope): OntogenPath<uuid::Uuid>, query: OntogenQuery<OntogenPagedListParams>"
+                "OntogenPath(ontogen_scope): OntogenPath<::uuid::Uuid>, query: OntogenQuery<OntogenPagedListParams>"
             )),
             "{http}"
         );
@@ -6706,7 +6764,7 @@ pub async fn thing_changes(state: &AppState, app_error: String, internal_error: 
     assert_bindings_shadow_nothing(&http, "task_moves_sse", &["task_frame_data", "app_error"]);
     assert!(
         compact(&http).contains(&compact(
-            "ontogen_sse_stream(\"task-moves\", ontogen_rx, ontogen_core::events::no_id, ontogen_task_frame_data)"
+            "ontogen_sse_stream(\"task-moves\", ontogen_rx, ::ontogen_core::events::no_id, ontogen_task_frame_data)"
         )),
         "{http}"
     );
@@ -7330,7 +7388,7 @@ fn a_filtered_resource_list_reads_its_filter_from_the_filter_family() {
     assert!(
         flat.contains(&compact(
             "struct OntogenTagListFilterParams; impl OntogenRouteQuery for OntogenTagListFilterParams { const SPEC: OntogenQuerySpec = \
-             OntogenQuerySpec { filter: &[], filter_fields: Some(ontogen_jsonapi::filter_fields::<ListTagsQuery>), sort: true, \
+             OntogenQuerySpec { filter: &[], filter_fields: Some(::ontogen_jsonapi::filter_fields::<ListTagsQuery>), sort: true, \
              include: true, ..OntogenQuerySpec::NONE }; }"
         )),
         "no page on an unpaginated list:\n{http}"
@@ -7349,13 +7407,13 @@ fn a_filtered_resource_list_reads_its_filter_from_the_filter_family() {
             "let items = tag::list(&ontogen_store, ontogen_filter).await.map_err(ontogen_app_error)?;",
             "let mut document = OntogenDocument::new(data, OntogenLinks::new(link_query.href(collection)));",
             "if include.is_some() { document = document.with_included(Vec::new()); }",
-            "Ok(ontogen_jsonapi::response::ok(&document))",
+            "Ok(::ontogen_jsonapi::response::ok(&document))",
         ],
     );
     assert!(!list.contains("count("), "an unpaginated list has no total:\n{list}");
     assert!(!list.contains(".clone()"), "nothing reads the filter after the list:\n{list}");
     assert!(
-        flat.contains("filter_fields:Some(ontogen_jsonapi::filter_fields::<ListTagsQuery>)"),
+        flat.contains("filter_fields:Some(::ontogen_jsonapi::filter_fields::<ListTagsQuery>)"),
         "the runtime's member probe reads the filter struct:\n{http}"
     );
     assert!(flat.contains(&compact("get(tag_get_by_id).patch(tag_update)")), "the rest is served:\n{http}");
@@ -7374,7 +7432,7 @@ fn a_paginated_filtered_resource_list_reads_struct_then_bare_filters_in_byte_ord
     assert!(
         flat.contains(&compact(
             "struct OntogenEpicListFilterParams; impl OntogenRouteQuery for OntogenEpicListFilterParams { const SPEC: OntogenQuerySpec = \
-             OntogenQuerySpec { filter: &[\"owner\", \"title\"], filter_fields: Some(ontogen_jsonapi::filter_fields::<ListEpicsQuery>), \
+             OntogenQuerySpec { filter: &[\"owner\", \"title\"], filter_fields: Some(::ontogen_jsonapi::filter_fields::<ListEpicsQuery>), \
              sort: true, include: true, page: true, ..OntogenQuerySpec::NONE }; }"
         )),
         "{http}"
@@ -7398,9 +7456,9 @@ fn a_paginated_filtered_resource_list_reads_struct_then_bare_filters_in_byte_ord
             "let total = epic::count(&ontogen_store, ontogen_filter, ontogen_filter_title.as_deref(), \
              &ontogen_filter_owner).await.map_err(ontogen_app_error)?;",
             "let collection = \"/api/epics\";",
-            "let links = ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);",
+            "let links = ::ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);",
             "let mut document = OntogenDocument::new(data, links).with_meta(OntogenPageMeta { total, limit, offset });",
-            "Ok(ontogen_jsonapi::response::ok(&document))",
+            "Ok(::ontogen_jsonapi::response::ok(&document))",
         ],
     );
     // An unfiltered list beside it keeps its shared spec.
@@ -7421,7 +7479,7 @@ fn a_scoped_filtered_resource_list_reads_its_filter_as_the_unscoped_one_does() {
     assert!(
         flat.contains(&compact(
             "impl OntogenRouteQuery for OntogenEpicListScopedFilterParams { const SPEC: OntogenQuerySpec = OntogenQuerySpec { filter: \
-             &[\"owner\", \"title\"], filter_fields: Some(ontogen_jsonapi::filter_fields::<ListEpicsQuery>), sort: true, include: \
+             &[\"owner\", \"title\"], filter_fields: Some(::ontogen_jsonapi::filter_fields::<ListEpicsQuery>), sort: true, include: \
              true, page: true, ..OntogenQuerySpec::NONE }; }"
         )),
         "{http}"
@@ -7430,7 +7488,7 @@ fn a_scoped_filtered_resource_list_reads_its_filter_as_the_unscoped_one_does() {
         "epic_list_scoped",
         &handler_body(&http, "epic_list_scoped"),
         &[
-            "OntogenPath(ontogen_scope): OntogenPath<uuid::Uuid>, query: OntogenQuery<OntogenEpicListScopedFilterParams>",
+            "OntogenPath(ontogen_scope): OntogenPath<::uuid::Uuid>, query: OntogenQuery<OntogenEpicListScopedFilterParams>",
             "let ontogen_filter: ListEpicsQuery = query.filter()?;",
             "let ontogen_filter_owner = query.required_filter_member::<String>(\"owner\")?;",
             "let ontogen_filter_title = query.filter_member::<String>(\"title\")?;",
@@ -7442,12 +7500,12 @@ fn a_scoped_filtered_resource_list_reads_its_filter_as_the_unscoped_one_does() {
             "epic::list(&ontogen_store, ontogen_filter.clone(), ontogen_filter_title.as_deref(), &ontogen_filter_owner, \
              &order,",
             "epic::count(&ontogen_store, ontogen_filter, ontogen_filter_title.as_deref(), &ontogen_filter_owner)",
-            "let collection = &format!(\"/api/projects/{}/epics\", ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));",
-            "let links = ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);",
+            "let collection = &format!(\"/api/projects/{}/epics\", ::ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));",
+            "let links = ::ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);",
         ],
     );
     assert!(
-        flat.contains(&compact(".route(\"/api/projects/{project_id}/epics\", axum::routing::get(epic_list_scoped)")),
+        flat.contains(&compact(".route(\"/api/projects/{project_id}/epics\", ::axum::routing::get(epic_list_scoped)")),
         "{http}"
     );
 }
@@ -7508,7 +7566,7 @@ fn an_entityless_filtered_list_reads_its_filter_then_its_op_arg_page() {
     assert!(
         flat.contains(&compact(
             "struct OntogenAgentListFilterParams; impl OntogenRouteQuery for OntogenAgentListFilterParams { const SPEC: OntogenQuerySpec = \
-             OntogenQuerySpec { filter: &[\"skill_id\"], filter_fields: Some(ontogen_jsonapi::filter_fields::<AgentQuery>), op_args: \
+             OntogenQuerySpec { filter: &[\"skill_id\"], filter_fields: Some(::ontogen_jsonapi::filter_fields::<AgentQuery>), op_args: \
              &[\"limit\", \"offset\"], ..OntogenQuerySpec::NONE }; }"
         )),
         "{http}"
@@ -7529,10 +7587,10 @@ fn an_entityless_filtered_list_reads_its_filter_then_its_op_arg_page() {
              .await.map_err(ontogen_app_error)?;",
             "let ontogen_result = OntogenPaginatedResult { items: ontogen_items, total: ontogen_total, limit: ontogen_limit, \
              offset: ontogen_offset, };",
-            "Ok(ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
+            "Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
         ],
     );
-    assert!(flat.contains(&compact(".route(\"/api/agents\", axum::routing::get(agent_list)")), "{http}");
+    assert!(flat.contains(&compact(".route(\"/api/agents\", ::axum::routing::get(agent_list)")), "{http}");
     assert!(!handler_body(&http, "agent_list").contains("OntogenLinks"), "a meta.result page has no links:\n{http}");
 }
 
@@ -7577,7 +7635,7 @@ fn an_unpaginated_entityless_filtered_list_answers_the_whole_list() {
                 open,
                 "let ontogen_result = feed::list(&ontogen_store, &ontogen_filter_kind, ontogen_filter_verbose, None, \
                  None).await.map_err(ontogen_internal_error)?;",
-                "Ok(ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
+                "Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
             ],
         );
         let body = handler_body(&http, handler);
@@ -7598,7 +7656,8 @@ fn no_list_speaks_the_flat_query_dialect() {
         generate_http(tmp.path(), resource_fixture(tmp.path(), true)),
     ];
     for http in &files {
-        for flat in ["axum::extract::Query", "QueryRejection", "ontogen_query_rejection", "PaginationParams", "Json"] {
+        for flat in ["::axum::extract::Query", "QueryRejection", "ontogen_query_rejection", "PaginationParams", "Json"]
+        {
             assert!(!http.contains(flat), "{flat}:\n{http}");
         }
     }
@@ -7609,7 +7668,7 @@ fn no_list_speaks_the_flat_query_dialect() {
         for chunk in http.split("\nasync fn ").skip(1) {
             let name = chunk.split('(').next().unwrap();
             if !name.contains("_sse") {
-                assert!(!chunk.contains("axum::extract::Query"), "{name} reads a flat query:\n{chunk}");
+                assert!(!chunk.contains("::axum::extract::Query"), "{name} reads a flat query:\n{chunk}");
             }
         }
     }
@@ -7759,7 +7818,7 @@ fn a_custom_get_reads_its_options_as_op_args_in_byte_order() {
     // `?verbose=` included, is a 400 from the `Query` extractor.
     assert!(http.contains("op_args: &[\"verbose\", \"label\"]"), "{http}");
     assert!(compact(&http).contains(&compact(
-        ".route(\"/api/workouts/summary/{id}\", axum::routing::get(workout_get_summary).fallback(ontogen_allow([OntogenMethod::GET])))"
+        ".route(\"/api/workouts/summary/{id}\", ::axum::routing::get(workout_get_summary).fallback(ontogen_allow([OntogenMethod::GET])))"
     )));
     assert_in_order(
         "workout_get_summary",
@@ -7773,7 +7832,7 @@ fn a_custom_get_reads_its_options_as_op_args_in_byte_order() {
             "let verbose = ontogen_query.op_arg::<bool>(\"verbose\")?;",
             "let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;",
             "let ontogen_result = workout::get_summary(&ontogen_store, &id, verbose, label.as_deref()).await.map_err(ontogen_app_error)?;",
-            "Ok(ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
+            "Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
         ],
     );
     // A stateless GET takes no state and still checks `Accept` and its query.
@@ -7800,32 +7859,36 @@ fn a_custom_post_reads_every_argument_from_meta_args() {
             "ontogen_body: OntogenBody",
             "ontogen_query?;",
             "let ontogen_bytes = ontogen_body.into_bytes()?;",
-            "let ontogen_args = ontogen_jsonapi::request::op_args(&ontogen_bytes, true)?;",
-            "ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"input\", \"note\"])?;",
+            "let ontogen_args = ::ontogen_jsonapi::request::op_args(&ontogen_bytes, true)?;",
+            "::ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"input\", \"note\"])?;",
             // Declaration order; the `*Input` and the `Option` are members too.
-            "let input = ontogen_jsonapi::request::op_arg::<StartWorkoutInput>(&ontogen_args, \"input\", true)?;",
-            "let note = ontogen_jsonapi::request::op_arg::<Option<String>>(&ontogen_args, \"note\", false)?;",
+            "let input = ::ontogen_jsonapi::request::op_arg::<StartWorkoutInput>(&ontogen_args, \"input\", true)?;",
+            "let note = ::ontogen_jsonapi::request::op_arg::<Option<String>>(&ontogen_args, \"note\", false)?;",
             "let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;",
             // Not an `AppError`: a 500.
             "let ontogen_result = workout::start(&ontogen_store, input, note).await.map_err(ontogen_internal_error)?;",
-            "Ok(ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
+            "Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
         ],
     );
     // A POST has no path parameters: a required argument is a member too.
     let rename = handler_body(&http, "workout_rename");
     assert!(!rename.contains("OntogenPath"), "{rename}");
     assert!(
-        rename.contains(&compact("let id = ontogen_jsonapi::request::op_arg::<String>(&ontogen_args, \"id\", true)?;"))
+        rename
+            .contains(&compact("let id = ::ontogen_jsonapi::request::op_arg::<String>(&ontogen_args, \"id\", true)?;"))
     );
     assert!(rename.contains(&compact(
-        "workout::rename(&ontogen_store, &id, name).await.map_err(ontogen_app_error)?; Ok(ontogen_jsonapi::response::no_content())"
+        "workout::rename(&ontogen_store, &id, name).await.map_err(ontogen_app_error)?; Ok(::ontogen_jsonapi::response::no_content())"
     )));
     // With no required argument, a missing `meta` or `args` is `{}`; a `()`
     // result is a 204.
     let pause = handler_body(&http, "workout_pause");
-    assert!(pause.contains(&compact("ontogen_jsonapi::request::op_args(&ontogen_bytes, false)?;")), "{pause}");
-    assert!(pause.contains(&compact("ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[])?;")), "{pause}");
-    assert!(pause.contains(&compact("Ok(ontogen_jsonapi::response::no_content())")), "{pause}");
+    assert!(pause.contains(&compact("::ontogen_jsonapi::request::op_args(&ontogen_bytes, false)?;")), "{pause}");
+    assert!(
+        pause.contains(&compact("::ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[])?;")),
+        "{pause}"
+    );
+    assert!(pause.contains(&compact("Ok(::ontogen_jsonapi::response::no_content())")), "{pause}");
     assert!(!handler_body(&http, "workout_start").contains("created("), "a custom op is never a 201");
 }
 
@@ -7836,11 +7899,11 @@ fn junction_ops_outside_a_resource_module_are_served_as_custom_ops_at_their_rout
     let flat = compact(&http);
 
     assert!(flat.contains(&compact(
-        ".route(\"/api/workouts/{parent_id}/labels\", axum::routing::get(workout_list_labels).post(workout_add_label)\
+        ".route(\"/api/workouts/{parent_id}/labels\", ::axum::routing::get(workout_list_labels).post(workout_add_label)\
          .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])))"
     )));
     assert!(flat.contains(&compact(
-        ".route(\"/api/workouts/{parent_id}/labels/{child_id}\", axum::routing::delete(workout_remove_label)\
+        ".route(\"/api/workouts/{parent_id}/labels/{child_id}\", ::axum::routing::delete(workout_remove_label)\
          .fallback(ontogen_allow([OntogenMethod::DELETE])))"
     )));
     // A paginated junction list slices the fn's whole result.
@@ -7863,9 +7926,9 @@ fn junction_ops_outside_a_resource_module_are_served_as_custom_ops_at_their_rout
         &[
             "ontogen_path: Result<OntogenPath<String>, OntogenErrorObject>,",
             "let OntogenPath(workout_id) = ontogen_path?;",
-            "ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"label\"])?;",
+            "::ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"label\"])?;",
             "workout::add_label(&ontogen_store, &workout_id, &label).await.map_err(ontogen_app_error)?;",
-            "Ok(ontogen_jsonapi::response::no_content())",
+            "Ok(::ontogen_jsonapi::response::no_content())",
         ],
     );
     assert_in_order(
@@ -7873,7 +7936,7 @@ fn junction_ops_outside_a_resource_module_are_served_as_custom_ops_at_their_rout
         &handler_body(&http, "workout_remove_label"),
         &[
             "OntogenPath((workout_id, label)): OntogenPath<(String, String)>, _: OntogenQuery<OntogenNoParams>",
-            "Ok(ontogen_jsonapi::response::no_content())",
+            "Ok(::ontogen_jsonapi::response::no_content())",
         ],
     );
 
@@ -7885,7 +7948,7 @@ fn junction_ops_outside_a_resource_module_are_served_as_custom_ops_at_their_rout
     // A `list_X` with no add or remove beside it is a custom GET, answering
     // its whole result: it has no page.
     assert!(flat.contains(&compact(
-        ".route(\"/api/tasks/list-overdue/{before}\", axum::routing::get(task_list_overdue).fallback(ontogen_allow([OntogenMethod::GET])))"
+        ".route(\"/api/tasks/list-overdue/{before}\", ::axum::routing::get(task_list_overdue).fallback(ontogen_allow([OntogenMethod::GET])))"
     )));
     let lone = handler_body(&http, "task_list_overdue");
     assert!(
@@ -7904,21 +7967,19 @@ fn event_frames_send_entities_as_unlinked_resources_and_other_items_as_meta_resu
 
     // `Task` is an entity: its resource object, with every link left out.
     assert!(flat.contains(&compact(
-        "fn ontogen_task_frame_data(event: OntogenEvent, entity: &Task) -> Result<OntogenEvent, axum::Error> { \
+        "fn ontogen_task_frame_data(event: OntogenEvent, entity: &Task) -> Result<OntogenEvent, ::axum::Error> { \
          event.json_data(ontogen_task_as_resource(entity, \"/api/tasks\").into_unlinked()) }"
     )));
     assert!(http.contains(
-        "ontogen_sse_stream(\"task-changed\", ontogen_rx, ontogen_core::events::no_id, ontogen_task_frame_data)"
+        "ontogen_sse_stream(\"task-changed\", ontogen_rx, ::ontogen_core::events::no_id, ontogen_task_frame_data)"
     ));
     // `Activity` and `String` are not: `{"meta":{"result":…}}`.
     assert!(http.contains(
-        "ontogen_sse_stream(\"activity-for-kind\", ontogen_rx, ontogen_core::events::seq_id, ontogen_result_frame))"
+        "ontogen_sse_stream(\"activity-for-kind\", ontogen_rx, ::ontogen_core::events::seq_id, ontogen_result_frame))"
     ));
-    assert!(
-        http.contains(
-            "ontogen_sse_stream(\"log-lines\", ontogen_rx, ontogen_core::events::no_id, ontogen_result_frame))"
-        )
-    );
+    assert!(http.contains(
+        "ontogen_sse_stream(\"log-lines\", ontogen_rx, ::ontogen_core::events::no_id, ontogen_result_frame))"
+    ));
     assert!(http.contains("event.json_data(OntogenResultFrame::new(item))"));
     // A lag frame keeps its bare shape.
     assert!(http.contains("event(\"lag\").data(format!(\"{{\\\"skipped\\\":{skipped}}}\"))"));
@@ -7988,7 +8049,7 @@ fn scoped_ops_have_the_unscoped_wire() {
         "report_list_scoped",
         &handler_body(&http, "report_list_scoped"),
         &[
-            "OntogenPath(ontogen_scope): OntogenPath<uuid::Uuid>, ontogen_query: OntogenQuery<OntogenPageOpArgs>",
+            "OntogenPath(ontogen_scope): OntogenPath<::uuid::Uuid>, ontogen_query: OntogenQuery<OntogenPageOpArgs>",
             "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;",
             "report::list(&ontogen_store, Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset))).await.map_err(ontogen_app_error)?;",
             "let ontogen_total = report::count(&ontogen_store).await.map_err(ontogen_app_error)?;",
@@ -7998,7 +8059,7 @@ fn scoped_ops_have_the_unscoped_wire() {
         "agent_list_scoped",
         &handler_body(&http, "agent_list_scoped"),
         &[
-            "OntogenPath(ontogen_scope): OntogenPath<uuid::Uuid>, ontogen_query: OntogenQuery<OntogenAgentListScopedFilterParams>",
+            "OntogenPath(ontogen_scope): OntogenPath<::uuid::Uuid>, ontogen_query: OntogenQuery<OntogenAgentListScopedFilterParams>",
             "let ontogen_filter: AgentQuery = ontogen_query.filter()?;",
             "let ontogen_filter_skill_id = ontogen_query.filter_member::<String>(\"skill_id\")?;",
             "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
@@ -8007,7 +8068,7 @@ fn scoped_ops_have_the_unscoped_wire() {
              Some(u64::from(ontogen_limit)), Some(u64::from(ontogen_offset)))",
             "let ontogen_total = agent::count(&ontogen_store, ontogen_filter, ontogen_filter_skill_id)\
              .await.map_err(ontogen_app_error)?;",
-            "Ok(ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
+            "Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))",
         ],
     );
     for list in ["report_list_scoped", "agent_list_scoped"] {
@@ -8019,7 +8080,7 @@ fn scoped_ops_have_the_unscoped_wire() {
         "workout_list_labels_scoped",
         &handler_body(&http, "workout_list_labels_scoped"),
         &[
-            "OntogenPath((ontogen_scope, workout_id)): OntogenPath<(uuid::Uuid, String)>, ontogen_query: OntogenQuery<OntogenPageOpArgs>",
+            "OntogenPath((ontogen_scope, workout_id)): OntogenPath<(::uuid::Uuid, String)>, ontogen_query: OntogenQuery<OntogenPageOpArgs>",
             "let ontogen_limit = ontogen_query.page_op_arg(\"limit\")?.unwrap_or(20).min(100);",
             "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;",
             "workout::list_labels(&ontogen_store, &workout_id)",
@@ -8030,9 +8091,9 @@ fn scoped_ops_have_the_unscoped_wire() {
         "workout_add_label_scoped",
         &handler_body(&http, "workout_add_label_scoped"),
         &[
-            "ontogen_path: Result<OntogenPath<(uuid::Uuid, String)>, OntogenErrorObject>,",
+            "ontogen_path: Result<OntogenPath<(::uuid::Uuid, String)>, OntogenErrorObject>,",
             "let OntogenPath((ontogen_scope, workout_id)) = ontogen_path?;",
-            "ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"label\"])?;",
+            "::ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"label\"])?;",
         ],
     );
     // A custom op reads its arguments as the unscoped one does, after the
@@ -8041,23 +8102,23 @@ fn scoped_ops_have_the_unscoped_wire() {
         "workout_start_scoped",
         &handler_body(&http, "workout_start_scoped"),
         &[
-            "ontogen_path: Result<OntogenPath<uuid::Uuid>, OntogenErrorObject>,",
+            "ontogen_path: Result<OntogenPath<::uuid::Uuid>, OntogenErrorObject>,",
             "let OntogenPath(ontogen_scope) = ontogen_path?;",
             "ontogen_query?;",
-            "ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"input\", \"note\"])?;",
+            "::ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"input\", \"note\"])?;",
             "let ontogen_store = ontogen_state.store_for(&ontogen_scope).map_err(ontogen_internal_error)?;",
         ],
     );
     assert!(flat.contains(&compact(
-        "OntogenPath((ontogen_scope, id)): OntogenPath<(uuid::Uuid, String)>, ontogen_query: OntogenQuery<OntogenWorkoutGetSummaryOpArgs>"
+        "OntogenPath((ontogen_scope, id)): OntogenPath<(::uuid::Uuid, String)>, ontogen_query: OntogenQuery<OntogenWorkoutGetSummaryOpArgs>"
     )));
     assert!(flat.contains(&compact(
-        ".route(\"/api/projects/{project_id}/workouts/{parent_id}/labels\", axum::routing::get(workout_list_labels_scoped)\
+        ".route(\"/api/projects/{project_id}/workouts/{parent_id}/labels\", ::axum::routing::get(workout_list_labels_scoped)\
          .post(workout_add_label_scoped).fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])))"
     )));
     assert!(flat.contains(&compact(
         ".route(\"/api/projects/{project_id}/workouts/{parent_id}/labels/{child_id}\", \
-         axum::routing::delete(workout_remove_label_scoped).fallback(ontogen_allow([OntogenMethod::DELETE])))"
+         ::axum::routing::delete(workout_remove_label_scoped).fallback(ontogen_allow([OntogenMethod::DELETE])))"
     )));
     assert!(!flat.contains("list-labels") && !flat.contains("add-label"), "no action-style junction route:\n{http}");
     // Every handler name is unique, including `tag::list` and
@@ -8069,7 +8130,7 @@ fn scoped_ops_have_the_unscoped_wire() {
     unique.dedup();
     assert_eq!(unique.len(), names.len(), "{names:?}");
     // The stateless op has no store to scope: it keeps its unscoped route.
-    assert!(flat.contains(&compact(".route(\"/api/workouts/version\", axum::routing::get(workout_get_version)")));
+    assert!(flat.contains(&compact(".route(\"/api/workouts/version\", ::axum::routing::get(workout_get_version)")));
 }
 
 /// A junction add or remove answers `204` whatever its fn returns, under the
@@ -8099,7 +8160,7 @@ fn a_junction_add_or_remove_answers_204_scoped_or_not() {
         let suffix = if scoped { "_scoped" } else { "" };
         for handler in ["crew_add_label", "crew_remove_label"] {
             let body = handler_body(&http, &format!("{handler}{suffix}"));
-            assert!(body.contains("Ok(ontogen_jsonapi::response::no_content())"), "{handler}{suffix}: {body}");
+            assert!(body.contains("Ok(::ontogen_jsonapi::response::no_content())"), "{handler}{suffix}: {body}");
             assert!(!body.contains("OntogenResultMeta"), "{handler}{suffix}: {body}");
         }
         for (handler, op) in [("relationship_post", "add_label"), ("relationship_delete", "remove_label")] {
@@ -8110,7 +8171,7 @@ fn a_junction_add_or_remove_answers_204_scoped_or_not() {
                 &[
                     &format!("task::{op}("),
                     ".await.map_err(ontogen_app_error)?;",
-                    "Ok(ontogen_jsonapi::response::no_content())",
+                    "Ok(::ontogen_jsonapi::response::no_content())",
                 ],
             );
         }
@@ -8134,7 +8195,7 @@ fn a_resource_with_relationships_serves_the_relationship_and_related_routes() {
         let (base, suffix) = if scoped { ("/api/projects/{project_id}", "_scoped") } else { ("/api", "") };
         assert!(
             flat.contains(&compact(&format!(
-                ".route(\"{base}/tasks/{{id}}/relationships/{{rel}}\", axum::routing::get(ontogen_task_relationship_get{suffix})\
+                ".route(\"{base}/tasks/{{id}}/relationships/{{rel}}\", ::axum::routing::get(ontogen_task_relationship_get{suffix})\
              .patch(ontogen_task_relationship_patch{suffix}).post(ontogen_task_relationship_post{suffix})\
              .delete(ontogen_task_relationship_delete{suffix})\
              .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::PATCH, OntogenMethod::POST, OntogenMethod::DELETE])))"
@@ -8142,7 +8203,7 @@ fn a_resource_with_relationships_serves_the_relationship_and_related_routes() {
             "{http}"
         );
         assert!(flat.contains(&compact(&format!(
-            ".route(\"{base}/tasks/{{id}}/{{rel}}\", axum::routing::get(ontogen_task_related_get{suffix})\
+            ".route(\"{base}/tasks/{{id}}/{{rel}}\", ::axum::routing::get(ontogen_task_related_get{suffix})\
              .fallback(ontogen_allow([OntogenMethod::GET])))"
         ))));
         // `epic` and `tag` have no relationship, so no such route.
@@ -8152,7 +8213,7 @@ fn a_resource_with_relationships_serves_the_relationship_and_related_routes() {
         // Each handler matches `{rel}` against every relationship, field
         // ones first, and answers any other name with `404`.
         let path = if scoped {
-            "OntogenPath((ontogen_scope, id, rel)): OntogenPath<(uuid::Uuid, OntogenLookupKey, OntogenLookupKey)>"
+            "OntogenPath((ontogen_scope, id, rel)): OntogenPath<(::uuid::Uuid, OntogenLookupKey, OntogenLookupKey)>"
         } else {
             "OntogenPath((id, rel)): OntogenPath<(OntogenLookupKey, OntogenLookupKey)>"
         };
@@ -8167,13 +8228,13 @@ fn a_resource_with_relationships_serves_the_relationship_and_related_routes() {
                     "Some(\"epic\") =>",
                     "Some(\"tags\") =>",
                     "Some(\"labels\") =>",
-                    "_ => Err(ontogen_jsonapi::error::no_such_relationship(\"tasks\", &rel)),",
+                    "_ => Err(::ontogen_jsonapi::error::no_such_relationship(\"tasks\", &rel)),",
                 ],
             );
         }
         for handler in ["relationship_patch", "relationship_post", "relationship_delete"] {
             let ty = if scoped {
-                "(uuid::Uuid, OntogenLookupKey, OntogenLookupKey)"
+                "(::uuid::Uuid, OntogenLookupKey, OntogenLookupKey)"
             } else {
                 "(OntogenLookupKey, OntogenLookupKey)"
             };
@@ -8187,7 +8248,7 @@ fn a_resource_with_relationships_serves_the_relationship_and_related_routes() {
                     "ontogen_body: OntogenBody",
                     "= ontogen_path?;",
                     "match rel.as_str() {",
-                    "_ => Err(ontogen_jsonapi::error::no_such_relationship(\"tasks\", &rel)),",
+                    "_ => Err(::ontogen_jsonapi::error::no_such_relationship(\"tasks\", &rel)),",
                 ],
             );
         }
@@ -8245,11 +8306,11 @@ fn every_relationship_links_its_routes() {
         "ontogen_task_request_fields",
         &compact(&http[http.find("fn ontogen_task_request_fields(").unwrap()..]),
         &[
-            "ontogen_jsonapi::request::check_relationship_names(relationships, \"tasks\", &[\"epic\", \"tags\", \"labels\"])?;",
+            "::ontogen_jsonapi::request::check_relationship_names(relationships, \"tasks\", &[\"epic\", \"tags\", \"labels\"])?;",
             "relationships.and_then(|r| r.get(\"epic\"))",
             "relationships.and_then(|r| r.get(\"tags\"))",
             "if relationships.is_some_and(|r| r.contains_key(\"labels\")) {",
-            "return Err(ontogen_jsonapi::error::relationship_update_unsupported(\"tasks\", \"labels\", \"a create or update\")\
+            "return Err(::ontogen_jsonapi::error::relationship_update_unsupported(\"tasks\", \"labels\", \"a create or update\")\
              .with_pointer(\"/data/relationships/labels\"));",
             "Ok((fields, linked))",
         ],
@@ -8299,20 +8360,20 @@ fn relationship_handlers_check_in_the_contract_order() {
         &[
             "ontogen_query?;",
             "let ontogen_bytes = ontogen_body.into_bytes()?;",
-            "ontogen_jsonapi::request::to_one(&ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"epics\", true)?",
+            "::ontogen_jsonapi::request::to_one(&::ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"epics\", true)?",
             ".map(|ontogen_member| OntogenLinkedId { id: ontogen_member, pointer: \"/data\".to_owned() });",
             "let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;",
             "ontogen_epic_check_ids(&ontogen_state, ontogen_linked.as_slice()).await?;",
             "ontogen_task_write_field(&ontogen_state, &ontogen_entity.id, \"epic_id\", \
              ontogen_linked.map(|ontogen_member| ontogen_member.id).into()).await?;",
-            "Ok(ontogen_jsonapi::response::no_content())",
+            "Ok(::ontogen_jsonapi::response::no_content())",
         ],
     );
     assert_in_order(
         "PATCH tags",
         &arm("ontogen_task_relationship_patch", "tags"),
         &[
-            "ontogen_jsonapi::request::to_many_linked(&ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"tags\", None)?;",
+            "::ontogen_jsonapi::request::to_many_linked(&::ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"tags\", None)?;",
             "ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;",
             "\"tags\", ontogen_linked.into_iter().map(|ontogen_member| ontogen_member.id).collect()",
         ],
@@ -8321,7 +8382,7 @@ fn relationship_handlers_check_in_the_contract_order() {
         "POST tags",
         &arm("ontogen_task_relationship_post", "tags"),
         &[
-            "ontogen_jsonapi::request::to_many_linked(&ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"tags\", Some(1))?;",
+            "::ontogen_jsonapi::request::to_many_linked(&::ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"tags\", Some(1))?;",
             "ontogen_task_read(&ontogen_state, &id).await?;",
             "ontogen_tag_check_ids(&ontogen_state, &ontogen_linked).await?;",
             "if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.tags, &ontogen_linked) {",
@@ -8369,7 +8430,7 @@ fn relationship_handlers_check_in_the_contract_order() {
                 "let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;",
                 "task::list_labels(&ontogen_store, &ontogen_entity.id)",
                 ".skip(ontogen_offset as usize).take(ontogen_limit as usize)",
-                "ontogen_jsonapi::links::pagination_links(&ontogen_self, &OntogenCanonicalQuery::new(), ontogen_offset, ontogen_limit, ontogen_total)",
+                "::ontogen_jsonapi::links::pagination_links(&ontogen_self, &OntogenCanonicalQuery::new(), ontogen_offset, ontogen_limit, ontogen_total)",
                 ".with_meta(OntogenPageMeta { total: ontogen_total, limit: ontogen_limit, offset: ontogen_offset",
             ],
         );
@@ -8418,7 +8479,7 @@ fn unsupported_relationship_writes_are_refused_from_the_route() {
     let refused = |handler: &str, rel: &str, method: &str| {
         let body = handler_body(&http, handler);
         let arm = compact(&format!(
-            "Some(\"{rel}\") => {{ ontogen_query?; Err(ontogen_jsonapi::error::relationship_update_unsupported(\"tasks\", \"{rel}\", \"{method}\")) }}"
+            "Some(\"{rel}\") => {{ ontogen_query?; Err(::ontogen_jsonapi::error::relationship_update_unsupported(\"tasks\", \"{rel}\", \"{method}\")) }}"
         ));
         assert!(body.contains(&arm), "{handler} {rel}: {body}");
     };
@@ -8818,7 +8879,7 @@ fn a_borrowed_filter_struct_is_lent_to_list_and_count() {
     let config = filtered_tag_fixture(tmp.path(), "query: &ListTagsQuery", true);
     let http = generate_http(tmp.path(), config.clone());
 
-    assert!(http.contains("filter_fields: Some(ontogen_jsonapi::filter_fields::<ListTagsQuery>)"), "{http}");
+    assert!(http.contains("filter_fields: Some(::ontogen_jsonapi::filter_fields::<ListTagsQuery>)"), "{http}");
     let list = handler_body(&http, "tag_list");
     assert_in_order(
         "tag_list",
@@ -9011,13 +9072,13 @@ fn a_list_and_a_get_read_include_in_the_contract_order() {
                 "let (offset, limit) = ontogen_page(&query, 20, 100)?;",
                 "let link_query = query.link_query(include.as_deref())?;",
                 open,
-                "let links = ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);",
+                "let links = ::ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);",
                 "let mut document = OntogenDocument::new(data, links).with_meta(OntogenPageMeta { total, limit, offset });",
                 &format!(
                     "if let Some(paths) = &include {{ document = document.with_included(ontogen_task_included{suffix}(\
                      &ontogen_state, {scope}&items, paths).await?); }}"
                 ),
-                "Ok(ontogen_jsonapi::response::ok(&document))",
+                "Ok(::ontogen_jsonapi::response::ok(&document))",
             ],
         );
         assert_in_order(
@@ -9032,9 +9093,9 @@ fn a_list_and_a_get_read_include_in_the_contract_order() {
                 "let mut document = OntogenDocument::resource(ontogen_task_as_resource(&entity, collection), &link_query);",
                 &format!(
                     "if let Some(paths) = &include {{ document = document.with_included(ontogen_task_included{suffix}(\
-                     &ontogen_state, {scope}std::slice::from_ref(&entity), paths).await?); }}"
+                     &ontogen_state, {scope}::std::slice::from_ref(&entity), paths).await?); }}"
                 ),
-                "Ok(ontogen_jsonapi::response::ok(&document))",
+                "Ok(::ontogen_jsonapi::response::ok(&document))",
             ],
         );
         // A filtered list reads `include` after its filter, and a type with
@@ -9120,8 +9181,8 @@ fn the_include_helper_reads_each_path_through_its_targets_get_by_id() {
         "ontogen_task_included_scoped",
         &emitted_fn(&http, "ontogen_task_included_scoped("),
         &[
-            "state: &AppState, ontogen_scope: &uuid::Uuid, entities: &[Task], paths: &[&str])",
-            "let collection = &format!(\"/api/projects/{}/epics\", ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));",
+            "state: &AppState, ontogen_scope: &::uuid::Uuid, entities: &[Task], paths: &[&str])",
+            "let collection = &format!(\"/api/projects/{}/epics\", ::ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));",
             "for related in ontogen_epic_fetch_scoped(state, ontogen_scope, &ids).await? {",
         ],
     );
@@ -9186,9 +9247,9 @@ fn a_scoped_handler_includes_types_read_on_either_side_of_the_prefix() {
         "ontogen_task_included_scoped",
         &emitted_fn(&http, "ontogen_task_included_scoped("),
         &[
-            "state: &AppState, ontogen_scope: &uuid::Uuid, entities: &[Task], paths: &[&str])",
+            "state: &AppState, ontogen_scope: &::uuid::Uuid, entities: &[Task], paths: &[&str])",
             "\"epic\" =>",
-            "let collection = &format!(\"/api/projects/{}/epics\", ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));",
+            "let collection = &format!(\"/api/projects/{}/epics\", ::ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));",
             "for related in ontogen_epic_fetch_scoped(state, ontogen_scope, &ids).await? {",
             "\"tags\" =>",
             "let collection = \"/api/tags\";",
@@ -9242,13 +9303,13 @@ fn without_get_by_id_a_resource_has_no_links_and_no_location() {
         create.contains(&compact(
             "let document = OntogenDocument::resource(ontogen_task_as_resource(&entity), &OntogenCanonicalQuery::new()); \
              let location = document.data().and_then(OntogenResourceObject::links).map(OntogenLinks::self_link); \
-             Ok(ontogen_jsonapi::response::created(location, &document))"
+             Ok(::ontogen_jsonapi::response::created(location, &document))"
         )),
         "{create}"
     );
     assert!(
         handler_body(&http, "task_update").contains(&compact(
-            "Ok(ontogen_jsonapi::response::ok(&OntogenDocument::resource(ontogen_task_as_resource(&entity), &OntogenCanonicalQuery::new())))"
+            "Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::resource(ontogen_task_as_resource(&entity), &OntogenCanonicalQuery::new())))"
         )),
         "{http}"
     );
@@ -9258,7 +9319,7 @@ fn without_get_by_id_a_resource_has_no_links_and_no_location() {
         &[
             "let include = query.include_paths(\"tasks\", &[\"epic\", \"tags\"], &[])?;",
             "let data: Vec<_> = items.iter().map(ontogen_task_as_resource).collect();",
-            "let links = ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);",
+            "let links = ::ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);",
             "document.with_included(ontogen_task_included(&ontogen_state, &items, paths).await?);",
         ],
     );
@@ -9279,7 +9340,7 @@ fn without_get_by_id_a_resource_has_no_links_and_no_location() {
         epic_create.contains(&compact(
             "let document = OntogenDocument::resource(ontogen_epic_as_resource(&entity, collection), &OntogenCanonicalQuery::new()); \
              let location = document.data().and_then(OntogenResourceObject::links).map(OntogenLinks::self_link); \
-             Ok(ontogen_jsonapi::response::created(location, &document))"
+             Ok(::ontogen_jsonapi::response::created(location, &document))"
         )),
         "{epic_create}"
     );
@@ -9303,7 +9364,7 @@ fn a_string_prefix_named_by_its_path_is_borrowed_as_str() {
             &emitted_fn(&http, "ontogen_task_included_scoped("),
             &[
                 "state: &AppState, ontogen_scope: &str, entities: &[Task], paths: &[&str])",
-                "let collection = &format!(\"/api/projects/{}/epics\", ontogen_jsonapi::links::encode_path_segment(ontogen_scope));",
+                "let collection = &format!(\"/api/projects/{}/epics\", ::ontogen_jsonapi::links::encode_path_segment(ontogen_scope));",
                 "for related in ontogen_epic_fetch_scoped(state, ontogen_scope, &ids).await? {",
             ],
         );
@@ -9315,16 +9376,19 @@ fn a_string_prefix_named_by_its_path_is_borrowed_as_str() {
             assert!(flat.contains(&compact(&format!("async fn {helper}"))), "{helper}:\n{http}");
         }
         assert!(!http.contains(&format!("&{ty}")), "no helper borrows the `String` itself:\n{http}");
-        assert!(!http.contains("ontogen_jsonapi::links::encode_path_segment(&ontogen_scope)"), "{http}");
+        assert!(!http.contains("::ontogen_jsonapi::links::encode_path_segment(&ontogen_scope)"), "{http}");
 
         let create = handler_body(&http, "task_create_scoped");
         assert!(
-            create.contains(&compact(&format!("path_params: Result<OntogenPath<{ty}>, OntogenErrorObject>,"))),
+            create.contains(&compact(&format!(
+                "path_params: Result<OntogenPath<::{}>, OntogenErrorObject>,",
+                ty.trim_start_matches("::")
+            ))),
             "{create}"
         );
         assert!(
             create.contains(&compact(
-                "let collection = &format!(\"/api/projects/{}/tasks\", ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));"
+                "let collection = &format!(\"/api/projects/{}/tasks\", ::ontogen_jsonapi::links::encode_path_segment(&ontogen_scope.to_string()));"
             )),
             "{create}"
         );
@@ -9370,12 +9434,77 @@ impl<'ast> syn::visit::Visit<'ast> for BareNames {
     }
 }
 
+/// Each lowercase first segment of a path in `source`'s code that has no
+/// leading `::`, other than `crate`, `self`, `super`, a primitive, a lint
+/// tool or a module the file imports from the consumer: a crate the file
+/// names that way resolves to the consumer's module of that name instead
+/// (entity `Serde`, API module `serde`). Read from the text, so paths in
+/// derives and macro bodies are counted too.
+fn unrooted_crate_paths(source: &str) -> Vec<String> {
+    let consumer: Vec<String> = use_bindings(source)
+        .into_iter()
+        .filter(|(path, _)| path.starts_with("crate::"))
+        .map(|(_, name)| name)
+        .collect();
+    let allowed = |root: &str| {
+        matches!(
+            root,
+            "crate"
+                | "self"
+                | "super"
+                | "clippy"
+                | "str"
+                | "bool"
+                | "char"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "f32"
+                | "f64"
+        ) || consumer.iter().any(|name| name == root)
+    };
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '#';
+    let mut found = Vec::new();
+    for line in source.lines().filter(|l| !l.trim_start().starts_with("//")) {
+        let chars: Vec<char> = line.chars().collect();
+        for i in 1..chars.len() {
+            if chars[i] != ':' || chars[i - 1] != ':' || (i >= 2 && chars[i - 2] == ':') {
+                continue;
+            }
+            let end = i - 1;
+            let mut start = end;
+            while start > 0 && is_ident(chars[start - 1]) {
+                start -= 1;
+            }
+            let root: String = chars[start..end].iter().collect();
+            let rooted = start >= 2 && chars[start - 1] == ':' && chars[start - 2] == ':';
+            // `.op_arg::<T>` and `ontogen_from_fields::<T>` name a fn.
+            let turbofish = chars.get(i + 1) == Some(&'<') || (start > 0 && chars[start - 1] == '.');
+            let lowercase = root.starts_with(|c: char| c.is_ascii_lowercase() || c == '_');
+            if !root.is_empty() && lowercase && !rooted && !turbofish && !allowed(&root) && !found.contains(&root) {
+                found.push(root);
+            }
+        }
+    }
+    found
+}
+
 /// The rule the generated HTTP file keeps so that a consumer may name its
 /// entities and API modules anything (§13.4): the only bare names it binds
 /// besides the consumer's are `Ontogen`-prefixed imports and its own
 /// `Ontogen…` types and `ontogen_…` helpers, so no runtime item is named
-/// bare, and every helper it defines is prefixed. Its handlers keep their
-/// IPC command names (`task_list`).
+/// bare, every crate is named by its `::`-rooted path, and every helper it
+/// defines is prefixed. Its handlers keep their IPC command names
+/// (`task_list`).
 fn assert_http_names_nothing_bare(http: &str) {
     let bindings = use_bindings(http);
     for (path, name) in &bindings {
@@ -9437,6 +9566,8 @@ fn assert_http_names_nothing_bare(http: &str) {
             panic!("`{name}` is named bare in:\n{}", quote::quote!(#item));
         }
     }
+    let unrooted = unrooted_crate_paths(http);
+    assert!(unrooted.is_empty(), "{unrooted:?} named by a path without `::`:\n{http}");
 }
 
 #[test]
@@ -9451,7 +9582,8 @@ fn the_http_server_names_no_runtime_item_bare() {
 /// Entities named after what the HTTP server imports from its runtime
 /// (`Document`, `Response`, `State`, …) or after a keyword (`Match`, whose
 /// module is `r#match`), relationships named after keywords (`match`, `ref`,
-/// `loop`, `in`), and API fn parameters written as raw idents.
+/// `loop`, `in`, and `crate`, `self`, `super`, which have no raw spelling),
+/// and API fn parameters written as raw idents.
 const HOSTILE_SCHEMA: &str = r#"
     #[derive(OntologyEntity)]
     #[ontology(entity)]
@@ -9463,6 +9595,12 @@ const HOSTILE_SCHEMA: &str = r#"
         pub match_id: Option<String>,
         #[ontology(relation(belongs_to, target = "Request"))]
         pub ref_id: Option<String>,
+        #[ontology(relation(belongs_to, target = "Request"))]
+        pub crate_id: Option<String>,
+        #[ontology(relation(belongs_to, target = "Document"))]
+        pub self_id: Option<String>,
+        #[ontology(relation(belongs_to, target = "Match"))]
+        pub super_id: Option<String>,
         #[ontology(relation(many_to_many, target = "Response"))]
         pub r#loop: Vec<String>,
     }
@@ -9495,8 +9633,10 @@ const HOSTILE_SCHEMA: &str = r#"
     }
 "#;
 
-/// The other entities named after runtime items, served alike.
-const HOSTILE_PLAIN: [&str; 7] = ["state", "method", "links", "relationship", "endpoint", "event", "value"];
+/// The other entities named after runtime items or after crates the file
+/// names (`Serde`, `Axum`, whose modules are `serde`, `axum`), served alike.
+const HOSTILE_PLAIN: [&str; 10] =
+    ["state", "method", "links", "relationship", "endpoint", "event", "value", "path", "serde", "axum"];
 
 /// A config serving [`HOSTILE_SCHEMA`] and [`HOSTILE_PLAIN`] with the CRUD
 /// modules `gen_api` emits, `request`'s list filtered by a bare `r#type`,
@@ -9564,14 +9704,15 @@ fn entities_named_after_runtime_items_or_keywords_keep_their_names_over_http() {
         let unique = names.len();
         names.dedup();
         assert_eq!(names.len(), unique, "a name is bound twice:\n{http}");
-        for entity in ["Document", "Request", "Response", "Match", "State", "Method", "Links", "Relationship", "Event"]
+        for entity in
+            ["Document", "Request", "Response", "Match", "State", "Method", "Links", "Relationship", "Event", "Path"]
         {
             assert!(
                 bindings.contains(&(format!("crate::model::{entity}"), entity.to_string())),
                 "`{entity}` is the consumer's:\n{http}"
             );
         }
-        for module in ["request", "response", "r#match", "state", "event"] {
+        for module in ["request", "response", "r#match", "state", "event", "serde", "axum"] {
             assert!(
                 bindings.contains(&(format!("crate::api::v1::{module}"), module.to_string())),
                 "`{module}` is the API module:\n{http}"
@@ -9583,24 +9724,37 @@ fn entities_named_after_runtime_items_or_keywords_keep_their_names_over_http() {
         assert!(flat.contains("r#match::get_by_id("), "{http}");
         assert!(!flat.contains("(match::") && !flat.contains("=match::"), "{http}");
 
-        // Relationships named after keywords are raw idents in Rust and bare
-        // on the wire.
+        // The ids a document links are held under the relation fields'
+        // names, which are always Rust idents, and named by relationship on
+        // the wire: `crate`, `self` and `super` have no raw spelling.
         assert!(
             flat.contains(&compact(
-                "struct OntogenDocumentLinkedIds { r#match: Option<OntogenLinkedId>, r#ref: Option<OntogenLinkedId>, \
-                 r#loop: Vec<OntogenLinkedId>, }"
+                "struct OntogenDocumentLinkedIds { match_id: Option<OntogenLinkedId>, ref_id: Option<OntogenLinkedId>, \
+                 crate_id: Option<OntogenLinkedId>, self_id: Option<OntogenLinkedId>, \
+                 super_id: Option<OntogenLinkedId>, r#loop: Vec<OntogenLinkedId>, }"
             )),
             "{http}"
         );
         for read in [
-            "linked.r#match = id.map(|id| OntogenLinkedId { id, pointer: \"/data/relationships/match/data\".to_owned() });",
+            "linked.match_id = id.map(|id| OntogenLinkedId { id, pointer: \"/data/relationships/match/data\".to_owned() });",
+            "linked.crate_id = id.map(|id| OntogenLinkedId { id, pointer: \"/data/relationships/crate/data\".to_owned() });",
+            "linked.self_id = id.map(|id| OntogenLinkedId { id, pointer: \"/data/relationships/self/data\".to_owned() });",
+            "if let Some(rel) = relationships.and_then(|r| r.get(\"super\")) {",
             "linked.r#loop = ids;",
             "for linked in &linked.r#loop {",
-            "if let Some(linked) = &linked.r#ref {",
+            "if let Some(linked) = &linked.ref_id {",
+            "if let Some(linked) = &linked.crate_id {",
+            "if let Some(linked) = &linked.super_id {",
         ] {
             assert!(flat.contains(&compact(read)), "{read}\n{http}");
         }
-        assert!(flat.contains("&[(\"match_id\",\"match\"),(\"ref_id\",\"ref\"),(\"loop\",\"loop\")]"), "{http}");
+        assert!(
+            flat.contains(&compact(
+                "&[(\"match_id\", \"match\"), (\"ref_id\", \"ref\"), (\"crate_id\", \"crate\"), \
+                 (\"self_id\", \"self\"), (\"super_id\", \"super\"), (\"loop\", \"loop\")]"
+            )),
+            "{http}"
+        );
         assert!(flat.contains("linked.r#in=id.map("), "{http}");
 
         // Arguments written as raw idents are named without `r#` on the wire.
@@ -9608,9 +9762,9 @@ fn entities_named_after_runtime_items_or_keywords_keep_their_names_over_http() {
         assert!(!http.contains("{r#"), "a route path parameter keeps `r#`:\n{http}");
         let find_docs = handler_body(&http, &format!("lookup_find_docs{}", if scoped { "_scoped" } else { "" }));
         for step in [
-            "ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"type\", \"in\"])?;",
-            "let r#type = ontogen_jsonapi::request::op_arg::<Option<String>>(&ontogen_args, \"type\", false)?;",
-            "let r#in = ontogen_jsonapi::request::op_arg::<Option<String>>(&ontogen_args, \"in\", false)?;",
+            "::ontogen_jsonapi::request::check_op_arg_names(&ontogen_args, &[\"type\", \"in\"])?;",
+            "let r#type = ::ontogen_jsonapi::request::op_arg::<Option<String>>(&ontogen_args, \"type\", false)?;",
+            "let r#in = ::ontogen_jsonapi::request::op_arg::<Option<String>>(&ontogen_args, \"in\", false)?;",
             "lookup::find_docs(&ontogen_store, r#type, r#in)",
         ] {
             assert!(find_docs.contains(&compact(step)), "{step}\n{find_docs}");
@@ -9638,7 +9792,7 @@ fn entities_named_after_runtime_items_or_keywords_keep_their_names_over_http() {
         // An attribute's schema type is named through `types_import_path`.
         assert!(
             flat.contains(&compact(
-                "ontogen_jsonapi::request::attribute::<Option<crate::model::Kind>>(attributes, \"kind\", false)"
+                "::ontogen_jsonapi::request::attribute::<Option<crate::model::Kind>>(attributes, \"kind\", false)"
             )),
             "{http}"
         );
