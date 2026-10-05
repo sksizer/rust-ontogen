@@ -421,6 +421,7 @@ mod tests {
         config.scan_dirs = vec![tmp.path().join("nope")];
         let Err(err) = api::generate(&entities, &config) else { panic!("a missing scan dir is refused") };
         assert!(err.to_string().contains("API scan directory does not exist"), "{err}");
+        assert!(err.to_string().contains("Create it, or remove it from `Pipeline::api_scan_dirs`"), "{err}");
     }
 
     #[test]

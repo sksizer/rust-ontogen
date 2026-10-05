@@ -2,6 +2,7 @@
 
 use ontogen_core::order::OrderBy;
 
+use ::sea_orm::TransactionTrait as _;
 use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::r#match;
@@ -116,33 +117,28 @@ impl Store {
     pub async fn create_match(&self, mut record: Match) -> Result<Match, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if record.id.trim().is_empty() {
             let base = ontogen_core::id::slugify(&record.title);
             if base.is_empty() {
                 return Err(AppError::MatchIdRequired("field \"title\" produced an empty slug".to_string()));
             }
             for candidate in ontogen_core::id::candidates(&base) {
-                let taken = r#match::Entity::find_by_id(candidate.as_str())
-                    .one(self.db())
-                    .await
-                    .map_err(|e| AppError::DbError(e.to_string()))?
-                    .is_some();
-                if taken {
-                    continue;
-                }
                 record.id = candidate;
-                if self.try_insert_match(&record).await? {
+                if self.try_insert_match(&txn, &record).await? {
                     break;
                 }
             }
             record.id.clone()
         } else {
             ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_match(&record).await? {
+            if !self.try_insert_match(&txn, &record).await? {
                 return Err(AppError::MatchAlreadyExists(record.id));
             }
             record.id.clone()
         };
+
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_match(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Match, id);
@@ -162,9 +158,11 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
+
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_match(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::Match, id.to_string());
@@ -191,13 +189,18 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_match(&self, record: &Match) -> Result<bool, AppError> {
+    async fn try_insert_match<C: ::sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        record: &Match,
+    ) -> Result<bool, AppError> {
         let active = record.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = r#match::Entity::find_by_id(record.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();
@@ -205,6 +208,14 @@ impl Store {
             }
             Err(e) => Err(AppError::DbError(e.to_string())),
         }
+    }
+
+    pub(crate) async fn match_exists(&self, id: &str) -> Result<bool, AppError> {
+        Ok(r#match::Entity::find_by_id(id)
+            .one(self.db())
+            .await
+            .map_err(|e| AppError::DbError(e.to_string()))?
+            .is_some())
     }
 }
 

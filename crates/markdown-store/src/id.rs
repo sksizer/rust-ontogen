@@ -11,6 +11,16 @@ use crate::error::Error;
 ///
 /// A non-empty caller-supplied id always wins, under every strategy — the
 /// strategy only fills the gap.
+///
+/// The `Uuid` variant exists only with the `uuid` cargo feature, so code
+/// that names it without the feature fails to compile rather than failing
+/// every create at run time:
+///
+#[cfg_attr(feature = "uuid", doc = "```")]
+#[cfg_attr(not(feature = "uuid"), doc = "```compile_fail")]
+/// let id = markdown_store::IdStrategy::Uuid.make_id(None, None).unwrap();
+/// assert_eq!(id.len(), 36);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdStrategy {
     /// The caller must supply the id; without one, a create is
@@ -20,9 +30,9 @@ pub enum IdStrategy {
     /// *name* is carried so code generators know which field's value to
     /// pass; [`IdStrategy::make_id`] receives that value.
     SlugFromField(String),
-    /// A fresh UUID v4. Requires the `uuid` cargo feature; constructing the
-    /// variant is always possible, but deriving an id without the feature
-    /// returns [`Error::InvalidId`].
+    /// A fresh UUID v4, hyphenated lowercase (36 bytes), which passes the
+    /// create rule. Only with the `uuid` cargo feature.
+    #[cfg(feature = "uuid")]
     Uuid,
 }
 
@@ -59,20 +69,8 @@ impl IdStrategy {
                 }
                 Ok(slug)
             }
-            IdStrategy::Uuid => {
-                #[cfg(feature = "uuid")]
-                {
-                    Ok(uuid::Uuid::new_v4().to_string())
-                }
-                #[cfg(not(feature = "uuid"))]
-                {
-                    Err(Error::InvalidId {
-                        id: String::new(),
-                        reason: "IdStrategy::Uuid requires the `uuid` cargo feature".into(),
-                        create_rule: false,
-                    })
-                }
-            }
+            #[cfg(feature = "uuid")]
+            IdStrategy::Uuid => Ok(uuid::Uuid::new_v4().to_string()),
         }
     }
 }
@@ -254,7 +252,13 @@ mod tests {
 
     #[test]
     fn provided_wins_under_every_strategy() {
-        for strategy in [IdStrategy::Provided, IdStrategy::SlugFromField("title".into()), IdStrategy::Uuid] {
+        let strategies = [
+            IdStrategy::Provided,
+            IdStrategy::SlugFromField("title".into()),
+            #[cfg(feature = "uuid")]
+            IdStrategy::Uuid,
+        ];
+        for strategy in strategies {
             assert_eq!(strategy.make_id(Some("explicit"), Some("Title")).unwrap(), "explicit");
         }
     }

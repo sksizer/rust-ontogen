@@ -207,18 +207,18 @@ async function callOp<T>(method: string, path: string, args?: Record<string, unk
 
 function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
-  const push = (key: string, value: unknown) => {
+  const push = (key: string, value: unknown, member: boolean) => {
     if (value == null) return;
     const values = Array.isArray(value) ? value : [value];
-    if (values.length > 0) parts.push(`${key}=${values.map((v) => encodeURIComponent(String(v))).join(',')}`);
+    if (values.length > 0 || member) parts.push(`${key}=${values.map((v) => encodeURIComponent(String(v))).join(',')}`);
   };
   for (const [key, value] of Object.entries(params)) {
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
       for (const [member, v] of Object.entries(value)) {
-        push(`${encodeURIComponent(key)}%5B${encodeURIComponent(member)}%5D`, v);
+        push(`${encodeURIComponent(key)}%5B${encodeURIComponent(member)}%5D`, v, true);
       }
     } else {
-      push(encodeURIComponent(key), value);
+      push(encodeURIComponent(key), value, false);
     }
   }
   return parts.length > 0 ? `?${parts.join('&')}` : '';

@@ -2,6 +2,7 @@
 
 use ontogen_core::order::OrderBy;
 
+use ::sea_orm::TransactionTrait as _;
 use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::workout;
@@ -170,17 +171,25 @@ impl Store {
     pub async fn create_workout(&self, mut record: Workout) -> Result<Workout, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        for target_id in &record.tags {
+            if !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
+            }
+        }
+
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if record.id.trim().is_empty() {
             return Err(AppError::WorkoutIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
             ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_workout(&record).await? {
+            if !self.try_insert_workout(&txn, &record).await? {
                 return Err(AppError::WorkoutAlreadyExists(record.id));
             }
             record.id.clone()
         };
 
-        self.sync_junction("workout_tags", "workout_id", "tag_id", &id, &record.tags).await?;
+        self.sync_junction(&txn, "workout_tags", "workout_id", "tag_id", &id, &record.tags).await?;
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_workout(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Workout, id);
@@ -203,14 +212,21 @@ impl Store {
 
         let tags_changed = updates.tags.is_some();
 
-        updates.apply(&mut current);
-
-        let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
-
-        if tags_changed {
-            self.sync_junction("workout_tags", "workout_id", "tag_id", id, &current.tags).await?;
+        for target_id in updates.tags.iter().flatten() {
+            if !current.tags.contains(target_id) && !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
+            }
         }
+
+        updates.apply(&mut current);
+        let active = current.to_active_model()?;
+
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        if tags_changed {
+            self.sync_junction(&txn, "workout_tags", "workout_id", "tag_id", id, &current.tags).await?;
+        }
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_workout(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::Workout, id.to_string());
@@ -245,13 +261,18 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_workout(&self, record: &Workout) -> Result<bool, AppError> {
+    async fn try_insert_workout<C: ::sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        record: &Workout,
+    ) -> Result<bool, AppError> {
         let active = record.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = workout::Entity::find_by_id(record.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();

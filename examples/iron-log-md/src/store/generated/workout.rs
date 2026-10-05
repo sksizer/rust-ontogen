@@ -169,6 +169,12 @@ impl Store {
     pub async fn create_workout(&self, mut record: Workout) -> Result<Workout, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        for target_id in &record.tags {
+            if !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
+            }
+        }
+
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&WorkoutFrontmatter::from_workout(&record), WORKOUT_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(WORKOUTS_DIR, WORKOUT_TYPE).create(
@@ -192,6 +198,12 @@ impl Store {
     pub async fn update_workout(&self, id: &str, updates: WorkoutUpdate) -> Result<Workout, AppError> {
         let current = self.get_workout(id).await?;
         hooks::before_update(self, &current, &updates).await?;
+
+        for target_id in updates.tags.iter().flatten() {
+            if !current.tags.contains(target_id) && !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
+            }
+        }
 
         self.vault()
             .entity(WORKOUTS_DIR, WORKOUT_TYPE)

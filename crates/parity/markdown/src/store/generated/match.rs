@@ -171,4 +171,12 @@ impl Store {
         hooks::after_delete(self, id).await?;
         Ok(())
     }
+
+    pub(crate) async fn match_exists(&self, id: &str) -> Result<bool, AppError> {
+        match self.vault().entity(MATCHES_DIR, MATCH_TYPE).read_opt(id) {
+            Ok(doc) => Ok(doc.is_some()),
+            Err(markdown_store::Error::InvalidId { .. }) => Ok(false),
+            Err(e) => Err(AppError::from(e)),
+        }
+    }
 }

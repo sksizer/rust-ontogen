@@ -94,9 +94,10 @@ fn main() {
 //         fn from(e: markdown_store::Error) -> Self { AppError::Md(e.to_string()) }
 //     }
 // The typed variants are the same as on SeaORM: {Entity}NotFound,
-// {Entity}IdRequired and {Entity}AlreadyExists per entity, and
-// {Child}ParentRequired for a has_many child whose foreign key is not
-// Option. DbError is never referenced by markdown-generated code.
+// {Entity}IdRequired and {Entity}AlreadyExists per entity,
+// {Child}ParentCycle for a has_many child, and {Child}ParentRequired for
+// a has_many child whose foreign key is not Option. DbError is never
+// referenced by markdown-generated code.
 //
 // The vault handle carries no id strategy:
 //     VaultHandle::new("data/vault", VaultLayout::PerEntityDir)

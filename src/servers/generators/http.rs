@@ -25,6 +25,7 @@ use ontogen_jsonapi::links::encode_path_segment;
 
 use crate::ident::rust_ident;
 use crate::persistence::dto::{create_field_required, field_to_create_type};
+use crate::persistence::seaorm::gen_entity::wide_integer;
 use crate::resource::{Arity, JunctionRelationship, Relationship, Resource, member_name};
 use crate::schema::model::FieldDef;
 use crate::servers::classify::classify_op;
@@ -1095,8 +1096,11 @@ fn emit_resource_helpers(
     for a in &resource.attributes {
         let field = resource.entity.fields.iter().find(|fd| fd.name == a.field).expect("an attribute is a field");
         let required = if create_field_required(field) { "create" } else { "false" };
+        // A value past `i64` passes serde as its own type, but no store holds
+        // it, so step 7 refuses it rather than the store's `500` (§8.2).
+        let read = if wide_integer(field).is_some() { "wide_integer_attribute" } else { "attribute" };
         out.push_str(&format!(
-            "    ontogen_set_field(&mut fields, \"{name}\", ::ontogen_jsonapi::request::attribute::<{ty}>(attributes, \"{name}\", \
+            "    ontogen_set_field(&mut fields, \"{name}\", ::ontogen_jsonapi::request::{read}::<{ty}>(attributes, \"{name}\", \
              {required})?);\n",
             name = a.name,
             ty = attribute_type(field, config),
@@ -1165,12 +1169,23 @@ fn emit_resource_helpers(
                     ));
                 }
             }
-            Arity::ToMany => out.push_str(&format!(
-                "    if let Some(rel) = relationships.and_then(|r| r.get(\"{name}\")) {{\n        let ids = \
-                 ::ontogen_jsonapi::request::to_many_linked(rel, \"{pointer}\", \"{target}\", None)?;\n        \
-                 fields.insert(\"{field}\".to_owned(), ids.iter().map(|l| \
-                 ::serde_json::Value::String(l.id.clone())).collect());\n        linked.{linked_field} = ids;\n    }}\n"
-            )),
+            Arity::ToMany => {
+                // `data.id` is the URL id on an update and the client id, if
+                // any, on a create.
+                let cycle = if rel.parents_its_own_type {
+                    format!(
+                        "        ::ontogen_jsonapi::request::refuse_cycle(&ids, data.id.as_deref(), \"{type_name}\", \"{name}\")?;\n"
+                    )
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    "    if let Some(rel) = relationships.and_then(|r| r.get(\"{name}\")) {{\n        let ids = \
+                     ::ontogen_jsonapi::request::to_many_linked(rel, \"{pointer}\", \"{target}\", None)?;\n{cycle}        \
+                     fields.insert(\"{field}\".to_owned(), ids.iter().map(|l| \
+                     ::serde_json::Value::String(l.id.clone())).collect());\n        linked.{linked_field} = ids;\n    }}\n"
+                ));
+            }
         }
     }
     out.push_str(&format!("{refuse_junctions}    Ok((fields, linked))\n}}\n\n"));

@@ -168,6 +168,12 @@ impl Store {
     pub async fn create_document(&self, mut record: Document) -> Result<Document, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        for target_id in &record.r#loop {
+            if !self.response_exists(target_id).await? {
+                return Err(AppError::ResponseNotFound(target_id.clone()));
+            }
+        }
+
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&DocumentFrontmatter::from_document(&record), DOCUMENT_FM_FIELDS)
             .map_err(AppError::from)?;
@@ -193,6 +199,12 @@ impl Store {
     pub async fn update_document(&self, id: &str, updates: DocumentUpdate) -> Result<Document, AppError> {
         let current = self.get_document(id).await?;
         hooks::before_update(self, &current, &updates).await?;
+
+        for target_id in updates.r#loop.iter().flatten() {
+            if !current.r#loop.contains(target_id) && !self.response_exists(target_id).await? {
+                return Err(AppError::ResponseNotFound(target_id.clone()));
+            }
+        }
 
         self.vault()
             .entity(DOCUMENTS_DIR, DOCUMENT_TYPE)

@@ -709,10 +709,10 @@ pub struct ServersConfig {
     /// Directory whose top-level `*.rs` files are scanned for the consumer's
     /// `enum AppError`. Each variant becomes an HTTP error with a status from
     /// its name's suffix (`NotFound` 404, `IdRequired` 400, `AlreadyExists`
-    /// 409, `ParentRequired` 403, anything else 500) and the variant name in
-    /// snake_case as its `code`. `None`, or a directory with no `AppError`,
-    /// maps every `AppError` to `500`. [`Pipeline`] fills it with its schema
-    /// directory when left `None`.
+    /// 409, `ParentRequired` and `ParentCycle` 403, anything else 500) and the
+    /// variant name in snake_case as its `code`. `None`, or a directory with
+    /// no `AppError`, maps every `AppError` to `500`. [`Pipeline`] fills it
+    /// with its schema directory when left `None`.
     pub error_source_dir: Option<PathBuf>,
 }
 

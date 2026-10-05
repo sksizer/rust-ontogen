@@ -1137,15 +1137,7 @@ pub fn scan_api_dir_excluding(
 ) -> ScanResult {
     let mut result = ScanResult::default();
 
-    // Collect .rs files from api_dir and its immediate subdirectories (e.g. generated/)
-    let mut entries: Vec<_> = collect_rs_files(api_dir);
-    if let Some(exclude) = exclude {
-        let exclude = fs::canonicalize(exclude).unwrap_or_else(|_| exclude.to_path_buf());
-        entries.retain(|p| !fs::canonicalize(p).unwrap_or_else(|_| p.clone()).starts_with(&exclude));
-    }
-    entries.sort();
-
-    for path in entries {
+    for path in api_dir_files(api_dir, exclude) {
         let parsed = parse_api_module(&path, state_type, store_type);
         result.skips.extend(parsed.skips);
         if let Some(m) = parsed.module
@@ -1156,6 +1148,19 @@ pub fn scan_api_dir_excluding(
     }
 
     result
+}
+
+/// The files [`scan_api_dir_excluding`] reads, sorted: the `.rs` files of
+/// `api_dir` and of its immediate subdirectories (e.g. `generated/`), less
+/// every file under `exclude`.
+pub(crate) fn api_dir_files(api_dir: &Path, exclude: Option<&Path>) -> Vec<std::path::PathBuf> {
+    let mut entries: Vec<_> = collect_rs_files(api_dir);
+    if let Some(exclude) = exclude {
+        let exclude = fs::canonicalize(exclude).unwrap_or_else(|_| exclude.to_path_buf());
+        entries.retain(|p| !fs::canonicalize(p).unwrap_or_else(|_| p.clone()).starts_with(&exclude));
+    }
+    entries.sort();
+    entries
 }
 
 /// Scan every surface's `api_dir` and merge the results into one module list.

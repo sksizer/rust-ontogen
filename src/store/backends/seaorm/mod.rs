@@ -15,15 +15,17 @@ impl StoreBackend for SeaormBackend {
     fn emit_preamble(&self, code: &mut String, entity: &EntityDef) {
         let snake = to_snake_case(&entity.name);
 
-        // `QueryOrder` backs `order_{plural}_query`, which every module has,
-        // so these imports are always used — no condition here to keep in
-        // lockstep with gen_crud. Traits come in unnamed and SeaORM types by
-        // `::`-rooted path: a bare `Order` or `Select` would clash with an
-        // entity of that name, and an unrooted `sea_orm::` with the module of
-        // an entity named `SeaOrm`.
+        // `QueryOrder` backs `order_{plural}_query`, and `TransactionTrait`
+        // the transaction of `create_*` and `update_*`. Every module has
+        // those, so these imports are always used — no condition here to
+        // keep in lockstep with gen_crud. Traits come in unnamed and SeaORM
+        // types by `::`-rooted path: a bare `Order` or `Select` would clash
+        // with an entity of that name, and an unrooted `sea_orm::` with the
+        // module of an entity named `SeaOrm`.
         code.push_str(
-            "use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};\n\n",
+            "use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};\n",
         );
+        code.push_str("use ::sea_orm::TransactionTrait as _;\n\n");
 
         // Additional imports for entities with has_many relations
         if entity.has_many_relations().next().is_some() {
@@ -33,8 +35,15 @@ impl StoreBackend for SeaormBackend {
         code.push_str(&format!("use crate::persistence::db::entities::{};\n", rust_ident(&snake)));
     }
 
-    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef, enums: &[EnumDef], id_strategy: &IdStrategy) {
-        gen_crud::generate_crud_impl(code, entity, enums, id_strategy);
+    fn emit_crud_impl(
+        &self,
+        code: &mut String,
+        entity: &EntityDef,
+        entities: &[EntityDef],
+        enums: &[EnumDef],
+        id_strategy: &IdStrategy,
+    ) {
+        gen_crud::generate_crud_impl(code, entity, entities, enums, id_strategy);
     }
 
     fn wikilink_policy(&self) -> super::WikilinkPolicy {

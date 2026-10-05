@@ -47,9 +47,11 @@ fn ontogen_app_error(e: crate::schema::AppError) -> OntogenErrorObject {
         crate::schema::AppError::SectionIdRequired(..) => (OntogenStatusCode::BAD_REQUEST, "section_id_required"),
         crate::schema::AppError::SectionAlreadyExists(..) => (OntogenStatusCode::CONFLICT, "section_already_exists"),
         crate::schema::AppError::SectionParentRequired(..) => (OntogenStatusCode::FORBIDDEN, "section_parent_required"),
+        crate::schema::AppError::SectionParentCycle(..) => (OntogenStatusCode::FORBIDDEN, "section_parent_cycle"),
         crate::schema::AppError::TaskNotFound(..) => (OntogenStatusCode::NOT_FOUND, "task_not_found"),
         crate::schema::AppError::TaskIdRequired(..) => (OntogenStatusCode::BAD_REQUEST, "task_id_required"),
         crate::schema::AppError::TaskAlreadyExists(..) => (OntogenStatusCode::CONFLICT, "task_already_exists"),
+        crate::schema::AppError::TaskParentCycle(..) => (OntogenStatusCode::FORBIDDEN, "task_parent_cycle"),
         crate::schema::AppError::TagNotFound(..) => (OntogenStatusCode::NOT_FOUND, "tag_not_found"),
         crate::schema::AppError::TagIdRequired(..) => (OntogenStatusCode::BAD_REQUEST, "tag_id_required"),
         crate::schema::AppError::TagAlreadyExists(..) => (OntogenStatusCode::CONFLICT, "tag_already_exists"),
@@ -383,6 +385,7 @@ fn ontogen_section_request_fields(
     }
     if let Some(rel) = relationships.and_then(|r| r.get("children")) {
         let ids = ::ontogen_jsonapi::request::to_many_linked(rel, "/data/relationships/children", "sections", None)?;
+        ::ontogen_jsonapi::request::refuse_cycle(&ids, data.id.as_deref(), "sections", "children")?;
         fields.insert("children".to_owned(), ids.iter().map(|l| ::serde_json::Value::String(l.id.clone())).collect());
         linked.children = ids;
     }
@@ -422,8 +425,10 @@ struct OntogenTagResourceAttributes<'a>(&'a Tag);
 impl ::serde::Serialize for OntogenTagResourceAttributes<'_> {
     fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use ::serde::ser::SerializeStruct;
-        let mut attributes = serializer.serialize_struct("OntogenTagResourceAttributes", 1)?;
+        let mut attributes = serializer.serialize_struct("OntogenTagResourceAttributes", 3)?;
         attributes.serialize_field("title", &self.0.title)?;
+        attributes.serialize_field("uses", &self.0.uses)?;
+        attributes.serialize_field("peak_uses", &self.0.peak_uses)?;
         attributes.end()
     }
 }
@@ -450,7 +455,7 @@ fn ontogen_tag_request_fields(
     create: bool,
 ) -> Result<::serde_json::Map<String, ::serde_json::Value>, OntogenErrorObject> {
     let attributes = data.attributes.as_ref();
-    ::ontogen_jsonapi::request::check_attribute_names(attributes, "tags", &["title"], &[])?;
+    ::ontogen_jsonapi::request::check_attribute_names(attributes, "tags", &["title", "uses", "peak_uses"], &[])?;
     let mut fields = ::serde_json::Map::new();
     if create {
         fields.insert("id".to_owned(), ::serde_json::Value::String(data.id.clone().unwrap_or_default()));
@@ -459,6 +464,16 @@ fn ontogen_tag_request_fields(
         &mut fields,
         "title",
         ::ontogen_jsonapi::request::attribute::<String>(attributes, "title", create)?,
+    );
+    ontogen_set_field(
+        &mut fields,
+        "uses",
+        ::ontogen_jsonapi::request::wide_integer_attribute::<u64>(attributes, "uses", false)?,
+    );
+    ontogen_set_field(
+        &mut fields,
+        "peak_uses",
+        ::ontogen_jsonapi::request::wide_integer_attribute::<Option<u64>>(attributes, "peak_uses", false)?,
     );
     ::ontogen_jsonapi::request::check_relationship_names(data.relationships()?, "tags", &[])?;
     Ok(fields)
@@ -588,6 +603,7 @@ fn ontogen_task_request_fields(
     }
     if let Some(rel) = relationships.and_then(|r| r.get("subtasks")) {
         let ids = ::ontogen_jsonapi::request::to_many_linked(rel, "/data/relationships/subtasks", "tasks", None)?;
+        ::ontogen_jsonapi::request::refuse_cycle(&ids, data.id.as_deref(), "tasks", "subtasks")?;
         fields.insert("subtasks".to_owned(), ids.iter().map(|l| ::serde_json::Value::String(l.id.clone())).collect());
         linked.subtasks = ids;
     }
@@ -1491,6 +1507,7 @@ async fn ontogen_section_relationship_patch(
                 "sections",
                 None,
             )?;
+            ::ontogen_jsonapi::request::refuse_cycle(&ontogen_linked, id.as_str(), "sections", "children")?;
             let ontogen_entity = ontogen_section_read(&ontogen_state, &id).await?;
             ontogen_section_check_ids(&ontogen_state, &ontogen_linked).await?;
             ontogen_section_write_field(
@@ -1528,6 +1545,7 @@ async fn ontogen_section_relationship_post(
                 "sections",
                 Some(1),
             )?;
+            ::ontogen_jsonapi::request::refuse_cycle(&ontogen_linked, id.as_str(), "sections", "children")?;
             let ontogen_entity = ontogen_section_read(&ontogen_state, &id).await?;
             ontogen_section_check_ids(&ontogen_state, &ontogen_linked).await?;
             if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.children, &ontogen_linked) {
@@ -2082,6 +2100,7 @@ async fn ontogen_task_relationship_patch(
                 "tasks",
                 None,
             )?;
+            ::ontogen_jsonapi::request::refuse_cycle(&ontogen_linked, id.as_str(), "tasks", "subtasks")?;
             let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
             ontogen_task_check_ids(&ontogen_state, &ontogen_linked).await?;
             ontogen_task_write_field(
@@ -2143,6 +2162,7 @@ async fn ontogen_task_relationship_post(
                 "tasks",
                 Some(1),
             )?;
+            ::ontogen_jsonapi::request::refuse_cycle(&ontogen_linked, id.as_str(), "tasks", "subtasks")?;
             let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;
             ontogen_task_check_ids(&ontogen_state, &ontogen_linked).await?;
             if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.subtasks, &ontogen_linked) {

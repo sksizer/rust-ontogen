@@ -299,15 +299,28 @@ pub async fn create_task(&self, mut record: Task) -> Result<Task, AppError> {
     hooks::before_create(self, &mut record).await?;
 
     let id = record.id.clone();
-    let active = record.to_active_model()?;
+    let fulfills = record.fulfills.clone();
 
-    active.insert(self.db()).await
+    // Every listed requirement must exist
+    for target_id in &fulfills {
+        if !self.requirement_exists(target_id).await? {
+            return Err(AppError::RequirementNotFound(target_id.clone()));
+        }
+    }
+
+    // The row and the junction rows are written in one transaction
+    let txn = self.db().begin().await
+        .map_err(|e| AppError::DbError(e.to_string()))?;
+    let active = record.to_active_model()?;
+    active.insert(&txn).await
         .map_err(|e| AppError::DbError(e.to_string()))?;
 
     // Sync the many-to-many junction table
     self.sync_junction(
-        "task_fulfills", "task_id", "requirement_id", &id, &record.fulfills
+        &txn, "task_fulfills", "task_id", "requirement_id", &id, &fulfills
     ).await?;
+    txn.commit().await
+        .map_err(|e| AppError::DbError(e.to_string()))?;
 
     let created = self.get_task(&id).await?;
     hooks::after_create(self, &created).await?;
@@ -322,17 +335,22 @@ pub async fn update_task(&self, id: &str, updates: TaskUpdate) -> Result<Task, A
     // ... fetch existing, call before_update hook ...
 
     let fulfills_changed = updates.fulfills.is_some();
+    // ... check every listed requirement exists ...
     updates.apply(&mut current);
 
     let active = current.to_active_model()?;
-    active.update(self.db()).await
+    let txn = self.db().begin().await
+        .map_err(|e| AppError::DbError(e.to_string()))?;
+    active.update(&txn).await
         .map_err(|e| AppError::DbError(e.to_string()))?;
 
     if fulfills_changed {
         self.sync_junction(
-            "task_fulfills", "task_id", "requirement_id", id, &current.fulfills
+            &txn, "task_fulfills", "task_id", "requirement_id", id, &current.fulfills
         ).await?;
     }
+    txn.commit().await
+        .map_err(|e| AppError::DbError(e.to_string()))?;
 
     // ... call after_update hook, return result ...
 }

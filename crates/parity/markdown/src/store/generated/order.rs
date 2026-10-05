@@ -125,6 +125,12 @@ impl Store {
     pub async fn create_order(&self, mut record: Order) -> Result<Order, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        for target_id in &record.r#loop {
+            if !self.match_exists(target_id).await? {
+                return Err(AppError::MatchNotFound(target_id.clone()));
+            }
+        }
+
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&OrderFrontmatter::from_order(&record), ORDER_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(ORDERS_DIR, ORDER_TYPE).create(
@@ -148,6 +154,12 @@ impl Store {
     pub async fn update_order(&self, id: &str, updates: OrderUpdate) -> Result<Order, AppError> {
         let current = self.get_order(id).await?;
         hooks::before_update(self, &current, &updates).await?;
+
+        for target_id in updates.r#loop.iter().flatten() {
+            if !current.r#loop.contains(target_id) && !self.match_exists(target_id).await? {
+                return Err(AppError::MatchNotFound(target_id.clone()));
+            }
+        }
 
         self.vault()
             .entity(ORDERS_DIR, ORDER_TYPE)

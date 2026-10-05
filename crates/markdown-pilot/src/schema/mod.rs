@@ -26,6 +26,7 @@ pub use dto::task::{CreateTaskInput, UpdateTaskInput};
 // ── Error type ──────────────────────────────────────────────────────────────
 // The markdown consumer contract: the typed variants the generated store
 // constructs (per entity NotFound, IdRequired and AlreadyExists, plus
+// ParentCycle for the child of a self-referential has_many and
 // ParentRequired for a child whose has_many foreign key is required), the
 // hand-written bookmark API's BookmarkNotFound, and a single Md variant
 // carrying everything else from the runtime crate.
@@ -39,9 +40,11 @@ pub enum AppError {
     SectionIdRequired(String),
     SectionAlreadyExists(String),
     SectionParentRequired(String),
+    SectionParentCycle(String),
     TaskNotFound(String),
     TaskIdRequired(String),
     TaskAlreadyExists(String),
+    TaskParentCycle(String),
     TagNotFound(String),
     TagIdRequired(String),
     TagAlreadyExists(String),
@@ -66,6 +69,9 @@ impl std::fmt::Display for AppError {
             | AppError::TaskAlreadyExists(id)
             | AppError::TagAlreadyExists(id) => write!(f, "already exists: {id}"),
             AppError::SectionParentRequired(id) => write!(f, "section {id} needs a parent and cannot be dropped"),
+            AppError::SectionParentCycle(id) | AppError::TaskParentCycle(id) => {
+                write!(f, "{id} cannot be its own child")
+            }
             AppError::Md(msg) => write!(f, "markdown store error: {msg}"),
         }
     }

@@ -52,7 +52,7 @@ use crate::ir::{
 };
 use crate::{
     ApiConfig, ApiSurface, ClientsConfig, CodegenError, DEFAULT_SCHEMA_MODULE_PATH, DocsConfig, DtoConfig,
-    MarkdownIoConfig, SchemaConfig, SeaOrmConfig, ServersConfig, StoreConfig, gen_api, gen_clients, gen_docs, gen_dtos,
+    MarkdownIoConfig, SchemaConfig, SeaOrmConfig, ServersConfig, StoreConfig, gen_clients, gen_docs, gen_dtos,
     gen_markdown_io, gen_seaorm, gen_servers, gen_store, parse_schema,
 };
 
@@ -358,6 +358,16 @@ impl Pipeline {
     /// the clients stage's `api_dir`, without repeats, so the directories the
     /// transports read are the ones the generated CRUD module defers to. A
     /// directory given here must exist.
+    ///
+    /// When a servers or clients stage is enabled, these directories have
+    /// no effect on what is served: the transports scan their own
+    /// `api_dir`s, not the API stage's output, and those are scanned here
+    /// anyway. A hand-written `list` or `count` that replaces a generated
+    /// one must therefore sit in a file under the transports' `api_dir`s; one found
+    /// only through these directories would serve nothing, so the build
+    /// fails with an error naming the file. Set this only for a pipeline
+    /// without a servers or clients stage.
+    ///
     /// Has no effect unless [`Pipeline::api`] has been called.
     #[must_use]
     pub fn api_scan_dirs(mut self, scan_dirs: Vec<PathBuf>) -> Self {
@@ -626,7 +636,7 @@ impl Pipeline {
                 // directory that does not exist is skipped here, because the
                 // servers or clients stage reports it with its own message.
                 let mut scan_dirs = stage.scan_dirs;
-                for dir in transport_api_dirs {
+                for dir in transport_api_dirs.iter().cloned() {
                     if scan_dirs.contains(&dir) {
                         continue;
                     }
@@ -647,7 +657,10 @@ impl Pipeline {
                     (false, None) => None,
                 };
 
-                Some(gen_api(
+                // Without a servers or clients stage nothing tells the api stage
+                // which directories are served, so every scanned one counts.
+                let transports_known = self.servers.is_some() || self.clients.is_some();
+                Some(crate::api::generate_for_transports(
                     &schema.entities,
                     &ApiConfig {
                         output_dir: stage.output_dir,
@@ -658,6 +671,7 @@ impl Pipeline {
                         schema_module_path: self.schema_module_path.clone(),
                         paginated: stage.paginated,
                     },
+                    transports_known.then_some(transport_api_dirs.as_slice()),
                 )?)
             }
             None => None,

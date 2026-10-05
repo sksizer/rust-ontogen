@@ -60,10 +60,15 @@ alias fc := full-check
 full-write: format
 alias fw := full-write
 
-# Run tests (whole workspace, so every member crate is gated)
+# Run tests (whole workspace, so every member crate is gated). The last
+# line tests markdown-store's doc examples on their own: there the crate
+# builds without its `uuid` feature, which parity-markdown turns on for the
+# whole workspace, so the compile_fail example on `IdStrategy` proves the
+# `Uuid` variant does not exist without the feature.
 test: && test-admin-layer test-ts-clients
     cargo test --workspace
     cargo test -p ontogen-jsonapi --no-default-features
+    cargo test -p markdown-store --doc
 
 # Run packages/nuxt_admin_layer's vitest suite (regression tests for the Nuxt
 # admin layer; the layer itself has no Nuxt app of its own to build inside,

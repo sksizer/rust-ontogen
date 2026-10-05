@@ -11,7 +11,7 @@ repository = "https://github.com/sksizer/rust-ontogen"
 publish = false
 
 [dependencies]
-ontogen-core = { path = "../../ontogen-core" }
+ontogen-core = { path = "../../ontogen-core", features = ["uuid"] }
 ontogen-macros = { path = "../../ontogen-macros" }
 sea-orm = { version = "1", default-features = false, features = ["macros", "sqlx-sqlite", "runtime-tokio-rustls"] }
 serde = { version = "1", features = ["derive"] }

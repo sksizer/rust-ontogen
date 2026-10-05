@@ -6224,6 +6224,71 @@ pub(crate) fn generate_http(root: &std::path::Path, mut config: Config) -> Strin
     std::fs::read_to_string(output).unwrap()
 }
 
+/// [`resource_fixture`] with `Task` given a `has_many` of its own type and
+/// two integer attributes wider than `i64`, one of them optional.
+fn self_parenting_fixture(root: &std::path::Path) -> Config {
+    let mut config = resource_fixture(root, true);
+    let schema = RESOURCE_SCHEMA.replace(
+        "pub notes: Option<String>,",
+        "pub notes: Option<String>,
+        pub views: u64,
+        pub peak: Option<i128>,
+        #[ontology(relation(belongs_to, target = \"Task\"))]
+        pub parent_id: Option<String>,
+        #[ontology(relation(has_many, target = \"Task\", foreign_key = \"parent_id\"))]
+        pub subtasks: Vec<String>,",
+    );
+    let entities = crate::schema::parse::parse_schema_source(&schema, std::path::Path::new("schema.rs")).unwrap();
+    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming);
+    config
+}
+
+/// A write listing the resource itself in a `has_many` of its own type is
+/// refused at step 7, after the identifiers are read and before the parent
+/// is (§9.2): in a create or update body against `data.id`, and on the
+/// relationship route's `PATCH` and `POST` against the URL id. `DELETE`
+/// and a `many_to_many` are not checked.
+#[test]
+fn a_has_many_of_its_own_type_refuses_the_resource_itself() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = generate_http(tmp.path(), self_parenting_fixture(tmp.path()));
+    let flat = compact(&http);
+
+    let body = compact(
+        "let ids = ::ontogen_jsonapi::request::to_many_linked(rel, \"/data/relationships/subtasks\", \"tasks\", None)?;
+         ::ontogen_jsonapi::request::refuse_cycle(&ids, data.id.as_deref(), \"tasks\", \"subtasks\")?;
+         fields.insert(\"subtasks\".to_owned(),",
+    );
+    assert_eq!(flat.matches(&body).count(), 1, "{http}");
+    for max in ["None", "Some(1)"] {
+        let route = compact(&format!(
+            "::ontogen_jsonapi::request::to_many_linked(&::ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"tasks\", {max})?;
+             ::ontogen_jsonapi::request::refuse_cycle(&ontogen_linked, id.as_str(), \"tasks\", \"subtasks\")?;
+             let ontogen_entity = ontogen_task_read(&ontogen_state, &id).await?;"
+        ));
+        assert!(flat.contains(&route), "{max}: {http}");
+    }
+    assert_eq!(flat.matches("request::refuse_cycle(").count(), 3, "{http}");
+}
+
+/// An integer attribute whose type reaches past `i64` is read with its
+/// range checked, required or not and in its `Option` form; every other
+/// attribute is read as before (§8.2).
+#[test]
+fn a_wide_integer_attribute_is_read_with_its_range_checked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let flat = compact(&generate_http(tmp.path(), self_parenting_fixture(tmp.path())));
+    for read in [
+        "request::wide_integer_attribute::<u64>(attributes, \"views\", create)?",
+        "request::wide_integer_attribute::<Option<i128>>(attributes, \"peak\", false)?",
+        "request::attribute::<String>(attributes, \"title\", create)?",
+        "request::attribute::<bool>(attributes, \"done\", false)?",
+    ] {
+        assert!(flat.contains(&compact(read)), "{read}: {flat}");
+    }
+    assert_eq!(flat.matches("request::wide_integer_attribute::").count(), 2, "{flat}");
+}
+
 #[test]
 fn a_resource_module_is_served_as_jsonapi() {
     let tmp = tempfile::tempdir().unwrap();

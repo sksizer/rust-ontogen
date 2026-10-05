@@ -2,6 +2,7 @@
 
 use ontogen_core::order::OrderBy;
 
+use ::sea_orm::TransactionTrait as _;
 use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::exercise;
@@ -143,15 +144,18 @@ impl Store {
     pub async fn create_exercise(&self, mut record: Exercise) -> Result<Exercise, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if record.id.trim().is_empty() {
             return Err(AppError::ExerciseIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
             ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_exercise(&record).await? {
+            if !self.try_insert_exercise(&txn, &record).await? {
                 return Err(AppError::ExerciseAlreadyExists(record.id));
             }
             record.id.clone()
         };
+
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_exercise(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Exercise, id);
@@ -171,9 +175,11 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
+
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_exercise(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::Exercise, id.to_string());
@@ -200,13 +206,18 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_exercise(&self, record: &Exercise) -> Result<bool, AppError> {
+    async fn try_insert_exercise<C: ::sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        record: &Exercise,
+    ) -> Result<bool, AppError> {
         let active = record.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = exercise::Entity::find_by_id(record.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();

@@ -100,7 +100,7 @@ A `has_many` is the reverse side of a `belongs_to`. It represents "other entitie
 pub contains: Vec<String>,
 ```
 
-The `foreign_key` parameter is required and must name the FK column on the target entity. The target must be the declaring entity itself; a `has_many` to another entity fails the build (see [has_many writes](/guides/store-layer/#has_many-writes) for the workaround).
+The `foreign_key` parameter is required. The target must be the declaring entity itself; a `has_many` to another entity fails the build (see [has_many writes](/guides/store-layer/#has_many-writes) for the workaround). So `foreign_key` names a field of the same entity: its `belongs_to` back to itself, typed `String` or `Option<String>` (`parent_id` above, declared `#[ontology(relation(belongs_to, target = "Node"))]`). A missing `foreign_key`, one that names no field, a field that is not that `belongs_to`, or a field of another type fails the build with a `CodegenError` naming the `has_many` field.
 
 ### What gets generated
 
@@ -136,15 +136,17 @@ The list is ordered by child id (byte order) on both backends.
 On create and update, the store sets the FK on child entities:
 
 ```rust
-// In create_node()
+// In create_node(), on the create's transaction
 for child_id in &contains {
-    self.set_node_parent(child_id, Some(&id)).await?;
+    self.set_node_parent(&txn, child_id, Some(&id)).await?;
 }
 ```
 
 The `set_node_parent` helper sets the FK column on the target table with one `UPDATE`, which sea-query builds for the connection's backend, quoting the table and column names.
 
 For what an update does to children the list drops, the `ParentRequired` error, and the supported shape, see [has_many writes](/guides/store-layer/#has_many-writes).
+
+A node cannot list itself among its own children: that write fails with `{Child}ParentCycle(id)` before anything is written (over HTTP the server refuses it first, as `403 relationship_cycle`). Longer cycles (`a` a child of `b` while `b` is a child of `a`) are not refused, because the markdown backend cannot make an ancestor check safe against a concurrent write. If your tree must stay acyclic, walk the ancestors in a `before_create` or `before_update` hook (see [has_many writes](/guides/store-layer/#has_many-writes)).
 
 ### On the HTTP wire
 
@@ -184,6 +186,7 @@ When the entity's module serves `get_by_id`, each relationship also gets its own
 
 - Writes go through the module's `update`, so they follow the rules above, hooks and `ParentRequired` included, and answer `204`. Adding a member that is already there, or removing one that is not, is `204` and writes nothing, as is `{"data": []}` on `POST` or `DELETE`.
 - A body with more than one identifier on `POST` or `DELETE` is `403 relationship_batch_unsupported`. `POST` or `DELETE` on a to-one, and any write when the module has no `update`, is `403 relationship_update_unsupported`.
+- A `has_many` lists children of the entity's own type, so a `PATCH` or `POST` naming the resource itself, which would make it its own parent, is `403 relationship_cycle`, and so is a create or update body that does. A `DELETE` naming it writes nothing.
 - The related route reads each resource with the target module's `get_by_id`, so every target needs one (the build fails otherwise). A dangling id is skipped; a to-one whose target is gone is `null`.
 - An unknown `{rel}` is `404 no_such_relationship`, and a missing parent `404` with its `{entity}_not_found` code.
 - An entity whose module serves no `get_by_id` gets no relationship routes, and its relationships carry `data` only.
@@ -282,16 +285,18 @@ node.fulfills = self
     .load_junction_ids("node_fulfills", "node_id", "requirement_id", &node.id)
     .await?;
 
-// In create_node()
-self.sync_junction("node_fulfills", "node_id", "requirement_id", &id, &fulfills).await?;
+// In create_node(), on the create's transaction
+self.sync_junction(&txn, "node_fulfills", "node_id", "requirement_id", &id, &fulfills).await?;
 
 // In update_node() (only if the field changed)
 if fulfills_changed {
-    self.sync_junction("node_fulfills", "node_id", "requirement_id", id, &current.fulfills).await?;
+    self.sync_junction(&txn, "node_fulfills", "node_id", "requirement_id", id, &current.fulfills).await?;
 }
 ```
 
 The list keeps the order it was written in, on both backends. On SeaORM that holds because your `sync_junction` inserts rows in list order and your `load_junction_ids` reads them back with `ORDER BY rowid` (see [Junction Sync](/guides/store-layer/#junction-sync)).
+
+Every listed id must be a record of the target entity. A create or update that lists a missing one fails with `{Target}NotFound(id)` before anything is written, on both backends (see [many_to_many targets](/guides/store-layer/#many_to_many-targets)).
 
 ### Junction Table Naming
 
@@ -366,8 +371,8 @@ pub enum Relation {
 | **Junction Table** | -- | -- | Full entity generated |
 | **from_model()** | Cloned from model | `Vec::new()` | `Vec::new()` |
 | **to_active_model()** | `Set(value)` | Excluded | Excluded |
-| **Store: create** | Direct insert | Set FK on children | `sync_junction()` |
-| **Store: update** | Direct update | Conditional FK update; dropped children cleared | Conditional `sync_junction()` |
+| **Store: create** | Direct insert | Children checked, then FK set on them | Targets checked, then `sync_junction()` |
+| **Store: update** | Direct update | Children checked; conditional FK update; dropped children cleared | Targets checked, then conditional `sync_junction()` |
 | **Store: list/get** | Direct read | `populate_relations()` | `populate_relations()` |
 | **Update struct** | `Option<Option<String>>` or `Option<String>` | `Option<Vec<String>>` | `Option<Vec<String>>` |
 
@@ -430,7 +435,7 @@ From these three structs, Ontogen generates:
 
 The store layer generates:
 - `list_workouts(order, limit, offset)`/`get_workout()` calls `populate_workout_relations()` which loads `tags` via `load_junction_ids("workout_tags", ...)`
-- `create_workout()` calls `sync_junction("workout_tags", ...)` to insert junction rows
+- `create_workout()` checks every listed tag exists, then calls `sync_junction(&txn, "workout_tags", ...)` to insert junction rows in the create's transaction
 - `update_workout()` conditionally re-syncs if `tags` was included in the update
 - `WorkoutSet` CRUD has no extra relation handling -- `belongs_to` fields are just regular columns
 

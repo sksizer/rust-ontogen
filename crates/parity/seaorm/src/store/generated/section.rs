@@ -2,6 +2,7 @@
 
 use ontogen_core::order::OrderBy;
 
+use ::sea_orm::TransactionTrait as _;
 use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::section;
@@ -131,43 +132,41 @@ impl Store {
     pub async fn create_section(&self, mut record: Section) -> Result<Section, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        if !record.id.trim().is_empty() && record.children.contains(&record.id) {
+            return Err(AppError::SectionParentCycle(record.id.clone()));
+        }
+
         for child_id in &record.children {
             if !self.section_exists(child_id).await? {
                 return Err(AppError::SectionNotFound(child_id.clone()));
             }
         }
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if record.id.trim().is_empty() {
             let base = ontogen_core::id::slugify(&record.title);
             if base.is_empty() {
                 return Err(AppError::SectionIdRequired("field \"title\" produced an empty slug".to_string()));
             }
             for candidate in ontogen_core::id::candidates(&base) {
-                let taken = section::Entity::find_by_id(candidate.as_str())
-                    .one(self.db())
-                    .await
-                    .map_err(|e| AppError::DbError(e.to_string()))?
-                    .is_some();
-                if taken {
-                    continue;
-                }
                 record.id = candidate;
-                if self.try_insert_section(&record).await? {
+                if self.try_insert_section(&txn, &record).await? {
                     break;
                 }
             }
             record.id.clone()
         } else {
             ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_section(&record).await? {
+            if !self.try_insert_section(&txn, &record).await? {
                 return Err(AppError::SectionAlreadyExists(record.id));
             }
             record.id.clone()
         };
 
         for child_id in &record.children {
-            self.set_section_parent(child_id, &id).await?;
+            self.set_section_parent(&txn, child_id, &id).await?;
         }
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_section(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Section, id);
@@ -190,8 +189,12 @@ impl Store {
 
         let children_changed = updates.children.is_some();
 
+        if updates.children.as_ref().is_some_and(|ids| ids.iter().any(|c| c == id)) {
+            return Err(AppError::SectionParentCycle(id.to_string()));
+        }
+
         for child_id in updates.children.iter().flatten() {
-            if !self.section_exists(child_id).await? {
+            if !current.children.contains(child_id) && !self.section_exists(child_id).await? {
                 return Err(AppError::SectionNotFound(child_id.clone()));
             }
         }
@@ -205,15 +208,16 @@ impl Store {
         }
 
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
         if children_changed {
             for child_id in &current.children {
-                self.set_section_parent(child_id, id).await?;
+                self.set_section_parent(&txn, child_id, id).await?;
             }
         }
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_section(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::Section, id.to_string());
@@ -259,13 +263,18 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_section(&self, record: &Section) -> Result<bool, AppError> {
+    async fn try_insert_section<C: ::sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        record: &Section,
+    ) -> Result<bool, AppError> {
         let active = record.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = section::Entity::find_by_id(record.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();
@@ -275,19 +284,23 @@ impl Store {
         }
     }
 
-    async fn set_section_parent(&self, child_id: &str, parent_id: &str) -> Result<(), AppError> {
-        use ::sea_orm::ConnectionTrait as _;
+    async fn set_section_parent<C: ::sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        child_id: &str,
+        parent_id: &str,
+    ) -> Result<(), AppError> {
         let update = ::sea_orm::sea_query::Query::update()
             .table(::sea_orm::sea_query::Alias::new("sections"))
             .value(::sea_orm::sea_query::Alias::new("parent_id"), parent_id.to_string())
             .and_where(::sea_orm::sea_query::Expr::col(::sea_orm::sea_query::Alias::new("id")).eq(child_id))
             .to_owned();
-        let stmt = self.db().get_database_backend().build(&update);
-        self.db().execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        let stmt = conn.get_database_backend().build(&update);
+        conn.execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
         Ok(())
     }
 
-    async fn section_exists(&self, id: &str) -> Result<bool, AppError> {
+    pub(crate) async fn section_exists(&self, id: &str) -> Result<bool, AppError> {
         Ok(section::Entity::find_by_id(id)
             .one(self.db())
             .await

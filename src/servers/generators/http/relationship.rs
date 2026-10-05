@@ -656,13 +656,26 @@ fn write_handler(served: &Served<'_>, rels: &[Rel<'_, '_>], name: &str, method: 
     out
 }
 
-/// The body's linkage (§13.2 step 7) and the parent (step 8), the lines
-/// every writing arm starts with.
-fn write_prelude(served: &Served<'_>, linkage: &str) -> String {
+/// The body's linkage (§13.2 step 7), then `checks`, the arm's other step-7
+/// lines, and the parent (step 8): the lines every writing arm starts with.
+fn write_prelude(served: &Served<'_>, linkage: &str, checks: &str) -> String {
     format!(
         "            let ontogen_bytes = ontogen_body.into_bytes()?;\n            let ontogen_linked = \
-         {linkage};\n            let ontogen_entity = {}&id).await?;\n",
+         {linkage};\n{checks}            let ontogen_entity = {}&id).await?;\n",
         served.call(Helper::Read, &served.m.name, served.get)
+    )
+}
+
+/// The step-7 refusal of a `PATCH` or `POST` listing the parent in a
+/// `has_many` of its own type, which would make it its own parent (§9.2).
+/// A `DELETE` needs none: the parent is never in its own list.
+fn refuse_cycle(served: &Served<'_>, rel: &Relationship) -> String {
+    if !rel.parents_its_own_type {
+        return String::new();
+    }
+    format!(
+        "            ::ontogen_jsonapi::request::refuse_cycle(&ontogen_linked, id.as_str(), \"{}\", \"{}\")?;\n",
+        served.resource.resource_type, rel.name
     )
 }
 
@@ -694,7 +707,8 @@ fn field_write(served: &Served<'_>, rel: &Relationship, method: Method) -> Optio
                 &format!(
                     "::ontogen_jsonapi::request::to_one(&::ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"{target}\", {nullable})?\n                \
                      .map(|ontogen_member| OntogenLinkedId {{ id: ontogen_member, pointer: \"/data\".to_owned() }})"
-                )
+                ),
+                ""
             ),
             write("ontogen_linked.map(|ontogen_member| ontogen_member.id).into()"),
         ),
@@ -704,7 +718,8 @@ fn field_write(served: &Served<'_>, rel: &Relationship, method: Method) -> Optio
                 served,
                 &format!(
                     "::ontogen_jsonapi::request::to_many_linked(&::ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"{target}\", None)?"
-                )
+                ),
+                &refuse_cycle(served, rel)
             ),
             write("ontogen_linked.into_iter().map(|ontogen_member| ontogen_member.id).collect()"),
         ),
@@ -712,14 +727,14 @@ fn field_write(served: &Served<'_>, rel: &Relationship, method: Method) -> Optio
         (Method::Post, Arity::ToMany) => format!(
             "{}            {check}&ontogen_linked).await?;\n            if let Some(ontogen_ids) = \
              ontogen_added(&ontogen_entity.{}, &ontogen_linked) {{\n                {};\n            }}\n",
-            write_prelude(served, &one_identifier(target)),
+            write_prelude(served, &one_identifier(target), &refuse_cycle(served, rel)),
             rel.field,
             write("ontogen_ids.into()"),
         ),
         (Method::Delete, Arity::ToMany) => format!(
             "{}            if let Some(ontogen_ids) = ontogen_removed(&ontogen_entity.{}, &ontogen_linked) {{\n                \
              {};\n            }}\n",
-            write_prelude(served, &one_identifier(target)),
+            write_prelude(served, &one_identifier(target), ""),
             rel.field,
             write("ontogen_ids.into()"),
         ),
@@ -761,6 +776,6 @@ fn junction_write(served: &Served<'_>, j: &JunctionRelationship<'_>, method: Met
         "{}{check}            if let Some(ontogen_child) = ontogen_linked.first() {{\n{opens}{indent}let ontogen_members \
          = {list};\n{indent}if {condition} {{\n{indent}    {write};\n{indent}}}\n            }}\n            \
          Ok(::ontogen_jsonapi::response::no_content())\n",
-        write_prelude(served, &one_identifier(&j.target_type)),
+        write_prelude(served, &one_identifier(&j.target_type), ""),
     ))
 }

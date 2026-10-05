@@ -53,9 +53,11 @@ impl ErrorVariant {
 
 /// The name suffixes of the variants the generated store constructs
 /// (`{Entity}NotFound`, `{Entity}IdRequired`, `{Entity}AlreadyExists`,
-/// `{Child}ParentRequired`), with the status each maps to.
-const STORE_SUFFIXES: [(&str, u16); 4] =
-    [("NotFound", 404), ("IdRequired", 400), ("AlreadyExists", 409), ("ParentRequired", 403)];
+/// `{Child}ParentRequired`, `{Child}ParentCycle`), with the status each maps
+/// to. The two `has_many` refusals are `403`, which JSON:API requires when a
+/// server refuses a relationship update.
+const STORE_SUFFIXES: [(&str, u16); 5] =
+    [("NotFound", 404), ("IdRequired", 400), ("AlreadyExists", 409), ("ParentRequired", 403), ("ParentCycle", 403)];
 
 /// Status for a variant name: a store suffix's status, or `500` for the
 /// consumer's own failures.
@@ -189,7 +191,8 @@ mod tests {
         let map = scan_files(&[(
             "mod.rs",
             "#[derive(Debug)]\npub enum AppError {\n    TaskNotFound(String),\n    TaskIdRequired(String),\n    \
-             TaskAlreadyExists(String),\n    SectionParentRequired(String),\n    DbError(String),\n    Md(String),\n}\n",
+             TaskAlreadyExists(String),\n    SectionParentRequired(String),\n    TaskParentCycle(String),\n    \
+             DbError(String),\n    Md(String),\n}\n",
         )])
         .unwrap()
         .expect("AppError found");
@@ -200,6 +203,7 @@ mod tests {
                 ("TaskIdRequired", "task_id_required", 400, VariantShape::Tuple(1)),
                 ("TaskAlreadyExists", "task_already_exists", 409, VariantShape::Tuple(1)),
                 ("SectionParentRequired", "section_parent_required", 403, VariantShape::Tuple(1)),
+                ("TaskParentCycle", "task_parent_cycle", 403, VariantShape::Tuple(1)),
                 ("DbError", "db_error", 500, VariantShape::Tuple(1)),
                 ("Md", "md", 500, VariantShape::Tuple(1)),
             ]

@@ -631,6 +631,18 @@ mod tests {
             }
 
             let (doc, order) = (read(&out, "doc.rs"), read(&out, "order.rs"));
+            // The checks on listed ids read the record and the update through
+            // the same bindings, and name the keyword target's exists helper.
+            assert!(r#match.contains("pub(crate) async fn match_exists(&self, id: &str)"), "{backend:?}: {}", r#match);
+            for listed in ["&record.r#loop", "updates.r#loop.iter().flatten()"] {
+                assert!(order.contains(&format!("for target_id in {listed} {{")), "{backend:?}: {order}");
+            }
+            assert!(order.contains("if !self.match_exists(target_id).await? {"), "{backend:?}: {order}");
+            assert!(
+                doc.contains("if !record.id.trim().is_empty() && record.children.contains(&record.id) {"),
+                "{backend:?}: {doc}"
+            );
+            assert!(doc.contains("return Err(AppError::DocParentCycle(record.id.clone()));"), "{backend:?}: {doc}");
             match backend {
                 crate::ir::Backend::Seaorm(_) => {
                     assert!(order.contains("let loop_changed = updates.r#loop.is_some();"), "{order}");
@@ -641,7 +653,7 @@ mod tests {
                             imports
                                 .iter()
                                 .filter(|l| l.starts_with("use "))
-                                .all(|l| l.starts_with("use ::sea_orm::{") && l.contains(" as _")),
+                                .all(|l| l.starts_with("use ::sea_orm::") && l.contains(" as _")),
                             "{imports:?}"
                         );
                     }
@@ -653,7 +665,7 @@ mod tests {
                     );
                     assert!(
                         order.contains(
-                            r#"self.sync_junction("order_loop", "order_id", "match_id", &id, &record.r#loop)"#
+                            r#"self.sync_junction(&txn, "order_loop", "order_id", "match_id", &id, &record.r#loop)"#
                         ),
                         "{order}"
                     );

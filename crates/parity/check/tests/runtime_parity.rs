@@ -24,6 +24,7 @@ enum StoreError {
     IdRequired(&'static str, String),
     AlreadyExists(&'static str, String),
     ParentRequired(&'static str, String),
+    ParentCycle(&'static str, String),
     Backend(String),
 }
 
@@ -34,7 +35,8 @@ impl PartialEq for StoreError {
             (NotFound(a, x), NotFound(b, y))
             | (IdRequired(a, x), IdRequired(b, y))
             | (AlreadyExists(a, x), AlreadyExists(b, y))
-            | (ParentRequired(a, x), ParentRequired(b, y)) => a == b && x == y,
+            | (ParentRequired(a, x), ParentRequired(b, y))
+            | (ParentCycle(a, x), ParentCycle(b, y)) => a == b && x == y,
             (Backend(_), Backend(_)) => true,
             _ => false,
         }
@@ -72,17 +74,26 @@ trait Backend: Sized {
     async fn get_fixed(&self, id: &str) -> R<Value>;
     async fn count_fixeds(&self) -> R<u64>;
 
+    async fn create_stamped(&self, stamped: Value) -> R<Value>;
+    async fn get_stamped(&self, id: &str) -> R<Value>;
+    async fn count_stampeds(&self) -> R<u64>;
+
     async fn create_doc(&self, doc: Value) -> R<Value>;
     async fn get_doc(&self, id: &str) -> R<Value>;
     async fn update_doc(&self, id: &str, patch: Value) -> R<Value>;
 
     async fn create_match(&self, r#match: Value) -> R<Value>;
     async fn create_order(&self, order: Value) -> R<Value>;
+    async fn get_order(&self, id: &str) -> R<Value>;
     async fn update_order(&self, id: &str, patch: Value) -> R<Value>;
 
     /// Rename a stored item the way an edit made outside the store would
     /// (an SQL `UPDATE`, a file rename), to reach ids no create can make.
     async fn rename_item(&self, from: &str, to: &str);
+
+    /// Delete a tag and leave every item that lists it listing it. The
+    /// markdown store's delete does that by design (ADR 0001 amendment 5).
+    async fn delete_tag_leaving_links(&self, id: &str);
 }
 
 /// The generated method calls are spelled identically in both crates, so
@@ -162,6 +173,16 @@ macro_rules! store_methods {
         async fn count_fixeds(&self) -> R<u64> {
             self.store.count_fixeds().await.map_err(err)
         }
+        async fn create_stamped(&self, stamped: Value) -> R<Value> {
+            let stamped = serde_json::from_value(stamped).expect("a Stamped");
+            self.store.create_stamped(stamped).await.map(to_json).map_err(err)
+        }
+        async fn get_stamped(&self, id: &str) -> R<Value> {
+            self.store.get_stamped(id).await.map(to_json).map_err(err)
+        }
+        async fn count_stampeds(&self) -> R<u64> {
+            self.store.count_stampeds().await.map_err(err)
+        }
         async fn create_doc(&self, doc: Value) -> R<Value> {
             let doc = serde_json::from_value(doc).expect("a Doc");
             self.store.create_doc(doc).await.map(to_json).map_err(err)
@@ -181,6 +202,9 @@ macro_rules! store_methods {
             let order = serde_json::from_value(order).expect("an Order");
             self.store.create_order(order).await.map(to_json).map_err(err)
         }
+        async fn get_order(&self, id: &str) -> R<Value> {
+            self.store.get_order(id).await.map(to_json).map_err(err)
+        }
         async fn update_order(&self, id: &str, patch: Value) -> R<Value> {
             let input: $krate::schema::UpdateOrderInput = serde_json::from_value(patch).expect("an UpdateOrderInput");
             self.store.update_order(id, input.into()).await.map(to_json).map_err(err)
@@ -196,6 +220,7 @@ macro_rules! error_mappers {
                 E::DocNotFound(id) => StoreError::NotFound("Doc", id),
                 E::DocIdRequired(r) => StoreError::IdRequired("Doc", r),
                 E::DocAlreadyExists(id) => StoreError::AlreadyExists("Doc", id),
+                E::DocParentCycle(id) => StoreError::ParentCycle("Doc", id),
                 E::MatchNotFound(id) => StoreError::NotFound("Match", id),
                 E::MatchIdRequired(r) => StoreError::IdRequired("Match", r),
                 E::MatchAlreadyExists(id) => StoreError::AlreadyExists("Match", id),
@@ -214,13 +239,18 @@ macro_rules! error_mappers {
                 E::ItemNotFound(id) => StoreError::NotFound("Item", id),
                 E::ItemIdRequired(r) => StoreError::IdRequired("Item", r),
                 E::ItemAlreadyExists(id) => StoreError::AlreadyExists("Item", id),
+                E::ItemParentCycle(id) => StoreError::ParentCycle("Item", id),
                 E::SectionNotFound(id) => StoreError::NotFound("Section", id),
                 E::SectionIdRequired(r) => StoreError::IdRequired("Section", r),
                 E::SectionAlreadyExists(id) => StoreError::AlreadyExists("Section", id),
                 E::SectionParentRequired(id) => StoreError::ParentRequired("Section", id),
+                E::SectionParentCycle(id) => StoreError::ParentCycle("Section", id),
                 E::TagNotFound(id) => StoreError::NotFound("Tag", id),
                 E::TagIdRequired(r) => StoreError::IdRequired("Tag", r),
                 E::TagAlreadyExists(id) => StoreError::AlreadyExists("Tag", id),
+                E::StampedNotFound(id) => StoreError::NotFound("Stamped", id),
+                E::StampedIdRequired(r) => StoreError::IdRequired("Stamped", r),
+                E::StampedAlreadyExists(id) => StoreError::AlreadyExists("Stamped", id),
                 E::$other(msg) => StoreError::Backend(msg),
             }
         }
@@ -253,6 +283,16 @@ mod sqlite {
             let renamed = self.store.db().execute_unprepared(&sql).await.expect("rename");
             assert_eq!(renamed.rows_affected(), 1, "rename {from:?}");
         }
+
+        /// The junction's foreign key forbids a dangling row, so foreign
+        /// keys are switched off for the rest of the store's life, as on a
+        /// database whose tables were created without them.
+        async fn delete_tag_leaving_links(&self, id: &str) {
+            use sea_orm::ConnectionTrait;
+            // sqlite-only: `PRAGMA foreign_keys` is how SQLite stops enforcing foreign keys.
+            self.store.db().execute_unprepared("PRAGMA foreign_keys = OFF").await.expect("foreign keys off");
+            self.store.delete_tag(id).await.expect("delete tag");
+        }
     }
 
     error_mappers!(parity_seaorm, DbError);
@@ -281,6 +321,10 @@ mod vault {
         async fn rename_item(&self, from: &str, to: &str) {
             let dir = self.store.vault().root().join("items");
             std::fs::rename(dir.join(format!("{from}.md")), dir.join(format!("{to}.md"))).expect("rename");
+        }
+
+        async fn delete_tag_leaving_links(&self, id: &str) {
+            self.store.delete_tag(id).await.expect("delete tag");
         }
     }
 
@@ -528,6 +572,13 @@ async fn integers_outside_i64<B: Backend>(b: &B, mut t: Transcript) -> Transcrip
         t.record(label, &result).unwrap_err();
     }
     t.expect("base is unchanged", b.get_item("base").await, Ok(base));
+
+    // Refused before an id is derived, so a title with nothing to derive
+    // from does not decide the error.
+    let result = b.create_item(item("", json!({ "title": "!!!", "n_u64": u64::MAX }))).await;
+    assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] empty slug and u64::MAX: {result:?}", B::NAME);
+    t.record("create with an empty slug and n_u64 = u64::MAX", &result).unwrap_err();
+    t.expect("still only base", listed_ids(b.list_items(&[], None, None).await), ok_ids(&["base"]));
     t
 }
 
@@ -1048,6 +1099,60 @@ async fn create_fills_and_refuses_ids_the_same_way() {
     parity!(create_ids);
 }
 
+/// Whether `id` is a UUID v4 as both stores write it: lowercase hex in
+/// 8-4-4-4-12 groups, version 4, RFC 4122 variant.
+fn is_uuid_v4(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.iter().map(|g| g.len()).eq([8, 4, 4, 4, 12])
+        && groups.iter().all(|g| g.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        && groups[2].starts_with('4')
+        && groups[3].starts_with(['8', '9', 'a', 'b'])
+}
+
+/// `result` with a minted `id` replaced by `"<uuid>"`, since each backend
+/// mints its own.
+fn minted(result: R<Value>) -> R<Value> {
+    result.map(|mut record| {
+        let id = record["id"].as_str().expect("an id");
+        assert!(is_uuid_v4(id), "a minted id is a UUID v4: {id:?}");
+        record["id"] = json!("<uuid>");
+        record
+    })
+}
+
+async fn uuid_ids<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let stamped = |id: &str, title: &str| json!({ "id": id, "title": title });
+    let minted_record = |title: &str| Ok(stamped("<uuid>", title));
+
+    // A create without an id, blank or empty, mints one; a get finds it.
+    let first = b.create_stamped(stamped("", "Same")).await;
+    let first_id = first.as_ref().map(|r| r["id"].as_str().unwrap().to_string()).expect("created");
+    t.expect("no id", minted(first), minted_record("Same"));
+    t.expect("get the minted id", minted(b.get_stamped(&first_id).await), minted_record("Same"));
+    let second = b.create_stamped(stamped(" \t", "Same")).await;
+    let second_id = second.as_ref().map(|r| r["id"].as_str().unwrap().to_string()).expect("created");
+    t.expect("blank id", minted(second), minted_record("Same"));
+    t.expect("two creates mint two ids", Ok(first_id != second_id), Ok(true));
+
+    // A provided id wins over the strategy, under the create rule.
+    t.expect("provided id", b.create_stamped(stamped("kept", "Own")).await, Ok(stamped("kept", "Own")));
+    t.expect(
+        "duplicate provided id",
+        b.create_stamped(stamped("kept", "Again")).await,
+        Err(StoreError::AlreadyExists("Stamped", "kept".into())),
+    );
+    let refused = b.create_stamped(stamped("Kept", "Upper")).await;
+    assert!(matches!(refused, Err(StoreError::Backend(_))), "[{}] create \"Kept\": {refused:?}", B::NAME);
+    t.record("invalid provided id", &refused).unwrap_err();
+    t.expect("three stored", b.count_stampeds().await, Ok(3));
+    t
+}
+
+#[tokio::test]
+async fn a_uuid_store_mints_a_uuid_v4_and_keeps_a_provided_id() {
+    parity!(uuid_ids);
+}
+
 /// The 200-byte limit, and slugs cut to fit it, on provided and derived ids.
 async fn id_length<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     let created_id = |v: R<Value>| v.map(|r| r["id"].as_str().unwrap().to_string());
@@ -1300,11 +1405,15 @@ async fn required_parent<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
         children(b.update_section("book", json!({ "children": ["ch2", "appendix", "ch1"] })).await),
         Ok(json!(["appendix", "ch1", "ch2"])),
     );
+    // A root is its own parent through its belongs_to, never through its
+    // own children list.
+    let roots = b.list_sections().await;
     t.expect(
-        "listing the record itself as a child keeps it out of the list",
-        children(b.update_section("book", json!({ "children": ["book", "appendix", "ch1", "ch2"] })).await),
-        Ok(json!(["appendix", "ch1", "ch2"])),
+        "listing the record itself as a child is refused",
+        b.update_section("book", json!({ "title": "Renamed", "children": ["book", "appendix", "ch1", "ch2"] })).await,
+        Err(StoreError::ParentCycle("Section", "book".into())),
     );
+    t.expect("the refused update wrote nothing", b.list_sections().await, roots);
     t.record("final state", &b.list_sections().await).unwrap();
     t
 }
@@ -1389,13 +1498,278 @@ async fn a_missing_child_is_not_found_and_writes_nothing() {
     parity!(missing_children);
 }
 
+/// A has_many list that names the record itself is refused before anything
+/// is written, on create (an explicit id) and on update: a record cannot be
+/// its own child (JSON:API wire contract §5.4).
+async fn self_listing<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    t.record("create a", &b.create_item(item("a", json!({}))).await).unwrap();
+    t.record("create k1", &b.create_item(item("k1", json!({ "parent_id": "a" }))).await).unwrap();
+    t.record("create loose", &b.create_item(item("loose", json!({}))).await).unwrap();
+    let before = b.list_items(&[], None, None).await;
+    let cycle = |id: &str| Err(StoreError::ParentCycle("Item", id.into()));
+
+    t.expect(
+        "update listing the record itself",
+        b.update_item("a", json!({ "title": "Renamed", "children": ["k1", "loose", "a"] })).await,
+        cycle("a"),
+    );
+    t.expect("nothing was updated, a's own parent included", b.list_items(&[], None, None).await, before.clone());
+    t.expect(
+        "the self-listing is reported before a missing child",
+        b.update_item("a", json!({ "children": ["ghost", "a"] })).await,
+        cycle("a"),
+    );
+    t.expect(
+        "create with an explicit id listing itself",
+        b.create_item(item("b", json!({ "children": ["loose", "b"] }))).await,
+        cycle("b"),
+    );
+    t.expect(
+        "the refused create wrote no record",
+        b.get_item("b").await,
+        Err(StoreError::NotFound("Item", "b".into())),
+    );
+    t.expect("nothing was written", b.list_items(&[], None, None).await, before);
+
+    for (id, parent) in [("book", "book"), ("ch1", "book")] {
+        t.record(format!("create section {id}"), &b.create_section(section(id, parent)).await).unwrap();
+    }
+    let sections = b.list_sections().await;
+    t.expect(
+        "a section listing itself",
+        b.update_section("book", json!({ "children": ["ch1", "book"] })).await,
+        Err(StoreError::ParentCycle("Section", "book".into())),
+    );
+    t.expect(
+        "a root created listing itself",
+        b.create_section(section_with("root", "root", &["root"])).await,
+        Err(StoreError::ParentCycle("Section", "root".into())),
+    );
+    t.expect("no section changed", b.list_sections().await, sections);
+    t
+}
+
+#[tokio::test]
+async fn a_has_many_list_naming_the_record_itself_is_refused() {
+    parity!(self_listing);
+}
+
+// ─── many_to_many writes ────────────────────────────────────────────────────
+
+/// A many_to_many id with no record behind it fails the create or update
+/// before anything is written, on both backends: SQLite's junction foreign
+/// key would refuse it, and the markdown store checks it the same way
+/// (JSON:API wire contract §5.4).
+async fn missing_tags<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    t.record("create tag t1", &b.create_tag(json!({ "id": "t1", "title": "t1" })).await).unwrap();
+    t.record("create other", &b.create_item(item("other", json!({ "tags": ["t1"] }))).await).unwrap();
+    let before = b.list_items(&[], None, None).await;
+    fn missing<T>(id: &str) -> R<T> {
+        Err(StoreError::NotFound("Tag", id.into()))
+    }
+
+    t.expect(
+        "create listing a missing tag",
+        b.create_item(item("q", json!({ "tags": ["t1", "ghost", "ghost-2"] }))).await,
+        missing("ghost"),
+    );
+    t.expect("the failed create wrote no record", b.get_item("q").await, Err(StoreError::NotFound("Item", "q".into())));
+    t.expect("nothing was written", b.list_items(&[], None, None).await, before.clone());
+
+    t.expect(
+        "update listing a missing tag",
+        b.update_item("other", json!({ "title": "Renamed", "tags": ["ghost", "t1"] })).await,
+        missing("ghost"),
+    );
+    t.expect("nothing was updated, the title included", b.list_items(&[], None, None).await, before.clone());
+
+    // Relations are checked in declaration order: `children` before `tags`.
+    t.expect(
+        "a missing child and a missing tag",
+        b.create_item(item("q", json!({ "children": ["lost"], "tags": ["ghost"] }))).await,
+        Err(StoreError::NotFound("Item", "lost".into())),
+    );
+    t.expect(
+        "the missing tag is reported before an id is derived",
+        b.create_item(item("", json!({ "title": "!!!", "tags": ["ghost"] }))).await,
+        missing("ghost"),
+    );
+
+    // A failed derived-id create leaves nothing behind for the retry to probe past.
+    let created_id = |v: R<Value>| v.map(|r| r["id"].as_str().unwrap().to_string());
+    t.expect(
+        "a derived-id create with a missing tag",
+        created_id(b.create_item(item("", json!({ "title": "Same", "tags": ["ghost"] }))).await),
+        missing("ghost"),
+    );
+    t.expect(
+        "the retry gets the base slug",
+        created_id(b.create_item(item("", json!({ "title": "Same", "tags": ["t1"] }))).await),
+        Ok("same".into()),
+    );
+    t.expect("listed", listed_ids(b.list_items(&[], None, None).await), ok_ids(&["other", "same"]));
+    t
+}
+
+#[tokio::test]
+async fn a_missing_many_to_many_target_is_not_found_and_writes_nothing() {
+    parity!(missing_tags);
+}
+
+/// A record may hold a many_to_many id whose target was deleted (ADR 0001
+/// amendment 5; JSON:API wire contract §7.5). An update checks only the ids
+/// it adds, so such a record can still gain and lose links, keep the
+/// dangling id or drop it, while an id it adds must still name a record.
+async fn held_missing_tags<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    for id in ["t1", "t2", "t3"] {
+        t.record(format!("create tag {id}"), &b.create_tag(json!({ "id": id, "title": id })).await).unwrap();
+    }
+    t.record("create i", &b.create_item(item("i", json!({ "tags": ["t1", "t2"] }))).await).unwrap();
+    b.delete_tag_leaving_links("t2").await;
+    let tags = |r: R<Value>| r.map(|i| i["tags"].clone());
+    t.expect("i still lists the deleted t2", tags(b.get_item("i").await), Ok(json!(["t1", "t2"])));
+
+    let set = |list: Value| json!({ "tags": list });
+    t.expect(
+        "add a tag",
+        tags(b.update_item("i", set(json!(["t1", "t2", "t3"]))).await),
+        Ok(json!(["t1", "t2", "t3"])),
+    );
+    t.expect("remove a tag", tags(b.update_item("i", set(json!(["t2", "t3"]))).await), Ok(json!(["t2", "t3"])));
+    t.expect(
+        "set the list unchanged, with a title",
+        tags(b.update_item("i", json!({ "title": "Renamed", "tags": ["t2", "t3"] })).await),
+        Ok(json!(["t2", "t3"])),
+    );
+    let before = b.get_item("i").await;
+    t.expect(
+        "add a missing tag",
+        b.update_item("i", set(json!(["t2", "t3", "ghost"]))).await,
+        Err(StoreError::NotFound("Tag", "ghost".into())),
+    );
+    t.expect("the refused update wrote nothing", b.get_item("i").await, before);
+    t.expect("remove the deleted tag", tags(b.update_item("i", set(json!(["t3"]))).await), Ok(json!(["t3"])));
+    t.expect(
+        "the deleted tag cannot be added back",
+        b.update_item("i", set(json!(["t3", "t2"]))).await,
+        Err(StoreError::NotFound("Tag", "t2".into())),
+    );
+    t.expect("i lists t3", tags(b.get_item("i").await), Ok(json!(["t3"])));
+    t
+}
+
+#[tokio::test]
+async fn an_update_checks_only_the_many_to_many_ids_it_adds() {
+    parity!(held_missing_tags);
+}
+
+// ─── SeaORM: one transaction per write ──────────────────────────────────────
+
+/// Makes every junction insert fail on SQLite, after the pre-checks have
+/// passed and the record's own row is written.
+async fn refuse_junction_inserts(b: &Sqlite) {
+    use sea_orm::ConnectionTrait;
+    // sqlite-only: RAISE in a trigger is SQLite's way to fail a statement on demand.
+    let sql = "CREATE TRIGGER refuse_tags BEFORE INSERT ON item_tags BEGIN SELECT RAISE(ABORT, 'refused'); END";
+    b.store.db().execute_unprepared(sql).await.expect("trigger");
+}
+
+/// SeaORM only, since the markdown store has no transactions: a create or
+/// update whose junction write fails after the record's row is written
+/// leaves nothing written.
+#[tokio::test]
+async fn a_failed_junction_write_rolls_back_the_whole_write() {
+    use sea_orm::ConnectionTrait;
+    let b = Sqlite::open().await;
+    b.create_tag(json!({ "id": "t1", "title": "t1" })).await.expect("tag");
+    b.create_tag(json!({ "id": "t2", "title": "t2" })).await.expect("tag");
+    b.create_item(item("kept", json!({ "tags": ["t1"] }))).await.expect("kept");
+    let kept = b.get_item("kept").await.expect("kept");
+    refuse_junction_inserts(&b).await;
+
+    let created = b.create_item(item("", json!({ "title": "Same", "tags": ["t2"] }))).await;
+    assert!(matches!(created, Err(StoreError::Backend(_))), "{created:?}");
+    assert_eq!(listed_ids(b.list_items(&[], None, None).await), ok_ids(&["kept"]), "the row was rolled back");
+
+    let updated = b.update_item("kept", json!({ "title": "Renamed", "tags": ["t2"] })).await;
+    assert!(matches!(updated, Err(StoreError::Backend(_))), "{updated:?}");
+    assert_eq!(b.get_item("kept").await, Ok(kept), "the title and the old junction rows are back");
+
+    b.store.db().execute_unprepared("DROP TRIGGER refuse_tags").await.expect("drop trigger");
+    let retried = b.create_item(item("", json!({ "title": "Same", "tags": ["t2"] }))).await.expect("retry");
+    assert_eq!(retried["id"], json!("same"), "no row was left for the retry to probe past");
+}
+
+/// SeaORM only: derived-id creates racing on a file-backed SQLite database
+/// with a pool of several connections all succeed. SQLite answers a
+/// transaction that read first and then wants the write lock another
+/// connection holds with an immediate "database is locked", which the busy
+/// timeout does not wait out; a transaction whose first statement is a write
+/// waits for the lock instead. The pool keeps sqlx's 5 second busy timeout,
+/// far longer than 80 small serialized writes take.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_derived_id_creates_all_succeed_on_a_pooled_database() {
+    use std::sync::Arc;
+    const RACERS: usize = 40;
+    let dir = tempfile::tempdir().expect("tempdir");
+    // sqlite-only: a file-backed SQLite URL; `mode=rwc` creates the file.
+    let url = format!("sqlite://{}?mode=rwc", dir.path().join("parity.db").display());
+    let store = Arc::new(parity_seaorm::Store::open_url(&url, 8).await.expect("sqlite"));
+    let start = Arc::new(tokio::sync::Barrier::new(2 * RACERS));
+
+    let mut slugged = Vec::new();
+    let mut stamped = Vec::new();
+    for _ in 0..RACERS {
+        let (items, gate) = (store.clone(), start.clone());
+        slugged.push(tokio::spawn(async move {
+            let record = serde_json::from_value(item("", json!({ "title": "Same" }))).expect("an Item");
+            gate.wait().await;
+            items.create_item(record).await.map(|created| created.id).map_err(|e| format!("{e:?}"))
+        }));
+        let (stampeds, gate) = (store.clone(), start.clone());
+        stamped.push(tokio::spawn(async move {
+            let record = serde_json::from_value(json!({ "id": "", "title": "Stamped" })).expect("a Stamped");
+            gate.wait().await;
+            stampeds.create_stamped(record).await.map(|created| created.id).map_err(|e| format!("{e:?}"))
+        }));
+    }
+
+    let outcomes = |tasks: Vec<tokio::task::JoinHandle<Result<String, String>>>| async move {
+        let mut ids = std::collections::BTreeSet::new();
+        let mut failures = Vec::new();
+        for task in tasks {
+            match task.await.expect("task") {
+                Ok(id) => assert!(ids.insert(id.clone()), "{id} was handed out twice"),
+                Err(e) => failures.push(e),
+            }
+        }
+        (ids, failures)
+    };
+    let (slug_ids, slug_failures) = outcomes(slugged).await;
+    let (uuid_ids, uuid_failures) = outcomes(stamped).await;
+    assert!(
+        slug_failures.is_empty() && uuid_failures.is_empty(),
+        "{}/{RACERS} slug and {}/{RACERS} uuid creates succeeded; the first failure: {:?}",
+        slug_ids.len(),
+        uuid_ids.len(),
+        slug_failures.first().or(uuid_failures.first()),
+    );
+    let expected: std::collections::BTreeSet<String> =
+        std::iter::once("same".to_string()).chain((2..=RACERS).map(|n| format!("same-{n}"))).collect();
+    assert_eq!(slug_ids, expected, "the slug ids are the base and its first suffixes, none skipped");
+    assert_eq!(uuid_ids.len(), RACERS);
+    assert_eq!(store.count_items().await.expect("count"), RACERS as u64);
+    assert_eq!(store.count_stampeds().await.expect("count"), RACERS as u64);
+}
+
 // ─── Names the generated code could collide with ────────────────────────────
 
 /// `Doc` (the markdown store's own binding), `Order` (SeaORM's
 /// `sea_query::Order`), `Match` (a keyword module) and the keyword
 /// relationships `r#in` (an SQL keyword column too) and `r#loop` behave as
 /// any other entity and relationship: the `has_many` tree writes its keyword
-/// foreign key, and the `many_to_many` keeps its written order.
+/// foreign key, and the `many_to_many` keeps its written order. Both refuse
+/// a self-listing and a missing target as any other relationship does.
 async fn hostile_names<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     let doc =
         |id: &str, parent: Option<&str>| json!({ "id": id, "title": id, "in": parent, "children": [], "body": "" });
@@ -1416,6 +1790,17 @@ async fn hostile_names<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
     t.expect("an order keeps its matches in order", looped(created), Ok(json!(["m2", "m1"])));
     let updated = b.update_order("o", json!({ "loop": ["m1"] })).await;
     t.expect("an update replaces them", looped(updated), Ok(json!(["m1"])));
+    t.expect(
+        "a doc listing itself",
+        b.update_doc("root", json!({ "children": ["a", "root"] })).await,
+        Err(StoreError::ParentCycle("Doc", "root".into())),
+    );
+    t.expect(
+        "an order listing a missing match",
+        b.update_order("o", json!({ "loop": ["m2", "ghost"] })).await,
+        Err(StoreError::NotFound("Match", "ghost".into())),
+    );
+    t.expect("the refused update kept the order's matches", looped(b.get_order("o").await), Ok(json!(["m1"])));
     t
 }
 

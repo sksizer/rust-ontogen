@@ -24,7 +24,8 @@ pub struct WalkOptions {
     /// Apply `.gitignore`, `.ignore`, parent ignores, and skip hidden
     /// entries. Off-spec content like `node_modules` drops out as a side
     /// effect. When `false`, the walk is a plain filesystem traversal that
-    /// also visits hidden entries.
+    /// also visits hidden directories. A hidden file is never a record
+    /// either way: no lookup accepts a stem with a leading `.`.
     pub respect_gitignore: bool,
     /// Follow symbolic links. Off by default to avoid cycles in vaults that
     /// link into themselves.
@@ -54,10 +55,15 @@ impl Default for WalkOptions {
 /// suffix boundaries: `x-2.md` < `x.md` because `-` < `.`, yet the ids sort
 /// `x` < `x-2`.) Full path breaks ties.
 ///
-/// OKF's reserved `index` and `log` files (any configured extension, any
-/// depth, any ASCII case) are skipped: they are directory listings and
-/// update logs, not records, and their ids could never be read back anyway
-/// (see [`crate::layout::validate_lookup_id`]).
+/// Only a file whose stem a lookup accepts is a record: a UTF-8 stem that
+/// passes [`crate::layout::validate_lookup_id`]. Every other file is
+/// skipped without a report, so a listing, a count and a lookup agree on
+/// what exists. Skipped are OKF's reserved `index` and `log` files (any
+/// configured extension, any depth, any ASCII case), which are directory
+/// listings and update logs, and a file whose stem no lookup can name:
+/// `a:b.md`, `a\b.md`, `.draft.md`, `draft..md`, `draft .md`, a
+/// whitespace-only stem, or one that is not UTF-8. Rename such a file to
+/// make it a record.
 ///
 /// A missing directory yields `Ok(vec![])` — a store whose entity directory
 /// hasn't been created yet is empty, not broken.
@@ -72,8 +78,9 @@ fn is_record_file(path: &Path, opts: &WalkOptions) -> bool {
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|ext| opts.extensions.iter().any(|want| want.eq_ignore_ascii_case(ext)));
-    let reserved = path.file_stem().and_then(|s| s.to_str()).is_some_and(crate::layout::is_reserved_id);
-    matches_ext && !reserved
+    let reachable =
+        path.file_stem().and_then(|s| s.to_str()).is_some_and(|stem| crate::layout::validate_lookup_id(stem).is_ok());
+    matches_ext && reachable
 }
 
 fn sort_by_id(paths: &mut [PathBuf]) {
@@ -245,19 +252,56 @@ mod tests {
         assert_eq!(names, vec!["log/entry.md", "nested/changelog.md", "record.md"]);
     }
 
+    /// Stems [`crate::layout::validate_lookup_id`] refuses that the host
+    /// filesystem can hold as a `.md` file name. Windows reads `a:b.md` as
+    /// an alternate data stream of `a`, takes `\` for a separator and
+    /// refuses control characters.
+    fn unreachable_stems() -> Vec<&'static str> {
+        let mut stems = vec![".hidden", "trail.", "trail ", "   "];
+        if cfg!(not(windows)) {
+            stems.extend(["a:b", "back\\slash", "\t"]);
+        }
+        stems
+    }
+
     #[test]
-    fn hidden_files_skipped_by_default_included_when_raw() {
+    fn stems_no_lookup_accepts_are_not_records() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        touch(&root.join(".hidden.md"));
+        touch(&root.join("ok.md"));
+        for stem in unreachable_stems() {
+            assert!(crate::layout::validate_lookup_id(stem).is_err(), "{stem:?} is refused by a lookup");
+            touch(&root.join(format!("{stem}.md")));
+            touch(&root.join(format!("nested/{stem}.md")));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            touch(&root.join(std::ffi::OsStr::from_bytes(b"not-utf8-\xff.md")));
+        }
+
+        let raw = WalkOptions { respect_gitignore: false, ..WalkOptions::default() };
+        for opts in [WalkOptions::default(), raw] {
+            let paths = list_record_paths(root, &opts).unwrap();
+            let names: Vec<String> =
+                paths.iter().map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned()).collect();
+            assert_eq!(names, ["ok.md"], "{opts:?}");
+        }
+    }
+
+    #[test]
+    fn hidden_directories_skipped_by_default_walked_when_raw() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        touch(&root.join(".hidden/inner.md"));
         touch(&root.join("visible.md"));
 
         let default = list_record_paths(root, &WalkOptions::default()).unwrap();
-        assert_eq!(default.len(), 1, "hidden file must be skipped: {default:?}");
+        assert_eq!(default.len(), 1, "hidden directory must be skipped: {default:?}");
 
         let raw = WalkOptions { respect_gitignore: false, ..WalkOptions::default() };
         let all = list_record_paths(root, &raw).unwrap();
-        assert_eq!(all.len(), 2, "raw walk sees hidden files: {all:?}");
+        assert_eq!(all.len(), 2, "raw walk sees hidden directories: {all:?}");
     }
 
     #[test]

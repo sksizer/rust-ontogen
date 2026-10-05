@@ -14,10 +14,10 @@ Version 0.9 is complete on `main` and pending release. This page lists its break
 5. [TypeScript clients](#typescript-clients): the generated `Transport` interface and clients.
 6. [Sorting](#sorting): the order every generated list takes, in the store, the API and on every transport.
 7. [Calling the HTTP API directly](#calling-the-http-api-directly): a checklist for HTTP callers other than the generated clients.
-8. [SeaORM data and code](#seaorm-data-and-code): integer columns, data migrations and create behaviour on SeaORM.
+8. [SeaORM data and code](#seaorm-data-and-code): integer columns, data migrations, create behaviour and the `sync_junction` signature on SeaORM.
 9. [Record ids](#record-ids): the id rule both backends apply to new records.
 10. [Markdown-store API](#markdown-store-api): the `markdown-store` runtime API.
-11. [Store behaviour](#store-behaviour): list order, `has_many` writes and lookups on both backends.
+11. [Store behaviour](#store-behaviour): list order, write checks, `has_many` writes and lookups on both backends.
 
 ## Build configuration
 
@@ -223,6 +223,7 @@ In a module named after an entity, a hand-written `list` now replaces the genera
 - When the module is paginated, a hand-written `list` also drops the generated `count`, because the generated one counts the whole table. The module must define a `count` that takes the same filter parameters as the `list` (and no page). Without one the build fails with a message saying the hand-written `list` replaces the generated `count`.
 - Only `list` and `count` may be hand-written beside the generated module. Any other name the generated module defines (`get_by_id`, `create`, `update`, `delete`), written again by hand in the same module, fails the build as defined twice in that API directory. Before, the hand-written fn was silently dropped. Give it another name, or exclude the entity from the api stage and write the whole module.
 - `Pipeline` now scans the servers stage's `api_dir`, every extra surface's `api_dir` and the clients stage's `api_dir` for the api stage. Directories given to `api_scan_dirs` are scanned too, ahead of those; before, `api_scan_dirs` was the whole list. A direct `gen_api` caller lists its `scan_dirs` and must include every directory that holds a hand-written `list` or `count`.
+- With a servers or clients stage, a hand-written `list` or `count` must be in a file those stages read: their `api_dir`s and the directories directly inside them. One that only `api_scan_dirs` reaches fails the build with an error naming the file, because the transports would not serve it. Before, it was ignored and the generated fn was served. Move the file into a transport's `api_dir`, or rename the fn to keep the generated one. A `Pipeline` with neither stage, and a direct `gen_api` call, let every scanned directory replace.
 - When the api stage does not scan the directory holding a hand-written `list` or `count`, the generated one is still emitted and the servers stage finds the fn twice in one API directory. The build then fails with an error that names the fn and this rule. Before, it reported the fn as defined by two API surfaces.
 - A `#[ontogen::stateless]` `list` or `count` never replaces the generated one, so it fails the build the same way. Give it the state or the store.
 - A directory listed in `api_scan_dirs` or `ApiConfig::scan_dirs` that does not exist is an error. A transport's `api_dir` that does not exist is skipped by the api stage with a warning, and the servers stage reports it.
@@ -281,7 +282,8 @@ serde_json = "1"
 - `QuerySpec` has a new field `filter_fields`, so a struct literal must set it or end with `..QuerySpec::NONE`. `QuerySpec` no longer implements `PartialEq` or `Eq`, and the crate no longer depends on `serde_urlencoded`.
 - `QueryParams` gained `filter`, `filter_member`, `required_filter_member`, `link_query` and `include_paths`, and the crate exports `filter_fields::<T>()`. `link_query` takes the parsed include (`Option<&[&str]>`, from `QueryParams::include_paths`).
 - `response::created` takes `Option<&str>`, the `Location` (`None` for a module that serves no `get_by_id`), and `ResourceObject::links()` returns `Option<&Links>` (`None` for such a module's resources).
-- `ErrorCode::RelatedResourceNotFound` and `ErrorCode::RelationshipNotFound` are renamed `NoSuchRelatedResource` and `NoSuchRelationship`, and their codes are `no_such_related_resource` and `no_such_relationship`. No code the server raises ends in a suffix of the store's `AppError` variants (`_not_found`, `_id_required`, `_already_exists`, `_parent_required`), so an entity named `Relationship` or `RelatedResource` can be served. `ErrorCode::ALL` is a `&'static [ErrorCode]`; it was a `[ErrorCode; 22]`.
+- `ErrorCode::RelatedResourceNotFound` and `ErrorCode::RelationshipNotFound` are renamed `NoSuchRelatedResource` and `NoSuchRelationship`, and their codes are `no_such_related_resource` and `no_such_relationship`. No code the server raises ends in a suffix of the store's `AppError` variants (`_not_found`, `_id_required`, `_already_exists`, `_parent_required`, `_parent_cycle`), so an entity named `Relationship` or `RelatedResource` can be served. `ErrorCode::ALL` is a `&'static [ErrorCode]`; it was a `[ErrorCode; 22]`. `ErrorCode::RelationshipCycle` (`403 relationship_cycle`) is new; `ErrorCode` is `#[non_exhaustive]`, so a match outside the crate already has a wildcard arm.
+- New: `CanonicalQuery::set_filter_items`, `request::wide_integer_attribute` and `request::refuse_cycle`. `QueryParams::filter` reads a sequence member (`Vec<T>`, `Option<Vec<T>>`) from comma-separated items, each percent-decoded after the split, and `link_query` writes it back item by item.
 
 ### Mount the router at the root
 
@@ -423,6 +425,18 @@ Add `{Entity}AlreadyExists(String)` for every entity, next to the existing `{Ent
 
 Add `{Child}ParentRequired(String)` for a `has_many` child whose foreign key is a plain `String` rather than an `Option`. It carries the id of the child that would be left without a parent. See [has_many writes](/guides/store-layer/#has_many-writes).
 
+Add `{Child}ParentCycle(String)` for the child of every `has_many`. Only the self-referential `has_many` is supported, so the child is the declaring entity: a `Task` with `subtasks` declares `TaskParentCycle(String)`. It carries the record's own id, refused because the record's `has_many` list names it (see [Store behaviour](#store-behaviour)). Without it the build fails with rustc's `E0599` ("no variant or associated item named `TaskParentCycle` found for enum `AppError` in the current scope") in the generated store module.
+
+```rust
+pub enum AppError {
+    TaskNotFound(String),
+    TaskIdRequired(String),
+    TaskAlreadyExists(String),
+    TaskParentCycle(String),     // Task.subtasks names the task itself
+    // ...
+}
+```
+
 ### Statuses and codes on HTTP
 
 The HTTP generator scans `ServersConfig::error_source_dir` for `enum AppError` and gives each variant a status from the suffix of its name. The `code` of the error is the variant name in snake_case.
@@ -433,6 +447,7 @@ The HTTP generator scans `ServersConfig::error_source_dir` for `enum AppError` a
 | `*IdRequired` | 400 | `task_id_required` |
 | `*AlreadyExists` | 409 | `task_already_exists` |
 | `*ParentRequired` | 403 | `task_parent_required` |
+| `*ParentCycle` | 403 | `task_parent_cycle` |
 | any other variant | 500 | `db_error` for `DbError` |
 
 Before this change every `AppError` was a `500` with `{"error": "<Display text>"}`, whatever the variant. Clients that branched on `500` for a missing record now see `404`, and so on.
@@ -530,7 +545,7 @@ The status is still `201 Created`; the response now has `Location: /api/tasks/re
 
 ### Request bodies are checked member by member
 
-A body is a single JSON object with a `data` resource object. A `type` that is not the route's is `409 type_mismatch`, as is a linked identifier of the wrong `type`. A required attribute that is absent from a create is `400 missing_attribute`, a required to-one relationship `400 missing_relationship`, an unknown relationship `400 unknown_relationship`, and a body that is not a valid document `400 invalid_document` with a `pointer`. A client-supplied id that is already taken is `409` with `source.pointer: "/data/id"`. A body over the server's size limit is `413 content_too_large`.
+A body is a single JSON object with a `data` resource object. A `type` that is not the route's is `409 type_mismatch`, as is a linked identifier of the wrong `type`. A required attribute that is absent from a create is `400 missing_attribute`, a required to-one relationship `400 missing_relationship`, an unknown relationship `400 unknown_relationship`, and a body that is not a valid document `400 invalid_document` with a `pointer`. A client-supplied id that is already taken is `409` with `source.pointer: "/data/id"`. A body over the server's size limit is `413 content_too_large`. An integer attribute whose type reaches past `i64` (`u64`, `usize`, `u128`, …) is `400 invalid_attribute` for a value outside `i64`, which no store holds, rather than the store's `500`. A `has_many` that names the resource itself, which would become its own parent, is `403 relationship_cycle`.
 
 ### Update is `PATCH`
 
@@ -721,7 +736,7 @@ An unpaginated list with no entity behind it answers the bare array as `meta.res
 }
 ```
 
-A struct whose fields serde does not report, for example one with `#[serde(flatten)]`, accepts no members. When several things are wrong the first error wins, in a fixed order: names the route does not accept, in request order, then the struct's members in byte order, then its first missing required field, then the bare filters in byte order of name, then the page.
+A struct field that is a `Vec<T>` takes one value listing its items: `filter[tags]=a,b%2Cc` is `["a", "b,c"]`, split at each literal comma with each piece decoded, and `filter[tags]=` is the empty list. A struct whose fields serde does not report, for example one with `#[serde(flatten)]`, accepts no members. When several things are wrong the first error wins, in a fixed order: names the route does not accept, in request order, then the struct's members in byte order, then its first missing required field, then the bare filters in byte order of name, then the page.
 
 **Links carry the filter.** The links repeat the request's `filter[…]` members, in the [link query order](#pagination), so following `next` keeps the filter.
 
@@ -731,7 +746,7 @@ A query parameter a route does not accept is `400 invalid_query_parameter`, with
 
 ### Related resources must exist
 
-A create or update that links a resource that does not exist, for example an `epic` or a `tags` id, is `404 no_such_related_resource` before anything is written. Before, a markdown vault accepted it and wrote a dangling wikilink.
+A create or update that links a resource that does not exist, for example an `epic` or a `tags` id, is `404 no_such_related_resource` before anything is written. Before, a markdown vault accepted it and wrote a dangling wikilink. The store refuses a missing `many_to_many` or `has_many` id as well, so IPC and MCP refuse it too (see [Store behaviour](#store-behaviour)).
 
 ### Relationship endpoints
 
@@ -779,7 +794,7 @@ curl http://127.0.0.1:3002/api/tasks/ship-the-emitter/tags -H 'Accept: applicati
 
 - `GET …/relationships/{rel}` answers the linkage: an identifier or `null` for a to-one, an array for a to-many, with `links.self` and `links.related`.
 - `PATCH` sets or clears a to-one (`{"data": null}`) and replaces a to-many (`{"data": []}` clears it), with the same rules as a resource `PATCH` of that one field, `has_many` included.
-- `POST` and `DELETE` add and remove one member of a to-many. The body holds exactly one identifier; more is `403 relationship_batch_unsupported`, and `{"data": []}` changes nothing. Adding a member already present, or removing one that is absent, is `204` and writes nothing. On a to-one both are `403 relationship_update_unsupported`.
+- `POST` and `DELETE` add and remove one member of a to-many. The body holds exactly one identifier; more is `403 relationship_batch_unsupported`, and `{"data": []}` changes nothing. A `PATCH` or `POST` naming the parent in its own `has_many` is `403 relationship_cycle`. Adding a member already present, or removing one that is absent, is `204` and writes nothing. On a to-one both are `403 relationship_update_unsupported`.
 - A relation field is read through the module's `get_by_id` and written through its `update`, so its hooks run. A module with no `update` answers every write `403 relationship_update_unsupported`.
 - The related route loads each resource with the target module's `get_by_id`. A dangling id is skipped, and a to-one whose target is missing is `"data": null`.
 - An unknown `{rel}` is `404 no_such_relationship`, a missing parent `404 {entity}_not_found`, and a missing linked resource on `PATCH` or `POST` `404 no_such_related_resource`. Another method is `405`, with `Allow: GET, HEAD, PATCH, POST, DELETE` or `Allow: GET, HEAD`.
@@ -1172,7 +1187,7 @@ taskList(query?: ListTasksQuery, limit?: number, offset?: number, options?: List
 await transport.taskList(undefined, 20, 0, { sort: ['-created', 'title'] });
 ```
 
-`TaskSortKey` (`'id' | '-id' | 'title' | '-title' | …`) and `ListOptions<K>` are exported from each generated client file, beside `PaginatedResult`. Positional callers do not change. The HTTP transport sends `sort=-created,title`, and the IPC transport passes `sort` in the invoke arguments. `toQueryString` now writes an array value as one comma-joined parameter and skips an empty array. Regenerate the TypeScript.
+`TaskSortKey` (`'id' | '-id' | 'title' | '-title' | …`) and `ListOptions<K>` are exported from each generated client file, beside `PaginatedResult`. Positional callers do not change. The HTTP transport sends `sort=-created,title`, and the IPC transport passes `sort` in the invoke arguments. `toQueryString` now writes an array value as one comma-joined parameter, each item encoded, and skips an empty array at the top level; inside a family, such as a filter's `Vec` member, an empty array is sent with an empty value. Regenerate the TypeScript.
 
 ### The clients stage refuses colliding parameter names
 
@@ -1250,6 +1265,42 @@ On SeaORM, after `before_create` runs:
 
 Before relying on create, rename existing rows whose ids break the rule. Rows with the ids `.`, `..` or `""` stay listed and reachable through the store, the API, IPC and MCP, like any other id that breaks the rule (see [Record ids](#record-ids)). Over HTTP, `""` matches no route, and `.` and `..` reach their record only from a client that sends the path as given (`curl --path-as-is`): a client that normalises URLs, as `fetch` and so the generated TypeScript do, resolves them away before sending. The same was true in 0.8. Rename such rows if HTTP clients must reach them. A vault cannot hold such records, in 0.8 or now.
 
+### `sync_junction` takes the transaction
+
+The generated `create_*` and `update_*` make all their writes (the record's row, every `sync_junction`, every `has_many` child's foreign key) in one transaction, and pass it to your `sync_junction` as a new first argument. A write that fails part-way now leaves nothing written: before, a junction row the foreign key refused left the record's row, or the update's new values, in place, and a derived-id create that failed and was retried left `title`, `title-2` and so on behind.
+
+Change your `sync_junction` to take the connection and run every statement on it:
+
+```rust
+// Before
+pub async fn sync_junction(
+    &self,
+    table: &str,
+    source_col: &str,
+    target_col: &str,
+    source_id: &str,
+    target_ids: &[String],
+) -> Result<(), AppError> {
+    let db = self.db();
+    // ... db.execute(...) ...
+}
+
+// After
+pub async fn sync_junction<C: sea_orm::ConnectionTrait>(
+    &self,
+    conn: &C,
+    table: &str,
+    source_col: &str,
+    target_col: &str,
+    source_id: &str,
+    target_ids: &[String],
+) -> Result<(), AppError> {
+    // ... conn.execute(...) ...
+}
+```
+
+A statement left on `self.db()` runs outside the transaction, so it is not undone when the write fails, and on a pool of one connection (in-memory SQLite) it waits forever for the connection the transaction holds. A file-backed SQLite pool of more than one connection needs a busy timeout longer than the writes queued ahead of one take: sqlx's default is 5 seconds, and `ConnectOptions::map_sqlx_sqlite_opts(|o| o.busy_timeout(..))` raises it. A hand-written transaction that calls into the store, or writes alongside it, must make a write its first statement, or concurrent writers can fail with `SQLITE_BUSY`. See [Writes are all or nothing](/guides/store-layer/#writes-are-all-or-nothing). `load_junction_ids` is unchanged. Code that calls `sync_junction` directly passes a connection first: `self.db()` outside a transaction, or the transaction it opened. Without the change the build fails with rustc's `E0061` ("this method takes 5 arguments but 6 arguments were supplied") in the generated store module. See [Junction Sync](/guides/store-layer/#junction-sync).
+
 ### `load_junction_ids` order
 
 Your `load_junction_ids` must return ids in the order they were written, because a `many_to_many` list keeps its written order. On SQLite that means adding `ORDER BY rowid` to the query. See [Junction Sync](/guides/store-layer/#junction-sync).
@@ -1286,6 +1337,8 @@ In a vault, rename the file and update every `[[wikilink]]` and foreign key that
 - A missing id is the new `Error::IdRequired { reason }`. It used to be `InvalidId`.
 - `Error::InvalidId` has a third field, `create_rule`: true when the create rule refused the id, whose message then states the whole rule, and false when a lookup's path-safety check did. Add it where you construct the variant; a `{ .. }` pattern needs no change.
 - `layout::validate_id` is the create rule (see [Record ids](#record-ids)). `create_record` checks it too, so it refuses an id that `record_path` accepts. `record_path`, and every read, update and delete, use the looser path-safety check `layout::validate_lookup_id`, so a record whose file stem breaks the create rule stays reachable.
+- `IdStrategy::Uuid` exists only with the `uuid` feature. Code that names it without the feature, such as a 0.8 `VaultHandle::new(root, layout, IdStrategy::Uuid)` or a generated markdown store with a `Uuid` entity or store default, used to compile and fail every create without an id with `Error::InvalidId`. It now fails to compile with ``no variant or associated item named `Uuid` found for enum `markdown_store::IdStrategy` in the current scope``. Enable the feature: `markdown-store = { path = "...", features = ["uuid"] }`.
+- `walk::list_record_paths` returns only files whose stem is UTF-8 and passes `layout::validate_lookup_id`. With `WalkOptions::respect_gitignore` off it still walks hidden directories, but no longer returns a hidden file (`.draft.md`), whose stem no lookup accepts.
 - `layout::validate_segment`, and so `record_path` and `entity_dir` under `PerEntityDir`, refuses a directory segment that is a Windows device name (`con`, `NUL`, `lpt0`, and the superscript forms `com¹`-`com³`, `lpt¹`-`lpt³`) with `Error::InvalidSegment`, on every platform.
 - `id::candidates(base)` yields the probe sequence `base`, `base-2`, … that derived ids use. New constants: `layout::MAX_ID_LEN` (200), `layout::MAX_STEM_LEN` (252), `id::SLUG_MAX_LEN` (190), `layout::DEVICE_NAMES`, `layout::ID_RULE`, `layout::RESERVED_REASON` and `layout::DEVICE_NAME_REASON`; `layout::is_device_name` tells whether an id is a device name.
 
@@ -1294,4 +1347,9 @@ In a vault, rename the file and update every `[[wikilink]]` and foreign key that
 - **Markdown list order is id byte order.** `VaultHandle::read_all`, `list_ids` and `EntityRecords::read_all` guarantee it. It differs from the old path order only for nested layouts.
 - **`has_many` updates clear dropped children.** An update that sets the list clears the foreign key of every child it drops, or fails with `{Child}ParentRequired` when the key is not an `Option`. A listed child that does not exist fails the create or update with `{Child}NotFound`, with nothing written; SeaORM used to ignore it. Child ids are id-ascending, and a record is never its own child. See [has_many writes](/guides/store-layer/#has_many-writes).
 - **A cross-entity `has_many` fails the build.** A `has_many` whose `target` is not the declaring entity used to generate a store that wrote the wrong records. It is now a `CodegenError`. Declare the `belongs_to` on the child and list the children in a hand-written API function. See [has_many writes](/guides/store-layer/#has_many-writes).
+- **A `has_many`'s `foreign_key` is checked at build time.** It must name the declaring entity's `belongs_to` to itself, typed `String` or `Option<String>`. Anything else is now a `CodegenError` that names the `has_many` field, the `foreign_key` and the fix. Before, a `foreign_key` naming no field or a field of another type failed to compile in the generated store; a `has_many` without `foreign_key` was never filled or written; and a plain field or a `belongs_to` to another entity had parent ids written into it.
 - **Lookups of an id the vault can never hold** (`index`, `a/b`, `.hidden`, whitespace) answer `{Entity}NotFound` from the generated markdown `get_*`, `update_*` and `delete_*`, instead of an internal error.
+- **A vault file no lookup can name is not a record.** A markdown `list`, `count` and `has_many` list skip a file whose stem fails the lookup check `layout::validate_lookup_id` or is not UTF-8: a stem containing `/`, `\`, `:` or NUL, starting with `.`, ending with `.` or a space, whitespace-only, over 252 bytes, or `index` or `log` in any case (`a:b.md`, `draft .md`). Such a file used to be listed although no get, update or delete could reach it; now list, count and lookups agree, and nothing reports a skipped file. Migration: rename such files to ids the [id rule](#record-ids) accepts. The store neither moves nor deletes them.
+- **A `many_to_many` id must name a record.** A create or update that lists a missing target id fails with `{Target}NotFound(id)`, the first missing id in list order, before anything is written, on both backends. Before, the markdown store wrote the dangling wikilink, and SeaORM wrote the record's row and then failed on the junction's foreign key with `DbError`. An update checks only the ids it adds, so an existing record that already holds a dangling id still updates, and still gains and loses links through relationship `POST` and `DELETE`, keeping the dangling id until a write drops it. Code that writes through the store (a hook, a seed script, IPC or MCP) creates the target records first. A self-referential `many_to_many` may list the record's own id on create when the id is given. See [many_to_many targets](/guides/store-layer/#many_to_many-targets).
+- **A `has_many` list that names the record itself is refused.** `update_task(a, subtasks: [a, …])` set `a`'s own parent to `a` and answered as if nothing changed, since a record is never listed among its own children. It now fails with `{Child}ParentCycle(a)` before anything is written, and so does a create with a given id that lists itself. Over HTTP the request is refused before the store is called, as `403 relationship_cycle`. A root over a plain `String` foreign key is still its own parent through its `belongs_to` field. Longer cycles (`a` under `b` under `a`) are not refused; see [has_many writes](/guides/store-layer/#has_many-writes) for a hook that refuses them.
+- **The store's checks run in one order on both backends**: the `has_many` self-listing, the missing related ids, a dropped required child, then an integer outside `i64` and a `NaN`, then the id. On SeaORM an integer outside `i64` is refused before the id is derived, as on markdown, so a create with an empty-slug title and such an integer is `DbError` rather than `{Entity}IdRequired`. See [Check order](/guides/store-layer/#check-order).

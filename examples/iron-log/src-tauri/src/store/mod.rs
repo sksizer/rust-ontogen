@@ -48,18 +48,21 @@ impl Store {
     }
 
     /// Sync a many-to-many junction table: delete all existing rows for the
-    /// source entity, then insert the new set.
-    pub async fn sync_junction(
+    /// source entity, then insert the new set. `conn` is the generated
+    /// create's or update's transaction: every statement goes through it, so
+    /// a failure here undoes the whole write.
+    pub async fn sync_junction<C: sea_orm::ConnectionTrait>(
         &self,
+        conn: &C,
         table: &str,
         source_col: &str,
         target_col: &str,
         source_id: &str,
         target_ids: &[String],
     ) -> Result<(), crate::schema::AppError> {
-        use sea_orm::{ConnectionTrait, Statement};
+        use sea_orm::Statement;
 
-        let db = self.db();
+        let db = conn;
 
         // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders; list
         // order survives only because SQLite's rowid follows insertion order.

@@ -241,6 +241,7 @@ Content-Type: application/vnd.api+json
 - **Relation fields** are read through the module's `get_by_id` and written through its `update`, with the same rules, hooks and errors as a resource `PATCH` of that one field. Adding a member already present, or removing an absent one, writes nothing. A module with no `update` answers every write `403 relationship_update_unsupported`, as does `POST` or `DELETE` on a to-one.
 - **Junction ops** of the module (`list_X` with `add_Y` and/or `remove_Y`) define the to-many relationship `X`. `GET` calls `list_X`, paged in memory with `page[offset]` and `page[limit]` on a paginated surface. `POST` and `DELETE` call `add_Y` and `remove_Y`, after a `list_X` membership check that makes a repeated add or remove a `204` that calls nothing. `PATCH` is `403`, as is `POST` without `add_Y` and `DELETE` without `remove_Y`. Such a relationship appears in resource objects with `links` only. The build checks are in the [Relationships guide](/guides/relationships/#junction-ops).
 - **One identifier** per `POST` or `DELETE`; more is `403 relationship_batch_unsupported`, and `{"data": []}` is a no-op.
+- **A `has_many` naming the resource itself**, whose child would be its own parent, is `403 relationship_cycle` on `PATCH` and `POST`, pointing at the identifier. A `DELETE` naming it writes nothing.
 - **Related resources** are read with the target module's `get_by_id`, which every target must serve. A dangling id is skipped.
 - An unknown `{rel}` is `404 no_such_relationship`. A missing parent is the parent's `404`, and a linked id that does not exist on `PATCH` or `POST` is `404 no_such_related_resource`.
 
@@ -331,9 +332,10 @@ Every error the generated HTTP server returns is a JSON:API error document with 
 | `{Entity}IdRequired` | 400 | `task_id_required` |
 | `{Entity}AlreadyExists` | 409 | `task_already_exists` |
 | `{Child}ParentRequired` | 403 | `task_parent_required` |
+| `{Child}ParentCycle` | 403 | `task_parent_cycle` |
 | any other variant | 500 | `db_error` |
 
-The generated store constructs `{Entity}NotFound` and `{Entity}AlreadyExists` for every entity, `{Entity}IdRequired` for every markdown entity and for a SeaORM entity whose id strategy is `Provided` or `SlugFromField` (a SeaORM entity under `Uuid` always gets an id), and `{Child}ParentRequired` for an entity that is the child of a `has_many` whose foreign key is not `Option`, so your `AppError` declares each one the store uses (tasks-tracker declares the first three for `Task`, `Epic` and `Tag`). An error mapped from `AppError` carries no `source`, except `{entity}_already_exists` on a create that sent `data.id`. Only an op whose error type is your `AppError` is mapped; any other error type is `500 internal_error`.
+The generated store constructs `{Entity}NotFound` and `{Entity}AlreadyExists` for every entity, `{Entity}IdRequired` for every markdown entity and for a SeaORM entity whose id strategy is `Provided` or `SlugFromField` (a SeaORM entity under `Uuid` always gets an id), and `{Child}ParentRequired` for an entity that is the child of a `has_many` whose foreign key is not `Option`, and `{Child}ParentCycle` for an entity that is the child of a `has_many` (a list that names the record itself), so your `AppError` declares each one the store uses (tasks-tracker declares the first three for `Task`, `Epic` and `Tag`, and `TaskParentCycle`). A variant the store uses but your `AppError` lacks fails your build with rustc's `E0599` in the generated store module. An error mapped from `AppError` carries no `source`, except `{entity}_already_exists` on a create that sent `data.id`. Only an op whose error type is your `AppError` is mapped; any other error type is `500 internal_error`.
 
 When the build generates the HTTP server, a variant whose snake_case name equals one of ontogen's own codes (for example an `InvalidDocument` or `NoSuchRelationship` variant) fails the build, so a code always means one thing; no ontogen code ends in a store suffix such as `_not_found`, so an entity's store variants never clash. Two `enum AppError` declarations in the scanned directory also fail it. With no `AppError` in the directory, every `AppError`-typed site answers `500 internal_error`.
 
@@ -346,13 +348,14 @@ When the build generates the HTTP server, a variant whose snake_case name equals
 | 400 | `invalid_include_path` | a bad `include` on a list or a get: an unknown, dotted, empty or non-includable relationship name |
 | 400 | `invalid_path_parameter` | a typed route-prefix parameter fails to parse |
 | 400 | `invalid_document` | the body is not JSON or not a valid resource document, or a custom op body whose `meta.args` is missing, unknown or ill-typed |
-| 400 | `unknown_attribute`, `invalid_attribute` | an attribute the type does not have, or a value serde rejects (`null` on a non-`Option` field included), in a create or update body |
+| 400 | `unknown_attribute`, `invalid_attribute` | an attribute the type does not have, or a value serde rejects (`null` on a non-`Option` field included) or an integer outside `i64` (which every store holds integers as), in a create or update body |
 | 400 | `missing_attribute` | a required attribute absent from a create body |
 | 400 | `unknown_relationship` | a relationship name the type does not have, in a create or update body |
 | 400 | `missing_relationship` | a non-`Option` to-one absent from a create body |
 | 403 | `relationship_required` | `null` for a non-`Option` to-one |
 | 403 | `relationship_update_unsupported` | a relationship write the relationship does not support: `POST` or `DELETE` on a to-one, `PATCH` on a junction op's relationship, `POST` without `add_Y` or `DELETE` without `remove_Y`, any write when the module has no `update`, or a junction op's relationship in a create or update body |
 | 403 | `relationship_batch_unsupported` | a relationship `POST` or `DELETE` with more than one identifier |
+| 403 | `relationship_cycle` | a `has_many` write naming the resource itself, which would become its own parent: a create or update body, or a relationship `PATCH` or `POST` |
 | 404 | `no_such_related_resource` | a linked id that does not exist |
 | 404 | `no_such_relationship` | a `{rel}` that is not a relationship of the type |
 | 405 | `method_not_allowed` | a method the route does not serve |
@@ -426,7 +429,7 @@ A paginated junction list slices the full list in memory.
 
 **Event streams** are `text/event-stream` routes, and only the `data:` payload is JSON:API shaped. When the item type is a schema entity, `data:` is its resource object without `links`: `type`, `id`, `attributes` and `relationships` (`data` only, and left out when the entity has none). Any other item is `{"meta": {"result": …}}`. A `lag` frame stays `{"skipped": n}`. See [Event subscriptions](#event-subscriptions).
 
-**Filtered lists.** A hand-written `list` that takes filter parameters (anything besides the page) is served like any list. In a module named after an entity it is `GET /api/{type}` with `filter[...]` and `page[...]`, and `meta.total` comes from the module's hand-written `count`, which takes the same filter. In a module with no entity behind it it is a custom op at `GET /api/{module}` with `filter[...]` and `opArg[limit]`/`opArg[offset]`, answering `meta.result`. A filter is at most one `*Query` struct taken by value (each serde field is `filter[field]`) plus bare parameters (`filter[name]`, optional when an `Option`). Its scoped variant behaves like its unscoped one. See the [Filtered lists recipe](/cookbook/custom-api-endpoints/#recipe-filtered-lists).
+**Filtered lists.** A hand-written `list` that takes filter parameters (anything besides the page) is served like any list. In a module named after an entity it is `GET /api/{type}` with `filter[...]` and `page[...]`, and `meta.total` comes from the module's hand-written `count`, which takes the same filter. In a module with no entity behind it it is a custom op at `GET /api/{module}` with `filter[...]` and `opArg[limit]`/`opArg[offset]`, answering `meta.result`. A filter is at most one `*Query` struct taken by value (each serde field is `filter[field]`) plus bare parameters (`filter[name]`, optional when an `Option`). A struct field that is a `Vec<T>` takes one value listing its items, `filter[tags]=a,b%2Cc` for `["a", "b,c"]`: the value is split at each literal comma and each piece decoded, so an item's own comma is sent as `%2C`, as the generated TS client does. `filter[tags]=` is the empty list. Its scoped variant behaves like its unscoped one. See the [Filtered lists recipe](/cookbook/custom-api-endpoints/#recipe-filtered-lists).
 
 Every error from these routes is the error document described under [Errors](#errors).
 

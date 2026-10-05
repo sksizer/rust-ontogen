@@ -9,4 +9,5 @@ pub mod order;
 pub mod sea_orm;
 pub mod sea_query;
 pub mod section;
+pub mod stamped;
 pub mod tag;

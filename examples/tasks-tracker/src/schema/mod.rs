@@ -23,6 +23,7 @@ pub enum AppError {
     TaskNotFound(String),
     TaskIdRequired(String),
     TaskAlreadyExists(String),
+    TaskParentCycle(String),
     EpicNotFound(String),
     EpicIdRequired(String),
     EpicAlreadyExists(String),
@@ -44,6 +45,7 @@ impl std::fmt::Display for AppError {
             AppError::TaskAlreadyExists(id)
             | AppError::EpicAlreadyExists(id)
             | AppError::TagAlreadyExists(id) => write!(f, "already exists: {id}"),
+            AppError::TaskParentCycle(id) => write!(f, "task {id} cannot be its own subtask"),
             AppError::Md(msg) => write!(f, "markdown store error: {msg}"),
         }
     }

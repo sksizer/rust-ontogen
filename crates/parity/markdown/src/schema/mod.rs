@@ -16,6 +16,8 @@ mod sea_orm;
 mod sea_query;
 #[path = "../../../schema/section.rs"]
 mod section;
+#[path = "../../../schema/stamped.rs"]
+mod stamped;
 #[path = "../../../schema/tag.rs"]
 mod tag;
 
@@ -29,6 +31,7 @@ pub use order::Order;
 pub use sea_orm::SeaOrm;
 pub use sea_query::SeaQuery;
 pub use section::Section;
+pub use stamped::Stamped;
 pub use tag::Tag;
 
 pub use dto::doc::{CreateDocInput, UpdateDocInput};
@@ -39,6 +42,7 @@ pub use dto::order::{CreateOrderInput, UpdateOrderInput};
 pub use dto::sea_orm::{CreateSeaOrmInput, UpdateSeaOrmInput};
 pub use dto::sea_query::{CreateSeaQueryInput, UpdateSeaQueryInput};
 pub use dto::section::{CreateSectionInput, UpdateSectionInput};
+pub use dto::stamped::{CreateStampedInput, UpdateStampedInput};
 pub use dto::tag::{CreateTagInput, UpdateTagInput};
 
 /// The variants the generated store constructs, plus `Md` for everything
@@ -48,12 +52,14 @@ pub enum AppError {
     DocNotFound(String),
     DocIdRequired(String),
     DocAlreadyExists(String),
+    DocParentCycle(String),
     FixedNotFound(String),
     FixedIdRequired(String),
     FixedAlreadyExists(String),
     ItemNotFound(String),
     ItemIdRequired(String),
     ItemAlreadyExists(String),
+    ItemParentCycle(String),
     MatchNotFound(String),
     MatchIdRequired(String),
     MatchAlreadyExists(String),
@@ -70,9 +76,13 @@ pub enum AppError {
     SectionIdRequired(String),
     SectionAlreadyExists(String),
     SectionParentRequired(String),
+    SectionParentCycle(String),
     TagNotFound(String),
     TagIdRequired(String),
     TagAlreadyExists(String),
+    StampedNotFound(String),
+    StampedIdRequired(String),
+    StampedAlreadyExists(String),
     Md(String),
 }
 
@@ -100,4 +110,5 @@ pub enum EntityKind {
     Tag,
     SeaOrm,
     SeaQuery,
+    Stamped,
 }

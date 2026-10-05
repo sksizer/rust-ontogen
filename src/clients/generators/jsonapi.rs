@@ -142,24 +142,27 @@ async function callOp<T>(method: string, path: string, args?: Record<string, unk
 /// parameter family (§14.2): `{ filter: query, page: { offset: 0 } }` gives
 /// `filter%5Bstatus%5D=…&page%5Boffset%5D=0`. A `null` or `undefined` member,
 /// and a family that is itself `null` or `undefined` (an omitted `query`), is
-/// skipped. An array value is one parameter, its items joined by `,` as
-/// `sort` takes them (§7.4), and skipped when empty; the server refuses a
-/// repeated parameter, and filters take no array (§7.3).
+/// skipped. An array value is one parameter, each item encoded and the items
+/// joined by a literal `,`, which `sort` (§7.4) and a filter's sequence
+/// member (§7.3) both split at, so an item's own comma travels as `%2C`; the
+/// server refuses a repeated parameter. An empty array is skipped at the top
+/// level (`sort`), but sent with an empty value as a family member, which a
+/// filter reads as the empty sequence, as IPC and MCP read `[]`.
 const TO_QUERY_STRING: &str = "\
 function toQueryString(params: Record<string, unknown>): string {
   const parts: string[] = [];
-  const push = (key: string, value: unknown) => {
+  const push = (key: string, value: unknown, member: boolean) => {
     if (value == null) return;
     const values = Array.isArray(value) ? value : [value];
-    if (values.length > 0) parts.push(`${key}=${values.map((v) => encodeURIComponent(String(v))).join(',')}`);
+    if (values.length > 0 || member) parts.push(`${key}=${values.map((v) => encodeURIComponent(String(v))).join(',')}`);
   };
   for (const [key, value] of Object.entries(params)) {
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
       for (const [member, v] of Object.entries(value)) {
-        push(`${encodeURIComponent(key)}%5B${encodeURIComponent(member)}%5D`, v);
+        push(`${encodeURIComponent(key)}%5B${encodeURIComponent(member)}%5D`, v, true);
       }
     } else {
-      push(encodeURIComponent(key), value);
+      push(encodeURIComponent(key), value, false);
     }
   }
   return parts.length > 0 ? `?${parts.join('&')}` : '';

@@ -43,6 +43,8 @@ pub enum ErrorCode {
     RelationshipUpdateUnsupported,
     /// `403 relationship_batch_unsupported`
     RelationshipBatchUnsupported,
+    /// `403 relationship_cycle`
+    RelationshipCycle,
     /// `404 no_such_related_resource`
     NoSuchRelatedResource,
     /// `404 no_such_relationship`
@@ -81,6 +83,7 @@ impl ErrorCode {
         ErrorCode::RelationshipRequired,
         ErrorCode::RelationshipUpdateUnsupported,
         ErrorCode::RelationshipBatchUnsupported,
+        ErrorCode::RelationshipCycle,
         ErrorCode::NoSuchRelatedResource,
         ErrorCode::NoSuchRelationship,
         ErrorCode::MethodNotAllowed,
@@ -108,6 +111,7 @@ impl ErrorCode {
             ErrorCode::RelationshipRequired => "relationship_required",
             ErrorCode::RelationshipUpdateUnsupported => "relationship_update_unsupported",
             ErrorCode::RelationshipBatchUnsupported => "relationship_batch_unsupported",
+            ErrorCode::RelationshipCycle => "relationship_cycle",
             ErrorCode::NoSuchRelatedResource => "no_such_related_resource",
             ErrorCode::NoSuchRelationship => "no_such_relationship",
             ErrorCode::MethodNotAllowed => "method_not_allowed",
@@ -135,7 +139,8 @@ impl ErrorCode {
             | ErrorCode::MissingRelationship => StatusCode::BAD_REQUEST,
             ErrorCode::RelationshipRequired
             | ErrorCode::RelationshipUpdateUnsupported
-            | ErrorCode::RelationshipBatchUnsupported => StatusCode::FORBIDDEN,
+            | ErrorCode::RelationshipBatchUnsupported
+            | ErrorCode::RelationshipCycle => StatusCode::FORBIDDEN,
             ErrorCode::NoSuchRelatedResource | ErrorCode::NoSuchRelationship => StatusCode::NOT_FOUND,
             ErrorCode::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ErrorCode::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
@@ -476,6 +481,7 @@ mod tests {
             ("relationship_required", 403),
             ("relationship_update_unsupported", 403),
             ("relationship_batch_unsupported", 403),
+            ("relationship_cycle", 403),
             ("no_such_related_resource", 404),
             ("no_such_relationship", 404),
             ("method_not_allowed", 405),
@@ -530,6 +536,7 @@ mod tests {
             RelationshipRequired,
             RelationshipUpdateUnsupported,
             RelationshipBatchUnsupported,
+            RelationshipCycle,
             NoSuchRelatedResource,
             NoSuchRelationship,
             MethodNotAllowed,

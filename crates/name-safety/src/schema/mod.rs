@@ -83,6 +83,7 @@ pub enum AppError {
     MatchAlreadyExists(String),
     MapIdRequired(String),
     MapAlreadyExists(String),
+    MapParentCycle(String),
     MethodNotFound(String),
     MethodIdRequired(String),
     MethodAlreadyExists(String),

@@ -2,6 +2,7 @@
 
 use ontogen_core::order::OrderBy;
 
+use ::sea_orm::TransactionTrait as _;
 use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::sea_query;
@@ -116,33 +117,28 @@ impl Store {
     pub async fn create_sea_query(&self, mut record: SeaQuery) -> Result<SeaQuery, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if record.id.trim().is_empty() {
             let base = ontogen_core::id::slugify(&record.title);
             if base.is_empty() {
                 return Err(AppError::SeaQueryIdRequired("field \"title\" produced an empty slug".to_string()));
             }
             for candidate in ontogen_core::id::candidates(&base) {
-                let taken = sea_query::Entity::find_by_id(candidate.as_str())
-                    .one(self.db())
-                    .await
-                    .map_err(|e| AppError::DbError(e.to_string()))?
-                    .is_some();
-                if taken {
-                    continue;
-                }
                 record.id = candidate;
-                if self.try_insert_sea_query(&record).await? {
+                if self.try_insert_sea_query(&txn, &record).await? {
                     break;
                 }
             }
             record.id.clone()
         } else {
             ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_sea_query(&record).await? {
+            if !self.try_insert_sea_query(&txn, &record).await? {
                 return Err(AppError::SeaQueryAlreadyExists(record.id));
             }
             record.id.clone()
         };
+
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_sea_query(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::SeaQuery, id);
@@ -162,9 +158,11 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
+
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_sea_query(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::SeaQuery, id.to_string());
@@ -191,13 +189,18 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_sea_query(&self, record: &SeaQuery) -> Result<bool, AppError> {
+    async fn try_insert_sea_query<C: ::sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        record: &SeaQuery,
+    ) -> Result<bool, AppError> {
         let active = record.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = sea_query::Entity::find_by_id(record.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();

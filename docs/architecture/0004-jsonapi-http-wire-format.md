@@ -203,8 +203,11 @@ only.
   (ADR 0003): envelope, methods, query parameters, custom-op bodies and the
   error body all change. The 0.9.0 changelog carries the migration.
 - **Breaking for every consumer's `AppError`.** It gains `{Entity}IdRequired`
-  and `{Entity}AlreadyExists` per entity, and `{Child}ParentRequired` where
-  a required-foreign-key `has_many` exists.
+  and `{Entity}AlreadyExists` per entity, `{Child}ParentRequired` where a
+  required-foreign-key `has_many` exists, and `{Child}ParentCycle` for the
+  child of any `has_many`. The upgrading guide
+  (`site/src/content/docs/reference/upgrading.mdx`) lists which entities
+  need which variant.
 - **Breaking for direct callers.** `gen_servers` and `gen_clients` gain a
   parameter, and `VaultHandle::new` loses one.
 - **Breaking for SeaORM data whose ids break the shared id rule**
@@ -230,6 +233,14 @@ only.
     before relying on create under those ids, and before moving the data
     to a markdown vault, where a vault cannot create them and some of
     them cannot exist as files.
+- **Breaking for markdown vaults holding a file no lookup can name.** A
+  file is a record only when its stem passes the markdown lookup check
+  (wire contract §8.2): `a:b.md`, `a\b.md`, `draft..md`, `draft .md` and a
+  whitespace-only stem do not. Such a file used to be listed although no
+  lookup could reach it. It is no longer listed, counted or any record's
+  child, so a list emits no link a lookup refuses.
+  - **Migration:** rename such files; the files stay on disk, and a
+    renamed one is a record again.
 - **Breaking for SeaORM consumers with an integer field the parser files
   under `OptionEnum` or `Other`** (`u32`, `Option<u16>` and the like). The
   generated entity field becomes `i64` (ADR 0006 §4), and the generated

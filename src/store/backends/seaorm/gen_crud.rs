@@ -12,11 +12,27 @@
 //! `load_junction_ids` must read them back in insertion order
 //! (`ORDER BY rowid` on SQLite).
 //!
+//! `create_*` and `update_*` make every write (the record's row, each
+//! `sync_junction`, each `set_*_parent`) in one transaction, committed
+//! before the read-back, `emit_change` and the `after_*` hook. A write that
+//! fails part-way leaves nothing written. Every statement inside goes
+//! through the transaction, which `sync_junction` takes as its first
+//! argument: a pool of one connection would wait forever on `self.db()`
+//! while the transaction holds it.
+//!
+//! The transaction's first statement is a write, and every read the write
+//! needs first (the hooks, the existence checks, the update's current row)
+//! runs before it opens. SQLite answers a transaction that has read and then
+//! wants the write lock another connection holds with an immediate
+//! `SQLITE_BUSY` that no busy timeout waits out; one that writes first waits
+//! for the lock like any other write.
+//!
 //! `create_*` calls `ontogen_core::id` at runtime, so the consumer depends
 //! on `ontogen-core`, with its `uuid` feature under `IdStrategy::Uuid`.
 
 use crate::ident::rust_ident;
 use crate::ir::IdStrategy;
+use crate::persistence::seaorm::gen_entity::column_meta_for;
 use crate::resource::member_name;
 use crate::schema::model::{EntityDef, EnumDef};
 use crate::schema::sort::{SortKind, sort_fields};
@@ -25,12 +41,20 @@ use crate::store::has_many::{self, has_many_writes};
 use crate::store::helpers::{
     junction_source_col, junction_table_name, junction_target_col, pluralize, to_pascal_case, to_snake_case,
 };
+use crate::store::int_range::{IntegerSource, emit_integer_range_checks};
+use crate::store::linked_ids::{self, Listed};
 use crate::store::nan::{FloatSource, Skipped, emit_nan_checks};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /// Generate the complete `impl Store { ... }` block with CRUD methods.
-pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, enums: &[EnumDef], id_strategy: &IdStrategy) {
+pub fn generate_crud_impl(
+    code: &mut String,
+    entity: &EntityDef,
+    entities: &[EntityDef],
+    enums: &[EnumDef],
+    id_strategy: &IdStrategy,
+) {
     let has_relations = entity.junction_relations().next().is_some() || entity.has_many_relations().next().is_some();
 
     code.push_str("impl Store {\n");
@@ -38,8 +62,8 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, enums: &[EnumDe
     generate_list(code, entity, has_relations);
     generate_count(code, entity);
     generate_get(code, entity, has_relations);
-    generate_create(code, entity, has_relations, id_strategy);
-    generate_update(code, entity, has_relations);
+    generate_create(code, entity, entities, id_strategy);
+    generate_update(code, entity, entities, has_relations);
     generate_delete(code, entity);
 
     if has_relations {
@@ -49,11 +73,10 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, enums: &[EnumDe
     generate_try_insert_helper(code, entity);
 
     // has_many reverse helpers (e.g., set_node_parent)
-    let writes = has_many_writes(entity);
-    for hm in &writes {
+    for hm in &has_many_writes(entity) {
         generate_set_parent_helper(code, entity, hm.fk, hm.fk_required);
     }
-    if !writes.is_empty() {
+    if linked_ids::needs_exists_helper(entity, entities) {
         generate_exists_helper(code, entity);
     }
 
@@ -199,7 +222,7 @@ fn generate_get(code: &mut String, entity: &EntityDef, has_relations: bool) {
     code.push_str("    }\n\n");
 }
 
-fn generate_create(code: &mut String, entity: &EntityDef, has_relations: bool, id_strategy: &IdStrategy) {
+fn generate_create(code: &mut String, entity: &EntityDef, entities: &[EntityDef], id_strategy: &IdStrategy) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let entity_kind = entity_kind_variant(name);
@@ -214,11 +237,13 @@ fn generate_create(code: &mut String, entity: &EntityDef, has_relations: bool, i
     // The junction and has_many lists are written from the record once it
     // has an id; the insert only borrows it.
     let junctions: Vec<_> = entity.junction_relations().collect();
-    has_many::emit_missing_children_check(code, entity, &has_many_writes(entity), |f| format!("&record.{f}"));
-    emit_nan_checks(code, entity, FloatSource::Record("record"), Skipped::Stored, |m| {
-        format!("AppError::DbError({m})")
-    });
+    let listed = Listed::Create("record");
+    linked_ids::emit_self_listing_check(code, entity, &listed);
+    linked_ids::emit_listed_ids_check(code, entity, entities, &listed);
+    emit_integer_range_checks(code, entity, IntegerSource::Record("record"), Skipped::Stored, db_error);
+    emit_nan_checks(code, entity, FloatSource::Record("record"), Skipped::Stored, db_error);
 
+    emit_begin(code);
     generate_insert_with_id(code, entity, id_strategy);
 
     // Sync junction tables
@@ -230,7 +255,7 @@ fn generate_create(code: &mut String, entity: &EntityDef, has_relations: bool, i
         let tgt_col = junction_target_col(&snake, &target_snake, is_self_ref);
 
         code.push_str(&format!(
-            "        self.sync_junction(\"{jt}\", \"{src_col}\", \"{tgt_col}\", &id, &record.{}).await?;\n",
+            "        self.sync_junction(&txn, \"{jt}\", \"{src_col}\", \"{tgt_col}\", &id, &record.{}).await?;\n",
             field.name
         ));
     }
@@ -239,15 +264,13 @@ fn generate_create(code: &mut String, entity: &EntityDef, has_relations: bool, i
     for hm in has_many_writes(entity) {
         code.push_str(&format!("        for child_id in &record.{} {{\n", hm.field));
         code.push_str(&format!(
-            "            self.set_{snake}_parent(child_id, {}).await?;\n",
+            "            self.set_{snake}_parent(&txn, child_id, {}).await?;\n",
             has_many::set_parent_arg(hm.fk_required, "&id")
         ));
         code.push_str("        }\n");
     }
 
-    if has_relations {
-        code.push('\n');
-    }
+    emit_commit(code);
 
     code.push_str(&format!("        let created = self.get_{snake}(&id).await?;\n"));
     code.push_str(&format!("        self.emit_change(ChangeOp::Created, EntityKind::{entity_kind}, id);\n\n"));
@@ -258,17 +281,36 @@ fn generate_create(code: &mut String, entity: &EntityDef, has_relations: bool, i
     code.push_str("    }\n\n");
 }
 
+/// Open the transaction every write of `create_*` and `update_*` goes
+/// through, as `txn`. Dropped without a commit, it rolls back.
+fn emit_begin(code: &mut String) {
+    code.push_str("        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;\n");
+}
+
+fn emit_commit(code: &mut String) {
+    code.push_str("        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;\n\n");
+}
+
+/// The SeaORM store's catch-all for a value it refuses before writing.
+fn db_error(message: &str) -> String {
+    format!("AppError::DbError({message})")
+}
+
 /// Emit the insert of a new record, binding `id`. The same rules as the
 /// markdown runtime's create (JSON:API wire contract §8.2): an id that is
 /// empty or whitespace-only is absent, so the strategy derives one, probing
 /// `-2`, `-3`, … past ids that are taken or reserved; any other id is
 /// validated and inserted as given, and a duplicate is
-/// `{Entity}AlreadyExists`. A derived id another writer took between the
-/// probe and the insert moves on to the next suffix.
+/// `{Entity}AlreadyExists`.
+///
+/// A derived id probes by inserting: each candidate is inserted, and one
+/// `try_insert_{entity}` finds taken moves on to the next. The insert is the
+/// transaction's first statement (see the module doc), and once it has run
+/// the transaction holds the write lock, so the later candidates see every
+/// committed row and concurrent creates take consecutive suffixes.
 fn generate_insert_with_id(code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
     let name = &entity.name;
     let snake = to_snake_case(name);
-    let module = rust_ident(&snake);
 
     let base = match id_strategy {
         IdStrategy::Provided => None,
@@ -295,16 +337,8 @@ fn generate_insert_with_id(code: &mut String, entity: &EntityDef, id_strategy: &
                 code.push_str("            }\n");
             }
             code.push_str("            for candidate in ontogen_core::id::candidates(&base) {\n");
-            code.push_str(&format!("                let taken = {module}::Entity::find_by_id(candidate.as_str())\n"));
-            code.push_str("                    .one(self.db())\n");
-            code.push_str("                    .await\n");
-            code.push_str("                    .map_err(|e| AppError::DbError(e.to_string()))?\n");
-            code.push_str("                    .is_some();\n");
-            code.push_str("                if taken {\n");
-            code.push_str("                    continue;\n");
-            code.push_str("                }\n");
             code.push_str("                record.id = candidate;\n");
-            code.push_str(&format!("                if self.try_insert_{snake}(&record).await? {{\n"));
+            code.push_str(&format!("                if self.try_insert_{snake}(&txn, &record).await? {{\n"));
             code.push_str("                    break;\n");
             code.push_str("                }\n");
             code.push_str("            }\n");
@@ -315,14 +349,14 @@ fn generate_insert_with_id(code: &mut String, entity: &EntityDef, id_strategy: &
     code.push_str(
         "            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;\n",
     );
-    code.push_str(&format!("            if !self.try_insert_{snake}(&record).await? {{\n"));
+    code.push_str(&format!("            if !self.try_insert_{snake}(&txn, &record).await? {{\n"));
     code.push_str(&format!("                return Err(AppError::{name}AlreadyExists(record.id));\n"));
     code.push_str("            }\n");
     code.push_str("            record.id.clone()\n");
     code.push_str("        };\n\n");
 }
 
-fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
+fn generate_update(code: &mut String, entity: &EntityDef, entities: &[EntityDef], has_relations: bool) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let module = rust_ident(&snake);
@@ -371,19 +405,32 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
         code.push('\n');
     }
     let writes = has_many_writes(entity);
-    has_many::emit_missing_children_check(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
+    linked_ids::emit_self_listing_check(code, entity, &Listed::Update);
+    linked_ids::emit_listed_ids_check(code, entity, entities, &Listed::Update);
     has_many::emit_dropped_children(code, &writes);
-    emit_nan_checks(code, entity, FloatSource::Updates, Skipped::Stored, |m| format!("AppError::DbError({m})"));
+    emit_integer_range_checks(code, entity, IntegerSource::Updates, Skipped::Stored, db_error);
+    emit_nan_checks(code, entity, FloatSource::Updates, Skipped::Stored, db_error);
 
     // Apply updates
-    code.push_str("        updates.apply(&mut current);\n\n");
+    code.push_str("        updates.apply(&mut current);\n");
+    // A row with no column besides its id has nothing to update, and
+    // SeaORM answers such an update with a SELECT: a read as the
+    // transaction's first statement (see the module doc).
+    let row_has_values = entity.fields.iter().filter_map(column_meta_for).any(|column| !column.is_primary_key);
+    if row_has_values {
+        code.push_str("        let active = current.to_active_model()?;\n\n");
+    } else {
+        code.push('\n');
+    }
 
     // Re-persist
-    code.push_str("        let active = current.to_active_model()?;\n");
-    code.push_str("        active\n");
-    code.push_str("            .update(self.db())\n");
-    code.push_str("            .await\n");
-    code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?;\n\n");
+    emit_begin(code);
+    if row_has_values {
+        code.push_str("        active\n");
+        code.push_str("            .update(&txn)\n");
+        code.push_str("            .await\n");
+        code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?;\n");
+    }
 
     // Conditional junction sync
     for (field, info) in &junctions {
@@ -395,18 +442,15 @@ fn generate_update(code: &mut String, entity: &EntityDef, has_relations: bool) {
 
         code.push_str(&format!("        if {} {{\n", has_many::local(&field.name, "changed")));
         code.push_str(&format!(
-            "            self.sync_junction(\"{jt}\", \"{src_col}\", \"{tgt_col}\", id, &current.{fname}).await?;\n",
+            "            self.sync_junction(&txn, \"{jt}\", \"{src_col}\", \"{tgt_col}\", id, &current.{fname}).await?;\n",
             fname = field.name
         ));
         code.push_str("        }\n");
     }
 
     // Conditional has_many reverse sync
-    has_many::emit_update_children(code, entity, &writes, |f| format!("&current.{f}"));
-
-    if !junctions.is_empty() || !has_manys.is_empty() {
-        code.push('\n');
-    }
+    has_many::emit_update_children(code, entity, &writes, |f| format!("&current.{f}"), Some("&txn"));
+    emit_commit(code);
 
     code.push_str(&format!("        let result = self.get_{snake}(id).await?;\n"));
     code.push_str(&format!(
@@ -514,24 +558,30 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
 
 // ─── has_many helper: set_parent ─────────────────────────────────────────────
 
-/// `try_insert_{snake}`: insert a new row, answering `false` when its id is
-/// already taken. Only a unique violation with a row under that id means
-/// the id is taken; a violation of some other unique constraint the
-/// consumer declared is a `DbError` like any other.
+/// `try_insert_{snake}`: insert a new row on `conn` (the create's
+/// transaction), answering `false` when its id is already taken. Only a
+/// unique violation with a row under that id means the id is taken; a
+/// violation of some other unique constraint the consumer declared is a
+/// `DbError` like any other.
 fn generate_try_insert_helper(code: &mut String, entity: &EntityDef) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let module = rust_ident(&snake);
 
-    code.push_str(&format!("    async fn try_insert_{snake}(&self, record: &{name}) -> Result<bool, AppError> {{\n"));
+    code.push_str(&format!(
+        "    async fn try_insert_{snake}<C: ::sea_orm::ConnectionTrait>(&self, conn: &C, record: &{name}) -> Result<bool, AppError> {{\n"
+    ));
     code.push_str("        let active = record.to_active_model()?;\n");
-    code.push_str("        match active.insert(self.db()).await {\n");
+    code.push_str("        match active.insert(conn).await {\n");
     code.push_str("            Ok(_) => Ok(true),\n");
     code.push_str(
         "            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {\n",
     );
+    code.push_str(
+        "                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.\n",
+    );
     code.push_str(&format!("                let taken = {module}::Entity::find_by_id(record.id.as_str())\n"));
-    code.push_str("                    .one(self.db())\n");
+    code.push_str("                    .one(conn)\n");
     code.push_str("                    .await\n");
     code.push_str("                    .map_err(|e| AppError::DbError(e.to_string()))?\n");
     code.push_str("                    .is_some();\n");
@@ -542,8 +592,9 @@ fn generate_try_insert_helper(code: &mut String, entity: &EntityDef) {
     code.push_str("    }\n\n");
 }
 
-/// `set_{snake}_parent`: point a child's FK at a parent with one `UPDATE`.
-/// A required FK takes a parent, an optional one `None` to clear it.
+/// `set_{snake}_parent`: point a child's FK at a parent with one `UPDATE`
+/// on `conn` (the write's transaction). A required FK takes a parent, an
+/// optional one `None` to clear it.
 fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, fk_required: bool) {
     let snake = to_snake_case(&entity.name);
     // Built by sea_query, which quotes every identifier for the connection's
@@ -553,35 +604,35 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, f
     let alias = |name: &str| format!("::sea_orm::sea_query::Alias::new({name:?})");
     let parent = if fk_required { "parent_id.to_string()" } else { "parent_id.map(str::to_string)" };
 
-    code.push_str(&format!("    async fn set_{snake}_parent(\n"));
+    code.push_str(&format!("    async fn set_{snake}_parent<C: ::sea_orm::ConnectionTrait>(\n"));
     code.push_str("        &self,\n");
+    code.push_str("        conn: &C,\n");
     code.push_str("        child_id: &str,\n");
     code.push_str(&format!("        parent_id: {},\n", has_many::parent_param_type(fk_required)));
     code.push_str("    ) -> Result<(), AppError> {\n");
-    code.push_str("        use ::sea_orm::ConnectionTrait as _;\n");
     code.push_str("        let update = ::sea_orm::sea_query::Query::update()\n");
     code.push_str(&format!("            .table({})\n", alias(&entity.table)));
     code.push_str(&format!("            .value({}, {parent})\n", alias(member_name(fk))));
     code.push_str(&format!("            .and_where(::sea_orm::sea_query::Expr::col({}).eq(child_id))\n", alias(id)));
     code.push_str("            .to_owned();\n");
-    code.push_str("        let stmt = self.db().get_database_backend().build(&update);\n");
-    code.push_str("        self.db()\n");
-    code.push_str("            .execute(stmt)\n");
+    code.push_str("        let stmt = conn.get_database_backend().build(&update);\n");
+    code.push_str("        conn.execute(stmt)\n");
     code.push_str("            .await\n");
     code.push_str("            .map_err(|e| AppError::DbError(e.to_string()))?;\n");
     code.push_str("        Ok(())\n");
     code.push_str("    }\n\n");
 }
 
-/// `{snake}_exists`: whether a record with this id exists, for the
-/// missing-child check of a `has_many` write.
+/// `{snake}_exists`: whether a record with this id exists, for the checks
+/// on the ids a write lists (`linked_ids`). It reads through `self.db()`:
+/// those checks run before the write's transaction opens.
 fn generate_exists_helper(code: &mut String, entity: &EntityDef) {
     let snake = to_snake_case(&entity.name);
     let module = rust_ident(&snake);
 
     code.push_str(&format!(
-        "    async fn {}(&self, id: &str) -> Result<bool, AppError> {{\n",
-        has_many::exists_helper(entity)
+        "    pub(crate) async fn {}(&self, id: &str) -> Result<bool, AppError> {{\n",
+        linked_ids::exists_helper(&entity.name)
     ));
     code.push_str(&format!("        Ok({module}::Entity::find_by_id(id)\n"));
     code.push_str("            .one(self.db())\n");
@@ -683,7 +734,7 @@ mod tests {
     fn test_simple_entity_crud() {
         let entity = make_role_entity();
         let mut code = String::new();
-        generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
+        generate_crud_impl(&mut code, &entity, std::slice::from_ref(&entity), &[], &IdStrategy::Provided);
 
         assert!(code.contains("fn list_roles("));
         assert!(code.contains("fn get_role("));
@@ -698,10 +749,10 @@ mod tests {
     fn test_complex_entity_has_populate_relations() {
         let entity = make_node_entity();
         let mut code = String::new();
-        generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
+        generate_crud_impl(&mut code, &entity, std::slice::from_ref(&entity), &[], &IdStrategy::Provided);
 
         assert!(code.contains("populate_node_relations"));
-        assert!(code.contains("sync_junction(\"node_fulfills\""));
+        assert!(code.contains("self.sync_junction(&txn, \"node_fulfills\""));
         assert!(code.contains("set_node_parent"));
     }
 
@@ -709,7 +760,7 @@ mod tests {
     fn test_junction_sync_in_create() {
         let entity = make_node_entity();
         let mut code = String::new();
-        generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
+        generate_crud_impl(&mut code, &entity, std::slice::from_ref(&entity), &[], &IdStrategy::Provided);
 
         // Create writes the junction and the children from the record
         let create = method(&code, "create_node");
@@ -721,7 +772,7 @@ mod tests {
     fn test_list_has_pagination_params() {
         let entity = make_role_entity();
         let mut code = String::new();
-        generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
+        generate_crud_impl(&mut code, &entity, std::slice::from_ref(&entity), &[], &IdStrategy::Provided);
 
         // Generated list_* must accept an order and optional limit / offset for SQL-level pagination
         assert!(
@@ -803,7 +854,7 @@ mod tests {
         let check = update.find("if updates.weight.is_some_and(f32::is_nan) {").unwrap_or_else(|| panic!("{update}"));
         assert!(update.contains("if updates.high.flatten().is_some_and(f64::is_nan) {"), "{update}");
         assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
-        assert!(check < update.find(".update(self.db())").unwrap(), "before the record write: {update}");
+        assert!(check < update.find(".update(&txn)").unwrap(), "before the record write: {update}");
         assert!(!crud(&make_role_entity(), &IdStrategy::Provided).contains("is_nan"), "no float, no check");
     }
 
@@ -838,7 +889,7 @@ mod tests {
     fn test_update_tracks_junction_changes() {
         let entity = make_node_entity();
         let mut code = String::new();
-        generate_crud_impl(&mut code, &entity, &[], &IdStrategy::Provided);
+        generate_crud_impl(&mut code, &entity, std::slice::from_ref(&entity), &[], &IdStrategy::Provided);
 
         // Update should track which junction fields changed
         assert!(code.contains("let fulfills_changed = updates.fulfills.is_some()"));
@@ -860,12 +911,15 @@ mod tests {
 
     fn crud(entity: &EntityDef, strategy: &IdStrategy) -> String {
         let mut code = String::new();
-        generate_crud_impl(&mut code, entity, &[], strategy);
+        generate_crud_impl(&mut code, entity, std::slice::from_ref(entity), &[], strategy);
         code
     }
 
     fn method<'a>(code: &'a str, name: &str) -> &'a str {
-        let start = code.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("no fn {name}"));
+        let start = code
+            .find(&format!("fn {name}("))
+            .or_else(|| code.find(&format!("fn {name}<")))
+            .unwrap_or_else(|| panic!("no fn {name}"));
         let rest = &code[start..];
         &rest[..rest.find("\n    }\n").map(|e| e + 6).unwrap_or(rest.len())]
     }
@@ -902,8 +956,11 @@ mod tests {
             "the reason is the markdown runtime's wording: {create}"
         );
         assert!(create.contains("for candidate in ontogen_core::id::candidates(&base) {"), "{create}");
-        assert!(create.contains("role::Entity::find_by_id(candidate.as_str())"), "probes before inserting: {create}");
-        assert!(create.contains("if self.try_insert_role(&record).await? {"), "{create}");
+        assert!(
+            create.contains("record.id = candidate;\n                if self.try_insert_role(&txn, &record).await? {"),
+            "each candidate is probed by inserting it: {create}"
+        );
+        assert!(!create.contains("find_by_id"), "no lookup before the insert: {create}");
     }
 
     #[test]
@@ -933,7 +990,7 @@ mod tests {
             dropped < update.find("updates.apply(&mut current)").unwrap(),
             "computed from the stored list: {update}"
         );
-        assert!(update.contains("self.set_node_parent(child_id, None).await?;"), "{update}");
+        assert!(update.contains("self.set_node_parent(&txn, child_id, None).await?;"), "{update}");
         assert!(!update.contains("ParentRequired"), "an optional FK can be cleared: {update}");
         assert!(method(&code, "set_node_parent").contains("parent_id: Option<&str>,"));
     }
@@ -943,8 +1000,8 @@ mod tests {
         let code = crud(&make_node_with_required_parent(), &IdStrategy::Provided);
         let update = method(&code, "update_node");
         let refusal = update.find("return Err(AppError::NodeParentRequired(child_id.clone()));").expect("refusal");
-        assert!(refusal < update.find(".update(self.db())").unwrap(), "refused before the record write: {update}");
-        assert!(update.contains("self.set_node_parent(child_id, id).await?;"), "{update}");
+        assert!(refusal < update.find(".update(&txn)").unwrap(), "refused before the record write: {update}");
+        assert!(update.contains("self.set_node_parent(&txn, child_id, id).await?;"), "{update}");
         assert!(!update.contains("None).await"), "{update}");
 
         let helper = method(&code, "set_node_parent");
@@ -953,7 +1010,7 @@ mod tests {
             helper.contains(r#".value(::sea_orm::sea_query::Alias::new("parent_id"), parent_id.to_string())"#),
             "{helper}"
         );
-        assert!(method(&code, "create_node").contains("self.set_node_parent(child_id, &id).await?;"));
+        assert!(method(&code, "create_node").contains("self.set_node_parent(&txn, child_id, &id).await?;"));
     }
 
     #[test]
@@ -971,17 +1028,154 @@ mod tests {
             );
 
             let update = method(&code, "update_node");
-            let check = update.find("if !self.node_exists(child_id).await? {").expect("update checks");
+            let check = update
+                .find("if !current.contains.contains(child_id) && !self.node_exists(child_id).await? {")
+                .expect("an update checks the children it adds");
             assert!(update.contains("for child_id in updates.contains.iter().flatten() {"), "{update}");
             assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
             assert!(check < update.find("let contains_dropped").unwrap(), "before the drop check: {update}");
-            assert!(check < update.find(".update(self.db())").unwrap(), "before the record write: {update}");
+            assert!(check < update.find(".update(&txn)").unwrap(), "before the record write: {update}");
             assert!(update.contains("return Err(AppError::NodeNotFound(child_id.clone()));"), "{update}");
 
             let helper = method(&code, "node_exists");
             assert!(helper.contains("node::Entity::find_by_id(id)"), "{helper}");
         }
         assert!(!crud(&make_role_entity(), &IdStrategy::Provided).contains("_exists("), "no has_many, no check");
+    }
+
+    #[test]
+    fn every_write_of_a_create_or_update_is_in_one_transaction() {
+        let code = crud(&make_node_entity(), &IdStrategy::SlugFromField("name".into()));
+        for (op, first_write) in
+            [("create_node", "let id = if record.id.trim().is_empty()"), ("update_node", "active\n")]
+        {
+            let body = method(&code, op);
+            let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{op}: missing `{needle}`:\n{body}"));
+            let begin = at("let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;");
+            let commit = at("txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;");
+            assert!(at("hooks::before_") < begin && begin < at(first_write), "{op}: {body}");
+            assert!(at("self.sync_junction(&txn, ") < commit, "{op}: {body}");
+            assert!(at("self.set_node_parent(&txn, child_id, ") < commit, "{op}: {body}");
+            let after = at("hooks::after_");
+            assert!(commit < at(".await?;\n        self.emit_change(") && commit < after, "{op}: {body}");
+            let between = &body[begin + body[begin..].find('\n').unwrap()..commit];
+            assert!(!between.contains("self.db()"), "{op}: every statement goes through the transaction: {between}");
+        }
+        let create = method(&code, "create_node");
+        assert!(create.contains("if self.try_insert_node(&txn, &record).await? {"), "{create}");
+        assert!(method(&code, "update_node").contains(".update(&txn)"));
+        for helper in ["try_insert_node", "set_node_parent"] {
+            let helper = method(&code, helper);
+            assert!(helper.contains("<C: ::sea_orm::ConnectionTrait>(") && helper.contains("conn: &C,"), "{helper}");
+            assert!(!helper.contains("self.db()"), "{helper}");
+        }
+        let simple = crud(&make_role_entity(), &IdStrategy::Provided);
+        assert!(method(&simple, "create_role").contains("let txn = self.db().begin()"), "{simple}");
+    }
+
+    #[test]
+    fn a_many_to_many_target_is_checked_before_anything_is_written() {
+        let requirement = EntityDef {
+            name: "Requirement".to_string(),
+            directory: "requirement".to_string(),
+            table: "requirements".to_string(),
+            type_name: "requirement".to_string(),
+            prefix: "req".to_string(),
+            id_strategy: None,
+            fields: vec![FieldDef::new("id", FieldType::String, FieldRole::Id)],
+            doc: String::new(),
+        };
+        let entities = [make_node_entity(), requirement];
+        for (entity, expected) in entities.iter().zip([true, true]) {
+            let mut code = String::new();
+            generate_crud_impl(&mut code, entity, &entities, &[], &IdStrategy::Provided);
+            let exists = format!("pub(crate) async fn {}(&self, id: &str)", linked_ids::exists_helper(&entity.name));
+            assert_eq!(code.contains(&exists), expected, "{code}");
+        }
+        let mut code = String::new();
+        generate_crud_impl(&mut code, &entities[0], &entities, &[], &IdStrategy::Provided);
+        for op in ["create_node", "update_node"] {
+            let body = method(&code, op);
+            let check = body.find("!self.requirement_exists(target_id).await? {").unwrap_or_else(|| panic!("{body}"));
+            assert!(body.contains("return Err(AppError::RequirementNotFound(target_id.clone()));"), "{body}");
+            assert!(check < body.find("let txn = self.db().begin()").unwrap(), "{op}: before the transaction: {body}");
+            assert!(body.find("ParentCycle").unwrap() < check, "{op}: after the self-listing check: {body}");
+        }
+    }
+
+    #[test]
+    fn a_value_outside_i64_is_refused_before_the_id_is_derived() {
+        let mut entity = make_node_entity();
+        entity.fields.push(FieldDef::new("seq", FieldType::Other("u64".into()), FieldRole::Plain));
+        entity.fields.push(FieldDef::new("hidden", FieldType::Other("usize".into()), FieldRole::Skip));
+        let code = crud(&entity, &IdStrategy::SlugFromField("name".into()));
+
+        let create = method(&code, "create_node");
+        let check = create.find("if let Some(v) = Some(record.seq).filter(|v| i64::try_from(*v).is_err()) {");
+        let check = check.unwrap_or_else(|| panic!("{create}"));
+        assert!(
+            create
+                .contains(r#"return Err(AppError::DbError(format!("Node.seq: value {v} is out of range for i64")));"#),
+            "{create}"
+        );
+        assert!(create.contains("Some(record.hidden).filter("), "a skipped field has a column: {create}");
+        assert!(check < create.find("if record.").unwrap_or(usize::MAX), "{create}");
+        assert!(check < create.find("let id = if record.id.trim().is_empty()").unwrap(), "{create}");
+
+        let update = method(&code, "update_node");
+        let check = update.find("if let Some(v) = updates.seq.filter(|v| i64::try_from(*v).is_err()) {");
+        let check = check.unwrap_or_else(|| panic!("{update}"));
+        assert!(check < update.find("updates.apply(&mut current)").unwrap(), "{update}");
+        assert!(!update.contains("hidden"), "{update}");
+    }
+
+    /// SQLite fails a transaction that read and then wants the write lock
+    /// another connection holds at once, busy timeout or not, so the first
+    /// statement of every create and update transaction is a write.
+    #[test]
+    fn every_write_transaction_starts_with_a_write() {
+        let first_use = |body: &str| {
+            let begin = body.find("let txn = self.db().begin()").unwrap_or_else(|| panic!("{body}"));
+            let after = &body[begin + body[begin..].find('\n').unwrap()..];
+            let at = after.find("&txn").unwrap_or_else(|| panic!("{body}"));
+            after[after[..at].rfind('\n').unwrap() + 1..at + after[at..].find('\n').unwrap()].trim().to_string()
+        };
+        for strategy in strategies() {
+            let code = crud(&make_node_entity(), &strategy);
+            let create = first_use(method(&code, "create_node"));
+            assert!(create.contains("self.try_insert_node(&txn, &record).await?"), "{strategy:?}: {create}");
+            assert_eq!(first_use(method(&code, "update_node")), ".update(&txn)");
+        }
+
+        // A row that is only its id: SeaORM turns its update into a SELECT,
+        // so the update writes nothing to the row and starts with the junction.
+        let tagged = EntityDef {
+            name: "Pin".to_string(),
+            directory: "pin".to_string(),
+            table: "pins".to_string(),
+            type_name: "pin".to_string(),
+            prefix: "pin".to_string(),
+            id_strategy: None,
+            fields: vec![
+                FieldDef::new("id", FieldType::String, FieldRole::Id),
+                FieldDef::new(
+                    "marks",
+                    FieldType::VecString,
+                    FieldRole::Relation(RelationInfo {
+                        kind: RelationKind::ManyToMany,
+                        target: "Pin".to_string(),
+                        junction: None,
+                        foreign_key: None,
+                    }),
+                ),
+            ],
+            doc: String::new(),
+        };
+        let code = crud(&tagged, &IdStrategy::Uuid);
+        let update = method(&code, "update_pin");
+        assert!(!update.contains("to_active_model") && !update.contains(".update(&txn)"), "{update}");
+        assert!(first_use(update).starts_with("self.sync_junction(&txn, \"pin_marks\""), "{update}");
+        syn::parse_file(&code).unwrap_or_else(|e| panic!("{e}\n{code}"));
     }
 
     /// Syntax check: verify the generated `impl Store` block parses as valid

@@ -2,6 +2,7 @@
 
 use ontogen_core::order::OrderBy;
 
+use ::sea_orm::TransactionTrait as _;
 use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::doc;
@@ -135,43 +136,41 @@ impl Store {
     pub async fn create_doc(&self, mut record: Doc) -> Result<Doc, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        if !record.id.trim().is_empty() && record.children.contains(&record.id) {
+            return Err(AppError::DocParentCycle(record.id.clone()));
+        }
+
         for child_id in &record.children {
             if !self.doc_exists(child_id).await? {
                 return Err(AppError::DocNotFound(child_id.clone()));
             }
         }
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if record.id.trim().is_empty() {
             let base = ontogen_core::id::slugify(&record.title);
             if base.is_empty() {
                 return Err(AppError::DocIdRequired("field \"title\" produced an empty slug".to_string()));
             }
             for candidate in ontogen_core::id::candidates(&base) {
-                let taken = doc::Entity::find_by_id(candidate.as_str())
-                    .one(self.db())
-                    .await
-                    .map_err(|e| AppError::DbError(e.to_string()))?
-                    .is_some();
-                if taken {
-                    continue;
-                }
                 record.id = candidate;
-                if self.try_insert_doc(&record).await? {
+                if self.try_insert_doc(&txn, &record).await? {
                     break;
                 }
             }
             record.id.clone()
         } else {
             ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_doc(&record).await? {
+            if !self.try_insert_doc(&txn, &record).await? {
                 return Err(AppError::DocAlreadyExists(record.id));
             }
             record.id.clone()
         };
 
         for child_id in &record.children {
-            self.set_doc_parent(child_id, Some(&id)).await?;
+            self.set_doc_parent(&txn, child_id, Some(&id)).await?;
         }
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_doc(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Doc, id);
@@ -194,8 +193,12 @@ impl Store {
 
         let children_changed = updates.children.is_some();
 
+        if updates.children.as_ref().is_some_and(|ids| ids.iter().any(|c| c == id)) {
+            return Err(AppError::DocParentCycle(id.to_string()));
+        }
+
         for child_id in updates.children.iter().flatten() {
-            if !self.doc_exists(child_id).await? {
+            if !current.children.contains(child_id) && !self.doc_exists(child_id).await? {
                 return Err(AppError::DocNotFound(child_id.clone()));
             }
         }
@@ -206,18 +209,19 @@ impl Store {
         };
 
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
         if children_changed {
             for child_id in &current.children {
-                self.set_doc_parent(child_id, Some(id)).await?;
+                self.set_doc_parent(&txn, child_id, Some(id)).await?;
             }
             for child_id in &children_dropped {
-                self.set_doc_parent(child_id, None).await?;
+                self.set_doc_parent(&txn, child_id, None).await?;
             }
         }
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_doc(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::Doc, id.to_string());
@@ -263,13 +267,14 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_doc(&self, record: &Doc) -> Result<bool, AppError> {
+    async fn try_insert_doc<C: ::sea_orm::ConnectionTrait>(&self, conn: &C, record: &Doc) -> Result<bool, AppError> {
         let active = record.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = doc::Entity::find_by_id(record.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();
@@ -279,19 +284,23 @@ impl Store {
         }
     }
 
-    async fn set_doc_parent(&self, child_id: &str, parent_id: Option<&str>) -> Result<(), AppError> {
-        use ::sea_orm::ConnectionTrait as _;
+    async fn set_doc_parent<C: ::sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        child_id: &str,
+        parent_id: Option<&str>,
+    ) -> Result<(), AppError> {
         let update = ::sea_orm::sea_query::Query::update()
             .table(::sea_orm::sea_query::Alias::new("docs"))
             .value(::sea_orm::sea_query::Alias::new("in"), parent_id.map(str::to_string))
             .and_where(::sea_orm::sea_query::Expr::col(::sea_orm::sea_query::Alias::new("id")).eq(child_id))
             .to_owned();
-        let stmt = self.db().get_database_backend().build(&update);
-        self.db().execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        let stmt = conn.get_database_backend().build(&update);
+        conn.execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
         Ok(())
     }
 
-    async fn doc_exists(&self, id: &str) -> Result<bool, AppError> {
+    pub(crate) async fn doc_exists(&self, id: &str) -> Result<bool, AppError> {
         Ok(doc::Entity::find_by_id(id).one(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?.is_some())
     }
 }

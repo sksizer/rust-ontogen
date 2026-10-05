@@ -422,9 +422,18 @@ impl Store {
     pub async fn create_item(&self, mut record: Item) -> Result<Item, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        if !record.id.trim().is_empty() && record.children.contains(&record.id) {
+            return Err(AppError::ItemParentCycle(record.id.clone()));
+        }
+
         for child_id in &record.children {
             if !self.item_exists(child_id).await? {
                 return Err(AppError::ItemNotFound(child_id.clone()));
+            }
+        }
+        for target_id in &record.tags {
+            if !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
             }
         }
 
@@ -511,9 +520,18 @@ impl Store {
 
         let children_changed = updates.children.is_some();
 
+        if updates.children.as_ref().is_some_and(|ids| ids.iter().any(|c| c == id)) {
+            return Err(AppError::ItemParentCycle(id.to_string()));
+        }
+
         for child_id in updates.children.iter().flatten() {
-            if !self.item_exists(child_id).await? {
+            if !current.children.contains(child_id) && !self.item_exists(child_id).await? {
                 return Err(AppError::ItemNotFound(child_id.clone()));
+            }
+        }
+        for target_id in updates.tags.iter().flatten() {
+            if !current.tags.contains(target_id) && !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
             }
         }
 
@@ -646,7 +664,7 @@ impl Store {
             .map_err(AppError::from)
     }
 
-    async fn item_exists(&self, id: &str) -> Result<bool, AppError> {
+    pub(crate) async fn item_exists(&self, id: &str) -> Result<bool, AppError> {
         match self.vault().entity(ITEMS_DIR, ITEM_TYPE).read_opt(id) {
             Ok(doc) => Ok(doc.is_some()),
             Err(markdown_store::Error::InvalidId { .. }) => Ok(false),

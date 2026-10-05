@@ -138,6 +138,10 @@ impl Store {
     pub async fn create_map(&self, mut record: Map) -> Result<Map, AppError> {
         hooks::before_create(self, &mut record).await?;
 
+        if !record.id.trim().is_empty() && record.children.contains(&record.id) {
+            return Err(AppError::MapParentCycle(record.id.clone()));
+        }
+
         for child_id in &record.children {
             if !self.map_exists(child_id).await? {
                 return Err(AppError::MapNotFound(child_id.clone()));
@@ -174,8 +178,12 @@ impl Store {
 
         let children_changed = updates.children.is_some();
 
+        if updates.children.as_ref().is_some_and(|ids| ids.iter().any(|c| c == id)) {
+            return Err(AppError::MapParentCycle(id.to_string()));
+        }
+
         for child_id in updates.children.iter().flatten() {
-            if !self.map_exists(child_id).await? {
+            if !current.children.contains(child_id) && !self.map_exists(child_id).await? {
                 return Err(AppError::MapNotFound(child_id.clone()));
             }
         }
@@ -256,7 +264,7 @@ impl Store {
             .map_err(AppError::from)
     }
 
-    async fn map_exists(&self, id: &str) -> Result<bool, AppError> {
+    pub(crate) async fn map_exists(&self, id: &str) -> Result<bool, AppError> {
         match self.vault().entity(MAPS_DIR, MAP_TYPE).read_opt(id) {
             Ok(doc) => Ok(doc.is_some()),
             Err(markdown_store::Error::InvalidId { .. }) => Ok(false),

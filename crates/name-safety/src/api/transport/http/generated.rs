@@ -68,6 +68,7 @@ fn ontogen_app_error(e: crate::schema::AppError) -> OntogenErrorObject {
         crate::schema::AppError::MatchAlreadyExists(..) => (OntogenStatusCode::CONFLICT, "match_already_exists"),
         crate::schema::AppError::MapIdRequired(..) => (OntogenStatusCode::BAD_REQUEST, "map_id_required"),
         crate::schema::AppError::MapAlreadyExists(..) => (OntogenStatusCode::CONFLICT, "map_already_exists"),
+        crate::schema::AppError::MapParentCycle(..) => (OntogenStatusCode::FORBIDDEN, "map_parent_cycle"),
         crate::schema::AppError::MethodNotFound(..) => (OntogenStatusCode::NOT_FOUND, "method_not_found"),
         crate::schema::AppError::MethodIdRequired(..) => (OntogenStatusCode::BAD_REQUEST, "method_id_required"),
         crate::schema::AppError::MethodAlreadyExists(..) => (OntogenStatusCode::CONFLICT, "method_already_exists"),
@@ -805,6 +806,7 @@ fn ontogen_map_request_fields(
     }
     if let Some(rel) = relationships.and_then(|r| r.get("children")) {
         let ids = ::ontogen_jsonapi::request::to_many_linked(rel, "/data/relationships/children", "maps", None)?;
+        ::ontogen_jsonapi::request::refuse_cycle(&ids, data.id.as_deref(), "maps", "children")?;
         fields.insert("children".to_owned(), ids.iter().map(|l| ::serde_json::Value::String(l.id.clone())).collect());
         linked.children = ids;
     }
@@ -2880,6 +2882,7 @@ async fn ontogen_map_relationship_patch(
                 "maps",
                 None,
             )?;
+            ::ontogen_jsonapi::request::refuse_cycle(&ontogen_linked, id.as_str(), "maps", "children")?;
             let ontogen_entity = ontogen_map_read(&ontogen_state, &id).await?;
             ontogen_map_check_ids(&ontogen_state, &ontogen_linked).await?;
             ontogen_map_write_field(
@@ -2917,6 +2920,7 @@ async fn ontogen_map_relationship_post(
                 "maps",
                 Some(1),
             )?;
+            ::ontogen_jsonapi::request::refuse_cycle(&ontogen_linked, id.as_str(), "maps", "children")?;
             let ontogen_entity = ontogen_map_read(&ontogen_state, &id).await?;
             ontogen_map_check_ids(&ontogen_state, &ontogen_linked).await?;
             if let Some(ontogen_ids) = ontogen_added(&ontogen_entity.children, &ontogen_linked) {

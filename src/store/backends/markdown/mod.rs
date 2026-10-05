@@ -34,8 +34,15 @@ impl StoreBackend for MarkdownBackend {
         code.push_str(&format!("const {}: &str = {type_name:?};\n\n", gen_crud::type_const(&snake)));
     }
 
-    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef, _enums: &[EnumDef], id_strategy: &IdStrategy) {
-        gen_crud::generate_crud_impl(code, entity, id_strategy);
+    fn emit_crud_impl(
+        &self,
+        code: &mut String,
+        entity: &EntityDef,
+        entities: &[EntityDef],
+        _enums: &[EnumDef],
+        id_strategy: &IdStrategy,
+    ) {
+        gen_crud::generate_crud_impl(code, entity, entities, id_strategy);
     }
 
     fn wikilink_policy(&self) -> WikilinkPolicy {

@@ -33,8 +33,19 @@ impl Store {
         // One connection: each SQLite `:memory:` connection is its own
         // database, so a pool of several would see different data.
         // sqlite-only: the parity harness runs the SeaORM store on in-memory SQLite.
-        let mut options = ::sea_orm::ConnectOptions::new("sqlite::memory:");
-        options.max_connections(1).min_connections(1).sqlx_logging(false);
+        Self::open_url("sqlite::memory:", 1).await
+    }
+
+    /// A store over the database at `url` with a pool of `max_connections`,
+    /// creating every table from the generated entities. The tables must not
+    /// exist yet.
+    ///
+    /// The pool's connections keep sqlx's SQLite busy timeout (5 seconds):
+    /// a write that finds another connection holding the write lock waits
+    /// that long for it.
+    pub async fn open_url(url: &str, max_connections: u32) -> Result<Self, AppError> {
+        let mut options = ::sea_orm::ConnectOptions::new(url);
+        options.max_connections(max_connections).min_connections(1).sqlx_logging(false);
         let db = Database::connect(options).await.map_err(db_error)?;
         create_table(&db, tables::doc::Entity).await?;
         create_table(&db, tables::fixed::Entity).await?;
@@ -47,6 +58,7 @@ impl Store {
         create_table(&db, tables::sea_orm::Entity).await?;
         create_table(&db, tables::sea_query::Entity).await?;
         create_table(&db, tables::section::Entity).await?;
+        create_table(&db, tables::stamped::Entity).await?;
         let (change_tx, _) = tokio::sync::broadcast::channel(256);
         Ok(Self { db, change_tx })
     }
@@ -61,8 +73,11 @@ impl Store {
 
     /// Replace the junction rows of `source_id`, inserting `target_ids` in
     /// list order so `load_junction_ids` reads them back in that order.
-    pub async fn sync_junction(
+    /// Every statement goes through `conn`, the generated create's or
+    /// update's transaction, so a failure undoes the whole write.
+    pub async fn sync_junction<C: ConnectionTrait>(
         &self,
+        conn: &C,
         table: &str,
         source_col: &str,
         target_col: &str,
@@ -71,13 +86,10 @@ impl Store {
     ) -> Result<(), AppError> {
         // sqlite-only: list order survives only because SQLite's rowid follows insertion order.
         let delete = format!("DELETE FROM {table} WHERE {source_col} = ?");
-        self.db.execute(sqlite(&delete, vec![source_id.into()])).await.map_err(db_error)?;
+        conn.execute(sqlite(&delete, vec![source_id.into()])).await.map_err(db_error)?;
         let insert = format!("INSERT INTO {table} ({source_col}, {target_col}) VALUES (?, ?)");
         for target_id in target_ids {
-            self.db
-                .execute(sqlite(&insert, vec![source_id.into(), target_id.as_str().into()]))
-                .await
-                .map_err(db_error)?;
+            conn.execute(sqlite(&insert, vec![source_id.into(), target_id.as_str().into()])).await.map_err(db_error)?;
         }
         Ok(())
     }

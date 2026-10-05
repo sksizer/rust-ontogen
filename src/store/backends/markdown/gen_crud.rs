@@ -11,18 +11,18 @@
 
 use crate::ident::rust_ident;
 use crate::ir::IdStrategy;
-use crate::persistence::seaorm::gen_entity::{is_integer_primitive, widens_to_i64_losslessly};
-use crate::resource::member_name;
-use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType};
+use crate::schema::model::EntityDef;
 use crate::store::gen_order::sort_field_type;
 use crate::store::has_many::{self, has_many_writes};
 use crate::store::helpers::{pluralize, to_snake_case};
+use crate::store::int_range::{IntegerSource, emit_integer_range_checks};
+use crate::store::linked_ids::{self, Listed};
 use crate::store::nan::{FloatSource, Skipped, emit_nan_checks};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /// Generate the complete `impl Store { ... }` block for the markdown backend.
-pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
+pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, entities: &[EntityDef], id_strategy: &IdStrategy) {
     let has_relations = entity.junction_relations().next().is_some() || entity.has_many_relations().next().is_some();
 
     code.push_str("impl Store {\n");
@@ -30,8 +30,8 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, id_strategy: &I
     generate_list(code, entity, has_relations);
     generate_count(code, entity);
     generate_get(code, entity, has_relations);
-    generate_create(code, entity, id_strategy);
-    generate_update(code, entity);
+    generate_create(code, entity, entities, id_strategy);
+    generate_update(code, entity, entities);
     generate_delete(code, entity);
 
     if has_relations {
@@ -40,11 +40,10 @@ pub fn generate_crud_impl(code: &mut String, entity: &EntityDef, id_strategy: &I
 
     // has_many reverse helpers (e.g., set_node_parent) — read-mutate-rewrite
     // replaces SeaORM's raw-SQL fast path.
-    let writes = has_many_writes(entity);
-    for hm in &writes {
+    for hm in &has_many_writes(entity) {
         generate_set_parent_helper(code, entity, hm.fk, hm.fk_required);
     }
-    if !writes.is_empty() {
+    if linked_ids::needs_exists_helper(entity, entities) {
         generate_exists_helper(code, entity);
     }
 
@@ -167,7 +166,7 @@ fn generate_get(code: &mut String, entity: &EntityDef, has_relations: bool) {
     code.push_str("    }\n\n");
 }
 
-fn generate_create(code: &mut String, entity: &EntityDef, id_strategy: &IdStrategy) {
+fn generate_create(code: &mut String, entity: &EntityDef, entities: &[EntityDef], id_strategy: &IdStrategy) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let fm = fm_type(name);
@@ -184,8 +183,10 @@ fn generate_create(code: &mut String, entity: &EntityDef, id_strategy: &IdStrate
     // record's lists once it exists (same sequencing as the SeaORM emission;
     // m2m needs no step — the wikilink list IS the storage).
     let writes = has_many_writes(entity);
-    has_many::emit_missing_children_check(code, entity, &writes, |f| format!("&record.{f}"));
-    emit_integer_range_checks(code, entity, IntegerSource::Record("record"));
+    let listed = Listed::Create("record");
+    linked_ids::emit_self_listing_check(code, entity, &listed);
+    linked_ids::emit_listed_ids_check(code, entity, entities, &listed);
+    emit_integer_range_checks(code, entity, IntegerSource::Record("record"), Skipped::NotStored, serialize_error);
     emit_nan_checks(code, entity, FloatSource::Record("record"), Skipped::NotStored, serialize_error);
 
     code.push_str("        let mut doc = markdown_store::Document::new();\n");
@@ -230,7 +231,7 @@ fn generate_create(code: &mut String, entity: &EntityDef, id_strategy: &IdStrate
     code.push_str("    }\n\n");
 }
 
-fn generate_update(code: &mut String, entity: &EntityDef) {
+fn generate_update(code: &mut String, entity: &EntityDef, entities: &[EntityDef]) {
     let name = &entity.name;
     let snake = to_snake_case(name);
     let fm = fm_type(name);
@@ -261,9 +262,10 @@ fn generate_update(code: &mut String, entity: &EntityDef) {
         code.push('\n');
     }
     let writes = has_many_writes(entity);
-    has_many::emit_missing_children_check(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
+    linked_ids::emit_self_listing_check(code, entity, &Listed::Update);
+    linked_ids::emit_listed_ids_check(code, entity, entities, &Listed::Update);
     has_many::emit_dropped_children(code, &writes);
-    emit_integer_range_checks(code, entity, IntegerSource::Updates);
+    emit_integer_range_checks(code, entity, IntegerSource::Updates, Skipped::NotStored, serialize_error);
     emit_nan_checks(code, entity, FloatSource::Updates, Skipped::NotStored, serialize_error);
 
     code.push_str("        self.vault()\n");
@@ -284,7 +286,7 @@ fn generate_update(code: &mut String, entity: &EntityDef) {
     code.push_str("            .map_err(AppError::from)?;\n\n");
 
     // Conditional has_many reverse sync (read-mutate-rewrite per child).
-    has_many::emit_update_children(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
+    has_many::emit_update_children(code, entity, &writes, |f| format!("updates.{f}.iter().flatten()"), None);
     if !writes.is_empty() {
         code.push('\n');
     }
@@ -378,52 +380,7 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
     code.push_str("    }\n\n");
 }
 
-// ─── Integer range ───────────────────────────────────────────────────────────
-
-/// Where [`emit_integer_range_checks`] reads the values: the record being
-/// created, or the fields an update sets.
-enum IntegerSource<'a> {
-    Record(&'a str),
-    Updates,
-}
-
-/// The stored integer fields whose SeaORM column conversion
-/// (`i64::try_from`) can fail: `u64`, `usize`, `isize`, `u128`, `i128` and
-/// their `Option` forms.
-fn wide_integer_fields(entity: &EntityDef) -> impl Iterator<Item = (&FieldDef, bool)> {
-    entity.fields.iter().filter(|f| matches!(f.role, FieldRole::Plain | FieldRole::EnumField)).filter_map(|f| match &f
-        .field_type
-    {
-        FieldType::Other(t) if is_integer_primitive(t) && !widens_to_i64_losslessly(t) => Some((f, false)),
-        FieldType::OptionEnum(t) if is_integer_primitive(t) && !widens_to_i64_losslessly(t) => Some((f, true)),
-        _ => None,
-    })
-}
-
-/// Emit, before anything is written, the refusal of a value outside `i64`.
-/// SeaORM fails such a write in its column conversion (ADR 0006 §4); the
-/// vault could hold the value, but refusing it keeps both backends' results
-/// equal. The message matches SeaORM's.
-fn emit_integer_range_checks(code: &mut String, entity: &EntityDef, source: IntegerSource<'_>) {
-    let mut any = false;
-    for (field, optional) in wide_integer_fields(entity) {
-        let f = &field.name;
-        let message = format!("{}.{}: value {{v}} is out of range for i64", entity.name, member_name(f));
-        let value = match (&source, optional) {
-            (IntegerSource::Record(var), false) => format!("Some({var}.{f})"),
-            (IntegerSource::Record(var), true) => format!("{var}.{f}"),
-            (IntegerSource::Updates, false) => format!("updates.{f}"),
-            (IntegerSource::Updates, true) => format!("updates.{f}.flatten()"),
-        };
-        code.push_str(&format!("        if let Some(v) = {value}.filter(|v| i64::try_from(*v).is_err()) {{\n"));
-        code.push_str(&format!("            return Err({});\n", serialize_error(&format!("format!(\"{message}\")"))));
-        code.push_str("        }\n");
-        any = true;
-    }
-    if any {
-        code.push('\n');
-    }
-}
+// ─── Refused values ──────────────────────────────────────────────────────────
 
 /// The catch-all the markdown store refuses a value with before writing:
 /// `markdown_store::Error::Serialize` into the consumer's `AppError`, as a
@@ -467,15 +424,15 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, f
     code.push_str("    }\n\n");
 }
 
-/// `{snake}_exists`: whether a record with this id exists, for the
-/// missing-child check of a `has_many` write. An id the vault cannot hold
+/// `{snake}_exists`: whether a record with this id exists, for the checks
+/// on the ids a write lists (`linked_ids`). An id the vault cannot hold
 /// names no record, as in `get_*`.
 fn generate_exists_helper(code: &mut String, entity: &EntityDef) {
     let records = records(&to_snake_case(&entity.name));
 
     code.push_str(&format!(
-        "    async fn {}(&self, id: &str) -> Result<bool, AppError> {{\n",
-        has_many::exists_helper(entity)
+        "    pub(crate) async fn {}(&self, id: &str) -> Result<bool, AppError> {{\n",
+        linked_ids::exists_helper(&entity.name)
     ));
     code.push_str(&format!("        match self.vault().{records}.read_opt(id) {{\n"));
     code.push_str("            Ok(doc) => Ok(doc.is_some()),\n");
@@ -558,7 +515,7 @@ mod tests {
 
     fn crud(entity: &EntityDef) -> String {
         let mut code = String::new();
-        generate_crud_impl(&mut code, entity, &IdStrategy::SlugFromField("name".into()));
+        generate_crud_impl(&mut code, entity, std::slice::from_ref(entity), &IdStrategy::SlugFromField("name".into()));
         code
     }
 
@@ -580,7 +537,9 @@ mod tests {
             assert!(check < create.find(".create(\n").unwrap(), "before the record write: {create}");
 
             let update = method(&code, "update_node");
-            let check = update.find("if !self.node_exists(child_id).await? {").expect("update checks");
+            let check = update
+                .find("if !current.contains.contains(child_id) && !self.node_exists(child_id).await? {")
+                .expect("an update checks the children it adds");
             assert!(update.contains("for child_id in updates.contains.iter().flatten() {"), "{update}");
             assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
             assert!(check < update.find("let contains_dropped").unwrap(), "before the drop check: {update}");
@@ -591,6 +550,52 @@ mod tests {
             assert!(helper.contains(".entity(NODES_DIR, NODE_TYPE).read_opt(id)"), "{helper}");
             assert!(helper.contains("Err(markdown_store::Error::InvalidId { .. }) => Ok(false),"), "{helper}");
         }
+    }
+
+    #[test]
+    fn the_listed_ids_are_checked_before_anything_is_written() {
+        let mut node = node(FieldType::OptionString);
+        node.fields.push(FieldDef::new(
+            "tags",
+            FieldType::VecString,
+            FieldRole::Relation(RelationInfo {
+                kind: RelationKind::ManyToMany,
+                target: "Tag".to_string(),
+                junction: None,
+                foreign_key: None,
+            }),
+        ));
+        let tag = EntityDef {
+            name: "Tag".to_string(),
+            directory: "tags".to_string(),
+            table: "tags".to_string(),
+            type_name: "tag".to_string(),
+            prefix: "tag".to_string(),
+            id_strategy: None,
+            fields: vec![FieldDef::new("id", FieldType::String, FieldRole::Id)],
+            doc: String::new(),
+        };
+        let entities = [node, tag];
+        let strategy = IdStrategy::SlugFromField("name".into());
+        let mut code = String::new();
+        generate_crud_impl(&mut code, &entities[0], &entities, &strategy);
+
+        for (op, write) in [("create_node", ".create(\n"), ("update_node", ".modify(id,")] {
+            let body = method(&code, op);
+            let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{op}: missing `{needle}`:\n{body}"));
+            let cycle = at("return Err(AppError::NodeParentCycle(");
+            let child = at("!self.node_exists(child_id).await? {");
+            let target = at("!self.tag_exists(target_id).await? {");
+            assert!(cycle < child && child < target && target < at(write), "{op}: {body}");
+            assert!(body.contains("return Err(AppError::TagNotFound(target_id.clone()));"), "{body}");
+        }
+
+        let mut tag_code = String::new();
+        generate_crud_impl(&mut tag_code, &entities[1], &entities, &strategy);
+        let helper = method(&tag_code, "tag_exists");
+        assert!(helper.starts_with("fn tag_exists(&self, id: &str)"), "{helper}");
+        assert!(tag_code.contains("pub(crate) async fn tag_exists("), "callable from Node's module: {tag_code}");
+        syn::parse_file(&code).unwrap_or_else(|e| panic!("invalid Rust: {e}\n{code}"));
     }
 
     #[test]
