@@ -1127,25 +1127,29 @@ Ontogen accepts any valid id:
 - **Scope.** The rule governs ids being created: a client `data.id`, and a
   derived or hook-assigned id, which the store checks. A path `{id}` is
   only a lookup key and is never checked against it (§8.1). The server must
-  serve every link it emits, so a stored row whose id fails the rule (an id
-  containing `:` or uppercase letters, `Index`, `café`, or one over 200
+  serve every link it emits, so a SeaORM row whose id fails the rule (an
+  id containing `:` or uppercase letters, `Index`, `café`, or one over 200
   bytes, say) is listed, and is readable, updatable and deletable at its
   `links.self`; no create can make a row with that id. The exception is ids
   `.`, `..` and `""`: they are listed but unreachable, because clients
   resolve the dot segments of `/tasks/.` and `/tasks/..` away (RFC 3986
   §5.2.4; WHATWG URL parsing also decodes `%2E`), and `/tasks/` is the
   collection path. Such rows must be renamed to be reachable. ADR 0004
-  carries the migration note.
+  carries the migration note. A markdown vault keeps the same promise
+  through its lookup check, below.
 - **Markdown lookups.** A markdown lookup goes through a looser
   path-safety check (`markdown_store::layout::validate_lookup_id`): no
   path separator, `:` or NUL, no dot path or leading `.`, no trailing `.`
   or space, not whitespace-only, at most 252 bytes (a 255-byte filename
   less `.md`), and not `index` or `log` in any case. A record whose file
   stem breaks the create rule but passes this check (`Draft.md`,
-  `café.md`) is listed and reachable. An id that fails it cannot name a
-  record file; the store answers a lookup of one with `{Entity}NotFound`
-  instead of passing `markdown_store::Error::InvalidId` through as a
-  `500`.
+  `café.md`) is listed and reachable. A file whose stem fails it, or is
+  not UTF-8, is not a record: it is not listed or counted and is no
+  record's child (`a:b.md`, `Index.md`, `draft .md`), so no list emits a
+  link that a lookup refuses. Such a file must be renamed to become a
+  record. The store answers a lookup of an id that fails the check with
+  `{Entity}NotFound` instead of passing `markdown_store::Error::InvalidId`
+  through as a `500`.
 
   A lookup matches the stored file name byte for byte on every
   filesystem. macOS and Windows filesystems resolve a name to a file

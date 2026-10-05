@@ -450,6 +450,11 @@ let state = AppState::new(open_vault(VAULT_ROOT));
   `[a-z0-9._~-]`, at most 200 bytes), but lookups check only that the id is
   a safe file stem, so a hand-written `Draft.md` or `café.md` is listed,
   read, updated and deleted under its stem.
+- **A file no lookup can name is not a record.** A file whose stem fails
+  that check (`a:b.md`, `a\b.md`, `draft..md`, `draft .md`, a
+  whitespace-only or non-UTF-8 stem) is skipped like a `.txt` file: `list`,
+  `count` and `has_many` lists leave it out, so no listed id is one a
+  lookup refuses. Nothing reports it; rename the file to make it a record.
 - **Lookups match the stored name exactly, on every filesystem.** macOS and
   Windows resolve `KEPT.md` to a stored `kept.md` (and macOS resolves either
   Unicode normalization form of `café.md` to the other). The store does not:
