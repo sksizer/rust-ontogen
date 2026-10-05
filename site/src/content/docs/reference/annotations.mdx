@@ -42,7 +42,18 @@ pub struct Exercise {
 
 When `directory` and `prefix` are omitted they default to the snake_case version of the struct name (e.g., `"exercise"` for `Exercise`). `type_name` defaults to the struct name as written (`"Exercise"`).
 
-The snake_case name also names the entity's generated modules. When it is a Rust keyword (`Match` gives `match`) the modules are raw identifiers (`r#match`), while files, tables and directories keep the bare name. `crate`, `self`, `super` and `Self` have no raw form, so an entity named `Crate` or `Super` fails the build: rename it.
+The snake_case name also names the entity's generated modules. When it is a Rust keyword (`Match` gives `match`) the modules are raw identifiers (`r#match`), while files, tables and directories keep the bare name.
+
+A few entity names would collide with what the generated code names bare, so the build refuses them with an error that names the entity, says what it would clash with and suggests a rename:
+
+- `Crate` and `Super`, whose snake_case names `crate` and `super` have no raw form.
+- The prelude items the generated code uses: `Result`, `Option`, `Vec`, `String`, `Box`, `From`, `Default`, `Clone`, `Send`, `Sync` and `Fn`.
+- Names starting with `Ontogen` (`OntogenWidget`, not `Ontogeny`), reserved for the types ontogen generates.
+- Names whose module would shadow a crate the generated code names: `Std`, `Schemars`, `SeaQuery` and `MarkdownStore`.
+- With a store: `Store`, `AppError`, `ChangeOp`, `EntityKind` and `OrderBy`. With API forwarders over the store: `Hooks`, `Generated`, and a name whose module is the API output directory's.
+- With servers: the state and store types (`AppState`, `Store`); with an MCP server, `McpToolDef`, `SimpleToolDef`, `GetByIdInput`, `ByIntIdInput` and `EmptyInput`; with a paginated IPC server, `PaginatedResult`. The servers refuse these names, and the `Ontogen` prefix, for any type your API functions name, not only entities.
+
+A field may not start with `ontogen_`, the prefix of the generated code's own bindings.
 
 ### Id strategy
 

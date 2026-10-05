@@ -650,7 +650,20 @@ mod tests {
                         ),
                         "{order}"
                     );
-                    assert!(doc.contains(r#""UPDATE \"docs\" SET \"in\" = ? WHERE \"id\" = ?","#), "{doc}");
+                    // sea_query quotes each identifier for the backend, so the
+                    // keyword column `in` reaches SQL as `"in"`.
+                    assert!(doc.contains(r#".table(sea_orm::sea_query::Alias::new("docs"))"#), "{doc}");
+                    assert!(
+                        doc.contains(r#".value(sea_orm::sea_query::Alias::new("in"), parent_id.map(str::to_string))"#),
+                        "{doc}"
+                    );
+                    assert!(
+                        doc.contains(
+                            r#"sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")).eq(child_id)"#
+                        ),
+                        "{doc}"
+                    );
+                    assert!(!doc.contains("UPDATE"), "no hand-built SQL: {doc}");
                     assert!(doc.contains(".filter(doc::Column::In.eq(&record.id))"), "{doc}");
                 }
                 crate::ir::Backend::Markdown(_) => {
@@ -665,6 +678,40 @@ mod tests {
                     assert!(doc.contains("markdown_store::wikilink::strip_opt(child.r#in)"), "{doc}");
                 }
             }
+        }
+    }
+
+    /// An entity named like a type the store and API layers import bare is
+    /// refused before anything is written, naming the entity and the fix.
+    #[test]
+    fn an_entity_the_store_contract_has_no_room_for_is_refused() {
+        let entity_named = |name: &str| {
+            let src = format!(
+                "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {name} {{\n    #[ontology(id)]\n    pub id: String,\n}}\n"
+            );
+            crate::schema::parse::parse_schema_source(&src, std::path::Path::new("x.rs")).expect("parses").remove(0)
+        };
+        for (name, why) in [
+            ("Store", "the generated store and API import the consumer contract's `Store` bare"),
+            ("AppError", "the generated store and API import the consumer contract's `AppError` bare"),
+            ("ChangeOp", "the generated store and API import the consumer contract's `ChangeOp` bare"),
+            ("EntityKind", "the generated store and API import the consumer contract's `EntityKind` bare"),
+            ("OrderBy", "the generated store and API import the consumer contract's `OrderBy` bare"),
+        ] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let config = StoreConfig {
+                output_dir: tmp.path().join("generated"),
+                hooks_dir: None,
+                schema_module_path: "crate::schema".to_string(),
+                backend: crate::ir::Backend::Seaorm(None),
+                wikilink_policy: None,
+                id_strategy: crate::ir::IdStrategy::Provided,
+            };
+            let err = store::generate(&crate::schema::schema_of(&[entity_named(name)]), &config).expect_err(name);
+            let err = err.to_string();
+            assert!(err.contains(&format!("ontogen: entity `{name}` cannot have a store: {why}")), "{err}");
+            assert!(err.contains(&format!("Rename the entity (e.g. `{name}Item`).")), "{err}");
+            assert!(!tmp.path().join("generated").exists(), "{name}: refused before writing");
         }
     }
 }

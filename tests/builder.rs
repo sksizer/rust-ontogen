@@ -708,3 +708,128 @@ fn builder_a_missing_transport_api_dir_is_skipped_by_the_api_stage() {
     assert!(msg.contains("API directory does not exist"), "{msg}");
     assert!(generated.join("workout.rs").exists(), "the api stage ran");
 }
+
+/// A schema directory under `root` with one entity named `entity`.
+fn schema_with_entity(root: &Path, entity: &str) -> PathBuf {
+    let schema = root.join("schema");
+    std::fs::create_dir_all(&schema).unwrap();
+    std::fs::write(
+        schema.join("mod.rs"),
+        format!(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {entity} {{\n    #[ontology(id)]\n    pub id: \
+             String,\n}}\n"
+        ),
+    )
+    .unwrap();
+    schema
+}
+
+#[test]
+fn builder_refuses_an_entity_named_like_what_the_output_names_bare() {
+    // Refused at schema parse, whatever the pipeline generates.
+    for (entity, why) in [
+        ("Result", "the generated code names the prelude's `Result` bare"),
+        ("Option", "the generated code names the prelude's `Option` bare"),
+        ("OntogenListParams", "the `Ontogen` prefix is reserved"),
+        ("Std", "its module `std` would shadow the crate `std`"),
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let err = Pipeline::new(schema_with_entity(tmp.path(), entity))
+            .dtos(tmp.path().join("dto"))
+            .build()
+            .expect_err(entity);
+        assert!(matches!(err, ontogen::CodegenError::Schema(ref e) if e.contains(why)), "{entity}: {err}");
+        let rename = entity.strip_prefix("Ontogen").map_or(format!("{entity}Item"), str::to_string);
+        assert!(format!("{err}").contains(&format!("rename the entity (e.g. `{rename}`)")), "{err}");
+        assert!(!tmp.path().join("dto").exists(), "nothing is written");
+    }
+
+    // Refused when the store is generated, before any stage writes.
+    for (entity, why) in [
+        ("Store", "import the consumer contract's `Store` bare"),
+        ("OrderBy", "import the consumer contract's `OrderBy` bare"),
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let schema = schema_with_entity(tmp.path(), entity);
+        let err = Pipeline::new(&schema)
+            .markdown_io(tmp.path().join("md"), markdown_options())
+            .store(tmp.path().join("store"), None::<PathBuf>)
+            .store_id_strategy(IdStrategy::Provided)
+            .build()
+            .expect_err(entity);
+        assert!(matches!(err, ontogen::CodegenError::Store(ref e) if e.contains(why)), "{entity}: {err}");
+        assert!(!tmp.path().join("md").exists(), "{entity}: refused before the markdown stage writes");
+
+        // Without a store, the name is free.
+        Pipeline::new(&schema).markdown_io(tmp.path().join("md"), markdown_options()).build().expect(entity);
+    }
+
+    // The store's modules are the API forwarders' to refuse.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema = schema_with_entity(tmp.path(), "Hooks");
+    let err = Pipeline::new(&schema)
+        .markdown_io(tmp.path().join("md"), markdown_options())
+        .store(tmp.path().join("store"), None::<PathBuf>)
+        .store_id_strategy(IdStrategy::Provided)
+        .api(tmp.path().join("api"), "AppState")
+        .build()
+        .expect_err("Hooks");
+    assert!(
+        matches!(err, ontogen::CodegenError::Api(ref e) if e.contains("they reach its store module as `crate::store::hooks`")),
+        "{err}"
+    );
+    assert!(!tmp.path().join("md").exists(), "refused before the markdown stage writes");
+
+    // The state type is the servers' to refuse.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema = schema_with_entity(tmp.path(), "AppState");
+    let api = tmp.path().join("api");
+    std::fs::create_dir_all(&api).unwrap();
+    std::fs::write(
+        api.join("app_state.rs"),
+        "pub async fn get_by_id(state: &AppState, id: &str) -> Result<AppState, anyhow::Error> { todo!() }\n",
+    )
+    .unwrap();
+    let mcp = ontogen::servers::ServerGenerator::Mcp { output: tmp.path().join("mcp.rs") };
+    let err = servers_with(&schema, &api, None, vec![mcp]).expect_err("AppState");
+    assert!(
+        matches!(err, ontogen::CodegenError::Server(ref e) if e.contains("`app_state::get_by_id` names the type `AppState`, and the servers import it beside the state type of the same name")),
+        "{err}"
+    );
+}
+
+#[test]
+fn builder_refuses_an_api_argument_no_transport_can_name() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema = schema_with_entity(tmp.path(), "Note");
+    let api = tmp.path().join("api");
+    std::fs::create_dir_all(&api).unwrap();
+    std::fs::write(
+        api.join("note.rs"),
+        "pub async fn find(state: &AppState, ontogen_state: String) -> Result<Vec<Note>, anyhow::Error> { todo!() }\n",
+    )
+    .unwrap();
+    let mcp = ontogen::servers::ServerGenerator::Mcp { output: tmp.path().join("mcp.rs") };
+    let err = servers_with(&schema, &api, None, vec![mcp]).expect_err("refused");
+    assert!(
+        matches!(err, ontogen::CodegenError::Server(ref e) if e.contains("API fn `note::find` takes an argument named `ontogen_state`: the `ontogen_` prefix is reserved")),
+        "{err}"
+    );
+    assert!(!tmp.path().join("mcp.rs").exists(), "nothing is written");
+
+    // A TypeScript-only build scans with the same rules.
+    let err = Pipeline::new(&schema)
+        .clients(ontogen::ClientsConfig {
+            generators: vec![ontogen::clients::ClientGenerator::HttpTauriIpcSplit {
+                output: tmp.path().join("transport.ts"),
+                bindings_path: tmp.path().join("types.ts"),
+            }],
+            ..ontogen::ClientsConfig::new(&api, "AppState", "crate::api", "crate::schema", "crate::AppState")
+        })
+        .build()
+        .expect_err("refused");
+    assert!(
+        matches!(err, ontogen::CodegenError::Client(ref e) if e.contains("`note::find` takes an argument named `ontogen_state`")),
+        "{err}"
+    );
+}

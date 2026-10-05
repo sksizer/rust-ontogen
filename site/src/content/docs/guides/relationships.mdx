@@ -142,7 +142,7 @@ for child_id in &contains {
 }
 ```
 
-The `set_node_parent` helper executes a raw SQL `UPDATE` to set the FK column on the target table.
+The `set_node_parent` helper sets the FK column on the target table with one `UPDATE`, which sea-query builds for the connection's backend, quoting the table and column names.
 
 For what an update does to children the list drops, the `ParentRequired` error, and the supported shape, see [has_many writes](/guides/store-layer/#has_many-writes).
 

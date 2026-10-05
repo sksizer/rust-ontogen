@@ -1187,7 +1187,54 @@ pub fn scan_surfaces(surfaces: &[ApiSurface], state_type: &str) -> Result<ScanRe
     }
 
     result.modules = merge_surfaces(per_surface, surfaces)?;
+    check_api_names(&result.modules)?;
     Ok(result)
+}
+
+/// Refuses an API fn or argument name no transport can carry. Every
+/// transport derives names from a fn's (`lookup_find` handler and command,
+/// MCP tool, TS method), which a raw identifier's `r#` would break, and
+/// passes each argument under a name derived from its own: an argument
+/// needs a plain name, one whose IPC key and TS parameter are not empty,
+/// and one that is not a generated handler's binding (`ontogen_state`).
+pub(crate) fn check_api_names(modules: &[ApiModule]) -> Result<(), String> {
+    for m in modules {
+        let fns = m.functions.iter().map(|f| (&f.name, &f.params));
+        let events = m.events.iter().map(|ev| (&ev.name, &ev.params));
+        for (name, params) in fns.chain(events) {
+            if let Some(bare) = name.strip_prefix("r#") {
+                return Err(format!(
+                    "ontogen: API fn `{}::{name}` is named with a Rust keyword: every transport derives names from \
+                     it (its handler, command, MCP tool and TS method), which cannot carry the `r#`. Rename the fn \
+                     (e.g. `get_{bare}`).",
+                    m.name
+                ));
+            }
+            for p in params {
+                let arg = &p.name;
+                let refusal = if arg.is_empty() {
+                    "takes an argument without a name (`_` or a pattern), but the transports pass every argument \
+                     under its name. Bind the argument to a name"
+                        .to_string()
+                } else if crate::servers::types::ipc_arg_key(arg).is_empty() {
+                    format!(
+                        "takes an argument named `{arg}`, which has no letter or digit, so its IPC key and TS \
+                         parameter name would be empty. Rename the argument"
+                    )
+                } else if let Some(reason) = crate::ident::refused_binding_name(arg) {
+                    format!(
+                        "takes an argument named `{arg}`: {reason} and binds beside the fn's arguments. Rename the \
+                         argument so it does not start with `{}`",
+                        crate::ident::BINDING_PREFIX
+                    )
+                } else {
+                    continue;
+                };
+                return Err(format!("ontogen: API fn `{}::{name}` {refusal}.", m.name));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The error for a fn name defined by two files of one surface's directory.

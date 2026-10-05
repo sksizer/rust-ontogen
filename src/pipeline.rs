@@ -490,6 +490,16 @@ impl Pipeline {
 
         // Stage 1: parse schema (always)
         let schema: SchemaOutput = parse_schema(&SchemaConfig { schema_dir: self.schema_dir.clone() })?;
+        // The store and api stages check their names again; checked here
+        // too so a refused entity fails before the earlier stages write.
+        if self.store.is_some() {
+            crate::store::check_entity_names(&schema.entities).map_err(CodegenError::Store)?;
+        }
+        if let Some(stage) = &self.api {
+            let store_backed = self.store.is_some() || stage.store_type.is_some();
+            crate::api::check_entity_names(&schema.entities, &stage.output_dir, &stage.exclude, store_backed)
+                .map_err(CodegenError::Api)?;
+        }
 
         // Remember the SeaORM `entity_output` directory (if configured) so we
         // can auto-exclude it from the ontogen-ts type pool at the clients

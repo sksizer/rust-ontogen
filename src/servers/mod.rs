@@ -222,6 +222,7 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
 
     let mut modules = scanned.modules;
     parse::qualify_shared_types(&mut modules, &surfaces);
+    check_names(&modules, config)?;
     parse::apply_singleton_overlay(&mut modules, &config.naming);
     parse::apply_command_overrides(&mut modules, &config.naming);
     parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces)?;
@@ -265,4 +266,65 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     // memory before write_if_changed, preventing unnecessary mtime changes.
 
     Ok(modules)
+}
+
+/// Refuses a name the generated servers cannot import beside their own:
+/// a type the API signatures name (an entity, or any other type the
+/// handlers import bare from the types module) that is named like the
+/// state or store type, starts with the reserved `Ontogen`, or is a public
+/// item of a generated server ([`crate::ident::MCP_ITEMS`],
+/// [`crate::ident::IPC_ITEMS`]); and, with MCP, an API module named like a
+/// crate schemars' derive expands to ([`crate::ident::DERIVE_CRATES`]).
+fn check_names(modules: &[parse::ApiModule], config: &config::Config) -> Result<(), String> {
+    use crate::ident::{DERIVE_CRATES, IPC_ITEMS, MCP_ITEMS, has_type_prefix};
+
+    let has = |pred: fn(&ServerGenerator) -> bool| config.generators.iter().any(pred);
+    let mcp = has(|g| matches!(g, ServerGenerator::Mcp { .. }));
+    let ipc_pages = has(|g| matches!(g, ServerGenerator::TauriIpc { .. })) && config.any_pagination();
+    let last_segment = |ty: &str| ty.rsplit("::").next().unwrap_or(ty).trim().to_string();
+    let state = last_segment(&config.state_type);
+    let stores: Vec<String> =
+        config.surfaces().iter().filter_map(|s| s.store_type.as_deref().map(last_segment)).collect();
+
+    for m in modules {
+        if mcp && DERIVE_CRATES.contains(&m.name.as_str()) {
+            return Err(format!(
+                "ontogen: the MCP server cannot be generated: it imports the API module `{0}` by name, which shadows \
+                 the crate `{0}` that the `JsonSchema` derive of its tool inputs expands to. Rename the module (or the \
+                 entity it serves).",
+                m.name
+            ));
+        }
+        let fns = m.functions.iter().map(|f| (&f.name, &f.return_type_ast, &f.params));
+        let events = m.events.iter().map(|ev| (&ev.name, &ev.item_type_ast, &ev.params));
+        for (fn_name, ret, params) in fns.chain(events) {
+            let mut names = Vec::new();
+            types::collect_type_import(ret, &mut names);
+            for p in params {
+                types::collect_type_import(&p.ty_ast, &mut names);
+            }
+            for name in names {
+                let reason = if name == state {
+                    "the servers import it beside the state type of the same name".to_string()
+                } else if stores.contains(&name) {
+                    "the servers import it beside the store type of the same name".to_string()
+                } else if has_type_prefix(&name) {
+                    "the `Ontogen` prefix is reserved for the types the servers generate".to_string()
+                } else if mcp && MCP_ITEMS.contains(&name.as_str()) {
+                    format!("the generated MCP server declares a public `{name}` of its own")
+                } else if ipc_pages && IPC_ITEMS.contains(&name.as_str()) {
+                    format!("the generated IPC server declares a public `{name}` of its own")
+                } else {
+                    continue;
+                };
+                return Err(format!(
+                    "ontogen: the servers cannot be generated: `{}::{fn_name}` names the type `{name}`, and {reason}. \
+                     Rename the type or entity (e.g. `{}`).",
+                    m.name,
+                    crate::ident::suggested_rename(&name),
+                ));
+            }
+        }
+    }
+    Ok(())
 }

@@ -10185,3 +10185,176 @@ fn an_mcp_sorted_list_refuses_a_filter_named_sort() {
     let mcp = generate_one(tmp.path(), config, mcp_gen);
     assert!(mcp.contains("let sort: Option<String> = ontogen_args"), "{mcp}");
 }
+
+// ─── Names the transports cannot carry ──────────────────────────────────────
+
+/// The error `generate_transport` gives over `files` with `generators`
+/// (`config` adjusts the rest).
+fn names_error(files: &[(&str, &str)], generators: Vec<ServerGenerator>, config: impl FnOnce(&mut Config)) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    for (file, source) in files {
+        write_synthetic_api(&api_dir, file, source);
+    }
+    let mut cfg = test_config(api_dir);
+    cfg.generators = generators;
+    config(&mut cfg);
+    crate::servers::generate_transport(&cfg).expect_err("refused")
+}
+
+/// A keyword fn name would reach every transport as `r#type` (the handler
+/// `lookup_r#type`, the MCP tool `"lookup_r#type"`), so the scan refuses it
+/// whichever transports are generated.
+#[test]
+fn an_api_fn_named_with_a_raw_identifier_is_refused() {
+    let lookup = "pub async fn r#type(store: &Store, id: &str) -> Result<Vec<Doc>, AppError> { todo!() }\n";
+    assert_eq!(
+        names_error(&[("lookup.rs", lookup)], vec![], |_| {}),
+        "ontogen: API fn `lookup::r#type` is named with a Rust keyword: every transport derives names from it (its \
+         handler, command, MCP tool and TS method), which cannot carry the `r#`. Rename the fn (e.g. `get_type`)."
+    );
+}
+
+/// Every transport passes an argument under a name derived from its own:
+/// one without a name, one whose key is empty, and one named like a
+/// generated handler's binding are refused, naming the fn and argument.
+#[test]
+fn an_api_argument_no_transport_can_name_is_refused() {
+    let cases = [
+        ("_: String", "takes an argument without a name (`_` or a pattern)"),
+        (
+            "__: String",
+            "takes an argument named `__`, which has no letter or digit, so its IPC key and TS parameter name would \
+             be empty",
+        ),
+        ("ontogen_state: String", "takes an argument named `ontogen_state`: the `ontogen_` prefix is reserved"),
+        ("ontogen_args: String", "takes an argument named `ontogen_args`: the `ontogen_` prefix is reserved"),
+    ];
+    for (arg, why) in cases {
+        let lookup = format!("pub async fn find(store: &Store, {arg}) -> Result<Vec<Doc>, AppError> {{ todo!() }}\n");
+        let err = names_error(&[("lookup.rs", &lookup)], vec![], |_| {});
+        assert!(err.starts_with(&format!("ontogen: API fn `lookup::find` {why}")), "{arg}: {err}");
+    }
+    // `_kind` keys as `kind`, and `ontogeny` is not the prefix.
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "lookup.rs",
+        "pub async fn find(store: &Store, _kind: String, ontogeny: String) -> Result<Vec<Doc>, AppError> { todo!() }\n",
+    );
+    crate::servers::generate_transport(&test_config(api_dir)).expect("plain names are accepted");
+}
+
+/// The clients stage scans with the same rules, so a TS-only build refuses
+/// the same names.
+#[test]
+fn the_clients_scan_refuses_the_same_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "lookup.rs",
+        "pub async fn find(store: &Store, ontogen_args: String) -> Result<Vec<Doc>, AppError> { todo!() }\n",
+    );
+    let scanned = crate::servers::parse::scan_surfaces(&client_test_config(api_dir).surfaces(), "AppState");
+    let err = scanned.expect_err("refused");
+    assert!(err.contains("`lookup::find` takes an argument named `ontogen_args`"), "{err}");
+}
+
+/// A type the handlers import bare from the types module may not be named
+/// like what they import or declare beside it.
+#[test]
+fn a_type_the_servers_import_beside_their_own_is_refused() {
+    let module = |ty: &str| format!("pub async fn list(store: &Store) -> Result<Vec<{ty}>, AppError> {{ todo!() }}\n");
+    let mcp = || vec![ServerGenerator::Mcp { output: PathBuf::from("unused-mcp.rs") }];
+    let ipc = || vec![ServerGenerator::TauriIpc { output: PathBuf::from("unused-ipc.rs") }];
+    // (type, generators, paginated, why)
+    let cases = [
+        ("AppState", vec![], false, "the servers import it beside the state type of the same name"),
+        ("Store", vec![], false, "the servers import it beside the store type of the same name"),
+        ("OntogenWidget", vec![], false, "the `Ontogen` prefix is reserved for the types the servers generate"),
+        ("McpToolDef", mcp(), false, "the generated MCP server declares a public `McpToolDef` of its own"),
+        ("PaginatedResult", ipc(), true, "the generated IPC server declares a public `PaginatedResult` of its own"),
+    ];
+    for (ty, generators, paginated, why) in cases {
+        let err = names_error(&[("widget.rs", &module(ty))], generators, |c| {
+            if paginated {
+                c.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
+            }
+        });
+        assert_eq!(
+            err,
+            format!(
+                "ontogen: the servers cannot be generated: `widget::list` names the type `{ty}`, and {why}. Rename \
+                 the type or entity (e.g. `{}`).",
+                crate::ident::suggested_rename(ty)
+            )
+        );
+    }
+
+    // Without the server that declares it, the name is free.
+    for (ty, generators) in [("McpToolDef", ipc()), ("PaginatedResult", ipc()), ("PaginatedResult", mcp())] {
+        let tmp = tempfile::tempdir().unwrap();
+        let api_dir = tmp.path().join("api");
+        write_synthetic_api(&api_dir, "widget.rs", &module(ty));
+        let mut config = test_config(api_dir);
+        config.generators = generators
+            .into_iter()
+            .map(|g| match g {
+                ServerGenerator::Mcp { .. } => ServerGenerator::Mcp { output: tmp.path().join("mcp.rs") },
+                ServerGenerator::TauriIpc { .. } => ServerGenerator::TauriIpc { output: tmp.path().join("ipc.rs") },
+                other => other,
+            })
+            .collect();
+        crate::servers::generate_transport(&config).unwrap_or_else(|e| panic!("{ty}: {e}"));
+    }
+}
+
+/// schemars' `JsonSchema` derive expands to unrooted `schemars::` and
+/// `std::` paths, so the MCP server, which derives it beside the API
+/// modules it imports by name, refuses a module of either name.
+#[test]
+fn the_mcp_server_refuses_an_api_module_named_like_a_derive_crate() {
+    for module in ["std", "schemars"] {
+        let source = "pub async fn list(store: &Store) -> Result<Vec<Doc>, AppError> { todo!() }\n";
+        let err = names_error(
+            &[(&format!("{module}.rs"), source)],
+            vec![ServerGenerator::Mcp { output: PathBuf::from("unused.rs") }],
+            |_| {},
+        );
+        assert!(
+            err.starts_with(&format!(
+                "ontogen: the MCP server cannot be generated: it imports the API module `{module}` by name, which \
+                 shadows the crate `{module}`"
+            )),
+            "{err}"
+        );
+    }
+}
+
+/// A hand-written API module named after a keyword (`loop.rs`) is
+/// imported and called as `r#loop`, and its names elsewhere stay bare.
+#[test]
+fn a_hand_written_keyword_module_generates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "loop.rs",
+        "pub async fn find_loops(store: &Store, title: String) -> Result<Vec<Doc>, AppError> { todo!() }\n",
+    );
+    let mut config = test_config(api_dir);
+    let (http, mcp, ipc) = (tmp.path().join("http.rs"), tmp.path().join("mcp.rs"), tmp.path().join("ipc.rs"));
+    config.generators = vec![
+        ServerGenerator::HttpAxum { output: http.clone() },
+        ServerGenerator::Mcp { output: mcp.clone() },
+        ServerGenerator::TauriIpc { output: ipc.clone() },
+    ];
+    crate::servers::generate_transport(&config).expect("a keyword module generates");
+    for path in [&http, &mcp, &ipc] {
+        let code = std::fs::read_to_string(path).unwrap();
+        assert!(code.contains("r#loop::find_loops("), "{}:\n{code}", path.display());
+        assert!(code.contains("loop_find_loops"), "named bare: {}:\n{code}", path.display());
+    }
+}
