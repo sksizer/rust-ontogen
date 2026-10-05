@@ -1519,7 +1519,7 @@ async fn ontogen_document_relationship_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("documents", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("documents", &rel)),
     }
 }
 
@@ -1594,7 +1594,7 @@ async fn ontogen_document_relationship_patch(
             .await?;
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("documents", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("documents", &rel)),
     }
 }
 
@@ -1631,7 +1631,7 @@ async fn ontogen_document_relationship_post(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("documents", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("documents", &rel)),
     }
 }
 
@@ -1667,7 +1667,7 @@ async fn ontogen_document_relationship_delete(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("documents", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("documents", &rel)),
     }
 }
 
@@ -1715,7 +1715,7 @@ async fn ontogen_document_related_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, OntogenLinks::new(ontogen_self))))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("documents", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("documents", &rel)),
     }
 }
 
@@ -2193,7 +2193,7 @@ async fn ontogen_map_relationship_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("maps", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("maps", &rel)),
     }
 }
 
@@ -2247,7 +2247,7 @@ async fn ontogen_map_relationship_patch(
             .await?;
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("maps", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("maps", &rel)),
     }
 }
 
@@ -2280,7 +2280,7 @@ async fn ontogen_map_relationship_post(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("maps", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("maps", &rel)),
     }
 }
 
@@ -2312,7 +2312,7 @@ async fn ontogen_map_relationship_delete(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("maps", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("maps", &rel)),
     }
 }
 
@@ -2348,7 +2348,7 @@ async fn ontogen_map_related_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, OntogenLinks::new(ontogen_self))))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("maps", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("maps", &rel)),
     }
 }
 

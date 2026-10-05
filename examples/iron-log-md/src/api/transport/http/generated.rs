@@ -1041,7 +1041,7 @@ async fn ontogen_workout_relationship_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("workouts", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("workouts", &rel)),
     }
 }
 
@@ -1074,7 +1074,7 @@ async fn ontogen_workout_relationship_patch(
             .await?;
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("workouts", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("workouts", &rel)),
     }
 }
 
@@ -1103,7 +1103,7 @@ async fn ontogen_workout_relationship_post(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("workouts", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("workouts", &rel)),
     }
 }
 
@@ -1131,7 +1131,7 @@ async fn ontogen_workout_relationship_delete(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("workouts", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("workouts", &rel)),
     }
 }
 
@@ -1157,7 +1157,7 @@ async fn ontogen_workout_related_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, OntogenLinks::new(ontogen_self))))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("workouts", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("workouts", &rel)),
     }
 }
 
@@ -1304,7 +1304,7 @@ async fn ontogen_workout_set_relationship_get(
             )));
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("workout-sets", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("workout-sets", &rel)),
     }
 }
 
@@ -1359,7 +1359,7 @@ async fn ontogen_workout_set_relationship_patch(
             .await?;
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("workout-sets", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("workout-sets", &rel)),
     }
 }
 
@@ -1379,7 +1379,7 @@ async fn ontogen_workout_set_relationship_post(
             ontogen_query?;
             Err(ontogen_jsonapi::error::relationship_update_unsupported("workout-sets", "exercise", "POST"))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("workout-sets", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("workout-sets", &rel)),
     }
 }
 
@@ -1399,7 +1399,7 @@ async fn ontogen_workout_set_relationship_delete(
             ontogen_query?;
             Err(ontogen_jsonapi::error::relationship_update_unsupported("workout-sets", "exercise", "DELETE"))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("workout-sets", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("workout-sets", &rel)),
     }
 }
 
@@ -1439,7 +1439,7 @@ async fn ontogen_workout_set_related_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, OntogenLinks::new(ontogen_self))))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("workout-sets", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("workout-sets", &rel)),
     }
 }
 

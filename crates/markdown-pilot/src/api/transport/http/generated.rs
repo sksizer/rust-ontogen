@@ -1121,7 +1121,7 @@ async fn ontogen_note_relationship_get(
                 }),
             ))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("notes", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("notes", &rel)),
     }
 }
 
@@ -1137,7 +1137,7 @@ async fn ontogen_note_relationship_patch(
             ontogen_query?;
             Err(ontogen_jsonapi::error::relationship_update_unsupported("notes", "tags", "PATCH"))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("notes", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("notes", &rel)),
     }
 }
 
@@ -1172,7 +1172,7 @@ async fn ontogen_note_relationship_post(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("notes", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("notes", &rel)),
     }
 }
 
@@ -1206,7 +1206,7 @@ async fn ontogen_note_relationship_delete(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("notes", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("notes", &rel)),
     }
 }
 
@@ -1254,7 +1254,7 @@ async fn ontogen_note_related_get(
                 }),
             ))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("notes", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("notes", &rel)),
     }
 }
 
@@ -1430,7 +1430,7 @@ async fn ontogen_section_relationship_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("sections", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("sections", &rel)),
     }
 }
 
@@ -1484,7 +1484,7 @@ async fn ontogen_section_relationship_patch(
             .await?;
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("sections", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("sections", &rel)),
     }
 }
 
@@ -1517,7 +1517,7 @@ async fn ontogen_section_relationship_post(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("sections", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("sections", &rel)),
     }
 }
 
@@ -1549,7 +1549,7 @@ async fn ontogen_section_relationship_delete(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("sections", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("sections", &rel)),
     }
 }
 
@@ -1589,7 +1589,7 @@ async fn ontogen_section_related_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, OntogenLinks::new(ontogen_self))))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("sections", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("sections", &rel)),
     }
 }
 
@@ -2021,7 +2021,7 @@ async fn ontogen_task_relationship_get(
                 }),
             ))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("tasks", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -2099,7 +2099,7 @@ async fn ontogen_task_relationship_patch(
             ontogen_query?;
             Err(ontogen_jsonapi::error::relationship_update_unsupported("tasks", "labels", "PATCH"))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("tasks", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -2171,7 +2171,7 @@ async fn ontogen_task_relationship_post(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("tasks", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -2240,7 +2240,7 @@ async fn ontogen_task_relationship_delete(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("tasks", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -2328,7 +2328,7 @@ async fn ontogen_task_related_get(
                 }),
             ))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("tasks", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("tasks", &rel)),
     }
 }
 

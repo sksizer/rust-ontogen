@@ -975,7 +975,7 @@ async fn ontogen_task_relationship_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("tasks", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -1070,7 +1070,7 @@ async fn ontogen_task_relationship_patch(
             .await?;
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("tasks", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -1123,7 +1123,7 @@ async fn ontogen_task_relationship_post(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("tasks", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -1174,7 +1174,7 @@ async fn ontogen_task_relationship_delete(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("tasks", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -1238,7 +1238,7 @@ async fn ontogen_task_related_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, OntogenLinks::new(ontogen_self))))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("tasks", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("tasks", &rel)),
     }
 }
 

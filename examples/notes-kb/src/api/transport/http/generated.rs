@@ -406,7 +406,7 @@ async fn ontogen_note_relationship_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("notes", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("notes", &rel)),
     }
 }
 
@@ -439,7 +439,7 @@ async fn ontogen_note_relationship_patch(
             .await?;
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("notes", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("notes", &rel)),
     }
 }
 
@@ -468,7 +468,7 @@ async fn ontogen_note_relationship_post(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("notes", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("notes", &rel)),
     }
 }
 
@@ -496,7 +496,7 @@ async fn ontogen_note_relationship_delete(
             }
             Ok(ontogen_jsonapi::response::no_content())
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("notes", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("notes", &rel)),
     }
 }
 
@@ -522,7 +522,7 @@ async fn ontogen_note_related_get(
             );
             Ok(ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, OntogenLinks::new(ontogen_self))))
         }
-        _ => Err(ontogen_jsonapi::error::relationship_not_found("notes", &rel)),
+        _ => Err(ontogen_jsonapi::error::no_such_relationship("notes", &rel)),
     }
 }
 
