@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Request, AppError> {
 
 /// Create a new request
 pub async fn create(store: &Store, input: CreateRequestInput) -> Result<Request, AppError> {
-    let request: Request = input.into();
-    store.create_request(request).await
+    store.create_request(Request::from(input)).await
 }
 
 /// Update an existing request
 pub async fn update(store: &Store, id: &str, input: UpdateRequestInput) -> Result<Request, AppError> {
-    let updates: RequestUpdate = input.into();
-    store.update_request(id, updates).await
+    store.update_request(id, RequestUpdate::from(input)).await
 }
 
 /// Delete a request by ID

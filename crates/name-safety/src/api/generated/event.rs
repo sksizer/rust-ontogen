@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Event, AppError> {
 
 /// Create a new event
 pub async fn create(store: &Store, input: CreateEventInput) -> Result<Event, AppError> {
-    let event: Event = input.into();
-    store.create_event(event).await
+    store.create_event(Event::from(input)).await
 }
 
 /// Update an existing event
 pub async fn update(store: &Store, id: &str, input: UpdateEventInput) -> Result<Event, AppError> {
-    let updates: EventUpdate = input.into();
-    store.update_event(id, updates).await
+    store.update_event(id, EventUpdate::from(input)).await
 }
 
 /// Delete a event by ID

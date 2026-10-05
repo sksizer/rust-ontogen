@@ -476,7 +476,7 @@ fn per_entity_id_overrides_are_byte_identical_above_the_store() {
         assert!(store_b["note.rs"].contains("&markdown_store::IdStrategy::Uuid,"), "{default:?}: Note is uuid");
         assert!(store_a["task.rs"].contains("TaskIdRequired(\"this store requires"), "{default:?}: Task is provided");
         assert!(store_b["task.rs"].contains("&markdown_store::IdStrategy::Provided,"), "{default:?}: Task is provided");
-        assert!(store_a["tag.rs"].contains("ontogen_core::id::slugify(&tag.title)"), "{default:?}: Tag slugs");
+        assert!(store_a["tag.rs"].contains("ontogen_core::id::slugify(&record.title)"), "{default:?}: Tag slugs");
         assert!(store_b["tag.rs"].contains("SlugFromField(\"title\".into())"), "{default:?}: Tag slugs");
     }
 }

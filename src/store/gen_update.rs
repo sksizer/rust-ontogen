@@ -7,7 +7,6 @@
 //! - `From<Create{Entity}Input> for {Entity}` - DTO → domain entity
 
 use super::backends::WikilinkPolicy;
-use super::helpers::to_snake_case;
 use crate::persistence::dto::qualify_type;
 use crate::schema::model::{EntityDef, FieldDef, FieldRole, FieldType, RelationKind};
 
@@ -34,15 +33,14 @@ pub fn generate_update_struct(code: &mut String, entity: &EntityDef) {
 /// Generate the `apply()` method on `{Entity}Update`.
 pub fn generate_apply_method(code: &mut String, entity: &EntityDef) {
     let name = &entity.name;
-    let snake = to_snake_case(name);
 
     code.push_str(&format!("impl {name}Update {{\n"));
-    code.push_str(&format!("    fn apply(&self, {snake}: &mut {name}) {{\n"));
+    code.push_str(&format!("    fn apply(&self, record: &mut {name}) {{\n"));
 
     for field in updatable_fields(entity) {
         let fname = &field.name;
-        code.push_str(&format!("        if let Some({fname}) = &self.{fname} {{\n"));
-        code.push_str(&format!("            {snake}.{fname}.clone_from({fname});\n"));
+        code.push_str(&format!("        if let Some(value) = &self.{fname} {{\n"));
+        code.push_str(&format!("            record.{fname}.clone_from(value);\n"));
         code.push_str("        }\n");
     }
 
@@ -288,8 +286,9 @@ mod tests {
         let mut code = String::new();
         generate_apply_method(&mut code, &entity);
 
-        assert!(code.contains("fn apply(&self, role: &mut Role)"));
-        assert!(code.contains("role.body.clone_from(body)"));
+        assert!(code.contains("fn apply(&self, record: &mut Role)"));
+        assert!(code.contains("if let Some(value) = &self.body {"));
+        assert!(code.contains("record.body.clone_from(value)"));
     }
 
     #[test]

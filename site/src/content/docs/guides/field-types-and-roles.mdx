@@ -321,12 +321,12 @@ And the `apply()` method uses `clone_from` for each field that's `Some`:
 
 ```rust
 impl WorkoutUpdate {
-    fn apply(&self, workout: &mut Workout) {
-        if let Some(name) = &self.name {
-            workout.name.clone_from(name);
+    fn apply(&self, record: &mut Workout) {
+        if let Some(value) = &self.name {
+            record.name.clone_from(value);
         }
-        if let Some(date) = &self.date {
-            workout.date.clone_from(date);
+        if let Some(value) = &self.date {
+            record.date.clone_from(value);
         }
         // ... same pattern for all fields
     }

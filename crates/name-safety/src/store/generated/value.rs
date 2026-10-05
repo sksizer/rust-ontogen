@@ -19,9 +19,9 @@ pub struct ValueUpdate {
 }
 
 impl ValueUpdate {
-    fn apply(&self, value: &mut Value) {
-        if let Some(title) = &self.title {
-            value.title.clone_from(title);
+    fn apply(&self, record: &mut Value) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Value>, AppError> {
-        let mut values = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(VALUES_DIR, VALUE_TYPE).read_all().map_err(AppError::from)? {
             let fm: ValueFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            values.push(fm.into_value(id));
+            records.push(fm.into_value(id));
         }
-        sort_values(&mut values, order);
+        sort_values(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(values.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_values(&self) -> Result<u64, AppError> {
@@ -112,20 +112,20 @@ impl Store {
         Ok(fm.into_value(id.to_string()))
     }
 
-    pub async fn create_value(&self, mut value: Value) -> Result<Value, AppError> {
-        hooks::before_create(self, &mut value).await?;
+    pub async fn create_value(&self, mut record: Value) -> Result<Value, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&ValueFrontmatter::from_value(&value), VALUE_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&ValueFrontmatter::from_value(&record), VALUE_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(VALUES_DIR, VALUE_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(value.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(value.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::ValueIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::ValueAlreadyExists(value.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::ValueAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -143,9 +143,9 @@ impl Store {
             .entity(VALUES_DIR, VALUE_TYPE)
             .modify(id, |doc| {
                 let fm: ValueFrontmatter = doc.deserialize()?;
-                let mut value = fm.into_value(id.to_string());
-                updates.apply(&mut value);
-                doc.merge_serialize(&ValueFrontmatter::from_value(&value), VALUE_FM_FIELDS)?;
+                let mut record = fm.into_value(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&ValueFrontmatter::from_value(&record), VALUE_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Doc, AppError> {
 
 /// Create a new doc
 pub async fn create(store: &Store, input: CreateDocInput) -> Result<Doc, AppError> {
-    let doc: Doc = input.into();
-    store.create_doc(doc).await
+    store.create_doc(Doc::from(input)).await
 }
 
 /// Update an existing doc
 pub async fn update(store: &Store, id: &str, input: UpdateDocInput) -> Result<Doc, AppError> {
-    let updates: DocUpdate = input.into();
-    store.update_doc(id, updates).await
+    store.update_doc(id, DocUpdate::from(input)).await
 }
 
 /// Delete a doc by ID

@@ -34,10 +34,14 @@ impl Store {
         let mut options = sea_orm::ConnectOptions::new("sqlite::memory:");
         options.max_connections(1).min_connections(1).sqlx_logging(false);
         let db = Database::connect(options).await.map_err(db_error)?;
+        create_table(&db, tables::doc::Entity).await?;
         create_table(&db, tables::fixed::Entity).await?;
         create_table(&db, tables::item::Entity).await?;
         create_table(&db, tables::tag::Entity).await?;
         create_table(&db, tables::item_tags::Entity).await?;
+        create_table(&db, tables::r#match::Entity).await?;
+        create_table(&db, tables::order::Entity).await?;
+        create_table(&db, tables::order_loop::Entity).await?;
         create_table(&db, tables::section::Entity).await?;
         let (change_tx, _) = tokio::sync::broadcast::channel(256);
         Ok(Self { db, change_tx })

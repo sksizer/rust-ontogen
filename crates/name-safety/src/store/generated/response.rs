@@ -19,9 +19,9 @@ pub struct ResponseUpdate {
 }
 
 impl ResponseUpdate {
-    fn apply(&self, response: &mut Response) {
-        if let Some(title) = &self.title {
-            response.title.clone_from(title);
+    fn apply(&self, record: &mut Response) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Response>, AppError> {
-        let mut responses = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(RESPONSES_DIR, RESPONSE_TYPE).read_all().map_err(AppError::from)? {
             let fm: ResponseFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            responses.push(fm.into_response(id));
+            records.push(fm.into_response(id));
         }
-        sort_responses(&mut responses, order);
+        sort_responses(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(responses.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_responses(&self) -> Result<u64, AppError> {
@@ -112,23 +112,21 @@ impl Store {
         Ok(fm.into_response(id.to_string()))
     }
 
-    pub async fn create_response(&self, mut response: Response) -> Result<Response, AppError> {
-        hooks::before_create(self, &mut response).await?;
+    pub async fn create_response(&self, mut record: Response) -> Result<Response, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&ResponseFrontmatter::from_response(&response), RESPONSE_FM_FIELDS)
+        doc.merge_serialize(&ResponseFrontmatter::from_response(&record), RESPONSE_FM_FIELDS)
             .map_err(AppError::from)?;
         let id = match self.vault().entity(RESPONSES_DIR, RESPONSE_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(response.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(response.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::ResponseIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => {
-                return Err(AppError::ResponseAlreadyExists(response.id));
-            }
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::ResponseAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -146,9 +144,9 @@ impl Store {
             .entity(RESPONSES_DIR, RESPONSE_TYPE)
             .modify(id, |doc| {
                 let fm: ResponseFrontmatter = doc.deserialize()?;
-                let mut response = fm.into_response(id.to_string());
-                updates.apply(&mut response);
-                doc.merge_serialize(&ResponseFrontmatter::from_response(&response), RESPONSE_FM_FIELDS)?;
+                let mut record = fm.into_response(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&ResponseFrontmatter::from_response(&record), RESPONSE_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

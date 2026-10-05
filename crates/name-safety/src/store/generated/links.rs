@@ -19,9 +19,9 @@ pub struct LinksUpdate {
 }
 
 impl LinksUpdate {
-    fn apply(&self, links: &mut Links) {
-        if let Some(title) = &self.title {
-            links.title.clone_from(title);
+    fn apply(&self, record: &mut Links) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Links>, AppError> {
-        let mut linkses = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(LINKSES_DIR, LINKS_TYPE).read_all().map_err(AppError::from)? {
             let fm: LinksFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            linkses.push(fm.into_links(id));
+            records.push(fm.into_links(id));
         }
-        sort_linkses(&mut linkses, order);
+        sort_linkses(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(linkses.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_linkses(&self) -> Result<u64, AppError> {
@@ -112,20 +112,20 @@ impl Store {
         Ok(fm.into_links(id.to_string()))
     }
 
-    pub async fn create_links(&self, mut links: Links) -> Result<Links, AppError> {
-        hooks::before_create(self, &mut links).await?;
+    pub async fn create_links(&self, mut record: Links) -> Result<Links, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&LinksFrontmatter::from_links(&links), LINKS_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&LinksFrontmatter::from_links(&record), LINKS_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(LINKSES_DIR, LINKS_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(links.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(links.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::LinksIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::LinksAlreadyExists(links.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::LinksAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -143,9 +143,9 @@ impl Store {
             .entity(LINKSES_DIR, LINKS_TYPE)
             .modify(id, |doc| {
                 let fm: LinksFrontmatter = doc.deserialize()?;
-                let mut links = fm.into_links(id.to_string());
-                updates.apply(&mut links);
-                doc.merge_serialize(&LinksFrontmatter::from_links(&links), LINKS_FM_FIELDS)?;
+                let mut record = fm.into_links(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&LinksFrontmatter::from_links(&record), LINKS_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

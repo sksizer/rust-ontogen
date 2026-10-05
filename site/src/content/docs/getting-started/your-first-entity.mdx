@@ -295,19 +295,18 @@ The conversion layer generates `from_model` that initializes the `fulfills` vec 
 The generated `create_task` method handles junction table sync automatically. This is a simplified sketch; the generated method also fills a missing id and reports duplicates (see [Creating records](/guides/store-layer/#creating-records)):
 
 ```rust
-pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
-    hooks::before_create(self, &mut task).await?;
+pub async fn create_task(&self, mut record: Task) -> Result<Task, AppError> {
+    hooks::before_create(self, &mut record).await?;
 
-    let id = task.id.clone();
-    let fulfills = task.fulfills.clone();
-    let active = task.to_active_model()?;
+    let id = record.id.clone();
+    let active = record.to_active_model()?;
 
     active.insert(self.db()).await
         .map_err(|e| AppError::DbError(e.to_string()))?;
 
     // Sync the many-to-many junction table
     self.sync_junction(
-        "task_fulfills", "task_id", "requirement_id", &id, &fulfills
+        "task_fulfills", "task_id", "requirement_id", &id, &record.fulfills
     ).await?;
 
     let created = self.get_task(&id).await?;
@@ -374,14 +373,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Task, AppError> {
 
 /// Create a new task
 pub async fn create(store: &Store, input: CreateTaskInput) -> Result<Task, AppError> {
-    let task: Task = input.into();
-    store.create_task(task).await
+    store.create_task(Task::from(input)).await
 }
 
 /// Update an existing task
 pub async fn update(store: &Store, id: &str, input: UpdateTaskInput) -> Result<Task, AppError> {
-    let updates: TaskUpdate = input.into();
-    store.update_task(id, updates).await
+    store.update_task(id, TaskUpdate::from(input)).await
 }
 
 /// Delete a task by ID

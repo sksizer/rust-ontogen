@@ -34,14 +34,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Task, AppError> {
 
 /// Create a new task
 pub async fn create(store: &Store, input: CreateTaskInput) -> Result<Task, AppError> {
-    let task: Task = input.into();
-    store.create_task(task).await
+    store.create_task(Task::from(input)).await
 }
 
 /// Update an existing task
 pub async fn update(store: &Store, id: &str, input: UpdateTaskInput) -> Result<Task, AppError> {
-    let updates: TaskUpdate = input.into();
-    store.update_task(id, updates).await
+    store.update_task(id, TaskUpdate::from(input)).await
 }
 
 /// Delete a task by ID

@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Method, AppError> {
 
 /// Create a new method
 pub async fn create(store: &Store, input: CreateMethodInput) -> Result<Method, AppError> {
-    let method: Method = input.into();
-    store.create_method(method).await
+    store.create_method(Method::from(input)).await
 }
 
 /// Update an existing method
 pub async fn update(store: &Store, id: &str, input: UpdateMethodInput) -> Result<Method, AppError> {
-    let updates: MethodUpdate = input.into();
-    store.update_method(id, updates).await
+    store.update_method(id, MethodUpdate::from(input)).await
 }
 
 /// Delete a method by ID

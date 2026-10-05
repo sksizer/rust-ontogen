@@ -5,12 +5,16 @@ use ontogen_core::order::OrderBy;
 use crate::schema::AppError;
 use crate::schema::Match;
 use crate::schema::{CreateMatchInput, UpdateMatchInput};
-use crate::store::match::{MatchSortField, MatchUpdate};
 use crate::store::Store;
-
+use crate::store::r#match::{MatchSortField, MatchUpdate};
 
 /// One page of matches
-pub async fn list(store: &Store, order: &[OrderBy<MatchSortField>], limit: Option<u64>, offset: Option<u64>) -> Result<Vec<Match>, AppError> {
+pub async fn list(
+    store: &Store,
+    order: &[OrderBy<MatchSortField>],
+    limit: Option<u64>,
+    offset: Option<u64>,
+) -> Result<Vec<Match>, AppError> {
     store.list_matches(order, limit, offset).await
 }
 
@@ -26,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Match, AppError> {
 
 /// Create a new match
 pub async fn create(store: &Store, input: CreateMatchInput) -> Result<Match, AppError> {
-    let match: Match = input.into();
-    store.create_match(match).await
+    store.create_match(Match::from(input)).await
 }
 
 /// Update an existing match
 pub async fn update(store: &Store, id: &str, input: UpdateMatchInput) -> Result<Match, AppError> {
-    let updates: MatchUpdate = input.into();
-    store.update_match(id, updates).await
+    store.update_match(id, MatchUpdate::from(input)).await
 }
 
 /// Delete a match by ID

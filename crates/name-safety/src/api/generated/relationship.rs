@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Relationship, AppError
 
 /// Create a new relationship
 pub async fn create(store: &Store, input: CreateRelationshipInput) -> Result<Relationship, AppError> {
-    let relationship: Relationship = input.into();
-    store.create_relationship(relationship).await
+    store.create_relationship(Relationship::from(input)).await
 }
 
 /// Update an existing relationship
 pub async fn update(store: &Store, id: &str, input: UpdateRelationshipInput) -> Result<Relationship, AppError> {
-    let updates: RelationshipUpdate = input.into();
-    store.update_relationship(id, updates).await
+    store.update_relationship(id, RelationshipUpdate::from(input)).await
 }
 
 /// Delete a relationship by ID

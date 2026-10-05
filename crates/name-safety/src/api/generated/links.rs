@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Links, AppError> {
 
 /// Create a new links
 pub async fn create(store: &Store, input: CreateLinksInput) -> Result<Links, AppError> {
-    let links: Links = input.into();
-    store.create_links(links).await
+    store.create_links(Links::from(input)).await
 }
 
 /// Update an existing links
 pub async fn update(store: &Store, id: &str, input: UpdateLinksInput) -> Result<Links, AppError> {
-    let updates: LinksUpdate = input.into();
-    store.update_links(id, updates).await
+    store.update_links(id, LinksUpdate::from(input)).await
 }
 
 /// Delete a links by ID

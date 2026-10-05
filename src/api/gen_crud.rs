@@ -8,12 +8,13 @@
 //!   [`Omissions`]). `order` is the caller's sort, `&[]` for the default
 //!   id order (ADR 0006 §1)
 //! - `get_by_id` → `store.get_{entity}(id)`
-//! - `create` → `input.into()` + `store.create_{entity}(entity)`
-//! - `update` → `input.into()` + `store.update_{entity}(id, updates)`
+//! - `create` → `store.create_{entity}({Entity}::from(input))`
+//! - `update` → `store.update_{entity}(id, {Entity}Update::from(input))`
 //! - `delete` → `store.delete_{entity}(id)`
 
 use super::Omissions;
 use crate::ApiConfig;
+use crate::ident::rust_ident;
 use crate::schema::model::EntityDef;
 use crate::store::helpers::{pluralize, to_snake_case};
 
@@ -21,6 +22,7 @@ use crate::store::helpers::{pluralize, to_snake_case};
 pub(super) fn generate_crud_module(entity: &EntityDef, config: &ApiConfig, omit: Omissions) -> String {
     let name = &entity.name;
     let snake = to_snake_case(name);
+    let module = rust_ident(&snake);
     let plural = pluralize(&snake);
     let schema_path = &config.schema_module_path;
 
@@ -38,9 +40,9 @@ pub(super) fn generate_crud_module(entity: &EntityDef, config: &ApiConfig, omit:
     code.push_str(&format!("use {schema_path}::{name};\n"));
     code.push_str(&format!("use {schema_path}::{{Create{name}Input, Update{name}Input}};\n"));
     if omit.list {
-        code.push_str(&format!("use crate::store::{snake}::{name}Update;\n"));
+        code.push_str(&format!("use crate::store::{module}::{name}Update;\n"));
     } else {
-        code.push_str(&format!("use crate::store::{snake}::{{{name}SortField, {name}Update}};\n"));
+        code.push_str(&format!("use crate::store::{module}::{{{name}SortField, {name}Update}};\n"));
     }
     code.push_str("use crate::store::Store;\n\n");
     code.push('\n');
@@ -82,8 +84,9 @@ pub(super) fn generate_crud_module(entity: &EntityDef, config: &ApiConfig, omit:
     code.push_str(&format!(
         "pub async fn create(store: &Store, input: Create{name}Input) -> Result<{name}, AppError> {{\n"
     ));
-    code.push_str(&format!("    let {snake}: {name} = input.into();\n"));
-    code.push_str(&format!("    store.create_{snake}({snake}).await\n"));
+    // No binding named after the entity: `Match` would make it `match`, and
+    // `Store` or `Input` would shadow a parameter.
+    code.push_str(&format!("    store.create_{snake}({name}::from(input)).await\n"));
     code.push_str("}\n\n");
 
     // update
@@ -91,8 +94,7 @@ pub(super) fn generate_crud_module(entity: &EntityDef, config: &ApiConfig, omit:
     code.push_str(&format!(
         "pub async fn update(store: &Store, id: &str, input: Update{name}Input) -> Result<{name}, AppError> {{\n"
     ));
-    code.push_str(&format!("    let updates: {name}Update = input.into();\n"));
-    code.push_str(&format!("    store.update_{snake}(id, updates).await\n"));
+    code.push_str(&format!("    store.update_{snake}(id, {name}Update::from(input)).await\n"));
     code.push_str("}\n\n");
 
     // delete
@@ -187,5 +189,24 @@ mod tests {
         let omitted = generate_crud_module(&make_role_entity(), &make_config(), Omissions { list: true, count: false });
         assert!(!omitted.contains("OrderBy") && !omitted.contains("RoleSortField"), "a hand-written list: {omitted}");
         assert!(omitted.contains("use crate::store::role::RoleUpdate;"), "{omitted}");
+    }
+
+    /// No forwarder binds the record: an entity named after a keyword
+    /// (`Match`) or after a parameter (`Store`, `Input`) would break it.
+    #[test]
+    fn forwarders_bind_nothing_after_the_entity() {
+        for entity in crate::schema::hostile_entities() {
+            let code = generate_crud_module(&entity, &make_config(), Omissions::default());
+            syn::parse_file(&code).unwrap_or_else(|e| panic!("{}: invalid Rust: {e}\n{code}", entity.name));
+            let name = &entity.name;
+            let snake = to_snake_case(name);
+            assert!(code.contains(&format!("store.create_{snake}({name}::from(input)).await")), "{code}");
+            assert!(code.contains(&format!("store.update_{snake}(id, {name}Update::from(input)).await")), "{code}");
+            assert!(!code.contains("let "), "{code}");
+        }
+        let r#match = crate::schema::hostile_entities().into_iter().find(|e| e.name == "Match").expect("Match");
+        let code = generate_crud_module(&r#match, &make_config(), Omissions::default());
+        assert!(code.contains("use crate::store::r#match::{MatchSortField, MatchUpdate};"), "{code}");
+        assert!(super::super::generate_mod_rs(&["match".into()]).contains("pub mod r#match;"));
     }
 }

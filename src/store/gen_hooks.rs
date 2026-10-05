@@ -14,6 +14,7 @@ use std::fs;
 use std::path::Path;
 
 use super::helpers::to_snake_case;
+use crate::ident::rust_ident;
 use crate::schema::model::EntityDef;
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ fn generate_hook_file(entity: &EntityDef, schema_module_path: &str) -> String {
 
     code.push_str(&format!("use {schema_module_path}::{{{name}, AppError}};\n"));
     code.push_str("use crate::store::Store;\n");
-    code.push_str(&format!("use crate::store::generated::{snake}::{name}Update;\n\n"));
+    code.push_str(&format!("use crate::store::generated::{}::{name}Update;\n\n", rust_ident(&snake)));
 
     // before_create
     code.push_str(&format!("/// Called before a {snake} is inserted. Modify the entity or return Err to reject.\n"));
@@ -133,7 +134,7 @@ fn generate_hooks_mod_rs(entities: &[EntityDef], hooks_dir: &Path) -> String {
         // Only declare the module if the hook file exists
         let path = hooks_dir.join(format!("{name}.rs"));
         if path.exists() {
-            code.push_str(&format!("pub mod {name};\n"));
+            code.push_str(&format!("pub mod {};\n", rust_ident(name)));
         }
     }
 
