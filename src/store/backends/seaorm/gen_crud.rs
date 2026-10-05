@@ -1011,7 +1011,9 @@ mod tests {
             );
 
             let update = method(&code, "update_node");
-            let check = update.find("if !self.node_exists(child_id).await? {").expect("update checks");
+            let check = update
+                .find("if !current.contains.contains(child_id) && !self.node_exists(child_id).await? {")
+                .expect("an update checks the children it adds");
             assert!(update.contains("for child_id in updates.contains.iter().flatten() {"), "{update}");
             assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
             assert!(check < update.find("let contains_dropped").unwrap(), "before the drop check: {update}");
@@ -1078,8 +1080,7 @@ mod tests {
         generate_crud_impl(&mut code, &entities[0], &entities, &[], &IdStrategy::Provided);
         for op in ["create_node", "update_node"] {
             let body = method(&code, op);
-            let check =
-                body.find("if !self.requirement_exists(target_id).await? {").unwrap_or_else(|| panic!("{body}"));
+            let check = body.find("!self.requirement_exists(target_id).await? {").unwrap_or_else(|| panic!("{body}"));
             assert!(body.contains("return Err(AppError::RequirementNotFound(target_id.clone()));"), "{body}");
             assert!(check < body.find("let txn = self.db().begin()").unwrap(), "{op}: before the transaction: {body}");
             assert!(body.find("ParentCycle").unwrap() < check, "{op}: after the self-listing check: {body}");

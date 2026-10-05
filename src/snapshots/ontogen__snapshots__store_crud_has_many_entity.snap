@@ -216,7 +216,7 @@ impl Store {
         }
 
         for child_id in updates.contains.iter().flatten() {
-            if !self.node_exists(child_id).await? {
+            if !current.contains.contains(child_id) && !self.node_exists(child_id).await? {
                 return Err(AppError::NodeNotFound(child_id.clone()));
             }
         }

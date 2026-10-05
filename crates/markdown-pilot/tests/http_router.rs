@@ -1090,6 +1090,40 @@ async fn a_many_to_many_relationship_adds_removes_and_replaces_members(scope: Sc
 }
 in_both_scopes!(a_many_to_many_relationship_adds_removes_and_replaces_members);
 
+/// A task may list a tag that was deleted after it was linked (ADR 0001
+/// amendment 5). `POST` and `DELETE` write the whole list back through the
+/// store's update, which checks only the ids it adds, so the task still
+/// gains and loses tags. Any id a request names is still checked (§13.2
+/// step 8): a `PATCH` naming the deleted tag is refused like a new one.
+async fn a_many_to_many_relationship_holding_a_deleted_member_still_changes(scope: Scope) {
+    let server = Server::new();
+    server.task("Alpha", "open").await;
+    for (id, title) in [("a", "A"), ("b", "B"), ("c", "C")] {
+        server.tag(id, title).await;
+    }
+    let tags = "/api/tasks/alpha/relationships/tags";
+    let one = |id: &str| linkage(json!([identifier("tags", id)]));
+    let all = |ids: &[&str]| linkage(ids.iter().map(|id| identifier("tags", id)).collect());
+    server.write_in(scope, "PATCH", tags, all(&["a", "b"])).await.no_content();
+    server.store().delete_tag("b").await.expect("delete b");
+    assert_eq!(server.task_tags("alpha").await, ["a", "b"]);
+
+    server.write_in(scope, "POST", tags, one("c")).await.no_content();
+    assert_eq!(server.task_tags("alpha").await, ["a", "b", "c"]);
+    server.write_in(scope, "DELETE", tags, one("a")).await.no_content();
+    assert_eq!(server.task_tags("alpha").await, ["b", "c"]);
+
+    let reply = server.write_in(scope, "POST", tags, one("nope")).await;
+    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "no_such_related_resource"), "/data/0");
+    let reply = server.write_in(scope, "PATCH", tags, all(&["c", "b"])).await;
+    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "no_such_related_resource"), "/data/1");
+    assert_eq!(server.task_tags("alpha").await, ["b", "c"], "the refused writes changed nothing");
+
+    server.write_in(scope, "DELETE", tags, one("b")).await.no_content();
+    assert_eq!(server.task_tags("alpha").await, ["c"]);
+}
+in_both_scopes!(a_many_to_many_relationship_holding_a_deleted_member_still_changes);
+
 async fn a_has_many_relationship_writes_the_childrens_foreign_keys(scope: Scope) {
     let server = Server::new();
     for title in ["Alpha", "Beta", "Gamma"] {

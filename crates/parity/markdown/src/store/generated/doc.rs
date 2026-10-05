@@ -190,7 +190,7 @@ impl Store {
         }
 
         for child_id in updates.children.iter().flatten() {
-            if !self.doc_exists(child_id).await? {
+            if !current.children.contains(child_id) && !self.doc_exists(child_id).await? {
                 return Err(AppError::DocNotFound(child_id.clone()));
             }
         }

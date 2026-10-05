@@ -213,7 +213,7 @@ impl Store {
         let tags_changed = updates.tags.is_some();
 
         for target_id in updates.tags.iter().flatten() {
-            if !self.tag_exists(target_id).await? {
+            if !current.tags.contains(target_id) && !self.tag_exists(target_id).await? {
                 return Err(AppError::TagNotFound(target_id.clone()));
             }
         }

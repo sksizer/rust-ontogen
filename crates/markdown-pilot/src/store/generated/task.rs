@@ -210,12 +210,12 @@ impl Store {
         }
 
         for child_id in updates.subtasks.iter().flatten() {
-            if !self.task_exists(child_id).await? {
+            if !current.subtasks.contains(child_id) && !self.task_exists(child_id).await? {
                 return Err(AppError::TaskNotFound(child_id.clone()));
             }
         }
         for target_id in updates.tags.iter().flatten() {
-            if !self.tag_exists(target_id).await? {
+            if !current.tags.contains(target_id) && !self.tag_exists(target_id).await? {
                 return Err(AppError::TagNotFound(target_id.clone()));
             }
         }
