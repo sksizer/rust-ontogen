@@ -16,7 +16,7 @@ A SeaORM `many_to_many` write calls the consumer's `sync_junction(conn, table, s
 
 ## Proposal
 
-- Emit the sync into the generated store: `{junction}::Entity::delete_many().filter(source = id).exec(conn)`, then one insert per target in list order (`insert_many` keeps statement order on SQLite; see below), on the transaction.
+- Emit the sync into the generated store: `{junction}::Entity::delete_many().filter(source = id).exec(conn)`, then one insert per target in list order (`insert_many` keeps statement order on SQLite; see the Order bullet), on the transaction.
 - Keep `load_junction_ids` as the read side, or generate it too once order is portable.
 - Order: many_to_many lists keep their written order (ADR 0006 §4), which today relies on SQLite's `rowid` (B-SQLT items for `sync_junction` and `load_junction_ids`). Generating the sync is the natural point to add a `position` column to junction tables and order by it, which also removes those two B-SQLT locations.
 - Remove `sync_junction` from the consumer contract: a breaking change (the hook becomes dead code a consumer deletes, and junction tables gain a column if `position` is added). Upgrading guide entry and migration SQL for existing junction tables.

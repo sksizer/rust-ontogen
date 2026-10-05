@@ -363,7 +363,7 @@ impl Pipeline {
     /// no effect on what is served: the transports scan their own
     /// `api_dir`s, not the API stage's output, and those are scanned here
     /// anyway. A hand-written `list` or `count` that replaces a generated
-    /// one must therefore sit in a file one of those stages reads; one found
+    /// one must therefore sit in a file under the transports' `api_dir`s; one found
     /// only through these directories would serve nothing, so the build
     /// fails with an error naming the file. Set this only for a pipeline
     /// without a servers or clients stage.

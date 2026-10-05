@@ -16,7 +16,14 @@ A self-referential `has_many` (`Task.subtasks -> Task.parent_id`) describes a tr
 
 ## Why it is not refused today
 
-Cost and scope. Refusing a cycle needs an ancestor walk on every write that can close one: a `has_many` list (each listed child must not be an ancestor of the record) and a `belongs_to` write (the new parent must not be a descendant of the record). That is one read per ancestor on every such write, and on the markdown backend a read of a self-referential entity loads its directory (B-BGMN), so the walk is a per-write cost proportional to tree depth times directory size. It also widens the pre-0.9.0 fix that refused the one-record cycle into a new check on `belongs_to` writes. Neither backend can make the walk airtight cheaply under concurrency either: SeaORM would need row locks or serializable isolation on the walk's reads, and the markdown store has no transactions, so two concurrent updates (`a.parent_id = b`, `b.parent_id = a`) could each pass. Until then acyclicity is the consumer's concern: a `before_create` or `before_update` hook can walk the ancestors and refuse.
+The reason is cost and scope.
+
+- Refusing a cycle needs an ancestor walk on every write that can close one: a `has_many` list (each listed child must not be an ancestor of the record) and a `belongs_to` write (the new parent must not be a descendant of the record). That is one read per ancestor on every such write. On the markdown backend a read of a self-referential entity loads its directory (B-BGMN), so the walk costs tree depth times directory size per write.
+- It would also extend the pre-0.9.0 one-record refusal to `belongs_to` writes, which is a new check rather than a fix.
+- Neither backend makes the walk race-free cheaply. SeaORM would need row locks or serializable isolation on the walk's reads, and the markdown store has no transactions, so two concurrent updates (`a.parent_id = b`, `b.parent_id = a`) could each pass.
+- On SQLite, a SeaORM walk inside the write's transaction has to come after the transaction's first write (see the store-layer guide, "Writes are all or nothing").
+
+Until then acyclicity is the consumer's concern: a `before_create` or `before_update` hook can walk the ancestors and refuse.
 
 ## Design
 

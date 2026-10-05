@@ -415,7 +415,8 @@ relationship (§9.1), which is changed only through its own endpoint.
   members, and keeps that id until a write drops it. Over HTTP the step-8
   check catches a missing id first, as `404 no_such_related_resource`,
   for every id the request names: a relationship `POST` or `DELETE`
-  names one member, a `PATCH` the whole list. The store's check covers
+  names one member, a `PATCH` the whole list (so a `PATCH` must leave
+  out an id whose target was deleted; see §9.1). The store's check covers
   IPC, MCP and direct store callers. On SeaORM the
   junction's foreign key would refuse the id too, but only once the
   record's row is written; the markdown store has no foreign key. The
@@ -1578,7 +1579,13 @@ user code and pass through the same hooks and errors as a resource
 - A `POST` or `DELETE` that writes sends every id the record holds, an
   id whose target was deleted (§7.5) included. The store checks only the
   ids an update adds (§5.4), so such an id does not block the write. A
-  `PATCH` names every id, and step 8 checks each.
+  `PATCH` names every id, and step 8 checks each. A full-replacement
+  `PATCH` of a to-many relationship (the relationship endpoint, or the
+  relationship in a resource `PATCH` body) must therefore leave out an id
+  whose resource no longer exists, or step 8 refuses it with `404
+  no_such_related_resource`. A relationship `POST` or `DELETE`, and a
+  resource `PATCH` that omits the relationship, still succeed on a record
+  holding such an id.
 - `"data": []` on `POST` or `DELETE` writes nothing. The parent is still
   read, so a missing parent is still `404`.
 - On a `has_many` of the type's own type, a `PATCH` or `POST` naming the
@@ -2347,7 +2354,8 @@ so does one a hook or a direct caller supplies.
 
   A variant the generated store uses but the `AppError` lacks fails the
   consumer's build with rustc's `E0599` ("no variant or associated item
-  named …") in the generated store module. The scan reads only what the
+  named `TaskParentCycle` found for enum `AppError` in the current
+  scope", for a `Task`) in the generated store module. The scan reads only what the
   enum declares, so the build is where a missing variant shows.
 - **Code clashes.** When the build generates the HTTP server, a variant
   whose snake_case name equals a §13.3 code (an `InvalidDocument` variant,
