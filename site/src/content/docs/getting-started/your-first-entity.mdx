@@ -295,11 +295,11 @@ The conversion layer generates `from_model` that initializes the `fulfills` vec 
 The generated `create_task` method handles junction table sync automatically. This is a simplified sketch; the generated method also fills a missing id and reports duplicates (see [Creating records](/guides/store-layer/#creating-records)):
 
 ```rust
-pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
-    hooks::before_create(self, &mut task).await?;
+pub async fn create_task(&self, mut record: Task) -> Result<Task, AppError> {
+    hooks::before_create(self, &mut record).await?;
 
-    let id = task.id.clone();
-    let fulfills = task.fulfills.clone();
+    let id = record.id.clone();
+    let fulfills = record.fulfills.clone();
 
     // Every listed requirement must exist
     for target_id in &fulfills {
@@ -311,7 +311,7 @@ pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
     // The row and the junction rows are written in one transaction
     let txn = self.db().begin().await
         .map_err(|e| AppError::DbError(e.to_string()))?;
-    let active = task.to_active_model()?;
+    let active = record.to_active_model()?;
     active.insert(&txn).await
         .map_err(|e| AppError::DbError(e.to_string()))?;
 
@@ -391,14 +391,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Task, AppError> {
 
 /// Create a new task
 pub async fn create(store: &Store, input: CreateTaskInput) -> Result<Task, AppError> {
-    let task: Task = input.into();
-    store.create_task(task).await
+    store.create_task(Task::from(input)).await
 }
 
 /// Update an existing task
 pub async fn update(store: &Store, id: &str, input: UpdateTaskInput) -> Result<Task, AppError> {
-    let updates: TaskUpdate = input.into();
-    store.update_task(id, updates).await
+    store.update_task(id, TaskUpdate::from(input)).await
 }
 
 /// Delete a task by ID
@@ -429,23 +427,38 @@ generators: vec![
 This produces Axum route handlers with proper routing (abridged):
 
 ```rust
-pub fn entity_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/api/tasks", get(task_list).post(task_create).fallback(allow([Method::GET, Method::POST])))
+pub fn entity_routes() -> ::axum::Router<::std::sync::Arc<AppState>> {
+    ::axum::Router::new()
+        .route(
+            "/api/tasks",
+            ::axum::routing::get(task_list)
+                .post(task_create)
+                .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])),
+        )
         .route(
             "/api/tasks/{id}",
-            get(task_get_by_id).patch(task_update).delete(task_delete)
-                .fallback(allow([Method::GET, Method::PATCH, Method::DELETE])),
+            ::axum::routing::get(task_get_by_id)
+                .patch(task_update)
+                .delete(task_delete)
+                .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::PATCH, OntogenMethod::DELETE])),
         )
         .route(
             "/api/tasks/{id}/relationships/{rel}",
-            get(ontogen_task_relationship_get)
+            ::axum::routing::get(ontogen_task_relationship_get)
                 .patch(ontogen_task_relationship_patch)
                 .post(ontogen_task_relationship_post)
                 .delete(ontogen_task_relationship_delete)
-                .fallback(allow([Method::GET, Method::PATCH, Method::POST, Method::DELETE])),
+                .fallback(ontogen_allow([
+                    OntogenMethod::GET,
+                    OntogenMethod::PATCH,
+                    OntogenMethod::POST,
+                    OntogenMethod::DELETE,
+                ])),
         )
-        .route("/api/tasks/{id}/{rel}", get(ontogen_task_related_get).fallback(allow([Method::GET])))
+        .route(
+            "/api/tasks/{id}/{rel}",
+            ::axum::routing::get(ontogen_task_related_get).fallback(ontogen_allow([OntogenMethod::GET])),
+        )
         // ... the same for agents and requirements
 }
 ```

@@ -15,7 +15,7 @@ impl Exercise {
     }
 
     pub fn to_active_model(&self) -> Result<entity::ActiveModel, AppError> {
-        use sea_orm::Set;
+        use ::sea_orm::Set;
 
         Ok(entity::ActiveModel {
             id: Set(self.id.clone()),

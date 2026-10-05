@@ -10,7 +10,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 cargo := require("cargo")
 rustc := require("rustc")
 
-# pnpm: https://pnpm.io/installation (used by packages/nuxt_admin_layer's test suite)
+# pnpm: https://pnpm.io/installation (used by packages/nuxt_admin_layer's test
+# suite and to type-check the generated TypeScript)
 pnpm := require("pnpm")
 
 # ---------------------------------------------------------------------------- #
@@ -64,7 +65,7 @@ alias fw := full-write
 # builds without its `uuid` feature, which parity-markdown turns on for the
 # whole workspace, so the compile_fail example on `IdStrategy` proves the
 # `Uuid` variant does not exist without the feature.
-test: && test-admin-layer
+test: && test-admin-layer test-ts-clients
     cargo test --workspace
     cargo test -p ontogen-jsonapi --no-default-features
     cargo test -p markdown-store --doc
@@ -76,6 +77,13 @@ test: && test-admin-layer
 test-admin-layer:
     pnpm install --frozen-lockfile
     pnpm --filter @ontogen/admin-layer test
+
+# Type-check the TypeScript the name-safety fixture generates (its build
+# script rewrites crates/name-safety/generated-ts when the crate builds, as
+# `cargo test --workspace` does) under `tsc --strict`, Tauri's API stubbed.
+test-ts-clients:
+    pnpm install --frozen-lockfile
+    pnpm exec tsc -p crates/name-safety/tsconfig.json
 
 # The examples live outside the root cargo workspace and commit their generated
 # trees so diffs stay reviewable, but nothing regenerates them automatically —

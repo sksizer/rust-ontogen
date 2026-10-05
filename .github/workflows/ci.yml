@@ -22,7 +22,8 @@ jobs:
           toolchain: "stable"
       - uses: "extractions/setup-just@v3"
       # `test` (via full-check) runs packages/nuxt_admin_layer's vitest suite
-      # (just test-admin-layer), which needs pnpm/node.
+      # (just test-admin-layer) and type-checks the generated TypeScript
+      # (just test-ts-clients), which need pnpm/node.
       - uses: "pnpm/action-setup@v4"
       - uses: "actions/setup-node@v4"
         with:

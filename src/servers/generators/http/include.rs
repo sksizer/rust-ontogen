@@ -164,8 +164,8 @@ impl<'a> Includes<'a> {
             "/// The resources `paths` include for `entities`, path by path and each in\n/// linkage order: each \
              once, and none of `entities` among them. `paths` are\n/// those `include_paths` admitted, so no other \
              path occurs.\nasync fn {}(\n    state: &{},\n    {scope_param}entities: &[{entity_ty}],\n    \
-             paths: &[&str],\n) -> Result<Vec<AnyResource>, ErrorObject> {{\n    let mut included = \
-             Included::new(\"{}\", entities.iter().map(|entity| entity.{}.as_str()));\n    for path in paths \
+             paths: &[&str],\n) -> Result<Vec<OntogenAnyResource>, OntogenErrorObject> {{\n    let mut included = \
+             OntogenIncluded::new(\"{}\", entities.iter().map(|entity| entity.{}.as_str()));\n    for path in paths \
              {{\n{each_path}\n}}\n    Ok(included.finish())\n}}\n\n",
             self.helper_name(),
             config.state_type,

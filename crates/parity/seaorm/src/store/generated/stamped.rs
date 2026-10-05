@@ -2,8 +2,8 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select, TransactionTrait};
+use ::sea_orm::TransactionTrait as _;
+use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::stamped;
 use crate::schema::Stamped;
@@ -19,9 +19,9 @@ pub struct StampedUpdate {
 }
 
 impl StampedUpdate {
-    fn apply(&self, stamped: &mut Stamped) {
-        if let Some(title) = &self.title {
-            stamped.title.clone_from(title);
+    fn apply(&self, record: &mut Stamped) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -65,13 +65,13 @@ pub fn sort_stampeds(items: &mut [Stamped], order: &[OrderBy<StampedSortField>])
         keys.iter()
             .map(|key| key.direction.apply(compare_stampeds(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_stampeds`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_stampeds(a: &Stamped, b: &Stamped, field: StampedSortField) -> std::cmp::Ordering {
+fn compare_stampeds(a: &Stamped, b: &Stamped, field: StampedSortField) -> ::std::cmp::Ordering {
     match field {
         StampedSortField::Id => a.id.cmp(&b.id),
         StampedSortField::Title => a.title.cmp(&b.title),
@@ -114,11 +114,11 @@ impl Store {
         Stamped::from_model(&model)
     }
 
-    pub async fn create_stamped(&self, mut stamped: Stamped) -> Result<Stamped, AppError> {
-        hooks::before_create(self, &mut stamped).await?;
+    pub async fn create_stamped(&self, mut record: Stamped) -> Result<Stamped, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
-        let id = if stamped.id.trim().is_empty() {
+        let id = if record.id.trim().is_empty() {
             let base = ontogen_core::id::new_uuid();
             for candidate in ontogen_core::id::candidates(&base) {
                 let taken = stamped::Entity::find_by_id(candidate.as_str())
@@ -129,18 +129,18 @@ impl Store {
                 if taken {
                     continue;
                 }
-                stamped.id = candidate;
-                if self.try_insert_stamped(&txn, &stamped).await? {
+                record.id = candidate;
+                if self.try_insert_stamped(&txn, &record).await? {
                     break;
                 }
             }
-            stamped.id.clone()
+            record.id.clone()
         } else {
-            ontogen_core::id::validate_id(&stamped.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_stamped(&txn, &stamped).await? {
-                return Err(AppError::StampedAlreadyExists(stamped.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_stamped(&txn, &record).await? {
+                return Err(AppError::StampedAlreadyExists(record.id));
             }
-            stamped.id.clone()
+            record.id.clone()
         };
 
         txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
@@ -194,17 +194,17 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_stamped<C: sea_orm::ConnectionTrait>(
+    async fn try_insert_stamped<C: ::sea_orm::ConnectionTrait>(
         &self,
         conn: &C,
-        stamped: &Stamped,
+        record: &Stamped,
     ) -> Result<bool, AppError> {
-        let active = stamped.to_active_model()?;
+        let active = record.to_active_model()?;
         match active.insert(conn).await {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
                 // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
-                let taken = stamped::Entity::find_by_id(stamped.id.as_str())
+                let taken = stamped::Entity::find_by_id(record.id.as_str())
                     .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -219,17 +219,21 @@ impl Store {
 /// Applies `order` to `query` as `list_stampeds` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_stampeds_query(
-    mut query: Select<stamped::Entity>,
+    mut query: ::sea_orm::Select<stamped::Entity>,
     order: &[OrderBy<StampedSortField>],
-) -> Select<stamped::Entity> {
+) -> ::sea_orm::Select<stamped::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             StampedSortField::Id => stamped::Column::Id,
             StampedSortField::Title => stamped::Column::Title,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => {
+                (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)
+            }
+            ontogen_core::order::Direction::Desc => {
+                (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last)
+            }
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

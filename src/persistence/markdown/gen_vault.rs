@@ -5,7 +5,9 @@
 //! id strategy is not vault configuration: the generated store passes it to
 //! each create (`StoreConfig::id_strategy`). Both items go into the output
 //! directory's `mod.rs`, beside the per-entity module declarations, so no
-//! entity's module name can collide with them.
+//! entity's module name can collide with them; for the same reason they
+//! name `std` and `markdown_store` by `::`-rooted paths, which an entity
+//! `MarkdownStore` (module `markdown_store`) cannot shadow.
 
 use crate::MarkdownIoConfig;
 use crate::ir::MarkdownLayout;
@@ -29,8 +31,8 @@ pub fn generate_open_vault(config: &MarkdownIoConfig) -> String {
          /// configured at build time. Pass [`VAULT_ROOT`] to use the configured\n\
          /// location, or any other directory (a test's tempdir, say).\n",
     );
-    code.push_str("pub fn open_vault(root: impl Into<std::path::PathBuf>) -> markdown_store::VaultHandle {\n");
-    code.push_str(&format!("    markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::{layout})\n"));
+    code.push_str("pub fn open_vault(root: impl Into<::std::path::PathBuf>) -> ::markdown_store::VaultHandle {\n");
+    code.push_str(&format!("    ::markdown_store::VaultHandle::new(root, ::markdown_store::VaultLayout::{layout})\n"));
     code.push_str(&format!("        .with_list_cap({})\n", config.list_cap));
     // Only what differs from the runtime's default policy is spelled out, so
     // a vault with both options off reads as the plain handle it is.
@@ -42,7 +44,7 @@ pub fn generate_open_vault(config: &MarkdownIoConfig) -> String {
         policy.push(format!("generated_by: Some({actor:?}.into())"));
     }
     if !policy.is_empty() {
-        code.push_str("        .with_okf(markdown_store::OkfPolicy {\n");
+        code.push_str("        .with_okf(::markdown_store::OkfPolicy {\n");
         for field in policy {
             code.push_str(&format!("            {field},\n"));
         }
@@ -72,12 +74,25 @@ mod tests {
         let code = generate_open_vault(&config(OkfOptions::default()));
         assert!(code.contains("pub const VAULT_ROOT: &str = \"data/vault\";"), "{code}");
         assert!(
-            code.contains("markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::PerEntityDir)\n"),
+            code.contains("::markdown_store::VaultHandle::new(root, ::markdown_store::VaultLayout::PerEntityDir)\n"),
             "{code}"
         );
         assert!(code.contains(".with_list_cap(10000)\n}"), "{code}");
         assert!(!code.contains("with_okf"), "the default policy is not spelled out: {code}");
         syn::parse_file(&code).expect("valid Rust");
+    }
+
+    /// `open_vault` sits beside the entity modules, so a crate it names
+    /// bare would resolve to an entity's module of that name.
+    #[test]
+    fn open_vault_roots_every_crate_path() {
+        let code =
+            generate_open_vault(&config(OkfOptions { index: true, generated_by: Some("notes-kb/0.1.0".into()) }));
+        for name in ["std::", "markdown_store::"] {
+            for (at, _) in code.match_indices(name) {
+                assert!(code[..at].ends_with("::"), "`{name}` without `::` at byte {at}:\n{code}");
+            }
+        }
     }
 
     #[test]
@@ -86,7 +101,7 @@ mod tests {
             generate_open_vault(&config(OkfOptions { index: true, generated_by: Some("notes-kb/0.1.0".into()) }));
         assert!(
             code.contains(
-                ".with_okf(markdown_store::OkfPolicy {\n            index: true,\n            \
+                ".with_okf(::markdown_store::OkfPolicy {\n            index: true,\n            \
                  generated_by: Some(\"notes-kb/0.1.0\".into()),\n            ..Default::default()\n        })\n}"
             ),
             "{code}"
@@ -103,7 +118,10 @@ mod tests {
         let mut flat = config(OkfOptions::default());
         flat.layout = MarkdownLayout::Flat;
         let code = generate_open_vault(&flat);
-        assert!(code.contains("markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::Flat)\n"), "{code}");
+        assert!(
+            code.contains("::markdown_store::VaultHandle::new(root, ::markdown_store::VaultLayout::Flat)\n"),
+            "{code}"
+        );
         assert!(!code.contains("IdStrategy"), "the id strategy is the store's, not the vault's: {code}");
     }
 }

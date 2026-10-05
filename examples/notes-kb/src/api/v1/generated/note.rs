@@ -20,14 +20,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Note, AppError> {
 
 /// Create a new note
 pub async fn create(store: &Store, input: CreateNoteInput) -> Result<Note, AppError> {
-    let note: Note = input.into();
-    store.create_note(note).await
+    store.create_note(Note::from(input)).await
 }
 
 /// Update an existing note
 pub async fn update(store: &Store, id: &str, input: UpdateNoteInput) -> Result<Note, AppError> {
-    let updates: NoteUpdate = input.into();
-    store.update_note(id, updates).await
+    store.update_note(id, NoteUpdate::from(input)).await
 }
 
 /// Delete a note by ID

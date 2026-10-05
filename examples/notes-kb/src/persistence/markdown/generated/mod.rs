@@ -10,8 +10,8 @@ pub const VAULT_ROOT: &str = "data/vault";
 /// Open the vault at `root` with the layout, list cap and OKF options
 /// configured at build time. Pass [`VAULT_ROOT`] to use the configured
 /// location, or any other directory (a test's tempdir, say).
-pub fn open_vault(root: impl Into<std::path::PathBuf>) -> markdown_store::VaultHandle {
-    markdown_store::VaultHandle::new(root, markdown_store::VaultLayout::PerEntityDir).with_list_cap(10000).with_okf(
-        markdown_store::OkfPolicy { index: true, generated_by: Some("notes-kb/0.1.0".into()), ..Default::default() },
+pub fn open_vault(root: impl Into<::std::path::PathBuf>) -> ::markdown_store::VaultHandle {
+    ::markdown_store::VaultHandle::new(root, ::markdown_store::VaultLayout::PerEntityDir).with_list_cap(10000).with_okf(
+        ::markdown_store::OkfPolicy { index: true, generated_by: Some("notes-kb/0.1.0".into()), ..Default::default() },
     )
 }

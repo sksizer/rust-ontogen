@@ -48,96 +48,96 @@ pub struct ItemUpdate {
 }
 
 impl ItemUpdate {
-    fn apply(&self, item: &mut Item) {
-        if let Some(title) = &self.title {
-            item.title.clone_from(title);
+    fn apply(&self, record: &mut Item) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(int32) = &self.int32 {
-            item.int32.clone_from(int32);
+        if let Some(value) = &self.int32 {
+            record.int32.clone_from(value);
         }
-        if let Some(int64) = &self.int64 {
-            item.int64.clone_from(int64);
+        if let Some(value) = &self.int64 {
+            record.int64.clone_from(value);
         }
-        if let Some(float32) = &self.float32 {
-            item.float32.clone_from(float32);
+        if let Some(value) = &self.float32 {
+            record.float32.clone_from(value);
         }
-        if let Some(float64) = &self.float64 {
-            item.float64.clone_from(float64);
+        if let Some(value) = &self.float64 {
+            record.float64.clone_from(value);
         }
-        if let Some(flag) = &self.flag {
-            item.flag.clone_from(flag);
+        if let Some(value) = &self.flag {
+            record.flag.clone_from(value);
         }
-        if let Some(kind) = &self.kind {
-            item.kind.clone_from(kind);
+        if let Some(value) = &self.kind {
+            record.kind.clone_from(value);
         }
-        if let Some(maybe_text) = &self.maybe_text {
-            item.maybe_text.clone_from(maybe_text);
+        if let Some(value) = &self.maybe_text {
+            record.maybe_text.clone_from(value);
         }
-        if let Some(maybe_int32) = &self.maybe_int32 {
-            item.maybe_int32.clone_from(maybe_int32);
+        if let Some(value) = &self.maybe_int32 {
+            record.maybe_int32.clone_from(value);
         }
-        if let Some(maybe_int64) = &self.maybe_int64 {
-            item.maybe_int64.clone_from(maybe_int64);
+        if let Some(value) = &self.maybe_int64 {
+            record.maybe_int64.clone_from(value);
         }
-        if let Some(maybe_float32) = &self.maybe_float32 {
-            item.maybe_float32.clone_from(maybe_float32);
+        if let Some(value) = &self.maybe_float32 {
+            record.maybe_float32.clone_from(value);
         }
-        if let Some(maybe_float64) = &self.maybe_float64 {
-            item.maybe_float64.clone_from(maybe_float64);
+        if let Some(value) = &self.maybe_float64 {
+            record.maybe_float64.clone_from(value);
         }
-        if let Some(maybe_flag) = &self.maybe_flag {
-            item.maybe_flag.clone_from(maybe_flag);
+        if let Some(value) = &self.maybe_flag {
+            record.maybe_flag.clone_from(value);
         }
-        if let Some(maybe_kind) = &self.maybe_kind {
-            item.maybe_kind.clone_from(maybe_kind);
+        if let Some(value) = &self.maybe_kind {
+            record.maybe_kind.clone_from(value);
         }
-        if let Some(n_u8) = &self.n_u8 {
-            item.n_u8.clone_from(n_u8);
+        if let Some(value) = &self.n_u8 {
+            record.n_u8.clone_from(value);
         }
-        if let Some(n_u16) = &self.n_u16 {
-            item.n_u16.clone_from(n_u16);
+        if let Some(value) = &self.n_u16 {
+            record.n_u16.clone_from(value);
         }
-        if let Some(n_u32) = &self.n_u32 {
-            item.n_u32.clone_from(n_u32);
+        if let Some(value) = &self.n_u32 {
+            record.n_u32.clone_from(value);
         }
-        if let Some(n_u64) = &self.n_u64 {
-            item.n_u64.clone_from(n_u64);
+        if let Some(value) = &self.n_u64 {
+            record.n_u64.clone_from(value);
         }
-        if let Some(n_usize) = &self.n_usize {
-            item.n_usize.clone_from(n_usize);
+        if let Some(value) = &self.n_usize {
+            record.n_usize.clone_from(value);
         }
-        if let Some(n_u128) = &self.n_u128 {
-            item.n_u128.clone_from(n_u128);
+        if let Some(value) = &self.n_u128 {
+            record.n_u128.clone_from(value);
         }
-        if let Some(n_i8) = &self.n_i8 {
-            item.n_i8.clone_from(n_i8);
+        if let Some(value) = &self.n_i8 {
+            record.n_i8.clone_from(value);
         }
-        if let Some(n_i16) = &self.n_i16 {
-            item.n_i16.clone_from(n_i16);
+        if let Some(value) = &self.n_i16 {
+            record.n_i16.clone_from(value);
         }
-        if let Some(n_isize) = &self.n_isize {
-            item.n_isize.clone_from(n_isize);
+        if let Some(value) = &self.n_isize {
+            record.n_isize.clone_from(value);
         }
-        if let Some(n_i128) = &self.n_i128 {
-            item.n_i128.clone_from(n_i128);
+        if let Some(value) = &self.n_i128 {
+            record.n_i128.clone_from(value);
         }
-        if let Some(maybe_u32) = &self.maybe_u32 {
-            item.maybe_u32.clone_from(maybe_u32);
+        if let Some(value) = &self.maybe_u32 {
+            record.maybe_u32.clone_from(value);
         }
-        if let Some(maybe_u64) = &self.maybe_u64 {
-            item.maybe_u64.clone_from(maybe_u64);
+        if let Some(value) = &self.maybe_u64 {
+            record.maybe_u64.clone_from(value);
         }
-        if let Some(parent_id) = &self.parent_id {
-            item.parent_id.clone_from(parent_id);
+        if let Some(value) = &self.parent_id {
+            record.parent_id.clone_from(value);
         }
-        if let Some(children) = &self.children {
-            item.children.clone_from(children);
+        if let Some(value) = &self.children {
+            record.children.clone_from(value);
         }
-        if let Some(tags) = &self.tags {
-            item.tags.clone_from(tags);
+        if let Some(value) = &self.tags {
+            record.tags.clone_from(value);
         }
-        if let Some(body) = &self.body {
-            item.body.clone_from(body);
+        if let Some(value) = &self.body {
+            record.body.clone_from(value);
         }
     }
 }
@@ -322,13 +322,13 @@ pub fn sort_items(items: &mut [Item], order: &[OrderBy<ItemSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_items(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_items`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_items(a: &Item, b: &Item, field: ItemSortField) -> std::cmp::Ordering {
+fn compare_items(a: &Item, b: &Item, field: ItemSortField) -> ::std::cmp::Ordering {
     match field {
         ItemSortField::Id => a.id.cmp(&b.id),
         ItemSortField::Title => a.title.cmp(&b.title),
@@ -386,19 +386,19 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Item>, AppError> {
-        let mut items = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(ITEMS_DIR, ITEM_TYPE).read_all().map_err(AppError::from)? {
             let fm: ItemFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            items.push(fm.into_item(id, doc.body().to_string()));
+            records.push(fm.into_item(id, doc.body().to_string()));
         }
-        sort_items(&mut items, order);
+        sort_items(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        let mut items: Vec<Item> = items.into_iter().skip(offset).take(limit).collect();
-        for entity in &mut items {
-            self.populate_item_relations(entity).await?;
+        let mut records: Vec<Item> = records.into_iter().skip(offset).take(limit).collect();
+        for record in &mut records {
+            self.populate_item_relations(record).await?;
         }
-        Ok(items)
+        Ok(records)
     }
 
     pub async fn count_items(&self) -> Result<u64, AppError> {
@@ -414,99 +414,97 @@ impl Store {
             Err(e) => return Err(AppError::from(e)),
         };
         let fm: ItemFrontmatter = doc.deserialize().map_err(AppError::from)?;
-        let mut item = fm.into_item(id.to_string(), doc.body().to_string());
-        self.populate_item_relations(&mut item).await?;
-        Ok(item)
+        let mut record = fm.into_item(id.to_string(), doc.body().to_string());
+        self.populate_item_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_item(&self, mut item: Item) -> Result<Item, AppError> {
-        hooks::before_create(self, &mut item).await?;
+    pub async fn create_item(&self, mut record: Item) -> Result<Item, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let children = item.children.clone();
-
-        if !item.id.trim().is_empty() && item.children.contains(&item.id) {
-            return Err(AppError::ItemParentCycle(item.id.clone()));
+        if !record.id.trim().is_empty() && record.children.contains(&record.id) {
+            return Err(AppError::ItemParentCycle(record.id.clone()));
         }
 
-        for child_id in &item.children {
+        for child_id in &record.children {
             if !self.item_exists(child_id).await? {
                 return Err(AppError::ItemNotFound(child_id.clone()));
             }
         }
-        for target_id in &item.tags {
+        for target_id in &record.tags {
             if !self.tag_exists(target_id).await? {
                 return Err(AppError::TagNotFound(target_id.clone()));
             }
         }
 
-        if let Some(v) = Some(item.n_u64).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.n_u64).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: format!("Item.n_u64: value {v} is out of range for i64"),
             }));
         }
-        if let Some(v) = Some(item.n_usize).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.n_usize).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: format!("Item.n_usize: value {v} is out of range for i64"),
             }));
         }
-        if let Some(v) = Some(item.n_u128).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.n_u128).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: format!("Item.n_u128: value {v} is out of range for i64"),
             }));
         }
-        if let Some(v) = Some(item.n_isize).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.n_isize).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: format!("Item.n_isize: value {v} is out of range for i64"),
             }));
         }
-        if let Some(v) = Some(item.n_i128).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.n_i128).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: format!("Item.n_i128: value {v} is out of range for i64"),
             }));
         }
-        if let Some(v) = item.maybe_u64.filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = record.maybe_u64.filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: format!("Item.maybe_u64: value {v} is out of range for i64"),
             }));
         }
 
-        if item.float32.is_nan() {
+        if record.float32.is_nan() {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: "Item.float32: NaN cannot be stored".to_string(),
             }));
         }
-        if item.float64.is_nan() {
+        if record.float64.is_nan() {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: "Item.float64: NaN cannot be stored".to_string(),
             }));
         }
-        if item.maybe_float32.is_some_and(f32::is_nan) {
+        if record.maybe_float32.is_some_and(f32::is_nan) {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: "Item.maybe_float32: NaN cannot be stored".to_string(),
             }));
         }
-        if item.maybe_float64.is_some_and(f64::is_nan) {
+        if record.maybe_float64.is_some_and(f64::is_nan) {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: "Item.maybe_float64: NaN cannot be stored".to_string(),
             }));
         }
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&ItemFrontmatter::from_item(&item), ITEM_FM_FIELDS).map_err(AppError::from)?;
-        doc.set_body(item.body.clone());
+        doc.merge_serialize(&ItemFrontmatter::from_item(&record), ITEM_FM_FIELDS).map_err(AppError::from)?;
+        doc.set_body(record.body.clone());
         let id = match self.vault().entity(ITEMS_DIR, ITEM_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(item.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(item.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::ItemIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::ItemAlreadyExists(item.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::ItemAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
-        for child_id in &children {
+        for child_id in &record.children {
             self.set_item_parent(child_id, Some(&id)).await?;
         }
 
@@ -598,10 +596,10 @@ impl Store {
             .entity(ITEMS_DIR, ITEM_TYPE)
             .modify(id, |doc| {
                 let fm: ItemFrontmatter = doc.deserialize()?;
-                let mut item = fm.into_item(id.to_string(), doc.body().to_string());
-                updates.apply(&mut item);
-                doc.merge_serialize(&ItemFrontmatter::from_item(&item), ITEM_FM_FIELDS)?;
-                doc.set_body(item.body);
+                let mut record = fm.into_item(id.to_string(), doc.body().to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&ItemFrontmatter::from_item(&record), ITEM_FM_FIELDS)?;
+                doc.set_body(record.body);
                 Ok(())
             })
             .map_err(AppError::from)?;
@@ -639,19 +637,19 @@ impl Store {
 
     pub(crate) async fn populate_item_relations(
         &self,
-        item: &mut crate::schema::Item,
+        record: &mut crate::schema::Item,
     ) -> Result<(), crate::schema::AppError> {
-        let mut children = Vec::new();
+        let mut ids = Vec::new();
         for (child_id, doc) in self.vault().entity(ITEMS_DIR, ITEM_TYPE).read_all().map_err(AppError::from)? {
-            if child_id == item.id {
+            if child_id == record.id {
                 continue;
             }
             let child: ItemFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            if markdown_store::wikilink::strip_opt(child.parent_id).as_deref() == Some(item.id.as_str()) {
-                children.push(child_id);
+            if markdown_store::wikilink::strip_opt(child.parent_id).as_deref() == Some(record.id.as_str()) {
+                ids.push(child_id);
             }
         }
-        item.children = children;
+        record.children = ids;
         Ok(())
     }
 

@@ -13,14 +13,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Tag, AppError> {
 
 /// Create a new tag
 pub async fn create(store: &Store, input: CreateTagInput) -> Result<Tag, AppError> {
-    let tag: Tag = input.into();
-    store.create_tag(tag).await
+    store.create_tag(Tag::from(input)).await
 }
 
 /// Update an existing tag
 pub async fn update(store: &Store, id: &str, input: UpdateTagInput) -> Result<Tag, AppError> {
-    let updates: TagUpdate = input.into();
-    store.update_tag(id, updates).await
+    store.update_tag(id, TagUpdate::from(input)).await
 }
 
 /// Delete a tag by ID

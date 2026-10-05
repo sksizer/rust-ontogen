@@ -22,18 +22,18 @@ pub struct ExerciseUpdate {
 }
 
 impl ExerciseUpdate {
-    fn apply(&self, exercise: &mut Exercise) {
-        if let Some(name) = &self.name {
-            exercise.name.clone_from(name);
+    fn apply(&self, record: &mut Exercise) {
+        if let Some(value) = &self.name {
+            record.name.clone_from(value);
         }
-        if let Some(muscle_group) = &self.muscle_group {
-            exercise.muscle_group.clone_from(muscle_group);
+        if let Some(value) = &self.muscle_group {
+            record.muscle_group.clone_from(value);
         }
-        if let Some(equipment) = &self.equipment {
-            exercise.equipment.clone_from(equipment);
+        if let Some(value) = &self.equipment {
+            record.equipment.clone_from(value);
         }
-        if let Some(notes) = &self.notes {
-            exercise.notes.clone_from(notes);
+        if let Some(value) = &self.notes {
+            record.notes.clone_from(value);
         }
     }
 }
@@ -89,13 +89,13 @@ pub fn sort_exercises(items: &mut [Exercise], order: &[OrderBy<ExerciseSortField
         keys.iter()
             .map(|key| key.direction.apply(compare_exercises(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_exercises`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_exercises(a: &Exercise, b: &Exercise, field: ExerciseSortField) -> std::cmp::Ordering {
+fn compare_exercises(a: &Exercise, b: &Exercise, field: ExerciseSortField) -> ::std::cmp::Ordering {
     match field {
         ExerciseSortField::Id => a.id.cmp(&b.id),
         ExerciseSortField::Name => a.name.cmp(&b.name),
@@ -112,15 +112,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Exercise>, AppError> {
-        let mut exercises = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(EXERCISES_DIR, EXERCISE_TYPE).read_all().map_err(AppError::from)? {
             let fm: ExerciseFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            exercises.push(fm.into_exercise(id));
+            records.push(fm.into_exercise(id));
         }
-        sort_exercises(&mut exercises, order);
+        sort_exercises(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(exercises.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_exercises(&self) -> Result<u64, AppError> {
@@ -139,23 +139,21 @@ impl Store {
         Ok(fm.into_exercise(id.to_string()))
     }
 
-    pub async fn create_exercise(&self, mut exercise: Exercise) -> Result<Exercise, AppError> {
-        hooks::before_create(self, &mut exercise).await?;
+    pub async fn create_exercise(&self, mut record: Exercise) -> Result<Exercise, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&ExerciseFrontmatter::from_exercise(&exercise), EXERCISE_FM_FIELDS)
+        doc.merge_serialize(&ExerciseFrontmatter::from_exercise(&record), EXERCISE_FM_FIELDS)
             .map_err(AppError::from)?;
         let id = match self.vault().entity(EXERCISES_DIR, EXERCISE_TYPE).create(
             &markdown_store::IdStrategy::Provided,
-            Some(exercise.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
             None,
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::ExerciseIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => {
-                return Err(AppError::ExerciseAlreadyExists(exercise.id));
-            }
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::ExerciseAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -173,9 +171,9 @@ impl Store {
             .entity(EXERCISES_DIR, EXERCISE_TYPE)
             .modify(id, |doc| {
                 let fm: ExerciseFrontmatter = doc.deserialize()?;
-                let mut exercise = fm.into_exercise(id.to_string());
-                updates.apply(&mut exercise);
-                doc.merge_serialize(&ExerciseFrontmatter::from_exercise(&exercise), EXERCISE_FM_FIELDS)?;
+                let mut record = fm.into_exercise(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&ExerciseFrontmatter::from_exercise(&record), EXERCISE_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

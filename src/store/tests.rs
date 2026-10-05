@@ -303,7 +303,7 @@ mod tests {
         );
         for needle in [
             "Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::TagIdRequired(reason)),",
-            "Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TagAlreadyExists(tag.id)),",
+            "Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TagAlreadyExists(record.id)),",
             "Ok(None) | Err(markdown_store::Error::InvalidId { .. }) => {",
             "Err(markdown_store::Error::NotFound { .. } | markdown_store::Error::InvalidId { .. }) => {",
         ] {
@@ -449,7 +449,7 @@ mod tests {
 
             let (default, uuid, provided) = match backend {
                 crate::ir::Backend::Seaorm(_) => (
-                    "ontogen_core::id::slugify(&tag.name)",
+                    "ontogen_core::id::slugify(&record.name)",
                     "ontogen_core::id::new_uuid()",
                     "AppError::ExerciseIdRequired(\"this store requires the caller to supply an id\"",
                 ),
@@ -574,6 +574,165 @@ mod tests {
             let msg = format!("{err}");
             assert!(msg.contains("`Workout.sets`: has_many target `WorkoutSet`"), "{backend:?}: {msg}");
             assert!(!out_dir.exists(), "validation failures must not write files");
+        }
+    }
+
+    /// Entities named like the generated code's own bindings and imports
+    /// (`Doc`, `Order`), after a keyword (`Match`), and keyword
+    /// relationships (`r#in`, `r#loop`) generate a store that parses on both
+    /// backends, binds no local after a schema name, and imports nothing
+    /// bare that an entity can be named.
+    #[test]
+    fn schema_names_cannot_collide_with_generated_names_on_either_backend() {
+        let entities = crate::schema::hostile_entities();
+        for backend in [crate::ir::Backend::Seaorm(None), markdown_backend()] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let (out, hooks) = (tmp.path().join("generated"), tmp.path().join("hooks"));
+            let config = StoreConfig {
+                output_dir: out.clone(),
+                hooks_dir: Some(hooks.clone()),
+                schema_module_path: "crate::schema".to_string(),
+                backend: backend.clone(),
+                wikilink_policy: None,
+                id_strategy: crate::ir::IdStrategy::SlugFromField("title".into()),
+            };
+            store::generate(&crate::schema::schema_of(&entities), &config)
+                .unwrap_or_else(|e| panic!("{backend:?}: {e}"));
+            let read = |dir: &std::path::Path, file: &str| {
+                let code = std::fs::read_to_string(dir.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+                syn::parse_file(&code).unwrap_or_else(|e| panic!("{backend:?}: {file} is not Rust: {e}\n{code}"));
+                code
+            };
+
+            assert!(read(&out, "mod.rs").contains("pub mod r#match;"), "{backend:?}");
+            assert!(read(&hooks, "mod.rs").contains("pub mod r#match;"), "{backend:?}");
+            assert!(read(&hooks, "match.rs").contains("use crate::store::generated::r#match::MatchUpdate;"));
+            let r#match = read(&out, "match.rs");
+            assert!(r#match.contains("use crate::store::hooks::r#match as hooks;"), "{backend:?}: {}", r#match);
+
+            for (file, name) in [("doc.rs", "Doc"), ("order.rs", "Order"), ("match.rs", "Match")] {
+                let code = read(&out, file);
+                let snake = crate::store::helpers::to_snake_case(name);
+                assert!(code.contains(&format!("create_{snake}(&self, mut record: {name})")), "{backend:?}: {code}");
+                assert!(code.contains(&format!("fn apply(&self, record: &mut {name})")), "{backend:?}: {code}");
+                // The record is never bound under the entity's name, so an
+                // internal binding (`doc` on markdown) cannot shadow it.
+                let bindings = [
+                    format!("{snake}: {name}"),
+                    format!("{snake}: &{name}"),
+                    format!("{snake}: &mut {name}"),
+                    format!("{snake}: &mut crate::schema::{name}"),
+                    format!("let mut {snake} = fm.into_"),
+                    format!("let mut {snake} = {name}::from_model"),
+                ];
+                for binding in bindings {
+                    assert!(!code.contains(&binding), "{backend:?}: {file} binds `{binding}`:\n{code}");
+                }
+            }
+
+            let (doc, order) = (read(&out, "doc.rs"), read(&out, "order.rs"));
+            // The checks on listed ids read the record and the update through
+            // the same bindings, and name the keyword target's exists helper.
+            assert!(r#match.contains("pub(crate) async fn match_exists(&self, id: &str)"), "{backend:?}: {}", r#match);
+            for listed in ["&record.r#loop", "updates.r#loop.iter().flatten()"] {
+                assert!(order.contains(&format!("for target_id in {listed} {{")), "{backend:?}: {order}");
+            }
+            assert!(order.contains("if !self.match_exists(target_id).await? {"), "{backend:?}: {order}");
+            assert!(
+                doc.contains("if !record.id.trim().is_empty() && record.children.contains(&record.id) {"),
+                "{backend:?}: {doc}"
+            );
+            assert!(doc.contains("return Err(AppError::DocParentCycle(record.id.clone()));"), "{backend:?}: {doc}");
+            match backend {
+                crate::ir::Backend::Seaorm(_) => {
+                    assert!(order.contains("let loop_changed = updates.r#loop.is_some();"), "{order}");
+                    for code in [&doc, &order, &r#match] {
+                        let imports: Vec<_> = code.lines().filter(|l| l.contains("sea_orm")).collect();
+                        assert!(!code.contains(" sea_orm::") && !code.contains("(sea_orm::"), "unrooted:\n{code}");
+                        assert!(
+                            imports
+                                .iter()
+                                .filter(|l| l.starts_with("use "))
+                                .all(|l| l.starts_with("use ::sea_orm::") && l.contains(" as _")),
+                            "{imports:?}"
+                        );
+                    }
+                    assert!(r#match.contains("use crate::persistence::db::entities::r#match;"), "{}", r#match);
+                    assert!(r#match.contains("r#match::Entity::find_by_id(id)"), "{}", r#match);
+                    assert!(
+                        order.contains("(::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)"),
+                        "{order}"
+                    );
+                    assert!(
+                        order.contains(
+                            r#"self.sync_junction(&txn, "order_loop", "order_id", "match_id", &id, &record.r#loop)"#
+                        ),
+                        "{order}"
+                    );
+                    // sea_query quotes each identifier for the backend, so the
+                    // keyword column `in` reaches SQL as `"in"`.
+                    assert!(doc.contains(r#".table(::sea_orm::sea_query::Alias::new("docs"))"#), "{doc}");
+                    assert!(
+                        doc.contains(
+                            r#".value(::sea_orm::sea_query::Alias::new("in"), parent_id.map(str::to_string))"#
+                        ),
+                        "{doc}"
+                    );
+                    assert!(
+                        doc.contains(
+                            r#"::sea_orm::sea_query::Expr::col(::sea_orm::sea_query::Alias::new("id")).eq(child_id)"#
+                        ),
+                        "{doc}"
+                    );
+                    assert!(!doc.contains("UPDATE"), "no hand-built SQL: {doc}");
+                    assert!(doc.contains(".filter(doc::Column::In.eq(&record.id))"), "{doc}");
+                }
+                crate::ir::Backend::Markdown(_) => {
+                    assert!(
+                        r#match.contains("use crate::persistence::markdown::generated::r#match::{MATCH_FM_FIELDS"),
+                        "{}",
+                        r#match
+                    );
+                    let create = &doc[doc.find("pub async fn create_doc").expect("create_doc")..];
+                    assert!(create.contains("let mut doc = markdown_store::Document::new();"), "{create}");
+                    assert!(create.contains("DocFrontmatter::from_doc(&record)"), "{create}");
+                    assert!(doc.contains("markdown_store::wikilink::strip_opt(child.r#in)"), "{doc}");
+                }
+            }
+        }
+    }
+
+    /// An entity named like a type the store and API layers import bare is
+    /// refused before anything is written, naming the entity and the fix.
+    #[test]
+    fn an_entity_the_store_contract_has_no_room_for_is_refused() {
+        let entity_named = |name: &str| {
+            let src = format!(
+                "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {name} {{\n    #[ontology(id)]\n    pub id: String,\n}}\n"
+            );
+            crate::schema::parse::parse_schema_source(&src, std::path::Path::new("x.rs")).expect("parses").remove(0)
+        };
+        for (name, why) in [
+            ("Store", "the generated store and API import the consumer contract's `Store` bare"),
+            ("AppError", "the generated store and API import the consumer contract's `AppError` bare"),
+            ("ChangeOp", "the generated store and API import the consumer contract's `ChangeOp` bare"),
+            ("EntityKind", "the generated store and API import the consumer contract's `EntityKind` bare"),
+            ("OrderBy", "the generated store and API import the consumer contract's `OrderBy` bare"),
+        ] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let config = StoreConfig {
+                output_dir: tmp.path().join("generated"),
+                hooks_dir: None,
+                schema_module_path: "crate::schema".to_string(),
+                backend: crate::ir::Backend::Seaorm(None),
+                wikilink_policy: None,
+                id_strategy: crate::ir::IdStrategy::Provided,
+            };
+            let err = store::generate(&crate::schema::schema_of(&[entity_named(name)]), &config).expect_err(name);
+            let err = err.to_string();
+            assert!(err.contains(&format!("ontogen: entity `{name}` cannot have a store: {why}")), "{err}");
+            assert!(err.contains(&format!("Rename the entity (e.g. `{name}Item`).")), "{err}");
+            assert!(!tmp.path().join("generated").exists(), "{name}: refused before writing");
         }
     }
 }

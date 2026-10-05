@@ -21,15 +21,15 @@ pub struct TagUpdate {
 }
 
 impl TagUpdate {
-    fn apply(&self, tag: &mut Tag) {
-        if let Some(title) = &self.title {
-            tag.title.clone_from(title);
+    fn apply(&self, record: &mut Tag) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(uses) = &self.uses {
-            tag.uses.clone_from(uses);
+        if let Some(value) = &self.uses {
+            record.uses.clone_from(value);
         }
-        if let Some(peak_uses) = &self.peak_uses {
-            tag.peak_uses.clone_from(peak_uses);
+        if let Some(value) = &self.peak_uses {
+            record.peak_uses.clone_from(value);
         }
     }
 }
@@ -77,13 +77,13 @@ pub fn sort_tags(items: &mut [Tag], order: &[OrderBy<TagSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_tags(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_tags`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_tags(a: &Tag, b: &Tag, field: TagSortField) -> std::cmp::Ordering {
+fn compare_tags(a: &Tag, b: &Tag, field: TagSortField) -> ::std::cmp::Ordering {
     match field {
         TagSortField::Id => a.id.cmp(&b.id),
         TagSortField::Title => a.title.cmp(&b.title),
@@ -99,15 +99,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Tag>, AppError> {
-        let mut tags = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(TAGS_DIR, TAG_TYPE).read_all().map_err(AppError::from)? {
             let fm: TagFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            tags.push(fm.into_tag(id));
+            records.push(fm.into_tag(id));
         }
-        sort_tags(&mut tags, order);
+        sort_tags(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(tags.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_tags(&self) -> Result<u64, AppError> {
@@ -126,31 +126,31 @@ impl Store {
         Ok(fm.into_tag(id.to_string()))
     }
 
-    pub async fn create_tag(&self, mut tag: Tag) -> Result<Tag, AppError> {
-        hooks::before_create(self, &mut tag).await?;
+    pub async fn create_tag(&self, mut record: Tag) -> Result<Tag, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        if let Some(v) = Some(tag.uses).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.uses).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: format!("Tag.uses: value {v} is out of range for i64"),
             }));
         }
-        if let Some(v) = tag.peak_uses.filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = record.peak_uses.filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::from(markdown_store::Error::Serialize {
                 message: format!("Tag.peak_uses: value {v} is out of range for i64"),
             }));
         }
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&TagFrontmatter::from_tag(&tag), TAG_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&TagFrontmatter::from_tag(&record), TAG_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(TAGS_DIR, TAG_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(tag.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(tag.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::TagIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TagAlreadyExists(tag.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::TagAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -179,9 +179,9 @@ impl Store {
             .entity(TAGS_DIR, TAG_TYPE)
             .modify(id, |doc| {
                 let fm: TagFrontmatter = doc.deserialize()?;
-                let mut tag = fm.into_tag(id.to_string());
-                updates.apply(&mut tag);
-                doc.merge_serialize(&TagFrontmatter::from_tag(&tag), TAG_FM_FIELDS)?;
+                let mut record = fm.into_tag(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&TagFrontmatter::from_tag(&record), TAG_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

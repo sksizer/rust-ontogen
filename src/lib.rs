@@ -23,6 +23,7 @@ pub mod admin;
 pub mod api;
 pub mod clients;
 pub mod docs;
+mod ident;
 pub mod persistence;
 pub mod pipeline;
 pub(crate) mod resource;
@@ -328,9 +329,10 @@ pub fn gen_api(entities: &[EntityDef], config: &ApiConfig) -> Result<ApiOutput, 
 /// `schema` is [`parse_schema`]'s output, or `&SchemaOutput::default()` when
 /// there is no schema. An API module whose name is an entity's module name
 /// (the entity name in snake_case, as [`gen_api`] names it) is served as that
-/// entity's JSON:API resource over HTTP. Every entity must therefore be
-/// servable as one: a `String` id field, legal and distinct member names, and
-/// relation targets that are entities of the schema.
+/// entity's JSON:API resource over HTTP. When [`ServersConfig::generators`]
+/// includes `HttpAxum`, every entity must therefore be servable as one: a
+/// `String` id field, legal and distinct member names, and relation targets
+/// that are entities of the schema.
 ///
 /// Currently, this function always scans `config.api_dir` and every
 /// [`ServersConfig::extra_surfaces`] entry with `syn`, regardless of `api`

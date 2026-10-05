@@ -1212,7 +1212,9 @@ fn a_scoped_resource_route_keeps_its_prefix() {
 fn every_http_call_throws_json_api_error() {
     let clients = jsonapi_clients(false, |_| {});
     for ts in [&clients.transport, &clients.http] {
-        assert!(ts.contains("export class JsonApiError extends Error {\n  override readonly name = 'JsonApiError';"));
+        assert!(ts.contains(
+            "export class JsonApiError extends globalThis.Error {\n  override readonly name = 'JsonApiError';"
+        ));
         assert!(ts.contains("constructor(status: number, errors: JsonApiErrorObject[], message: string) {"));
         let error = ts_function(ts, "toJsonApiError");
         assert!(error.contains("Array.isArray((body as { errors?: unknown }).errors)"), "{error}");
@@ -1779,11 +1781,11 @@ fn under_a_route_prefix_a_scoped_write_links_unscoped_targets() {
     );
     assert!(clients.is_ok(), "{:?}", clients.err());
     let http = servers.unwrap().unwrap().http;
-    let check = &http[http.find("async fn workout_set_check_linked_scoped(").expect(&http)..];
+    let check = &http[http.find("async fn ontogen_workout_set_check_linked_scoped(").expect(&http)..];
     let check = &check[..check.find("\n}\n").unwrap()];
     assert!(check.contains("tag::get_by_id(state, &linked.id)"), "{check}");
     assert!(!check.contains("store_for"), "the state reaches an unscoped target:\n{check}");
-    assert!(!http.contains("async fn workout_set_check_linked("), "no write is unscoped:\n{http}");
+    assert!(!http.contains("async fn ontogen_workout_set_check_linked("), "no write is unscoped:\n{http}");
 }
 
 /// A `list_X` with no add or remove beside it is a custom GET at its action
@@ -1838,6 +1840,7 @@ fn server_routes(server: &str) -> BTreeMap<Call, String> {
     for route in flat.split(".route(\"").skip(1) {
         let (path, rest) = route.split_once("\",").unwrap();
         let handlers = &rest[..rest.find(".fallback(").unwrap_or_else(|| panic!("no fallback on {path}"))];
+        let handlers = handlers.strip_prefix("::axum::routing::").unwrap_or(handlers);
         for method in ["get", "post", "put", "patch", "delete"] {
             let at = if handlers.starts_with(&format!("{method}(")) {
                 Some(0)
@@ -1890,10 +1893,11 @@ fn server_args(server: &str, handler: &str) -> (ArgNames, BTreeSet<String>) {
         names.page = body.contains("page:true");
     }
     // The JSON:API `Query<Spec>` it extracts, not Axum's own.
-    for (at, _) in signature.match_indices("Query<").filter(|(at, _)| !signature[..*at].ends_with("::")) {
-        let spec = &signature[at + "Query<".len()..];
+    for (at, _) in signature.match_indices("OntogenQuery<") {
+        let spec = &signature[at + "OntogenQuery<".len()..];
         let spec = &spec[..spec.find('>').unwrap()];
-        let Some(spec_impl) = flat.split_once(&format!("implRouteQueryfor{spec}{{")).map(|(_, rest)| rest) else {
+        let Some(spec_impl) = flat.split_once(&format!("implOntogenRouteQueryfor{spec}{{")).map(|(_, rest)| rest)
+        else {
             continue;
         };
         let spec_impl = &spec_impl[..spec_impl.find('}').unwrap()];
@@ -2265,8 +2269,8 @@ fn ipc_invokes(ts: &str) -> BTreeMap<String, (String, BTreeSet<String>)> {
 }
 
 /// The arguments the generated Tauri command `command` in `ipc` takes from
-/// its caller, as the caller names them: camelCased, Tauri's default for a
-/// command's arguments. Its state and event channel come from Tauri.
+/// its caller, as the caller names them: by the key Tauri derives for each.
+/// Its state and event channel come from Tauri.
 fn ipc_command_args(ipc: &str, command: &str) -> BTreeSet<String> {
     let start = ipc
         .find(&format!("pub async fn {command}("))
@@ -2291,7 +2295,7 @@ fn ipc_command_args(ipc: &str, command: &str) -> BTreeSet<String> {
         .iter()
         .filter_map(|param| param.trim_start_matches(',').split_once(':').map(|(name, _)| name.trim()))
         .filter(|name| !name.is_empty() && !["ontogen_state", "channel"].contains(name))
-        .map(crate::servers::types::snake_to_camel)
+        .map(crate::servers::types::ipc_arg_key)
         .collect()
 }
 
@@ -2358,7 +2362,7 @@ fn transport_over_resources(modules: &[ApiModule], bindings: &str) -> String {
         paginated_modules: Vec::new(),
         schema_dir: None,
     }]);
-    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming).unwrap();
+    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming);
     let (bindings_path, output) = (tmp.path().join("bindings.ts"), tmp.path().join("transport.ts"));
     fs::write(&bindings_path, bindings).unwrap();
     crate::clients::generators::transport::generate(&output, &bindings_path, modules, &config);
@@ -2512,11 +2516,11 @@ fn assert_tag_crud_is_a_resource(http: &str, clients: &JsonApiClients) {
     let flat = crate::servers::tests::compact(http);
     assert!(
         flat.contains(&crate::servers::tests::compact(
-            ".route(\"/api/tags/{id}\", get(tag_get_by_id).patch(tag_update).delete(tag_delete)"
+            ".route(\"/api/tags/{id}\", ::axum::routing::get(tag_get_by_id).patch(tag_update).delete(tag_delete)"
         )),
         "{http}"
     );
-    assert!(http.contains("fn tag_as_resource<'a>("), "{http}");
+    assert!(http.contains("fn ontogen_tag_as_resource<'a>("), "{http}");
     for ts in [&clients.transport, &clients.http] {
         assert!(ts_method(ts, "tagGetById").contains("httpGet<JsonApiResourceDocument>(`/tags/"), "{ts}");
         assert!(ts_method(ts, "tagUpdate").contains("httpPatch<JsonApiResourceDocument>("), "{ts}");
@@ -3516,4 +3520,278 @@ fn an_unsorted_list_may_take_filters_named_sort_and_options() {
         "{}",
         clients.http
     );
+}
+
+// ── Names a schema may use ──
+
+/// Entities named after the Web globals the clients use (`Response`, `Map`,
+/// `Event`, `Error`) and after the Tauri `Channel`, with raw-named fields.
+const NAMED_LIKE_GLOBALS_SCHEMA: &str = r#"
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Response {
+    #[ontology(id)]
+    pub id: String,
+    pub r#match: String,
+    #[ontology(relation(belongs_to, target = "Map"))]
+    pub r#in: Option<String>,
+}
+
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Map {
+    #[ontology(id)]
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Event {
+    #[ontology(id)]
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Error {
+    #[ontology(id)]
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(OntologyEntity)]
+#[ontology(entity)]
+pub struct Channel {
+    #[ontology(id)]
+    pub id: String,
+    pub title: String,
+}
+"#;
+
+/// Ops whose arguments are named after Rust keywords (`r#type`, `r#in`),
+/// JavaScript reserved words (`class`, `new`, `default`) or start with an
+/// underscore (`_kind`): a custom POST, a custom GET, an event op and a
+/// legacy event op.
+const KEYWORD_ARGS_MODULE: &str = "\
+use crate::schema::{Event, Response};
+use crate::store::Store;
+use crate::AppState;
+
+pub async fn find(store: &Store, r#type: Option<String>, r#in: Option<String>, class: Option<String>, _kind: Option<String>) -> Result<Vec<Response>, anyhow::Error> { todo!() }
+pub async fn retitle(store: &Store, id: &str, new: String, default: Option<String>) -> Result<Response, anyhow::Error> { todo!() }
+#[ontogen::http::get]
+pub async fn get_kind(store: &Store, r#type: &str, r#in: Option<String>) -> Result<Response, anyhow::Error> { todo!() }
+pub async fn changes(state: &AppState, r#type: Option<String>, _kind: Option<String>) -> Result<tokio::sync::broadcast::Receiver<Event>, anyhow::Error> { todo!() }
+pub fn pings(state: &AppState) -> tokio::sync::broadcast::Receiver<Event> { todo!() }
+";
+
+/// What [`named_clients`] generated.
+struct NamedClients {
+    transport: String,
+    http: String,
+    bindings: String,
+    admin: String,
+}
+
+/// Every client generator's output for `schema`, its generated API and the
+/// `extra` modules beside it, paginated. `adjust` edits the clients config.
+fn try_named_clients(
+    schema: &str,
+    extra: &[(&str, &str)],
+    adjust: impl FnOnce(&mut crate::ClientsConfig),
+) -> Result<NamedClients, String> {
+    let tmp = tempfile::tempdir().unwrap();
+    let entities = crate::schema::parse::parse_schema_source(schema, std::path::Path::new("schema.rs")).unwrap();
+    let api_dir = tmp.path().join("api");
+    let api = crate::gen_api(
+        &entities,
+        &crate::ApiConfig {
+            output_dir: api_dir.clone(),
+            exclude: Vec::new(),
+            scan_dirs: Vec::new(),
+            state_type: "AppState".into(),
+            store_type: Some("Store".into()),
+            schema_module_path: "crate::schema".into(),
+            paginated: entities.iter().map(|e| crate::to_snake_case(&e.name)).collect(),
+        },
+    )
+    .unwrap();
+    for (file, source) in extra {
+        fs::write(api_dir.join(file), source).unwrap();
+    }
+    let ts = tmp.path().join("ts");
+    fs::create_dir_all(&ts).unwrap();
+    let bindings_path = ts.join("types.ts");
+    let mut config = crate::ClientsConfig {
+        generators: vec![
+            ClientGenerator::HttpTauriIpcSplit {
+                output: ts.join("transport.ts"),
+                bindings_path: bindings_path.clone(),
+            },
+            ClientGenerator::HttpTs { output: ts.join("http.ts"), bindings_path: bindings_path.clone() },
+            ClientGenerator::AdminRegistry { output: ts.join("admin-registry.ts") },
+        ],
+        store_type: Some("Store".into()),
+        store_import: Some("crate::store::Store".into()),
+        pagination: Some(PaginationConfig { default_limit: 20, max_limit: 100 }),
+        ..crate::ClientsConfig::new(api_dir, "AppState", "crate::api", "crate::schema", "crate::AppState")
+    };
+    adjust(&mut config);
+    let read = |name: &str| fs::read_to_string(ts.join(name)).unwrap_or_default();
+    crate::gen_clients(&crate::schema::schema_of(&entities), Some(&api), &[], &config).map_err(|e| e.to_string())?;
+    Ok(NamedClients {
+        transport: read("transport.ts"),
+        http: read("http.ts"),
+        bindings: read("types.ts"),
+        admin: read("admin-registry.ts"),
+    })
+}
+
+fn named_clients() -> NamedClients {
+    try_named_clients(NAMED_LIKE_GLOBALS_SCHEMA, &[("lookup.rs", KEYWORD_ARGS_MODULE)], |_| {})
+        .unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// An argument named after a keyword or with a leading underscore gets a TS
+/// parameter that is a valid binding (`in_`, `class_`, `kind`), and travels
+/// under its wire key: its serde name (`type`, `in`, `_kind`) over HTTP, the
+/// key Tauri derives (`type`, `in`, `kind`) over IPC.
+#[test]
+fn keyword_named_arguments_get_valid_ts_names_and_their_wire_keys() {
+    let clients = named_clients();
+    let signature = "lookupFind(type: string | null, in_: string | null, class_: string | null, kind: string | null)";
+    for ts in [&clients.transport, &clients.http] {
+        assert!(ts.contains(signature), "{ts}");
+        assert!(ts.contains("lookupRetitle(id: string, new_: string, default_: string | null)"), "{ts}");
+        assert!(
+            ts_method(ts, "lookupFind")
+                .contains("callOp<Response[]>('POST', '/lookups/find', { type, in: in_, class: class_, _kind: kind })"),
+            "{ts}"
+        );
+        assert!(
+            ts_method(ts, "lookupRetitle").contains("{ id, new: new_, default: default_ }"),
+            "{}",
+            ts_method(ts, "lookupRetitle")
+        );
+        let get = ts_method(ts, "lookupGetKind");
+        assert!(get.contains("${encodeURIComponent(type)}"), "{get}");
+        assert!(get.contains("toQueryString({ opArg: { in: in_ } })"), "{get}");
+    }
+
+    let ipc = &clients.transport[clients.transport.find("createIpcTransport").unwrap()..];
+    assert!(
+        ts_method(ipc, "lookupFind").contains("invoke('lookup_find', { type, in: in_, class: class_, kind })"),
+        "{ipc}"
+    );
+    assert!(
+        ts_method(ipc, "lookupRetitle").contains("invoke('lookup_retitle', { id, new: new_, default: default_ })"),
+        "{ipc}"
+    );
+
+    // An event op's arguments are members of `args`, named by their IPC key.
+    assert!(
+        clients.transport.contains(
+            "subscribeChanges(args: { type?: string | null; kind?: string | null }, handlers: \
+             SubscriptionHandlers<Event>)"
+        ),
+        "{}",
+        clients.transport
+    );
+    assert!(
+        ts_method(ipc, "subscribeChanges").contains("{ type: args.type ?? null, kind: args.kind ?? null }"),
+        "{ipc}"
+    );
+    let http = &clients.transport[clients.transport.find("createHttpTransport").unwrap()..];
+    assert!(
+        ts_method(http, "subscribeChanges").contains("toQueryString({ type: args.type, _kind: args.kind })"),
+        "{http}"
+    );
+}
+
+/// The bindings and the admin registry name a raw field as serde writes it.
+#[test]
+fn raw_fields_are_named_as_serde_writes_them() {
+    let clients = named_clients();
+    for member in ["  match: string;", "  in: string | null;", "  in?: string | null | null;"] {
+        assert!(clients.bindings.contains(member), "missing `{member}` in:\n{}", clients.bindings);
+    }
+    assert!(!clients.bindings.contains("r#"), "{}", clients.bindings);
+    assert!(clients.admin.contains("{ key: 'match', label: 'Match'"), "{}", clients.admin);
+    assert!(clients.admin.contains("{ key: 'in', label: 'In'"), "{}", clients.admin);
+    for ts in [&clients.transport, &clients.http] {
+        assert!(ts.contains("in: { field: 'in', type: 'maps', many: false },"), "{ts}");
+        assert!(ts.contains("    in: toOneId(r.relationships?.['in']),"), "{ts}");
+    }
+}
+
+/// An entity may be named after a Web global the clients use: they name
+/// each one through `globalThis`, and import Tauri's `Channel` renamed.
+#[test]
+fn entities_named_like_web_globals_do_not_shadow_them() {
+    let clients = named_clients();
+    for ts in [&clients.transport, &clients.http] {
+        let imports = &ts[..ts.find("} from './types';").unwrap()];
+        for entity in ["Error,", "Event,", "Map,", "Response,"] {
+            assert!(imports.contains(entity), "{imports}");
+        }
+        assert!(ts.contains("export class JsonApiError extends globalThis.Error {"), "{ts}");
+        assert!(ts.contains("): Promise<globalThis.Response> {"), "{ts}");
+        assert!(ts.contains("async function toJsonApiError(res: globalThis.Response)"), "{ts}");
+        assert!(ts.contains("new globalThis.Map("), "{ts}");
+        assert!(!ts.contains("new Map(") && !ts.contains("res: Response") && !ts.contains("extends Error"), "{ts}");
+    }
+    let transport = &clients.transport;
+    assert!(transport.contains("import { Channel as IpcChannel, invoke } from '@tauri-apps/api/core';"), "{transport}");
+    assert!(transport.contains("new IpcChannel<EventFrame<T>>()"), "{transport}");
+    for qualified in [
+        "let source: globalThis.EventSource | null = null;",
+        "new globalThis.EventSource(url(lastId))",
+        "(event: globalThis.MessageEvent) =>",
+        "es.onerror = (err: globalThis.Event) =>",
+        "let es: globalThis.EventSource | null = null;",
+    ] {
+        assert!(transport.contains(qualified), "missing `{qualified}` in:\n{transport}");
+    }
+    assert!(!transport.contains(": Event)") && !transport.contains("new EventSource("), "{transport}");
+}
+
+/// A type the clients import may not take a name they give a global they
+/// use as it is, or a type they declare: the build fails naming it.
+#[test]
+fn a_type_named_like_a_client_declaration_is_refused() {
+    let entity = |name: &str| {
+        format!(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {name} {{\n    #[ontology(id)]\n    pub id: \
+             String,\n}}\n"
+        )
+    };
+    let refused = |name: &str, client: &str, use_: &str| {
+        format!(
+            "ontogen: the TypeScript {client} cannot be generated: it imports the type `{name}` from the bindings, \
+             but `{name}` is {use_}. Rename the type."
+        )
+    };
+    let global = "the JavaScript global it uses";
+    let declared = "a name it declares";
+    for (name, keep, client, use_) in [
+        ("Record", is_http_ts as fn(&ClientGenerator) -> bool, "HTTP client", global),
+        ("Promise", is_transport, "transport", global),
+        ("Math", is_transport, "transport", global),
+        ("PaginatedResult", is_http_ts, "HTTP client", declared),
+        ("JsonApiError", is_transport, "transport", declared),
+        ("Transport", is_transport, "transport", declared),
+    ] {
+        let result = try_named_clients(&entity(name), &[], clients_only(keep));
+        assert_eq!(
+            result.err().as_deref(),
+            Some(format!("client codegen error: {}", refused(name, client, use_)).as_str())
+        );
+    }
+    // Only the transport declares `Transport` and uses `Math`.
+    for name in ["Transport", "Math"] {
+        let http = try_named_clients(&entity(name), &[], clients_only(is_http_ts));
+        assert!(http.is_ok(), "{name}: {:?}", http.err());
+    }
 }

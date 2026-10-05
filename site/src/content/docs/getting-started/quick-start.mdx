@@ -202,7 +202,7 @@ impl Store {
         offset: Option<u64>,
     ) -> Result<Vec<Task>, AppError> { ... }
     pub async fn get_task(&self, id: &str) -> Result<Task, AppError> { ... }
-    pub async fn create_task(&self, task: Task) -> Result<Task, AppError> { ... }
+    pub async fn create_task(&self, record: Task) -> Result<Task, AppError> { ... }
     pub async fn update_task(&self, id: &str, updates: TaskUpdate) -> Result<Task, AppError> { ... }
     pub async fn delete_task(&self, id: &str) -> Result<(), AppError> { ... }
 }
@@ -211,13 +211,13 @@ impl Store {
 Each method calls lifecycle hooks at the right points (simplified; the generated `create_task` also fills a missing id from the store's id strategy and returns `AppError::TaskAlreadyExists` for a duplicate):
 
 ```rust
-pub async fn create_task(&self, mut task: Task) -> Result<Task, AppError> {
-    hooks::before_create(self, &mut task).await?;
+pub async fn create_task(&self, mut record: Task) -> Result<Task, AppError> {
+    hooks::before_create(self, &mut record).await?;
 
-    let active = task.to_active_model()?;
+    let active = record.to_active_model()?;
     active.insert(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-    let created = self.get_task(&task.id).await?;
+    let created = self.get_task(&record.id).await?;
     hooks::after_create(self, &created).await?;
     Ok(created)
 }

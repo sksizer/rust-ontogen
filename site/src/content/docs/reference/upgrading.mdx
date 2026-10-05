@@ -143,7 +143,22 @@ Under a `route_prefix`, a row of `ServersOutput.http_routes` for a route served 
 
 The HTTP wire builds a resource's `attributes` from the entity's serde shape, so a struct or field with an attribute that changes that shape is now a schema error. The refused attributes are `rename`, `rename_all`, `alias`, `flatten`, `skip`, `skip_serializing`, `skip_serializing_if`, `serialize_with` and `with`. `#[serde(default)]` and `deserialize_with` change only deserialization and stay allowed. Remove the attribute, or rename the Rust field.
 
-Also refused at build time: an id field that is not a `String`, an attribute or relationship name that is not a legal JSON:API member name (for example one that starts or ends with `_`) or is `type` or `id`, a relationship that shares its name with an attribute or another relationship (or is named `relationships`), and a relation whose target is not in the schema.
+Also refused at build time, when the build generates an HTTP server (`HttpAxum`) or an HTTP TypeScript client (`HttpTs`, `HttpTauriIpcSplit`): an id field that is not a `String`, an attribute or relationship name that is not a legal JSON:API member name or is `type` or `id`, a relationship that shares its name with an attribute or another relationship (or is named `relationships`), and a relation whose target is not in the schema. A legal member name has only ASCII letters and digits, non-ASCII characters, `-`, `_` and spaces, and starts and ends with an ASCII letter or digit or a non-ASCII character, so a field named `_draft` or `draft_` is refused. IPC-only and MCP-only builds, with or without the admin registry, are unaffected.
+
+### Names the generator refuses
+
+A schema or API name that collides with a name the generated code uses bare is refused at build time with a `CodegenError` that names the entity, fn or argument, says what it would clash with and suggests a rename. The entity names are listed under [Entity names](/reference/annotations/#minimal-form). For API modules:
+
+- An API fn named with a raw identifier (`pub fn r#type`). Every transport derives names from the fn's (its handler, IPC command, MCP tool and TS method), and none can carry the `r#`. A module file named after a keyword (`type.rs`, module `r#type`) is fine.
+- An argument without a plain name (`_`, a pattern), one with no letter or digit (`__`), whose IPC key and TS parameter would be empty, and one starting with `ontogen_`, the prefix of the generated handlers' own bindings (`ontogen_state`, `ontogen_args`).
+- With an MCP server, an API module named `std` or `schemars`: the server imports API modules by name, and the `JsonSchema` derive of its tool inputs expands to unrooted `std::` and `schemars::` paths.
+
+Most of these names never compiled. These did with 0.8.0 and are now refused, so rename them:
+
+- An entity whose name starts with `Ontogen`, and an entity field or API fn argument that starts with `ontogen_`. Both prefixes are reserved for generated items.
+- An entity named after a prelude item (`Result`, `Option`, `Vec`, `String`, `Box`, `From`, `Default`, `Clone`, `Send`, `Sync`, `Fn`) in a build whose generated code did not name that item bare: `Default` in most builds, `Send`, `Sync` or `Clone` without a server. The name is now refused whatever the build generates.
+- An entity named `OrderBy` in a build with a store. The 0.9 store and API modules name it bare.
+- An argument named `__` (or another name with no letter or digit) in a build without a TypeScript client.
 
 ### Ops the generator now refuses
 
@@ -225,6 +240,7 @@ The MCP tools keep their names and their flat payloads, with these changes:
 - **A custom op reads each argument as its declared type.** Before, an `Option<bool>` or `Option<u32>` argument was read as a string and the generated code did not compile. A custom op that takes an `*Input` beside other arguments takes the input under its parameter name, as the IPC command does: `{"input": {…}, "status": "open"}`. Before, that op did not compile either. An op whose only argument is its input still takes the input's fields flat.
 - **A required string argument of the wrong type** is ``Invalid parameter id: invalid type: integer `5`, expected a string``, not `Missing required parameter: id`, which now means only that the key is absent.
 - Create and update read their input without the route-prefix parameter (and update without `id`), so a `deny_unknown_fields` input works there too.
+- **An argument named after a Rust keyword travels under serde's name for it.** A custom op's `r#type` argument is the key `type`, as its input schema already said; before, the tool read the key `r#type`. Send `type`.
 - The generated schema-only structs are named `Ontogen{Module}{Fn}Filter` and `Ontogen{Module}{Fn}Input` so they cannot collide with your types; the HTTP query-spec types are likewise `Ontogen{Handler}FilterParams` and `Ontogen{Module}{Fn}OpArgs`.
 
 ### A list's `*Query` struct is named through `types_import_path`
@@ -272,6 +288,10 @@ serde_json = "1"
 ### Mount the router at the root
 
 Links and `Location` headers are built from the route templates ontogen generated (`/api/...`), not from the request URI. Mount the generated router at the root of your Axum app. If you nest it under another prefix, the links it emits lack that prefix.
+
+### The HTTP server's `PaginatedResult` is private
+
+The generated HTTP file no longer exports `PaginatedResult`. Its page type is now the private `OntogenPaginatedResult`, and the file names nothing else bare but your types and API modules: what it defines is `Ontogen`- or `ontogen_`-prefixed, and what it uses from `axum`, `ontogen-jsonapi`, `serde` and `std` is imported under an `Ontogen` alias or named by its `::`-rooted path. So an entity may be called `Document`, `Response` or `State`, and an API module `request`. If your code named the HTTP module's `PaginatedResult`, declare the struct yourself; its wire shape, `{items, total, limit, offset}` in `meta.result`, is unchanged.
 
 ## OKF vaults
 
@@ -1026,6 +1046,8 @@ Given a `projectId`, every junction method calls the same path under the prefix;
 
 The HTTP-only client (`HttpTs`) changes in two ways. Its custom op methods now call the server's actual paths, kebab-cased and singleton-aware, where some used the module's Rust name. Its paginated lists, including junction lists, take `limit?` and `offset?` and return `PaginatedResult<T>`; before, they took no page arguments and returned the server's default first page.
 
+The IPC transport sends each argument under the key Tauri reads it from, the name without its `r#` lowerCamelCased with heck, where it sent the name camelCased: an argument `_kind` travels as `kind`, which the command reads, where it travelled as `Kind`, which the command never read. A `subscribeX` method's `args` members are named by the same key, so an event op argument `_kind` is `args.kind`, where it was `args.Kind`; rename the member where you pass one. A TS parameter is named by that key too, with a trailing `_` for a reserved word (`class_`, `new_`, `in_` for `r#in`); positional callers do not change. The bindings name a raw field as serde writes it (`loop` for `r#loop`).
+
 ## Sorting
 
 Every generated list takes an order, and `sort` works on HTTP, Tauri IPC, MCP and the generated TypeScript. The order is one argument to the store and the API, built from `sort` by `ontogen_core::order::parse_sort`, so the transports accept the same keys. `name` sorts ascending and `-name` descending. The id is always the last key. See [Sorting a list](/guides/store-layer/#ordering) for the rules and [ADR 0006](https://github.com/sksizer/rust-ontogen/blob/main/docs/architecture/0006-ordering-on-both-store-backends.md) for the design.
@@ -1171,7 +1193,9 @@ await transport.taskList(undefined, 20, 0, { sort: ['-created', 'title'] });
 
 A sorted list's TS method takes `options` as its last parameter, so a bare filter on that list that camelCases to `options` (`options`, `options_`) fails the build on every TS client; rename it. A route prefix parameter named `options` is refused on the `Transport` of a sorted list. More generally, a bare filter whose TS name equals `query`, `limit`, `offset`, the route prefix parameter or an earlier filter is refused, where it used to emit a method with a duplicate parameter that `tsc` rejects.
 
-With an `HttpTauriIpcSplit` client, the clients stage applies the IPC wire-key rules itself, even when the build generates only an HTTP server: a bare filter named `sort` on a sorted list, `query` beside a `*Query` struct, `limit` or `offset` on a paginated junction list, `channel` on an event op, or an argument named like the route prefix parameter fails the build instead of generating TypeScript that does not compile. Names are compared by the invoke key they travel under, which is the camelCased name, so `sort_` collides with `sort` and `project_id_` with the prefix parameter `project_id`; this applies to the IPC server's own check too. An unsorted list may still take filters named `sort` or `options`.
+With an `HttpTauriIpcSplit` client, the clients stage applies the IPC wire-key rules itself, even when the build generates only an HTTP server: a bare filter named `sort` on a sorted list, `query` beside a `*Query` struct, `limit` or `offset` on a paginated junction list, `channel` on an event op, or an argument named like the route prefix parameter fails the build instead of generating TypeScript that does not compile. Names are compared by the invoke key they travel under, the name without its `r#` lowerCamelCased as Tauri derives it, so `sort_` and `_sort` collide with `sort`, and `project_id_` and `_project_id` with the prefix parameter `project_id`; this applies to the IPC server's own check too. An unsorted list may still take filters named `sort` or `options`.
+
+A type the TS clients import may not take the name of a global they use unqualified (`Array`, `JSON`, `Object`, `Promise`, `Record`, `String`, and on the split transport `Math` and `ReturnType`) or of a name a client declares (`PaginatedResult`, `ListOptions`, an `{Entity}SortKey`, a `JsonApi…` type, and on the split transport `Transport`, `SubscriptionHandlers`, `EventFrame` and `IpcChannel`). The build fails naming the type, where it generated TypeScript that `tsc` rejects; rename the type.
 
 ### Clients-stage errors are `CodegenError::Client`
 

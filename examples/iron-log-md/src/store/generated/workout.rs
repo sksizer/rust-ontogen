@@ -24,24 +24,24 @@ pub struct WorkoutUpdate {
 }
 
 impl WorkoutUpdate {
-    fn apply(&self, workout: &mut Workout) {
-        if let Some(name) = &self.name {
-            workout.name.clone_from(name);
+    fn apply(&self, record: &mut Workout) {
+        if let Some(value) = &self.name {
+            record.name.clone_from(value);
         }
-        if let Some(date) = &self.date {
-            workout.date.clone_from(date);
+        if let Some(value) = &self.date {
+            record.date.clone_from(value);
         }
-        if let Some(duration_minutes) = &self.duration_minutes {
-            workout.duration_minutes.clone_from(duration_minutes);
+        if let Some(value) = &self.duration_minutes {
+            record.duration_minutes.clone_from(value);
         }
-        if let Some(notes) = &self.notes {
-            workout.notes.clone_from(notes);
+        if let Some(value) = &self.notes {
+            record.notes.clone_from(value);
         }
-        if let Some(tags) = &self.tags {
-            workout.tags.clone_from(tags);
+        if let Some(value) = &self.tags {
+            record.tags.clone_from(value);
         }
-        if let Some(created_at) = &self.created_at {
-            workout.created_at.clone_from(created_at);
+        if let Some(value) = &self.created_at {
+            record.created_at.clone_from(value);
         }
     }
 }
@@ -109,13 +109,13 @@ pub fn sort_workouts(items: &mut [Workout], order: &[OrderBy<WorkoutSortField>])
         keys.iter()
             .map(|key| key.direction.apply(compare_workouts(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_workouts`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_workouts(a: &Workout, b: &Workout, field: WorkoutSortField) -> std::cmp::Ordering {
+fn compare_workouts(a: &Workout, b: &Workout, field: WorkoutSortField) -> ::std::cmp::Ordering {
     match field {
         WorkoutSortField::Id => a.id.cmp(&b.id),
         WorkoutSortField::Name => a.name.cmp(&b.name),
@@ -133,19 +133,19 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Workout>, AppError> {
-        let mut workouts = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(WORKOUTS_DIR, WORKOUT_TYPE).read_all().map_err(AppError::from)? {
             let fm: WorkoutFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            workouts.push(fm.into_workout(id));
+            records.push(fm.into_workout(id));
         }
-        sort_workouts(&mut workouts, order);
+        sort_workouts(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        let mut workouts: Vec<Workout> = workouts.into_iter().skip(offset).take(limit).collect();
-        for entity in &mut workouts {
-            self.populate_workout_relations(entity).await?;
+        let mut records: Vec<Workout> = records.into_iter().skip(offset).take(limit).collect();
+        for record in &mut records {
+            self.populate_workout_relations(record).await?;
         }
-        Ok(workouts)
+        Ok(records)
     }
 
     pub async fn count_workouts(&self) -> Result<u64, AppError> {
@@ -161,31 +161,31 @@ impl Store {
             Err(e) => return Err(AppError::from(e)),
         };
         let fm: WorkoutFrontmatter = doc.deserialize().map_err(AppError::from)?;
-        let mut workout = fm.into_workout(id.to_string());
-        self.populate_workout_relations(&mut workout).await?;
-        Ok(workout)
+        let mut record = fm.into_workout(id.to_string());
+        self.populate_workout_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_workout(&self, mut workout: Workout) -> Result<Workout, AppError> {
-        hooks::before_create(self, &mut workout).await?;
+    pub async fn create_workout(&self, mut record: Workout) -> Result<Workout, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        for target_id in &workout.tags {
+        for target_id in &record.tags {
             if !self.tag_exists(target_id).await? {
                 return Err(AppError::TagNotFound(target_id.clone()));
             }
         }
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&WorkoutFrontmatter::from_workout(&workout), WORKOUT_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&WorkoutFrontmatter::from_workout(&record), WORKOUT_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(WORKOUTS_DIR, WORKOUT_TYPE).create(
             &markdown_store::IdStrategy::Provided,
-            Some(workout.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
             None,
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::WorkoutIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::WorkoutAlreadyExists(workout.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::WorkoutAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -209,9 +209,9 @@ impl Store {
             .entity(WORKOUTS_DIR, WORKOUT_TYPE)
             .modify(id, |doc| {
                 let fm: WorkoutFrontmatter = doc.deserialize()?;
-                let mut workout = fm.into_workout(id.to_string());
-                updates.apply(&mut workout);
-                doc.merge_serialize(&WorkoutFrontmatter::from_workout(&workout), WORKOUT_FM_FIELDS)?;
+                let mut record = fm.into_workout(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&WorkoutFrontmatter::from_workout(&record), WORKOUT_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;
@@ -240,12 +240,11 @@ impl Store {
 
     pub(crate) async fn populate_workout_relations(
         &self,
-        workout: &mut crate::schema::Workout,
+        record: &mut crate::schema::Workout,
     ) -> Result<(), crate::schema::AppError> {
         // many_to_many lists are authoritative in this record's own
         // frontmatter and were populated at parse time.
-        let _ = &*self;
-        let _ = &*workout;
+        let _ = (self, record);
         Ok(())
     }
 }

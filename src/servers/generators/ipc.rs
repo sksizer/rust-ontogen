@@ -1,6 +1,11 @@
 #![allow(clippy::too_many_lines, clippy::format_push_string)]
 
 //! Generate Tauri IPC command handlers from API modules.
+//!
+//! The generated file names the consumer's types and API modules bare, so
+//! every runtime item in it is a `::`-rooted path and every binding a
+//! command makes of its own is `ontogen_`-prefixed: no consumer name can
+//! collide with one or shadow it.
 
 use std::fs;
 use std::path::Path;
@@ -12,8 +17,8 @@ use crate::servers::config::{ApiSurface, Config, PaginationConfig, RoutePrefix, 
 use crate::servers::generators::{filter_arg, surface_use_stmts};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{
-    NamingConfig, capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
-    snake_to_camel,
+    NamingConfig, capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, ipc_arg_key,
+    param_to_owned_type,
 };
 
 /// Returns the generated prefix param line for IPC commands (e.g., `project_id: Option<String>,`).
@@ -36,7 +41,7 @@ fn prefix_validation_line(config: &Config) -> String {
             let accessor = &prefix.state_accessor;
             format!(
                 "    if let Some(ref ontogen_pid) = {} {{\n\
-                 \x20       let ontogen_uuid = uuid::Uuid::parse_str(ontogen_pid).map_err(|ontogen_e| ontogen_e.to_string())?;\n\
+                 \x20       let ontogen_uuid = ::uuid::Uuid::parse_str(ontogen_pid).map_err(|ontogen_e| ontogen_e.to_string())?;\n\
                  \x20       ontogen_state.{}(&ontogen_uuid).map_err(|ontogen_e| ontogen_e.to_string())?;\n\
                  \x20   }}\n",
                 pp.name, accessor,
@@ -59,7 +64,7 @@ fn store_construction_line(config: &Config, f: &ApiFn) -> String {
             let accessor = &prefix.state_accessor;
             format!(
                 "    let ontogen_store = if let Some(ref ontogen_pid) = {} {{\n\
-                 \x20       let ontogen_uuid = uuid::Uuid::parse_str(ontogen_pid).map_err(|ontogen_e| ontogen_e.to_string())?;\n\
+                 \x20       let ontogen_uuid = ::uuid::Uuid::parse_str(ontogen_pid).map_err(|ontogen_e| ontogen_e.to_string())?;\n\
                  \x20       ontogen_state.{}(&ontogen_uuid).map_err(|ontogen_e| ontogen_e.to_string())?\n\
                  \x20   }} else {{\n\
                  \x20       ontogen_state.{store_accessor}().await.map_err(|ontogen_e| ontogen_e.to_string())?\n\
@@ -127,9 +132,9 @@ impl WireKeyScope<'_> {
 
 /// Refuses a fn whose IPC command would take two arguments under one invoke
 /// key. Tauri reads each command parameter from the invoke payload under
-/// its name camelCased, and the TS transport invokes with the same keys, so
-/// two parameters whose names camelCase alike (`sort` and `sort_`,
-/// `project_id` and `project_id_`) would share one key. The command's own
+/// its [`ipc_arg_key`], and the TS transport invokes with the same keys, so
+/// two parameters whose keys match (`sort`, `_sort` and `sort_`;
+/// `project_id` and `_project_id`) would share one key. The command's own
 /// parameters cannot be renamed in the generated code:
 ///
 /// - `id` and `input` for a CRUD op's record id and input;
@@ -192,7 +197,7 @@ fn check_command_keys(
     let mut taken: Vec<(String, String)> =
         own.into_iter().map(|(key, use_)| (key.to_string(), use_.to_string())).collect();
     if let Some(param) = prefix {
-        let key = snake_to_camel(param);
+        let key = ipc_arg_key(param);
         if let Some((_, use_)) = taken.iter().find(|(taken, _)| *taken == key) {
             let named = format!("is called with the route prefix parameter `{param}`");
             return collide(&named, &key, use_, "route prefix parameter");
@@ -200,7 +205,7 @@ fn check_command_keys(
         taken.push((key, "the route prefix parameter".into()));
     }
     for arg in args {
-        let key = snake_to_camel(arg);
+        let key = ipc_arg_key(arg);
         if let Some((_, use_)) = taken.iter().find(|(taken, _)| *taken == key) {
             return collide(&format!("takes an argument named `{arg}`"), &key, use_, "argument");
         }
@@ -245,13 +250,19 @@ fn command_wire_keys<'a>(
 
 /// Generate IPC command handlers and write to the output file.
 ///
-/// Each command parameter that carries a fn argument is named after it, as
-/// that name, camelCased, is the IPC wire key the TS transport invokes
-/// with. Every other binding a command makes of its own is
-/// `ontogen_`-prefixed (`ontogen_state`, `ontogen_store`, `ontogen_limit`,
-/// …), so an argument named `state`, `store` or `limit` neither collides
-/// with one nor is shadowed by one. Tauri's `State` extractor is matched by type, not by
-/// name, so its parameter is not a wire key.
+/// Each command parameter that carries a fn argument is named after it,
+/// since Tauri derives the IPC wire key the TS transport invokes with from
+/// the parameter's name ([`ipc_arg_key`]). Every other binding a command
+/// makes of its own is `ontogen_`-prefixed (`ontogen_state`,
+/// `ontogen_store`, `ontogen_limit`, …), so an argument named `state`,
+/// `store` or `limit` neither collides with one nor is shadowed by one.
+/// Tauri's `State` extractor is matched by type, not by name, so its
+/// parameter is not a wire key.
+///
+/// The only names the file brings into scope bare are the consumer's: its
+/// API modules, the types its fns name, its state and store. Every runtime
+/// item is written by its `::`-rooted path, so no consumer name (an entity
+/// `State`, a module `log`) collides with one or shadows its crate.
 pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
     let mut out = String::new();
     let state_type = &config.state_type;
@@ -261,11 +272,10 @@ pub fn generate(output: &Path, modules: &[ApiModule], config: &Config) {
 #![allow(dead_code, unused_imports, clippy::pedantic)]
 //! Auto-generated Tauri IPC command handlers. DO NOT EDIT.
 //!
-//! Generated by ontogen from API source files.
-
-use std::sync::Arc;
-
-use tauri::State;
+//! Generated by ontogen from API source files. Every runtime item is named
+//! by its `::`-rooted path and every binding a command makes of its own is
+//! `ontogen_`-prefixed, so besides `PaginatedResult` the only types and
+//! modules it names bare are your own types and API modules.
 
 ",
     );
@@ -289,10 +299,8 @@ use tauri::State;
     if config.any_pagination() {
         out.push_str(
             "\
-use serde::Serialize;
-
-#[derive(Serialize)]
-pub struct PaginatedResult<T: Serialize> {
+#[derive(::serde::Serialize)]
+pub struct PaginatedResult<T: ::serde::Serialize> {
     pub items: Vec<T>,
     pub total: u64,
     pub limit: u32,
@@ -375,9 +383,9 @@ pub struct PaginatedResult<T: Serialize> {
                         param_lines.push_str("    offset: Option<u32>,\n");
                         out.push_str(&format!(
                             "\
-#[tauri::command]
+#[::tauri::command]
 pub async fn {cmd_name}(
-{param_lines}{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
+{param_lines}{fn_pp_line}    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<{state_type}>>,
 ) -> Result<PaginatedResult<{item_type}>, String> {{
 {sort}{fn_pp_body}    let ontogen_limit = limit.unwrap_or({default_limit}).min({max_limit});
     let ontogen_offset = offset.unwrap_or(0);
@@ -395,9 +403,9 @@ pub async fn {cmd_name}(
                         let page_args = if f.takes_page() { ", None, None" } else { "" };
                         out.push_str(&format!(
                             "\
-#[tauri::command]
+#[::tauri::command]
 pub async fn {cmd_name}(
-{param_lines}{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
+{param_lines}{fn_pp_line}    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
 {sort}{fn_pp_body}    {svc}::list({first_arg}{extra_args}{page_args}){await_str}
         .map_err(|ontogen_e| ontogen_e.to_string())
@@ -415,10 +423,10 @@ pub async fn {cmd_name}(
                     if is_async {
                         out.push_str(&format!(
                             "\
-#[tauri::command]
+#[::tauri::command]
 pub async fn {cmd_name}(
     id: String,
-{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
+{fn_pp_line}    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
 {fn_pp_body}    {svc}::{fn_name}({first_arg}, &id)
         .await
@@ -430,10 +438,10 @@ pub async fn {cmd_name}(
                     } else {
                         out.push_str(&format!(
                             "\
-#[tauri::command]
+#[::tauri::command]
 pub async fn {cmd_name}(
     id: String,
-{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
+{fn_pp_line}    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
 {fn_pp_body}    {svc}::{fn_name}({first_arg}, &id)
         .map_err(|ontogen_e| ontogen_e.to_string())
@@ -451,10 +459,10 @@ pub async fn {cmd_name}(
                     let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
                         "\
-#[tauri::command]
+#[::tauri::command]
 pub async fn {cmd_name}(
     input: {input_type},
-{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
+{fn_pp_line}    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
 {fn_pp_body}    {svc}::create({first_arg}, input){await_str}
         .map_err(|ontogen_e| ontogen_e.to_string())
@@ -471,11 +479,11 @@ pub async fn {cmd_name}(
                     let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
                         "\
-#[tauri::command]
+#[::tauri::command]
 pub async fn {cmd_name}(
     id: String,
     input: {input_type},
-{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
+{fn_pp_line}    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<{state_type}>>,
 ) -> Result<{ret_type}, String> {{
 {fn_pp_body}    {svc}::update({first_arg}, &id, input){await_str}
         .map_err(|ontogen_e| ontogen_e.to_string())
@@ -491,10 +499,10 @@ pub async fn {cmd_name}(
                     let await_str = if is_async { "\n        .await" } else { "" };
                     out.push_str(&format!(
                         "\
-#[tauri::command]
+#[::tauri::command]
 pub async fn {cmd_name}(
     id: String,
-{fn_pp_line}    ontogen_state: State<'_, Arc<{state_type}>>,
+{fn_pp_line}    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<{state_type}>>,
 ) -> Result<(), String> {{
 {fn_pp_body}    {svc}::delete({first_arg}, &id){await_str}
         .map_err(|ontogen_e| ontogen_e.to_string())
@@ -545,7 +553,7 @@ pub async fn {cmd_name}(
 /// and the consumer has nothing to wire. A forwarding task leaves it when its
 /// receiver closes, when a `Channel::send` fails (the webview is gone; a
 /// `Channel` has no close callback), or on an explicit unsubscribe.
-static EVENT_SUBSCRIPTIONS: ontogen_core::events::Subscriptions = ontogen_core::events::Subscriptions::new();
+static EVENT_SUBSCRIPTIONS: ::ontogen_core::events::Subscriptions = ::ontogen_core::events::Subscriptions::new();
 
 ",
         );
@@ -567,12 +575,10 @@ static EVENT_SUBSCRIPTIONS: ontogen_core::events::Subscriptions = ontogen_core::
             "\
 // ── Event Forwarding (global) ──
 
-use tauri::Emitter;
-
 /// Emit every parameterless event stream to all windows as a Tauri event.
 /// Call this during app setup. Prefer the per-subscriber `*_subscribe`
 /// commands, which report lag to the subscriber and end with it.
-pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
+pub fn start_event_forwarding(app_handle: ::tauri::AppHandle, state: &{}) {{
 ",
             config.state_import.split("::").last().unwrap_or(&config.state_type),
         ));
@@ -582,7 +588,7 @@ pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
             for ev in m.events.iter().filter(|ev| ev.is_legacy()) {
                 let fn_name = &ev.name;
                 let ev_name = event_name(fn_name);
-                let svc = &m.name;
+                let svc = crate::ident::rust_ident(&m.name);
                 let service = &surfaces[ev.surface].service_import_path;
                 out.push_str(&format!(
                     "\
@@ -590,18 +596,18 @@ pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
     {{
         let handle = app_handle.clone();
         let mut rx = {service}::{svc}::{fn_name}(state);
-        tauri::async_runtime::spawn(async move {{
+        ::tauri::async_runtime::spawn(async move {{
             loop {{
                 match rx.recv().await {{
                     Ok(delta) => {{
-                        if let Err(e) = handle.emit(\"{ev_name}\", &delta) {{
-                            log::error!(\"Failed to forward {ev_name} to IPC: {{:?}}\", e);
+                        if let Err(e) = ::tauri::Emitter::emit(&handle, \"{ev_name}\", &delta) {{
+                            ::log::error!(\"Failed to forward {ev_name} to IPC: {{:?}}\", e);
                         }}
                     }}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {{
-                        log::warn!(\"{ev_name} forwarding lagged; {{}} events dropped\", skipped);
+                    Err(::tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {{
+                        ::log::warn!(\"{ev_name} forwarding lagged; {{}} events dropped\", skipped);
                     }}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(::tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }}
             }}
         }});
@@ -617,8 +623,8 @@ pub fn start_event_forwarding(app_handle: tauri::AppHandle, state: &{}) {{
     // Generate ipc_handler() wrapper with tauri::generate_handler!
     out.push_str(
         "/// Generated IPC handler. Wire this into `tauri::Builder::invoke_handler()`.\n\
-         pub fn ipc_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {\n\
-         \x20   tauri::generate_handler![\n",
+         pub fn ipc_handler() -> impl Fn(::tauri::ipc::Invoke) -> bool + Send + Sync + 'static {\n\
+         \x20   ::tauri::generate_handler![\n",
     );
     for name in &command_names {
         out.push_str(&format!("        {},\n", name));
@@ -644,26 +650,32 @@ fn generate_event_subscription(out: &mut String, m: &ApiModule, ev: &EventFn, co
     let state_type = &config.state_type;
     let item_type = &ev.item_type;
 
-    if !ev.doc.is_empty() {
-        out.push_str(&format!("/// {}\n", ev.doc));
+    // A block doc comment (`/** … */`) reaches here as one string with line
+    // breaks, each of which must open its own `///` line.
+    for line in ev.doc.lines().map(str::trim) {
+        if line.is_empty() {
+            out.push_str("///\n");
+        } else {
+            out.push_str(&format!("/// {line}\n"));
+        }
     }
-    out.push_str(&format!("#[tauri::command]\npub async fn {fn_name}_subscribe(\n"));
+    out.push_str(&format!("#[::tauri::command]\npub async fn {fn_name}_subscribe(\n"));
     for p in &ev.params {
         out.push_str(&format!("    {}: {},\n", p.name, param_to_owned_type(&p.ty_ast)));
     }
     out.push_str(&format!(
-        "    channel: tauri::ipc::Channel<ontogen_core::events::EventFrame<{item_type}>>,\n\
-         \x20   ontogen_state: State<'_, Arc<{state_type}>>,\n\
+        "    channel: ::tauri::ipc::Channel<::ontogen_core::events::EventFrame<{item_type}>>,\n\
+         \x20   ontogen_state: ::tauri::State<'_, ::std::sync::Arc<{state_type}>>,\n\
          ) -> Result<u64, String> {{\n"
     ));
     let mut args = vec!["&ontogen_state".to_string()];
     args.extend(ev.params.iter().map(|p| forward_arg_expr(&p.name, &p.ty_ast)));
     let await_str = if ev.is_async { ".await" } else { "" };
     let map_err = if ev.returns_result { ".map_err(|ontogen_e| ontogen_e.to_string())?" } else { "" };
-    let id_fn = if ev.is_resumable() { "ontogen_core::events::seq_id" } else { "ontogen_core::events::no_id" };
+    let id_fn = if ev.is_resumable() { "::ontogen_core::events::seq_id" } else { "::ontogen_core::events::no_id" };
     out.push_str(&format!(
         "    let ontogen_rx = {svc}::{fn_name}({}){await_str}{map_err};\n\
-         \x20   Ok(EVENT_SUBSCRIPTIONS.spawn(ontogen_core::events::forward(ontogen_rx, {id_fn}, move |ontogen_frame| {{\n\
+         \x20   Ok(EVENT_SUBSCRIPTIONS.spawn(::ontogen_core::events::forward(ontogen_rx, {id_fn}, move |ontogen_frame| {{\n\
          \x20       channel.send(ontogen_frame)\n\
          \x20   }})))\n\
          }}\n\n",
@@ -672,7 +684,7 @@ fn generate_event_subscription(out: &mut String, m: &ApiModule, ev: &EventFn, co
 
     out.push_str(&format!(
         "/// End a `{fn_name}_subscribe` subscription. Returns `false` when it already ended.\n\
-         #[tauri::command]\n\
+         #[::tauri::command]\n\
          pub fn {fn_name}_unsubscribe(id: u64) -> bool {{\n\
          \x20   EVENT_SUBSCRIPTIONS.cancel(id)\n\
          }}\n\n"
@@ -702,7 +714,7 @@ fn generate_generic_ipc_handler(out: &mut String, m: &ApiModule, f: &ApiFn, conf
     };
 
     let cmd_fn_name = command_name(module, f, config);
-    out.push_str(&format!("#[tauri::command]\npub async fn {}(\n", cmd_fn_name));
+    out.push_str(&format!("#[::tauri::command]\npub async fn {}(\n", cmd_fn_name));
 
     for p in &f.params {
         let owned_ty = param_to_owned_type(&p.ty_ast);
@@ -711,7 +723,7 @@ fn generate_generic_ipc_handler(out: &mut String, m: &ApiModule, f: &ApiFn, conf
 
     out.push_str(&pp_line);
     if !f.is_stateless {
-        out.push_str(&format!("    ontogen_state: State<'_, Arc<{state_type}>>,\n"));
+        out.push_str(&format!("    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<{state_type}>>,\n"));
     }
     out.push_str(&format!(") -> Result<{}, String> {{\n", ret_type));
     out.push_str(&fn_pp_body);
@@ -766,7 +778,7 @@ fn generate_paginated_ipc_handler(
     };
 
     let cmd_fn_name = command_name(module, f, config);
-    out.push_str(&format!("#[tauri::command]\npub async fn {}(\n", cmd_fn_name));
+    out.push_str(&format!("#[::tauri::command]\npub async fn {}(\n", cmd_fn_name));
 
     for p in &f.params {
         let owned_ty = param_to_owned_type(&p.ty_ast);
@@ -777,7 +789,7 @@ fn generate_paginated_ipc_handler(
     out.push_str("    offset: Option<u32>,\n");
     out.push_str(&pp_line);
     if !f.is_stateless {
-        out.push_str(&format!("    ontogen_state: State<'_, Arc<{state_type}>>,\n"));
+        out.push_str(&format!("    ontogen_state: ::tauri::State<'_, ::std::sync::Arc<{state_type}>>,\n"));
     }
     out.push_str(&format!(") -> Result<PaginatedResult<{}>, String> {{\n", item_type));
     out.push_str(&fn_pp_body);
@@ -812,7 +824,7 @@ fn generate_paginated_ipc_handler(
 /// A sorted list command's read of its `sort` argument into the order its
 /// list takes, with the parser HTTP and MCP use: absent is the default
 /// order, and a bad key is the parser's error text.
-const ORDER_FROM_SORT: &str = "    let ontogen_order = ontogen_core::order::parse_sort(sort.unwrap_or_default())
+const ORDER_FROM_SORT: &str = "    let ontogen_order = ::ontogen_core::order::parse_sort(sort.unwrap_or_default())
         .map_err(|ontogen_e| ontogen_e.to_string())?;
 ";
 

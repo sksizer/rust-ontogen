@@ -2,8 +2,8 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select, TransactionTrait};
+use ::sea_orm::TransactionTrait as _;
+use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::exercise;
 use crate::schema::Exercise;
@@ -22,18 +22,18 @@ pub struct ExerciseUpdate {
 }
 
 impl ExerciseUpdate {
-    fn apply(&self, exercise: &mut Exercise) {
-        if let Some(name) = &self.name {
-            exercise.name.clone_from(name);
+    fn apply(&self, record: &mut Exercise) {
+        if let Some(value) = &self.name {
+            record.name.clone_from(value);
         }
-        if let Some(muscle_group) = &self.muscle_group {
-            exercise.muscle_group.clone_from(muscle_group);
+        if let Some(value) = &self.muscle_group {
+            record.muscle_group.clone_from(value);
         }
-        if let Some(equipment) = &self.equipment {
-            exercise.equipment.clone_from(equipment);
+        if let Some(value) = &self.equipment {
+            record.equipment.clone_from(value);
         }
-        if let Some(notes) = &self.notes {
-            exercise.notes.clone_from(notes);
+        if let Some(value) = &self.notes {
+            record.notes.clone_from(value);
         }
     }
 }
@@ -89,13 +89,13 @@ pub fn sort_exercises(items: &mut [Exercise], order: &[OrderBy<ExerciseSortField
         keys.iter()
             .map(|key| key.direction.apply(compare_exercises(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_exercises`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_exercises(a: &Exercise, b: &Exercise, field: ExerciseSortField) -> std::cmp::Ordering {
+fn compare_exercises(a: &Exercise, b: &Exercise, field: ExerciseSortField) -> ::std::cmp::Ordering {
     match field {
         ExerciseSortField::Id => a.id.cmp(&b.id),
         ExerciseSortField::Name => a.name.cmp(&b.name),
@@ -141,18 +141,18 @@ impl Store {
         Exercise::from_model(&model)
     }
 
-    pub async fn create_exercise(&self, mut exercise: Exercise) -> Result<Exercise, AppError> {
-        hooks::before_create(self, &mut exercise).await?;
+    pub async fn create_exercise(&self, mut record: Exercise) -> Result<Exercise, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
-        let id = if exercise.id.trim().is_empty() {
+        let id = if record.id.trim().is_empty() {
             return Err(AppError::ExerciseIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
-            ontogen_core::id::validate_id(&exercise.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_exercise(&txn, &exercise).await? {
-                return Err(AppError::ExerciseAlreadyExists(exercise.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_exercise(&txn, &record).await? {
+                return Err(AppError::ExerciseAlreadyExists(record.id));
             }
-            exercise.id.clone()
+            record.id.clone()
         };
 
         txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
@@ -206,17 +206,17 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_exercise<C: sea_orm::ConnectionTrait>(
+    async fn try_insert_exercise<C: ::sea_orm::ConnectionTrait>(
         &self,
         conn: &C,
-        exercise: &Exercise,
+        record: &Exercise,
     ) -> Result<bool, AppError> {
-        let active = exercise.to_active_model()?;
+        let active = record.to_active_model()?;
         match active.insert(conn).await {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
                 // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
-                let taken = exercise::Entity::find_by_id(exercise.id.as_str())
+                let taken = exercise::Entity::find_by_id(record.id.as_str())
                     .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -231,9 +231,9 @@ impl Store {
 /// Applies `order` to `query` as `list_exercises` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_exercises_query(
-    mut query: Select<exercise::Entity>,
+    mut query: ::sea_orm::Select<exercise::Entity>,
     order: &[OrderBy<ExerciseSortField>],
-) -> Select<exercise::Entity> {
+) -> ::sea_orm::Select<exercise::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             ExerciseSortField::Id => exercise::Column::Id,
@@ -243,8 +243,12 @@ pub fn order_exercises_query(
             ExerciseSortField::Notes => exercise::Column::Notes,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => {
+                (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)
+            }
+            ontogen_core::order::Direction::Desc => {
+                (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last)
+            }
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

@@ -21,15 +21,15 @@ pub struct NoteUpdate {
 }
 
 impl NoteUpdate {
-    fn apply(&self, note: &mut Note) {
-        if let Some(title) = &self.title {
-            note.title.clone_from(title);
+    fn apply(&self, record: &mut Note) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(links) = &self.links {
-            note.links.clone_from(links);
+        if let Some(value) = &self.links {
+            record.links.clone_from(value);
         }
-        if let Some(body) = &self.body {
-            note.body.clone_from(body);
+        if let Some(value) = &self.body {
+            record.body.clone_from(value);
         }
     }
 }
@@ -78,13 +78,13 @@ pub fn sort_notes(items: &mut [Note], order: &[OrderBy<NoteSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_notes(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_notes`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_notes(a: &Note, b: &Note, field: NoteSortField) -> std::cmp::Ordering {
+fn compare_notes(a: &Note, b: &Note, field: NoteSortField) -> ::std::cmp::Ordering {
     match field {
         NoteSortField::Id => a.id.cmp(&b.id),
         NoteSortField::Title => a.title.cmp(&b.title),
@@ -98,19 +98,19 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Note>, AppError> {
-        let mut notes = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(NOTES_DIR, NOTE_TYPE).read_all().map_err(AppError::from)? {
             let fm: NoteFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            notes.push(fm.into_note(id, doc.body().to_string()));
+            records.push(fm.into_note(id, doc.body().to_string()));
         }
-        sort_notes(&mut notes, order);
+        sort_notes(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        let mut notes: Vec<Note> = notes.into_iter().skip(offset).take(limit).collect();
-        for entity in &mut notes {
-            self.populate_note_relations(entity).await?;
+        let mut records: Vec<Note> = records.into_iter().skip(offset).take(limit).collect();
+        for record in &mut records {
+            self.populate_note_relations(record).await?;
         }
-        Ok(notes)
+        Ok(records)
     }
 
     pub async fn count_notes(&self) -> Result<u64, AppError> {
@@ -126,32 +126,32 @@ impl Store {
             Err(e) => return Err(AppError::from(e)),
         };
         let fm: NoteFrontmatter = doc.deserialize().map_err(AppError::from)?;
-        let mut note = fm.into_note(id.to_string(), doc.body().to_string());
-        self.populate_note_relations(&mut note).await?;
-        Ok(note)
+        let mut record = fm.into_note(id.to_string(), doc.body().to_string());
+        self.populate_note_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_note(&self, mut note: Note) -> Result<Note, AppError> {
-        hooks::before_create(self, &mut note).await?;
+    pub async fn create_note(&self, mut record: Note) -> Result<Note, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        for target_id in &note.links {
-            if (note.id.trim().is_empty() || *target_id != note.id) && !self.note_exists(target_id).await? {
+        for target_id in &record.links {
+            if (record.id.trim().is_empty() || *target_id != record.id) && !self.note_exists(target_id).await? {
                 return Err(AppError::NoteNotFound(target_id.clone()));
             }
         }
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&NoteFrontmatter::from_note(&note), NOTE_FM_FIELDS).map_err(AppError::from)?;
-        doc.set_body(note.body.clone());
+        doc.merge_serialize(&NoteFrontmatter::from_note(&record), NOTE_FM_FIELDS).map_err(AppError::from)?;
+        doc.set_body(record.body.clone());
         let id = match self.vault().entity(NOTES_DIR, NOTE_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(note.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(note.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::NoteIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::NoteAlreadyExists(note.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::NoteAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -175,10 +175,10 @@ impl Store {
             .entity(NOTES_DIR, NOTE_TYPE)
             .modify(id, |doc| {
                 let fm: NoteFrontmatter = doc.deserialize()?;
-                let mut note = fm.into_note(id.to_string(), doc.body().to_string());
-                updates.apply(&mut note);
-                doc.merge_serialize(&NoteFrontmatter::from_note(&note), NOTE_FM_FIELDS)?;
-                doc.set_body(note.body);
+                let mut record = fm.into_note(id.to_string(), doc.body().to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&NoteFrontmatter::from_note(&record), NOTE_FM_FIELDS)?;
+                doc.set_body(record.body);
                 Ok(())
             })
             .map_err(AppError::from)?;
@@ -207,12 +207,11 @@ impl Store {
 
     pub(crate) async fn populate_note_relations(
         &self,
-        note: &mut crate::schema::Note,
+        record: &mut crate::schema::Note,
     ) -> Result<(), crate::schema::AppError> {
         // many_to_many lists are authoritative in this record's own
         // frontmatter and were populated at parse time.
-        let _ = &*self;
-        let _ = &*note;
+        let _ = (self, record);
         Ok(())
     }
 

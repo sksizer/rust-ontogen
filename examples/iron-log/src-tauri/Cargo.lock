@@ -2613,6 +2613,7 @@ name = "ontogen"
 version = "0.8.0"
 dependencies = [
  "cruet",
+ "heck 0.5.0",
  "ontogen-core",
  "ontogen-jsonapi",
  "ontogen-macros",

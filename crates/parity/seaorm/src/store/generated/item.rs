@@ -2,13 +2,13 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select, TransactionTrait};
+use ::sea_orm::TransactionTrait as _;
+use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::item;
 use crate::schema::Item;
 use crate::schema::{AppError, ChangeOp, EntityKind};
-use sea_orm::{ColumnTrait, QueryFilter};
+use ::sea_orm::{ColumnTrait as _, QueryFilter as _};
 
 use crate::store::Store;
 use crate::store::hooks::item as hooks;
@@ -49,96 +49,96 @@ pub struct ItemUpdate {
 }
 
 impl ItemUpdate {
-    fn apply(&self, item: &mut Item) {
-        if let Some(title) = &self.title {
-            item.title.clone_from(title);
+    fn apply(&self, record: &mut Item) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(int32) = &self.int32 {
-            item.int32.clone_from(int32);
+        if let Some(value) = &self.int32 {
+            record.int32.clone_from(value);
         }
-        if let Some(int64) = &self.int64 {
-            item.int64.clone_from(int64);
+        if let Some(value) = &self.int64 {
+            record.int64.clone_from(value);
         }
-        if let Some(float32) = &self.float32 {
-            item.float32.clone_from(float32);
+        if let Some(value) = &self.float32 {
+            record.float32.clone_from(value);
         }
-        if let Some(float64) = &self.float64 {
-            item.float64.clone_from(float64);
+        if let Some(value) = &self.float64 {
+            record.float64.clone_from(value);
         }
-        if let Some(flag) = &self.flag {
-            item.flag.clone_from(flag);
+        if let Some(value) = &self.flag {
+            record.flag.clone_from(value);
         }
-        if let Some(kind) = &self.kind {
-            item.kind.clone_from(kind);
+        if let Some(value) = &self.kind {
+            record.kind.clone_from(value);
         }
-        if let Some(maybe_text) = &self.maybe_text {
-            item.maybe_text.clone_from(maybe_text);
+        if let Some(value) = &self.maybe_text {
+            record.maybe_text.clone_from(value);
         }
-        if let Some(maybe_int32) = &self.maybe_int32 {
-            item.maybe_int32.clone_from(maybe_int32);
+        if let Some(value) = &self.maybe_int32 {
+            record.maybe_int32.clone_from(value);
         }
-        if let Some(maybe_int64) = &self.maybe_int64 {
-            item.maybe_int64.clone_from(maybe_int64);
+        if let Some(value) = &self.maybe_int64 {
+            record.maybe_int64.clone_from(value);
         }
-        if let Some(maybe_float32) = &self.maybe_float32 {
-            item.maybe_float32.clone_from(maybe_float32);
+        if let Some(value) = &self.maybe_float32 {
+            record.maybe_float32.clone_from(value);
         }
-        if let Some(maybe_float64) = &self.maybe_float64 {
-            item.maybe_float64.clone_from(maybe_float64);
+        if let Some(value) = &self.maybe_float64 {
+            record.maybe_float64.clone_from(value);
         }
-        if let Some(maybe_flag) = &self.maybe_flag {
-            item.maybe_flag.clone_from(maybe_flag);
+        if let Some(value) = &self.maybe_flag {
+            record.maybe_flag.clone_from(value);
         }
-        if let Some(maybe_kind) = &self.maybe_kind {
-            item.maybe_kind.clone_from(maybe_kind);
+        if let Some(value) = &self.maybe_kind {
+            record.maybe_kind.clone_from(value);
         }
-        if let Some(n_u8) = &self.n_u8 {
-            item.n_u8.clone_from(n_u8);
+        if let Some(value) = &self.n_u8 {
+            record.n_u8.clone_from(value);
         }
-        if let Some(n_u16) = &self.n_u16 {
-            item.n_u16.clone_from(n_u16);
+        if let Some(value) = &self.n_u16 {
+            record.n_u16.clone_from(value);
         }
-        if let Some(n_u32) = &self.n_u32 {
-            item.n_u32.clone_from(n_u32);
+        if let Some(value) = &self.n_u32 {
+            record.n_u32.clone_from(value);
         }
-        if let Some(n_u64) = &self.n_u64 {
-            item.n_u64.clone_from(n_u64);
+        if let Some(value) = &self.n_u64 {
+            record.n_u64.clone_from(value);
         }
-        if let Some(n_usize) = &self.n_usize {
-            item.n_usize.clone_from(n_usize);
+        if let Some(value) = &self.n_usize {
+            record.n_usize.clone_from(value);
         }
-        if let Some(n_u128) = &self.n_u128 {
-            item.n_u128.clone_from(n_u128);
+        if let Some(value) = &self.n_u128 {
+            record.n_u128.clone_from(value);
         }
-        if let Some(n_i8) = &self.n_i8 {
-            item.n_i8.clone_from(n_i8);
+        if let Some(value) = &self.n_i8 {
+            record.n_i8.clone_from(value);
         }
-        if let Some(n_i16) = &self.n_i16 {
-            item.n_i16.clone_from(n_i16);
+        if let Some(value) = &self.n_i16 {
+            record.n_i16.clone_from(value);
         }
-        if let Some(n_isize) = &self.n_isize {
-            item.n_isize.clone_from(n_isize);
+        if let Some(value) = &self.n_isize {
+            record.n_isize.clone_from(value);
         }
-        if let Some(n_i128) = &self.n_i128 {
-            item.n_i128.clone_from(n_i128);
+        if let Some(value) = &self.n_i128 {
+            record.n_i128.clone_from(value);
         }
-        if let Some(maybe_u32) = &self.maybe_u32 {
-            item.maybe_u32.clone_from(maybe_u32);
+        if let Some(value) = &self.maybe_u32 {
+            record.maybe_u32.clone_from(value);
         }
-        if let Some(maybe_u64) = &self.maybe_u64 {
-            item.maybe_u64.clone_from(maybe_u64);
+        if let Some(value) = &self.maybe_u64 {
+            record.maybe_u64.clone_from(value);
         }
-        if let Some(parent_id) = &self.parent_id {
-            item.parent_id.clone_from(parent_id);
+        if let Some(value) = &self.parent_id {
+            record.parent_id.clone_from(value);
         }
-        if let Some(children) = &self.children {
-            item.children.clone_from(children);
+        if let Some(value) = &self.children {
+            record.children.clone_from(value);
         }
-        if let Some(tags) = &self.tags {
-            item.tags.clone_from(tags);
+        if let Some(value) = &self.tags {
+            record.tags.clone_from(value);
         }
-        if let Some(body) = &self.body {
-            item.body.clone_from(body);
+        if let Some(value) = &self.body {
+            record.body.clone_from(value);
         }
     }
 }
@@ -323,13 +323,13 @@ pub fn sort_items(items: &mut [Item], order: &[OrderBy<ItemSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_items(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_items`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_items(a: &Item, b: &Item, field: ItemSortField) -> std::cmp::Ordering {
+fn compare_items(a: &Item, b: &Item, field: ItemSortField) -> ::std::cmp::Ordering {
     match field {
         ItemSortField::Id => a.id.cmp(&b.id),
         ItemSortField::Title => a.title.cmp(&b.title),
@@ -399,11 +399,11 @@ impl Store {
         }
         let models = query.all(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-        let mut entities: Vec<Item> = models.iter().map(Item::from_model).collect::<Result<_, _>>()?;
-        for entity in &mut entities {
-            self.populate_item_relations(entity).await?;
+        let mut records: Vec<Item> = models.iter().map(Item::from_model).collect::<Result<_, _>>()?;
+        for record in &mut records {
+            self.populate_item_relations(record).await?;
         }
-        Ok(entities)
+        Ok(records)
     }
 
     pub async fn count_items(&self) -> Result<u64, AppError> {
@@ -417,67 +417,64 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::ItemNotFound(id.to_string()))?;
 
-        let mut entity = Item::from_model(&model)?;
-        self.populate_item_relations(&mut entity).await?;
-        Ok(entity)
+        let mut record = Item::from_model(&model)?;
+        self.populate_item_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_item(&self, mut item: Item) -> Result<Item, AppError> {
-        hooks::before_create(self, &mut item).await?;
+    pub async fn create_item(&self, mut record: Item) -> Result<Item, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let tags = item.tags.clone();
-        let children = item.children.clone();
-
-        if !item.id.trim().is_empty() && item.children.contains(&item.id) {
-            return Err(AppError::ItemParentCycle(item.id.clone()));
+        if !record.id.trim().is_empty() && record.children.contains(&record.id) {
+            return Err(AppError::ItemParentCycle(record.id.clone()));
         }
 
-        for child_id in &item.children {
+        for child_id in &record.children {
             if !self.item_exists(child_id).await? {
                 return Err(AppError::ItemNotFound(child_id.clone()));
             }
         }
-        for target_id in &item.tags {
+        for target_id in &record.tags {
             if !self.tag_exists(target_id).await? {
                 return Err(AppError::TagNotFound(target_id.clone()));
             }
         }
 
-        if let Some(v) = Some(item.n_u64).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.n_u64).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::DbError(format!("Item.n_u64: value {v} is out of range for i64")));
         }
-        if let Some(v) = Some(item.n_usize).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.n_usize).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::DbError(format!("Item.n_usize: value {v} is out of range for i64")));
         }
-        if let Some(v) = Some(item.n_u128).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.n_u128).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::DbError(format!("Item.n_u128: value {v} is out of range for i64")));
         }
-        if let Some(v) = Some(item.n_isize).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.n_isize).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::DbError(format!("Item.n_isize: value {v} is out of range for i64")));
         }
-        if let Some(v) = Some(item.n_i128).filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = Some(record.n_i128).filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::DbError(format!("Item.n_i128: value {v} is out of range for i64")));
         }
-        if let Some(v) = item.maybe_u64.filter(|v| i64::try_from(*v).is_err()) {
+        if let Some(v) = record.maybe_u64.filter(|v| i64::try_from(*v).is_err()) {
             return Err(AppError::DbError(format!("Item.maybe_u64: value {v} is out of range for i64")));
         }
 
-        if item.float32.is_nan() {
+        if record.float32.is_nan() {
             return Err(AppError::DbError("Item.float32: NaN cannot be stored".to_string()));
         }
-        if item.float64.is_nan() {
+        if record.float64.is_nan() {
             return Err(AppError::DbError("Item.float64: NaN cannot be stored".to_string()));
         }
-        if item.maybe_float32.is_some_and(f32::is_nan) {
+        if record.maybe_float32.is_some_and(f32::is_nan) {
             return Err(AppError::DbError("Item.maybe_float32: NaN cannot be stored".to_string()));
         }
-        if item.maybe_float64.is_some_and(f64::is_nan) {
+        if record.maybe_float64.is_some_and(f64::is_nan) {
             return Err(AppError::DbError("Item.maybe_float64: NaN cannot be stored".to_string()));
         }
 
         let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
-        let id = if item.id.trim().is_empty() {
-            let base = ontogen_core::id::slugify(&item.title);
+        let id = if record.id.trim().is_empty() {
+            let base = ontogen_core::id::slugify(&record.title);
             if base.is_empty() {
                 return Err(AppError::ItemIdRequired("field \"title\" produced an empty slug".to_string()));
             }
@@ -490,22 +487,22 @@ impl Store {
                 if taken {
                     continue;
                 }
-                item.id = candidate;
-                if self.try_insert_item(&txn, &item).await? {
+                record.id = candidate;
+                if self.try_insert_item(&txn, &record).await? {
                     break;
                 }
             }
-            item.id.clone()
+            record.id.clone()
         } else {
-            ontogen_core::id::validate_id(&item.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_item(&txn, &item).await? {
-                return Err(AppError::ItemAlreadyExists(item.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_item(&txn, &record).await? {
+                return Err(AppError::ItemAlreadyExists(record.id));
             }
-            item.id.clone()
+            record.id.clone()
         };
 
-        self.sync_junction(&txn, "item_tags", "item_id", "tag_id", &id, &tags).await?;
-        for child_id in &children {
+        self.sync_junction(&txn, "item_tags", "item_id", "tag_id", &id, &record.tags).await?;
+        for child_id in &record.children {
             self.set_item_parent(&txn, child_id, Some(&id)).await?;
         }
         txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
@@ -629,31 +626,31 @@ impl Store {
 
     pub(crate) async fn populate_item_relations(
         &self,
-        item: &mut crate::schema::Item,
+        record: &mut crate::schema::Item,
     ) -> Result<(), crate::schema::AppError> {
-        item.children = {
+        record.children = {
             use crate::persistence::db::entities::item;
             // sqlite-only: child ids sort in byte order under SQLite's default BINARY collation.
             let children = item::Entity::find()
-                .filter(item::Column::ParentId.eq(&item.id))
-                .filter(item::Column::Id.ne(&item.id))
+                .filter(item::Column::ParentId.eq(&record.id))
+                .filter(item::Column::Id.ne(&record.id))
                 .order_by_asc(item::Column::Id)
                 .all(self.db())
                 .await
                 .map_err(|e| crate::schema::AppError::DbError(e.to_string()))?;
             children.into_iter().map(|m| m.id).collect()
         };
-        item.tags = self.load_junction_ids("item_tags", "item_id", "tag_id", &item.id).await?;
+        record.tags = self.load_junction_ids("item_tags", "item_id", "tag_id", &record.id).await?;
         Ok(())
     }
 
-    async fn try_insert_item<C: sea_orm::ConnectionTrait>(&self, conn: &C, item: &Item) -> Result<bool, AppError> {
-        let active = item.to_active_model()?;
+    async fn try_insert_item<C: ::sea_orm::ConnectionTrait>(&self, conn: &C, record: &Item) -> Result<bool, AppError> {
+        let active = record.to_active_model()?;
         match active.insert(conn).await {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
                 // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
-                let taken = item::Entity::find_by_id(item.id.as_str())
+                let taken = item::Entity::find_by_id(record.id.as_str())
                     .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -664,22 +661,18 @@ impl Store {
         }
     }
 
-    async fn set_item_parent<C: sea_orm::ConnectionTrait>(
+    async fn set_item_parent<C: ::sea_orm::ConnectionTrait>(
         &self,
         conn: &C,
         child_id: &str,
         parent_id: Option<&str>,
     ) -> Result<(), AppError> {
-        use sea_orm::Value;
-        // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.
-        let stmt = sea_orm::Statement::from_sql_and_values(
-            sea_orm::DatabaseBackend::Sqlite,
-            "UPDATE items SET parent_id = ? WHERE id = ?",
-            [
-                parent_id.map(|p| Value::from(p.to_string())).unwrap_or(Value::String(None)),
-                Value::from(child_id.to_string()),
-            ],
-        );
+        let update = ::sea_orm::sea_query::Query::update()
+            .table(::sea_orm::sea_query::Alias::new("items"))
+            .value(::sea_orm::sea_query::Alias::new("parent_id"), parent_id.map(str::to_string))
+            .and_where(::sea_orm::sea_query::Expr::col(::sea_orm::sea_query::Alias::new("id")).eq(child_id))
+            .to_owned();
+        let stmt = conn.get_database_backend().build(&update);
         conn.execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
         Ok(())
     }
@@ -691,7 +684,10 @@ impl Store {
 
 /// Applies `order` to `query` as `list_items` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
-pub fn order_items_query(mut query: Select<item::Entity>, order: &[OrderBy<ItemSortField>]) -> Select<item::Entity> {
+pub fn order_items_query(
+    mut query: ::sea_orm::Select<item::Entity>,
+    order: &[OrderBy<ItemSortField>],
+) -> ::sea_orm::Select<item::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             ItemSortField::Id => item::Column::Id,
@@ -723,8 +719,12 @@ pub fn order_items_query(mut query: Select<item::Entity>, order: &[OrderBy<ItemS
             ItemSortField::MaybeU64 => item::Column::MaybeU64,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => {
+                (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)
+            }
+            ontogen_core::order::Direction::Desc => {
+                (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last)
+            }
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

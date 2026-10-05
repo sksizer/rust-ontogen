@@ -9,6 +9,7 @@
 //! `tests/golden/markdown-backend/store/note.rs.golden`, enforced by the
 //! conformance test once the harness lands.
 
+use crate::ident::rust_ident;
 use crate::ir::IdStrategy;
 use crate::schema::model::EntityDef;
 use crate::store::gen_order::sort_field_type;
@@ -96,27 +97,27 @@ fn generate_list(code: &mut String, entity: &EntityDef, has_relations: bool) {
     code.push_str(&format!(
         "    pub async fn list_{plural}(&self, order: &[OrderBy<{sort_field}>], limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{name}>, AppError> {{\n"
     ));
-    code.push_str(&format!("        let mut {plural} = Vec::new();\n"));
+    code.push_str("        let mut records = Vec::new();\n");
     code.push_str(&format!("        for (id, doc) in self.vault().{records}.read_all().map_err(AppError::from)? {{\n"));
     code.push_str(&format!("            let fm: {fm} = doc.deserialize().map_err(AppError::from)?;\n"));
-    code.push_str(&format!("            {plural}.push({});\n", into_call(&snake, entity, "id", "doc")));
+    code.push_str(&format!("            records.push({});\n", into_call(&snake, entity, "id", "doc")));
     code.push_str("        }\n");
     // The walk's path order is not the list order: a nested layout's paths
     // do not sort as its ids do (ADR 0006 §5). The sort precedes the page.
-    code.push_str(&format!("        sort_{plural}(&mut {plural}, order);\n"));
+    code.push_str(&format!("        sort_{plural}(&mut records, order);\n"));
     code.push_str("        let offset = offset.unwrap_or(0) as usize;\n");
     code.push_str("        let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);\n");
 
     if has_relations {
         code.push_str(&format!(
-            "        let mut {plural}: Vec<{name}> = {plural}.into_iter().skip(offset).take(limit).collect();\n"
+            "        let mut records: Vec<{name}> = records.into_iter().skip(offset).take(limit).collect();\n"
         ));
-        code.push_str(&format!("        for entity in &mut {plural} {{\n"));
-        code.push_str(&format!("            self.populate_{snake}_relations(entity).await?;\n"));
+        code.push_str("        for record in &mut records {\n");
+        code.push_str(&format!("            self.populate_{snake}_relations(record).await?;\n"));
         code.push_str("        }\n");
-        code.push_str(&format!("        Ok({plural})\n"));
+        code.push_str("        Ok(records)\n");
     } else {
-        code.push_str(&format!("        Ok({plural}.into_iter().skip(offset).take(limit).collect())\n"));
+        code.push_str("        Ok(records.into_iter().skip(offset).take(limit).collect())\n");
     }
     code.push_str("    }\n\n");
 }
@@ -156,9 +157,9 @@ fn generate_get(code: &mut String, entity: &EntityDef, has_relations: bool) {
     code.push_str(&format!("        let fm: {fm} = doc.deserialize().map_err(AppError::from)?;\n"));
 
     if has_relations {
-        code.push_str(&format!("        let mut {snake} = {};\n", into_call(&snake, entity, "id.to_string()", "doc")));
-        code.push_str(&format!("        self.populate_{snake}_relations(&mut {snake}).await?;\n"));
-        code.push_str(&format!("        Ok({snake})\n"));
+        code.push_str(&format!("        let mut record = {};\n", into_call(&snake, entity, "id.to_string()", "doc")));
+        code.push_str(&format!("        self.populate_{snake}_relations(&mut record).await?;\n"));
+        code.push_str("        Ok(record)\n");
     } else {
         code.push_str(&format!("        Ok({})\n", into_call(&snake, entity, "id.to_string()", "doc")));
     }
@@ -174,40 +175,34 @@ fn generate_create(code: &mut String, entity: &EntityDef, entities: &[EntityDef]
     let entity_kind = entity_kind_variant(name);
 
     code.push_str(&format!(
-        "    pub async fn create_{snake}(&self, mut {snake}: {name}) -> Result<{name}, AppError> {{\n"
+        "    pub async fn create_{snake}(&self, mut record: {name}) -> Result<{name}, AppError> {{\n"
     ));
-    code.push_str(&format!("        hooks::before_create(self, &mut {snake}).await?;\n\n"));
+    code.push_str("        hooks::before_create(self, &mut record).await?;\n\n");
 
-    // has_many children are derived views: capture before persisting so the
-    // reverse FKs can be set after the record exists (same sequencing as the
-    // SeaORM emission; m2m needs no step — the wikilink list IS the storage).
+    // has_many children are derived views: the reverse FKs are set from the
+    // record's lists once it exists (same sequencing as the SeaORM emission;
+    // m2m needs no step — the wikilink list IS the storage).
     let writes = has_many_writes(entity);
-    for hm in &writes {
-        code.push_str(&format!("        let {fname} = {snake}.{fname}.clone();\n", fname = hm.field));
-    }
-    if !writes.is_empty() {
-        code.push('\n');
-    }
-    let listed = Listed::Create(&snake);
+    let listed = Listed::Create("record");
     linked_ids::emit_self_listing_check(code, entity, &listed);
     linked_ids::emit_listed_ids_check(code, entity, entities, &listed);
-    emit_integer_range_checks(code, entity, IntegerSource::Record(&snake), Skipped::NotStored, serialize_error);
-    emit_nan_checks(code, entity, FloatSource::Record(&snake), Skipped::NotStored, serialize_error);
+    emit_integer_range_checks(code, entity, IntegerSource::Record("record"), Skipped::NotStored, serialize_error);
+    emit_nan_checks(code, entity, FloatSource::Record("record"), Skipped::NotStored, serialize_error);
 
     code.push_str("        let mut doc = markdown_store::Document::new();\n");
     code.push_str(&format!(
-        "        doc.merge_serialize(&{fm}::from_{snake}(&{snake}), {fields}).map_err(AppError::from)?;\n"
+        "        doc.merge_serialize(&{fm}::from_{snake}(&record), {fields}).map_err(AppError::from)?;\n"
     ));
     if let Some(body) = entity.body_field() {
-        code.push_str(&format!("        doc.set_body({snake}.{}.clone());\n", body.name));
+        code.push_str(&format!("        doc.set_body(record.{}.clone());\n", body.name));
     }
 
     // The runtime derives a missing id by the strategy, probing `-2`, `-3`
     // under the vault's write lock, so only a provided id can already exist.
     code.push_str(&format!("        let id = match self.vault().{records}.create(\n"));
     code.push_str(&format!("            &{},\n", runtime_strategy(id_strategy)));
-    code.push_str(&format!("            Some({snake}.id.as_str()).filter(|s| !s.trim().is_empty()),\n"));
-    code.push_str(&format!("            {},\n", slug_source_expr(&snake, id_strategy)));
+    code.push_str("            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),\n");
+    code.push_str(&format!("            {},\n", slug_source_expr(id_strategy)));
     code.push_str("            doc,\n");
     code.push_str("        ) {\n");
     code.push_str("            Ok(id) => id,\n");
@@ -215,13 +210,13 @@ fn generate_create(code: &mut String, entity: &EntityDef, entities: &[EntityDef]
         "            Err(markdown_store::Error::IdRequired {{ reason }}) => return Err(AppError::{name}IdRequired(reason)),\n"
     ));
     code.push_str(&format!(
-        "            Err(markdown_store::Error::AlreadyExists {{ .. }}) => return Err(AppError::{name}AlreadyExists({snake}.id)),\n"
+        "            Err(markdown_store::Error::AlreadyExists {{ .. }}) => return Err(AppError::{name}AlreadyExists(record.id)),\n"
     ));
     code.push_str("            Err(e) => return Err(AppError::from(e)),\n");
     code.push_str("        };\n\n");
 
     for hm in &writes {
-        code.push_str(&format!("        for child_id in &{fname} {{\n", fname = hm.field));
+        code.push_str(&format!("        for child_id in &record.{} {{\n", hm.field));
         code.push_str(&format!(
             "            self.set_{snake}_parent(child_id, {}).await?;\n",
             has_many::set_parent_arg(hm.fk_required, "&id")
@@ -257,7 +252,11 @@ fn generate_update(code: &mut String, entity: &EntityDef, entities: &[EntityDef]
     // and persists with the record itself — no tracking needed).
     let has_manys: Vec<_> = entity.has_many_relations().collect();
     for (field, _info) in &has_manys {
-        code.push_str(&format!("        let {fname}_changed = updates.{fname}.is_some();\n", fname = field.name));
+        code.push_str(&format!(
+            "        let {} = updates.{}.is_some();\n",
+            has_many::local(&field.name, "changed"),
+            field.name
+        ));
     }
     if !has_manys.is_empty() {
         code.push('\n');
@@ -274,13 +273,13 @@ fn generate_update(code: &mut String, entity: &EntityDef, entities: &[EntityDef]
     code.push_str("            .modify(id, |doc| {\n");
     code.push_str(&format!("                let fm: {fm} = doc.deserialize()?;\n"));
     code.push_str(&format!(
-        "                let mut {snake} = {};\n",
+        "                let mut record = {};\n",
         into_call(&snake, entity, "id.to_string()", "doc")
     ));
-    code.push_str(&format!("                updates.apply(&mut {snake});\n"));
-    code.push_str(&format!("                doc.merge_serialize(&{fm}::from_{snake}(&{snake}), {fields})?;\n"));
+    code.push_str("                updates.apply(&mut record);\n");
+    code.push_str(&format!("                doc.merge_serialize(&{fm}::from_{snake}(&record), {fields})?;\n"));
     if let Some(body) = entity.body_field() {
-        code.push_str(&format!("                doc.set_body({snake}.{});\n", body.name));
+        code.push_str(&format!("                doc.set_body(record.{});\n", body.name));
     }
     code.push_str("                Ok(())\n");
     code.push_str("            })\n");
@@ -338,7 +337,7 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
     let records = records(&snake);
 
     code.push_str(&format!("    pub(crate) async fn populate_{snake}_relations(\n"));
-    code.push_str(&format!("        &self,\n        {snake}: &mut crate::schema::{name},\n"));
+    code.push_str(&format!("        &self,\n        record: &mut crate::schema::{name},\n"));
     code.push_str("    ) -> Result<(), crate::schema::AppError> {\n");
 
     // m2m: authoritative wikilink list in this record's own frontmatter —
@@ -347,8 +346,7 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
     if has_manys.iter().all(|(_, info)| info.foreign_key.is_none()) {
         code.push_str("        // many_to_many lists are authoritative in this record's own\n");
         code.push_str("        // frontmatter and were populated at parse time.\n");
-        code.push_str("        let _ = &*self;\n");
-        code.push_str(&format!("        let _ = &*{snake};\n"));
+        code.push_str("        let _ = (self, record);\n");
     }
 
     // has_many: derived view — walk the entity directory and collect the ids
@@ -357,25 +355,25 @@ fn generate_populate_relations(code: &mut String, entity: &EntityDef) {
     // as SeaORM's `ORDER BY id` makes it there.
     for hm in has_many_writes(entity) {
         let fk = hm.fk;
-        code.push_str(&format!("        let mut {fname} = Vec::new();\n", fname = hm.field));
+        code.push_str("        let mut ids = Vec::new();\n");
         code.push_str(&format!(
             "        for (child_id, doc) in self.vault().{records}.read_all().map_err(AppError::from)? {{\n"
         ));
-        code.push_str(&format!("            if child_id == {snake}.id {{\n"));
+        code.push_str("            if child_id == record.id {\n");
         code.push_str("                continue;\n");
         code.push_str("            }\n");
         code.push_str(&format!("            let child: {fm} = doc.deserialize().map_err(AppError::from)?;\n"));
         if hm.fk_required {
-            code.push_str(&format!("            if markdown_store::wikilink::strip(&child.{fk}) == {snake}.id {{\n"));
+            code.push_str(&format!("            if markdown_store::wikilink::strip(&child.{fk}) == record.id {{\n"));
         } else {
             code.push_str(&format!(
-                "            if markdown_store::wikilink::strip_opt(child.{fk}).as_deref() == Some({snake}.id.as_str()) {{\n"
+                "            if markdown_store::wikilink::strip_opt(child.{fk}).as_deref() == Some(record.id.as_str()) {{\n"
             ));
         }
-        code.push_str(&format!("                {fname}.push(child_id);\n", fname = hm.field));
+        code.push_str("                ids.push(child_id);\n");
         code.push_str("            }\n");
         code.push_str("        }\n");
-        code.push_str(&format!("        {snake}.{fname} = {fname};\n", fname = hm.field));
+        code.push_str(&format!("        record.{} = ids;\n", hm.field));
     }
 
     code.push_str("        Ok(())\n");
@@ -466,9 +464,9 @@ fn runtime_strategy(id_strategy: &IdStrategy) -> String {
 
 /// The slug-source argument of the runtime create: the slug field's value,
 /// or `None` when the strategy doesn't slug.
-fn slug_source_expr(snake: &str, id_strategy: &IdStrategy) -> String {
+fn slug_source_expr(id_strategy: &IdStrategy) -> String {
     match id_strategy {
-        IdStrategy::SlugFromField(field) => format!("Some({snake}.{field}.as_str())"),
+        IdStrategy::SlugFromField(field) => format!("Some(record.{}.as_str())", rust_ident(field)),
         IdStrategy::Provided | IdStrategy::Uuid => "None".to_string(),
     }
 }
@@ -534,7 +532,7 @@ mod tests {
 
             let create = method(&code, "create_node");
             let check = create.find("if !self.node_exists(child_id).await? {").expect("create checks");
-            assert!(create.contains("for child_id in &node.contains {"), "{create}");
+            assert!(create.contains("for child_id in &record.contains {"), "{create}");
             assert!(check > create.find("hooks::before_create").unwrap(), "after the hook: {create}");
             assert!(check < create.find(".create(\n").unwrap(), "before the record write: {create}");
 
@@ -608,9 +606,9 @@ mod tests {
         let code = crud(&entity);
 
         let create = method(&code, "create_node");
-        let check = create.find("if let Some(v) = Some(node.seq).filter(|v| i64::try_from(*v).is_err()) {");
+        let check = create.find("if let Some(v) = Some(record.seq).filter(|v| i64::try_from(*v).is_err()) {");
         let check = check.unwrap_or_else(|| panic!("create checks a bare u64: {create}"));
-        assert!(create.contains("if let Some(v) = node.cap.filter(|v| i64::try_from(*v).is_err()) {"), "{create}");
+        assert!(create.contains("if let Some(v) = record.cap.filter(|v| i64::try_from(*v).is_err()) {"), "{create}");
         assert!(
             create.contains(
                 r#"return Err(AppError::from(markdown_store::Error::Serialize { message: format!("Node.seq: value {v} is out of range for i64") }));"#
@@ -642,7 +640,7 @@ mod tests {
             ),
             "{list}"
         );
-        let sort = list.find("sort_nodes(&mut nodes, order);").expect("the list sorts");
+        let sort = list.find("sort_nodes(&mut records, order);").expect("the list sorts");
         assert!(sort > list.find("read_all()").unwrap(), "after every record is read: {list}");
         assert!(sort < list.find(".skip(offset)").unwrap(), "before the page is cut: {list}");
     }
@@ -659,8 +657,8 @@ mod tests {
         let refusal = r#"return Err(AppError::from(markdown_store::Error::Serialize { message: "Node.weight: NaN cannot be stored".to_string() }));"#;
 
         let create = method(&code, "create_node");
-        let check = create.find("if node.weight.is_nan() {").unwrap_or_else(|| panic!("create checks: {create}"));
-        assert!(create.contains("if node.low.is_some_and(f32::is_nan) {"), "{create}");
+        let check = create.find("if record.weight.is_nan() {").unwrap_or_else(|| panic!("create checks: {create}"));
+        assert!(create.contains("if record.low.is_some_and(f32::is_nan) {"), "{create}");
         assert!(create.contains(refusal), "{create}");
         assert!(check > create.find("hooks::before_create").unwrap(), "after the hook: {create}");
         assert!(check < create.find(".create(\n").unwrap(), "before the record write: {create}");

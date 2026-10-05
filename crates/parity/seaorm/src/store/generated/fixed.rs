@@ -2,8 +2,8 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select, TransactionTrait};
+use ::sea_orm::TransactionTrait as _;
+use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::fixed;
 use crate::schema::Fixed;
@@ -19,9 +19,9 @@ pub struct FixedUpdate {
 }
 
 impl FixedUpdate {
-    fn apply(&self, fixed: &mut Fixed) {
-        if let Some(title) = &self.title {
-            fixed.title.clone_from(title);
+    fn apply(&self, record: &mut Fixed) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -65,13 +65,13 @@ pub fn sort_fixeds(items: &mut [Fixed], order: &[OrderBy<FixedSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_fixeds(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_fixeds`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_fixeds(a: &Fixed, b: &Fixed, field: FixedSortField) -> std::cmp::Ordering {
+fn compare_fixeds(a: &Fixed, b: &Fixed, field: FixedSortField) -> ::std::cmp::Ordering {
     match field {
         FixedSortField::Id => a.id.cmp(&b.id),
         FixedSortField::Title => a.title.cmp(&b.title),
@@ -114,18 +114,18 @@ impl Store {
         Fixed::from_model(&model)
     }
 
-    pub async fn create_fixed(&self, mut fixed: Fixed) -> Result<Fixed, AppError> {
-        hooks::before_create(self, &mut fixed).await?;
+    pub async fn create_fixed(&self, mut record: Fixed) -> Result<Fixed, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
-        let id = if fixed.id.trim().is_empty() {
+        let id = if record.id.trim().is_empty() {
             return Err(AppError::FixedIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
-            ontogen_core::id::validate_id(&fixed.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_fixed(&txn, &fixed).await? {
-                return Err(AppError::FixedAlreadyExists(fixed.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_fixed(&txn, &record).await? {
+                return Err(AppError::FixedAlreadyExists(record.id));
             }
-            fixed.id.clone()
+            record.id.clone()
         };
 
         txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
@@ -179,13 +179,17 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_fixed<C: sea_orm::ConnectionTrait>(&self, conn: &C, fixed: &Fixed) -> Result<bool, AppError> {
-        let active = fixed.to_active_model()?;
+    async fn try_insert_fixed<C: ::sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        record: &Fixed,
+    ) -> Result<bool, AppError> {
+        let active = record.to_active_model()?;
         match active.insert(conn).await {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
                 // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
-                let taken = fixed::Entity::find_by_id(fixed.id.as_str())
+                let taken = fixed::Entity::find_by_id(record.id.as_str())
                     .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -200,17 +204,21 @@ impl Store {
 /// Applies `order` to `query` as `list_fixeds` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_fixeds_query(
-    mut query: Select<fixed::Entity>,
+    mut query: ::sea_orm::Select<fixed::Entity>,
     order: &[OrderBy<FixedSortField>],
-) -> Select<fixed::Entity> {
+) -> ::sea_orm::Select<fixed::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             FixedSortField::Id => fixed::Column::Id,
             FixedSortField::Title => fixed::Column::Title,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => {
+                (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)
+            }
+            ontogen_core::order::Direction::Desc => {
+                (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last)
+            }
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

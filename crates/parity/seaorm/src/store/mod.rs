@@ -7,7 +7,9 @@ pub mod hooks;
 
 pub use generated::*;
 
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection, EntityTrait, Schema, Statement};
+// Rooted: `pub use generated::*` brings in the store module of the
+// `SeaOrm` entity, named `sea_orm`.
+use ::sea_orm::{ConnectionTrait, Database, DatabaseConnection, EntityTrait, Schema, Statement};
 
 use crate::persistence::db::entities as tables;
 use crate::schema::{AppError, ChangeOp, EntityKind};
@@ -31,13 +33,19 @@ impl Store {
         // One connection: each SQLite `:memory:` connection is its own
         // database, so a pool of several would see different data.
         // sqlite-only: the parity harness runs the SeaORM store on in-memory SQLite.
-        let mut options = sea_orm::ConnectOptions::new("sqlite::memory:");
+        let mut options = ::sea_orm::ConnectOptions::new("sqlite::memory:");
         options.max_connections(1).min_connections(1).sqlx_logging(false);
         let db = Database::connect(options).await.map_err(db_error)?;
+        create_table(&db, tables::doc::Entity).await?;
         create_table(&db, tables::fixed::Entity).await?;
         create_table(&db, tables::item::Entity).await?;
         create_table(&db, tables::tag::Entity).await?;
         create_table(&db, tables::item_tags::Entity).await?;
+        create_table(&db, tables::r#match::Entity).await?;
+        create_table(&db, tables::order::Entity).await?;
+        create_table(&db, tables::order_loop::Entity).await?;
+        create_table(&db, tables::sea_orm::Entity).await?;
+        create_table(&db, tables::sea_query::Entity).await?;
         create_table(&db, tables::section::Entity).await?;
         create_table(&db, tables::stamped::Entity).await?;
         let (change_tx, _) = tokio::sync::broadcast::channel(256);
@@ -100,8 +108,8 @@ async fn create_table<E: EntityTrait>(db: &DatabaseConnection, entity: E) -> Res
 }
 
 // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.
-fn sqlite(sql: &str, values: Vec<sea_orm::Value>) -> Statement {
-    Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite, sql, values)
+fn sqlite(sql: &str, values: Vec<::sea_orm::Value>) -> Statement {
+    Statement::from_sql_and_values(::sea_orm::DatabaseBackend::Sqlite, sql, values)
 }
 
 fn db_error(e: impl std::fmt::Display) -> AppError {

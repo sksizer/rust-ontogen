@@ -8,6 +8,7 @@ members = [
     "crates/ontogen-ts",
     "crates/markdown-store",
     "crates/markdown-pilot",
+    "crates/name-safety",
     "crates/parity/markdown",
     "crates/parity/seaorm",
     "crates/parity/check",
@@ -49,6 +50,9 @@ ontogen-macros = { path = "crates/ontogen-macros", version = "=0.1.1" }
 ontogen-jsonapi = { path = "crates/ontogen-jsonapi", version = "=0.1.0", default-features = false }
 ontogen-ts = { path = "crates/ontogen-ts", version = "=0.1.6" }
 cruet = "1.0"
+# Tauri 2 keys each command argument in the invoke payload with heck's
+# lowerCamelCase; the generator derives the same keys with the same crate.
+heck = "0.5"
 syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
 quote = "1"
 serde = { version = "1", features = ["derive"] }

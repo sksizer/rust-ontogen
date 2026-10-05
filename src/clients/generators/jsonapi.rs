@@ -10,12 +10,12 @@ use ontogen_core::ir::OpKind;
 use ontogen_core::naming::to_snake_case;
 
 use crate::clients::config::Config;
-use crate::clients::generators::{command_name, ts_params_in_declaration_order};
+use crate::clients::generators::{command_name, ts_params_in_declaration_order, typed_params};
 use crate::resource::{Arity, JunctionRelationship, Resource, member_name};
 use crate::schema::sort::{sort_fields, sort_keys};
 use crate::servers::classify::classify_op;
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
-use crate::servers::types::{extract_input_type, rust_type_to_ts, snake_to_camel, strip_ref};
+use crate::servers::types::{collect_ts_import, snake_to_camel, ts_param};
 
 /// The exported JSON:API types and the error every HTTP call throws (§14.4).
 ///
@@ -54,7 +54,7 @@ export interface JsonApiErrorObject {
 }
 
 /** A non-2xx response. `errors` is empty when the body was not a JSON:API error document. */
-export class JsonApiError extends Error {
+export class JsonApiError extends globalThis.Error {
   override readonly name = 'JsonApiError';
   readonly status: number;
   readonly errors: JsonApiErrorObject[];
@@ -82,7 +82,7 @@ const HTTP_HELPERS: &str = "\
 const BASE = '/api';
 const JSON_API_MEDIA_TYPE = 'application/vnd.api+json';
 
-async function httpRequest(method: string, path: string, body?: unknown): Promise<Response> {
+async function httpRequest(method: string, path: string, body?: unknown): Promise<globalThis.Response> {
   const headers: Record<string, string> = { Accept: JSON_API_MEDIA_TYPE };
   if (body != null) headers['Content-Type'] = JSON_API_MEDIA_TYPE;
   const res = await fetch(`${BASE}${path}`, {
@@ -94,7 +94,7 @@ async function httpRequest(method: string, path: string, body?: unknown): Promis
   return res;
 }
 
-async function toJsonApiError(res: Response): Promise<JsonApiError> {
+async function toJsonApiError(res: globalThis.Response): Promise<JsonApiError> {
   const body: unknown = await res.json().catch(() => null);
   const errors =
     typeof body === 'object' && body !== null && Array.isArray((body as { errors?: unknown }).errors)
@@ -186,16 +186,7 @@ export interface PaginatedResult<T> {
 /// sorts. The union enumerates the server's sort keys, ascending then
 /// descending per field.
 pub(crate) fn sort_types(modules: &[ApiModule], config: &Config) -> String {
-    let mut sorted: Vec<&Resource> = Vec::new();
-    for m in modules {
-        for f in m.functions.iter().filter(|f| is_emitted(&m.name, f, config)) {
-            if let Some(r) = sort_resource(m, f, config)
-                && !sorted.iter().any(|known| known.module == r.module)
-            {
-                sorted.push(r);
-            }
-        }
-    }
+    let sorted = sorted_resources(modules, config);
     if sorted.is_empty() {
         return String::new();
     }
@@ -214,6 +205,21 @@ export interface ListOptions<K extends string> {
         out.push_str(&format!("export type {} = {};\n\n", sort_key_type(r), union.join(" | ")));
     }
     out
+}
+
+/// Every resource an emitted `list` sorts, in module order.
+fn sorted_resources<'a>(modules: &[ApiModule], config: &'a Config) -> Vec<&'a Resource> {
+    let mut sorted: Vec<&Resource> = Vec::new();
+    for m in modules {
+        for f in m.functions.iter().filter(|f| is_emitted(&m.name, f, config)) {
+            if let Some(r) = sort_resource(m, f, config)
+                && !sorted.iter().any(|known| known.module == r.module)
+            {
+                sorted.push(r);
+            }
+        }
+    }
+    sorted
 }
 
 /// `TaskSortKey`.
@@ -285,7 +291,7 @@ function unflattenResource(def: JsonApiResourceDef, input: object, id?: string):
   let resourceId = id;
   const attributes: Record<string, unknown> = {};
   const relationships: Record<string, JsonApiRelationship> = {};
-  const relByField = new Map(
+  const relByField = new globalThis.Map(
     Object.entries(def.relationships).map(([name, rel]) => [rel.field, { name, ...rel }] as const),
   );
   for (const [key, value] of Object.entries(input)) {
@@ -450,13 +456,100 @@ pub(crate) fn served_resources<'a>(modules: &'a [ApiModule], config: &'a Config,
     resources
 }
 
+/// Every type a client imports from the bindings (or stubs, when they lack
+/// it), sorted: each emitted method's return and parameter types, each
+/// flattened resource's entity and, with `events`, each event op's item and
+/// parameter types.
+pub(crate) fn imported_types(modules: &[ApiModule], config: &Config, events: bool) -> Vec<String> {
+    let mut types = Vec::new();
+    for m in modules {
+        for f in m.functions.iter().filter(|f| is_emitted(&m.name, f, config)) {
+            collect_ts_import(&config.ts_type(&f.return_type), &mut types);
+            for p in typed_params(f) {
+                collect_ts_import(&config.ts_type(&p.ty), &mut types);
+            }
+        }
+        for ev in m.events.iter().filter(|_| events) {
+            collect_ts_import(&config.ts_type(&ev.item_type), &mut types);
+            for p in &ev.params {
+                collect_ts_import(&config.ts_type(&p.ty), &mut types);
+            }
+        }
+    }
+    for r in served_resources(modules, config, events) {
+        collect_ts_import(&r.entity.name, &mut types);
+    }
+    types.sort();
+    types.dedup();
+    types
+}
+
+/// Globals every JSON:API client names as they are, which an imported type
+/// of the same name would shadow. The ones a schema may well name an entity
+/// after (`Error`, `Event`, `EventSource`, `Map`, `MessageEvent`,
+/// `Response`) are written `globalThis.…` instead and can be imported.
+const CLIENT_GLOBALS: &[&str] = &["Array", "JSON", "Object", "Promise", "Record", "String"];
+
+/// The ones the transport's event helpers add.
+const TRANSPORT_GLOBALS: &[&str] = &["Math", "ReturnType"];
+
+/// The top-level types and the class every JSON:API client declares.
+const CLIENT_DECLARATIONS: &[&str] = &[
+    "JsonApiCollectionDocument",
+    "JsonApiError",
+    "JsonApiErrorObject",
+    "JsonApiPageDocument",
+    "JsonApiRelationship",
+    "JsonApiResource",
+    "JsonApiResourceDef",
+    "JsonApiResourceDocument",
+    "JsonApiResourceIdentifier",
+    "JsonApiWriteDocument",
+    "ListOptions",
+    "PaginatedResult",
+];
+
+/// The ones the transport adds, with the name it imports Tauri's `Channel`
+/// under.
+const TRANSPORT_DECLARATIONS: &[&str] = &["EventFrame", "IpcChannel", "SubscriptionHandlers", "Transport"];
+
+/// Refuses a type the client (`transport`: the split transport, else the
+/// HTTP client) imports from the bindings under a name the client already
+/// gives a global it uses or a type it declares, which TypeScript rejects.
+///
+/// # Errors
+///
+/// The first such type, naming what the client uses its name for.
+pub(crate) fn check_imported_types(modules: &[ApiModule], config: &Config, transport: bool) -> Result<(), String> {
+    let sort_keys: Vec<String> = sorted_resources(modules, config).into_iter().map(sort_key_type).collect();
+    for name in imported_types(modules, config, transport) {
+        let use_ =
+            if CLIENT_GLOBALS.contains(&name.as_str()) || (transport && TRANSPORT_GLOBALS.contains(&name.as_str())) {
+                "the JavaScript global it uses"
+            } else if CLIENT_DECLARATIONS.contains(&name.as_str())
+                || (transport && TRANSPORT_DECLARATIONS.contains(&name.as_str()))
+                || sort_keys.contains(&name)
+            {
+                "a name it declares"
+            } else {
+                continue;
+            };
+        let client = if transport { "transport" } else { "HTTP client" };
+        return Err(format!(
+            "ontogen: the TypeScript {client} cannot be generated: it imports the type `{name}` from the bindings, \
+             but `{name}` is {use_}. Rename the type."
+        ));
+    }
+    Ok(())
+}
+
 /// The expression that turns event frame `frame` into the flat item the
 /// handlers receive: an entity's resource object is flattened, any other
 /// item is the frame's `meta.result`.
 pub(crate) fn decode_event_frame(ev: &EventFn, config: &Config, frame: &str) -> String {
     match event_resource(ev, config) {
         Some(r) => format!("{}({frame} as JsonApiResource)", flatten_fn(r)),
-        None => format!("metaResult<{}>({frame})", rust_type_to_ts(&ev.item_type)),
+        None => format!("metaResult<{}>({frame})", config.ts_type(&ev.item_type)),
     }
 }
 
@@ -500,8 +593,8 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&s
     let scope = scope_of(m, f, config, scope);
     let base = config.naming.url_for_module(m);
     let fetch = |p: &str| fetch(p, scope);
-    let ret = if f.return_type == "()" { "null".to_string() } else { rust_type_to_ts(&f.return_type) };
-    let input_type = |i: usize| rust_type_to_ts(&extract_input_type(&f.params[i].ty));
+    let ret = if f.return_type == "()" { "null".to_string() } else { config.ts_type(&f.return_type) };
+    let input_type = |i: usize| config.ts_type(&f.params[i].ty);
     let id_path = format!("/{base}/${{encodeURIComponent(id)}}");
     let op = classify_op(m, f);
     let resource = match served(m, f, config) {
@@ -516,16 +609,16 @@ pub(crate) fn method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&s
                 OpKind::Update => (vec!["id: string".to_string(), format!("input: {}", input_type(1))], ret),
                 OpKind::Delete => (vec!["id: string".to_string()], "null".to_string()),
                 OpKind::JunctionList { .. } if is_paginated(m, f, config) => {
-                    let mut params = ts_params_in_declaration_order(f);
+                    let mut params = ts_params_in_declaration_order(f, config);
                     params.push("limit?: number".to_string());
                     params.push("offset?: number".to_string());
                     (params, paginated_result(&ret))
                 }
                 OpKind::JunctionAdd { .. } | OpKind::JunctionRemove { .. } => {
-                    (ts_params_in_declaration_order(f), "null".to_string())
+                    (ts_params_in_declaration_order(f, config), "null".to_string())
                 }
                 OpKind::List | OpKind::JunctionList { .. } | OpKind::CustomGet | OpKind::CustomPost => {
-                    (ts_params_in_declaration_order(f), ret)
+                    (ts_params_in_declaration_order(f, config), ret)
                 }
             };
             let body = vec![op_call(&return_type, &op_route(m, f, config), scope)];
@@ -606,13 +699,13 @@ fn relationship_method(
     config: &Config,
     scope: Option<&str>,
 ) -> Method {
-    let mut params = ts_params_in_declaration_order(f);
-    let parent = format!("/{}{}", config.naming.url_for_module(m), path_segment(&snake_to_camel(&f.params[0].name)));
+    let mut params = ts_params_in_declaration_order(f, config);
+    let parent = format!("/{}{}", config.naming.url_for_module(m), path_segment(&ts_param(&f.params[0].name)));
     let rel = ontogen_jsonapi::links::encode_path_segment(&junction.name);
     let linkage = format!("{parent}/relationships/{rel}");
     if f.name != junction.list.name {
         let verb = if junction.add.is_some_and(|add| add.name == f.name) { "httpPost" } else { "httpDelete" };
-        let child = snake_to_camel(&f.params[1].name);
+        let child = ts_param(&f.params[1].name);
         let body = format!("{{ data: [{{ type: '{}', id: {child} }}] }}", junction.target_type);
         return Method {
             params,
@@ -623,7 +716,7 @@ fn relationship_method(
     }
 
     let paginated = is_paginated(m, f, config);
-    let ret = rust_type_to_ts(&f.return_type);
+    let ret = config.ts_type(&f.return_type);
     let (path, item, doc) = if junction.lists_entities {
         let target = config.resources.by_module(&junction.target_module).expect("a junction target is a resource");
         (format!("{parent}/{rel}"), flatten_fn(target), "")
@@ -704,7 +797,7 @@ struct OpRoute<'a> {
 fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config) -> OpRoute<'a> {
     let op = classify_op(m, f);
     let base = format!("/{}", config.naming.url_for_module(m));
-    let value = |p: &Param| if p.is_input() { "input".to_string() } else { snake_to_camel(&p.name) };
+    let value = |p: &Param| if p.is_input() { "input".to_string() } else { ts_param(&p.name) };
     let segment = |p: &Param| path_segment(&value(p));
     let (method, mut path, named) = match &op {
         OpKind::CustomGet | OpKind::CustomPost => {
@@ -746,11 +839,13 @@ fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config) -> OpRoute<'a> {
             op_args = page();
         }
         OpKind::JunctionList { .. } => op_args = page(),
-        _ if matches!(method, "POST" | "PATCH") => args = rest.iter().map(|p| (p.name.as_str(), value(p))).collect(),
+        _ if matches!(method, "POST" | "PATCH") => {
+            args = rest.iter().map(|p| (member_name(&p.name), value(p))).collect()
+        }
         _ => {
             for p in rest {
                 if p.is_option() {
-                    op_args.push((p.name.as_str(), value(p)));
+                    op_args.push((member_name(&p.name), value(p)));
                 } else {
                     path.push_str(&segment(p));
                 }
@@ -783,7 +878,7 @@ fn query_string(families: &[(&str, String)]) -> String {
 /// `None` for a list that takes no filter.
 fn filter_family(f: &ApiFn) -> Option<String> {
     let bare: Vec<(&str, String)> =
-        f.bare_filters().into_iter().map(|p| (p.name.as_str(), snake_to_camel(&p.name))).collect();
+        f.bare_filters().into_iter().map(|p| (member_name(&p.name), ts_param(&p.name))).collect();
     match (f.filter_struct(), bare.is_empty()) {
         (None, true) => None,
         (Some(_), true) => Some("query".to_string()),
@@ -837,8 +932,7 @@ fn paginated_result(array: &str) -> String {
 /// resolve (no type pool, or not found in it) is not known to have one, and
 /// its `query?` parameter stays optional.
 pub(crate) fn query_required(f: &ApiFn, config: &Config) -> bool {
-    f.filter_struct()
-        .is_some_and(|q| config.required_query_structs.contains(&rust_type_to_ts(&extract_input_type(&q.ty))))
+    f.filter_struct().is_some_and(|q| config.required_query_structs.contains(&config.ts_type(&q.ty)))
 }
 
 /// The `list` method for `f`, its collection at `/{base}`: its bare
@@ -856,13 +950,10 @@ fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -
     let base = config.naming.url_for_module(m);
     let paginated = is_paginated(m, f, config);
 
-    let mut params: Vec<String> = f
-        .bare_filters()
-        .into_iter()
-        .map(|p| format!("{}: {}", snake_to_camel(&p.name), rust_type_to_ts(&strip_ref(&p.ty))))
-        .collect();
+    let mut params: Vec<String> =
+        f.bare_filters().into_iter().map(|p| format!("{}: {}", ts_param(&p.name), config.ts_type(&p.ty))).collect();
     if let Some(query) = f.filter_struct() {
-        let ts = rust_type_to_ts(&extract_input_type(&query.ty));
+        let ts = config.ts_type(&query.ty);
         // Bare filters are required and `limit`/`offset` follow, so a
         // required `query` never follows an optional parameter.
         let optional = if query_required(f, config) { "" } else { "?" };
@@ -873,7 +964,7 @@ fn list_method(m: &ApiModule, f: &ApiFn, config: &Config, scope: Option<&str>) -
         params.push("offset?: number".to_string());
     }
 
-    let ret = rust_type_to_ts(&f.return_type);
+    let ret = config.ts_type(&f.return_type);
     let return_type = if paginated { paginated_result(&ret) } else { ret };
 
     let Served::Resource(resource) = served(m, f, config) else {
@@ -928,7 +1019,7 @@ pub(crate) fn check_list_params(modules: &[ApiModule], config: &Config, transpor
             }
             if transport && let Some(prefix) = &config.route_prefix {
                 let param = &prefix.params[0].name;
-                let ts = snake_to_camel(param);
+                let ts = ts_param(param);
                 if let Some((_, use_)) = taken.iter().find(|(name, _)| *name == ts) {
                     let named = format!("is called with the route prefix parameter `{param}`");
                     return collide(&named, &ts, use_, "route prefix parameter");
@@ -936,7 +1027,7 @@ pub(crate) fn check_list_params(modules: &[ApiModule], config: &Config, transpor
                 taken.push((ts, "the route prefix parameter".into()));
             }
             for p in f.bare_filters() {
-                let ts = snake_to_camel(&p.name);
+                let ts = ts_param(&p.name);
                 if let Some((_, use_)) = taken.iter().find(|(name, _)| *name == ts) {
                     let named = format!("takes an argument named `{}`", p.name);
                     return collide(&named, &ts, use_, "argument");

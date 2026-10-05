@@ -14,6 +14,7 @@
 //! and the `foreign_key` is that entity's `belongs_to` back to itself.
 //! [`validate_targets`] refuses any other `has_many` at build time.
 
+use crate::resource::member_name;
 use crate::schema::model::{EntityDef, FieldRole, FieldType, RelationKind};
 use crate::store::helpers::to_snake_case;
 
@@ -122,6 +123,13 @@ pub(crate) fn set_parent_arg(fk_required: bool, id_expr: &str) -> String {
     if fk_required { id_expr.to_string() } else { format!("Some({id_expr})") }
 }
 
+/// The `{field}_{suffix}` local an update keeps per relationship field
+/// (`subtasks_changed`), from the field's bare name: `r#loop` gives
+/// `loop_changed`.
+pub(crate) fn local(field: &str, suffix: &str) -> String {
+    format!("{}_{suffix}", member_name(field))
+}
+
 /// Emit, inside `update_*` and before anything is written, the children
 /// the update drops from each `has_many` list (`{field}_dropped`), and the
 /// `{Child}ParentRequired` refusal where the foreign key is required.
@@ -130,15 +138,15 @@ pub(crate) fn set_parent_arg(fk_required: bool, id_expr: &str) -> String {
 /// `updates` in scope.
 pub(crate) fn emit_dropped_children(code: &mut String, writes: &[HasManyWrite<'_>]) {
     for hm in writes {
-        let f = hm.field;
-        code.push_str(&format!("        let {f}_dropped: Vec<String> = match &updates.{f} {{\n"));
+        let (f, dropped) = (hm.field, local(hm.field, "dropped"));
+        code.push_str(&format!("        let {dropped}: Vec<String> = match &updates.{f} {{\n"));
         code.push_str(&format!(
             "            Some(new_ids) => current.{f}.iter().filter(|c| !new_ids.contains(c)).cloned().collect(),\n"
         ));
         code.push_str("            None => Vec::new(),\n");
         code.push_str("        };\n");
         if hm.fk_required {
-            code.push_str(&format!("        if let Some(child_id) = {f}_dropped.first() {{\n"));
+            code.push_str(&format!("        if let Some(child_id) = {dropped}.first() {{\n"));
             code.push_str(&format!(
                 "            return Err(AppError::{}ParentRequired(child_id.clone()));\n",
                 hm.child
@@ -168,7 +176,7 @@ pub(crate) fn emit_update_children(
     let conn = conn.map(|c| format!("{c}, ")).unwrap_or_default();
     for hm in writes {
         let f = hm.field;
-        code.push_str(&format!("        if {f}_changed {{\n"));
+        code.push_str(&format!("        if {} {{\n", local(f, "changed")));
         code.push_str(&format!("            for child_id in {} {{\n", listed(f)));
         code.push_str(&format!(
             "                self.set_{snake}_parent({conn}child_id, {}).await?;\n",
@@ -176,7 +184,7 @@ pub(crate) fn emit_update_children(
         ));
         code.push_str("            }\n");
         if !hm.fk_required {
-            code.push_str(&format!("            for child_id in &{f}_dropped {{\n"));
+            code.push_str(&format!("            for child_id in &{} {{\n", local(f, "dropped")));
             code.push_str(&format!("                self.set_{snake}_parent({conn}child_id, None).await?;\n"));
             code.push_str("            }\n");
         }

@@ -19,9 +19,9 @@ pub struct StampedUpdate {
 }
 
 impl StampedUpdate {
-    fn apply(&self, stamped: &mut Stamped) {
-        if let Some(title) = &self.title {
-            stamped.title.clone_from(title);
+    fn apply(&self, record: &mut Stamped) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -65,13 +65,13 @@ pub fn sort_stampeds(items: &mut [Stamped], order: &[OrderBy<StampedSortField>])
         keys.iter()
             .map(|key| key.direction.apply(compare_stampeds(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_stampeds`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_stampeds(a: &Stamped, b: &Stamped, field: StampedSortField) -> std::cmp::Ordering {
+fn compare_stampeds(a: &Stamped, b: &Stamped, field: StampedSortField) -> ::std::cmp::Ordering {
     match field {
         StampedSortField::Id => a.id.cmp(&b.id),
         StampedSortField::Title => a.title.cmp(&b.title),
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Stamped>, AppError> {
-        let mut stampeds = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(STAMPEDS_DIR, STAMPED_TYPE).read_all().map_err(AppError::from)? {
             let fm: StampedFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            stampeds.push(fm.into_stamped(id));
+            records.push(fm.into_stamped(id));
         }
-        sort_stampeds(&mut stampeds, order);
+        sort_stampeds(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(stampeds.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_stampeds(&self) -> Result<u64, AppError> {
@@ -112,20 +112,20 @@ impl Store {
         Ok(fm.into_stamped(id.to_string()))
     }
 
-    pub async fn create_stamped(&self, mut stamped: Stamped) -> Result<Stamped, AppError> {
-        hooks::before_create(self, &mut stamped).await?;
+    pub async fn create_stamped(&self, mut record: Stamped) -> Result<Stamped, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&StampedFrontmatter::from_stamped(&stamped), STAMPED_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&StampedFrontmatter::from_stamped(&record), STAMPED_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(STAMPEDS_DIR, STAMPED_TYPE).create(
             &markdown_store::IdStrategy::Uuid,
-            Some(stamped.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
             None,
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::StampedIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::StampedAlreadyExists(stamped.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::StampedAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -143,9 +143,9 @@ impl Store {
             .entity(STAMPEDS_DIR, STAMPED_TYPE)
             .modify(id, |doc| {
                 let fm: StampedFrontmatter = doc.deserialize()?;
-                let mut stamped = fm.into_stamped(id.to_string());
-                updates.apply(&mut stamped);
-                doc.merge_serialize(&StampedFrontmatter::from_stamped(&stamped), STAMPED_FM_FIELDS)?;
+                let mut record = fm.into_stamped(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&StampedFrontmatter::from_stamped(&record), STAMPED_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

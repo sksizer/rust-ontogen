@@ -11,6 +11,7 @@
 //! `u64`; HTTP refuses it earlier, in the body check.
 
 use crate::persistence::seaorm::gen_entity::wide_integer_type;
+use crate::resource::member_name;
 use crate::schema::model::{EntityDef, FieldDef, FieldRole};
 use crate::store::nan::Skipped;
 
@@ -56,7 +57,7 @@ pub(crate) fn emit_integer_range_checks(
     let mut any = false;
     for (field, optional) in wide_integer_fields(entity, &source, skipped) {
         let f = &field.name;
-        let message = format!("format!(\"{}.{f}: value {{v}} is out of range for i64\")", entity.name);
+        let message = format!("format!(\"{}.{}: value {{v}} is out of range for i64\")", entity.name, member_name(f));
         let value = match (&source, optional) {
             (IntegerSource::Record(var), false) => format!("Some({var}.{f})"),
             (IntegerSource::Record(var), true) => format!("{var}.{f}"),

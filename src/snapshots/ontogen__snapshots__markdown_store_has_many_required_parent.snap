@@ -26,18 +26,18 @@ pub struct NodeUpdate {
 }
 
 impl NodeUpdate {
-    fn apply(&self, node: &mut Node) {
-        if let Some(label) = &self.label {
-            node.label.clone_from(label);
+    fn apply(&self, record: &mut Node) {
+        if let Some(value) = &self.label {
+            record.label.clone_from(value);
         }
-        if let Some(parent_id) = &self.parent_id {
-            node.parent_id.clone_from(parent_id);
+        if let Some(value) = &self.parent_id {
+            record.parent_id.clone_from(value);
         }
-        if let Some(contains) = &self.contains {
-            node.contains.clone_from(contains);
+        if let Some(value) = &self.contains {
+            record.contains.clone_from(value);
         }
-        if let Some(body) = &self.body {
-            node.body.clone_from(body);
+        if let Some(value) = &self.body {
+            record.body.clone_from(value);
         }
     }
 }
@@ -92,13 +92,13 @@ pub fn sort_nodes(items: &mut [Node], order: &[OrderBy<NodeSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_nodes(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_nodes`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_nodes(a: &Node, b: &Node, field: NodeSortField) -> std::cmp::Ordering {
+fn compare_nodes(a: &Node, b: &Node, field: NodeSortField) -> ::std::cmp::Ordering {
     match field {
         NodeSortField::Id => a.id.cmp(&b.id),
         NodeSortField::Label => a.label.cmp(&b.label),
@@ -112,19 +112,19 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Node>, AppError> {
-        let mut nodes = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(NODES_DIR, NODE_TYPE).read_all().map_err(AppError::from)? {
             let fm: NodeFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            nodes.push(fm.into_node(id, doc.body().to_string()));
+            records.push(fm.into_node(id, doc.body().to_string()));
         }
-        sort_nodes(&mut nodes, order);
+        sort_nodes(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        let mut nodes: Vec<Node> = nodes.into_iter().skip(offset).take(limit).collect();
-        for entity in &mut nodes {
-            self.populate_node_relations(entity).await?;
+        let mut records: Vec<Node> = records.into_iter().skip(offset).take(limit).collect();
+        for record in &mut records {
+            self.populate_node_relations(record).await?;
         }
-        Ok(nodes)
+        Ok(records)
     }
 
     pub async fn count_nodes(&self) -> Result<u64, AppError> {
@@ -140,42 +140,40 @@ impl Store {
             Err(e) => return Err(AppError::from(e)),
         };
         let fm: NodeFrontmatter = doc.deserialize().map_err(AppError::from)?;
-        let mut node = fm.into_node(id.to_string(), doc.body().to_string());
-        self.populate_node_relations(&mut node).await?;
-        Ok(node)
+        let mut record = fm.into_node(id.to_string(), doc.body().to_string());
+        self.populate_node_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_node(&self, mut node: Node) -> Result<Node, AppError> {
-        hooks::before_create(self, &mut node).await?;
+    pub async fn create_node(&self, mut record: Node) -> Result<Node, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let contains = node.contains.clone();
-
-        if !node.id.trim().is_empty() && node.contains.contains(&node.id) {
-            return Err(AppError::NodeParentCycle(node.id.clone()));
+        if !record.id.trim().is_empty() && record.contains.contains(&record.id) {
+            return Err(AppError::NodeParentCycle(record.id.clone()));
         }
 
-        for child_id in &node.contains {
+        for child_id in &record.contains {
             if !self.node_exists(child_id).await? {
                 return Err(AppError::NodeNotFound(child_id.clone()));
             }
         }
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&NodeFrontmatter::from_node(&node), NODE_FM_FIELDS).map_err(AppError::from)?;
-        doc.set_body(node.body.clone());
+        doc.merge_serialize(&NodeFrontmatter::from_node(&record), NODE_FM_FIELDS).map_err(AppError::from)?;
+        doc.set_body(record.body.clone());
         let id = match self.vault().entity(NODES_DIR, NODE_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("label".into()),
-            Some(node.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(node.label.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.label.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::NodeIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::NodeAlreadyExists(node.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::NodeAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
-        for child_id in &contains {
+        for child_id in &record.contains {
             self.set_node_parent(child_id, &id).await?;
         }
 
@@ -213,10 +211,10 @@ impl Store {
             .entity(NODES_DIR, NODE_TYPE)
             .modify(id, |doc| {
                 let fm: NodeFrontmatter = doc.deserialize()?;
-                let mut node = fm.into_node(id.to_string(), doc.body().to_string());
-                updates.apply(&mut node);
-                doc.merge_serialize(&NodeFrontmatter::from_node(&node), NODE_FM_FIELDS)?;
-                doc.set_body(node.body);
+                let mut record = fm.into_node(id.to_string(), doc.body().to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&NodeFrontmatter::from_node(&record), NODE_FM_FIELDS)?;
+                doc.set_body(record.body);
                 Ok(())
             })
             .map_err(AppError::from)?;
@@ -251,19 +249,19 @@ impl Store {
 
     pub(crate) async fn populate_node_relations(
         &self,
-        node: &mut crate::schema::Node,
+        record: &mut crate::schema::Node,
     ) -> Result<(), crate::schema::AppError> {
-        let mut contains = Vec::new();
+        let mut ids = Vec::new();
         for (child_id, doc) in self.vault().entity(NODES_DIR, NODE_TYPE).read_all().map_err(AppError::from)? {
-            if child_id == node.id {
+            if child_id == record.id {
                 continue;
             }
             let child: NodeFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            if markdown_store::wikilink::strip(&child.parent_id) == node.id {
-                contains.push(child_id);
+            if markdown_store::wikilink::strip(&child.parent_id) == record.id {
+                ids.push(child_id);
             }
         }
-        node.contains = contains;
+        record.contains = ids;
         Ok(())
     }
 
