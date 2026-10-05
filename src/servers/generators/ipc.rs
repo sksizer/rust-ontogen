@@ -12,8 +12,8 @@ use crate::servers::config::{ApiSurface, Config, PaginationConfig, RoutePrefix, 
 use crate::servers::generators::{filter_arg, surface_use_stmts};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, Param};
 use crate::servers::types::{
-    NamingConfig, capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, param_to_owned_type,
-    snake_to_camel,
+    NamingConfig, capitalize, event_name, extract_input_type, forward_arg_expr, inner_type, ipc_arg_key,
+    param_to_owned_type,
 };
 
 /// Returns the generated prefix param line for IPC commands (e.g., `project_id: Option<String>,`).
@@ -127,9 +127,9 @@ impl WireKeyScope<'_> {
 
 /// Refuses a fn whose IPC command would take two arguments under one invoke
 /// key. Tauri reads each command parameter from the invoke payload under
-/// its name camelCased, and the TS transport invokes with the same keys, so
-/// two parameters whose names camelCase alike (`sort` and `sort_`,
-/// `project_id` and `project_id_`) would share one key. The command's own
+/// its [`ipc_arg_key`], and the TS transport invokes with the same keys, so
+/// two parameters whose keys match (`sort`, `_sort` and `sort_`;
+/// `project_id` and `_project_id`) would share one key. The command's own
 /// parameters cannot be renamed in the generated code:
 ///
 /// - `id` and `input` for a CRUD op's record id and input;
@@ -192,7 +192,7 @@ fn check_command_keys(
     let mut taken: Vec<(String, String)> =
         own.into_iter().map(|(key, use_)| (key.to_string(), use_.to_string())).collect();
     if let Some(param) = prefix {
-        let key = snake_to_camel(param);
+        let key = ipc_arg_key(param);
         if let Some((_, use_)) = taken.iter().find(|(taken, _)| *taken == key) {
             let named = format!("is called with the route prefix parameter `{param}`");
             return collide(&named, &key, use_, "route prefix parameter");
@@ -200,7 +200,7 @@ fn check_command_keys(
         taken.push((key, "the route prefix parameter".into()));
     }
     for arg in args {
-        let key = snake_to_camel(arg);
+        let key = ipc_arg_key(arg);
         if let Some((_, use_)) = taken.iter().find(|(taken, _)| *taken == key) {
             return collide(&format!("takes an argument named `{arg}`"), &key, use_, "argument");
         }

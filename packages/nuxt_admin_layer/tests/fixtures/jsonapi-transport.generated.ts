@@ -13,7 +13,7 @@ import type {
   WorkoutSet,
 } from './jsonapi-bindings';
 
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { Channel as IpcChannel, invoke } from '@tauri-apps/api/core';
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -118,7 +118,7 @@ export interface JsonApiErrorObject {
 }
 
 /** A non-2xx response. `errors` is empty when the body was not a JSON:API error document. */
-export class JsonApiError extends Error {
+export class JsonApiError extends globalThis.Error {
   override readonly name = 'JsonApiError';
   readonly status: number;
   readonly errors: JsonApiErrorObject[];
@@ -135,7 +135,7 @@ export class JsonApiError extends Error {
 const BASE = '/api';
 const JSON_API_MEDIA_TYPE = 'application/vnd.api+json';
 
-async function httpRequest(method: string, path: string, body?: unknown): Promise<Response> {
+async function httpRequest(method: string, path: string, body?: unknown): Promise<globalThis.Response> {
   const headers: Record<string, string> = { Accept: JSON_API_MEDIA_TYPE };
   if (body != null) headers['Content-Type'] = JSON_API_MEDIA_TYPE;
   const res = await fetch(`${BASE}${path}`, {
@@ -147,7 +147,7 @@ async function httpRequest(method: string, path: string, body?: unknown): Promis
   return res;
 }
 
-async function toJsonApiError(res: Response): Promise<JsonApiError> {
+async function toJsonApiError(res: globalThis.Response): Promise<JsonApiError> {
   const body: unknown = await res.json().catch(() => null);
   const errors =
     typeof body === 'object' && body !== null && Array.isArray((body as { errors?: unknown }).errors)
@@ -218,20 +218,20 @@ function subscribeSse<T>(
   decode: (frame: unknown) => T,
   handlers: SubscriptionHandlers<T>,
 ): () => void {
-  let source: EventSource | null = null;
+  let source: globalThis.EventSource | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastId = initialResume;
   let attempt = 0;
   let closed = false;
   function connect() {
     if (closed) return;
-    const es = new EventSource(url(lastId));
+    const es = new globalThis.EventSource(url(lastId));
     source = es;
     es.onopen = () => {
       attempt = 0;
       handlers.onOpen?.();
     };
-    es.addEventListener(eventName, (event: MessageEvent) => {
+    es.addEventListener(eventName, (event: globalThis.MessageEvent) => {
       const id = event.lastEventId || null;
       if (id) lastId = id;
       let data: T;
@@ -243,14 +243,14 @@ function subscribeSse<T>(
       }
       handlers.onEvent(data, id);
     });
-    es.addEventListener('lag', (event: MessageEvent) => {
+    es.addEventListener('lag', (event: globalThis.MessageEvent) => {
       try {
         handlers.onLag?.(JSON.parse(event.data).skipped);
       } catch (err) {
         handlers.onError?.(err);
       }
     });
-    es.onerror = (err: Event) => {
+    es.onerror = (err: globalThis.Event) => {
       es.close();
       if (source === es) source = null;
       if (closed) return;
@@ -326,7 +326,7 @@ function unflattenResource(def: JsonApiResourceDef, input: object, id?: string):
   let resourceId = id;
   const attributes: Record<string, unknown> = {};
   const relationships: Record<string, JsonApiRelationship> = {};
-  const relByField = new Map(
+  const relByField = new globalThis.Map(
     Object.entries(def.relationships).map(([name, rel]) => [rel.field, { name, ...rel }] as const),
   );
   for (const [key, value] of Object.entries(input)) {
@@ -574,7 +574,7 @@ async function subscribeIpc<T>(
   args: Record<string, unknown>,
   handlers: SubscriptionHandlers<T>,
 ): Promise<() => void> {
-  const channel = new Channel<EventFrame<T>>();
+  const channel = new IpcChannel<EventFrame<T>>();
   channel.onmessage = (frame) => {
     if (frame.kind === 'event') handlers.onEvent(frame.data, frame.id ?? null);
     else handlers.onLag?.(frame.skipped);

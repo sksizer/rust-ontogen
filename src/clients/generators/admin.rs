@@ -13,6 +13,7 @@ use ontogen_core::model::{EntityDef, EnumDef, FieldDef, FieldRole, FieldType, Re
 
 use crate::clients::config::Config;
 use crate::clients::generators::command_name;
+use crate::resource::member_name;
 use crate::servers::parse::ApiModule;
 use crate::servers::types::{extract_input_type, inner_type, rust_type_to_ts, snake_to_camel};
 
@@ -151,7 +152,8 @@ fn generate_fields_for_entity(module_name: &str, entity: &EntityDef, enums: &[En
             continue;
         }
 
-        let key = &field.name;
+        // The admin layer reads a record's field by the key serde writes.
+        let key = member_name(&field.name);
         let label = config
             .label_overrides
             .get(&format!("{module_name}.{key}"))

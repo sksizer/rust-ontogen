@@ -488,7 +488,7 @@ pub async fn workout_list(
 }
 ```
 
-A command names each parameter after the function's argument, since that name is the `invoke` key, and prefixes its own bindings with `ontogen_`. Payloads are flat: entities in and out with their Rust field names, relation fields as ids, `PaginatedResult` for a paginated list, and errors as strings (an `AppError`'s `Display` text).
+A command names each parameter after the function's argument, since Tauri reads each argument from the `invoke` payload under a key derived from that name: the name without its `r#`, lowerCamelCased with heck (`project_id` is `projectId`, `_kind` is `kind`, `r#type` is `type`). The command prefixes its own bindings with `ontogen_`. Payloads are flat: entities in and out with their Rust field names, relation fields as ids, `PaginatedResult` for a paginated list, and errors as strings (an `AppError`'s `Display` text).
 
 A list that takes an order has an optional `sort` argument, an array of the keys `sort` takes over HTTP (`['-created', 'title']`). It is read with `ontogen_core::order::parse_sort`, so a bad key is the string error ``unknown sort field `priority` ``, and it is read before the store opens. A list's filter and page arguments sit beside it. A bare filter named `sort` on such a list is a build error, since it would share the `sort` key.
 

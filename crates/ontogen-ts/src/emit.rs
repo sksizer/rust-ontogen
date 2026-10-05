@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use syn::ext::IdentExt;
 use syn::{
     Fields, GenericArgument, ItemEnum, ItemStruct, PathArguments, Type, TypeArray, TypePath as SynTypePath,
     TypeReference, TypeSlice, TypeTuple,
@@ -547,7 +548,8 @@ fn collect_named_fields(
             out.intersections.push(flatten_member(&field.ty, defaulted, config, referenced_by)?);
             continue;
         }
-        let raw_ident = field.ident.as_ref().expect("Fields::Named guarantees a field ident").to_string();
+        // Serde names a raw field (`r#type`) without its `r#`.
+        let raw_ident = field.ident.as_ref().expect("Fields::Named guarantees a field ident").unraw().to_string();
         let wire_name = field_wire_name(&raw_ident, &field_attrs, rename_all);
         let key = format_ts_key(&wire_name);
         let ty_ts = emit_type(&field.ty, config, referenced_by)?;
@@ -1853,6 +1855,33 @@ mod tests {
         );
         let ts = emit_struct(&item, &config).expect("emit ok");
         assert!(ts.contains("prompt_template: string"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn raw_field_is_named_as_serde_writes_it() {
+        let config = EmitConfig::default();
+        let item = struct_item(
+            r#"
+            pub struct Foo {
+                pub r#type: String,
+                pub r#in_stock: bool,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert!(ts.contains("  type: string;"), "ts was: {ts}");
+        assert!(ts.contains("  in_stock: boolean;"), "ts was: {ts}");
+
+        let item = struct_item(
+            r#"
+            #[serde(rename_all = "camelCase")]
+            pub struct Foo {
+                pub r#type_name: String,
+            }
+            "#,
+        );
+        let ts = emit_struct(&item, &config).expect("emit ok");
+        assert!(ts.contains("  typeName: string;"), "ts was: {ts}");
     }
 
     #[test]

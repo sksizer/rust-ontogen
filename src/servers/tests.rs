@@ -16,7 +16,8 @@ use crate::servers::config::{Config, PrefixParam, RoutePrefix, ServerGenerator};
 use crate::servers::parse::{ApiFn, ApiModule, EventFn, ForcedMethod, Param};
 use crate::servers::types::{
     NamingConfig, capitalize, collect_ts_import, collect_type_import, event_name, extract_input_type, forward_arg_expr,
-    inner_type, normalize_spaces, param_to_owned_type, rust_type_to_ts, snake_to_camel, strip_ref, to_pascal_case,
+    inner_type, ipc_arg_key, normalize_spaces, param_to_owned_type, rust_type_to_ts, snake_to_camel, strip_ref,
+    to_pascal_case, ts_key, ts_param,
 };
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
@@ -5784,7 +5785,7 @@ fn test_ts_transport_event_subscriptions() {
     let sig = "subscribeVaultNoteChanges(args: { vaultId: string; classes?: string | null; resume?: string | null }, \
                handlers: SubscriptionHandlers<LoggedChange>): Promise<() => void>";
     assert_eq!(content.matches(sig).count(), 3, "interface, HTTP and IPC share one signature");
-    assert!(content.contains("import { Channel, invoke } from '@tauri-apps/api/core';"));
+    assert!(content.contains("import { Channel as IpcChannel, invoke } from '@tauri-apps/api/core';"));
     assert!(content.contains("toQueryString({ classes: args.classes, resume: resume })"));
     assert!(content.contains("'vault-note-changes',\n        args.resume ?? null,"));
     assert!(content.contains("subscribeIpc('vault_note_changes_subscribe', 'vault_note_changes_unsubscribe'"));
@@ -6909,6 +6910,90 @@ pub async fn archive(store: &Store, tag: &str, tag_: &str) -> Result<(), AppErro
         ipc_generation_error(&[("gadget.rs", archive)], false),
         collision("gadget_archive", "gadget::archive", "tag_", "tag", "the argument `tag`")
     );
+}
+
+/// Tauri strips an argument's `r#` and lowerCamelCases it with heck, which
+/// drops leading underscores: `_sort` travels as `sort`, `_project_id` as
+/// `projectId` and `type_` as `type`, so each collides with the argument
+/// whose key it takes.
+#[test]
+fn an_ipc_command_refuses_arguments_tauri_keys_alike() {
+    let collision = |arg: &str, key: &str, other: &str| {
+        format!(
+            "ontogen: the IPC command `gadget_archive` cannot be generated: `gadget::archive` takes an argument \
+             named `{arg}`, which the command takes under the IPC wire key `{key}`, the key it uses for the argument \
+             `{other}`, so the two would collide. Rename the argument."
+        )
+    };
+    for (args, arg, key, other) in [
+        ("sort: &str, _sort: &str", "_sort", "sort", "sort"),
+        ("project_id: &str, _project_id: &str", "_project_id", "projectId", "project_id"),
+        ("r#type: &str, type_: &str", "type_", "type", "r#type"),
+    ] {
+        let archive = format!("pub async fn archive(store: &Store, {args}) -> Result<(), AppError> {{ todo!() }}\n");
+        assert_eq!(ipc_generation_error(&[("gadget.rs", &archive)], false), collision(arg, key, other));
+    }
+
+    let archive = "\
+pub async fn archive(store: &Store, _project_id: &str) -> Result<(), AppError> { todo!() }
+";
+    assert_eq!(
+        scoped_generation_error(&[("gadget.rs", archive)], |output| ServerGenerator::TauriIpc { output }),
+        "ontogen: the IPC command `gadget_archive` cannot be generated: `gadget::archive` takes an argument named \
+         `_project_id`, which the command takes under the IPC wire key `projectId`, the key it uses for the route \
+         prefix parameter, so the two would collide. Rename the argument."
+    );
+}
+
+/// The keys [`ipc_arg_key`] derives are Tauri's: heck's lowerCamelCase of
+/// the name without its `r#`, which drops every underscore, leading,
+/// trailing or doubled, and splits a word before a digit run only at an
+/// underscore.
+#[test]
+fn ipc_arg_keys_are_the_ones_tauri_reads() {
+    for (param, key) in [
+        ("project_id", "projectId"),
+        ("_sort", "sort"),
+        ("sort_", "sort"),
+        ("__kind", "kind"),
+        ("parent__id", "parentId"),
+        ("r#type", "type"),
+        ("r#in", "in"),
+        ("page_2", "page2"),
+        ("v2_beta", "v2Beta"),
+        ("x_1_b", "x1B"),
+        ("_1st", "1st"),
+        ("fooBar", "fooBar"),
+        ("HTTPServer", "httpServer"),
+    ] {
+        assert_eq!(ipc_arg_key(param), key, "{param}");
+    }
+}
+
+/// A TS parameter is the IPC key, made a valid binding that no generated
+/// call in the method body reads under the same name.
+#[test]
+fn ts_params_are_bindings_that_shadow_nothing() {
+    for (param, name) in [
+        ("project_id", "projectId"),
+        ("_kind", "kind"),
+        ("r#type", "type"),
+        ("r#in", "in_"),
+        ("class", "class_"),
+        ("new", "new_"),
+        ("default", "default_"),
+        ("r#await", "await_"),
+        ("arguments", "arguments_"),
+        ("invoke", "invoke_"),
+        ("call_op", "callOp_"),
+        ("flatten_task", "flattenTask_"),
+        ("flattened", "flattened"),
+        ("_1st", "_1st"),
+    ] {
+        assert_eq!(ts_param(param), name, "{param}");
+    }
+    assert_eq!(ts_key("in"), "in");
+    assert_eq!(ts_key("1st"), "'1st'");
 }
 
 /// The route prefix parameter travels camelCased too: an argument

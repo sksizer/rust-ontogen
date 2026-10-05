@@ -372,7 +372,9 @@ fn owned_form_derefs_to(elem: &Type) -> bool {
     }
 }
 
-/// Convert snake_case to camelCase.
+/// Convert snake_case to camelCase: a command name to its TS method name
+/// (`task_get_by_id` → `taskGetById`). A fn argument's IPC key is
+/// [`ipc_arg_key`] and its TS parameter name [`ts_param`].
 pub fn snake_to_camel(s: &str) -> String {
     let mut result = String::new();
     let mut capitalize_next = false;
@@ -387,6 +389,124 @@ pub fn snake_to_camel(s: &str) -> String {
         }
     }
     result
+}
+
+/// The key Tauri 2 reads the command argument `param` from in the invoke
+/// payload: the name without its `r#`, lowerCamelCased by heck, as
+/// `#[tauri::command]` derives it (`_sort` → `sort`, `r#type` → `type`,
+/// `project_id_` → `projectId`). Always alphanumeric, never empty for a
+/// named argument, and never ending in `_`.
+pub fn ipc_arg_key(param: &str) -> String {
+    use heck::ToLowerCamelCase;
+    param.strip_prefix("r#").unwrap_or(param).to_lower_camel_case()
+}
+
+/// Reserved words that cannot name a binding in strict-mode JavaScript (an
+/// ES module is strict), plus `arguments` and `eval`, which strict mode
+/// forbids binding.
+const JS_RESERVED: &[&str] = &[
+    "arguments",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "eval",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "implements",
+    "import",
+    "in",
+    "instanceof",
+    "interface",
+    "let",
+    "new",
+    "null",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "return",
+    "static",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+];
+
+/// Functions the generated clients call from a method body, which a
+/// parameter of the same name would shadow.
+const TS_CLIENT_CALLEES: &[&str] = &[
+    "callOp",
+    "encodeURIComponent",
+    "httpDelete",
+    "httpGet",
+    "httpPatch",
+    "httpPost",
+    "httpRequest",
+    "invoke",
+    "listen",
+    "metaResult",
+    "scopedPath",
+    "subscribeIpc",
+    "subscribeSse",
+    "toQueryString",
+];
+
+/// The TS parameter (or local) name for the Rust fn argument `param`: its
+/// [`ipc_arg_key`], with a trailing `_` when that is a reserved word
+/// (`r#in` → `in_`, `new` → `new_`) or a function a method body calls
+/// (`invoke`, `flattenTask`), and a leading `_` when it starts with a digit
+/// (`_1st` → `_1st`).
+///
+/// Two arguments get one name only when their IPC keys match, which
+/// [`check_wire_keys`](crate::servers::generators::ipc::check_wire_keys)
+/// refuses: a key never ends in `_` nor starts with one.
+pub fn ts_param(param: &str) -> String {
+    let key = ipc_arg_key(param);
+    let codec = |prefix: &str| key.strip_prefix(prefix).is_some_and(|rest| rest.starts_with(char::is_uppercase));
+    let shadows = JS_RESERVED.contains(&key.as_str())
+        || TS_CLIENT_CALLEES.contains(&key.as_str())
+        || codec("flatten")
+        || codec("unflatten");
+    if key.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("_{key}")
+    } else if shadows {
+        format!("{key}_")
+    } else {
+        key
+    }
+}
+
+/// `key` as a TS object-literal or type-member key: bare when it is an
+/// identifier (reserved words included, which a member may be), quoted
+/// otherwise (`'1st'`).
+pub fn ts_key(key: &str) -> String {
+    let mut chars = key.chars();
+    let ident = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$')
+        && chars.all(|c| c.is_alphanumeric() || c == '_' || c == '$');
+    if ident { key.to_string() } else { format!("'{key}'") }
 }
 
 /// Split a generic type string into its head and its top-level type
