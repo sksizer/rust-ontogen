@@ -132,10 +132,14 @@ fn parse_name(name: &str) -> Name<'_> {
     }
 }
 
-/// One accepted parameter: its first value, and whether it was repeated.
+/// One accepted parameter: its first value, decoded and as sent, and
+/// whether it was repeated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Slot {
     value: String,
+    /// The value still percent-encoded, which a sequence is split from
+    /// (§7.3).
+    raw: String,
     repeated: bool,
 }
 
@@ -165,7 +169,8 @@ impl QueryParams {
         let mut params = QueryParams::default();
         for piece in raw.unwrap_or("").split('&').filter(|p| !p.is_empty()) {
             let (raw_name, raw_value) = piece.split_once('=').unwrap_or((piece, ""));
-            let (name, value) = (decode(raw_name), decode(raw_value));
+            let name = decode(raw_name);
+            let value = Slot { value: decode(raw_value), raw: raw_value.to_owned(), repeated: false };
             let parsed = parse_name(&name);
             if parsed == Name::Malformed {
                 return Err(invalid(&name, format!("`{name}` is not a well-formed query parameter name")));
@@ -210,7 +215,7 @@ impl QueryParams {
             .filter
             .iter()
             .filter(|(member, _)| fields.contains(&member.as_str()))
-            .map(|(member, slot)| (member.as_str(), slot.value.as_str(), slot.repeated));
+            .map(|(member, slot)| (member.as_str(), slot.value.as_str(), slot.raw.as_str(), slot.repeated));
         form::read_struct(members).map_err(|err| match err {
             form::Error::Repeated(member) => repeated(&filter_name(&member)),
             form::Error::Member { member, message } => {
@@ -243,8 +248,9 @@ impl QueryParams {
     }
 
     /// The query the links repeat (§4.3): every `filter[…]` member with its
-    /// value as the request gave it (decoded), `sort` item by item as the
-    /// request gave it, and `include` as
+    /// value as the request gave it, item by item (the decoded pieces
+    /// between its literal commas, so a link reads back the sequence it was
+    /// sent), `sort` item by item as the request gave it, and `include` as
     /// [`include_paths`](Self::include_paths) read it. Fails on the first
     /// repeated member in ascending byte order of name, then on a repeated
     /// `sort`.
@@ -254,8 +260,9 @@ impl QueryParams {
     /// any `sort` on a list that cannot be sorted.
     pub fn link_query(&self, include: Option<&[&str]>) -> Result<CanonicalQuery, ErrorObject> {
         let mut query = CanonicalQuery::new();
-        for (member, value) in self.filters()? {
-            query.set_filter(member, value);
+        self.filters()?;
+        for (member, slot) in &self.filter {
+            query.set_filter_items(member.as_str(), slot.raw.split(',').map(decode));
         }
         if let Some(value) = self.sort()? {
             query.set_sort(value.split(','));
@@ -376,18 +383,18 @@ impl QueryParams {
     }
 }
 
-fn put(slot: &mut Option<Slot>, value: String) {
+fn put(slot: &mut Option<Slot>, value: Slot) {
     match slot {
         Some(slot) => slot.repeated = true,
-        None => *slot = Some(Slot { value, repeated: false }),
+        None => *slot = Some(value),
     }
 }
 
-fn put_member(slots: &mut BTreeMap<String, Slot>, member: &str, value: String) {
+fn put_member(slots: &mut BTreeMap<String, Slot>, member: &str, value: Slot) {
     match slots.get_mut(member) {
         Some(slot) => slot.repeated = true,
         None => {
-            slots.insert(member.to_owned(), Slot { value, repeated: false });
+            slots.insert(member.to_owned(), value);
         }
     }
 }
@@ -422,8 +429,9 @@ fn page(slot: Option<&Slot>, name: &str, min: u32) -> Result<Option<u32>, ErrorO
 }
 
 fn member_value<T: DeserializeOwned>(slot: Option<&Slot>, parameter: &str) -> Result<Option<T>, ErrorObject> {
-    let Some(value) = single(slot, parameter)? else { return Ok(None) };
-    T::deserialize(form::Value(value))
+    single(slot, parameter)?;
+    let Some(slot) = slot else { return Ok(None) };
+    T::deserialize(form::Value::new(&slot.value, &slot.raw))
         .map(Some)
         .map_err(|err| invalid(parameter, format!("`{parameter}` is invalid: {err}")))
 }
@@ -1188,6 +1196,58 @@ mod tests {
             let q = parse("filter[skill_id]=a+b&filter%5Bstatus%5D=", &TASKS);
             assert_eq!(q.link_query(None).unwrap().query_string(), "filter%5Bskill_id%5D=a%20b&filter%5Bstatus%5D=");
             assert_eq!(parse("", &TASKS).link_query(None).unwrap().href("/api/tasks"), "/api/tasks");
+        }
+
+        #[derive(Debug, Default, PartialEq, Deserialize)]
+        struct Sequences {
+            ids: Vec<String>,
+            sizes: Option<Vec<u32>>,
+            #[serde(default)]
+            levels: Vec<Priority>,
+        }
+
+        const SEQUENCES: QuerySpec = QuerySpec { filter_fields: Some(filter_fields::<Sequences>), ..QuerySpec::NONE };
+
+        fn sequences(raw: &str) -> Sequences {
+            parse(raw, &SEQUENCES).filter::<Sequences>().unwrap()
+        }
+
+        #[test]
+        fn a_sequence_member_splits_its_value_as_sent_at_each_comma() {
+            let read = sequences("filter[ids]=a,b%2Cc,d+e,%2B&filter[sizes]=3,1&filter[levels]=low,high");
+            assert_eq!(read.ids, ["a", "b,c", "d e", "+"]);
+            assert_eq!(read.sizes, Some(vec![3, 1]));
+            assert_eq!(read.levels, [Priority::Low, Priority::High]);
+            // An empty value is the empty sequence; an empty piece is an item.
+            let read = sequences("filter[ids]=&filter[sizes]=&filter[levels]=");
+            assert_eq!(read, Sequences { ids: vec![], sizes: Some(vec![]), levels: vec![] });
+            assert_eq!(sequences("filter[ids]=,a,").ids, ["", "a", ""]);
+            // Absent, as serde reads a missing field: `None` for an `Option`,
+            // the default under `#[serde(default)]`, and required otherwise.
+            assert_eq!(
+                sequences("filter[ids]=a"),
+                Sequences { ids: vec!["a".to_owned()], sizes: None, levels: vec![] }
+            );
+            assert_eq!(filter_failure::<Sequences>("filter[sizes]=1", &SEQUENCES).0, "filter[ids]");
+        }
+
+        #[test]
+        fn a_bad_item_names_its_member() {
+            let (parameter, detail) = filter_failure::<Sequences>("filter[ids]=a&filter[sizes]=1,x,2", &SEQUENCES);
+            assert_eq!(parameter, "filter[sizes]");
+            assert_eq!(detail, "`filter[sizes]` is invalid: item 2 (`x`): invalid digit found in string");
+            for raw in ["filter[sizes]=1,", "filter[sizes]=-1", "filter[levels]=low,medium"] {
+                let (parameter, _) = filter_failure::<Sequences>(&format!("filter[ids]=a&{raw}"), &SEQUENCES);
+                assert_eq!(parameter, raw[..raw.find('=').unwrap()], "{raw}");
+            }
+        }
+
+        #[test]
+        fn a_link_reads_back_the_sequence_it_was_sent() {
+            let q = parse("filter[ids]=a,b%2Cc,d+e&filter[sizes]=", &SEQUENCES);
+            let link = q.link_query(None).unwrap().query_string();
+            assert_eq!(link, "filter%5Bids%5D=a,b%2Cc,d%20e&filter%5Bsizes%5D=");
+            assert_eq!(parse(&link, &SEQUENCES).filter::<Sequences>().unwrap(), q.filter::<Sequences>().unwrap());
         }
 
         #[test]

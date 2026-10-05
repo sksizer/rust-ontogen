@@ -19,8 +19,7 @@ pub fn encode_path_segment(segment: &str) -> String {
 }
 
 /// Percent-encodes a query value as §4.3 writes it: like a path segment,
-/// except that `,` stays literal because it separates `sort` and `include`
-/// items.
+/// except that `,` stays literal because it separates the value's items.
 pub fn encode_query_value(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     encode_into(&mut out, value, true);
@@ -47,9 +46,13 @@ fn encode_into(out: &mut String, s: &str, keep_comma: bool) {
 /// every `filter[…]` by ascending byte order of member name, then `sort`,
 /// `include`, `page[offset]`, `page[limit]`. A parameter never set is
 /// absent.
+///
+/// A value is written item by item, each item percent-encoded as a path
+/// segment and the items joined by a literal `,` (§4.3), so an item holding
+/// a comma writes it as `%2C`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CanonicalQuery {
-    filter: BTreeMap<String, String>,
+    filter: BTreeMap<String, Vec<String>>,
     sort: Option<Vec<String>>,
     include: Option<Vec<String>>,
     page: Option<(u32, u32)>,
@@ -61,9 +64,24 @@ impl CanonicalQuery {
         Self::default()
     }
 
-    /// Sets `filter[member]`. Setting a member again replaces its value.
+    /// Sets `filter[member]` to `value`, its commas written literally, as
+    /// [`encode_query_value`] writes them. Setting a member again replaces
+    /// its value.
     pub fn set_filter(&mut self, member: impl Into<String>, value: impl Into<String>) -> &mut Self {
-        self.filter.insert(member.into(), value.into());
+        let value = value.into();
+        self.set_filter_items(member, value.split(','))
+    }
+
+    /// Sets `filter[member]` to its items: the decoded pieces of the value
+    /// as sent between its literal commas, so a link reads back the
+    /// sequence a member was sent (§7.3). An item's own comma is written
+    /// `%2C`. Setting a member again replaces its value.
+    pub fn set_filter_items<I, S>(&mut self, member: impl Into<String>, items: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.filter.insert(member.into(), items.into_iter().map(Into::into).collect());
         self
     }
 
@@ -100,8 +118,8 @@ impl CanonicalQuery {
     /// is set.
     pub fn query_string(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
-        for (member, value) in &self.filter {
-            parts.push(format!("filter%5B{}%5D={}", encode_path_segment(member), encode_query_value(value)));
+        for (member, items) in &self.filter {
+            parts.push(format!("filter%5B{}%5D={}", encode_path_segment(member), join_encoded(items)));
         }
         if let Some(items) = &self.sort {
             parts.push(format!("sort={}", join_encoded(items)));
@@ -125,7 +143,7 @@ impl CanonicalQuery {
 }
 
 fn join_encoded(items: &[String]) -> String {
-    items.iter().map(|item| encode_query_value(item)).collect::<Vec<_>>().join(",")
+    items.iter().map(|item| encode_path_segment(item)).collect::<Vec<_>>().join(",")
 }
 
 /// The links of a paginated document (§7.2): `self` and all four
@@ -184,10 +202,13 @@ mod tests {
     }
 
     #[test]
-    fn query_values_keep_commas_literal() {
+    fn query_values_keep_commas_literal_between_items_only() {
         assert_eq!(encode_query_value("closed/done"), "closed%2Fdone");
         assert_eq!(encode_query_value("-created,title"), "-created,title");
         assert_eq!(encode_query_value("a b"), "a%20b");
+        let mut q = CanonicalQuery::new();
+        q.set_sort(["-created", "title"]).set_filter("status", "closed/done").set_filter_items("in", ["a,b", "c d"]);
+        assert_eq!(q.query_string(), "filter%5Bin%5D=a%2Cb,c%20d&filter%5Bstatus%5D=closed%2Fdone&sort=-created,title");
     }
 
     #[test]
@@ -240,6 +261,10 @@ mod tests {
         let mut q = CanonicalQuery::new();
         q.set_filter("title", "a,b c&d");
         assert_eq!(q.query_string(), "filter%5Btitle%5D=a,b%20c%26d");
+        q.set_filter_items("title", ["a", "b c&d"]);
+        assert_eq!(q.query_string(), "filter%5Btitle%5D=a,b%20c%26d");
+        q.set_filter("title", "");
+        assert_eq!(q.query_string(), "filter%5Btitle%5D=");
     }
 
     fn offsets(links: &Links) -> [Option<String>; 5] {

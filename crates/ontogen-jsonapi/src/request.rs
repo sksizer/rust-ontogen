@@ -324,6 +324,51 @@ pub fn attribute<'a, T: DeserializeOwned>(
     }
 }
 
+/// [`attribute`] for an integer attribute whose Rust type `T` reaches past
+/// the `i64` both stores hold it in: `u64`, `usize`, `u128`, `isize`,
+/// `i128`, or an `Option` of one. A value serde reads as `T` but outside
+/// `i64` is `400 invalid_attribute` too, rather than reaching the store,
+/// which refuses it with a `500` (§8.2).
+pub fn wide_integer_attribute<'a, T: DeserializeOwned>(
+    attributes: Option<&'a Map<String, Value>>,
+    name: &str,
+    required: bool,
+) -> Result<Option<&'a Value>, ErrorObject> {
+    let value = attribute::<T>(attributes, name, required)?;
+    match value {
+        Some(Value::Number(n)) if n.as_i64().is_none() => Err(ErrorObject::new(
+            ErrorCode::InvalidAttribute,
+            format!("`{name}` is invalid: {n} is outside the stored range {}..={}", i64::MIN, i64::MAX),
+        )
+        .with_pointer(pointer("/data/attributes", name))),
+        _ => Ok(value),
+    }
+}
+
+/// Step 7 for a `has_many` whose children are of the resource's own type,
+/// once its identifiers have been read: `403 relationship_cycle` when one
+/// names the resource being written, which would become its own parent
+/// (§5.4). The pointer is that identifier's first occurrence.
+///
+/// `id` is the resource's id as the request gives it: the URL id on an
+/// update or a relationship route, the client `data.id` on a create, and
+/// `None` on a create without one, whose id no identifier can name.
+pub fn refuse_cycle(
+    linked: &[LinkedId],
+    id: Option<&str>,
+    type_name: &str,
+    relationship: &str,
+) -> Result<(), ErrorObject> {
+    match id.and_then(|id| linked.iter().find(|l| l.id == id)) {
+        None => Ok(()),
+        Some(own) => Err(ErrorObject::new(
+            ErrorCode::RelationshipCycle,
+            format!("`{type_name}` `{}` cannot be in its own `{relationship}`: it would be its own parent", own.id),
+        )
+        .with_pointer(own.pointer.clone())),
+    }
+}
+
 /// Step 7, third member family: the first relationship name, in byte
 /// order, that is not one of `declared` is `400 unknown_relationship`
 /// (§8.2).
@@ -840,6 +885,64 @@ mod tests {
         assert_eq!(
             rel_failure(attribute::<String>(None, "status", true)),
             (400, "missing_attribute".to_owned(), "/data".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_wide_integer_attribute_is_held_to_the_stored_range() {
+        // Read from text, as a request body is.
+        let a = attrs(
+            serde_json::from_str(
+                r#"{"max": 9223372036854775807, "over": 9223372036854775808, "top": 18446744073709551615,
+                    "min": -9223372036854775808, "under": -9223372036854775809, "none": null}"#,
+            )
+            .unwrap(),
+        );
+        let range = |name: &str| (400, "invalid_attribute".to_owned(), format!("/data/attributes/{name}"));
+        assert_eq!(wide_integer_attribute::<u64>(Some(&a), "max", true).unwrap(), Some(&json!(i64::MAX)));
+        assert_eq!(rel_failure(wide_integer_attribute::<u64>(Some(&a), "over", true)), range("over"));
+        assert_eq!(rel_failure(wide_integer_attribute::<Option<u64>>(Some(&a), "top", false)), range("top"));
+        assert_eq!(rel_failure(wide_integer_attribute::<u128>(Some(&a), "top", false)), range("top"));
+        let err = wide_integer_attribute::<usize>(Some(&a), "top", false).unwrap_err();
+        assert_eq!(
+            err.detail(),
+            "`top` is invalid: 18446744073709551615 is outside the stored range \
+             -9223372036854775808..=9223372036854775807"
+        );
+        assert_eq!(wide_integer_attribute::<i128>(Some(&a), "min", true).unwrap(), Some(&json!(i64::MIN)));
+        // A number below `i64::MIN` reads as a float, which serde refuses
+        // for an integer type before the range is looked at.
+        assert_eq!(rel_failure(wide_integer_attribute::<i128>(Some(&a), "under", true)), range("under"));
+        // `null` for an `Option`, absence, and serde's own refusals are as
+        // `attribute` reads them.
+        assert_eq!(wide_integer_attribute::<Option<u64>>(Some(&a), "none", false).unwrap(), Some(&Value::Null));
+        assert_eq!(wide_integer_attribute::<u64>(Some(&a), "absent", false).unwrap(), None);
+        assert_eq!(rel_failure(wide_integer_attribute::<u64>(Some(&a), "min", true)), range("min"));
+        assert_eq!(
+            rel_failure(wide_integer_attribute::<u64>(None, "absent", true)),
+            (400, "missing_attribute".to_owned(), "/data".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_has_many_naming_the_resource_itself_is_a_cycle() {
+        let rel = json!({"data": [
+            {"type": "tasks", "id": "b"}, {"type": "tasks", "id": "a"}, {"type": "tasks", "id": "a"},
+        ]});
+        let linked = to_many_linked(&rel, "/data/relationships/subtasks", "tasks", None).unwrap();
+        assert!(refuse_cycle(&linked, Some("c"), "tasks", "subtasks").is_ok());
+        assert!(refuse_cycle(&linked, None, "tasks", "subtasks").is_ok());
+        assert!(refuse_cycle(&[], Some("a"), "tasks", "subtasks").is_ok());
+        let err = refuse_cycle(&linked, Some("a"), "tasks", "subtasks").unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            json!({
+                "status": "403",
+                "code": "relationship_cycle",
+                "title": "Forbidden",
+                "detail": "`tasks` `a` cannot be in its own `subtasks`: it would be its own parent",
+                "source": { "pointer": "/data/relationships/subtasks/data/1" }
+            })
         );
     }
 
