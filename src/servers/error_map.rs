@@ -56,13 +56,8 @@ impl ErrorVariant {
 /// `{Child}ParentRequired`, `{Child}ParentCycle`), with the status each maps
 /// to. The two `has_many` refusals are `403`, which JSON:API requires when a
 /// server refuses a relationship update.
-const STORE_SUFFIXES: [(&str, u16); 5] = [
-    ("NotFound", 404),
-    ("IdRequired", 400),
-    ("AlreadyExists", 409),
-    ("ParentRequired", 403),
-    ("ParentCycle", 403),
-];
+const STORE_SUFFIXES: [(&str, u16); 5] =
+    [("NotFound", 404), ("IdRequired", 400), ("AlreadyExists", 409), ("ParentRequired", 403), ("ParentCycle", 403)];
 
 /// Status for a variant name: a store suffix's status, or `500` for the
 /// consumer's own failures.
