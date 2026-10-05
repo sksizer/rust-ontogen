@@ -21,7 +21,9 @@
 //! from the schema: an entity or field named like one of the generator's own
 //! locals (`Doc` beside the markdown store's `doc`) would shadow it, and a
 //! keyword entity (`Match`) has no plain binding. Runtime items are imported
-//! unnamed (`as _`) or written by path, so no entity name clashes with them.
+//! unnamed (`as _`) or written by path; the few names the store imports bare
+//! (`OrderBy` and the consumer contract) are refused as entity names, see
+//! [`check_entity_names`].
 
 mod backends;
 mod gen_hooks;
@@ -44,6 +46,22 @@ use crate::{CodegenError, StoreConfig};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
+/// Refuses an entity named like a type the store imports bare
+/// ([`crate::ident::STORE_CONTRACT`]).
+pub(crate) fn check_entity_names(entities: &[EntityDef]) -> Result<(), String> {
+    for entity in entities {
+        let name = &entity.name;
+        if crate::ident::STORE_CONTRACT.contains(&name.as_str()) {
+            return Err(format!(
+                "ontogen: entity `{name}` cannot have a store: the generated store and API import the consumer \
+                 contract's `{name}` bare beside the entity types, so the two would clash. Rename the entity (e.g. \
+                 `{name}Item`)."
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Generate store layer code for the schema's entities.
 ///
 /// Writes generated CRUD files to `config.output_dir` and scaffolds hook files
@@ -54,6 +72,7 @@ pub fn generate(schema: &SchemaOutput, config: &StoreConfig) -> Result<StoreOutp
     let entities = &schema.entities[..];
     // Resolve and validate up front so misconfiguration fails loudly before
     // any files are written.
+    check_entity_names(entities).map_err(CodegenError::Store)?;
     validate_id_fields(entities).map_err(CodegenError::Store)?;
     validate_id_strategies(entities, &config.id_strategy).map_err(CodegenError::Store)?;
     has_many::validate_targets(entities).map_err(CodegenError::Store)?;

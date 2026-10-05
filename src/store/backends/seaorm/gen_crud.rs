@@ -542,15 +542,16 @@ fn generate_try_insert_helper(code: &mut String, entity: &EntityDef) {
     code.push_str("    }\n\n");
 }
 
-/// `set_{snake}_parent`: point a child's FK at a parent with one raw
-/// `UPDATE`. A required FK takes a parent, an optional one `None` to clear
-/// it.
+/// `set_{snake}_parent`: point a child's FK at a parent with one `UPDATE`.
+/// A required FK takes a parent, an optional one `None` to clear it.
 fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, fk_required: bool) {
     let snake = to_snake_case(&entity.name);
-    // Quoted, as SeaORM quotes its own queries: a column named after a
-    // keyword (`r#in` is the column `in`) is not an SQL identifier bare.
+    // Built by sea_query, which quotes every identifier for the connection's
+    // backend: a column named after a keyword (`r#in` is the column `in`) is
+    // not an SQL identifier bare.
     let id = entity.id_field().map_or("id", |f| member_name(&f.name));
-    let sql = format!("UPDATE \"{}\" SET \"{}\" = ? WHERE \"{id}\" = ?", entity.table, member_name(fk));
+    let alias = |name: &str| format!("sea_orm::sea_query::Alias::new({name:?})");
+    let parent = if fk_required { "parent_id.to_string()" } else { "parent_id.map(str::to_string)" };
 
     code.push_str(&format!("    async fn set_{snake}_parent(\n"));
     code.push_str("        &self,\n");
@@ -558,21 +559,12 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, f
     code.push_str(&format!("        parent_id: {},\n", has_many::parent_param_type(fk_required)));
     code.push_str("    ) -> Result<(), AppError> {\n");
     code.push_str("        use sea_orm::ConnectionTrait as _;\n");
-    code.push_str("        // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.\n");
-    code.push_str("        let stmt = sea_orm::Statement::from_sql_and_values(\n");
-    code.push_str("            sea_orm::DatabaseBackend::Sqlite,\n");
-    code.push_str(&format!("            {sql:?},\n"));
-    code.push_str("            [\n");
-    if fk_required {
-        code.push_str("                sea_orm::Value::from(parent_id.to_string()),\n");
-    } else {
-        code.push_str("                parent_id\n");
-        code.push_str("                    .map(|p| sea_orm::Value::from(p.to_string()))\n");
-        code.push_str("                    .unwrap_or(sea_orm::Value::String(None)),\n");
-    }
-    code.push_str("                sea_orm::Value::from(child_id.to_string()),\n");
-    code.push_str("            ],\n");
-    code.push_str("        );\n");
+    code.push_str("        let update = sea_orm::sea_query::Query::update()\n");
+    code.push_str(&format!("            .table({})\n", alias(&entity.table)));
+    code.push_str(&format!("            .value({}, {parent})\n", alias(member_name(fk))));
+    code.push_str(&format!("            .and_where(sea_orm::sea_query::Expr::col({}).eq(child_id))\n", alias(id)));
+    code.push_str("            .to_owned();\n");
+    code.push_str("        let stmt = self.db().get_database_backend().build(&update);\n");
     code.push_str("        self.db()\n");
     code.push_str("            .execute(stmt)\n");
     code.push_str("            .await\n");
@@ -957,7 +949,10 @@ mod tests {
 
         let helper = method(&code, "set_node_parent");
         assert!(helper.contains("parent_id: &str,"), "{helper}");
-        assert!(helper.contains("sea_orm::Value::from(parent_id.to_string()),"), "{helper}");
+        assert!(
+            helper.contains(r#".value(sea_orm::sea_query::Alias::new("parent_id"), parent_id.to_string())"#),
+            "{helper}"
+        );
         assert!(method(&code, "create_node").contains("self.set_node_parent(child_id, &id).await?;"));
     }
 

@@ -278,12 +278,12 @@ impl Store {
 
     async fn set_section_parent(&self, child_id: &str, parent_id: &str) -> Result<(), AppError> {
         use sea_orm::ConnectionTrait as _;
-        // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.
-        let stmt = sea_orm::Statement::from_sql_and_values(
-            sea_orm::DatabaseBackend::Sqlite,
-            "UPDATE \"sections\" SET \"parent_id\" = ? WHERE \"id\" = ?",
-            [sea_orm::Value::from(parent_id.to_string()), sea_orm::Value::from(child_id.to_string())],
-        );
+        let update = sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("sections"))
+            .value(sea_orm::sea_query::Alias::new("parent_id"), parent_id.to_string())
+            .and_where(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")).eq(child_id))
+            .to_owned();
+        let stmt = self.db().get_database_backend().build(&update);
         self.db().execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
         Ok(())
     }

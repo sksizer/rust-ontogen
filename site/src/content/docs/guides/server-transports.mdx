@@ -601,6 +601,8 @@ A list tool whose list takes an order has an optional `sort` property in its inp
 
 The IPC and MCP files bring into scope only your names: your API modules (`r#match` for a module named after a keyword), the types your functions name, and your state and store. Every runtime item is written by its `::`-rooted path (`::serde_json::Value`, `::tauri::State`, `::std::sync::Arc`), so an entity may be named `Value`, `State`, `Arc` or `Future`, and a module named `log` does not shadow the `log` crate. The types a file defines itself carry the `Ontogen` prefix (`OntogenHandlerFn`, `Ontogen{Module}{Fn}Input`), except the ones consumers use: `McpToolDef`, `SimpleToolDef`, `GetByIdInput`, `ByIntIdInput`, `EmptyInput` and IPC's `PaginatedResult`.
 
+Names the generated files cannot keep apart fail the build with an error that names them: an API fn named with a raw identifier (`r#type`), an argument with no plain name (`_`), no letter or digit (`__`) or the `ontogen_` prefix, a type your functions name that matches one of the names above, the state or store type, or starts with `Ontogen`, and, with MCP, an API module named `std` or `schemars`. The entity names the build refuses are listed under [Minimal form](/reference/annotations/#minimal-form).
+
 ## The naming system
 
 URL paths and command names are derived from module names using the `cruet` crate for Rails-style inflection. The `NamingConfig` lets you override the defaults when the inflector gets it wrong.

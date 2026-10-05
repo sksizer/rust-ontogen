@@ -145,6 +145,21 @@ The HTTP wire builds a resource's `attributes` from the entity's serde shape, so
 
 Also refused at build time, when the build generates an HTTP server (`HttpAxum`) or an HTTP TypeScript client (`HttpTs`, `HttpTauriIpcSplit`): an id field that is not a `String`, an attribute or relationship name that is not a legal JSON:API member name or is `type` or `id`, a relationship that shares its name with an attribute or another relationship (or is named `relationships`), and a relation whose target is not in the schema. A legal member name has only ASCII letters and digits, non-ASCII characters, `-`, `_` and spaces, and starts and ends with an ASCII letter or digit or a non-ASCII character, so a field named `_draft` or `draft_` is refused. IPC-only and MCP-only builds, with or without the admin registry, are unaffected.
 
+### Names the generator refuses
+
+A schema or API name that collides with a name the generated code uses bare is refused at build time with a `CodegenError` that names the entity, fn or argument, says what it would clash with and suggests a rename. The entity names are listed under [Entity names](/reference/annotations/#minimal-form). For API modules:
+
+- An API fn named with a raw identifier (`pub fn r#type`). Every transport derives names from the fn's (its handler, IPC command, MCP tool and TS method), and none can carry the `r#`. A module file named after a keyword (`type.rs`, module `r#type`) is fine.
+- An argument without a plain name (`_`, a pattern), one with no letter or digit (`__`), whose IPC key and TS parameter would be empty, and one starting with `ontogen_`, the prefix of the generated handlers' own bindings (`ontogen_state`, `ontogen_args`).
+- With an MCP server, an API module named `std` or `schemars`: the server imports API modules by name, and the `JsonSchema` derive of its tool inputs expands to unrooted `std::` and `schemars::` paths.
+
+Most of these names never compiled. These did with 0.8.0 and are now refused, so rename them:
+
+- An entity whose name starts with `Ontogen`, and an entity field or API fn argument that starts with `ontogen_`. Both prefixes are reserved for generated items.
+- An entity named after a prelude item (`Result`, `Option`, `Vec`, `String`, `Box`, `From`, `Default`, `Clone`, `Send`, `Sync`, `Fn`) in a build whose generated code did not name that item bare: `Default` in most builds, `Send` or `Clone` without a server, `Box` without an MCP server. The name is now refused whatever the build generates.
+- An entity named `OrderBy` in a build with a store, and one named `SeaQuery`, `MarkdownStore`, or `Std` without an MCP server, in any build. The 0.9 store, API and vault modules name these bare.
+- An argument named `__` (or another name with no letter or digit) in a build without a TypeScript client.
+
 ### Ops the generator now refuses
 
 These shapes fail `gen_servers` and `gen_clients` with a `CodegenError` that names the module and the function. The checks run only when the build generates an HTTP server (`HttpAxum`) or a TypeScript client that calls HTTP (`HttpTs` or `HttpTauriIpcSplit`). An IPC-only or MCP-only build skips them; the checks those transports run are under [IPC commands keep argument names for the wire](#ipc-commands-keep-argument-names-for-the-wire) and [Sorting](#sorting).

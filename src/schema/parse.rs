@@ -144,14 +144,23 @@ fn parse_entity_struct(input: &ItemStruct, path: &Path) -> Result<Option<EntityD
     }
 
     let default_snake = to_snake_case(&name);
-    // Every generated layer names a module after the entity, and these
-    // keywords have no raw form (`r#crate` is not an identifier).
-    if crate::ident::UNRAWABLE.contains(&default_snake.as_str()) {
+    if let Some(reason) = crate::ident::refused_entity_name(&name, &default_snake) {
         return Err(format!(
-            "entity `{name}` in {}: its snake_case name `{default_snake}` is a Rust keyword that cannot name a module, \
-             not even as a raw identifier; rename the entity (e.g. `{name}Item`)",
-            path.display()
+            "entity `{name}` in {}: ontogen cannot generate an entity of this name: {reason}; rename the entity \
+             (e.g. `{}`)",
+            path.display(),
+            crate::ident::suggested_rename(&name),
         ));
+    }
+    for field in &field_defs {
+        if let Some(reason) = crate::ident::refused_binding_name(&field.name) {
+            return Err(format!(
+                "entity `{name}` in {}: field `{}`: {reason}; rename the field so it does not start with `{}`",
+                path.display(),
+                field.name,
+                crate::ident::BINDING_PREFIX,
+            ));
+        }
     }
     let directory = struct_attrs.directory.unwrap_or_else(|| default_snake.clone());
     let table = struct_attrs.table.unwrap_or_else(|| default_snake.clone());
@@ -1534,13 +1543,53 @@ mod tests {
             );
             let err = parse_schema_source(&src, Path::new("bad.rs")).expect_err("refused");
             assert!(
-                err.contains(&format!("entity `{name}` in bad.rs: its snake_case name `{snake}` is a Rust keyword")),
+                err.contains(&format!("entity `{name}` in bad.rs: ontogen cannot generate an entity of this name: its snake_case name `{snake}` is a Rust keyword")),
                 "{err}"
             );
             assert!(err.contains("rename the entity"), "{err}");
         }
         let src = "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Match {\n    #[ontology(id)]\n    pub id: String,\n}\n";
         parse_schema_source(src, Path::new("ok.rs")).expect("a keyword that can be raw is accepted");
+    }
+
+    fn entity_source(name: &str, field: &str) -> String {
+        format!(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {name} {{\n    #[ontology(id)]\n    pub id: String,\n    pub {field}: String,\n}}\n"
+        )
+    }
+
+    #[test]
+    fn an_entity_named_like_what_the_output_names_bare_is_refused() {
+        for (name, why) in [
+            ("Result", "names the prelude's `Result` bare"),
+            ("Vec", "names the prelude's `Vec` bare"),
+            ("Send", "names the prelude's `Send` bare"),
+            ("OntogenWidget", "the `Ontogen` prefix is reserved"),
+            ("Std", "would shadow the crate `std`"),
+            ("SeaQuery", "would shadow the crate `sea_query`"),
+        ] {
+            let err = parse_schema_source(&entity_source(name, "title"), Path::new("bad.rs")).expect_err(name);
+            assert!(err.starts_with(&format!("entity `{name}` in bad.rs: ontogen cannot generate")), "{err}");
+            assert!(err.contains(why), "{err}");
+            let rename = if name == "OntogenWidget" { "Widget".to_string() } else { format!("{name}Item") };
+            assert!(err.contains(&format!("rename the entity (e.g. `{rename}`)")), "{err}");
+        }
+        for name in ["Iterator", "Ontogeny", "Core"] {
+            parse_schema_source(&entity_source(name, "title"), Path::new("ok.rs")).expect(name);
+        }
+    }
+
+    #[test]
+    fn a_field_with_the_binding_prefix_is_refused() {
+        for field in ["ontogen_state", "r#ontogen_type"] {
+            let err = parse_schema_source(&entity_source("Doc", field), Path::new("doc.rs")).expect_err(field);
+            assert!(
+                err.contains(&format!("entity `Doc` in doc.rs: field `{field}`: the `ontogen_` prefix is reserved")),
+                "{err}"
+            );
+            assert!(err.contains("rename the field so it does not start with `ontogen_`"), "{err}");
+        }
+        parse_schema_source(&entity_source("Doc", "ontogeny"), Path::new("doc.rs")).expect("not the prefix");
     }
 
     #[test]

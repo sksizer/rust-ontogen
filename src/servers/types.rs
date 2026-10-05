@@ -392,8 +392,9 @@ pub fn snake_to_camel(s: &str) -> String {
 /// The key Tauri 2 reads the command argument `param` from in the invoke
 /// payload: the name without its `r#`, lowerCamelCased by heck, as
 /// `#[tauri::command]` derives it (`_sort` → `sort`, `r#type` → `type`,
-/// `project_id_` → `projectId`). Always alphanumeric, never empty for a
-/// named argument, and never ending in `_`.
+/// `project_id_` → `projectId`). Always alphanumeric and never ending in
+/// `_`; empty for a name with no letter or digit (`__`), which the API scan
+/// refuses.
 pub fn ipc_arg_key(param: &str) -> String {
     use heck::ToLowerCamelCase;
     param.strip_prefix("r#").unwrap_or(param).to_lower_camel_case()
