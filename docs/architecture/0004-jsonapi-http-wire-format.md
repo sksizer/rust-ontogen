@@ -96,12 +96,19 @@ dialect.
    listed child that does not exist fails the write before anything is
    written, on both backends.
 
+Decisions 10-12 (portable ASCII ids, a per-entity id strategy over a
+required default, and SQLite-only SeaORM) are in the
+[epic's Decisions section](../planning/epics/jsonapi-http-transport.md#decisions-2026-10-03);
+they are not repeated here.
+
 ### Choices that were contested
 
 **Schema input.** The parsed `&[EntityDef]` becomes an explicit first
 argument of `gen_servers` and `gen_clients`, as it already is for
 `gen_api`. `Pipeline` passes the entities it parsed;
-`ClientsConfig::schema_entities` is removed.
+`ClientsConfig::schema_entities` is removed. The argument is `&SchemaOutput`
+rather than `&[EntityDef]`; see amendment 4 of
+[ADR 0006](0006-ordering-on-both-store-backends.md).
 
 A module with CRUD-named ops but no entity behind it is served as custom
 ops, not rejected. That is the scan-dirs-only consumer, or a standalone

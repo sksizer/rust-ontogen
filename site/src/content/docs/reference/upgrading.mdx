@@ -5,7 +5,19 @@ description: Every breaking change in 0.9 and how to migrate, grouped by area.
 
 import { Aside } from '@astrojs/starlight/components';
 
-Version 0.9 is complete on `main` and pending release. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, relationships, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API, lists and gets honour `include`, and every generated list (and any hand-written list that declares one) takes an order, so `sort` works on every transport. Work through the sections that apply to your project.
+Version 0.9 is complete on `main` and pending release. This page lists its breaking changes: the store and runtime changes, and the HTTP wire change, where CRUD routes, relationships, custom ops, junction ops, event frames, filtered lists and every error move to JSON:API, lists and gets honour `include`, and every generated list (and any hand-written list that declares one) takes an order, so `sort` works on every transport. Work through the sections that apply to your project, in this order:
+
+1. [Build configuration](#build-configuration): the `Pipeline` and `gen_*` calls in your `build.rs`, the schema and op shapes the generator refuses, and the crates the generated code depends on.
+2. [OKF vaults](#okf-vaults): markdown vaults as OKF bundles, and the markdown I/O configuration.
+3. [AppError](#apperror): the error variants every transport needs, and their HTTP statuses.
+4. [HTTP wire](#http-wire): the JSON:API wire of the generated HTTP server.
+5. [TypeScript clients](#typescript-clients): the generated `Transport` interface and clients.
+6. [Sorting](#sorting): the order every generated list takes, in the store, the API and on every transport.
+7. [Calling the HTTP API directly](#calling-the-http-api-directly): a checklist for HTTP callers other than the generated clients.
+8. [SeaORM data and code](#seaorm-data-and-code): integer columns, data migrations and create behaviour on SeaORM.
+9. [Record ids](#record-ids): the id rule both backends apply to new records.
+10. [Markdown-store API](#markdown-store-api): the `markdown-store` runtime API.
+11. [Store behaviour](#store-behaviour): list order, `has_many` writes and lookups on both backends.
 
 ## Build configuration
 
@@ -135,7 +147,7 @@ Also refused at build time, when the build generates an HTTP server (`HttpAxum`)
 
 ### Ops the generator now refuses
 
-These shapes fail `gen_servers` and `gen_clients` with a `CodegenError` that names the module and the function. The checks run only when the build generates an HTTP server (`HttpAxum`) or an HTTP TypeScript client; IPC-only and MCP-only builds are unaffected.
+These shapes fail `gen_servers` and `gen_clients` with a `CodegenError` that names the module and the function. The checks run only when the build generates an HTTP server (`HttpAxum`) or a TypeScript client that calls HTTP (`HttpTs` or `HttpTauriIpcSplit`). An IPC-only or MCP-only build skips them; the checks those transports run are under [IPC commands keep argument names for the wire](#ipc-commands-keep-argument-names-for-the-wire) and [Sorting](#sorting).
 
 - **A CRUD or junction op in a singleton module.** A module marked `// ontogen:singleton` (or listed in `NamingConfig::singleton_modules`) has no resource, so every op in it is a custom op. A function there that classifies as `list`, `get_by_id`, `create`, `update`, `delete`, or as a junction op (`list_X`, `add_Y`, `remove_Y`) is refused. Rename it so it classifies as a custom op, or move it to a module that is not a singleton.
 - **A parameter whose type name ends in `Input` on an op served without a body.** An `#[ontogen::http::get]` op, `get_by_id`, `delete`, `list_X` and `remove_Y` carry no request body, so such a parameter has nowhere to arrive. Change the op to a `POST`, or pass the fields as separate parameters.
@@ -202,8 +214,6 @@ In a module named after an entity, a hand-written `list` now replaces the genera
 - `gen_api` no longer prints warnings about scan records it skips; the servers and clients stages print the same ones.
 - The HTTP generator refuses, as a build error, a list whose filter it cannot serve: a second `*Query` struct, a `*Query` struct taken neither by value nor by `&` (`Option<ListTasksQuery>`, `&mut ListTasksQuery`), a bare filter whose type one value cannot carry (`Vec<_>`, a tuple, a schema entity), and an `*Input` parameter on a `list`, which has no body. IPC and MCP generation does not apply these checks.
 
-If you call the runtime crate directly, `ontogen-jsonapi` changed: `QuerySpec` has a new field `filter_fields`, so a struct literal must set it or end with `..QuerySpec::NONE`; `QuerySpec` no longer implements `PartialEq` or `Eq`; and the crate no longer depends on `serde_urlencoded`. `QueryParams` gained `filter`, `filter_member`, `required_filter_member`, `link_query` and `include_paths`, and the crate exports `filter_fields::<T>()`. `link_query` takes the parsed include (`Option<&[&str]>`, from `QueryParams::include_paths`). `response::created` takes `Option<&str>`, the `Location` (`None` for a module that serves no `get_by_id`), and `ResourceObject::links()` returns `Option<&Links>` (`None` for such a module's resources).
-
 ### MCP tools
 
 The MCP tools keep their names and their flat payloads, with these changes:
@@ -249,6 +259,15 @@ serde_json = "1"
 
 `ontogen-jsonapi` is part of the release set with `ontogen`, so use the version released alongside the `ontogen` you build with. A server with no resource module (`gen_servers` called with an empty schema) does not use these.
 
+### Code that calls `ontogen-jsonapi` 0.1 directly
+
+`ontogen-jsonapi` 0.1.0 was published before this release; 0.2.0 ships with ontogen 0.9. Code that calls the crate directly, rather than through the generated server, changes as follows:
+
+- `QuerySpec` has a new field `filter_fields`, so a struct literal must set it or end with `..QuerySpec::NONE`. `QuerySpec` no longer implements `PartialEq` or `Eq`, and the crate no longer depends on `serde_urlencoded`.
+- `QueryParams` gained `filter`, `filter_member`, `required_filter_member`, `link_query` and `include_paths`, and the crate exports `filter_fields::<T>()`. `link_query` takes the parsed include (`Option<&[&str]>`, from `QueryParams::include_paths`).
+- `response::created` takes `Option<&str>`, the `Location` (`None` for a module that serves no `get_by_id`), and `ResourceObject::links()` returns `Option<&Links>` (`None` for such a module's resources).
+- `ErrorCode::RelatedResourceNotFound` and `ErrorCode::RelationshipNotFound` are renamed `NoSuchRelatedResource` and `NoSuchRelationship`, and their codes are `no_such_related_resource` and `no_such_relationship`. No code the server raises ends in a suffix of the store's `AppError` variants (`_not_found`, `_id_required`, `_already_exists`, `_parent_required`), so an entity named `Relationship` or `RelatedResource` can be served. `ErrorCode::ALL` is a `&'static [ErrorCode]`; it was a `[ErrorCode; 22]`.
+
 ### Mount the router at the root
 
 Links and `Location` headers are built from the route templates ontogen generated (`/api/...`), not from the request URI. Mount the generated router at the root of your Axum app. If you nest it under another prefix, the links it emits lack that prefix.
@@ -256,6 +275,115 @@ Links and `Location` headers are built from the route templates ontogen generate
 ### The HTTP server's `PaginatedResult` is private
 
 The generated HTTP file no longer exports `PaginatedResult`. Its page type is now the private `OntogenPaginatedResult`, and the file names nothing else bare but your types and API modules: what it defines is `Ontogen`- or `ontogen_`-prefixed, and what it uses from `axum`, `ontogen-jsonapi`, `serde` and `std` is imported under an `Ontogen` alias or named by its path. So an entity may be called `Document`, `Response` or `State`, and an API module `request`. If your code named the HTTP module's `PaginatedResult`, declare the struct yourself; its wire shape, `{items, total, limit, offset}` in `meta.result`, is unchanged.
+
+## OKF vaults
+
+This section applies to projects that use the markdown store. A vault is an [OKF 0.2 bundle](/concepts/okf-bundles/): every record carries a `type`, `index` and `log` are reserved file names, and some frontmatter keys have fixed meanings. Index files and `generated` stamps are opt-in and off by default. The rules are in the [markdown backend guide](/guides/markdown-backend/#an-okf-vault).
+
+### `type_name` defaults to the struct name
+
+`EntityDef.type_name`, the `type` value the markdown backend writes into every record, defaults to the struct name (`WorkSession`). It used to default to the snake_case name (`work_session`). It is set only by the entity attribute; no build configuration option sets it. To keep the old value:
+
+```rust
+#[ontology(entity, type_name = "work_session")]
+pub struct WorkSession { /* .. */ }
+```
+
+0.8 wrote no `type` key, so the change matters for a vault whose records already carry `type` values in the old form, and for code that reads `EntityDef::type_name` or `MarkdownEntityMeta::type_name`.
+
+### Every write stamps `type`
+
+The generated store reads and writes through `VaultHandle::entity(dir, type)`, a `markdown_store::EntityRecords`.
+
+- A create writes `type` as the first frontmatter key.
+- An update, or the foreign-key write to a child that a `has_many` create or update makes, that changes the record also stamps it: a missing `type` is inserted as the first key, and a different value is overwritten in place. An update that changes no value writes nothing. Existing records gain `type` on their next real write, which shows in a diff as an added `type:` line.
+- A record with no `type` still reads.
+- A `type` value other than the entity's, a hand-added `type` key included, is replaced on the record's next real write. Move such values to another key before upgrading.
+- With `MarkdownLayout::PerEntityDir` the directory decides what a record is. A record whose `type` differs is still listed and read.
+- With `MarkdownLayout::Flat` the `type` decides. A record whose `type` is a string other than the entity's, the empty string `""` included, is left out of the entity's `list` and `count`, and its `get`, update and delete answer `{Entity}NotFound`. A record whose `type` is a number, list or mapping is listed by no entity. A record with no `type`, or with a `type:` that has no value (YAML null), is untyped: it is listed by every entity, as in 0.8, until a write through one entity stamps that entity's type on it. Before upgrading a `Flat` vault, add `type: <Entity>` (the struct name, or your `type_name`) to every record.
+
+The untyped `VaultHandle` methods (`create_record`, `create_record_derived`, `modify_record`, `remove_record`, `read_all`) are unchanged: they write no `type` and do not filter by it. Hand-written hooks and API functions that write records through them can use `vault.entity("<dir>", "<type>")`, whose `create`, `modify`, `remove`, `read_opt`, `read_all` and `count` behave as the generated store's do.
+
+### Reserved frontmatter keys
+
+`gen_markdown_io` checks the key each field is stored under against the keys OKF reserves.
+
+- A field stored under `type` (including a field named `r#type`) fails the build: the generator owns that key. Store it under another key with `#[ontology(frontmatter_name = "kind")]`, and rename the key in existing records before their next write, which would otherwise overwrite the value with the entity's type.
+- A field stored under `status`, `resource`, `stale_after`, `generated`, `usage_window`, `verified` or `sources` whose type cannot hold what OKF means by the key prints a `cargo:warning=` naming the entity, field and key. The build continues. Each key's expected type is listed under [Reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys). To clear a warning, move the field with `frontmatter_name` and rename the key in existing records; a record that still holds only the old key fails to read when the field is required.
+
+### `gen_markdown_io` takes the schema
+
+`gen_markdown_io` takes the parsed schema, a `&SchemaOutput`, where it took the entities, because the `status` check needs the schema's enums. So does `ontogen::persistence::markdown::generate`, which it calls. `Pipeline` users change nothing for this signature.
+
+Before:
+
+```rust
+ontogen::gen_markdown_io(&schema.entities, &markdown_io_config)?;
+```
+
+After:
+
+```rust
+ontogen::gen_markdown_io(&schema, &markdown_io_config)?;
+```
+
+### `MarkdownIoConfig` and `MarkdownIoOptions` have `okf`
+
+Both have a new public field, `okf: OkfOptions`. Neither implements `Default`, so every struct literal sets it. `OkfOptions::default()` turns both OKF options off, and then no index file or stamp is written:
+
+```rust
+use ontogen::{MarkdownIoOptions, MarkdownLayout, OkfOptions};
+
+MarkdownIoOptions {
+    vault_root: "data/vault".into(),
+    layout: MarkdownLayout::PerEntityDir,
+    list_cap: 10_000,
+    okf: OkfOptions::default(),
+}
+```
+
+### `MarkdownIoOutput` holds less
+
+`MarkdownIoOutput` has no `vault_root`, `layout` or `list_cap` field (nor `id_strategy`; see [The id strategy moved to the store](#the-id-strategy-moved-to-the-store)). It keeps `module_path` and `entities`. The three settings reach the runtime through the generated `open_vault`; code that read them from the output reads them from its `MarkdownIoConfig`. A hand-built `MarkdownIoOutput` drops them.
+
+### `gen_frontmatter::generate` is removed
+
+`ontogen::persistence::markdown::gen_frontmatter::generate(entities, output_dir)` is removed. Call `gen_markdown_io`, which writes the same per-entity frontmatter modules and a `mod.rs` that also holds `VAULT_ROOT` and `open_vault`. `gen_frontmatter::generate_frontmatter_module(entity)` still returns one entity's module source.
+
+### Open the vault with the generated `open_vault`
+
+The generated `mod.rs` in the markdown I/O output directory has `pub const VAULT_ROOT`, the configured `vault_root`, and `pub fn open_vault(root) -> markdown_store::VaultHandle`, which applies the configured layout, list cap and OKF options.
+
+Before:
+
+```rust
+let vault = VaultHandle::new("data/vault", VaultLayout::PerEntityDir, IdStrategy::SlugFromField("title".into()));
+```
+
+After:
+
+```rust
+use my_app::persistence::markdown::generated::{VAULT_ROOT, open_vault};
+
+let vault = open_vault(VAULT_ROOT);
+```
+
+A hand-built `VaultHandle::new(root, layout)` still works (its signature is under [Markdown-store API](#markdown-store-api)), but it gets only what you pass it: the configured list cap and OKF options reach it only through `open_vault`, or by repeating them with `with_list_cap` and `with_okf(OkfPolicy { .. })`. In 0.8 the configured `layout` and `list_cap` reached no runtime code, so check that they match the values you passed by hand before you switch. A relative `VAULT_ROOT` resolves against the working directory the program runs from. See [The generated `open_vault`](/guides/markdown-backend/#the-generated-open_vault).
+
+### `index.md` and `log.md` are not records
+
+The vault walk skips every file named `index` or `log`, in any letter case and with any record extension, at every depth, so `list`, `count` and `get` never return one. In 0.8 an `index.md` or `log.md` in an entity directory was listed as the record `index` or `log`. Neither id can be created (see [Record ids](#record-ids)), and a lookup of either is `{Entity}NotFound` (see [Store behaviour](#store-behaviour)). Rename such records, and update every `[[wikilink]]` and foreign key that names them.
+
+### Index files and `generated` stamps are opt-in
+
+With `OkfOptions::default()` neither is written. Turning one on changes files:
+
+- `okf.generated_by: Some("<producer>/<version>")` stamps `generated: { by, at }` on every create and every update that changes a record, through the generated store and the untyped `VaultHandle` methods alike. `at` is UTC to the second, so every write of a record changes that line; an update that changes nothing leaves the file alone. Existing records gain the stamp on their next real write. The value must be `<producer>/<version>` or `process:<id>`; anything else, a `human:` actor included, fails the build, as does a field stored under `generated` while the option is set. See [Generated stamps](/guides/markdown-backend/#generated-stamps).
+- `okf.index: true` keeps an `index.md` in the vault root and in every directory that holds records, regenerated after each real write. The store owns those files and overwrites a hand-written `index.md` there. Turning the option on writes nothing until the next write or `VaultHandle::rebuild_indexes()`. See [Index files](/guides/markdown-backend/#index-files).
+
+### `FieldDef` has `frontmatter_name`
+
+`FieldDef` has a new public field, `frontmatter_name: Option<String>`, set by `#[ontology(frontmatter_name = "...")]`. Code that builds `FieldDef` values by hand adds `frontmatter_name: None`, or starts from `FieldDef::new(name, field_type, role)`, which sets it to `None`. `FieldDef::frontmatter_key()` returns the key a field is stored under.
 
 ## AppError
 
@@ -272,7 +400,7 @@ pub enum AppError {
 }
 ```
 
-Add `{Entity}IdRequired(String)` and `{Entity}AlreadyExists(String)` for every entity, next to the existing `{Entity}NotFound(String)`.
+Add `{Entity}AlreadyExists(String)` for every entity, next to the existing `{Entity}NotFound(String)`. Add `{Entity}IdRequired(String)` for every entity whose generated store can return it: every entity of a markdown store, and every entity of a SeaORM store whose id strategy is `Provided` or `SlugFromField`. A SeaORM entity under `Uuid` always gets an id and does not need it.
 
 - `{Entity}NotFound(id)`: no record has that id, or the id can never exist in the store.
 - `{Entity}IdRequired(reason)`: a create had no id and none could be derived. That is `Provided` with no id, or a slug source that slugs to empty.
@@ -361,7 +489,7 @@ After:
 - `type` is the module's kebab-case plural, the same string as the URL segment.
 - A `belongs_to` field named `epic_id` becomes the relationship `epic`; other relation fields keep their name. A to-one is an identifier or `null`; a to-many is an array of identifiers.
 - Each relationship object carries `links` to its [relationship endpoints](#relationship-endpoints) and its `data`. Relationships are listed in field order, followed by those of the module's junction ops, which have `links` only.
-- A list is `{"jsonapi": …, "links": {"self": …}, "data": [ … ]}`, with `[]` when empty, ordered by id.
+- A list is `{"jsonapi": …, "links": {"self": …}, "data": [ … ]}`, with `[]` when empty, ordered by id unless the request gives [`sort`](#sorting).
 
 ### Create
 
@@ -476,6 +604,8 @@ After, `GET /api/tasks?page[offset]=20&page[limit]=10`:
 
 `meta` holds exactly the old fields (`limit` and `offset` are the effective values). `pagination` belongs to an API surface and its primary surface's value covers every module on it, so setting it pages every entity module of that surface. The tasks-tracker example now sets `.api_paginated(..)` for `task`, `epic` and `tag`, so its three lists page, over HTTP and as MCP tools. A scoped list (`route_prefix`) pages like an unscoped one: the page goes to the store. `prev` is `null` on the first page and `next` on the last. `page[limit]=0`, a non-integer, and any other `page[…]` member (`page[number]`, `page[size]`) are `400`.
 
+**Link queries.** The top-level `self` link and the pagination links repeat the request's query parameters in one order: each `filter[…]` member in ascending byte order of its name, then `sort`, then `include`, then `page[offset]` and `page[limit]`. `[` and `]` are written `%5B` and `%5D`, and every other byte outside `A-Z a-z 0-9 - . _ ~` is percent-encoded, except a `,` in a value (a filter value, or between `sort` and `include` items), which stays literal. A paginated list's links always carry both `page` parameters, with the effective values. Equal requests get equal links, and following `next` keeps the filter, the sort and the include.
+
 ### Compound documents
 
 Before, any `include` on a list or a get was `400 invalid_include_path`. After, `GET /api/{type}` and `GET /api/{type}/{id}` honour `include`: one level deep, a comma-separated list of relationship names, with the related resources in a top-level `included` member after `data`.
@@ -501,7 +631,7 @@ After, `GET /api/tasks?include=epic,tags`:
 }
 ```
 
-- Every link carries `include`, after `filter` and `sort` and before `page`, so following `next` keeps it. On a get, the top-level `self` is `/api/tasks/ship-the-emitter?include=epic` and the resource's own `links.self` carries no query.
+- Every link carries `include`, in the [link query order](#pagination), so following `next` keeps it. On a get, the top-level `self` is `/api/tasks/ship-the-emitter?include=epic` and the resource's own `links.self` carries no query.
 - `included` holds each resource once, in `include` order and then in order of first appearance in `data`. A resource already in `data` is not repeated, and a dangling markdown wikilink is left out of `included` while its identifier stays in the linkage. `include=` is `"included": []`.
 - Each included resource is read through the target module's `get_by_id`, one read per distinct id, so a hand-written `get_by_id` applies.
 - A field relationship (`belongs_to`, `many_to_many`, `has_many`) can be included. A [junction op](#junction-ops) relationship cannot, because it has no linkage. A relationship whose target module serves no `get_by_id` cannot be included either.
@@ -578,7 +708,7 @@ An unpaginated list with no entity behind it answers the bare array as `meta.res
 
 A struct whose fields serde does not report, for example one with `#[serde(flatten)]`, accepts no members. When several things are wrong the first error wins, in a fixed order: names the route does not accept, in request order, then the struct's members in byte order, then its first missing required field, then the bare filters in byte order of name, then the page.
 
-**Links carry the filter.** Every pagination link repeats the request's `filter[…]` members in canonical order (sorted by member name, percent-encoded), so following `next` keeps the filter.
+**Links carry the filter.** The links repeat the request's `filter[…]` members, in the [link query order](#pagination), so following `next` keeps the filter.
 
 ### Unknown query parameters are refused
 
@@ -586,7 +716,7 @@ A query parameter a route does not accept is `400 invalid_query_parameter`, with
 
 ### Related resources must exist
 
-A create or update that links a resource that does not exist, for example an `epic` or a `tags` id, is `404 related_resource_not_found` before anything is written. Before, a markdown vault accepted it and wrote a dangling wikilink.
+A create or update that links a resource that does not exist, for example an `epic` or a `tags` id, is `404 no_such_related_resource` before anything is written. Before, a markdown vault accepted it and wrote a dangling wikilink.
 
 ### Relationship endpoints
 
@@ -637,7 +767,7 @@ curl http://127.0.0.1:3002/api/tasks/ship-the-emitter/tags -H 'Accept: applicati
 - `POST` and `DELETE` add and remove one member of a to-many. The body holds exactly one identifier; more is `403 relationship_batch_unsupported`, and `{"data": []}` changes nothing. Adding a member already present, or removing one that is absent, is `204` and writes nothing. On a to-one both are `403 relationship_update_unsupported`.
 - A relation field is read through the module's `get_by_id` and written through its `update`, so its hooks run. A module with no `update` answers every write `403 relationship_update_unsupported`.
 - The related route loads each resource with the target module's `get_by_id`. A dangling id is skipped, and a to-one whose target is missing is `"data": null`.
-- An unknown `{rel}` is `404 relationship_not_found`, a missing parent `404 {entity}_not_found`, and a missing linked resource on `PATCH` or `POST` `404 related_resource_not_found`. Another method is `405`, with `Allow: GET, HEAD, PATCH, POST, DELETE` or `Allow: GET, HEAD`.
+- An unknown `{rel}` is `404 no_such_relationship`, a missing parent `404 {entity}_not_found`, and a missing linked resource on `PATCH` or `POST` `404 no_such_related_resource`. Another method is `405`, with `Allow: GET, HEAD, PATCH, POST, DELETE` or `Allow: GET, HEAD`.
 - Neither route takes query parameters, except `page[offset]` and `page[limit]` on a junction op's relationship in a paginated module.
 - An entity whose module has no `get_by_id` gets neither route, and its relationships carry `data` only.
 - Under a `route_prefix`, both routes exist where the type's scoped `get_by_id` does, with the prefix in every link.
@@ -668,7 +798,7 @@ After, with `Content-Type: application/vnd.api+json`:
 }
 ```
 
-`detail` is the old `error` text. `status`, `code`, `title` and `source` are stable; do not parse `detail`. `source` is present for request problems and holds a `pointer` into the body, a `parameter`, or a `header`. Besides the `AppError` codes above, the server raises its own codes for malformed requests (`invalid_document`, `unknown_attribute`, `missing_attribute`, `invalid_attribute`, `unknown_relationship`, `missing_relationship`, `type_mismatch`, `id_mismatch`, `related_resource_not_found`, `method_not_allowed`, `content_too_large` and others); the full table is in [Server Transports](/guides/server-transports/#errors). Axum's own plain-text extractor rejections are replaced by these documents. Every route also answers a method it does not serve with `405`, an `Allow` header and a `method_not_allowed` document. An event-stream function that fails before the stream opens maps its error like any other op (see [Event stream frames](#event-stream-frames)).
+`detail` is the old `error` text. `status`, `code`, `title` and `source` are stable; do not parse `detail`. `source` is present for request problems and holds a `pointer` into the body, a `parameter`, or a `header`. Besides the `AppError` codes above, the server raises its own codes for malformed requests (`invalid_document`, `unknown_attribute`, `missing_attribute`, `invalid_attribute`, `unknown_relationship`, `missing_relationship`, `type_mismatch`, `id_mismatch`, `no_such_related_resource`, `method_not_allowed`, `content_too_large` and others); the full table is in [Server Transports](/guides/server-transports/#errors). Axum's own plain-text extractor rejections are replaced by these documents. Every route also answers a method it does not serve with `405`, an `Allow` header and a `method_not_allowed` document. An event-stream function that fails before the stream opens maps its error like any other op (see [Event stream frames](#event-stream-frames)).
 
 ### Custom op responses
 
@@ -771,7 +901,7 @@ For `task::list_labels(store, id) -> Vec<Tag>`, `add_label(store, id, tag_id)` a
 Add and remove still answer `204`.
 
 - `GET /api/tasks/{id}/relationships/labels` answers the linkage, built from the listed entities' ids. A `list_X` that returns `Vec<String>` is read there; its related route loads each id with the target's `get_by_id` and skips ids that are gone.
-- The parent is read with `get_by_id` before your op runs, so a missing task is `404 task_not_found`. An add also checks that the tag exists (`404 related_resource_not_found`); a remove does not, so a member whose tag was deleted can still be removed.
+- The parent is read with `get_by_id` before your op runs, so a missing task is `404 task_not_found`. An add also checks that the tag exists (`404 no_such_related_resource`); a remove does not, so a member whose tag was deleted can still be removed.
 - Add and remove call `list_X` first. A tag already listed is `204` without calling `add_label`, and one not listed is `204` without calling `remove_label`.
 - `PATCH` is `403 relationship_update_unsupported`, and so is `POST` when the module has no `add_Y` and `DELETE` when it has no `remove_Y`.
 - A resource object lists the relationship after its relation fields, with `links` only: `"labels": {"links": {"self": "/api/tasks/ship-the-emitter/relationships/labels", "related": "/api/tasks/ship-the-emitter/labels"}}`. Sending it in a create or update body is `403 relationship_update_unsupported`.
@@ -834,11 +964,24 @@ The split transport calls these routes when given a `projectId`; before, it call
 
 ## TypeScript clients
 
-The generated `Transport` interface is unchanged, with the three exceptions below (a paginated module has no `xCount()`, a junction add or remove is declared `Promise<null>`, and a lone `list_X` takes no page): the same method names, parameters and return types, flat entities, `PaginatedResult<T>` for paginated lists. The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A filtered list sends `filter[…]`: the query struct's fields and the bare parameters, for example `toQueryString({ filter: { ...query, skill_id: skillId }, page: { offset, limit } })`, and a filtered list with no entity behind it sends `filter[…]` with `opArg[limit]` and `opArg[offset]`. Method signatures do not change. In the generated bindings, an `Option` field of a list's `*Query` struct is now optional (`status?: string | null`, was `status: string | null`), so `taskList({ status: 'open/ready' })` type-checks; other types keep every field required. When the filter struct has a required field, the list's `query` parameter is required too (`query: ListTasksQuery`, was `query?:`), on the `Transport` interface and every client, and the IPC transport sends it as given rather than `query ?? {}`. The IPC transport now sends a list's bare filters under their own names (`invoke('queue_list', { mode })`), as the Rust command takes them; before, a bare filter whose type name contained `Query` was sent as `query`. The `HttpTs` client imports its types from the configured bindings file; before, it always imported `./bindings`. If you build `ontogen_ts::EmitConfig` with a struct literal, add the new `deserialize_only` field or end it with `..Default::default()`. The changes to the client's custom, junction and subscription methods follow below.
+The generated `Transport` interface keeps its method names, parameters and return types, flat entities, and `PaginatedResult<T>` for paginated lists, except for these changes:
 
-One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone, because no generated route uses `PUT` any more; updates use `httpPatch`. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript. The IPC transport changes only in how it sends a list's bare filters, as described above, and in a lone `list_X` (below), and the MCP changes are listed under [MCP tools](#mcp-tools).
+- A paginated module has no `xCount()` (below).
+- A junction add or remove is declared `Promise<null>` (below).
+- A lone `list_X` takes no page (below).
+- A list whose `*Query` struct has a required field takes `query` as a required parameter (below).
+- A list's bare filter whose type name contains `Query` or `Input` without ending in it (`mode: QueryMode`) is declared under its own name. It used to be declared as `query?` (for `Query`) or left out (for `Input`).
+- A list that takes an order gains a trailing `options` parameter. See [TypeScript lists take `options`](#typescript-lists-take-options) under [Sorting](#sorting).
 
-The generated calls for custom ops, and for junction ops in a module with no entity behind it, follow the wire above, and every one of them returns `meta.result` (`null` on `204`). Each keeps its signature, except for the changes listed at the end of this section: `xCount()` is removed for a paginated module, a junction add or remove is declared `Promise<null>`, a lone `list_X` takes no page, and the `HttpTs` client's paginated lists take `limit?` and `offset?` and return `PaginatedResult<T>`. For example:
+**HTTP transport.** The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A filtered list sends `filter[…]`: the query struct's fields and the bare parameters, for example `toQueryString({ filter: { ...query, skill_id: skillId }, page: { offset, limit } })`, and a filtered list with no entity behind it sends `filter[…]` with `opArg[limit]` and `opArg[offset]`. Method signatures change only as listed above.
+
+**IPC transport.** A list whose `query` parameter is required sends it as given rather than `query ?? {}`. The IPC transport now sends a list's bare filters under their own names (`invoke('queue_list', { mode })`), as the Rust command takes them; before, a bare filter whose type name contained `Query` was sent as `query`.
+
+**Bindings and `EmitConfig`.** In the generated bindings, an `Option` field of a list's `*Query` struct is now optional (`status?: string | null`, was `status: string | null`), so `taskList({ status: 'open/ready' })` type-checks; other types keep every field required. When the filter struct has a required field, the list's `query` parameter is required too (`query: ListTasksQuery`, was `query?:`), on the `Transport` interface and every client. The `HttpTs` client imports its types from the configured bindings file; before, it always imported `./bindings`. If you build `ontogen_ts::EmitConfig` with a struct literal, add the new `deserialize_only` field or end it with `..Default::default()`.
+
+**Errors.** The error type changes too. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone, because no generated route uses `PUT` any more; updates use `httpPatch`. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript. The IPC transport changes only as described above, in a lone `list_X` (below) and in passing `sort` (see [Sorting](#sorting)), and the MCP changes are listed under [MCP tools](#mcp-tools). The changes to the client's custom, junction and subscription methods follow below.
+
+The generated calls for custom ops, and for junction ops in a module with no entity behind it, follow the wire above, and every one of them returns `meta.result` (`null` on `204`). Each keeps its signature, except for the `Transport` changes listed at the top of this section and the `HttpTs` client's paginated lists, which take `limit?` and `offset?` and return `PaginatedResult<T>` (see the end of this section). For example:
 
 ```ts
 async workoutStart(input: StartWorkoutInput, note: string | null): Promise<Workout> {
@@ -973,7 +1116,7 @@ A store `create_*` or `update_*` that sets a float field (`f32` or `f64`, option
 
 ### HTTP honours `sort`
 
-Before, `GET /api/tasks?sort=-created` was `400 invalid_sort_field` on every list. After, it sorts, and the response links repeat `sort` between the filter and the page:
+Before, `GET /api/tasks?sort=-created` was `400 invalid_sort_field` on every list. After, it sorts, and the response links repeat `sort`, in the [link query order](#pagination):
 
 ```http
 GET /api/tasks?sort=-created,title&page[limit]=2 HTTP/1.1
@@ -1053,10 +1196,10 @@ If you call the generated HTTP routes from something other than the generated Ty
 
 For an integer field that the parser files under `OptionEnum` or `Other` (`u8`, `u16`, `u32`, `i8`, `i16`, and now `usize`, `isize`, `u128`, `i128`), the generated model field is `i64` or `Option<i64>` instead of `i32`. An out-of-range value now fails with `AppError::DbError` naming the field, where it used to wrap.
 
-`u32` and `Option<u32>` need a data migration. A `u32` above `i32::MAX` was stored as a wrapped negative number, and reading such a row now fails. For each `u32` or `Option<u32>` column, run this once, before the first start of the new binary. The table and column names are examples:
+`u32` and `Option<u32>` need a data migration. A `u32` above `i32::MAX` was stored as a wrapped negative number, and reading such a row now fails. For each `u32` or `Option<u32>` column, run this once, before the first start of the new binary, with `<table>` and `<column>` replaced by the table's and the column's names:
 
 ```sql
-UPDATE workout_set SET reps = reps + 4294967296 WHERE reps < 0;
+UPDATE <table> SET <column> = <column> + 4294967296 WHERE <column> < 0;
 ```
 
 - This is SQLite SQL.
@@ -1066,11 +1209,11 @@ UPDATE workout_set SET reps = reps + 4294967296 WHERE reps < 0;
 - On Postgres, the driver reads an `i64` only from a `bigint` column. Widen **every** column that changed, `u8`, `u16`, `u32`, `i8` and `i16` (and their `Option` forms), then run the `UPDATE` for the `u32` columns only:
 
   ```sql
-  ALTER TABLE workout_set ALTER COLUMN reps TYPE bigint;
-  UPDATE workout_set SET reps = reps + 4294967296 WHERE reps < 0;
+  ALTER TABLE <table> ALTER COLUMN <column> TYPE bigint;
+  UPDATE <table> SET <column> = <column> + 4294967296 WHERE <column> < 0;
   ```
 
-- On MySQL, the narrower integer columns read as `i64` unchanged. Widen the `u32` columns with `ALTER TABLE workout_set MODIFY reps BIGINT;` (keep any `NULL` or `DEFAULT` clauses the column has), then run the same `UPDATE`.
+- On MySQL, the narrower integer columns read as `i64` unchanged. Widen the `u32` columns with `ALTER TABLE <table> MODIFY <column> BIGINT;` (keep any `NULL` or `DEFAULT` clauses the column has), then run the same `UPDATE`.
 
 `usize`, `isize`, `u128` and `i128` had no working SeaORM column before, so there is no data to migrate.
 
@@ -1090,7 +1233,7 @@ On SeaORM, after `before_create` runs:
 - An id that breaks the id rule is refused with `DbError`. The rule is in [Creating records](/guides/store-layer/#creating-records).
 - A duplicate id is `{Entity}AlreadyExists`. It used to be `DbError`.
 
-Before relying on create, rename existing rows whose ids break the rule. Rows with the ids `.`, `..` or `""` must be renamed before you upgrade.
+Before relying on create, rename existing rows whose ids break the rule. Rows with the ids `.`, `..` or `""` stay listed and reachable through the store, the API, IPC and MCP, like any other id that breaks the rule (see [Record ids](#record-ids)). Over HTTP, `""` matches no route, and `.` and `..` reach their record only from a client that sends the path as given (`curl --path-as-is`): a client that normalises URLs, as `fetch` and so the generated TypeScript do, resolves them away before sending. The same was true in 0.8. Rename such rows if HTTP clients must reach them. A vault cannot hold such records, in 0.8 or now.
 
 ### `load_junction_ids` order
 
@@ -1123,8 +1266,8 @@ In a vault, rename the file and update every `[[wikilink]]` and foreign key that
 
 ## Markdown-store API
 
-- `VaultHandle::new(root, layout)` takes no strategy, and the `id_strategy()` accessor is removed. Drop the third argument, or use the generated `open_vault`.
-- `create_record_derived`, `make_record_id` and `EntityRecords::create` take `&IdStrategy` as their second argument. Pass the store's strategy on each create.
+- `VaultHandle::new(root, layout)` takes no strategy, and the `id_strategy()` accessor is removed. Drop the third argument, or use the generated `open_vault` (see [Open the vault with the generated `open_vault`](#open-the-vault-with-the-generated-open_vault)).
+- `create_record_derived` and `make_record_id` take `&IdStrategy` as their second argument, as does the new `EntityRecords::create`. Pass the store's strategy on each create.
 - A missing id is the new `Error::IdRequired { reason }`. It used to be `InvalidId`.
 - `Error::InvalidId` has a third field, `create_rule`: true when the create rule refused the id, whose message then states the whole rule, and false when a lookup's path-safety check did. Add it where you construct the variant; a `{ .. }` pattern needs no change.
 - `layout::validate_id` is the create rule (see [Record ids](#record-ids)). `create_record` checks it too, so it refuses an id that `record_path` accepts. `record_path`, and every read, update and delete, use the looser path-safety check `layout::validate_lookup_id`, so a record whose file stem breaks the create rule stays reachable.

@@ -159,7 +159,7 @@ Over HTTP, a relation field is not an attribute. The generated JSON:API server m
 
 A `belongs_to` field name that ends in `_id` loses the suffix; every other relation field keeps its name. The `type` is the target entity's URL plural. A relationship name that equals an attribute name, `type`, `id` or `relationships`, or that another relationship already uses, fails a build that generates an HTTP server or client.
 
-Writes use the same shape. A create or update body sets a to-one with `"data": {"type": "epics", "id": "…"}` (or `null` for an `Option` field, `403 relationship_required` for a required one) and a to-many with a `data` array that replaces the stored list; a repeated identifier counts once. An identifier whose `type` is not the relationship's target is `409 type_mismatch`. A required to-one left out of a create body is `400 missing_relationship`; on an update, any relationship left out is unchanged. A `has_many` array goes through the children's foreign keys with the rules above, and a dropped child whose key is required is `403` with the `{child}_parent_required` code. Every linked id is checked first: a missing one is `404 related_resource_not_found`, and nothing is written. A relation field sent as an attribute (`epic_id`) is `400 unknown_attribute`.
+Writes use the same shape. A create or update body sets a to-one with `"data": {"type": "epics", "id": "…"}` (or `null` for an `Option` field, `403 relationship_required` for a required one) and a to-many with a `data` array that replaces the stored list; a repeated identifier counts once. An identifier whose `type` is not the relationship's target is `409 type_mismatch`. A required to-one left out of a create body is `400 missing_relationship`; on an update, any relationship left out is unchanged. A `has_many` array goes through the children's foreign keys with the rules above, and a dropped child whose key is required is `403` with the `{child}_parent_required` code. Every linked id is checked first: a missing one is `404 no_such_related_resource`, and nothing is written. A relation field sent as an attribute (`epic_id`) is `400 unknown_attribute`.
 
 #### Relationship endpoints
 
@@ -185,7 +185,7 @@ When the entity's module serves `get_by_id`, each relationship also gets its own
 - Writes go through the module's `update`, so they follow the rules above, hooks and `ParentRequired` included, and answer `204`. Adding a member that is already there, or removing one that is not, is `204` and writes nothing, as is `{"data": []}` on `POST` or `DELETE`.
 - A body with more than one identifier on `POST` or `DELETE` is `403 relationship_batch_unsupported`. `POST` or `DELETE` on a to-one, and any write when the module has no `update`, is `403 relationship_update_unsupported`.
 - The related route reads each resource with the target module's `get_by_id`, so every target needs one (the build fails otherwise). A dangling id is skipped; a to-one whose target is gone is `null`.
-- An unknown `{rel}` is `404 relationship_not_found`, and a missing parent `404` with its `{entity}_not_found` code.
+- An unknown `{rel}` is `404 no_such_relationship`, and a missing parent `404` with its `{entity}_not_found` code.
 - An entity whose module serves no `get_by_id` gets no relationship routes, and its relationships carry `data` only.
 
 #### Junction ops

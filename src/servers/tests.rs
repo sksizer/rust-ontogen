@@ -8167,7 +8167,7 @@ fn a_resource_with_relationships_serves_the_relationship_and_related_routes() {
                     "Some(\"epic\") =>",
                     "Some(\"tags\") =>",
                     "Some(\"labels\") =>",
-                    "_ => Err(ontogen_jsonapi::error::relationship_not_found(\"tasks\", &rel)),",
+                    "_ => Err(ontogen_jsonapi::error::no_such_relationship(\"tasks\", &rel)),",
                 ],
             );
         }
@@ -8187,7 +8187,7 @@ fn a_resource_with_relationships_serves_the_relationship_and_related_routes() {
                     "ontogen_body: OntogenBody",
                     "= ontogen_path?;",
                     "match rel.as_str() {",
-                    "_ => Err(ontogen_jsonapi::error::relationship_not_found(\"tasks\", &rel)),",
+                    "_ => Err(ontogen_jsonapi::error::no_such_relationship(\"tasks\", &rel)),",
                 ],
             );
         }
@@ -9408,7 +9408,7 @@ fn assert_http_names_nothing_bare(http: &str) {
         "encode_path_segment",
         "pagination_links",
         "method_not_allowed",
-        "relationship_not_found",
+        "no_such_relationship",
         "relationship_update_unsupported",
     ]);
     // A runtime item's name that the consumer's import binds names the

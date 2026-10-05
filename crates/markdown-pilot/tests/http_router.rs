@@ -385,7 +385,7 @@ async fn create_documents_are_checked_member_by_member() {
     // Step 8: a linked resource must exist.
     let reply =
         post(task(attributes.clone(), json!({ "parent": { "data": { "type": "tasks", "id": "nope" } } }))).await;
-    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "related_resource_not_found"), "/data/relationships/parent/data");
+    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "no_such_related_resource"), "/data/relationships/parent/data");
 
     // A section's parent is a required to-one.
     let section = json!({ "data": { "type": "sections", "attributes": { "title": "S" } } });
@@ -834,7 +834,7 @@ async fn a_lone_list_is_a_custom_get_with_no_page(scope: Scope) {
 
     // And `by_status` is no relationship of a task.
     for uri in ["/api/tasks/alpha/relationships/by_status", "/api/tasks/alpha/by_status"] {
-        server.get_in(scope, uri).await.error(StatusCode::NOT_FOUND, "relationship_not_found");
+        server.get_in(scope, uri).await.error(StatusCode::NOT_FOUND, "no_such_relationship");
     }
 }
 in_both_scopes!(a_lone_list_is_a_custom_get_with_no_page);
@@ -939,7 +939,7 @@ async fn a_to_one_relationship_is_read_and_set_through_its_parent(scope: Scope) 
 
     // The linked task must exist and be of the relationship's type.
     let reply = server.write_in(scope, "PATCH", parent, linkage(identifier("tasks", "nope"))).await;
-    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "related_resource_not_found"), "/data");
+    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "no_such_related_resource"), "/data");
     let reply = server.write_in(scope, "PATCH", parent, linkage(identifier("tags", "alpha"))).await;
     assert_eq!(reply.pointer(StatusCode::CONFLICT, "type_mismatch"), "/data");
     let reply = server.write_in(scope, "PATCH", parent, linkage(json!([identifier("tasks", "alpha")]))).await;
@@ -989,7 +989,7 @@ async fn a_many_to_many_relationship_adds_removes_and_replaces_members(scope: Sc
         server.write_in(scope, "POST", tags, linkage(json!([identifier("tags", "c"), identifier("tags", "a")]))).await;
     assert_eq!(reply.pointer(StatusCode::FORBIDDEN, "relationship_batch_unsupported"), "/data");
     let reply = server.write_in(scope, "POST", tags, one("nope")).await;
-    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "related_resource_not_found"), "/data/0");
+    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "no_such_related_resource"), "/data/0");
 
     // Removing an absent member, or one that names nothing, is a no-op.
     for id in ["a", "a", "nope"] {
@@ -1095,7 +1095,7 @@ async fn a_junction_relationship_calls_its_ops(scope: Scope) {
     let error = reply.error(StatusCode::FORBIDDEN, "relationship_update_unsupported");
     assert!(error.get("source").is_none(), "{}", reply.raw);
     let reply = server.write_in(scope, "POST", labels, one("nope")).await;
-    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "related_resource_not_found"), "/data/0");
+    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "no_such_related_resource"), "/data/0");
     let reply = server.write_in(scope, "POST", labels, json!({})).await;
     assert_eq!(reply.pointer(StatusCode::BAD_REQUEST, "invalid_document"), "");
     server.get_in(scope, "/api/tasks/nope/relationships/labels").await.error(StatusCode::NOT_FOUND, "task_not_found");
@@ -1164,18 +1164,18 @@ async fn relationship_routes_check_in_the_contract_order(scope: Scope) {
     for uri in
         ["/api/tasks/alpha/relationships/nope", "/api/tasks/alpha/nope", "/api/tasks/nope/relationships/nope?x=1"]
     {
-        let error = server.get_in(scope, uri).await.error(StatusCode::NOT_FOUND, "relationship_not_found");
+        let error = server.get_in(scope, uri).await.error(StatusCode::NOT_FOUND, "no_such_relationship");
         assert!(error.get("source").is_none());
     }
     for method in ["PATCH", "POST", "DELETE"] {
         let reply = server.op_in(scope, method, "/api/tasks/nope/relationships/nope?x=1", "not json").await;
-        reply.error(StatusCode::NOT_FOUND, "relationship_not_found");
+        reply.error(StatusCode::NOT_FOUND, "no_such_relationship");
     }
     // Undecodable, it names no relationship either.
     server
         .get_in(scope, "/api/tasks/alpha/relationships/%FF")
         .await
-        .error(StatusCode::NOT_FOUND, "relationship_not_found");
+        .error(StatusCode::NOT_FOUND, "no_such_relationship");
 
     // Step 3 precedes it: the body's media type.
     let reply = server
@@ -1343,7 +1343,7 @@ async fn a_junction_relationship_of_ids_adds_and_removes_by_membership(scope: Sc
     // A target must exist to be added; `[]` adds nothing; two identifiers
     // are refused.
     let reply = server.write_in(scope, "POST", tags, one("nope")).await;
-    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "related_resource_not_found"), "/data/0");
+    assert_eq!(reply.pointer(StatusCode::NOT_FOUND, "no_such_related_resource"), "/data/0");
     server.write_in(scope, "POST", tags, linkage(json!([]))).await.no_content();
     let reply =
         server.write_in(scope, "POST", tags, linkage(json!([identifier("tags", "a"), identifier("tags", "b")]))).await;
@@ -1569,7 +1569,7 @@ async fn every_relationship_error_row_answers_as_the_contract_says(scope: Scope)
         (
             &jsonapi,
             StatusCode::NOT_FOUND,
-            "relationship_not_found",
+            "no_such_relationship",
             vec![
                 ("GET", "/api/notes/alpha/relationships/nope", "", Nothing),
                 ("GET", "/api/notes/alpha/nope", "", Nothing),
@@ -1664,7 +1664,7 @@ async fn every_relationship_error_row_answers_as_the_contract_says(scope: Scope)
         (
             &jsonapi,
             StatusCode::NOT_FOUND,
-            "related_resource_not_found",
+            "no_such_related_resource",
             vec![
                 ("POST", "/api/notes/alpha/relationships/tags", tag_nope, Pointer("/data/0")),
                 ("PATCH", "/api/tasks/beta/relationships/tags", tags_a_nope, Pointer("/data/1")),
@@ -1759,11 +1759,11 @@ async fn junction_relationship_checks_run_in_the_contract_order(scope: Scope) {
     server
         .get_in(scope, "/api/notes/nope/relationships/nope?x=1")
         .await
-        .error(StatusCode::NOT_FOUND, "relationship_not_found");
-    server.get_in(scope, "/api/notes/nope/nope?x=1").await.error(StatusCode::NOT_FOUND, "relationship_not_found");
+        .error(StatusCode::NOT_FOUND, "no_such_relationship");
+    server.get_in(scope, "/api/notes/nope/nope?x=1").await.error(StatusCode::NOT_FOUND, "no_such_relationship");
     for method in ["PATCH", "POST", "DELETE"] {
         let reply = server.op_in(scope, method, "/api/notes/nope/relationships/nope?x=1", "[").await;
-        reply.error(StatusCode::NOT_FOUND, "relationship_not_found");
+        reply.error(StatusCode::NOT_FOUND, "no_such_relationship");
     }
     // 5 beats 6 and 8: the query before the refusal and the parent.
     let reply = server.op_in(scope, "PATCH", "/api/notes/nope/relationships/tags?x=1", "[").await;
