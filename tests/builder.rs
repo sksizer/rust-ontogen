@@ -621,3 +621,51 @@ fn builder_without_transports_every_api_scan_dir_may_replace() {
     let workout = std::fs::read_to_string(generated.join("workout.rs")).unwrap();
     assert!(!workout.contains("fn list("), "the hand-written list replaces it:\n{workout}");
 }
+
+#[test]
+fn builder_a_has_many_foreign_key_that_is_not_a_belongs_to_back_fails_the_build() {
+    for (parent_id, needle) in [
+        ("#[ontology(relation(belongs_to, target = \"Node\"))]\n pub parent_id: Option<String>,", ""),
+        (
+            "#[ontology(relation(belongs_to, target = \"Node\"))]\n pub parent: Option<String>,",
+            "names no field of `Node`",
+        ),
+        ("pub parent_id: Option<String>,", "is not a belongs_to relation"),
+        ("#[ontology(relation(belongs_to, target = \"Node\"))]\n pub parent_id: Option<i64>,", "is not typed `String`"),
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let schema = tmp.path().join("schema");
+        std::fs::create_dir_all(&schema).unwrap();
+        std::fs::write(
+            schema.join("node.rs"),
+            format!(
+                r#"
+                #[derive(OntologyEntity)]
+                #[ontology(entity, directory = "nodes", table = "nodes")]
+                pub struct Node {{
+                    #[ontology(id)]
+                    pub id: String,
+                    {parent_id}
+                    #[ontology(relation(has_many, target = "Node", foreign_key = "parent_id"))]
+                    pub children: Vec<String>,
+                }}
+            "#
+            ),
+        )
+        .unwrap();
+        let result = Pipeline::new(&schema)
+            .seaorm(tmp.path().join("entities"), tmp.path().join("conversions"))
+            .store(tmp.path().join("store"), None::<PathBuf>)
+            .store_id_strategy(IdStrategy::Provided)
+            .build();
+        if needle.is_empty() {
+            result.expect("a belongs_to back to Node is the supported foreign key");
+            continue;
+        }
+        let err = result.expect_err("the foreign key is refused at build time");
+        let msg = err.to_string();
+        assert!(matches!(err, ontogen::CodegenError::Store(_)), "{msg}");
+        assert!(msg.contains("`Node.children`") && msg.contains(needle), "{parent_id}: {msg}");
+        assert!(!tmp.path().join("store").exists(), "{parent_id}: nothing is written");
+    }
+}

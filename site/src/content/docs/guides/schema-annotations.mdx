@@ -273,7 +273,7 @@ You can stack `#[serde(...)]` and `#[ontology(...)]` on the same field in any or
 | Attribute | Used With | Required | Description |
 |---|---|---|---|
 | `target = "Entity"` | All relation kinds | Yes | Target entity name (PascalCase struct name) |
-| `foreign_key = "field"` | `has_many` | Yes | FK column name on the target table |
+| `foreign_key = "field"` | `has_many` | Yes | The declaring entity's `belongs_to` to itself (`String` or `Option<String>`) |
 | `junction = "table_name"` | `many_to_many` | No | Override junction table name (default: `{entity}_{field}`) |
 
 ## Practical Example: All Annotations in One Entity
