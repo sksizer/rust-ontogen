@@ -3,7 +3,6 @@
 ## Status
 
 **accepted** (2026-10-04). Implemented by E0004 phases 1a, 2 and 3c:
-[#197](https://github.com/sksizer/rust-ontogen/pull/197) and
 [#198](https://github.com/sksizer/rust-ontogen/pull/198) (phase 1a),
 [#202](https://github.com/sksizer/rust-ontogen/pull/202) (phase 2) and
 [#206](https://github.com/sksizer/rust-ontogen/pull/206) (phase 3c).
