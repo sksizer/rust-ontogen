@@ -56,7 +56,7 @@ conventional_commits = true
 # blank line before a backtick-led paragraph is left alone, since joining it
 # would make the subject unparseable and drop the commit.
 commit_preprocessors = [
-    { pattern = '([^\n])\n(`)', replace = '$1 $2' },
+    { pattern = '([^\r\n])\r?\n(`)', replace = '$1 $2' },
 ]
 filter_unconventional = true
 split_commits = false

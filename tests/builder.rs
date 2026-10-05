@@ -290,7 +290,7 @@ fn builder_checks_app_error_codes_only_for_an_http_server() {
 }
 
 #[test]
-fn builder_serves_http_for_entities_named_like_ontogen_relationship_errors() {
+fn builder_http_code_check_accepts_store_variants_of_relationship_named_entities() {
     for entity in ["Relationship", "RelatedResource"] {
         let tmp = tempfile::tempdir().expect("tempdir");
         let variants = ["NotFound", "IdRequired", "AlreadyExists"].map(|suffix| format!("{entity}{suffix}"));

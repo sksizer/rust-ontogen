@@ -9,10 +9,15 @@ Version 0.9 is complete on `main` and pending release. This page lists its break
 
 1. [Build configuration](#build-configuration): the `Pipeline` and `gen_*` calls in your `build.rs`, the schema and op shapes the generator refuses, and the crates the generated code depends on.
 2. [OKF vaults](#okf-vaults): markdown vaults as OKF bundles, and the markdown I/O configuration.
-3. [SeaORM data and code](#seaorm-data-and-code), [Record ids](#record-ids), [Markdown-store API](#markdown-store-api) and [Store behaviour](#store-behaviour): data migrations, the id rule, and the store's own API and behaviour.
-4. [AppError](#apperror), [HTTP wire](#http-wire) and [Calling the HTTP API directly](#calling-the-http-api-directly): the error variants every transport needs, then the JSON:API wire of the generated HTTP server.
+3. [AppError](#apperror): the error variants every transport needs, and their HTTP statuses.
+4. [HTTP wire](#http-wire): the JSON:API wire of the generated HTTP server.
 5. [TypeScript clients](#typescript-clients): the generated `Transport` interface and clients.
 6. [Sorting](#sorting): the order every generated list takes, in the store, the API and on every transport.
+7. [Calling the HTTP API directly](#calling-the-http-api-directly): a checklist for HTTP callers other than the generated clients.
+8. [SeaORM data and code](#seaorm-data-and-code): integer columns, data migrations and create behaviour on SeaORM.
+9. [Record ids](#record-ids): the id rule both backends apply to new records.
+10. [Markdown-store API](#markdown-store-api): the `markdown-store` runtime API.
+11. [Store behaviour](#store-behaviour): list order, `has_many` writes and lookups on both backends.
 
 ## Build configuration
 
@@ -255,7 +260,7 @@ serde_json = "1"
 
 ### Code that calls `ontogen-jsonapi` 0.1 directly
 
-`ontogen-jsonapi` 0.1.0 was published before this release. Code that calls it directly, rather than through the generated server, changes as follows:
+`ontogen-jsonapi` 0.1.0 was published before this release; 0.2.0 ships with ontogen 0.9. Code that calls the crate directly, rather than through the generated server, changes as follows:
 
 - `QuerySpec` has a new field `filter_fields`, so a struct literal must set it or end with `..QuerySpec::NONE`. `QuerySpec` no longer implements `PartialEq` or `Eq`, and the crate no longer depends on `serde_urlencoded`.
 - `QueryParams` gained `filter`, `filter_member`, `required_filter_member`, `link_query` and `include_paths`, and the crate exports `filter_fields::<T>()`. `link_query` takes the parsed include (`Option<&[&str]>`, from `QueryParams::include_paths`).
@@ -286,11 +291,11 @@ pub struct WorkSession { /* .. */ }
 The generated store reads and writes through `VaultHandle::entity(dir, type)`, a `markdown_store::EntityRecords`.
 
 - A create writes `type` as the first frontmatter key.
-- An update, or the parent write of a `has_many` update, that changes the record also stamps it: a missing `type` is inserted as the first key, and a different value is overwritten in place. An update that changes no value writes nothing. Existing records gain `type` on their next real write, which shows in a diff as an added `type:` line.
+- An update, or the foreign-key write to a child that a `has_many` create or update makes, that changes the record also stamps it: a missing `type` is inserted as the first key, and a different value is overwritten in place. An update that changes no value writes nothing. Existing records gain `type` on their next real write, which shows in a diff as an added `type:` line.
 - A record with no `type` still reads.
 - A `type` value other than the entity's, a hand-added `type` key included, is replaced on the record's next real write. Move such values to another key before upgrading.
 - With `MarkdownLayout::PerEntityDir` the directory decides what a record is. A record whose `type` differs is still listed and read.
-- With `MarkdownLayout::Flat` the `type` decides. A record whose `type` is a string other than the entity's is left out of the entity's `list` and `count`, and its `get`, update and delete answer `{Entity}NotFound`. A record whose `type` is not a string at all is listed by no entity. A record with no `type` is listed by every entity, as in 0.8, until a write through one entity stamps that entity's type on it. Before upgrading a `Flat` vault, add `type: <Entity>` (the struct name, or your `type_name`) to every record.
+- With `MarkdownLayout::Flat` the `type` decides. A record whose `type` is a string other than the entity's, the empty string `""` included, is left out of the entity's `list` and `count`, and its `get`, update and delete answer `{Entity}NotFound`. A record whose `type` is a number, list or mapping is listed by no entity. A record with no `type`, or with a `type:` that has no value (YAML null), is untyped: it is listed by every entity, as in 0.8, until a write through one entity stamps that entity's type on it. Before upgrading a `Flat` vault, add `type: <Entity>` (the struct name, or your `type_name`) to every record.
 
 The untyped `VaultHandle` methods (`create_record`, `create_record_derived`, `modify_record`, `remove_record`, `read_all`) are unchanged: they write no `type` and do not filter by it. Hand-written hooks and API functions that write records through them can use `vault.entity("<dir>", "<type>")`, whose `create`, `modify`, `remove`, `read_opt`, `read_all` and `count` behave as the generated store's do.
 
@@ -298,12 +303,12 @@ The untyped `VaultHandle` methods (`create_record`, `create_record_derived`, `mo
 
 `gen_markdown_io` checks the key each field is stored under against the keys OKF reserves.
 
-- A field stored under `type`, a field named `r#type`, fails the build: the generator owns that key. Store it under another key with `#[ontology(frontmatter_name = "kind")]`, and rename the key in existing records before their next write, which would otherwise overwrite the value with the entity's type.
+- A field stored under `type` (including a field named `r#type`) fails the build: the generator owns that key. Store it under another key with `#[ontology(frontmatter_name = "kind")]`, and rename the key in existing records before their next write, which would otherwise overwrite the value with the entity's type.
 - A field stored under `status`, `resource`, `stale_after`, `generated`, `usage_window`, `verified` or `sources` whose type cannot hold what OKF means by the key prints a `cargo:warning=` naming the entity, field and key. The build continues. Each key's expected type is listed under [Reserved frontmatter keys](/guides/markdown-backend/#reserved-frontmatter-keys). To clear a warning, move the field with `frontmatter_name` and rename the key in existing records; a record that still holds only the old key fails to read when the field is required.
 
 ### `gen_markdown_io` takes the schema
 
-`gen_markdown_io` takes the parsed schema, a `&SchemaOutput`, where it took the entities, because the `status` check needs the schema's enums. So does `ontogen::persistence::markdown::generate`, which it calls. `Pipeline` users change nothing.
+`gen_markdown_io` takes the parsed schema, a `&SchemaOutput`, where it took the entities, because the `status` check needs the schema's enums. So does `ontogen::persistence::markdown::generate`, which it calls. `Pipeline` users change nothing for this signature.
 
 Before:
 
@@ -594,7 +599,7 @@ After, `GET /api/tasks?page[offset]=20&page[limit]=10`:
 
 `meta` holds exactly the old fields (`limit` and `offset` are the effective values). `pagination` belongs to an API surface and its primary surface's value covers every module on it, so setting it pages every entity module of that surface. The tasks-tracker example now sets `.api_paginated(..)` for `task`, `epic` and `tag`, so its three lists page, over HTTP and as MCP tools. A scoped list (`route_prefix`) pages like an unscoped one: the page goes to the store. `prev` is `null` on the first page and `next` on the last. `page[limit]=0`, a non-integer, and any other `page[…]` member (`page[number]`, `page[size]`) are `400`.
 
-**Link queries.** The top-level `self` link and the pagination links repeat the request's query parameters in one order: each `filter[…]` member in ascending byte order of its name, then `sort`, then `include`, then `page[offset]` and `page[limit]`. `[` and `]` are written `%5B` and `%5D`, and every other byte outside `A-Z a-z 0-9 - . _ ~` is percent-encoded, except the `,` between `sort` and `include` items. A paginated list's links always carry both `page` parameters, with the effective values. Equal requests get equal links, and following `next` keeps the filter, the sort and the include.
+**Link queries.** The top-level `self` link and the pagination links repeat the request's query parameters in one order: each `filter[…]` member in ascending byte order of its name, then `sort`, then `include`, then `page[offset]` and `page[limit]`. `[` and `]` are written `%5B` and `%5D`, and every other byte outside `A-Z a-z 0-9 - . _ ~` is percent-encoded, except a `,` in a value (a filter value, or between `sort` and `include` items), which stays literal. A paginated list's links always carry both `page` parameters, with the effective values. Equal requests get equal links, and following `next` keeps the filter, the sort and the include.
 
 ### Compound documents
 
@@ -963,11 +968,15 @@ The generated `Transport` interface keeps its method names, parameters and retur
 - A list's bare filter whose type name contains `Query` or `Input` without ending in it (`mode: QueryMode`) is declared under its own name. It used to be declared as `query?` (for `Query`) or left out (for `Input`).
 - A list that takes an order gains a trailing `options` parameter. See [TypeScript lists take `options`](#typescript-lists-take-options) under [Sorting](#sorting).
 
-The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A filtered list sends `filter[…]`: the query struct's fields and the bare parameters, for example `toQueryString({ filter: { ...query, skill_id: skillId }, page: { offset, limit } })`, and a filtered list with no entity behind it sends `filter[…]` with `opArg[limit]` and `opArg[offset]`. Method signatures change only as listed above. In the generated bindings, an `Option` field of a list's `*Query` struct is now optional (`status?: string | null`, was `status: string | null`), so `taskList({ status: 'open/ready' })` type-checks; other types keep every field required. When the filter struct has a required field, the list's `query` parameter is required too (`query: ListTasksQuery`, was `query?:`), on the `Transport` interface and every client, and the IPC transport sends it as given rather than `query ?? {}`. The IPC transport now sends a list's bare filters under their own names (`invoke('queue_list', { mode })`), as the Rust command takes them; before, a bare filter whose type name contained `Query` was sent as `query`. The `HttpTs` client imports its types from the configured bindings file; before, it always imported `./bindings`. If you build `ontogen_ts::EmitConfig` with a struct literal, add the new `deserialize_only` field or end it with `..Default::default()`. The changes to the client's custom, junction and subscription methods follow below.
+**HTTP transport.** The HTTP transport applies and removes the JSON:API shape internally (`flattenTask` and `unflattenTask` per entity, from a per-entity resource table, with the entity's own id field name). A paginated list sends `page[offset]` and `page[limit]` and rebuilds `PaginatedResult` from `data` and `meta`. A filtered list sends `filter[…]`: the query struct's fields and the bare parameters, for example `toQueryString({ filter: { ...query, skill_id: skillId }, page: { offset, limit } })`, and a filtered list with no entity behind it sends `filter[…]` with `opArg[limit]` and `opArg[offset]`. Method signatures change only as listed above.
 
-One thing changes. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone, because no generated route uses `PUT` any more; updates use `httpPatch`. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript. The IPC transport changes only in how it sends a list's bare filters, as described above, and in a lone `list_X` (below), and the MCP changes are listed under [MCP tools](#mcp-tools).
+**IPC transport.** A list whose `query` parameter is required sends it as given rather than `query ?? {}`. The IPC transport now sends a list's bare filters under their own names (`invoke('queue_list', { mode })`), as the Rust command takes them; before, a bare filter whose type name contained `Query` was sent as `query`.
 
-The generated calls for custom ops, and for junction ops in a module with no entity behind it, follow the wire above, and every one of them returns `meta.result` (`null` on `204`). Each keeps its signature, except for the changes listed at the end of this section: `xCount()` is removed for a paginated module, a junction add or remove is declared `Promise<null>`, a lone `list_X` takes no page, and the `HttpTs` client's paginated lists take `limit?` and `offset?` and return `PaginatedResult<T>`. For example:
+**Bindings and `EmitConfig`.** In the generated bindings, an `Option` field of a list's `*Query` struct is now optional (`status?: string | null`, was `status: string | null`), so `taskList({ status: 'open/ready' })` type-checks; other types keep every field required. When the filter struct has a required field, the list's `query` parameter is required too (`query: ListTasksQuery`, was `query?:`), on the `Transport` interface and every client. The `HttpTs` client imports its types from the configured bindings file; before, it always imported `./bindings`. If you build `ontogen_ts::EmitConfig` with a struct literal, add the new `deserialize_only` field or end it with `..Default::default()`.
+
+**Errors.** The error type changes too. Any non-2xx response throws a `JsonApiError` with `status` and `errors` fields instead of a plain `Error`. Its `message` is the same text as before, but `String(e)` now reads `JsonApiError: Task not found: nope` where it read `Error: Task not found: nope`. Code or tests that match the `Error:` prefix must change. Read `e.status` and `e.errors[0]?.code` to branch on a failure. The `httpPut` helper is gone, because no generated route uses `PUT` any more; updates use `httpPatch`. `JsonApiError`, `JsonApiErrorObject` and `JsonApiResource` are exported from the generated file. Regenerate the TypeScript. The IPC transport changes only as described above, in a lone `list_X` (below) and in passing `sort` (see [Sorting](#sorting)), and the MCP changes are listed under [MCP tools](#mcp-tools). The changes to the client's custom, junction and subscription methods follow below.
+
+The generated calls for custom ops, and for junction ops in a module with no entity behind it, follow the wire above, and every one of them returns `meta.result` (`null` on `204`). Each keeps its signature, except for the `Transport` changes listed at the top of this section and the `HttpTs` client's paginated lists, which take `limit?` and `offset?` and return `PaginatedResult<T>` (see the end of this section). For example:
 
 ```ts
 async workoutStart(input: StartWorkoutInput, note: string | null): Promise<Workout> {

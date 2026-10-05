@@ -136,8 +136,11 @@ the OKF epic closed 2026-10-03 ([#194](https://github.com/sksizer/rust-ontogen/p
   store fixes the [wire contract](https://github.com/sksizer/rust-ontogen/blob/main/docs/jsonapi-wire-contract.md) lists in §15.
 - Deviation: the TypeScript `Transport` interface changed beyond the list
   `options` argument. It no longer declares a paginated module's `xCount()`,
-  it declares junction add and remove as `Promise<null>`, and a lone
-  `list_X` takes no page. The
+  it declares junction add and remove as `Promise<null>`, a lone
+  `list_X` takes no page, a list whose `*Query` struct has a required field
+  takes `query` as a required parameter, and a bare filter whose type name
+  contains `Query` or `Input` without ending in `Query` is declared under its
+  own name. The
   [epic's acceptance criteria](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/epics/jsonapi-http-transport.md#acceptance-criteria)
   record them.
 

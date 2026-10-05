@@ -238,8 +238,9 @@ cookbook update, a "what the wire looks like" page per example, README.
   CRUD except the trailing optional list `options` argument (decision 8);
   `packages/nuxt_admin_layer` tests pass with no source changes. — Met with
   deviation ([#200](https://github.com/sksizer/rust-ontogen/pull/200), [#201](https://github.com/sksizer/rust-ontogen/pull/201), [#203](https://github.com/sksizer/rust-ontogen/pull/203), [#206](https://github.com/sksizer/rust-ontogen/pull/206)). The admin layer has no source change
-  (only its tests and fixtures changed). The CRUD methods are unchanged
-  except `options`. `Transport` differs from 0.8.0 in three other ways:
+  (only its tests and fixtures changed). `get`, `create`, `update` and
+  `delete` are unchanged; lists gain `options`. `Transport` differs from 0.8.0
+  in five other ways:
   - the generated `xCount()` of a paginated module is not on `Transport`
     ([#201](https://github.com/sksizer/rust-ontogen/pull/201)); `gen_clients` drops it as `gen_servers` does, because
     no route serves it;
@@ -248,7 +249,13 @@ cookbook update, a "what the wire looks like" page per example, README.
     the fn's return type;
   - a lone `list_X` (no `add_Y` or `remove_Y`) is a custom `GET` that takes no
     `limit`/`offset` and returns its plain `Vec<T>` ([#203](https://github.com/sksizer/rust-ontogen/pull/203)); on a
-    paginated surface 0.8.0 declared it as a page.
+    paginated surface 0.8.0 declared it as a page;
+  - a list whose `*Query` struct has a required field takes `query` as a
+    required parameter ([#202](https://github.com/sksizer/rust-ontogen/pull/202)); 0.8.0 declared `query?`;
+  - a bare list filter whose type name contains `Query` or `Input` without
+    ending in `Query` (`mode: QueryMode`) is declared under its own name
+    ([#202](https://github.com/sksizer/rust-ontogen/pull/202)); 0.8.0 declared it as `query?` for `Query` and dropped it for
+    `Input`.
 - iron-log, iron-log-md, notes-kb and tasks-tracker run end-to-end on the
   new wire; `markdown-pilot` live router test passes. — Met ([#200](https://github.com/sksizer/rust-ontogen/pull/200), [#201](https://github.com/sksizer/rust-ontogen/pull/201), [#202](https://github.com/sksizer/rust-ontogen/pull/202), [#203](https://github.com/sksizer/rust-ontogen/pull/203), [#205](https://github.com/sksizer/rust-ontogen/pull/205), [#206](https://github.com/sksizer/rust-ontogen/pull/206), [#207](https://github.com/sksizer/rust-ontogen/pull/207)).
 - The HTTP snapshot and the 27 `src/servers/tests.rs` assertions pinning the
