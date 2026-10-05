@@ -495,6 +495,21 @@ impl Pipeline {
         if self.store.is_some() {
             crate::store::check_entity_names(&schema.entities).map_err(CodegenError::Store)?;
         }
+        let mut configured: Vec<(&str, &str)> = Vec::new();
+        if let Some(stage) = &self.api {
+            configured.push(("state", &stage.state_type));
+            configured.extend(stage.store_type.as_deref().map(|ty| ("store", ty)));
+        }
+        if let Some(stage) = &self.servers {
+            configured.push(("state", &stage.config.state_type));
+            configured.extend(stage.config.store_type.as_deref().map(|ty| ("store", ty)));
+        }
+        if let Some(stage) = &self.clients {
+            configured.push(("state", &stage.config.state_type));
+            configured.extend(stage.config.store_type.as_deref().map(|ty| ("store", ty)));
+        }
+        crate::ident::check_configured_names(schema.entities.iter().map(|e| e.name.as_str()), &configured)
+            .map_err(CodegenError::Schema)?;
         if let Some(stage) = &self.api {
             let store_backed = self.store.is_some() || stage.store_type.is_some();
             crate::api::check_entity_names(&schema.entities, &stage.output_dir, &stage.exclude, store_backed)

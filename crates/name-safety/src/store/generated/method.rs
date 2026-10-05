@@ -65,13 +65,13 @@ pub fn sort_methods(items: &mut [Method], order: &[OrderBy<MethodSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_methods(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_methods`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_methods(a: &Method, b: &Method, field: MethodSortField) -> std::cmp::Ordering {
+fn compare_methods(a: &Method, b: &Method, field: MethodSortField) -> ::std::cmp::Ordering {
     match field {
         MethodSortField::Id => a.id.cmp(&b.id),
         MethodSortField::Title => a.title.cmp(&b.title),

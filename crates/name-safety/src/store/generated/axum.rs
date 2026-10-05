@@ -65,13 +65,13 @@ pub fn sort_axums(items: &mut [Axum], order: &[OrderBy<AxumSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_axums(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_axums`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_axums(a: &Axum, b: &Axum, field: AxumSortField) -> std::cmp::Ordering {
+fn compare_axums(a: &Axum, b: &Axum, field: AxumSortField) -> ::std::cmp::Ordering {
     match field {
         AxumSortField::Id => a.id.cmp(&b.id),
         AxumSortField::Title => a.title.cmp(&b.title),

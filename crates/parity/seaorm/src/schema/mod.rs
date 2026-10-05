@@ -10,6 +10,10 @@ mod item;
 mod r#match;
 #[path = "../../../schema/order.rs"]
 mod order;
+#[path = "../../../schema/sea_orm.rs"]
+mod sea_orm;
+#[path = "../../../schema/sea_query.rs"]
+mod sea_query;
 #[path = "../../../schema/section.rs"]
 mod section;
 #[path = "../../../schema/tag.rs"]
@@ -22,6 +26,8 @@ pub use fixed::Fixed;
 pub use item::{Item, Kind};
 pub use r#match::Match;
 pub use order::Order;
+pub use sea_orm::SeaOrm;
+pub use sea_query::SeaQuery;
 pub use section::Section;
 pub use tag::Tag;
 
@@ -30,6 +36,8 @@ pub use dto::fixed::{CreateFixedInput, UpdateFixedInput};
 pub use dto::item::{CreateItemInput, UpdateItemInput};
 pub use dto::r#match::{CreateMatchInput, UpdateMatchInput};
 pub use dto::order::{CreateOrderInput, UpdateOrderInput};
+pub use dto::sea_orm::{CreateSeaOrmInput, UpdateSeaOrmInput};
+pub use dto::sea_query::{CreateSeaQueryInput, UpdateSeaQueryInput};
 pub use dto::section::{CreateSectionInput, UpdateSectionInput};
 pub use dto::tag::{CreateTagInput, UpdateTagInput};
 
@@ -49,6 +57,12 @@ pub enum AppError {
     MatchNotFound(String),
     MatchIdRequired(String),
     MatchAlreadyExists(String),
+    SeaOrmNotFound(String),
+    SeaOrmIdRequired(String),
+    SeaOrmAlreadyExists(String),
+    SeaQueryNotFound(String),
+    SeaQueryIdRequired(String),
+    SeaQueryAlreadyExists(String),
     OrderNotFound(String),
     OrderIdRequired(String),
     OrderAlreadyExists(String),
@@ -78,4 +92,6 @@ pub enum EntityKind {
     Order,
     Section,
     Tag,
+    SeaOrm,
+    SeaQuery,
 }

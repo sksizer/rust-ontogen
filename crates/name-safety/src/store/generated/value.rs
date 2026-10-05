@@ -65,13 +65,13 @@ pub fn sort_values(items: &mut [Value], order: &[OrderBy<ValueSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_values(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_values`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_values(a: &Value, b: &Value, field: ValueSortField) -> std::cmp::Ordering {
+fn compare_values(a: &Value, b: &Value, field: ValueSortField) -> ::std::cmp::Ordering {
     match field {
         ValueSortField::Id => a.id.cmp(&b.id),
         ValueSortField::Title => a.title.cmp(&b.title),

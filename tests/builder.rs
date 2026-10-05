@@ -780,22 +780,47 @@ fn builder_refuses_an_entity_named_like_what_the_output_names_bare() {
     );
     assert!(!tmp.path().join("md").exists(), "refused before the markdown stage writes");
 
-    // The state type is the servers' to refuse.
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let schema = schema_with_entity(tmp.path(), "AppState");
-    let api = tmp.path().join("api");
-    std::fs::create_dir_all(&api).unwrap();
-    std::fs::write(
-        api.join("app_state.rs"),
-        "pub async fn get_by_id(state: &AppState, id: &str) -> Result<AppState, anyhow::Error> { todo!() }\n",
-    )
-    .unwrap();
-    let mcp = ontogen::servers::ServerGenerator::Mcp { output: tmp.path().join("mcp.rs") };
-    let err = servers_with(&schema, &api, None, vec![mcp]).expect_err("AppState");
-    assert!(
-        matches!(err, ontogen::CodegenError::Server(ref e) if e.contains("`app_state::get_by_id` names the type `AppState`, and the servers import it beside the state type of the same name")),
-        "{err}"
-    );
+    // The configured state and store types are refused before any stage
+    // writes, so no hooks scaffold outlives the refusal.
+    for (entity, role, store_type) in [("AppState", "state", "Store"), ("Vault", "store", "Vault")] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let schema = schema_with_entity(tmp.path(), entity);
+        let api = tmp.path().join("api");
+        std::fs::create_dir_all(&api).unwrap();
+        let mcp = ontogen::servers::ServerGenerator::Mcp { output: tmp.path().join("mcp.rs") };
+        let err = Pipeline::new(&schema)
+            .markdown_io(tmp.path().join("md"), markdown_options())
+            .dtos(tmp.path().join("dto"))
+            .store(tmp.path().join("store"), Some(tmp.path().join("hooks")))
+            .store_id_strategy(IdStrategy::Provided)
+            .api(tmp.path().join("api_out"), "AppState")
+            .servers(ontogen::ServersConfig {
+                api_dir: api.clone(),
+                state_type: "crate::AppState".into(),
+                service_import_path: "crate::api".into(),
+                types_import_path: "crate::schema".into(),
+                state_import: "crate::AppState".into(),
+                naming: Default::default(),
+                generators: vec![mcp],
+                sse_route_overrides: Default::default(),
+                route_prefix: None,
+                store_type: Some(store_type.into()),
+                store_import: Some(format!("crate::store::{store_type}")),
+                pagination: None,
+                extra_surfaces: vec![],
+                error_source_dir: None,
+            })
+            .build()
+            .expect_err(entity);
+        let configured = format!("configured {role} type");
+        assert!(
+            matches!(err, ontogen::CodegenError::Schema(ref e) if e.contains(&configured) && e.contains(&format!("`{entity}Item`"))),
+            "{entity}: {err}"
+        );
+        for written in ["md", "dto", "store", "hooks", "api_out"] {
+            assert!(!tmp.path().join(written).exists(), "{entity}: nothing is written ({written})");
+        }
+    }
 }
 
 #[test]

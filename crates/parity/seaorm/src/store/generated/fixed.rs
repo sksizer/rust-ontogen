@@ -2,8 +2,7 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query;
-use sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
+use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::fixed;
 use crate::schema::Fixed;
@@ -65,13 +64,13 @@ pub fn sort_fixeds(items: &mut [Fixed], order: &[OrderBy<FixedSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_fixeds(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_fixeds`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_fixeds(a: &Fixed, b: &Fixed, field: FixedSortField) -> std::cmp::Ordering {
+fn compare_fixeds(a: &Fixed, b: &Fixed, field: FixedSortField) -> ::std::cmp::Ordering {
     match field {
         FixedSortField::Id => a.id.cmp(&b.id),
         FixedSortField::Title => a.title.cmp(&b.title),
@@ -178,7 +177,7 @@ impl Store {
         let active = record.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
                 let taken = fixed::Entity::find_by_id(record.id.as_str())
                     .one(self.db())
                     .await
@@ -194,17 +193,21 @@ impl Store {
 /// Applies `order` to `query` as `list_fixeds` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_fixeds_query(
-    mut query: sea_orm::Select<fixed::Entity>,
+    mut query: ::sea_orm::Select<fixed::Entity>,
     order: &[OrderBy<FixedSortField>],
-) -> sea_orm::Select<fixed::Entity> {
+) -> ::sea_orm::Select<fixed::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             FixedSortField::Id => fixed::Column::Id,
             FixedSortField::Title => fixed::Column::Title,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => {
+                (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)
+            }
+            ontogen_core::order::Direction::Desc => {
+                (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last)
+            }
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

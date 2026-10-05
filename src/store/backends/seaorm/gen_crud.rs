@@ -137,7 +137,7 @@ fn generate_order_query(code: &mut String, entity: &EntityDef, enums: &[EnumDef]
     ));
     code.push_str("/// descending, then the id. A hand-written list that filters in SQL orders through this.\n");
     code.push_str(&format!(
-        "pub fn order_{plural}_query(mut query: sea_orm::Select<{module}::Entity>, order: &[OrderBy<{sort_field}>]) -> sea_orm::Select<{module}::Entity> {{\n"
+        "pub fn order_{plural}_query(mut query: ::sea_orm::Select<{module}::Entity>, order: &[OrderBy<{sort_field}>]) -> ::sea_orm::Select<{module}::Entity> {{\n"
     ));
     code.push_str("    for key in ontogen_core::order::effective(order) {\n");
     code.push_str("        let column = match key.field {\n");
@@ -151,9 +151,9 @@ fn generate_order_query(code: &mut String, entity: &EntityDef, enums: &[EnumDef]
     code.push_str("        };\n");
     code.push_str("        let (direction, nulls) = match key.direction {\n");
     code.push_str(
-        "            ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),\n",
+        "            ontogen_core::order::Direction::Asc => (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First),\n",
     );
-    code.push_str("            ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),\n");
+    code.push_str("            ontogen_core::order::Direction::Desc => (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last),\n");
     code.push_str("        };\n");
     code.push_str("        // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.\n");
     code.push_str("        query = query.order_by_with_nulls(column, direction, nulls);\n");
@@ -528,7 +528,7 @@ fn generate_try_insert_helper(code: &mut String, entity: &EntityDef) {
     code.push_str("        match active.insert(self.db()).await {\n");
     code.push_str("            Ok(_) => Ok(true),\n");
     code.push_str(
-        "            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {\n",
+        "            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {\n",
     );
     code.push_str(&format!("                let taken = {module}::Entity::find_by_id(record.id.as_str())\n"));
     code.push_str("                    .one(self.db())\n");
@@ -550,7 +550,7 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, f
     // backend: a column named after a keyword (`r#in` is the column `in`) is
     // not an SQL identifier bare.
     let id = entity.id_field().map_or("id", |f| member_name(&f.name));
-    let alias = |name: &str| format!("sea_orm::sea_query::Alias::new({name:?})");
+    let alias = |name: &str| format!("::sea_orm::sea_query::Alias::new({name:?})");
     let parent = if fk_required { "parent_id.to_string()" } else { "parent_id.map(str::to_string)" };
 
     code.push_str(&format!("    async fn set_{snake}_parent(\n"));
@@ -558,11 +558,11 @@ fn generate_set_parent_helper(code: &mut String, entity: &EntityDef, fk: &str, f
     code.push_str("        child_id: &str,\n");
     code.push_str(&format!("        parent_id: {},\n", has_many::parent_param_type(fk_required)));
     code.push_str("    ) -> Result<(), AppError> {\n");
-    code.push_str("        use sea_orm::ConnectionTrait as _;\n");
-    code.push_str("        let update = sea_orm::sea_query::Query::update()\n");
+    code.push_str("        use ::sea_orm::ConnectionTrait as _;\n");
+    code.push_str("        let update = ::sea_orm::sea_query::Query::update()\n");
     code.push_str(&format!("            .table({})\n", alias(&entity.table)));
     code.push_str(&format!("            .value({}, {parent})\n", alias(member_name(fk))));
-    code.push_str(&format!("            .and_where(sea_orm::sea_query::Expr::col({}).eq(child_id))\n", alias(id)));
+    code.push_str(&format!("            .and_where(::sea_orm::sea_query::Expr::col({}).eq(child_id))\n", alias(id)));
     code.push_str("            .to_owned();\n");
     code.push_str("        let stmt = self.db().get_database_backend().build(&update);\n");
     code.push_str("        self.db()\n");
@@ -765,7 +765,7 @@ mod tests {
         let helper = &code[code.find("pub fn order_nodes_query(").expect("a module-level helper")..];
         assert!(
             helper.starts_with(
-                "pub fn order_nodes_query(mut query: sea_orm::Select<node::Entity>, order: &[OrderBy<NodeSortField>]) -> sea_orm::Select<node::Entity> {"
+                "pub fn order_nodes_query(mut query: ::sea_orm::Select<node::Entity>, order: &[OrderBy<NodeSortField>]) -> ::sea_orm::Select<node::Entity> {"
             ),
             "{helper}"
         );
@@ -774,8 +774,8 @@ mod tests {
             "NodeSortField::Id => node::Column::Id,",
             "NodeSortField::Name => node::Column::Name,",
             "NodeSortField::Type => node::Column::Type,",
-            "ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),",
-            "ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),",
+            "ontogen_core::order::Direction::Asc => (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First),",
+            "ontogen_core::order::Direction::Desc => (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last),",
             "string keys sort in byte order under SQLite's default BINARY collation.",
             "query = query.order_by_with_nulls(column, direction, nulls);",
         ] {
@@ -919,7 +919,7 @@ mod tests {
         let code = crud(&make_role_entity(), &IdStrategy::Provided);
         let helper = method(&code, "try_insert_role");
         assert!(helper.contains("let active = record.to_active_model()?;"), "{helper}");
-        assert!(helper.contains("Some(sea_orm::SqlErr::UniqueConstraintViolation(_))"), "{helper}");
+        assert!(helper.contains("Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))"), "{helper}");
         assert!(helper.contains("role::Entity::find_by_id(record.id.as_str())"), "{helper}");
         assert!(helper.contains("Err(AppError::DbError(e.to_string()))"), "{helper}");
     }
@@ -950,7 +950,7 @@ mod tests {
         let helper = method(&code, "set_node_parent");
         assert!(helper.contains("parent_id: &str,"), "{helper}");
         assert!(
-            helper.contains(r#".value(sea_orm::sea_query::Alias::new("parent_id"), parent_id.to_string())"#),
+            helper.contains(r#".value(::sea_orm::sea_query::Alias::new("parent_id"), parent_id.to_string())"#),
             "{helper}"
         );
         assert!(method(&code, "create_node").contains("self.set_node_parent(child_id, &id).await?;"));

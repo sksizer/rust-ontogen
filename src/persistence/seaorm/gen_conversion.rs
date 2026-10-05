@@ -89,7 +89,7 @@ impl {entity_name} {{
     }}
 
     pub fn to_active_model(&self) -> Result<entity::ActiveModel, AppError> {{
-        use sea_orm::Set;
+        use ::sea_orm::Set;
 
         Ok(entity::ActiveModel {{
 {to_active_model_fields}

@@ -65,13 +65,13 @@ pub fn sort_endpoints(items: &mut [Endpoint], order: &[OrderBy<EndpointSortField
         keys.iter()
             .map(|key| key.direction.apply(compare_endpoints(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_endpoints`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_endpoints(a: &Endpoint, b: &Endpoint, field: EndpointSortField) -> std::cmp::Ordering {
+fn compare_endpoints(a: &Endpoint, b: &Endpoint, field: EndpointSortField) -> ::std::cmp::Ordering {
     match field {
         EndpointSortField::Id => a.id.cmp(&b.id),
         EndpointSortField::Title => a.title.cmp(&b.title),

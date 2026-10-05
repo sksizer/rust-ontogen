@@ -15,19 +15,19 @@ impl StoreBackend for SeaormBackend {
     fn emit_preamble(&self, code: &mut String, entity: &EntityDef) {
         let snake = to_snake_case(&entity.name);
 
-        // `sea_query` and `QueryOrder` back `order_{plural}_query`, which
-        // every module has, so these imports are always used — no condition
-        // here to keep in lockstep with gen_crud. Traits come in unnamed and
-        // SeaORM types by path: a bare `Order` or `Select` would clash with
-        // an entity of that name.
-        code.push_str("use sea_orm::sea_query;\n");
+        // `QueryOrder` backs `order_{plural}_query`, which every module has,
+        // so these imports are always used — no condition here to keep in
+        // lockstep with gen_crud. Traits come in unnamed and SeaORM types by
+        // `::`-rooted path: a bare `Order` or `Select` would clash with an
+        // entity of that name, and an unrooted `sea_orm::` with the module of
+        // an entity named `SeaOrm`.
         code.push_str(
-            "use sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};\n\n",
+            "use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};\n\n",
         );
 
         // Additional imports for entities with has_many relations
         if entity.has_many_relations().next().is_some() {
-            code.push_str("use sea_orm::{ColumnTrait as _, QueryFilter as _};\n");
+            code.push_str("use ::sea_orm::{ColumnTrait as _, QueryFilter as _};\n");
         }
 
         code.push_str(&format!("use crate::persistence::db::entities::{};\n", rust_ident(&snake)));

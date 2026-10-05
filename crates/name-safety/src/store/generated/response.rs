@@ -65,13 +65,13 @@ pub fn sort_responses(items: &mut [Response], order: &[OrderBy<ResponseSortField
         keys.iter()
             .map(|key| key.direction.apply(compare_responses(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_responses`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_responses(a: &Response, b: &Response, field: ResponseSortField) -> std::cmp::Ordering {
+fn compare_responses(a: &Response, b: &Response, field: ResponseSortField) -> ::std::cmp::Ordering {
     match field {
         ResponseSortField::Id => a.id.cmp(&b.id),
         ResponseSortField::Title => a.title.cmp(&b.title),

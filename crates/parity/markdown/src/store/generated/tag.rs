@@ -65,13 +65,13 @@ pub fn sort_tags(items: &mut [Tag], order: &[OrderBy<TagSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_tags(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_tags`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_tags(a: &Tag, b: &Tag, field: TagSortField) -> std::cmp::Ordering {
+fn compare_tags(a: &Tag, b: &Tag, field: TagSortField) -> ::std::cmp::Ordering {
     match field {
         TagSortField::Id => a.id.cmp(&b.id),
         TagSortField::Title => a.title.cmp(&b.title),

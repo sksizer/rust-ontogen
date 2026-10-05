@@ -112,13 +112,13 @@ pub fn sort_documents(items: &mut [Document], order: &[OrderBy<DocumentSortField
         keys.iter()
             .map(|key| key.direction.apply(compare_documents(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_documents`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_documents(a: &Document, b: &Document, field: DocumentSortField) -> std::cmp::Ordering {
+fn compare_documents(a: &Document, b: &Document, field: DocumentSortField) -> ::std::cmp::Ordering {
     match field {
         DocumentSortField::Id => a.id.cmp(&b.id),
         DocumentSortField::Title => a.title.cmp(&b.title),

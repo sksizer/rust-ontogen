@@ -7,5 +7,7 @@ pub mod item_tags;
 pub mod r#match;
 pub mod order;
 pub mod order_loop;
+pub mod sea_orm;
+pub mod sea_query;
 pub mod section;
 pub mod tag;

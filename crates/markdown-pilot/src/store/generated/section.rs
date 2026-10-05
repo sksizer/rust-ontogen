@@ -82,13 +82,13 @@ pub fn sort_sections(items: &mut [Section], order: &[OrderBy<SectionSortField>])
         keys.iter()
             .map(|key| key.direction.apply(compare_sections(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_sections`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_sections(a: &Section, b: &Section, field: SectionSortField) -> std::cmp::Ordering {
+fn compare_sections(a: &Section, b: &Section, field: SectionSortField) -> ::std::cmp::Ordering {
     match field {
         SectionSortField::Id => a.id.cmp(&b.id),
         SectionSortField::Title => a.title.cmp(&b.title),

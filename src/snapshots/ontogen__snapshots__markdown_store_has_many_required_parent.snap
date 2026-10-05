@@ -92,13 +92,13 @@ pub fn sort_nodes(items: &mut [Node], order: &[OrderBy<NodeSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_nodes(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_nodes`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_nodes(a: &Node, b: &Node, field: NodeSortField) -> std::cmp::Ordering {
+fn compare_nodes(a: &Node, b: &Node, field: NodeSortField) -> ::std::cmp::Ordering {
     match field {
         NodeSortField::Id => a.id.cmp(&b.id),
         NodeSortField::Label => a.label.cmp(&b.label),

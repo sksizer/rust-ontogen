@@ -65,13 +65,13 @@ pub fn sort_events(items: &mut [Event], order: &[OrderBy<EventSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_events(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_events`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_events(a: &Event, b: &Event, field: EventSortField) -> std::cmp::Ordering {
+fn compare_events(a: &Event, b: &Event, field: EventSortField) -> ::std::cmp::Ordering {
     match field {
         EventSortField::Id => a.id.cmp(&b.id),
         EventSortField::Title => a.title.cmp(&b.title),

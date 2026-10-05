@@ -65,13 +65,13 @@ pub fn sort_relationships(items: &mut [Relationship], order: &[OrderBy<Relations
         keys.iter()
             .map(|key| key.direction.apply(compare_relationships(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_relationships`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_relationships(a: &Relationship, b: &Relationship, field: RelationshipSortField) -> std::cmp::Ordering {
+fn compare_relationships(a: &Relationship, b: &Relationship, field: RelationshipSortField) -> ::std::cmp::Ordering {
     match field {
         RelationshipSortField::Id => a.id.cmp(&b.id),
         RelationshipSortField::Title => a.title.cmp(&b.title),

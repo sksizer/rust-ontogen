@@ -635,15 +635,22 @@ mod tests {
                 crate::ir::Backend::Seaorm(_) => {
                     assert!(order.contains("let loop_changed = updates.r#loop.is_some();"), "{order}");
                     for code in [&doc, &order, &r#match] {
-                        let imports: Vec<_> = code.lines().filter(|l| l.starts_with("use sea_orm")).collect();
+                        let imports: Vec<_> = code.lines().filter(|l| l.contains("sea_orm")).collect();
+                        assert!(!code.contains(" sea_orm::") && !code.contains("(sea_orm::"), "unrooted:\n{code}");
                         assert!(
-                            imports.iter().all(|l| *l == "use sea_orm::sea_query;" || l.contains(" as _")),
+                            imports
+                                .iter()
+                                .filter(|l| l.starts_with("use "))
+                                .all(|l| l.starts_with("use ::sea_orm::{") && l.contains(" as _")),
                             "{imports:?}"
                         );
                     }
                     assert!(r#match.contains("use crate::persistence::db::entities::r#match;"), "{}", r#match);
                     assert!(r#match.contains("r#match::Entity::find_by_id(id)"), "{}", r#match);
-                    assert!(order.contains("(sea_query::Order::Asc, sea_query::NullOrdering::First)"), "{order}");
+                    assert!(
+                        order.contains("(::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)"),
+                        "{order}"
+                    );
                     assert!(
                         order.contains(
                             r#"self.sync_junction("order_loop", "order_id", "match_id", &id, &record.r#loop)"#
@@ -652,14 +659,16 @@ mod tests {
                     );
                     // sea_query quotes each identifier for the backend, so the
                     // keyword column `in` reaches SQL as `"in"`.
-                    assert!(doc.contains(r#".table(sea_orm::sea_query::Alias::new("docs"))"#), "{doc}");
+                    assert!(doc.contains(r#".table(::sea_orm::sea_query::Alias::new("docs"))"#), "{doc}");
                     assert!(
-                        doc.contains(r#".value(sea_orm::sea_query::Alias::new("in"), parent_id.map(str::to_string))"#),
+                        doc.contains(
+                            r#".value(::sea_orm::sea_query::Alias::new("in"), parent_id.map(str::to_string))"#
+                        ),
                         "{doc}"
                     );
                     assert!(
                         doc.contains(
-                            r#"sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")).eq(child_id)"#
+                            r#"::sea_orm::sea_query::Expr::col(::sea_orm::sea_query::Alias::new("id")).eq(child_id)"#
                         ),
                         "{doc}"
                     );

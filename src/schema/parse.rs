@@ -1566,7 +1566,7 @@ mod tests {
             ("Send", "names the prelude's `Send` bare"),
             ("OntogenWidget", "the `Ontogen` prefix is reserved"),
             ("Std", "would shadow the crate `std`"),
-            ("SeaQuery", "would shadow the crate `sea_query`"),
+            ("Schemars", "would shadow the crate `schemars`"),
         ] {
             let err = parse_schema_source(&entity_source(name, "title"), Path::new("bad.rs")).expect_err(name);
             assert!(err.starts_with(&format!("entity `{name}` in bad.rs: ontogen cannot generate")), "{err}");
@@ -1574,7 +1574,7 @@ mod tests {
             let rename = if name == "OntogenWidget" { "Widget".to_string() } else { format!("{name}Item") };
             assert!(err.contains(&format!("rename the entity (e.g. `{rename}`)")), "{err}");
         }
-        for name in ["Iterator", "Ontogeny", "Core"] {
+        for name in ["Iterator", "Ontogeny", "Core", "SeaOrm", "SeaQuery"] {
             parse_schema_source(&entity_source(name, "title"), Path::new("ok.rs")).expect(name);
         }
     }

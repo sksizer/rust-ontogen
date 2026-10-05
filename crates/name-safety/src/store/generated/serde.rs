@@ -65,13 +65,13 @@ pub fn sort_serdes(items: &mut [Serde], order: &[OrderBy<SerdeSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_serdes(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_serdes`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_serdes(a: &Serde, b: &Serde, field: SerdeSortField) -> std::cmp::Ordering {
+fn compare_serdes(a: &Serde, b: &Serde, field: SerdeSortField) -> ::std::cmp::Ordering {
     match field {
         SerdeSortField::Id => a.id.cmp(&b.id),
         SerdeSortField::Title => a.title.cmp(&b.title),

@@ -7,9 +7,9 @@
 //!   modules, and the few names listed below that it cannot avoid: the
 //!   prelude, the consumer contract (the store, state and error types) and
 //!   public items 0.8.0 consumers already name.
-//! - A transport, which imports the API modules by name, writes
-//!   extern-crate paths rooted (`::serde::Serialize`), so a module named
-//!   after a crate cannot shadow it. The few crates other output names
+//! - Every extern-crate path ontogen writes is rooted
+//!   (`::serde::Serialize`, `::sea_orm::Select`), so an entity or API module
+//!   named after a crate cannot shadow it. The crates a derive names
 //!   unrooted beside entity modules are refused as module names
 //!   ([`SHADOWED_CRATES`]).
 //! - Runtime types are imported under an `Ontogen` alias
@@ -25,6 +25,12 @@
 //! names a schema or an API module may not take and why; the stage that
 //! knows enough to tell (schema parse, the store, api and servers stages,
 //! the API scan) refuses them with an error naming the item and the fix.
+//!
+//! The TypeScript clients keep their own lists, beside the code that emits
+//! the names: `CLIENT_GLOBALS`, `TRANSPORT_GLOBALS` and the declaration
+//! lists in `src/clients/generators/jsonapi.rs` (types a consumer may not
+//! name), and `JS_RESERVED` and `TS_CLIENT_CALLEES` in
+//! `src/servers/types.rs` (argument names escaped with a trailing `_`).
 
 /// Strict and reserved keywords of every edition up to 2024, all of which
 /// can be written as raw identifiers.
@@ -62,13 +68,14 @@ pub(crate) const STORE_CONTRACT: &[&str] = &["AppError", "ChangeOp", "EntityKind
 /// snake_case name) when API forwarders over the store are generated.
 pub(crate) const STORE_MODULES: &[&str] = &["generated", "hooks"];
 
-/// Crates the output names by unrooted path in a scope that also holds
-/// entity modules: schemars' `JsonSchema` derive expands to `schemars::…`
-/// and `std::…` paths (the MCP server derives it beside the API modules it
-/// imports), and the SeaORM store imports its entity module by name beside
-/// `sea_query` and `std::cmp`. An entity whose snake_case name is one of
-/// these shadows the crate. Refused at schema parse.
-pub(crate) const SHADOWED_CRATES: &[&str] = &["schemars", "sea_query", "std"];
+/// Crates named by unrooted path in a scope that also holds entity
+/// modules, where the path comes from a derive ontogen does not write:
+/// schemars' `JsonSchema` derive expands to `schemars::…` and `std::…`
+/// paths, and the MCP server derives it beside the API modules it imports.
+/// An entity whose snake_case name is one of these shadows the crate.
+/// Refused at schema parse. Every path ontogen writes itself is
+/// `::`-rooted instead.
+pub(crate) const SHADOWED_CRATES: &[&str] = &["schemars", "std"];
 
 /// The crates of [`SHADOWED_CRATES`] a derive expands to. A hand-written
 /// API module of that name is refused when the MCP server is generated.
@@ -153,8 +160,43 @@ pub(crate) fn refused_binding_name(name: &str) -> Option<String> {
         .then(|| format!("the `{BINDING_PREFIX}` prefix is reserved for the bindings ontogen generates"))
 }
 
+/// Refuses an entity named like a type the configuration names, `role`
+/// saying which (`"state"`, `"store"`): the generated API and servers
+/// import it bare beside the entity types. Checked before any stage writes,
+/// since the scaffolded hooks of an entity would otherwise outlive the
+/// refusal.
+pub(crate) fn check_configured_names<'a>(
+    entities: impl IntoIterator<Item = &'a str>,
+    configured: &[(&str, &str)],
+) -> Result<(), String> {
+    for entity in entities {
+        for (role, ty) in configured {
+            let bare = ty.rsplit("::").next().unwrap_or(ty).trim();
+            if entity == bare {
+                return Err(format!(
+                    "ontogen: entity `{entity}` cannot be generated: the generated API and servers import the \
+                     configured {role} type `{ty}` bare beside the entity types, so the two would clash. Rename the \
+                     entity (e.g. `{entity}Item`)."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_entity_named_like_a_configured_type_is_refused() {
+        let configured = [("state", "crate::AppState"), ("store", "Store")];
+        let err = check_configured_names(["Note", "AppState"], &configured).unwrap_err();
+        assert!(err.starts_with("ontogen: entity `AppState` cannot be generated"), "{err}");
+        assert!(err.contains("configured state type `crate::AppState`"), "{err}");
+        assert!(err.contains("(e.g. `AppStateItem`)"), "{err}");
+        assert!(check_configured_names(["Store"], &configured).unwrap_err().contains("configured store type"));
+        check_configured_names(["Note", "State"], &configured).expect("other names build");
+    }
     use super::*;
 
     #[test]
@@ -185,7 +227,6 @@ mod tests {
             ("OntogenListParams", "ontogen_list_params"),
             ("Std", "std"),
             ("Schemars", "schemars"),
-            ("SeaQuery", "sea_query"),
         ] {
             assert!(refused_entity_name(name, snake).is_some(), "{name} should be refused");
         }
@@ -194,6 +235,8 @@ mod tests {
         for (name, snake) in [
             ("Document", "document"),
             ("MarkdownStore", "markdown_store"),
+            ("SeaOrm", "sea_orm"),
+            ("SeaQuery", "sea_query"),
             ("Match", "match"),
             ("Iterator", "iterator"),
             ("Into", "into"),

@@ -65,13 +65,13 @@ pub fn sort_linkses(items: &mut [Links], order: &[OrderBy<LinksSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_linkses(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_linkses`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_linkses(a: &Links, b: &Links, field: LinksSortField) -> std::cmp::Ordering {
+fn compare_linkses(a: &Links, b: &Links, field: LinksSortField) -> ::std::cmp::Ordering {
     match field {
         LinksSortField::Id => a.id.cmp(&b.id),
         LinksSortField::Title => a.title.cmp(&b.title),

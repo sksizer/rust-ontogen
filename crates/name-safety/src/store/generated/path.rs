@@ -65,13 +65,13 @@ pub fn sort_paths(items: &mut [Path], order: &[OrderBy<PathSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_paths(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_paths`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_paths(a: &Path, b: &Path, field: PathSortField) -> std::cmp::Ordering {
+fn compare_paths(a: &Path, b: &Path, field: PathSortField) -> ::std::cmp::Ordering {
     match field {
         PathSortField::Id => a.id.cmp(&b.id),
         PathSortField::Title => a.title.cmp(&b.title),

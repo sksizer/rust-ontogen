@@ -65,13 +65,13 @@ pub fn sort_fixeds(items: &mut [Fixed], order: &[OrderBy<FixedSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_fixeds(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_fixeds`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_fixeds(a: &Fixed, b: &Fixed, field: FixedSortField) -> std::cmp::Ordering {
+fn compare_fixeds(a: &Fixed, b: &Fixed, field: FixedSortField) -> ::std::cmp::Ordering {
     match field {
         FixedSortField::Id => a.id.cmp(&b.id),
         FixedSortField::Title => a.title.cmp(&b.title),

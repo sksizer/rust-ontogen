@@ -2,13 +2,12 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query;
-use sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
+use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::item;
 use crate::schema::Item;
 use crate::schema::{AppError, ChangeOp, EntityKind};
-use sea_orm::{ColumnTrait as _, QueryFilter as _};
+use ::sea_orm::{ColumnTrait as _, QueryFilter as _};
 
 use crate::store::Store;
 use crate::store::hooks::item as hooks;
@@ -323,13 +322,13 @@ pub fn sort_items(items: &mut [Item], order: &[OrderBy<ItemSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_items(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_items`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_items(a: &Item, b: &Item, field: ItemSortField) -> std::cmp::Ordering {
+fn compare_items(a: &Item, b: &Item, field: ItemSortField) -> ::std::cmp::Ordering {
     match field {
         ItemSortField::Id => a.id.cmp(&b.id),
         ItemSortField::Title => a.title.cmp(&b.title),
@@ -589,7 +588,7 @@ impl Store {
         let active = record.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
                 let taken = item::Entity::find_by_id(record.id.as_str())
                     .one(self.db())
                     .await
@@ -602,11 +601,11 @@ impl Store {
     }
 
     async fn set_item_parent(&self, child_id: &str, parent_id: Option<&str>) -> Result<(), AppError> {
-        use sea_orm::ConnectionTrait as _;
-        let update = sea_orm::sea_query::Query::update()
-            .table(sea_orm::sea_query::Alias::new("items"))
-            .value(sea_orm::sea_query::Alias::new("parent_id"), parent_id.map(str::to_string))
-            .and_where(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")).eq(child_id))
+        use ::sea_orm::ConnectionTrait as _;
+        let update = ::sea_orm::sea_query::Query::update()
+            .table(::sea_orm::sea_query::Alias::new("items"))
+            .value(::sea_orm::sea_query::Alias::new("parent_id"), parent_id.map(str::to_string))
+            .and_where(::sea_orm::sea_query::Expr::col(::sea_orm::sea_query::Alias::new("id")).eq(child_id))
             .to_owned();
         let stmt = self.db().get_database_backend().build(&update);
         self.db().execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
@@ -621,9 +620,9 @@ impl Store {
 /// Applies `order` to `query` as `list_items` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_items_query(
-    mut query: sea_orm::Select<item::Entity>,
+    mut query: ::sea_orm::Select<item::Entity>,
     order: &[OrderBy<ItemSortField>],
-) -> sea_orm::Select<item::Entity> {
+) -> ::sea_orm::Select<item::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             ItemSortField::Id => item::Column::Id,
@@ -655,8 +654,12 @@ pub fn order_items_query(
             ItemSortField::MaybeU64 => item::Column::MaybeU64,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => {
+                (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)
+            }
+            ontogen_core::order::Direction::Desc => {
+                (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last)
+            }
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);
