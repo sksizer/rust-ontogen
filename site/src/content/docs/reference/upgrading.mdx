@@ -157,7 +157,7 @@ Most of these names never compiled. These did with 0.8.0 and are now refused, so
 
 - An entity whose name starts with `Ontogen`, and an entity field or API fn argument that starts with `ontogen_`. Both prefixes are reserved for generated items.
 - An entity named after a prelude item (`Result`, `Option`, `Vec`, `String`, `Box`, `From`, `Default`, `Clone`, `Send`, `Sync`, `Fn`) in a build whose generated code did not name that item bare: `Default` in most builds, `Send` or `Clone` without a server, `Box` without an MCP server. The name is now refused whatever the build generates.
-- An entity named `OrderBy` in a build with a store, and one named `SeaQuery`, `MarkdownStore`, or `Std` without an MCP server, in any build. The 0.9 store, API and vault modules name these bare.
+- An entity named `OrderBy` in a build with a store, and one named `SeaQuery` or `Std` without an MCP server, in any build. The 0.9 store and API modules name these bare.
 - An argument named `__` (or another name with no letter or digit) in a build without a TypeScript client.
 
 ### Ops the generator now refuses

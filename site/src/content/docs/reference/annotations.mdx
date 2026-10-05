@@ -49,7 +49,7 @@ A few entity names would collide with what the generated code names bare, so the
 - `Crate` and `Super`, whose snake_case names `crate` and `super` have no raw form.
 - The prelude items the generated code uses: `Result`, `Option`, `Vec`, `String`, `Box`, `From`, `Default`, `Clone`, `Send`, `Sync` and `Fn`.
 - Names starting with `Ontogen` (`OntogenWidget`, not `Ontogeny`), reserved for the types ontogen generates.
-- Names whose module would shadow a crate the generated code names: `Std`, `Schemars`, `SeaQuery` and `MarkdownStore`.
+- Names whose module would shadow a crate the generated code names: `Std`, `Schemars` and `SeaQuery`.
 - With a store: `Store`, `AppError`, `ChangeOp`, `EntityKind` and `OrderBy`. With API forwarders over the store: `Hooks`, `Generated`, and a name whose module is the API output directory's.
 - With servers: the state and store types (`AppState`, `Store`); with an MCP server, `McpToolDef`, `SimpleToolDef`, `GetByIdInput`, `ByIntIdInput` and `EmptyInput`; with a paginated IPC server, `PaginatedResult`. The servers refuse these names, and the `Ontogen` prefix, for any type your API functions name, not only entities.
 

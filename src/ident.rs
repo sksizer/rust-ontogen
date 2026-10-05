@@ -65,12 +65,10 @@ pub(crate) const STORE_MODULES: &[&str] = &["generated", "hooks"];
 /// Crates the output names by unrooted path in a scope that also holds
 /// entity modules: schemars' `JsonSchema` derive expands to `schemars::…`
 /// and `std::…` paths (the MCP server derives it beside the API modules it
-/// imports), the SeaORM store imports its entity module by name beside
-/// `sea_query` and `std::cmp`, and the markdown vault module declares one
-/// module per entity beside `markdown_store` and `std::path`. An entity
-/// whose snake_case name is one of these shadows the crate. Refused at
-/// schema parse.
-pub(crate) const SHADOWED_CRATES: &[&str] = &["markdown_store", "schemars", "sea_query", "std"];
+/// imports), and the SeaORM store imports its entity module by name beside
+/// `sea_query` and `std::cmp`. An entity whose snake_case name is one of
+/// these shadows the crate. Refused at schema parse.
+pub(crate) const SHADOWED_CRATES: &[&str] = &["schemars", "sea_query", "std"];
 
 /// The crates of [`SHADOWED_CRATES`] a derive expands to. A hand-written
 /// API module of that name is refused when the MCP server is generated.
@@ -188,7 +186,6 @@ mod tests {
             ("Std", "std"),
             ("Schemars", "schemars"),
             ("SeaQuery", "sea_query"),
-            ("MarkdownStore", "markdown_store"),
         ] {
             assert!(refused_entity_name(name, snake).is_some(), "{name} should be refused");
         }
@@ -196,6 +193,7 @@ mod tests {
         // keyword entities (raw modules) and crates it roots or never names.
         for (name, snake) in [
             ("Document", "document"),
+            ("MarkdownStore", "markdown_store"),
             ("Match", "match"),
             ("Iterator", "iterator"),
             ("Into", "into"),
