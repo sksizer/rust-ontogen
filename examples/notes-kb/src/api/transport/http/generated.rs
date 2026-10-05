@@ -15,7 +15,7 @@ use axum::{
 use ontogen_jsonapi::{
     AnyResource, Document, ErrorObject, Included, Linkage, Links, LookupKey, QueryParams, QuerySpec, Relationship,
     ResourceIdentifier, ResourceObject,
-    error::{method_not_allowed, relationship_not_found},
+    error::{method_not_allowed, no_such_relationship},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::{CanonicalQuery, encode_path_segment},
     request::{self, Endpoint, LinkedId, ResourceData},
@@ -383,7 +383,7 @@ async fn ontogen_note_relationship_get(
             );
             Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(relationship_not_found("notes", &rel)),
+        _ => Err(no_such_relationship("notes", &rel)),
     }
 }
 
@@ -412,7 +412,7 @@ async fn ontogen_note_relationship_patch(
             .await?;
             Ok(response::no_content())
         }
-        _ => Err(relationship_not_found("notes", &rel)),
+        _ => Err(no_such_relationship("notes", &rel)),
     }
 }
 
@@ -437,7 +437,7 @@ async fn ontogen_note_relationship_post(
             }
             Ok(response::no_content())
         }
-        _ => Err(relationship_not_found("notes", &rel)),
+        _ => Err(no_such_relationship("notes", &rel)),
     }
 }
 
@@ -461,7 +461,7 @@ async fn ontogen_note_relationship_delete(
             }
             Ok(response::no_content())
         }
-        _ => Err(relationship_not_found("notes", &rel)),
+        _ => Err(no_such_relationship("notes", &rel)),
     }
 }
 
@@ -482,7 +482,7 @@ async fn ontogen_note_related_get(
             let ontogen_self = format!("{ontogen_collection}/{}/links", encode_path_segment(&ontogen_entity.id));
             Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
         }
-        _ => Err(relationship_not_found("notes", &rel)),
+        _ => Err(no_such_relationship("notes", &rel)),
     }
 }
 

@@ -111,7 +111,8 @@ example vault passes an OKF conformance check in CI; IPC, MCP and the admin
 layer are unchanged by either. The JSON:API `errors[]` document replaces the
 `{"error"}` body that the M3 error-mapping epic assumed, so that epic's
 envelope section is superseded while its status-mapping mechanism stands.
-**Met** — the OKF epic closed 2026-10-03 ([#194](https://github.com/sksizer/rust-ontogen/pull/194),
+**Met, with one deviation** (the TypeScript `Transport` interface, below) —
+the OKF epic closed 2026-10-03 ([#194](https://github.com/sksizer/rust-ontogen/pull/194),
 [#196](https://github.com/sksizer/rust-ontogen/pull/196)) and the JSON:API epic 2026-10-04 ([#195](https://github.com/sksizer/rust-ontogen/pull/195),
 [#197](https://github.com/sksizer/rust-ontogen/pull/197),
 [#198](https://github.com/sksizer/rust-ontogen/pull/198),
@@ -133,6 +134,15 @@ envelope section is superseded while its status-mapping mechanism stands.
 - IPC and MCP payloads stay flat, and the admin layer needed no source
   change. IPC and MCP list calls take an optional `sort`, and both get the
   store fixes the [wire contract](https://github.com/sksizer/rust-ontogen/blob/main/docs/jsonapi-wire-contract.md) lists in §15.
+- Deviation: the TypeScript `Transport` interface changed beyond the list
+  `options` argument. It no longer declares a paginated module's `xCount()`,
+  it declares junction add and remove as `Promise<null>`, a lone
+  `list_X` takes no page, a list whose `*Query` struct has a required field
+  takes `query` as a required parameter, and a bare filter whose type name
+  contains `Query` or `Input` without ending in `Query` is declared under its
+  own name. The
+  [epic's acceptance criteria](https://github.com/sksizer/rust-ontogen/blob/main/docs/planning/epics/jsonapi-http-transport.md#acceptance-criteria)
+  record them.
 
 ---
 

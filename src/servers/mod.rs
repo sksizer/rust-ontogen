@@ -46,6 +46,11 @@ pub fn generate(
         Some(dir) => error_map::scan(dir).map_err(CodegenError::Server)?,
         None => None,
     };
+    if let Some(map) = &error_map
+        && config.generators.iter().any(|g| matches!(g, ServerGenerator::HttpAxum { .. }))
+    {
+        map.check_codes().map_err(CodegenError::Server)?;
+    }
 
     // Convert unified ServersConfig → internal Config
     let legacy_config = config::Config {
