@@ -114,13 +114,13 @@ pub fn sort_workout_sets(items: &mut [WorkoutSet], order: &[OrderBy<WorkoutSetSo
         keys.iter()
             .map(|key| key.direction.apply(compare_workout_sets(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_workout_sets`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_workout_sets(a: &WorkoutSet, b: &WorkoutSet, field: WorkoutSetSortField) -> std::cmp::Ordering {
+fn compare_workout_sets(a: &WorkoutSet, b: &WorkoutSet, field: WorkoutSetSortField) -> ::std::cmp::Ordering {
     match field {
         WorkoutSetSortField::Id => a.id.cmp(&b.id),
         WorkoutSetSortField::SetNumber => a.set_number.cmp(&b.set_number),

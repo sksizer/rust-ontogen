@@ -116,13 +116,13 @@ pub fn sort_tasks(items: &mut [Task], order: &[OrderBy<TaskSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_tasks(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_tasks`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_tasks(a: &Task, b: &Task, field: TaskSortField) -> std::cmp::Ordering {
+fn compare_tasks(a: &Task, b: &Task, field: TaskSortField) -> ::std::cmp::Ordering {
     match field {
         TaskSortField::Id => a.id.cmp(&b.id),
         TaskSortField::Title => a.title.cmp(&b.title),

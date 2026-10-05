@@ -2,8 +2,7 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query;
-use sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
+use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::exercise;
 use crate::schema::Exercise;
@@ -89,13 +88,13 @@ pub fn sort_exercises(items: &mut [Exercise], order: &[OrderBy<ExerciseSortField
         keys.iter()
             .map(|key| key.direction.apply(compare_exercises(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_exercises`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_exercises(a: &Exercise, b: &Exercise, field: ExerciseSortField) -> std::cmp::Ordering {
+fn compare_exercises(a: &Exercise, b: &Exercise, field: ExerciseSortField) -> ::std::cmp::Ordering {
     match field {
         ExerciseSortField::Id => a.id.cmp(&b.id),
         ExerciseSortField::Name => a.name.cmp(&b.name),
@@ -205,7 +204,7 @@ impl Store {
         let active = record.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
                 let taken = exercise::Entity::find_by_id(record.id.as_str())
                     .one(self.db())
                     .await
@@ -221,9 +220,9 @@ impl Store {
 /// Applies `order` to `query` as `list_exercises` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_exercises_query(
-    mut query: sea_orm::Select<exercise::Entity>,
+    mut query: ::sea_orm::Select<exercise::Entity>,
     order: &[OrderBy<ExerciseSortField>],
-) -> sea_orm::Select<exercise::Entity> {
+) -> ::sea_orm::Select<exercise::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             ExerciseSortField::Id => exercise::Column::Id,
@@ -233,8 +232,12 @@ pub fn order_exercises_query(
             ExerciseSortField::Notes => exercise::Column::Notes,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (sea_query::Order::Asc, sea_query::NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (sea_query::Order::Desc, sea_query::NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => {
+                (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)
+            }
+            ontogen_core::order::Direction::Desc => {
+                (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last)
+            }
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

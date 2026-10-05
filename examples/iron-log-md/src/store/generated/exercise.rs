@@ -89,13 +89,13 @@ pub fn sort_exercises(items: &mut [Exercise], order: &[OrderBy<ExerciseSortField
         keys.iter()
             .map(|key| key.direction.apply(compare_exercises(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_exercises`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_exercises(a: &Exercise, b: &Exercise, field: ExerciseSortField) -> std::cmp::Ordering {
+fn compare_exercises(a: &Exercise, b: &Exercise, field: ExerciseSortField) -> ::std::cmp::Ordering {
     match field {
         ExerciseSortField::Id => a.id.cmp(&b.id),
         ExerciseSortField::Name => a.name.cmp(&b.name),
