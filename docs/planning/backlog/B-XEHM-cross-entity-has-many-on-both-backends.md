@@ -7,7 +7,7 @@ tags:
 - relations
 - has-many
 - parity
-last_reviewed: '2026-10-03'
+last_reviewed: '2026-10-04'
 ---
 
 # Support cross-entity has_many on both store backends
@@ -22,7 +22,8 @@ Before the restriction both backends emitted the cross-entity shape against the 
 To support it:
 
 - Emit the child-side helpers against the target: `set_{child}_parent`, `{child}_exists`, and the relation load over the target's table or vault directory and its `{fk}` column or frontmatter field, on both backends.
-- Read the foreign key's type (`String` or `Option<String>`, so `{Child}ParentRequired` or clear) from the target entity, not the declaring one. That needs the whole entity set in the store emission, which today generates one entity at a time.
+- Read the foreign key's type (`String` or `Option<String>`, so `{Child}ParentRequired` or clear) from the target entity, not the declaring one. The backends' `emit_crud_impl` already receives the whole entity set, for the `many_to_many` target checks.
+- A cross-entity child can never be the record itself, so `{Child}ParentCycle` does not apply; the missing-child check (`src/store/linked_ids.rs`) asks the target's `{child}_exists`.
 - Validate at build time that the target exists and has a `belongs_to` field named `foreign_key` pointing back at the declaring entity.
 - Add a runtime parity pair in `crates/parity` (a parent and a child entity, optional and required foreign keys) covering create, update with dropped children, `{Child}NotFound`, `{Child}ParentRequired` and child order, and run it on both backends.
 

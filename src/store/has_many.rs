@@ -5,9 +5,9 @@
 //! update that sets the list points every listed child at the record and
 //! clears the foreign key of every child it drops. When the foreign key is
 //! not `Option` a child cannot be left without a parent, so the update fails
-//! with `{Child}ParentRequired` before anything is written. A listed child
-//! that does not exist fails a create or update with `{Child}NotFound`, also
-//! before anything is written.
+//! with `{Child}ParentRequired` before anything is written. The checks on
+//! the listed ids themselves (the record listing itself, a missing child)
+//! run before that one, in `linked_ids`.
 //!
 //! Only the self-referential shape is supported: the children are records
 //! of the declaring entity, whose `set_{snake}_parent` helper rewrites them,
@@ -122,41 +122,6 @@ pub(crate) fn set_parent_arg(fk_required: bool, id_expr: &str) -> String {
     if fk_required { id_expr.to_string() } else { format!("Some({id_expr})") }
 }
 
-/// The name of the `{snake}_exists(&self, id: &str) -> Result<bool, AppError>`
-/// helper each backend emits for an entity with `has_many` writes. An id the
-/// backend could never hold is `false`, not an error.
-pub(crate) fn exists_helper(entity: &EntityDef) -> String {
-    format!("{}_exists", to_snake_case(&entity.name))
-}
-
-/// Emit, inside `create_*` or `update_*` and before anything is written, the
-/// check that every listed child exists: the first missing one, in list
-/// order, is `{Child}NotFound`. A child listed twice is checked twice, which
-/// is harmless. `listed` names an iterator of `&String` over the new list
-/// for a field: `&subtasks` on create, `updates.subtasks.iter().flatten()`
-/// on update, where an unset list checks nothing.
-///
-/// On update this runs before [`emit_dropped_children`], so a list that both
-/// names a missing child and drops a required one is `{Child}NotFound`.
-pub(crate) fn emit_missing_children_check(
-    code: &mut String,
-    entity: &EntityDef,
-    writes: &[HasManyWrite<'_>],
-    listed: impl Fn(&str) -> String,
-) {
-    let exists = exists_helper(entity);
-    for hm in writes {
-        code.push_str(&format!("        for child_id in {} {{\n", listed(hm.field)));
-        code.push_str(&format!("            if !self.{exists}(child_id).await? {{\n"));
-        code.push_str(&format!("                return Err(AppError::{}NotFound(child_id.clone()));\n", hm.child));
-        code.push_str("            }\n");
-        code.push_str("        }\n");
-    }
-    if !writes.is_empty() {
-        code.push('\n');
-    }
-}
-
 /// Emit, inside `update_*` and before anything is written, the children
 /// the update drops from each `has_many` list (`{field}_dropped`), and the
 /// `{Child}ParentRequired` refusal where the foreign key is required.
@@ -189,26 +154,30 @@ pub(crate) fn emit_dropped_children(code: &mut String, writes: &[HasManyWrite<'_
 /// Emit, inside `update_*` after the record is written, the foreign-key
 /// writes for each changed `has_many` list: every listed child is pointed at
 /// `id`, then every dropped child is cleared. `listed` names the new list
-/// for a field, e.g. `current.subtasks`.
+/// for a field, e.g. `current.subtasks`. `conn` is the connection argument
+/// `set_{snake}_parent` takes first, when the backend's takes one (SeaORM's
+/// transaction).
 pub(crate) fn emit_update_children(
     code: &mut String,
     entity: &EntityDef,
     writes: &[HasManyWrite<'_>],
     listed: impl Fn(&str) -> String,
+    conn: Option<&str>,
 ) {
     let snake = to_snake_case(&entity.name);
+    let conn = conn.map(|c| format!("{c}, ")).unwrap_or_default();
     for hm in writes {
         let f = hm.field;
         code.push_str(&format!("        if {f}_changed {{\n"));
         code.push_str(&format!("            for child_id in {} {{\n", listed(f)));
         code.push_str(&format!(
-            "                self.set_{snake}_parent(child_id, {}).await?;\n",
+            "                self.set_{snake}_parent({conn}child_id, {}).await?;\n",
             set_parent_arg(hm.fk_required, "id")
         ));
         code.push_str("            }\n");
         if !hm.fk_required {
             code.push_str(&format!("            for child_id in &{f}_dropped {{\n"));
-            code.push_str(&format!("                self.set_{snake}_parent(child_id, None).await?;\n"));
+            code.push_str(&format!("                self.set_{snake}_parent({conn}child_id, None).await?;\n"));
             code.push_str("            }\n");
         }
         code.push_str("        }\n");
@@ -337,7 +306,7 @@ mod tests {
 
         let mut code = String::new();
         emit_dropped_children(&mut code, &writes);
-        emit_update_children(&mut code, &entity, &writes, |f| format!("&current.{f}"));
+        emit_update_children(&mut code, &entity, &writes, |f| format!("&current.{f}"), None);
         assert!(code.contains("let children_dropped: Vec<String> = match &updates.children {"), "{code}");
         assert!(!code.contains("ParentRequired"), "{code}");
         assert!(code.contains("self.set_node_parent(child_id, Some(id)).await?;"), "{code}");
@@ -353,34 +322,10 @@ mod tests {
 
         let mut code = String::new();
         emit_dropped_children(&mut code, &writes);
-        emit_update_children(&mut code, &entity, &writes, |f| format!("&current.{f}"));
+        emit_update_children(&mut code, &entity, &writes, |f| format!("&current.{f}"), None);
         assert!(code.contains("return Err(AppError::NodeParentRequired(child_id.clone()));"), "{code}");
         assert!(code.contains("self.set_node_parent(child_id, id).await?;"), "{code}");
         assert!(!code.contains("None).await"), "a required foreign key is never cleared: {code}");
-    }
-
-    #[test]
-    fn a_missing_listed_child_is_the_child_not_found() {
-        let entity = node(FieldType::OptionString);
-        let writes = has_many_writes(&entity);
-        assert_eq!(exists_helper(&entity), "node_exists");
-
-        let mut code = String::new();
-        emit_missing_children_check(&mut code, &entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
-        assert!(code.contains("for child_id in updates.children.iter().flatten() {"), "{code}");
-        assert!(code.contains("if !self.node_exists(child_id).await? {"), "{code}");
-        assert!(code.contains("return Err(AppError::NodeNotFound(child_id.clone()));"), "{code}");
-    }
-
-    #[test]
-    fn the_snippets_parse_inside_a_create_body() {
-        let entity = node(FieldType::String);
-        let writes = has_many_writes(&entity);
-        let mut code = String::from("async fn create(&self, node: Node) -> Result<(), AppError> {\n");
-        code.push_str("        let children = node.children.clone();\n");
-        emit_missing_children_check(&mut code, &entity, &writes, |f| format!("&{f}"));
-        code.push_str("        Ok(())\n}\n");
-        syn::parse_file(&code).unwrap_or_else(|e| panic!("invalid Rust: {e}\n{code}"));
     }
 
     #[test]
@@ -389,10 +334,9 @@ mod tests {
             let entity = node(fk_type);
             let writes = has_many_writes(&entity);
             let mut code = String::from("async fn update(&self, id: &str) -> Result<(), AppError> {\n");
-            emit_missing_children_check(&mut code, &entity, &writes, |f| format!("updates.{f}.iter().flatten()"));
             emit_dropped_children(&mut code, &writes);
             code.push_str("        let children_changed = true;\n");
-            emit_update_children(&mut code, &entity, &writes, |f| format!("&current.{f}"));
+            emit_update_children(&mut code, &entity, &writes, |f| format!("&current.{f}"), None);
             code.push_str("        Ok(())\n}\n");
             syn::parse_file(&code).unwrap_or_else(|e| panic!("invalid Rust: {e}\n{code}"));
         }

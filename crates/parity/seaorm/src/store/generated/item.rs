@@ -3,7 +3,7 @@
 use ontogen_core::order::OrderBy;
 
 use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select, TransactionTrait};
 
 use crate::persistence::db::entities::item;
 use crate::schema::Item;
@@ -428,10 +428,38 @@ impl Store {
         let tags = item.tags.clone();
         let children = item.children.clone();
 
-        for child_id in &children {
+        if !item.id.trim().is_empty() && item.children.contains(&item.id) {
+            return Err(AppError::ItemParentCycle(item.id.clone()));
+        }
+
+        for child_id in &item.children {
             if !self.item_exists(child_id).await? {
                 return Err(AppError::ItemNotFound(child_id.clone()));
             }
+        }
+        for target_id in &item.tags {
+            if !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
+            }
+        }
+
+        if let Some(v) = Some(item.n_u64).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.n_u64: value {v} is out of range for i64")));
+        }
+        if let Some(v) = Some(item.n_usize).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.n_usize: value {v} is out of range for i64")));
+        }
+        if let Some(v) = Some(item.n_u128).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.n_u128: value {v} is out of range for i64")));
+        }
+        if let Some(v) = Some(item.n_isize).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.n_isize: value {v} is out of range for i64")));
+        }
+        if let Some(v) = Some(item.n_i128).filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.n_i128: value {v} is out of range for i64")));
+        }
+        if let Some(v) = item.maybe_u64.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.maybe_u64: value {v} is out of range for i64")));
         }
 
         if item.float32.is_nan() {
@@ -447,6 +475,7 @@ impl Store {
             return Err(AppError::DbError("Item.maybe_float64: NaN cannot be stored".to_string()));
         }
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if item.id.trim().is_empty() {
             let base = ontogen_core::id::slugify(&item.title);
             if base.is_empty() {
@@ -454,7 +483,7 @@ impl Store {
             }
             for candidate in ontogen_core::id::candidates(&base) {
                 let taken = item::Entity::find_by_id(candidate.as_str())
-                    .one(self.db())
+                    .one(&txn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();
@@ -462,23 +491,24 @@ impl Store {
                     continue;
                 }
                 item.id = candidate;
-                if self.try_insert_item(&item).await? {
+                if self.try_insert_item(&txn, &item).await? {
                     break;
                 }
             }
             item.id.clone()
         } else {
             ontogen_core::id::validate_id(&item.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_item(&item).await? {
+            if !self.try_insert_item(&txn, &item).await? {
                 return Err(AppError::ItemAlreadyExists(item.id));
             }
             item.id.clone()
         };
 
-        self.sync_junction("item_tags", "item_id", "tag_id", &id, &tags).await?;
+        self.sync_junction(&txn, "item_tags", "item_id", "tag_id", &id, &tags).await?;
         for child_id in &children {
-            self.set_item_parent(child_id, Some(&id)).await?;
+            self.set_item_parent(&txn, child_id, Some(&id)).await?;
         }
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_item(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Item, id);
@@ -502,9 +532,18 @@ impl Store {
         let tags_changed = updates.tags.is_some();
         let children_changed = updates.children.is_some();
 
+        if updates.children.as_ref().is_some_and(|ids| ids.iter().any(|c| c == id)) {
+            return Err(AppError::ItemParentCycle(id.to_string()));
+        }
+
         for child_id in updates.children.iter().flatten() {
             if !self.item_exists(child_id).await? {
                 return Err(AppError::ItemNotFound(child_id.clone()));
+            }
+        }
+        for target_id in updates.tags.iter().flatten() {
+            if !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
             }
         }
 
@@ -512,6 +551,25 @@ impl Store {
             Some(new_ids) => current.children.iter().filter(|c| !new_ids.contains(c)).cloned().collect(),
             None => Vec::new(),
         };
+
+        if let Some(v) = updates.n_u64.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.n_u64: value {v} is out of range for i64")));
+        }
+        if let Some(v) = updates.n_usize.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.n_usize: value {v} is out of range for i64")));
+        }
+        if let Some(v) = updates.n_u128.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.n_u128: value {v} is out of range for i64")));
+        }
+        if let Some(v) = updates.n_isize.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.n_isize: value {v} is out of range for i64")));
+        }
+        if let Some(v) = updates.n_i128.filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.n_i128: value {v} is out of range for i64")));
+        }
+        if let Some(v) = updates.maybe_u64.flatten().filter(|v| i64::try_from(*v).is_err()) {
+            return Err(AppError::DbError(format!("Item.maybe_u64: value {v} is out of range for i64")));
+        }
 
         if updates.float32.is_some_and(f32::is_nan) {
             return Err(AppError::DbError("Item.float32: NaN cannot be stored".to_string()));
@@ -527,21 +585,22 @@ impl Store {
         }
 
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
         if tags_changed {
-            self.sync_junction("item_tags", "item_id", "tag_id", id, &current.tags).await?;
+            self.sync_junction(&txn, "item_tags", "item_id", "tag_id", id, &current.tags).await?;
         }
         if children_changed {
             for child_id in &current.children {
-                self.set_item_parent(child_id, Some(id)).await?;
+                self.set_item_parent(&txn, child_id, Some(id)).await?;
             }
             for child_id in &children_dropped {
-                self.set_item_parent(child_id, None).await?;
+                self.set_item_parent(&txn, child_id, None).await?;
             }
         }
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_item(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::Item, id.to_string());
@@ -588,13 +647,14 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_item(&self, item: &Item) -> Result<bool, AppError> {
+    async fn try_insert_item<C: sea_orm::ConnectionTrait>(&self, conn: &C, item: &Item) -> Result<bool, AppError> {
         let active = item.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = item::Entity::find_by_id(item.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();
@@ -604,8 +664,13 @@ impl Store {
         }
     }
 
-    async fn set_item_parent(&self, child_id: &str, parent_id: Option<&str>) -> Result<(), AppError> {
-        use sea_orm::{ConnectionTrait, Value};
+    async fn set_item_parent<C: sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        child_id: &str,
+        parent_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        use sea_orm::Value;
         // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.
         let stmt = sea_orm::Statement::from_sql_and_values(
             sea_orm::DatabaseBackend::Sqlite,
@@ -615,11 +680,11 @@ impl Store {
                 Value::from(child_id.to_string()),
             ],
         );
-        self.db().execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        conn.execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
         Ok(())
     }
 
-    async fn item_exists(&self, id: &str) -> Result<bool, AppError> {
+    pub(crate) async fn item_exists(&self, id: &str) -> Result<bool, AppError> {
         Ok(item::Entity::find_by_id(id).one(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?.is_some())
     }
 }

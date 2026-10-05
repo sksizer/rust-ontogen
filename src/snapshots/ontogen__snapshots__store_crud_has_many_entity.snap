@@ -7,7 +7,7 @@ expression: code
 use ontogen_core::order::OrderBy;
 
 use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select, TransactionTrait};
 
 use crate::persistence::db::entities::node;
 use crate::schema::Node;
@@ -148,12 +148,17 @@ impl Store {
 
         let contains = node.contains.clone();
 
-        for child_id in &contains {
+        if !node.id.trim().is_empty() && node.contains.contains(&node.id) {
+            return Err(AppError::NodeParentCycle(node.id.clone()));
+        }
+
+        for child_id in &node.contains {
             if !self.node_exists(child_id).await? {
                 return Err(AppError::NodeNotFound(child_id.clone()));
             }
         }
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if node.id.trim().is_empty() {
             let base = ontogen_core::id::slugify(&node.label);
             if base.is_empty() {
@@ -161,7 +166,7 @@ impl Store {
             }
             for candidate in ontogen_core::id::candidates(&base) {
                 let taken = node::Entity::find_by_id(candidate.as_str())
-                    .one(self.db())
+                    .one(&txn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();
@@ -169,22 +174,23 @@ impl Store {
                     continue;
                 }
                 node.id = candidate;
-                if self.try_insert_node(&node).await? {
+                if self.try_insert_node(&txn, &node).await? {
                     break;
                 }
             }
             node.id.clone()
         } else {
             ontogen_core::id::validate_id(&node.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_node(&node).await? {
+            if !self.try_insert_node(&txn, &node).await? {
                 return Err(AppError::NodeAlreadyExists(node.id));
             }
             node.id.clone()
         };
 
         for child_id in &contains {
-            self.set_node_parent(child_id, Some(&id)).await?;
+            self.set_node_parent(&txn, child_id, Some(&id)).await?;
         }
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_node(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Node, id);
@@ -207,6 +213,10 @@ impl Store {
 
         let contains_changed = updates.contains.is_some();
 
+        if updates.contains.as_ref().is_some_and(|ids| ids.iter().any(|c| c == id)) {
+            return Err(AppError::NodeParentCycle(id.to_string()));
+        }
+
         for child_id in updates.contains.iter().flatten() {
             if !self.node_exists(child_id).await? {
                 return Err(AppError::NodeNotFound(child_id.clone()));
@@ -219,18 +229,19 @@ impl Store {
         };
 
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
         if contains_changed {
             for child_id in &current.contains {
-                self.set_node_parent(child_id, Some(id)).await?;
+                self.set_node_parent(&txn, child_id, Some(id)).await?;
             }
             for child_id in &contains_dropped {
-                self.set_node_parent(child_id, None).await?;
+                self.set_node_parent(&txn, child_id, None).await?;
             }
         }
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_node(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::Node, id.to_string());
@@ -276,13 +287,14 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_node(&self, node: &Node) -> Result<bool, AppError> {
+    async fn try_insert_node<C: sea_orm::ConnectionTrait>(&self, conn: &C, node: &Node) -> Result<bool, AppError> {
         let active = node.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = node::Entity::find_by_id(node.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();
@@ -292,8 +304,13 @@ impl Store {
         }
     }
 
-    async fn set_node_parent(&self, child_id: &str, parent_id: Option<&str>) -> Result<(), AppError> {
-        use sea_orm::{ConnectionTrait, Value};
+    async fn set_node_parent<C: sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        child_id: &str,
+        parent_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        use sea_orm::Value;
         // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.
         let stmt = sea_orm::Statement::from_sql_and_values(
             sea_orm::DatabaseBackend::Sqlite,
@@ -303,11 +320,11 @@ impl Store {
                 Value::from(child_id.to_string()),
             ],
         );
-        self.db().execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        conn.execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
         Ok(())
     }
 
-    async fn node_exists(&self, id: &str) -> Result<bool, AppError> {
+    pub(crate) async fn node_exists(&self, id: &str) -> Result<bool, AppError> {
         Ok(node::Entity::find_by_id(id).one(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?.is_some())
     }
 }

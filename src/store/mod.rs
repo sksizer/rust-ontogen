@@ -23,6 +23,8 @@ mod gen_order;
 mod gen_update;
 mod has_many;
 pub(crate) mod helpers;
+mod int_range;
+mod linked_ids;
 mod nan;
 #[cfg(test)]
 mod tests;
@@ -72,7 +74,7 @@ pub fn generate(schema: &SchemaOutput, config: &StoreConfig) -> Result<StoreOutp
         let snake = helpers::to_snake_case(&entity.name);
 
         // Generate the entity's store module
-        let code = generate_entity_store(&*backend, entity, &schema.enums, config);
+        let code = generate_entity_store(&*backend, entity, entities, &schema.enums, config);
 
         let path = output_dir.join(format!("{snake}.rs"));
         crate::write_and_format(&path, &code)?;
@@ -183,6 +185,7 @@ fn validate_id_strategies(entities: &[EntityDef], default: &IdStrategy) -> Resul
 fn generate_entity_store(
     backend: &dyn backends::StoreBackend,
     entity: &EntityDef,
+    entities: &[EntityDef],
     enums: &[EnumDef],
     config: &StoreConfig,
 ) -> String {
@@ -220,7 +223,7 @@ fn generate_entity_store(
     gen_order::generate_order_block(&mut code, entity, enums, schema_path);
 
     // CRUD impl block (with hook calls) — backend-specific bodies
-    backend.emit_crud_impl(&mut code, entity, enums, effective_id_strategy(entity, &config.id_strategy));
+    backend.emit_crud_impl(&mut code, entity, entities, enums, effective_id_strategy(entity, &config.id_strategy));
 
     code
 }

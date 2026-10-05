@@ -44,13 +44,21 @@ pub(crate) trait StoreBackend {
     /// Emit the complete `impl Store { ... }` block: CRUD methods, relation
     /// population, and any backend-specific helpers (e.g. `set_*_parent`),
     /// then any backend-specific module-level functions (SeaORM's
-    /// `order_{plural}_query`). `enums` are the schema's, for the sort
-    /// fields. `id_strategy` is the entity's effective strategy, already
+    /// `order_{plural}_query`). `entities` are the schema's, for the
+    /// checks on the ids a write lists (`linked_ids`); `enums` are the
+    /// schema's, for the sort fields. `id_strategy` is the entity's effective strategy, already
     /// validated; `create_*` derives missing ids by it.
     /// Method names, signatures, hook call sites, and `emit_change` points
     /// must match across backends — that contract is enforced by the
     /// backend-parity test, not by this trait.
-    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef, enums: &[EnumDef], id_strategy: &IdStrategy);
+    fn emit_crud_impl(
+        &self,
+        code: &mut String,
+        entity: &EntityDef,
+        entities: &[EntityDef],
+        enums: &[EnumDef],
+        id_strategy: &IdStrategy,
+    );
 
     /// How the shared DTO `From` impls treat wikilink-shaped relation ids.
     /// Wikilinks are a markdown-vault concern: that backend strips `[[id]]`

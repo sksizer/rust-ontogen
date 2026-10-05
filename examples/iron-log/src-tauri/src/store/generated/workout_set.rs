@@ -3,7 +3,7 @@
 use ontogen_core::order::OrderBy;
 
 use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select, TransactionTrait};
 
 use crate::persistence::db::entities::workout_set;
 use crate::schema::WorkoutSet;
@@ -170,15 +170,18 @@ impl Store {
     pub async fn create_workout_set(&self, mut workout_set: WorkoutSet) -> Result<WorkoutSet, AppError> {
         hooks::before_create(self, &mut workout_set).await?;
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if workout_set.id.trim().is_empty() {
             return Err(AppError::WorkoutSetIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
             ontogen_core::id::validate_id(&workout_set.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_workout_set(&workout_set).await? {
+            if !self.try_insert_workout_set(&txn, &workout_set).await? {
                 return Err(AppError::WorkoutSetAlreadyExists(workout_set.id));
             }
             workout_set.id.clone()
         };
+
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_workout_set(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::WorkoutSet, id);
@@ -198,9 +201,11 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
+
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_workout_set(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::WorkoutSet, id.to_string());
@@ -227,13 +232,18 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_workout_set(&self, workout_set: &WorkoutSet) -> Result<bool, AppError> {
+    async fn try_insert_workout_set<C: sea_orm::ConnectionTrait>(
+        &self,
+        conn: &C,
+        workout_set: &WorkoutSet,
+    ) -> Result<bool, AppError> {
         let active = workout_set.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = workout_set::Entity::find_by_id(workout_set.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();

@@ -3,7 +3,7 @@
 use ontogen_core::order::OrderBy;
 
 use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select, TransactionTrait};
 
 use crate::persistence::db::entities::tag;
 use crate::schema::Tag;
@@ -117,15 +117,18 @@ impl Store {
     pub async fn create_tag(&self, mut tag: Tag) -> Result<Tag, AppError> {
         hooks::before_create(self, &mut tag).await?;
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if tag.id.trim().is_empty() {
             return Err(AppError::TagIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
             ontogen_core::id::validate_id(&tag.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_tag(&tag).await? {
+            if !self.try_insert_tag(&txn, &tag).await? {
                 return Err(AppError::TagAlreadyExists(tag.id));
             }
             tag.id.clone()
         };
+
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_tag(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Tag, id);
@@ -145,9 +148,11 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
+
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_tag(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::Tag, id.to_string());
@@ -174,13 +179,14 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_tag(&self, tag: &Tag) -> Result<bool, AppError> {
+    async fn try_insert_tag<C: sea_orm::ConnectionTrait>(&self, conn: &C, tag: &Tag) -> Result<bool, AppError> {
         let active = tag.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = tag::Entity::find_by_id(tag.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();
@@ -188,6 +194,10 @@ impl Store {
             }
             Err(e) => Err(AppError::DbError(e.to_string())),
         }
+    }
+
+    pub(crate) async fn tag_exists(&self, id: &str) -> Result<bool, AppError> {
+        Ok(tag::Entity::find_by_id(id).one(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?.is_some())
     }
 }
 

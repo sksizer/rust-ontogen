@@ -15,12 +15,13 @@ impl StoreBackend for SeaormBackend {
         let snake = to_snake_case(&entity.name);
 
         // `QueryOrder`, `Select` and the `sea_query` pair back
-        // `order_{plural}_query`, which every module has, so these imports
-        // are always used — no condition here to keep in lockstep with
-        // gen_crud.
+        // `order_{plural}_query`, and `TransactionTrait` the transaction of
+        // `create_*` and `update_*`. Every module has those, so these
+        // imports are always used — no condition here to keep in lockstep
+        // with gen_crud.
         code.push_str("use sea_orm::sea_query::{NullOrdering, Order};\n");
         code.push_str(
-            "use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};\n\n",
+            "use sea_orm::{\n    ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select, TransactionTrait,\n};\n\n",
         );
 
         // Additional imports for entities with has_many relations
@@ -31,8 +32,15 @@ impl StoreBackend for SeaormBackend {
         code.push_str(&format!("use crate::persistence::db::entities::{snake};\n"));
     }
 
-    fn emit_crud_impl(&self, code: &mut String, entity: &EntityDef, enums: &[EnumDef], id_strategy: &IdStrategy) {
-        gen_crud::generate_crud_impl(code, entity, enums, id_strategy);
+    fn emit_crud_impl(
+        &self,
+        code: &mut String,
+        entity: &EntityDef,
+        entities: &[EntityDef],
+        enums: &[EnumDef],
+        id_strategy: &IdStrategy,
+    ) {
+        gen_crud::generate_crud_impl(code, entity, entities, enums, id_strategy);
     }
 
     fn wikilink_policy(&self) -> super::WikilinkPolicy {

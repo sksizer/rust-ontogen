@@ -134,6 +134,12 @@ impl Store {
     pub async fn create_note(&self, mut note: Note) -> Result<Note, AppError> {
         hooks::before_create(self, &mut note).await?;
 
+        for target_id in &note.links {
+            if (note.id.trim().is_empty() || *target_id != note.id) && !self.note_exists(target_id).await? {
+                return Err(AppError::NoteNotFound(target_id.clone()));
+            }
+        }
+
         let mut doc = markdown_store::Document::new();
         doc.merge_serialize(&NoteFrontmatter::from_note(&note), NOTE_FM_FIELDS).map_err(AppError::from)?;
         doc.set_body(note.body.clone());
@@ -158,6 +164,12 @@ impl Store {
     pub async fn update_note(&self, id: &str, updates: NoteUpdate) -> Result<Note, AppError> {
         let current = self.get_note(id).await?;
         hooks::before_update(self, &current, &updates).await?;
+
+        for target_id in updates.links.iter().flatten() {
+            if !self.note_exists(target_id).await? {
+                return Err(AppError::NoteNotFound(target_id.clone()));
+            }
+        }
 
         self.vault()
             .entity(NOTES_DIR, NOTE_TYPE)
@@ -202,5 +214,13 @@ impl Store {
         let _ = &*self;
         let _ = &*note;
         Ok(())
+    }
+
+    pub(crate) async fn note_exists(&self, id: &str) -> Result<bool, AppError> {
+        match self.vault().entity(NOTES_DIR, NOTE_TYPE).read_opt(id) {
+            Ok(doc) => Ok(doc.is_some()),
+            Err(markdown_store::Error::InvalidId { .. }) => Ok(false),
+            Err(e) => Err(AppError::from(e)),
+        }
     }
 }

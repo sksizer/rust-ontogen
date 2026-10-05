@@ -285,6 +285,18 @@ Add `{Entity}IdRequired(String)` and `{Entity}AlreadyExists(String)` for every e
 
 Add `{Child}ParentRequired(String)` for a `has_many` child whose foreign key is a plain `String` rather than an `Option`. It carries the id of the child that would be left without a parent. See [has_many writes](/guides/store-layer/#has_many-writes).
 
+Add `{Child}ParentCycle(String)` for the child of every `has_many`. Only the self-referential `has_many` is supported, so the child is the declaring entity: a `Task` with `subtasks` declares `TaskParentCycle(String)`. It carries the record's own id, refused because the record's `has_many` list names it (see [Store behaviour](#store-behaviour)). Without it the build fails with rustc's `E0599` ("no variant or associated item named `TaskParentCycle`") in the generated store module.
+
+```rust
+pub enum AppError {
+    TaskNotFound(String),
+    TaskIdRequired(String),
+    TaskAlreadyExists(String),
+    TaskParentCycle(String),     // Task.subtasks names the task itself
+    // ...
+}
+```
+
 ### Statuses and codes on HTTP
 
 The HTTP generator scans `ServersConfig::error_source_dir` for `enum AppError` and gives each variant a status from the suffix of its name. The `code` of the error is the variant name in snake_case.
@@ -295,6 +307,7 @@ The HTTP generator scans `ServersConfig::error_source_dir` for `enum AppError` a
 | `*IdRequired` | 400 | `task_id_required` |
 | `*AlreadyExists` | 409 | `task_already_exists` |
 | `*ParentRequired` | 403 | `task_parent_required` |
+| `*ParentCycle` | 403 | `task_parent_cycle` |
 | any other variant | 500 | `db_error` for `DbError` |
 
 Before this change every `AppError` was a `500` with `{"error": "<Display text>"}`, whatever the variant. Clients that branched on `500` for a missing record now see `404`, and so on.
@@ -591,7 +604,7 @@ A query parameter a route does not accept is `400 invalid_query_parameter`, with
 
 ### Related resources must exist
 
-A create or update that links a resource that does not exist, for example an `epic` or a `tags` id, is `404 related_resource_not_found` before anything is written. Before, a markdown vault accepted it and wrote a dangling wikilink.
+A create or update that links a resource that does not exist, for example an `epic` or a `tags` id, is `404 related_resource_not_found` before anything is written. Before, a markdown vault accepted it and wrote a dangling wikilink. The store refuses a missing `many_to_many` or `has_many` id as well, so IPC and MCP refuse it too (see [Store behaviour](#store-behaviour)).
 
 ### Relationship endpoints
 
@@ -1093,6 +1106,42 @@ On SeaORM, after `before_create` runs:
 
 Before relying on create, rename existing rows whose ids break the rule. Rows with the ids `.`, `..` or `""` must be renamed before you upgrade.
 
+### `sync_junction` takes the transaction
+
+The generated `create_*` and `update_*` make all their writes (the record's row, every `sync_junction`, every `has_many` child's foreign key) in one transaction, and pass it to your `sync_junction` as a new first argument. A write that fails part-way now leaves nothing written: before, a junction row the foreign key refused left the record's row, or the update's new values, in place, and a derived-id create that failed and was retried left `title`, `title-2` and so on behind.
+
+Change your `sync_junction` to take the connection and run every statement on it:
+
+```rust
+// Before
+pub async fn sync_junction(
+    &self,
+    table: &str,
+    source_col: &str,
+    target_col: &str,
+    source_id: &str,
+    target_ids: &[String],
+) -> Result<(), AppError> {
+    let db = self.db();
+    // ... db.execute(...) ...
+}
+
+// After
+pub async fn sync_junction<C: sea_orm::ConnectionTrait>(
+    &self,
+    conn: &C,
+    table: &str,
+    source_col: &str,
+    target_col: &str,
+    source_id: &str,
+    target_ids: &[String],
+) -> Result<(), AppError> {
+    // ... conn.execute(...) ...
+}
+```
+
+A statement left on `self.db()` runs outside the transaction, so it is not undone when the write fails, and on a pool of one connection (in-memory SQLite) it waits forever for the connection the transaction holds. `load_junction_ids` is unchanged. Code that calls `sync_junction` directly passes a connection first: `self.db()` outside a transaction, or the transaction it opened. Without the change the build fails with rustc's `E0061` ("this method takes 5 arguments but 6 arguments were supplied") in the generated store module. See [Junction Sync](/guides/store-layer/#junction-sync).
+
 ### `load_junction_ids` order
 
 Your `load_junction_ids` must return ids in the order they were written, because a `many_to_many` list keeps its written order. On SQLite that means adding `ORDER BY rowid` to the query. See [Junction Sync](/guides/store-layer/#junction-sync).
@@ -1142,3 +1191,6 @@ In a vault, rename the file and update every `[[wikilink]]` and foreign key that
 - **A `has_many`'s `foreign_key` is checked at build time.** It must name the declaring entity's `belongs_to` to itself, typed `String` or `Option<String>`. Anything else is now a `CodegenError` that names the `has_many` field, the `foreign_key` and the fix. Before, a `foreign_key` naming no field or a field of another type failed to compile in the generated store; a `has_many` without `foreign_key` was never filled or written; and a plain field or a `belongs_to` to another entity had parent ids written into it.
 - **Lookups of an id the vault can never hold** (`index`, `a/b`, `.hidden`, whitespace) answer `{Entity}NotFound` from the generated markdown `get_*`, `update_*` and `delete_*`, instead of an internal error.
 - **A vault file no lookup can name is not a record.** A markdown `list`, `count` and `has_many` list skip a file whose stem fails the lookup check `layout::validate_lookup_id` or is not UTF-8: a stem containing `/`, `\`, `:` or NUL, starting with `.`, ending with `.` or a space, whitespace-only, over 252 bytes, or `index` or `log` in any case (`a:b.md`, `draft .md`). Such a file used to be listed although no get, update or delete could reach it; now list, count and lookups agree, and nothing reports a skipped file. Migration: rename such files to ids the [id rule](#record-ids) accepts. The store neither moves nor deletes them.
+- **A `many_to_many` id must name a record.** A create or update that lists a missing target id fails with `{Target}NotFound(id)`, the first missing id in list order, before anything is written, on both backends. Before, the markdown store wrote the dangling wikilink, and SeaORM wrote the record's row and then failed on the junction's foreign key with `DbError`. Only the lists a write sets are checked, so an existing record that already holds a dangling id updates as long as the update leaves that list alone. Code that writes through the store (a hook, a seed script, IPC or MCP) creates the target records first. A self-referential `many_to_many` may list the record's own id on create when the id is given. See [many_to_many targets](/guides/store-layer/#many_to_many-targets).
+- **A `has_many` list that names the record itself is refused.** `update_task(a, subtasks: [a, …])` set `a`'s own parent to `a` and answered as if nothing changed, since a record is never listed among its own children. It now fails with `{Child}ParentCycle(a)` before anything is written, and so does a create with a given id that lists itself. Over HTTP the request is refused before the store is called, as `403 relationship_cycle`. A root over a plain `String` foreign key is still its own parent through its `belongs_to` field. Longer cycles (`a` under `b` under `a`) are not refused; see [has_many writes](/guides/store-layer/#has_many-writes) for a hook that refuses them.
+- **The store's checks run in one order on both backends**: the `has_many` self-listing, the missing related ids, a dropped required child, then an integer outside `i64` and a `NaN`, then the id. On SeaORM an integer outside `i64` is refused before the id is derived, as on markdown, so a create with an empty-slug title and such an integer is `DbError` rather than `{Entity}IdRequired`. See [Check order](/guides/store-layer/#check-order).
