@@ -7905,7 +7905,7 @@ fn a_resource_with_relationships_serves_the_relationship_and_related_routes() {
                     "Some(\"epic\") =>",
                     "Some(\"tags\") =>",
                     "Some(\"labels\") =>",
-                    "_ => Err(relationship_not_found(\"tasks\", &rel)),",
+                    "_ => Err(no_such_relationship(\"tasks\", &rel)),",
                 ],
             );
         }
@@ -7921,7 +7921,7 @@ fn a_resource_with_relationships_serves_the_relationship_and_related_routes() {
                     "ontogen_body: Body",
                     "= ontogen_path?;",
                     "match rel.as_str() {",
-                    "_ => Err(relationship_not_found(\"tasks\", &rel)),",
+                    "_ => Err(no_such_relationship(\"tasks\", &rel)),",
                 ],
             );
         }

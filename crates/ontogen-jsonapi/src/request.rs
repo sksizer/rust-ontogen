@@ -267,10 +267,10 @@ pub struct LinkedId {
 }
 
 impl LinkedId {
-    /// `404 related_resource_not_found` at this identifier: no resource of
+    /// `404 no_such_related_resource` at this identifier: no resource of
     /// `target_type` has this id.
     pub fn not_found(&self, target_type: &str) -> ErrorObject {
-        ErrorObject::new(ErrorCode::RelatedResourceNotFound, format!("`{target_type}` `{}` does not exist", self.id))
+        ErrorObject::new(ErrorCode::NoSuchRelatedResource, format!("`{target_type}` `{}` does not exist", self.id))
             .with_pointer(self.pointer.clone())
     }
 }
@@ -836,7 +836,7 @@ mod tests {
             serde_json::to_value(&missing).unwrap(),
             json!({
                 "status": "404",
-                "code": "related_resource_not_found",
+                "code": "no_such_related_resource",
                 "title": "Not Found",
                 "detail": "`tags` `a` does not exist",
                 "source": { "pointer": "/data/relationships/tags/data/1" }

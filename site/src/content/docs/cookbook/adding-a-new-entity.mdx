@@ -114,7 +114,7 @@ We'll add an `Exercise` entity to a fitness tracking app -- something with a cou
 
 5. ### Add the error variant
 
-   Generated store code uses an `AppError` enum with entity-specific `NotFound`, `IdRequired` and `AlreadyExists` variants. You need to add all three for the new entity. In your `AppError` definition (typically in `src/schema/mod.rs`):
+   Generated store code uses an `AppError` enum with entity-specific `NotFound`, `IdRequired` and `AlreadyExists` variants. Add `NotFound` and `AlreadyExists` for the new entity, and `IdRequired` too unless it is a SeaORM entity under `IdStrategy::Uuid`, which always gets an id. In your `AppError` definition (typically in `src/schema/mod.rs`):
 
    ```rust
    #[derive(Debug, thiserror::Error)]
@@ -129,7 +129,7 @@ We'll add an `Exercise` entity to a fitness tracking app -- something with a cou
    }
    ```
 
-   The generated store code references `AppError::ExerciseNotFound`, `AppError::ExerciseIdRequired` and `AppError::ExerciseAlreadyExists`, so these must match. If the entity is the child of a `has_many` (a self-referential one: the entity lists its own children), also add `ExerciseParentCycle(String)`, and if that `has_many`'s foreign key is a plain `String`, `ExerciseParentRequired(String)` too.
+   The generated store code references these variants by name, so the names must match. If the entity is the child of a `has_many` (a self-referential one: the entity lists its own children), also add `ExerciseParentCycle(String)`, and if that `has_many`'s foreign key is a plain `String`, `ExerciseParentRequired(String)` too.
 
    The HTTP server reads the variant names for its error documents: `ExerciseNotFound` is `404 exercise_not_found`, `ExerciseIdRequired` `400 exercise_id_required`, `ExerciseAlreadyExists` `409 exercise_already_exists`, `ExerciseParentRequired` `403 exercise_parent_required`, and `ExerciseParentCycle` `403 exercise_parent_cycle`. See [Errors](/guides/server-transports/#errors).
 
@@ -233,7 +233,7 @@ When you add a new entity, make sure you've done all of these:
 - [ ] Created `src/schema/entity_name.rs` with `#[derive(OntologyEntity)]`
 - [ ] Added `mod entity_name;` and `pub use` in `src/schema/mod.rs`
 - [ ] Added DTO re-exports in `src/schema/mod.rs` (if using DTOs)
-- [ ] Added `AppError::EntityNameNotFound`, `EntityNameIdRequired` and `EntityNameAlreadyExists` variants
+- [ ] Added `AppError::EntityNameNotFound`, `EntityNameAlreadyExists` and (unless a SeaORM entity under `Uuid`) `EntityNameIdRequired` variants
 - [ ] Added `EntityKind::EntityName` variant (if using change events)
 - [ ] Created the database table (migration or raw SQL)
 - [ ] Built successfully with `cargo build`

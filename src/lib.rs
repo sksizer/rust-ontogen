@@ -165,8 +165,8 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 /// `{Entity}Frontmatter` module per entity, with its owned-key list, and a
 /// `mod.rs` declaring them that also holds `VAULT_ROOT` and
 /// `open_vault(root)`. `open_vault` builds the runtime
-/// `markdown_store::VaultHandle` with this configuration's layout, id
-/// strategy, list cap and [`OkfOptions`], and `VAULT_ROOT` is `vault_root`;
+/// `markdown_store::VaultHandle` with this configuration's layout, list
+/// cap and [`OkfOptions`], and `VAULT_ROOT` is `vault_root`;
 /// consumers construct their vault through it rather than by hand.
 ///
 /// Takes the whole [`SchemaOutput`] because it checks every frontmatter key
@@ -177,7 +177,8 @@ pub fn gen_seaorm(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOr
 /// *Reserved frontmatter keys*); `#[ontology(frontmatter_name = "...")]`
 /// moves a field to another key.
 ///
-/// Returns [`MarkdownIoOutput`]: the id strategy plus per-entity metadata.
+/// Returns [`MarkdownIoOutput`]: the generated module's path plus
+/// per-entity metadata.
 /// Pass it to [`gen_store`] via [`Backend::Markdown`] to route the
 /// generated CRUD layer at this persistence backend (ADR 0001).
 ///
@@ -535,9 +536,10 @@ pub struct SeaOrmConfig {
 /// The per-entity frontmatter modules land under a single output
 /// directory; downstream code imports them as one module. The vault fields
 /// describe the markdown store's runtime shape (ADR 0001) and are baked
-/// into the generated `open_vault`; the id strategy also flows into the
-/// returned [`MarkdownIoOutput`] that [`gen_store`] consumes via
-/// [`Backend::Markdown`].
+/// into the generated `open_vault`. The id strategy is the store's, set
+/// on [`StoreConfig::id_strategy`]. The returned [`MarkdownIoOutput`],
+/// which [`gen_store`] consumes via [`Backend::Markdown`], carries the
+/// generated module's path and per-entity metadata.
 pub struct MarkdownIoConfig {
     /// Output directory for the generated frontmatter modules
     /// (e.g., `src/persistence/markdown/generated`).

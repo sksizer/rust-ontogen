@@ -45,10 +45,10 @@ pub enum ErrorCode {
     RelationshipBatchUnsupported,
     /// `403 relationship_cycle`
     RelationshipCycle,
-    /// `404 related_resource_not_found`
-    RelatedResourceNotFound,
-    /// `404 relationship_not_found`
-    RelationshipNotFound,
+    /// `404 no_such_related_resource`
+    NoSuchRelatedResource,
+    /// `404 no_such_relationship`
+    NoSuchRelationship,
     /// `405 method_not_allowed`
     MethodNotAllowed,
     /// `406 not_acceptable`
@@ -68,8 +68,8 @@ pub enum ErrorCode {
 impl ErrorCode {
     /// Every code, in the order of §13.3's table. The generator checks
     /// `AppError` variant names against these so a code means one thing
-    /// (§13.4).
-    pub const ALL: [ErrorCode; 23] = [
+    /// (§13.4). A slice, so adding a code does not change the type.
+    pub const ALL: &'static [ErrorCode] = &[
         ErrorCode::InvalidQueryParameter,
         ErrorCode::InvalidSortField,
         ErrorCode::InvalidIncludePath,
@@ -84,8 +84,8 @@ impl ErrorCode {
         ErrorCode::RelationshipUpdateUnsupported,
         ErrorCode::RelationshipBatchUnsupported,
         ErrorCode::RelationshipCycle,
-        ErrorCode::RelatedResourceNotFound,
-        ErrorCode::RelationshipNotFound,
+        ErrorCode::NoSuchRelatedResource,
+        ErrorCode::NoSuchRelationship,
         ErrorCode::MethodNotAllowed,
         ErrorCode::NotAcceptable,
         ErrorCode::TypeMismatch,
@@ -112,8 +112,8 @@ impl ErrorCode {
             ErrorCode::RelationshipUpdateUnsupported => "relationship_update_unsupported",
             ErrorCode::RelationshipBatchUnsupported => "relationship_batch_unsupported",
             ErrorCode::RelationshipCycle => "relationship_cycle",
-            ErrorCode::RelatedResourceNotFound => "related_resource_not_found",
-            ErrorCode::RelationshipNotFound => "relationship_not_found",
+            ErrorCode::NoSuchRelatedResource => "no_such_related_resource",
+            ErrorCode::NoSuchRelationship => "no_such_relationship",
             ErrorCode::MethodNotAllowed => "method_not_allowed",
             ErrorCode::NotAcceptable => "not_acceptable",
             ErrorCode::TypeMismatch => "type_mismatch",
@@ -141,7 +141,7 @@ impl ErrorCode {
             | ErrorCode::RelationshipUpdateUnsupported
             | ErrorCode::RelationshipBatchUnsupported
             | ErrorCode::RelationshipCycle => StatusCode::FORBIDDEN,
-            ErrorCode::RelatedResourceNotFound | ErrorCode::RelationshipNotFound => StatusCode::NOT_FOUND,
+            ErrorCode::NoSuchRelatedResource | ErrorCode::NoSuchRelationship => StatusCode::NOT_FOUND,
             ErrorCode::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ErrorCode::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
             ErrorCode::TypeMismatch | ErrorCode::IdMismatch => StatusCode::CONFLICT,
@@ -342,7 +342,7 @@ pub fn reason_phrase(status: StatusCode) -> &'static str {
     }
 }
 
-/// `404 relationship_not_found`: `rel` names no relationship of the resource
+/// `404 no_such_relationship`: `rel` names no relationship of the resource
 /// type `type_name` (§9).
 ///
 /// A relationship route captures `{rel}` rather than listing each name, so
@@ -350,8 +350,8 @@ pub fn reason_phrase(status: StatusCode) -> &'static str {
 /// consumer's router. A `rel` that does not decode names no relationship and
 /// is written as sent. The error has no `source`: the path is not a body
 /// member or a query parameter.
-pub fn relationship_not_found(type_name: &str, rel: &LookupKey) -> ErrorObject {
-    ErrorObject::new(ErrorCode::RelationshipNotFound, format!("`{type_name}` has no relationship `{rel}`"))
+pub fn no_such_relationship(type_name: &str, rel: &LookupKey) -> ErrorObject {
+    ErrorObject::new(ErrorCode::NoSuchRelationship, format!("`{type_name}` has no relationship `{rel}`"))
 }
 
 /// `403 relationship_update_unsupported`: the relationship `rel` of
@@ -482,8 +482,8 @@ mod tests {
             ("relationship_update_unsupported", 403),
             ("relationship_batch_unsupported", 403),
             ("relationship_cycle", 403),
-            ("related_resource_not_found", 404),
-            ("relationship_not_found", 404),
+            ("no_such_related_resource", 404),
+            ("no_such_relationship", 404),
             ("method_not_allowed", 405),
             ("not_acceptable", 406),
             ("type_mismatch", 409),
@@ -519,7 +519,7 @@ mod tests {
                         $(ErrorCode::$v)|* => {}
                     }
                 }
-                assert_eq!(ErrorCode::ALL.as_slice(), [$(ErrorCode::$v),*].as_slice());
+                assert_eq!(ErrorCode::ALL, [$(ErrorCode::$v),*].as_slice());
             }};
         }
         assert_all_in_order!(
@@ -537,8 +537,8 @@ mod tests {
             RelationshipUpdateUnsupported,
             RelationshipBatchUnsupported,
             RelationshipCycle,
-            RelatedResourceNotFound,
-            RelationshipNotFound,
+            NoSuchRelatedResource,
+            NoSuchRelationship,
             MethodNotAllowed,
             NotAcceptable,
             TypeMismatch,
@@ -551,17 +551,17 @@ mod tests {
 
     #[test]
     fn relationship_route_errors_have_no_source() {
-        let error = relationship_not_found("tasks", &LookupKey::from("owner"));
+        let error = no_such_relationship("tasks", &LookupKey::from("owner"));
         assert_eq!(
             serde_json::to_value(&error).unwrap(),
             serde_json::json!({
                 "status": "404",
-                "code": "relationship_not_found",
+                "code": "no_such_relationship",
                 "title": "Not Found",
                 "detail": "`tasks` has no relationship `owner`"
             })
         );
-        let undecodable = relationship_not_found("tasks", &LookupKey::undecodable("%FF"));
+        let undecodable = no_such_relationship("tasks", &LookupKey::undecodable("%FF"));
         assert_eq!(undecodable.detail(), "`tasks` has no relationship `%FF`");
 
         let error = relationship_update_unsupported("tasks", "epic", "POST");

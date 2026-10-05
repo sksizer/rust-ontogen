@@ -118,8 +118,12 @@ commit and can't be improved later without a hand-edit:
    ```
 
    One `BREAKING CHANGE:` footer per break is fine; the changelog lists every
-   one. Never start a wrapped continuation line with a word followed by `: ` or
-   `#`, because git reads it as a new trailer and cuts the footer short.
+   one. Never start a wrapped continuation line with a `token:` (a run of
+   non-space characters followed by a colon) or `token #`, because git-cliff's
+   footer parser (not git) reads it as a new trailer and cuts the footer short.
+   A continuation line that starts with a backtick is joined onto the previous
+   line by the preprocessor in `cliff.toml`, and a blank line followed by a
+   backtick-led paragraph is safe.
 
 Note that release-plz scopes each commit to a crate by the paths it touched, so
 a change spanning `ontogen` and `ontogen-core` lands in both changelogs — check

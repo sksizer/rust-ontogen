@@ -15,7 +15,7 @@ use axum::{
 use ontogen_jsonapi::{
     AnyResource, Document, ErrorObject, Included, Linkage, Links, LookupKey, PageMeta, QueryParams, QuerySpec,
     Relationship, ResourceIdentifier, ResourceObject,
-    error::{method_not_allowed, relationship_not_found, relationship_update_unsupported},
+    error::{method_not_allowed, no_such_relationship, relationship_update_unsupported},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     filter_fields,
     links::{CanonicalQuery, encode_path_segment, pagination_links},
@@ -904,7 +904,7 @@ async fn ontogen_task_relationship_get(
             );
             Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(relationship_not_found("tasks", &rel)),
+        _ => Err(no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -982,7 +982,7 @@ async fn ontogen_task_relationship_patch(
             .await?;
             Ok(response::no_content())
         }
-        _ => Err(relationship_not_found("tasks", &rel)),
+        _ => Err(no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -1028,7 +1028,7 @@ async fn ontogen_task_relationship_post(
             }
             Ok(response::no_content())
         }
-        _ => Err(relationship_not_found("tasks", &rel)),
+        _ => Err(no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -1071,7 +1071,7 @@ async fn ontogen_task_relationship_delete(
             }
             Ok(response::no_content())
         }
-        _ => Err(relationship_not_found("tasks", &rel)),
+        _ => Err(no_such_relationship("tasks", &rel)),
     }
 }
 
@@ -1119,7 +1119,7 @@ async fn ontogen_task_related_get(
             let ontogen_self = format!("{ontogen_collection}/{}/subtasks", encode_path_segment(&ontogen_entity.id));
             Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
         }
-        _ => Err(relationship_not_found("tasks", &rel)),
+        _ => Err(no_such_relationship("tasks", &rel)),
     }
 }
 

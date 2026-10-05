@@ -495,7 +495,7 @@ pub struct Event { /* ... */ }
 
 Both apply to both backends. The SeaORM store calls `ontogen_core::id` at runtime, with the `uuid` feature for `IdStrategy::Uuid`; every generated store depends on `ontogen-core` anyway, for its ordering. A markdown consumer enables the `uuid` feature of `markdown-store` instead. Without the feature neither store compiles: the generated SeaORM create calls `ontogen_core::id::new_uuid`, and the markdown one names `markdown_store::IdStrategy::Uuid`, and each exists only with its crate's `uuid` feature.
 
-Your `AppError` declares `{Entity}IdRequired(String)` and `{Entity}AlreadyExists(String)` for every entity:
+Your `AppError` declares `{Entity}AlreadyExists(String)` for every entity, and `{Entity}IdRequired(String)` for every entity whose store can return it: every markdown entity, and a SeaORM entity whose id strategy is `Provided` or `SlugFromField` (a SeaORM entity under `Uuid` always gets an id):
 
 ```rust
 pub enum AppError {

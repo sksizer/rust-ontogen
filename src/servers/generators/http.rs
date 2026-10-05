@@ -628,7 +628,7 @@ fn runtime_imports(body: &str, routes: &Routes) -> String {
     ]));
     jsonapi.extend(tree(
         "error",
-        strings(used(&["method_not_allowed", "relationship_not_found", "relationship_update_unsupported"])),
+        strings(used(&["method_not_allowed", "no_such_relationship", "relationship_update_unsupported"])),
     ));
     jsonapi.extend(tree("extract", strings(used(&["AcceptGuard", "Body", "NoParams", "Path", "Query", "RouteQuery"]))));
     jsonapi.extend(tree("links", strings(used(&["CanonicalQuery", "encode_path_segment", "pagination_links"]))));

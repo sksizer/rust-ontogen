@@ -400,7 +400,7 @@ relationship (§9.1), which is changed only through its own endpoint.
   through the relationship endpoint (§9). A listed id that does not exist
   fails a create or update with `{Target}NotFound` before anything is
   written: the first missing id, in list order. Over HTTP the step-8
-  check catches it first, as `404 related_resource_not_found`; the
+  check catches it first, as `404 no_such_related_resource`; the
   store's check covers IPC, MCP and direct store callers. On SeaORM the
   junction's foreign key would refuse the id too, but only once the
   record's row is written; the markdown store has no foreign key. The
@@ -429,7 +429,7 @@ relationship (§9.1), which is changed only through its own endpoint.
   - a listed child that does not exist fails a create or update with
     `{Child}NotFound` before anything is written: the first missing id, in
     list order. Over HTTP the step-8 check (§8.2, §8.3) catches it first,
-    as `404 related_resource_not_found`. The store's check covers IPC and
+    as `404 no_such_related_resource`. The store's check covers IPC and
     MCP;
   - longer cycles are not refused. An update that makes `a` a child of
     `b` while `b` is a child of `a` succeeds. Refusing it would need an
@@ -1298,7 +1298,7 @@ server can change the resource (the id fill, `before_create` hooks).
 | 7 | a non-`Option` to-one absent | 400 | `missing_relationship` | `pointer: "/data/relationships"`, or `"/data"` when `relationships` is absent |
 | 7 | an identifier of the wrong type | 409 | `type_mismatch` | `pointer: "/data/relationships/{name}/data"` (or `…/data/{i}`) |
 | 7 | a `has_many` of the type's own type naming the client `data.id` (§5.4) | 403 | `relationship_cycle` | the identifier's first occurrence, `/data/relationships/{name}/data/{i}` |
-| 8 | a linked resource that does not exist | 404 | `related_resource_not_found` | the identifier's pointer |
+| 8 | a linked resource that does not exist | 404 | `no_such_related_resource` | the identifier's pointer |
 | 9 | no id after `before_create` and the `IdStrategy` (`Provided` with no id; a slug source that slugifies to empty) | 400 | `{entity}_id_required` | none |
 | 9 | the id already exists | 409 | `{entity}_already_exists` | `pointer: "/data/id"` when the request carried `data.id`; otherwise none |
 | 9 | any other `AppError` | per §13.4 | §13.4 | none |
@@ -1432,7 +1432,7 @@ may change fields the request did not mention, and the spec then requires
 | 7 | `data.id` not a string | 400 | `invalid_document` | `pointer: "/data/id"` |
 | 7 | `data.id` differs from the URL id | 409 | `id_mismatch` | `pointer: "/data/id"` |
 | 7 | §8.2's remaining step-7 rows, except its `data.id` row (replaced by the three above), `missing_attribute` and `missing_relationship` | | | |
-| 8 | a linked resource that does not exist | 404 | `related_resource_not_found` | the identifier's pointer |
+| 8 | a linked resource that does not exist | 404 | `no_such_related_resource` | the identifier's pointer |
 | 9 | the resource does not exist | 404 | `{entity}_not_found` | none |
 | 9 | a `has_many` replacement drops a child whose foreign key is not `Option` | 403 | `{child}_parent_required` | none |
 | 9 | any other `AppError` | per §13.4 | §13.4 | none |
@@ -1517,7 +1517,7 @@ one relationship, a relation field (§5.4) or a junction-op relationship
 - **`{rel}` is captured.** It is the relationship name verbatim (§5.4).
   Both route templates capture it, so a name that is not a relationship of
   `{type}`, or a segment that does not percent-decode to UTF-8, reaches the
-  generated handler and is `404 relationship_not_found`. It does not fall
+  generated handler and is `404 no_such_relationship`. It does not fall
   through to the consumer's router.
 - **Other methods** are `405`, with `Allow: GET, HEAD, PATCH, POST, DELETE`
   on the relationship route and `Allow: GET, HEAD` on the related route.
@@ -1768,7 +1768,7 @@ The server makes no change beyond the request, so the spec allows it.
 | 1 | a method other than `GET`, `HEAD`, `PATCH`, `POST`, `DELETE` | 405 | `method_not_allowed` | none |
 | 2 | `Accept` not satisfiable | 406 | `not_acceptable` | `header: "Accept"` |
 | 3 | `Content-Type` not acceptable (`PATCH`, `POST`, `DELETE`) | 415 | `unsupported_media_type` | `header: "Content-Type"` |
-| 4 | `{rel}` is not a relationship of `{type}`, or does not percent-decode | 404 | `relationship_not_found` | none |
+| 4 | `{rel}` is not a relationship of `{type}`, or does not percent-decode | 404 | `no_such_relationship` | none |
 | 5 | any query parameter not accepted by §6 | 400 | `invalid_query_parameter` | `parameter` |
 | 6 | a write the relationship does not support (§9: the table, a relation field without `update`, a junction op without `add_Y` or `remove_Y`) | 403 | `relationship_update_unsupported` | none |
 | 7 | body not JSON, or top level not an object | 400 | `invalid_document` | none |
@@ -1780,7 +1780,7 @@ The server makes no change beyond the request, so the spec allows it.
 | 7 | an identifier of the wrong type | 409 | `type_mismatch` | the identifier's pointer |
 | 7 | `PATCH` or `POST` on a `has_many` of `{type}` naming the parent (`{id}`) | 403 | `relationship_cycle` | the identifier's first occurrence, `/data/{i}` |
 | 8 | parent resource missing | 404 | `{entity}_not_found` | none |
-| 8 | a linked resource that does not exist (`PATCH`, `POST`; never `DELETE`) | 404 | `related_resource_not_found` | the identifier's pointer |
+| 8 | a linked resource that does not exist (`PATCH`, `POST`; never `DELETE`) | 404 | `no_such_related_resource` | the identifier's pointer |
 | 9 | a `has_many` write drops a child whose foreign key is not `Option` | 403 | `{child}_parent_required` | none |
 | 9 | any other `AppError` from the store or a junction op | per §13.4 | §13.4 | none |
 
@@ -2179,7 +2179,7 @@ is the response:
    - a typed prefix parameter that fails to parse is
      `400 invalid_path_parameter`;
    - on relationship and related routes, an unknown `{rel}` is
-     `404 relationship_not_found`.
+     `404 no_such_relationship`.
 5. **Query parameters.**
    - First, a name the route does not accept (§6): the first such name in
      request order.
@@ -2211,7 +2211,7 @@ is the response:
 8. **Store reads the handler makes before acting.** First the parent
    resource on relationship and related routes (`404 {entity}_not_found`).
    Then each linked resource, in step-7 order
-   (`404 related_resource_not_found`).
+   (`404 no_such_related_resource`).
 9. **The operation itself**: the store call or the custom op, and its
    `AppError`.
 
@@ -2241,8 +2241,8 @@ consumer's `AppError`:
 | 403 | `relationship_update_unsupported` | a relationship write the relationship does not support: `PATCH` on a junction op, `POST`/`DELETE` on a to-one, a write to a relation field of a type whose module serves no `update`, `POST` on a junction op without `add_Y` or `DELETE` without `remove_Y`, or a junction-op relationship in a create or update body (§8.2, §9) |
 | 403 | `relationship_batch_unsupported` | a relationship `POST` or `DELETE` with more than one identifier (§9) |
 | 403 | `relationship_cycle` | a `has_many` of the type's own type naming the resource itself, which would become its own parent: in a create (its client `data.id`) or update body, or a relationship `PATCH` or `POST` (§5.4, §8.2, §9.2) |
-| 404 | `related_resource_not_found` | a linked id that does not exist (§8.2, §8.3, §9) |
-| 404 | `relationship_not_found` | `{rel}` is not a relationship of the type, or does not percent-decode (§9) |
+| 404 | `no_such_related_resource` | a linked id that does not exist (§8.2, §8.3, §9) |
+| 404 | `no_such_relationship` | `{rel}` is not a relationship of the type, or does not percent-decode (§9) |
 | 405 | `method_not_allowed` | a method the route does not serve (§13.5) |
 | 406 | `not_acceptable` | §3.2 |
 | 409 | `type_mismatch` | a `type` that is not the endpoint's or the relationship's (§8.2, §8.3, §9) |
@@ -2312,8 +2312,11 @@ so does one a hook or a direct caller supplies.
 - **Declaring the variants.** The store generator constructs every
   variant in the table, so a consumer `AppError` must declare each one the
   generated store uses:
-  - `NotFound`, `IdRequired` and `AlreadyExists` for every entity.
-    tasks-tracker declares all three for `Task`, `Epic` and `Tag`.
+  - `NotFound` and `AlreadyExists` for every entity.
+  - `IdRequired` for every markdown entity, and for a SeaORM entity whose
+    `IdStrategy` is `Provided` or `SlugFromField`; a SeaORM entity under
+    `Uuid` always gets an id. tasks-tracker declares all three for `Task`,
+    `Epic` and `Tag`.
   - `ParentRequired` only for an entity that is the child of a `has_many`
     whose foreign key is not `Option`. tasks-tracker needs none.
   - `ParentCycle` for an entity that is the child of a `has_many`, which is
@@ -2324,9 +2327,14 @@ so does one a hook or a direct caller supplies.
   consumer's build with rustc's `E0599` ("no variant or associated item
   named …") in the generated store module. The scan reads only what the
   enum declares, so the build is where a missing variant shows.
-- **Code clashes.** A variant whose snake_case name equals a §13.3 code
-  (an `InvalidDocument` variant, say) is a `CodegenError`, so a code always
-  means one thing.
+- **Code clashes.** When the build generates the HTTP server, a variant
+  whose snake_case name equals a §13.3 code (an `InvalidDocument` variant,
+  say) is a `CodegenError`, so a code always means one thing. No §13.3
+  code may end in a store suffix (`_not_found`, `_id_required`,
+  `_already_exists`, `_parent_required`, `_parent_cycle`), so no
+  entity's store variants clash; the test
+  `no_ontogen_code_ends_in_a_store_suffix` holds every new code to this. A new §13.3 code can still equal a consumer's own
+  non-store variant, and the check then refuses that build.
 - **`source`.** `AppError`-derived errors carry no `source`, except
   `*AlreadyExists` on a create that carried `data.id` (§8.2).
 - **No `AppError` in the schema directory** (the scan-dirs-only case):
@@ -2676,7 +2684,7 @@ the section that states each and its reason.
 |---|---|---|
 | `jsonapi: {"version":"1.1"}` on every document | 4.1 | Without it clients assume 1.0, and the member costs nothing |
 | `application/json` request bodies are `415` | 3.2 | One media type, and a client sending a flat body fails loudly instead of mis-parsing |
-| A JSON:API instance in `Accept` outranks wildcards; otherwise `*/*` and `application/*` satisfy it | 3.2 | The spec requires `406` when every JSON:API instance is unusable, and browsers, `curl` and `EventSource` send `*/*` |
+| A JSON:API instance in `Accept` outranks wildcards; otherwise `*/*` and `application/*` satisfy it | 3.2 | The spec requires `406` when every JSON:API instance is unusable, and browsers and `curl` send `*/*`. The event routes (§12) skip this negotiation: they answer `text/event-stream` and never check `Accept`, which is what the generated client's `EventSource` sends |
 | `Vary: Accept` on every response | 3.3 | The response depends on `Accept` (406) |
 | Links and `Location` are relative | 4.2 | The server cannot know its public origin behind proxies, dev servers and tunnels |
 | Canonical link query order and encoding | 4.3 | Byte-stable links for snapshots and caches |
@@ -2713,7 +2721,7 @@ the section that states each and its reason.
 | `included` is fetched through the target's `get_by_id`, one call per distinct id, unbatched | 7.5 | Same lookup as related links (§9.3), so a hand-written `get_by_id` and scope rules apply; the store has no batch primitive, and a store-level batch read would bypass a hand-written `get_by_id` |
 | A relationship that cannot be included is a runtime `400 invalid_include_path`, not a build error; junction-op relationships are never includable | 7.5 | JSON:API requires 400 for an unsupported include path, and a list-only module is a legitimate configuration; included resources must be reachable by linkage (full linkage), and junction relationships carry links only |
 | An empty item in a non-empty `include` is `400 invalid_include_path`; only `include=` is `included: []` | 7.5 | `sort` refuses empty items the same way, and `include=epic,` is a malformed list, not an empty one |
-| One id-validity rule on both backends, applied to ids being created: lowercase `[a-z0-9._~-]`, at most 200 bytes, not `index`/`log`, not a Windows device name (`con`, `nul.x`, …); an invalid one is `400` | 8.2 | A malformed id is a bad request, not a store `500`; the backends agree, and every id is a filename on Linux, macOS and Windows and a URL segment |
+| One id-validity rule on both backends, applied to ids being created: lowercase `[a-z0-9._~-]`, at most 200 bytes, no leading or trailing `.`, not `index`/`log`, not a Windows device name (`con`, `nul.x`, …); an invalid one is `400` | 8.2 | A malformed id is a bad request, not a store `500`; the backends agree, and every id is a filename on Linux, macOS and Windows and a URL segment |
 | A path `{id}` is a lookup key, never validated | 8.1 | Every row the store lists stays servable at its `links.self`, including rows whose id fails the rule |
 | Unknown attributes are `400` | 8.2 | Catches clients still sending the flat shape |
 | Body members are checked in schema order, unknown names in byte order | 8.2, 13.2 | Deterministic without an order-preserving parser |

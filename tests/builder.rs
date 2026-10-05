@@ -207,6 +207,7 @@ fn servers_only(
     schema_dir: &Path,
     api_dir: &Path,
     error_source_dir: Option<PathBuf>,
+    generators: Vec<ontogen::servers::ServerGenerator>,
 ) -> Result<(), ontogen::CodegenError> {
     std::fs::create_dir_all(api_dir).expect("api dir");
     Pipeline::new(schema_dir)
@@ -217,7 +218,7 @@ fn servers_only(
             types_import_path: "crate::schema".into(),
             state_import: "crate::AppState".into(),
             naming: Default::default(),
-            generators: vec![],
+            generators,
             sse_route_overrides: Default::default(),
             route_prefix: None,
             store_type: None,
@@ -244,12 +245,61 @@ fn builder_scans_the_schema_dir_for_app_error_unless_told_otherwise() {
 
     // The clash is only reachable through the scan, so the error proves the
     // pipeline pointed it at the schema directory.
-    let err = servers_only(&schema, &api, None).expect_err("a variant reusing an ontogen code must fail");
+    let http = || vec![ontogen::servers::ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
+    let err = servers_only(&schema, &api, None, http()).expect_err("a variant reusing an ontogen code must fail");
     assert!(format!("{err}").contains("AppError::InvalidDocument"), "got: {err}");
 
     let elsewhere = tmp.path().join("errors");
     std::fs::create_dir_all(&elsewhere).unwrap();
-    servers_only(&schema, &api, Some(elsewhere)).expect("an explicit error_source_dir is kept");
+    servers_only(&schema, &api, Some(elsewhere), http()).expect("an explicit error_source_dir is kept");
+}
+
+/// A schema directory declaring one entity and an `AppError` with `variants`.
+fn schema_with_app_error(root: &Path, entity: &str, variants: &[&str]) -> PathBuf {
+    let schema = root.join("schema");
+    std::fs::create_dir_all(&schema).unwrap();
+    std::fs::write(
+        schema.join("mod.rs"),
+        format!(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {entity} {{\n    #[ontology(id)]\n    pub id: \
+             String,\n}}\n\npub enum AppError {{\n    {}\n}}\n",
+            variants.iter().map(|v| format!("{v}(String),")).collect::<Vec<_>>().join("\n    ")
+        ),
+    )
+    .unwrap();
+    schema
+}
+
+#[test]
+fn builder_checks_app_error_codes_only_for_an_http_server() {
+    use ontogen::servers::ServerGenerator;
+
+    // The check exists because the JSON:API server's codes share the `code`
+    // namespace; IPC and MCP carry no such codes.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema = schema_with_app_error(tmp.path(), "Note", &["NoteNotFound", "InvalidDocument"]);
+    let api = tmp.path().join("api");
+    let ipc = ServerGenerator::TauriIpc { output: tmp.path().join("ipc.rs") };
+    let mcp = ServerGenerator::Mcp { output: tmp.path().join("mcp.rs") };
+    let http = ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") };
+
+    servers_only(&schema, &api, None, vec![]).expect("no transport, no clash");
+    servers_only(&schema, &api, None, vec![ipc.clone(), mcp.clone()]).expect("IPC and MCP have no ontogen codes");
+    let err = servers_only(&schema, &api, None, vec![ipc, mcp, http]).expect_err("the HTTP server's codes clash");
+    assert!(format!("{err}").contains("AppError::InvalidDocument"), "got: {err}");
+}
+
+#[test]
+fn builder_http_code_check_accepts_store_variants_of_relationship_named_entities() {
+    for entity in ["Relationship", "RelatedResource"] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let variants = ["NotFound", "IdRequired", "AlreadyExists"].map(|suffix| format!("{entity}{suffix}"));
+        let schema =
+            schema_with_app_error(tmp.path(), entity, &variants.iter().map(String::as_str).collect::<Vec<_>>());
+        let http = ontogen::servers::ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") };
+        servers_only(&schema, &tmp.path().join("api"), None, vec![http])
+            .unwrap_or_else(|e| panic!("`{entity}`'s store variants must not clash: {e}"));
+    }
 }
 
 #[test]
@@ -264,7 +314,7 @@ fn builder_servers_and_clients_refuse_an_entity_that_cannot_be_a_resource() {
     .unwrap();
     let api = tmp.path().join("api");
 
-    let err = servers_only(&schema, &api, None).expect_err("an i64 id cannot be a resource id");
+    let err = servers_only(&schema, &api, None, vec![]).expect_err("an i64 id cannot be a resource id");
     assert!(matches!(err, ontogen::CodegenError::Server(ref e) if e.contains("Note.id")), "got: {err}");
 
     let err = Pipeline::new(&schema)

@@ -50,12 +50,13 @@ footer = ""
 
 [git]
 conventional_commits = true
-# The footer parser treats any line shaped like `word: ` or `word #` as a git
-# trailer, so a wrapped continuation line that opens with a backtick-quoted
-# token (`{"meta":…}` keyed by…) cuts the preceding BREAKING CHANGE footer
-# short. Joining such a line onto the previous one keeps the footer whole.
+# git-cliff's footer parser (not git) reads a continuation line shaped `token:`
+# or `token #` as a new trailer, which cuts the preceding BREAKING CHANGE footer
+# short. Backtick-led continuation lines are joined onto the previous line; a
+# blank line before a backtick-led paragraph is left alone, since joining it
+# would make the subject unparseable and drop the commit.
 commit_preprocessors = [
-    { pattern = '\n(`)', replace = " $1" },
+    { pattern = '([^\r\n])\r?\n(`)', replace = '$1 $2' },
 ]
 filter_unconventional = true
 split_commits = false
