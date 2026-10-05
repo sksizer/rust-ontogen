@@ -185,7 +185,7 @@ A success response is a document with `jsonapi` (always `{"version": "1.1"}`), `
 }
 ```
 
-- `id` is the entity's `#[ontology(id)]` field, which must be a `String`.
+- `id` is the entity's `#[ontology(id)]` field, which must be a `String`: a build that generates the HTTP server or an HTTP client refuses any other id type.
 - `attributes` holds every other non-relation field under its Rust field name. `Option` fields that are `None` are `null`.
 - Each relation field becomes a relationship. A `belongs_to` field named `epic_id` becomes `epic`; other relation fields keep their name. A relationship object carries `links` to its [relationship endpoints](#relationship-endpoints) and its `data`. The relationships of the module's junction ops follow the relation fields, with `links` only. When the module serves no `get_by_id` there are no relationship endpoints, and relationship objects carry `data` only. A type with no relationship has no `relationships` member. See [Relationships](/guides/relationships/#on-the-http-wire) for each kind's linkage.
 - Links are relative paths. Ids in links are percent-encoded.

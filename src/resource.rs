@@ -31,11 +31,13 @@ pub(crate) struct Resource {
     /// (`workout-sets`). Also the collection's URL segment.
     pub resource_type: String,
     /// The `#[ontology(id)]` field, whatever it is called; on the wire it is
-    /// always the `id` member.
+    /// always the `id` member. Empty for an entity with none, which
+    /// [`ResourceModel::check`] refuses.
     pub id_field: String,
     /// In declaration order.
     pub attributes: Vec<Attribute>,
-    /// In declaration order.
+    /// In declaration order. A relation whose target is not an entity of
+    /// the schema has none, and [`ResourceModel::check`] refuses it.
     pub relationships: Vec<Relationship>,
 }
 
@@ -119,17 +121,91 @@ pub(crate) enum Arity {
 }
 
 impl ResourceModel {
-    /// Build the model, checking the rules of contract §5.2–§5.4 that the
-    /// schema parser cannot check alone.
+    /// Build the model for any parsed schema. Every generator reads it to
+    /// tell resource modules from the rest, but only an HTTP server or
+    /// client serves JSON:API, so its rules are left to [`Self::check`].
+    pub fn build(entities: &[EntityDef], naming: &NamingConfig) -> Self {
+        Self { resources: entities.iter().map(|e| resource_of(e, entities, naming)).collect() }
+    }
+
+    /// Check the rules of contract §5.2–§5.4 that the schema parser cannot
+    /// check alone. A build that generates an HTTP server or client runs it
+    /// before anything reads the model's ids, attributes or relationships;
+    /// IPC and MCP payloads are not JSON:API, so other builds skip it.
     ///
     /// # Errors
     ///
-    /// When an entity has no `String` id field, an attribute or relationship
-    /// name is not a legal JSON:API member name or collides with another
-    /// member, or a relation targets an entity outside `entities`.
-    pub fn build(entities: &[EntityDef], naming: &NamingConfig) -> Result<Self, String> {
-        let resources = entities.iter().map(|e| resource_of(e, entities, naming)).collect::<Result<_, _>>()?;
-        Ok(Self { resources })
+    /// The first entity, in schema order, that has no `String` id field, an
+    /// attribute or relationship name that is not a legal JSON:API member
+    /// name or collides with another member, or a relation that targets an
+    /// entity outside the schema.
+    pub fn check(&self) -> Result<(), String> {
+        self.resources.iter().try_for_each(|r| self.check_resource(r))
+    }
+
+    fn check_resource(&self, resource: &Resource) -> Result<(), String> {
+        let entity_name = &resource.entity.name;
+        let id = resource.entity.id_field().ok_or_else(|| {
+            format!("ontogen: entity `{entity_name}` has no `#[ontology(id)]` field; a JSON:API resource needs an id")
+        })?;
+        if id.field_type != FieldType::String {
+            return Err(format!(
+                "ontogen: the id field `{entity_name}.{}` must be a `String` to serve as a JSON:API resource id, \
+                 found {:?}",
+                id.name, id.field_type
+            ));
+        }
+        for field in &resource.entity.fields {
+            if let FieldRole::Relation(info) = &field.role
+                && self.by_entity(&info.target).is_none()
+            {
+                return Err(format!(
+                    "ontogen: relation `{entity_name}.{}` targets `{}`, which is not an entity in the schema",
+                    field.name, info.target
+                ));
+            }
+        }
+
+        let Resource { attributes, relationships, .. } = resource;
+        for a in attributes {
+            check_member_name(entity_name, "attribute", &a.name, &a.field)?;
+            if a.name == "type" || a.name == "id" {
+                return Err(format!(
+                    "ontogen: `{entity_name}.{}` would be an attribute named `{}`, which JSON:API reserves; rename \
+                     the field",
+                    a.field, a.name
+                ));
+            }
+        }
+        for (i, r) in relationships.iter().enumerate() {
+            check_member_name(entity_name, "relationship", &r.name, &r.field)?;
+            if matches!(r.name.as_str(), "type" | "id" | "relationships") {
+                return Err(format!(
+                    "ontogen: relation `{entity_name}.{}` would be a relationship named `{}`, which is reserved; \
+                     rename the field",
+                    r.field, r.name
+                ));
+            }
+            if let Some(a) = attributes.iter().find(|a| a.name == r.name) {
+                return Err(format!(
+                    "ontogen: relation `{entity_name}.{}` and field `{entity_name}.{}` would both be the member \
+                     `{}`; JSON:API gives attributes and relationships one namespace, so rename one",
+                    r.field, a.field, r.name
+                ));
+            }
+            if let Some(other) = relationships[..i].iter().find(|o| o.name == r.name) {
+                return Err(format!(
+                    "ontogen: relations `{entity_name}.{}` and `{entity_name}.{}` would both be the relationship \
+                     `{}`; rename one",
+                    other.field, r.field, r.name
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn by_entity(&self, entity: &str) -> Option<&Resource> {
+        self.resources.iter().find(|r| r.entity.name == entity)
     }
 
     /// The resource served by API module `module`. A module is a resource
@@ -334,7 +410,7 @@ impl ResourceModel {
         };
         let entity = &resource.entity.name;
         if !is_legal_member_name(name) {
-            return refuse("which is not a legal JSON:API member name (it may not start or end with `_`)".to_string());
+            return refuse(format!("which is not a legal JSON:API member name ({MEMBER_NAME_RULE})"));
         }
         if matches!(name, "type" | "id" | "relationships") {
             return refuse("a name JSON:API reserves".to_string());
@@ -409,33 +485,18 @@ pub(crate) fn module_name(entity: &EntityDef) -> String {
     to_snake_case(&entity.name)
 }
 
-fn resource_of(entity: &EntityDef, entities: &[EntityDef], naming: &NamingConfig) -> Result<Resource, String> {
-    let entity_name = &entity.name;
-    let id = entity.id_field().ok_or_else(|| {
-        format!("ontogen: entity `{entity_name}` has no `#[ontology(id)]` field; a JSON:API resource needs an id")
-    })?;
-    if id.field_type != FieldType::String {
-        return Err(format!(
-            "ontogen: the id field `{entity_name}.{}` must be a `String` to serve as a JSON:API resource id, found {:?}",
-            id.name, id.field_type
-        ));
-    }
-
+fn resource_of(entity: &EntityDef, entities: &[EntityDef], naming: &NamingConfig) -> Resource {
     let module = module_name(entity);
     let resource_type = naming.url_plural(&module);
+    let id_field = entity.id_field().map(|id| id.name.clone()).unwrap_or_default();
 
     let mut attributes = Vec::new();
-    let mut relationships: Vec<Relationship> = Vec::new();
+    let mut relationships = Vec::new();
     for field in &entity.fields {
         match &field.role {
             FieldRole::Id | FieldRole::Skip => {}
             FieldRole::Relation(info) => {
-                let target = entities.iter().find(|e| e.name == info.target).ok_or_else(|| {
-                    format!(
-                        "ontogen: relation `{entity_name}.{}` targets `{}`, which is not an entity in the schema",
-                        field.name, info.target
-                    )
-                })?;
+                let Some(target) = entities.iter().find(|e| e.name == info.target) else { continue };
                 let target_module = module_name(target);
                 let arity = match info.kind {
                     RelationKind::BelongsTo => Arity::ToOne { nullable: is_option(&field.field_type) },
@@ -456,42 +517,7 @@ fn resource_of(entity: &EntityDef, entities: &[EntityDef], naming: &NamingConfig
         }
     }
 
-    for a in &attributes {
-        check_member_name(entity_name, "attribute", &a.name, &a.field)?;
-        if a.name == "type" || a.name == "id" {
-            return Err(format!(
-                "ontogen: `{entity_name}.{}` would be an attribute named `{}`, which JSON:API reserves; rename the \
-                 field",
-                a.field, a.name
-            ));
-        }
-    }
-    for (i, r) in relationships.iter().enumerate() {
-        check_member_name(entity_name, "relationship", &r.name, &r.field)?;
-        if matches!(r.name.as_str(), "type" | "id" | "relationships") {
-            return Err(format!(
-                "ontogen: relation `{entity_name}.{}` would be a relationship named `{}`, which is reserved; rename \
-                 the field",
-                r.field, r.name
-            ));
-        }
-        if let Some(a) = attributes.iter().find(|a| a.name == r.name) {
-            return Err(format!(
-                "ontogen: relation `{entity_name}.{}` and field `{entity_name}.{}` would both be the member `{}`; \
-                 JSON:API gives attributes and relationships one namespace, so rename one",
-                r.field, a.field, r.name
-            ));
-        }
-        if let Some(other) = relationships[..i].iter().find(|o| o.name == r.name) {
-            return Err(format!(
-                "ontogen: relations `{entity_name}.{}` and `{entity_name}.{}` would both be the relationship `{}`; \
-                 rename one",
-                other.field, r.field, r.name
-            ));
-        }
-    }
-
-    Ok(Resource { entity: entity.clone(), module, resource_type, id_field: id.name.clone(), attributes, relationships })
+    Resource { entity: entity.clone(), module, resource_type, id_field, attributes, relationships }
 }
 
 fn relationship_name(field: &FieldDef, kind: &RelationKind) -> String {
@@ -531,13 +557,17 @@ fn is_legal_member_name(name: &str) -> bool {
     edge_ok(first) && edge_ok(last) && name.chars().all(inner_ok)
 }
 
+/// [`is_legal_member_name`] in words, for the errors that refuse a name.
+const MEMBER_NAME_RULE: &str = "a member name has only ASCII letters and digits, non-ASCII characters, `-`, `_` and \
+                                spaces, and starts and ends with an ASCII letter or digit or a non-ASCII character";
+
 fn check_member_name(entity: &str, what: &str, name: &str, field: &str) -> Result<(), String> {
     if is_legal_member_name(name) {
         Ok(())
     } else {
         Err(format!(
-            "ontogen: `{entity}.{field}` would be the {what} `{name}`, which is not a legal JSON:API member name (it \
-             may not start or end with `_`); rename the field"
+            "ontogen: `{entity}.{field}` would be the {what} `{name}`, which is not a legal JSON:API member name \
+             ({MEMBER_NAME_RULE}); rename the field"
         ))
     }
 }
@@ -550,21 +580,18 @@ mod tests {
     use crate::schema::parse::{parse_schema_dir, parse_schema_source};
     use crate::servers::parse::Param;
 
-    impl ResourceModel {
-        fn by_entity(&self, entity: &str) -> Option<&Resource> {
-            self.resources.iter().find(|r| r.entity.name == entity)
-        }
-    }
-
     impl Resource {
         fn relationship(&self, name: &str) -> Option<&Relationship> {
             self.relationships.iter().find(|r| r.name == name)
         }
     }
 
+    /// The model of `source`, checked.
     fn model(source: &str) -> Result<ResourceModel, String> {
         let entities = parse_schema_source(source, Path::new("test.rs")).expect("schema parses");
-        ResourceModel::build(&entities, &NamingConfig::default())
+        let model = ResourceModel::build(&entities, &NamingConfig::default());
+        model.check()?;
+        Ok(model)
     }
 
     const TASKS: &str = r#"
@@ -660,7 +687,7 @@ mod tests {
         let entities = parse_schema_source(TASKS, Path::new("test.rs")).unwrap();
         let mut naming = NamingConfig::default();
         naming.plural_overrides.insert("epic".into(), "sagas".into());
-        let model = ResourceModel::build(&entities, &naming).unwrap();
+        let model = ResourceModel::build(&entities, &naming);
         assert_eq!(model.by_entity("Epic").unwrap().resource_type, "sagas");
         assert_eq!(model.by_entity("WorkItem").unwrap().relationship("epic").unwrap().target_type, "sagas");
     }
@@ -712,6 +739,56 @@ mod tests {
             let err = entity_error(field);
             assert!(err.contains("not a legal JSON:API member name"), "{field}: {err}");
         }
+    }
+
+    #[test]
+    fn a_member_name_error_states_the_rule() {
+        assert_eq!(
+            entity_error("pub _draft: bool,"),
+            "ontogen: `Note._draft` would be the attribute `_draft`, which is not a legal JSON:API member name (a \
+             member name has only ASCII letters and digits, non-ASCII characters, `-`, `_` and spaces, and starts \
+             and ends with an ASCII letter or digit or a non-ASCII character); rename the field"
+        );
+    }
+
+    /// Schemas that each break one rule of §5.2–§5.4, as the fields of a
+    /// `Note` beside an entity `Tag`.
+    const REFUSED_NOTES: [&str; 6] = [
+        "#[ontology(id)]\npub id: i64,",
+        "pub title: String,",
+        "#[ontology(id)]\npub id: String,\n#[ontology(relation(belongs_to, target = \"Tag\"))]\npub type_id: String,",
+        "#[ontology(id)]\npub id: String,\n#[ontology(relation(many_to_many, target = \"Label\"))]\npub labels: Vec<String>,",
+        "#[ontology(id)]\npub id: String,\npub _draft: bool,",
+        "#[ontology(id)]\npub id: String,\npub tag: String,\n#[ontology(relation(belongs_to, target = \"Tag\"))]\npub tag_id: String,",
+    ];
+
+    fn refused_note(fields: &str) -> Vec<EntityDef> {
+        let source = format!(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Note {{\n{fields}\n}}\n\
+             #[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Tag {{\n#[ontology(id)]\npub id: String,\n}}"
+        );
+        parse_schema_source(&source, Path::new("test.rs")).expect("schema parses")
+    }
+
+    /// A build with no HTTP server or client still reads the model, so it
+    /// builds for every schema; only the check refuses one.
+    #[test]
+    fn the_model_builds_for_a_schema_the_check_refuses() {
+        for fields in REFUSED_NOTES {
+            let model = ResourceModel::build(&refused_note(fields), &NamingConfig::default());
+            let note = model.by_module("note").unwrap_or_else(|| panic!("{fields}: no resource"));
+            assert_eq!((note.entity.name.as_str(), note.resource_type.as_str()), ("Note", "notes"), "{fields}");
+            assert!(model.by_module("tag").is_some(), "{fields}");
+            assert!(model.check().is_err(), "{fields}: the check passes");
+        }
+    }
+
+    #[test]
+    fn a_resource_without_an_id_or_a_relation_target_leaves_them_out() {
+        let model = ResourceModel::build(&refused_note(REFUSED_NOTES[1]), &NamingConfig::default());
+        assert_eq!(model.by_module("note").unwrap().id_field, "");
+        let model = ResourceModel::build(&refused_note(REFUSED_NOTES[3]), &NamingConfig::default());
+        assert!(model.by_module("note").unwrap().relationships.is_empty());
     }
 
     #[test]
@@ -1038,6 +1115,13 @@ mod tests {
         let task = model.by_module("task").unwrap();
         let m = module("task", vec![]);
         let labels = list("list_labels", "Vec<Label>");
+        assert_eq!(
+            model.check_junction_name(&m, &labels, "-x", task, &[]).unwrap_err(),
+            "ontogen: `task::list_labels` defines the relationship `-x` of the JSON:API resource `tasks`, which is \
+             not a legal JSON:API member name (a member name has only ASCII letters and digits, non-ASCII \
+             characters, `-`, `_` and spaces, and starts and ends with an ASCII letter or digit or a non-ASCII \
+             character); rename the junction ops"
+        );
         for (name, why) in [
             ("_x", "which is not a legal JSON:API member name"),
             ("x_", "which is not a legal JSON:API member name"),
@@ -1140,7 +1224,7 @@ mod tests {
     /// Every schema in the tree is served as resources, so none of them may
     /// trip a §5 rule.
     #[test]
-    fn every_in_tree_schema_builds() {
+    fn every_in_tree_schema_passes_the_check() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         for dir in [
             "tests/fixtures/schema",
@@ -1153,7 +1237,7 @@ mod tests {
         ] {
             let entities = parse_schema_dir(&root.join(dir)).unwrap_or_else(|e| panic!("{dir}: {e}"));
             assert!(!entities.is_empty(), "{dir}: no entities");
-            ResourceModel::build(&entities, &NamingConfig::default()).unwrap_or_else(|e| panic!("{dir}: {e}"));
+            ResourceModel::build(&entities, &NamingConfig::default()).check().unwrap_or_else(|e| panic!("{dir}: {e}"));
         }
     }
 }

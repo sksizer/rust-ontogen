@@ -5872,7 +5872,7 @@ pub(crate) fn resource_fixture(root: &std::path::Path, app_error: bool) -> Confi
     let entities =
         crate::schema::parse::parse_schema_source(RESOURCE_SCHEMA, std::path::Path::new("schema.rs")).unwrap();
     let mut config = test_config(api_dir);
-    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming).unwrap();
+    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming);
     config.error_map = crate::servers::error_map::scan(&schema_dir).unwrap();
     config.pagination = Some(crate::servers::PaginationConfig { default_limit: 20, max_limit: 100 });
     config
@@ -8578,7 +8578,7 @@ fn a_paginated_count_is_neither_served_nor_called() {
     let out = tmp.path().join("out");
     let mut server = test_config(api_dir.clone());
     server.pagination = pagination.clone();
-    server.resources = crate::resource::ResourceModel::build(&entities, &server.naming).unwrap();
+    server.resources = crate::resource::ResourceModel::build(&entities, &server.naming);
     server.generators = vec![
         ServerGenerator::HttpAxum { output: out.join("http.rs") },
         ServerGenerator::TauriIpc { output: out.join("ipc.rs") },
@@ -9492,7 +9492,7 @@ fn an_mcp_list_tool_enumerates_the_entitys_sort_keys() {
         "pub async fn list(store: &Store, order: &[OrderBy<PaperSortField>]) -> Result<Vec<Paper>, AppError> { todo!() }\n",
     );
     let mut config = test_config(api_dir);
-    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming).unwrap();
+    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming);
     config.enums = enums;
     let mcp = generate_one(tmp.path(), config, mcp_gen);
     assert!(

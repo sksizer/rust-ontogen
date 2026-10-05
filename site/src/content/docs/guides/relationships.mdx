@@ -157,7 +157,7 @@ Over HTTP, a relation field is not an attribute. The generated JSON:API server m
 | `many_to_many` | `tags: Vec<String>` | `tags` | array of identifiers, in stored order |
 | `has_many` | `contains: Vec<String>` | `contains` | array of identifiers, id ascending |
 
-A `belongs_to` field name that ends in `_id` loses the suffix; every other relation field keeps its name. The `type` is the target entity's URL plural. A relationship name that equals an attribute name, `type`, `id` or `relationships`, or that another relationship already uses, fails the build.
+A `belongs_to` field name that ends in `_id` loses the suffix; every other relation field keeps its name. The `type` is the target entity's URL plural. A relationship name that equals an attribute name, `type`, `id` or `relationships`, or that another relationship already uses, fails a build that generates an HTTP server or client.
 
 Writes use the same shape. A create or update body sets a to-one with `"data": {"type": "epics", "id": "…"}` (or `null` for an `Option` field, `403 relationship_required` for a required one) and a to-many with a `data` array that replaces the stored list; a repeated identifier counts once. An identifier whose `type` is not the relationship's target is `409 type_mismatch`. A required to-one left out of a create body is `400 missing_relationship`; on an update, any relationship left out is unchanged. A `has_many` array goes through the children's foreign keys with the rules above, and a dropped child whose key is required is `403` with the `{child}_parent_required` code. Every linked id is checked first: a missing one is `404 related_resource_not_found`, and nothing is written. A relation field sent as an attribute (`epic_id`) is `400 unknown_attribute`.
 

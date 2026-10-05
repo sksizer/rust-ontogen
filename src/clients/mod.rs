@@ -44,9 +44,8 @@ use crate::servers::parse;
 
 /// Generate TypeScript client and admin-registry artefacts.
 ///
-/// Mirrors the shape of [`crate::gen_servers`] - takes the schema, the parsed
-/// [`ApiOutput`] (or scans the configured surfaces itself, as a fallback), the additional
-/// scan dirs (reserved for future enrichment), and a [`crate::ClientsConfig`].
+/// Mirrors the shape of [`crate::gen_servers`]: the API surfaces are always
+/// scanned from source, so `_api` and `_scan_dirs` are unused.
 ///
 /// Emits the schema-known TypeScript bindings first (always), then runs
 /// [`ontogen_ts`] over the consuming crate's `src/` to discover and emit
@@ -57,16 +56,16 @@ use crate::servers::parse;
 ///
 /// # Errors
 ///
-/// Returns [`CodegenError::Client`] when an entity cannot be served as a
-/// JSON:API resource, when an API fn cannot be served as a client method,
-/// and for parse, I/O, or formatting failure.
+/// Returns [`CodegenError::Client`] when an HTTP client is generated and an
+/// entity cannot be served as a JSON:API resource, when an API fn cannot be
+/// served as a client method, and for parse, I/O, or formatting failure.
 pub fn generate(
     schema: &SchemaOutput,
     _api: Option<&ApiOutput>,
     _scan_dirs: &[PathBuf],
     config: &crate::ClientsConfig,
 ) -> Result<(), CodegenError> {
-    let resources = ResourceModel::build(&schema.entities, &config.naming).map_err(CodegenError::Client)?;
+    let resources = ResourceModel::build(&schema.entities, &config.naming);
     // Convert public ClientsConfig → internal Config
     let internal = config::Config {
         api_dir: config.api_dir.clone(),
@@ -118,6 +117,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
         .iter()
         .any(|g| matches!(g, ClientGenerator::HttpTs { .. } | ClientGenerator::HttpTauriIpcSplit { .. }))
     {
+        config.resources.check()?;
         crate::servers::classify::check_http_ops(&modules, &config.resources, config.route_prefix.as_ref())?;
     }
     crate::servers::classify::check_order_params(&modules, &config.resources)?;

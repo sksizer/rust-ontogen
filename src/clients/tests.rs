@@ -2353,7 +2353,7 @@ fn transport_over_resources(modules: &[ApiModule], bindings: &str) -> String {
         paginated_modules: Vec::new(),
         schema_dir: None,
     }]);
-    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming).unwrap();
+    config.resources = crate::resource::ResourceModel::build(&entities, &config.naming);
     let (bindings_path, output) = (tmp.path().join("bindings.ts"), tmp.path().join("transport.ts"));
     fs::write(&bindings_path, bindings).unwrap();
     crate::clients::generators::transport::generate(&output, &bindings_path, modules, &config);

@@ -208,6 +208,16 @@ fn servers_only(
     api_dir: &Path,
     error_source_dir: Option<PathBuf>,
 ) -> Result<(), ontogen::CodegenError> {
+    servers_with(schema_dir, api_dir, error_source_dir, vec![])
+}
+
+/// A servers stage over `schema_dir` and `api_dir` running `generators`.
+fn servers_with(
+    schema_dir: &Path,
+    api_dir: &Path,
+    error_source_dir: Option<PathBuf>,
+    generators: Vec<ontogen::servers::ServerGenerator>,
+) -> Result<(), ontogen::CodegenError> {
     std::fs::create_dir_all(api_dir).expect("api dir");
     Pipeline::new(schema_dir)
         .servers(ontogen::ServersConfig {
@@ -217,7 +227,7 @@ fn servers_only(
             types_import_path: "crate::schema".into(),
             state_import: "crate::AppState".into(),
             naming: Default::default(),
-            generators: vec![],
+            generators,
             sse_route_overrides: Default::default(),
             route_prefix: None,
             store_type: None,
@@ -252,23 +262,126 @@ fn builder_scans_the_schema_dir_for_app_error_unless_told_otherwise() {
     servers_only(&schema, &api, Some(elsewhere)).expect("an explicit error_source_dir is kept");
 }
 
-#[test]
-fn builder_servers_and_clients_refuse_an_entity_that_cannot_be_a_resource() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let schema = tmp.path().join("schema");
+/// A `Note` with `note_fields` beside a `Tag`, under `root/schema`, and a
+/// `note` API module serving `get_by_id`, under `root/api`.
+fn note_project(root: &Path, note_fields: &str) -> (PathBuf, PathBuf) {
+    let schema = root.join("schema");
+    let api = root.join("api");
     std::fs::create_dir_all(&schema).unwrap();
+    std::fs::create_dir_all(&api).unwrap();
     std::fs::write(
-        schema.join("note.rs"),
-        "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Note {\n    #[ontology(id)]\n    pub id: i64,\n}\n",
+        schema.join("mod.rs"),
+        format!(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Note {{\n{note_fields}\n}}\n\n\
+             #[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Tag {{\n    #[ontology(id)]\n    pub id: String,\n}}\n"
+        ),
     )
     .unwrap();
-    let api = tmp.path().join("api");
+    std::fs::write(
+        api.join("note.rs"),
+        "use crate::schema::Note;\n\n\
+         pub async fn get_by_id(state: &AppState, id: &str) -> Result<Note, anyhow::Error> { todo!() }\n",
+    )
+    .unwrap();
+    (schema, api)
+}
 
-    let err = servers_only(&schema, &api, None).expect_err("an i64 id cannot be a resource id");
+/// Relations JSON:API refuses, with the error an HTTP build reports.
+const REFUSED_RELATIONS: [(&str, &str); 2] = [
+    (
+        "    #[ontology(id)]\n    pub id: String,\n    #[ontology(relation(belongs_to, target = \"Tag\"))]\n    pub type_id: String,",
+        "ontogen: relation `Note.type_id` would be a relationship named `type`, which is reserved; rename the field",
+    ),
+    (
+        "    #[ontology(id)]\n    pub id: String,\n    #[ontology(relation(belongs_to, target = \"Tag\"))]\n    pub _tag_id: String,",
+        "ontogen: `Note._tag_id` would be the relationship `_tag`, which is not a legal JSON:API member name (a \
+         member name has only ASCII letters and digits, non-ASCII characters, `-`, `_` and spaces, and starts and \
+         ends with an ASCII letter or digit or a non-ASCII character); rename the field",
+    ),
+];
+
+#[test]
+fn builder_ipc_and_mcp_servers_take_a_relation_json_api_refuses() {
+    for (fields, refusal) in REFUSED_RELATIONS {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (schema, api) = note_project(tmp.path(), fields);
+        let errors = tmp.path().join("errors");
+        std::fs::create_dir_all(&errors).unwrap();
+        let ipc = tmp.path().join("ipc.rs");
+        let mcp = tmp.path().join("mcp.rs");
+
+        servers_with(
+            &schema,
+            &api,
+            Some(errors.clone()),
+            vec![
+                ontogen::servers::ServerGenerator::TauriIpc { output: ipc.clone() },
+                ontogen::servers::ServerGenerator::Mcp { output: mcp.clone() },
+            ],
+        )
+        .unwrap_or_else(|e| panic!("IPC and MCP payloads are not JSON:API: {e}"));
+        assert!(ipc.exists() && mcp.exists(), "both transports are written");
+
+        let http = vec![ontogen::servers::ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
+        let err = servers_with(&schema, &api, Some(errors), http).expect_err("the HTTP server serves JSON:API");
+        assert!(matches!(err, ontogen::CodegenError::Server(ref e) if e == refusal), "got: {err}");
+    }
+}
+
+#[test]
+fn builder_admin_registry_takes_a_relation_json_api_refuses() {
+    use ontogen::clients::ClientGenerator;
+
+    for (fields, refusal) in REFUSED_RELATIONS {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (schema, api) = note_project(tmp.path(), fields);
+        let clients = |generators: Vec<ClientGenerator>| {
+            Pipeline::new(&schema)
+                .clients(ontogen::ClientsConfig {
+                    generators,
+                    ..ontogen::ClientsConfig::new(&api, "AppState", "crate::api", "crate::schema", "crate::AppState")
+                })
+                .build()
+        };
+
+        let registry = tmp.path().join("admin-registry.ts");
+        clients(vec![ClientGenerator::AdminRegistry { output: registry.clone() }])
+            .unwrap_or_else(|e| panic!("the admin registry is not JSON:API: {e}"));
+        assert!(registry.exists(), "the registry is written");
+
+        let bindings_path = tmp.path().join("bindings.ts");
+        for http in [
+            ClientGenerator::HttpTs { output: tmp.path().join("http.ts"), bindings_path: bindings_path.clone() },
+            ClientGenerator::HttpTauriIpcSplit {
+                output: tmp.path().join("transport.ts"),
+                bindings_path: bindings_path.clone(),
+            },
+        ] {
+            let err = clients(vec![http]).expect_err("an HTTP client speaks JSON:API");
+            assert!(matches!(err, ontogen::CodegenError::Client(ref e) if e == refusal), "got: {err}");
+        }
+    }
+}
+
+#[test]
+fn builder_http_servers_and_clients_refuse_an_entity_that_cannot_be_a_resource() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (schema, api) = note_project(tmp.path(), "    #[ontology(id)]\n    pub id: i64,");
+    let errors = tmp.path().join("errors");
+    std::fs::create_dir_all(&errors).unwrap();
+
+    let http = vec![ontogen::servers::ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
+    let err = servers_with(&schema, &api, Some(errors), http).expect_err("an i64 id cannot be a resource id");
     assert!(matches!(err, ontogen::CodegenError::Server(ref e) if e.contains("Note.id")), "got: {err}");
 
     let err = Pipeline::new(&schema)
-        .clients(ontogen::ClientsConfig::new(&api, "AppState", "crate::api", "crate::schema", "crate::AppState"))
+        .clients(ontogen::ClientsConfig {
+            generators: vec![ontogen::clients::ClientGenerator::HttpTs {
+                output: tmp.path().join("http.ts"),
+                bindings_path: tmp.path().join("bindings.ts"),
+            }],
+            ..ontogen::ClientsConfig::new(&api, "AppState", "crate::api", "crate::schema", "crate::AppState")
+        })
         .build()
         .expect_err("an i64 id cannot be a resource id");
     assert!(matches!(err, ontogen::CodegenError::Client(ref e) if e.contains("Note.id")), "got: {err}");
