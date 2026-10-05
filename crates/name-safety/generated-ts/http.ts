@@ -8,6 +8,7 @@ import type {
   CreateEventInput,
   CreateLinksInput,
   CreateMapInput,
+  CreateMatchInput,
   CreateMethodInput,
   CreateRelationshipInput,
   CreateRequestInput,
@@ -20,6 +21,7 @@ import type {
   Event,
   Links,
   Map,
+  Match,
   Method,
   Relationship,
   Request,
@@ -31,6 +33,7 @@ import type {
   UpdateEventInput,
   UpdateLinksInput,
   UpdateMapInput,
+  UpdateMatchInput,
   UpdateMethodInput,
   UpdateRelationshipInput,
   UpdateRequestInput,
@@ -63,6 +66,8 @@ export type EventSortKey = 'id' | '-id' | 'title' | '-title';
 export type LinksSortKey = 'id' | '-id' | 'title' | '-title';
 
 export type MapSortKey = 'id' | '-id' | 'title' | '-title';
+
+export type MatchSortKey = 'id' | '-id' | 'title' | '-title';
 
 export type MethodSortKey = 'id' | '-id' | 'title' | '-title';
 
@@ -394,6 +399,23 @@ function unflattenMap(input: object, id?: string): JsonApiWriteDocument {
   return unflattenResource(MAP_RESOURCE, input, id);
 }
 
+const MATCH_RESOURCE: JsonApiResourceDef = {
+  type: 'matches',
+  idField: 'id',
+  relationships: {},
+};
+
+function flattenMatch(r: JsonApiResource): Match {
+  return {
+    id: r.id,
+    ...r.attributes,
+  } as Match;
+}
+
+function unflattenMatch(input: object, id?: string): JsonApiWriteDocument {
+  return unflattenResource(MATCH_RESOURCE, input, id);
+}
+
 const METHOD_RESOURCE: JsonApiResourceDef = {
   type: 'methods',
   idField: 'id',
@@ -662,6 +684,34 @@ export const httpCommands = {
 
   async mapDelete(id: string): Promise<null> {
     await httpDelete(`/maps/${encodeURIComponent(id)}`);
+    return null;
+  },
+
+  async matchList(limit?: number, offset?: number, options?: ListOptions<MatchSortKey>): Promise<PaginatedResult<Match>> {
+    const { data, meta } = await httpGet<JsonApiPageDocument>(`/matches${toQueryString({ sort: options?.sort, page: { offset, limit } })}`);
+    return { items: data.map(flattenMatch), total: meta.total, limit: meta.limit, offset: meta.offset };
+  },
+
+  async matchGetById(id: string): Promise<Match> {
+    const { data } = await httpGet<JsonApiResourceDocument>(`/matches/${encodeURIComponent(id)}`);
+    return flattenMatch(data);
+  },
+
+  async matchCreate(input: CreateMatchInput): Promise<Match> {
+    const { data } = await httpPost<JsonApiResourceDocument>('/matches', unflattenMatch(input));
+    return flattenMatch(data);
+  },
+
+  async matchUpdate(id: string, input: UpdateMatchInput): Promise<Match> {
+    const { data } = await httpPatch<JsonApiResourceDocument>(
+      `/matches/${encodeURIComponent(id)}`,
+      unflattenMatch(input, id),
+    );
+    return flattenMatch(data);
+  },
+
+  async matchDelete(id: string): Promise<null> {
+    await httpDelete(`/matches/${encodeURIComponent(id)}`);
     return null;
   },
 

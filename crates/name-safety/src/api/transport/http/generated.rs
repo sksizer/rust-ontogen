@@ -24,15 +24,15 @@ use ontogen_jsonapi::{
 
 use crate::AppState;
 use crate::api::{
-    doc, document, endpoint, event, links, lookup, map, method, relationship, request, response, state, value,
+    doc, document, endpoint, event, links, lookup, map, r#match, method, relationship, request, response, state, value,
 };
 use crate::schema::{
     CreateDocInput, CreateDocumentInput, CreateEndpointInput, CreateEventInput, CreateLinksInput, CreateMapInput,
-    CreateMethodInput, CreateRelationshipInput, CreateRequestInput, CreateResponseInput, CreateStateInput,
-    CreateValueInput, Doc, Document, Endpoint, Event, Links, Map, Method, Relationship, Request, Response, State,
-    UpdateDocInput, UpdateDocumentInput, UpdateEndpointInput, UpdateEventInput, UpdateLinksInput, UpdateMapInput,
-    UpdateMethodInput, UpdateRelationshipInput, UpdateRequestInput, UpdateResponseInput, UpdateStateInput,
-    UpdateValueInput, Value,
+    CreateMatchInput, CreateMethodInput, CreateRelationshipInput, CreateRequestInput, CreateResponseInput,
+    CreateStateInput, CreateValueInput, Doc, Document, Endpoint, Event, Links, Map, Match, Method, Relationship,
+    Request, Response, State, UpdateDocInput, UpdateDocumentInput, UpdateEndpointInput, UpdateEventInput,
+    UpdateLinksInput, UpdateMapInput, UpdateMatchInput, UpdateMethodInput, UpdateRelationshipInput, UpdateRequestInput,
+    UpdateResponseInput, UpdateStateInput, UpdateValueInput, Value,
 };
 
 /// An `AppError` as an error object: the status its variant's name gives,
@@ -627,6 +627,57 @@ async fn ontogen_map_check_linked(state: &AppState, linked: &OntogenMapLinkedIds
         }
     }
     Ok(())
+}
+
+// ── `matches` ──
+
+/// `Match`'s attributes: every field but the id and the relations, in
+/// declaration order.
+struct OntogenMatchResourceAttributes<'a>(&'a Match);
+
+impl serde::Serialize for OntogenMatchResourceAttributes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut attributes = serializer.serialize_struct("OntogenMatchResourceAttributes", 1)?;
+        attributes.serialize_field("title", &self.0.title)?;
+        attributes.end()
+    }
+}
+
+/// `entity` as a resource object of type `matches`, its `links.self`
+/// under `collection`.
+fn ontogen_match_as_resource<'a>(
+    entity: &'a Match,
+    collection: &str,
+) -> OntogenResourceObject<OntogenMatchResourceAttributes<'a>> {
+    let self_link = format!("{collection}/{}", ontogen_jsonapi::links::encode_path_segment(&entity.id));
+    OntogenResourceObject::new("matches", entity.id.clone(), OntogenMatchResourceAttributes(entity), self_link)
+}
+
+/// The id an `{id}` path segment names.
+fn ontogen_match_lookup_key(id: &OntogenLookupKey) -> Result<&str, OntogenErrorObject> {
+    id.as_str().ok_or_else(|| ontogen_app_error(crate::schema::AppError::MatchNotFound(id.to_string())))
+}
+
+/// The fields a create or update document for `matches` sets, named as
+/// the input's fields, each member checked against the schema.
+fn ontogen_match_request_fields(
+    data: &OntogenResourceData,
+    create: bool,
+) -> Result<serde_json::Map<String, serde_json::Value>, OntogenErrorObject> {
+    let attributes = data.attributes.as_ref();
+    ontogen_jsonapi::request::check_attribute_names(attributes, "matches", &["title"], &[])?;
+    let mut fields = serde_json::Map::new();
+    if create {
+        fields.insert("id".to_owned(), serde_json::Value::String(data.id.clone().unwrap_or_default()));
+    }
+    ontogen_set_field(
+        &mut fields,
+        "title",
+        ontogen_jsonapi::request::attribute::<String>(attributes, "title", create)?,
+    );
+    ontogen_jsonapi::request::check_relationship_names(data.relationships()?, "matches", &[])?;
+    Ok(fields)
 }
 
 // ── `methods` ──
@@ -2245,6 +2296,114 @@ async fn ontogen_map_related_get(
     }
 }
 
+// ── Match Handlers ──
+
+async fn match_list(
+    OntogenState(ontogen_state): OntogenState<std::sync::Arc<AppState>>,
+    _: OntogenAcceptGuard,
+    query: OntogenQuery<OntogenPagedListParams>,
+) -> Result<OntogenResponse, OntogenErrorObject> {
+    let order = query.sort_order("matches")?;
+    let include = query.include_paths("matches", &[], &[])?;
+    let (offset, limit) = ontogen_page(&query, 10, 50)?;
+    let link_query = query.link_query(include.as_deref())?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let items = r#match::list(&ontogen_store, &order, Some(u64::from(limit)), Some(u64::from(offset)))
+        .await
+        .map_err(ontogen_app_error)?;
+    let total = r#match::count(&ontogen_store).await.map_err(ontogen_app_error)?;
+    let collection = "/api/matches";
+    let data: Vec<_> = items.iter().map(|entity| ontogen_match_as_resource(entity, collection)).collect();
+    let links = ontogen_jsonapi::links::pagination_links(collection, &link_query, offset, limit, total);
+    let mut document = OntogenDocument::new(data, links).with_meta(OntogenPageMeta { total, limit, offset });
+    if include.is_some() {
+        document = document.with_included(Vec::new());
+    }
+    Ok(ontogen_jsonapi::response::ok(&document))
+}
+
+async fn match_get_by_id(
+    OntogenState(ontogen_state): OntogenState<std::sync::Arc<AppState>>,
+    _: OntogenAcceptGuard,
+    OntogenPath(id): OntogenPath<OntogenLookupKey>,
+    query: OntogenQuery<OntogenGetParams>,
+) -> Result<OntogenResponse, OntogenErrorObject> {
+    let include = query.include_paths("matches", &[], &[])?;
+    let link_query = query.link_query(include.as_deref())?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let entity = r#match::get_by_id(&ontogen_store, ontogen_match_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
+    let collection = "/api/matches";
+    let mut document = OntogenDocument::resource(ontogen_match_as_resource(&entity, collection), &link_query);
+    if include.is_some() {
+        document = document.with_included(Vec::new());
+    }
+    Ok(ontogen_jsonapi::response::ok(&document))
+}
+
+async fn match_create(
+    OntogenState(ontogen_state): OntogenState<std::sync::Arc<AppState>>,
+    _: OntogenAcceptGuard,
+    query: Result<OntogenQuery<OntogenNoParams>, OntogenErrorObject>,
+    body: OntogenBody,
+) -> Result<OntogenResponse, OntogenErrorObject> {
+    query?;
+    let body = body.into_bytes()?;
+    let collection = "/api/matches";
+    let endpoint = OntogenEndpoint { type_name: "matches", path: collection };
+    let data = ontogen_jsonapi::request::parse_create(&body, endpoint, |id| {
+        ontogen_core::id::validate_id(id).map_err(|e| e.reason)
+    })?;
+    let fields = ontogen_match_request_fields(&data, true)?;
+    let input: CreateMatchInput = ontogen_from_fields(fields)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let entity = r#match::create(&ontogen_store, input).await.map_err(|e| match e {
+        e @ crate::schema::AppError::MatchAlreadyExists(..) if data.id.is_some() => {
+            ontogen_app_error(e).with_pointer("/data/id")
+        }
+        e => ontogen_app_error(e),
+    })?;
+    let document =
+        OntogenDocument::resource(ontogen_match_as_resource(&entity, collection), &OntogenCanonicalQuery::new());
+    let location = document.data().and_then(OntogenResourceObject::links).map(OntogenLinks::self_link);
+    Ok(ontogen_jsonapi::response::created(location, &document))
+}
+
+async fn match_update(
+    OntogenState(ontogen_state): OntogenState<std::sync::Arc<AppState>>,
+    _: OntogenAcceptGuard,
+    path_params: Result<OntogenPath<OntogenLookupKey>, OntogenErrorObject>,
+    query: Result<OntogenQuery<OntogenNoParams>, OntogenErrorObject>,
+    body: OntogenBody,
+) -> Result<OntogenResponse, OntogenErrorObject> {
+    let OntogenPath(id) = path_params?;
+    query?;
+    let body = body.into_bytes()?;
+    let collection = "/api/matches";
+    let path = format!("{collection}/{id}");
+    let endpoint = OntogenEndpoint { type_name: "matches", path: &path };
+    let data = ontogen_jsonapi::request::parse_update(&body, endpoint, &id)?;
+    let fields = ontogen_match_request_fields(&data, false)?;
+    let input: UpdateMatchInput = ontogen_from_fields(fields)?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let entity =
+        r#match::update(&ontogen_store, ontogen_match_lookup_key(&id)?, input).await.map_err(ontogen_app_error)?;
+    Ok(ontogen_jsonapi::response::ok(&OntogenDocument::resource(
+        ontogen_match_as_resource(&entity, collection),
+        &OntogenCanonicalQuery::new(),
+    )))
+}
+
+async fn match_delete(
+    OntogenState(ontogen_state): OntogenState<std::sync::Arc<AppState>>,
+    _: OntogenAcceptGuard,
+    OntogenPath(id): OntogenPath<OntogenLookupKey>,
+    _: OntogenQuery<OntogenNoParams>,
+) -> Result<OntogenResponse, OntogenErrorObject> {
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    r#match::delete(&ontogen_store, ontogen_match_lookup_key(&id)?).await.map_err(ontogen_app_error)?;
+    Ok(ontogen_jsonapi::response::no_content())
+}
+
 // ── Method Handlers ──
 
 async fn method_list(
@@ -3056,6 +3215,20 @@ pub fn entity_routes() -> axum::Router<std::sync::Arc<AppState>> {
         .route(
             "/api/maps/{id}/{rel}",
             axum::routing::get(ontogen_map_related_get).fallback(ontogen_allow([OntogenMethod::GET])),
+        )
+        .route(
+            "/api/matches",
+            axum::routing::get(match_list)
+                .post(match_create)
+                .fallback(ontogen_allow([OntogenMethod::GET, OntogenMethod::POST])),
+        )
+        .route(
+            "/api/matches/{id}",
+            axum::routing::get(match_get_by_id).patch(match_update).delete(match_delete).fallback(ontogen_allow([
+                OntogenMethod::GET,
+                OntogenMethod::PATCH,
+                OntogenMethod::DELETE,
+            ])),
         )
         .route(
             "/api/methods",
