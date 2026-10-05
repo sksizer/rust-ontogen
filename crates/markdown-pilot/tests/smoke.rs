@@ -7,7 +7,7 @@
 
 use markdown_pilot::Store;
 use markdown_pilot::persistence::markdown::generated::open_vault;
-use markdown_pilot::schema::{Note, Task};
+use markdown_pilot::schema::{Note, Tag, Task};
 
 fn store() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -28,6 +28,13 @@ fn task(title: &str, parent: Option<&str>, tags: &[&str]) -> Task {
         subtasks: Vec::new(),
         tags: tags.iter().map(|s| s.to_string()).collect(),
         body: format!("Body of {title}.\n"),
+    }
+}
+
+/// Create the tags a task lists: a many_to_many id must name a record.
+async fn tags(store: &Store, ids: &[&str]) {
+    for id in ids {
+        store.create_tag(Tag { id: id.to_string(), title: id.to_string() }).await.expect("create tag");
     }
 }
 
@@ -75,6 +82,7 @@ async fn note_crud_lifecycle() {
 #[tokio::test]
 async fn relations_wikilinks_and_derived_views() {
     let (dir, store) = store();
+    tags(&store, &["codegen", "storage"]).await;
 
     let parent = store.create_task(task("Parent epic", None, &[])).await.expect("create parent");
     let child_a = store.create_task(task("Child alpha", Some(&parent.id), &["codegen"])).await.expect("child a");
@@ -156,6 +164,7 @@ async fn change_events_fire_per_lifecycle() {
 #[tokio::test]
 async fn records_are_okf_typed_with_the_renamed_status_key() {
     let (dir, store) = store();
+    tags(&store, &["codegen"]).await;
     let created = store.create_task(task("Typed record", None, &["codegen"])).await.expect("create");
 
     let raw = std::fs::read_to_string(dir.path().join(format!("tasks/{}.md", created.id))).expect("file");

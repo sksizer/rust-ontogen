@@ -38,6 +38,7 @@ fn ontogen_app_error(e: crate::schema::AppError) -> ErrorObject {
         crate::schema::AppError::TaskNotFound(..) => (StatusCode::NOT_FOUND, "task_not_found"),
         crate::schema::AppError::TaskIdRequired(..) => (StatusCode::BAD_REQUEST, "task_id_required"),
         crate::schema::AppError::TaskAlreadyExists(..) => (StatusCode::CONFLICT, "task_already_exists"),
+        crate::schema::AppError::TaskParentCycle(..) => (StatusCode::FORBIDDEN, "task_parent_cycle"),
         crate::schema::AppError::EpicNotFound(..) => (StatusCode::NOT_FOUND, "epic_not_found"),
         crate::schema::AppError::EpicIdRequired(..) => (StatusCode::BAD_REQUEST, "epic_id_required"),
         crate::schema::AppError::EpicAlreadyExists(..) => (StatusCode::CONFLICT, "epic_already_exists"),

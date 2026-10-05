@@ -53,8 +53,11 @@ impl Store {
 
     /// Replace the junction rows of `source_id`, inserting `target_ids` in
     /// list order so `load_junction_ids` reads them back in that order.
-    pub async fn sync_junction(
+    /// Every statement goes through `conn`, the generated create's or
+    /// update's transaction, so a failure undoes the whole write.
+    pub async fn sync_junction<C: ConnectionTrait>(
         &self,
+        conn: &C,
         table: &str,
         source_col: &str,
         target_col: &str,
@@ -63,13 +66,10 @@ impl Store {
     ) -> Result<(), AppError> {
         // sqlite-only: list order survives only because SQLite's rowid follows insertion order.
         let delete = format!("DELETE FROM {table} WHERE {source_col} = ?");
-        self.db.execute(sqlite(&delete, vec![source_id.into()])).await.map_err(db_error)?;
+        conn.execute(sqlite(&delete, vec![source_id.into()])).await.map_err(db_error)?;
         let insert = format!("INSERT INTO {table} ({source_col}, {target_col}) VALUES (?, ?)");
         for target_id in target_ids {
-            self.db
-                .execute(sqlite(&insert, vec![source_id.into(), target_id.as_str().into()]))
-                .await
-                .map_err(db_error)?;
+            conn.execute(sqlite(&insert, vec![source_id.into(), target_id.as_str().into()])).await.map_err(db_error)?;
         }
         Ok(())
     }

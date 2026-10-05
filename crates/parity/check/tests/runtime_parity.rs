@@ -24,6 +24,7 @@ enum StoreError {
     IdRequired(&'static str, String),
     AlreadyExists(&'static str, String),
     ParentRequired(&'static str, String),
+    ParentCycle(&'static str, String),
     Backend(String),
 }
 
@@ -34,7 +35,8 @@ impl PartialEq for StoreError {
             (NotFound(a, x), NotFound(b, y))
             | (IdRequired(a, x), IdRequired(b, y))
             | (AlreadyExists(a, x), AlreadyExists(b, y))
-            | (ParentRequired(a, x), ParentRequired(b, y)) => a == b && x == y,
+            | (ParentRequired(a, x), ParentRequired(b, y))
+            | (ParentCycle(a, x), ParentCycle(b, y)) => a == b && x == y,
             (Backend(_), Backend(_)) => true,
             _ => false,
         }
@@ -168,10 +170,12 @@ macro_rules! error_mappers {
                 E::ItemNotFound(id) => StoreError::NotFound("Item", id),
                 E::ItemIdRequired(r) => StoreError::IdRequired("Item", r),
                 E::ItemAlreadyExists(id) => StoreError::AlreadyExists("Item", id),
+                E::ItemParentCycle(id) => StoreError::ParentCycle("Item", id),
                 E::SectionNotFound(id) => StoreError::NotFound("Section", id),
                 E::SectionIdRequired(r) => StoreError::IdRequired("Section", r),
                 E::SectionAlreadyExists(id) => StoreError::AlreadyExists("Section", id),
                 E::SectionParentRequired(id) => StoreError::ParentRequired("Section", id),
+                E::SectionParentCycle(id) => StoreError::ParentCycle("Section", id),
                 E::TagNotFound(id) => StoreError::NotFound("Tag", id),
                 E::TagIdRequired(r) => StoreError::IdRequired("Tag", r),
                 E::TagAlreadyExists(id) => StoreError::AlreadyExists("Tag", id),
@@ -482,6 +486,13 @@ async fn integers_outside_i64<B: Backend>(b: &B, mut t: Transcript) -> Transcrip
         t.record(label, &result).unwrap_err();
     }
     t.expect("base is unchanged", b.get_item("base").await, Ok(base));
+
+    // Refused before an id is derived, so a title with nothing to derive
+    // from does not decide the error.
+    let result = b.create_item(item("", json!({ "title": "!!!", "n_u64": u64::MAX }))).await;
+    assert!(matches!(result, Err(StoreError::Backend(_))), "[{}] empty slug and u64::MAX: {result:?}", B::NAME);
+    t.record("create with an empty slug and n_u64 = u64::MAX", &result).unwrap_err();
+    t.expect("still only base", listed_ids(b.list_items(&[], None, None).await), ok_ids(&["base"]));
     t
 }
 
@@ -1254,11 +1265,15 @@ async fn required_parent<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
         children(b.update_section("book", json!({ "children": ["ch2", "appendix", "ch1"] })).await),
         Ok(json!(["appendix", "ch1", "ch2"])),
     );
+    // A root is its own parent through its belongs_to, never through its
+    // own children list.
+    let roots = b.list_sections().await;
     t.expect(
-        "listing the record itself as a child keeps it out of the list",
-        children(b.update_section("book", json!({ "children": ["book", "appendix", "ch1", "ch2"] })).await),
-        Ok(json!(["appendix", "ch1", "ch2"])),
+        "listing the record itself as a child is refused",
+        b.update_section("book", json!({ "title": "Renamed", "children": ["book", "appendix", "ch1", "ch2"] })).await,
+        Err(StoreError::ParentCycle("Section", "book".into())),
     );
+    t.expect("the refused update wrote nothing", b.list_sections().await, roots);
     t.record("final state", &b.list_sections().await).unwrap();
     t
 }
@@ -1341,4 +1356,159 @@ async fn missing_children<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 #[tokio::test]
 async fn a_missing_child_is_not_found_and_writes_nothing() {
     parity!(missing_children);
+}
+
+/// A has_many list that names the record itself is refused before anything
+/// is written, on create (an explicit id) and on update: a record cannot be
+/// its own child (JSON:API wire contract §5.4).
+async fn self_listing<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    t.record("create a", &b.create_item(item("a", json!({}))).await).unwrap();
+    t.record("create k1", &b.create_item(item("k1", json!({ "parent_id": "a" }))).await).unwrap();
+    t.record("create loose", &b.create_item(item("loose", json!({}))).await).unwrap();
+    let before = b.list_items(&[], None, None).await;
+    let cycle = |id: &str| Err(StoreError::ParentCycle("Item", id.into()));
+
+    t.expect(
+        "update listing the record itself",
+        b.update_item("a", json!({ "title": "Renamed", "children": ["k1", "loose", "a"] })).await,
+        cycle("a"),
+    );
+    t.expect("nothing was updated, a's own parent included", b.list_items(&[], None, None).await, before.clone());
+    t.expect(
+        "the self-listing is reported before a missing child",
+        b.update_item("a", json!({ "children": ["ghost", "a"] })).await,
+        cycle("a"),
+    );
+    t.expect(
+        "create with an explicit id listing itself",
+        b.create_item(item("b", json!({ "children": ["loose", "b"] }))).await,
+        cycle("b"),
+    );
+    t.expect(
+        "the refused create wrote no record",
+        b.get_item("b").await,
+        Err(StoreError::NotFound("Item", "b".into())),
+    );
+    t.expect("nothing was written", b.list_items(&[], None, None).await, before);
+
+    for (id, parent) in [("book", "book"), ("ch1", "book")] {
+        t.record(format!("create section {id}"), &b.create_section(section(id, parent)).await).unwrap();
+    }
+    let sections = b.list_sections().await;
+    t.expect(
+        "a section listing itself",
+        b.update_section("book", json!({ "children": ["ch1", "book"] })).await,
+        Err(StoreError::ParentCycle("Section", "book".into())),
+    );
+    t.expect(
+        "a root created listing itself",
+        b.create_section(section_with("root", "root", &["root"])).await,
+        Err(StoreError::ParentCycle("Section", "root".into())),
+    );
+    t.expect("no section changed", b.list_sections().await, sections);
+    t
+}
+
+#[tokio::test]
+async fn a_has_many_list_naming_the_record_itself_is_refused() {
+    parity!(self_listing);
+}
+
+// ─── many_to_many writes ────────────────────────────────────────────────────
+
+/// A many_to_many id with no record behind it fails the create or update
+/// before anything is written, on both backends: SQLite's junction foreign
+/// key would refuse it, and the markdown store checks it the same way
+/// (JSON:API wire contract §5.4).
+async fn missing_tags<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    t.record("create tag t1", &b.create_tag(json!({ "id": "t1", "title": "t1" })).await).unwrap();
+    t.record("create other", &b.create_item(item("other", json!({ "tags": ["t1"] }))).await).unwrap();
+    let before = b.list_items(&[], None, None).await;
+    fn missing<T>(id: &str) -> R<T> {
+        Err(StoreError::NotFound("Tag", id.into()))
+    }
+
+    t.expect(
+        "create listing a missing tag",
+        b.create_item(item("q", json!({ "tags": ["t1", "ghost", "ghost-2"] }))).await,
+        missing("ghost"),
+    );
+    t.expect("the failed create wrote no record", b.get_item("q").await, Err(StoreError::NotFound("Item", "q".into())));
+    t.expect("nothing was written", b.list_items(&[], None, None).await, before.clone());
+
+    t.expect(
+        "update listing a missing tag",
+        b.update_item("other", json!({ "title": "Renamed", "tags": ["ghost", "t1"] })).await,
+        missing("ghost"),
+    );
+    t.expect("nothing was updated, the title included", b.list_items(&[], None, None).await, before.clone());
+
+    // Relations are checked in declaration order: `children` before `tags`.
+    t.expect(
+        "a missing child and a missing tag",
+        b.create_item(item("q", json!({ "children": ["lost"], "tags": ["ghost"] }))).await,
+        Err(StoreError::NotFound("Item", "lost".into())),
+    );
+    t.expect(
+        "the missing tag is reported before an id is derived",
+        b.create_item(item("", json!({ "title": "!!!", "tags": ["ghost"] }))).await,
+        missing("ghost"),
+    );
+
+    // A failed derived-id create leaves nothing behind for the retry to probe past.
+    let created_id = |v: R<Value>| v.map(|r| r["id"].as_str().unwrap().to_string());
+    t.expect(
+        "a derived-id create with a missing tag",
+        created_id(b.create_item(item("", json!({ "title": "Same", "tags": ["ghost"] }))).await),
+        missing("ghost"),
+    );
+    t.expect(
+        "the retry gets the base slug",
+        created_id(b.create_item(item("", json!({ "title": "Same", "tags": ["t1"] }))).await),
+        Ok("same".into()),
+    );
+    t.expect("listed", listed_ids(b.list_items(&[], None, None).await), ok_ids(&["other", "same"]));
+    t
+}
+
+#[tokio::test]
+async fn a_missing_many_to_many_target_is_not_found_and_writes_nothing() {
+    parity!(missing_tags);
+}
+
+// ─── SeaORM: one transaction per write ──────────────────────────────────────
+
+/// Makes every junction insert fail on SQLite, after the pre-checks have
+/// passed and the record's own row is written.
+async fn refuse_junction_inserts(b: &Sqlite) {
+    use sea_orm::ConnectionTrait;
+    // sqlite-only: RAISE in a trigger is SQLite's way to fail a statement on demand.
+    let sql = "CREATE TRIGGER refuse_tags BEFORE INSERT ON item_tags BEGIN SELECT RAISE(ABORT, 'refused'); END";
+    b.store.db().execute_unprepared(sql).await.expect("trigger");
+}
+
+/// SeaORM only, since the markdown store has no transactions: a create or
+/// update whose junction write fails after the record's row is written
+/// leaves nothing written.
+#[tokio::test]
+async fn a_failed_junction_write_rolls_back_the_whole_write() {
+    use sea_orm::ConnectionTrait;
+    let b = Sqlite::open().await;
+    b.create_tag(json!({ "id": "t1", "title": "t1" })).await.expect("tag");
+    b.create_tag(json!({ "id": "t2", "title": "t2" })).await.expect("tag");
+    b.create_item(item("kept", json!({ "tags": ["t1"] }))).await.expect("kept");
+    let kept = b.get_item("kept").await.expect("kept");
+    refuse_junction_inserts(&b).await;
+
+    let created = b.create_item(item("", json!({ "title": "Same", "tags": ["t2"] }))).await;
+    assert!(matches!(created, Err(StoreError::Backend(_))), "{created:?}");
+    assert_eq!(listed_ids(b.list_items(&[], None, None).await), ok_ids(&["kept"]), "the row was rolled back");
+
+    let updated = b.update_item("kept", json!({ "title": "Renamed", "tags": ["t2"] })).await;
+    assert!(matches!(updated, Err(StoreError::Backend(_))), "{updated:?}");
+    assert_eq!(b.get_item("kept").await, Ok(kept), "the title and the old junction rows are back");
+
+    b.store.db().execute_unprepared("DROP TRIGGER refuse_tags").await.expect("drop trigger");
+    let retried = b.create_item(item("", json!({ "title": "Same", "tags": ["t2"] }))).await.expect("retry");
+    assert_eq!(retried["id"], json!("same"), "no row was left for the retry to probe past");
 }

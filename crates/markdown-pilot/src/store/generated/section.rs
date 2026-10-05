@@ -140,7 +140,11 @@ impl Store {
 
         let children = section.children.clone();
 
-        for child_id in &children {
+        if !section.id.trim().is_empty() && section.children.contains(&section.id) {
+            return Err(AppError::SectionParentCycle(section.id.clone()));
+        }
+
+        for child_id in &section.children {
             if !self.section_exists(child_id).await? {
                 return Err(AppError::SectionNotFound(child_id.clone()));
             }
@@ -175,6 +179,10 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         let children_changed = updates.children.is_some();
+
+        if updates.children.as_ref().is_some_and(|ids| ids.iter().any(|c| c == id)) {
+            return Err(AppError::SectionParentCycle(id.to_string()));
+        }
 
         for child_id in updates.children.iter().flatten() {
             if !self.section_exists(child_id).await? {
@@ -258,7 +266,7 @@ impl Store {
             .map_err(AppError::from)
     }
 
-    async fn section_exists(&self, id: &str) -> Result<bool, AppError> {
+    pub(crate) async fn section_exists(&self, id: &str) -> Result<bool, AppError> {
         match self.vault().entity(SECTIONS_DIR, SECTION_TYPE).read_opt(id) {
             Ok(doc) => Ok(doc.is_some()),
             Err(markdown_store::Error::InvalidId { .. }) => Ok(false),

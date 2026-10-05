@@ -161,9 +161,18 @@ impl Store {
 
         let subtasks = task.subtasks.clone();
 
-        for child_id in &subtasks {
+        if !task.id.trim().is_empty() && task.subtasks.contains(&task.id) {
+            return Err(AppError::TaskParentCycle(task.id.clone()));
+        }
+
+        for child_id in &task.subtasks {
             if !self.task_exists(child_id).await? {
                 return Err(AppError::TaskNotFound(child_id.clone()));
+            }
+        }
+        for target_id in &task.tags {
+            if !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
             }
         }
 
@@ -198,9 +207,18 @@ impl Store {
 
         let subtasks_changed = updates.subtasks.is_some();
 
+        if updates.subtasks.as_ref().is_some_and(|ids| ids.iter().any(|c| c == id)) {
+            return Err(AppError::TaskParentCycle(id.to_string()));
+        }
+
         for child_id in updates.subtasks.iter().flatten() {
             if !self.task_exists(child_id).await? {
                 return Err(AppError::TaskNotFound(child_id.clone()));
+            }
+        }
+        for target_id in updates.tags.iter().flatten() {
+            if !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
             }
         }
 
@@ -281,7 +299,7 @@ impl Store {
             .map_err(AppError::from)
     }
 
-    async fn task_exists(&self, id: &str) -> Result<bool, AppError> {
+    pub(crate) async fn task_exists(&self, id: &str) -> Result<bool, AppError> {
         match self.vault().entity(TASKS_DIR, TASK_TYPE).read_opt(id) {
             Ok(doc) => Ok(doc.is_some()),
             Err(markdown_store::Error::InvalidId { .. }) => Ok(false),

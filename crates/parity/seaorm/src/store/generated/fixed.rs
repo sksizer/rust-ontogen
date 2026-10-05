@@ -3,7 +3,7 @@
 use ontogen_core::order::OrderBy;
 
 use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select, TransactionTrait};
 
 use crate::persistence::db::entities::fixed;
 use crate::schema::Fixed;
@@ -117,15 +117,18 @@ impl Store {
     pub async fn create_fixed(&self, mut fixed: Fixed) -> Result<Fixed, AppError> {
         hooks::before_create(self, &mut fixed).await?;
 
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
         let id = if fixed.id.trim().is_empty() {
             return Err(AppError::FixedIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
             ontogen_core::id::validate_id(&fixed.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_fixed(&fixed).await? {
+            if !self.try_insert_fixed(&txn, &fixed).await? {
                 return Err(AppError::FixedAlreadyExists(fixed.id));
             }
             fixed.id.clone()
         };
+
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_fixed(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Fixed, id);
@@ -145,9 +148,11 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
+
+        let txn = self.db().begin().await.map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await.map_err(|e| AppError::DbError(e.to_string()))?;
+        txn.commit().await.map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_fixed(id).await?;
         self.emit_change(ChangeOp::Updated, EntityKind::Fixed, id.to_string());
@@ -174,13 +179,14 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_fixed(&self, fixed: &Fixed) -> Result<bool, AppError> {
+    async fn try_insert_fixed<C: sea_orm::ConnectionTrait>(&self, conn: &C, fixed: &Fixed) -> Result<bool, AppError> {
         let active = fixed.to_active_model()?;
-        match active.insert(self.db()).await {
+        match active.insert(conn).await {
             Ok(_) => Ok(true),
             Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                // sqlite-only: a failed INSERT leaves an SQLite transaction usable; Postgres aborts it.
                 let taken = fixed::Entity::find_by_id(fixed.id.as_str())
-                    .one(self.db())
+                    .one(conn)
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
                     .is_some();

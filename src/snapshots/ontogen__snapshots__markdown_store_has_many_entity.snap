@@ -150,7 +150,11 @@ impl Store {
 
         let contains = node.contains.clone();
 
-        for child_id in &contains {
+        if !node.id.trim().is_empty() && node.contains.contains(&node.id) {
+            return Err(AppError::NodeParentCycle(node.id.clone()));
+        }
+
+        for child_id in &node.contains {
             if !self.node_exists(child_id).await? {
                 return Err(AppError::NodeNotFound(child_id.clone()));
             }
@@ -186,6 +190,10 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         let contains_changed = updates.contains.is_some();
+
+        if updates.contains.as_ref().is_some_and(|ids| ids.iter().any(|c| c == id)) {
+            return Err(AppError::NodeParentCycle(id.to_string()));
+        }
 
         for child_id in updates.contains.iter().flatten() {
             if !self.node_exists(child_id).await? {
@@ -270,7 +278,7 @@ impl Store {
             .map_err(AppError::from)
     }
 
-    async fn node_exists(&self, id: &str) -> Result<bool, AppError> {
+    pub(crate) async fn node_exists(&self, id: &str) -> Result<bool, AppError> {
         match self.vault().entity(NODES_DIR, NODE_TYPE).read_opt(id) {
             Ok(doc) => Ok(doc.is_some()),
             Err(markdown_store::Error::InvalidId { .. }) => Ok(false),
