@@ -51,14 +51,16 @@ impl ErrorVariant {
     }
 }
 
-/// Status for a variant name. The suffixes are the variants the generated
-/// store constructs (`{Entity}NotFound`, `{Entity}IdRequired`,
-/// `{Entity}AlreadyExists`, `{Child}ParentRequired`); anything else is the
-/// consumer's own failure and maps to `500`.
+/// The name suffixes of the variants the generated store constructs
+/// (`{Entity}NotFound`, `{Entity}IdRequired`, `{Entity}AlreadyExists`,
+/// `{Child}ParentRequired`), with the status each maps to.
+const STORE_SUFFIXES: [(&str, u16); 4] =
+    [("NotFound", 404), ("IdRequired", 400), ("AlreadyExists", 409), ("ParentRequired", 403)];
+
+/// Status for a variant name: a store suffix's status, or `500` for the
+/// consumer's own failures.
 fn status_for(variant: &str) -> u16 {
-    const SUFFIXES: [(&str, u16); 4] =
-        [("NotFound", 404), ("IdRequired", 400), ("AlreadyExists", 409), ("ParentRequired", 403)];
-    SUFFIXES.iter().find(|(suffix, _)| variant.ends_with(suffix)).map_or(500, |(_, status)| *status)
+    STORE_SUFFIXES.iter().find(|(suffix, _)| variant.ends_with(suffix)).map_or(500, |(_, status)| *status)
 }
 
 /// Scan the top-level `*.rs` files of `dir` for `enum AppError`.
@@ -70,9 +72,8 @@ fn status_for(variant: &str) -> u16 {
 ///
 /// # Errors
 ///
-/// When the directory or a file cannot be read or parsed, when more than one
-/// file declares `AppError`, or when a variant's code equals one of the codes
-/// the generated server raises itself.
+/// When the directory or a file cannot be read or parsed, or when more than
+/// one file declares `AppError`.
 pub(crate) fn scan(dir: &Path) -> Result<Option<ErrorMap>, String> {
     let entries = fs::read_dir(dir)
         .map_err(|e| format!("ontogen: failed to read the AppError source directory {}: {e}", dir.display()))?;
@@ -107,7 +108,6 @@ pub(crate) fn scan(dir: &Path) -> Result<Option<ErrorMap>, String> {
 
     let Some((source, item)) = found else { return Ok(None) };
     let variants = item.variants.iter().map(variant_of).collect::<Vec<_>>();
-    check_codes(&variants, &source)?;
     Ok(Some(ErrorMap { source, variants }))
 }
 
@@ -138,21 +138,25 @@ fn variant_of(variant: &syn::Variant) -> ErrorVariant {
     ErrorVariant { code: to_snake_case(&name), status: status_for(&name), name, shape }
 }
 
-/// A `code` always means one thing, so a variant may not reuse a code the
-/// generated server raises itself (wire contract §13.4, "Code clashes").
-fn check_codes(variants: &[ErrorVariant], source: &Path) -> Result<(), String> {
-    for v in variants {
-        if ErrorCode::ALL.iter().any(|c| c.as_str() == v.code) {
-            return Err(format!(
-                "ontogen: `AppError::{}` in {} has the error code `{}`, which the generated JSON:API server already \
-                 uses for its own errors; rename the variant",
-                v.name,
-                source.display(),
-                v.code
-            ));
+impl ErrorMap {
+    /// A `code` always means one thing, so a variant may not reuse a code the
+    /// generated JSON:API server raises itself (wire contract §13.4, "Code
+    /// clashes"). Only the HTTP server has those codes, so only a build that
+    /// generates it runs the check.
+    pub(crate) fn check_codes(&self) -> Result<(), String> {
+        for v in &self.variants {
+            if ErrorCode::ALL.iter().any(|c| c.as_str() == v.code) {
+                return Err(format!(
+                    "ontogen: `AppError::{}` in {} has the error code `{}`, which the generated JSON:API server \
+                     already uses for its own errors; rename the variant",
+                    v.name,
+                    self.source.display(),
+                    v.code
+                ));
+            }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -262,9 +266,35 @@ mod tests {
 
     #[test]
     fn a_variant_reusing_an_ontogen_code_is_an_error() {
-        for variant in ["InvalidDocument", "RelatedResourceNotFound", "InternalError", "MethodNotAllowed"] {
-            let err = scan_files(&[("mod.rs", &format!("pub enum AppError {{ {variant}(String) }}"))]).unwrap_err();
+        for variant in ["InvalidDocument", "NoSuchRelatedResource", "InternalError", "MethodNotAllowed"] {
+            let map =
+                scan_files(&[("mod.rs", &format!("pub enum AppError {{ {variant}(String) }}"))]).unwrap().unwrap();
+            let err = map.check_codes().unwrap_err();
             assert!(err.contains(&format!("AppError::{variant}")) && err.contains(&to_snake_case(variant)), "{err}");
+        }
+    }
+
+    #[test]
+    fn store_variants_of_relationship_named_entities_pass_the_code_check() {
+        let map = scan_files(&[(
+            "mod.rs",
+            "pub enum AppError { RelationshipNotFound(String), RelatedResourceNotFound(String) }",
+        )])
+        .unwrap()
+        .unwrap();
+        map.check_codes().expect("no ontogen code ends in a store suffix");
+    }
+
+    #[test]
+    fn no_ontogen_code_ends_in_a_store_suffix() {
+        // An entity's store variants are `{Entity}{Suffix}`, so an ontogen
+        // code `{prefix}_not_found` would make an entity named `{Prefix}`
+        // unbuildable.
+        for code in ErrorCode::ALL {
+            for (suffix, _) in STORE_SUFFIXES {
+                let suffix = format!("_{}", to_snake_case(suffix));
+                assert!(!code.as_str().ends_with(&suffix), "`{code}` ends in the store suffix `{suffix}`");
+            }
         }
     }
 

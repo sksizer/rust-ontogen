@@ -50,7 +50,7 @@ pub(crate) const LOOKUP_KEY_TOKEN: &str = "$ontogen_jsonapi::LookupKey";
 /// ```
 ///
 /// A `{rel}` that does not decode is not a relationship of the type: the
-/// handler answers `404 relationship_not_found` at §13.2 step 4, before the
+/// handler answers `404 no_such_relationship` at §13.2 step 4, before the
 /// query and the body, not at step 9 as for an `{id}` (§9).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LookupKey(Key);

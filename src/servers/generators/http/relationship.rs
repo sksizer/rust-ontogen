@@ -342,7 +342,7 @@ fn get_handler(served: &Served<'_>, rels: &[Rel<'_, '_>], name: &str, related: b
         };
         out.push_str(&format!("        Some(\"{}\") => {{\n{arm}        }}\n", rel.name()));
     }
-    out.push_str(&format!("        _ => Err(relationship_not_found(\"{type_name}\", &rel)),\n    }}\n}}\n\n"));
+    out.push_str(&format!("        _ => Err(no_such_relationship(\"{type_name}\", &rel)),\n    }}\n}}\n\n"));
     out
 }
 
@@ -642,7 +642,7 @@ fn write_handler(served: &Served<'_>, rels: &[Rel<'_, '_>], name: &str, method: 
         });
         out.push_str(&format!("        Some(\"{rel}\") => {{\n            ontogen_query?;\n{arm}        }}\n"));
     }
-    out.push_str(&format!("        _ => Err(relationship_not_found(\"{type_name}\", &rel)),\n    }}\n}}\n\n"));
+    out.push_str(&format!("        _ => Err(no_such_relationship(\"{type_name}\", &rel)),\n    }}\n}}\n\n"));
     out
 }
 

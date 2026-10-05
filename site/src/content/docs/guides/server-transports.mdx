@@ -209,7 +209,7 @@ A create body is `{"data": {"type": "tasks", "attributes": {...}, "relationships
 
 A `PATCH` body must carry `data.type` and a `data.id` equal to the URL id (`409 id_mismatch` otherwise). An attribute or relationship that is absent is left unchanged; `null` clears an `Option` field or an optional to-one; a to-many `data` array replaces the whole list. A `PATCH` with neither `attributes` nor `relationships` writes nothing and answers `200` with the current resource. A `PATCH` to a missing id is `404` once the body has passed its checks.
 
-Before it creates or updates, the handler checks that every linked resource exists and answers `404 related_resource_not_found` otherwise, so a markdown vault never receives a dangling wikilink.
+Before it creates or updates, the handler checks that every linked resource exists and answers `404 no_such_related_resource` otherwise, so a markdown vault never receives a dangling wikilink.
 
 ### Compound documents
 
@@ -242,7 +242,7 @@ Content-Type: application/vnd.api+json
 - **Junction ops** of the module (`list_X` with `add_Y` and/or `remove_Y`) define the to-many relationship `X`. `GET` calls `list_X`, paged in memory with `page[offset]` and `page[limit]` on a paginated surface. `POST` and `DELETE` call `add_Y` and `remove_Y`, after a `list_X` membership check that makes a repeated add or remove a `204` that calls nothing. `PATCH` is `403`, as is `POST` without `add_Y` and `DELETE` without `remove_Y`. Such a relationship appears in resource objects with `links` only. The build checks are in the [Relationships guide](/guides/relationships/#junction-ops).
 - **One identifier** per `POST` or `DELETE`; more is `403 relationship_batch_unsupported`, and `{"data": []}` is a no-op.
 - **Related resources** are read with the target module's `get_by_id`, which every target must serve. A dangling id is skipped.
-- An unknown `{rel}` is `404 relationship_not_found`. A missing parent is the parent's `404`, and a linked id that does not exist on `PATCH` or `POST` is `404 related_resource_not_found`.
+- An unknown `{rel}` is `404 no_such_relationship`. A missing parent is the parent's `404`, and a linked id that does not exist on `PATCH` or `POST` is `404 no_such_related_resource`.
 
 <Aside type="caution">
 The two routes capture every `/api/{type}/{id}/{segment}` and `/api/{type}/{id}/relationships/{segment}` path of such an entity. A route in your own router with the same shape (`/api/tasks/{task_id}/{view}`) conflicts with them, and Axum panics when the routers are merged. A route with a fixed last segment (`/api/tasks/{id}/history`) still registers and takes that segment.
@@ -335,7 +335,7 @@ Every error the generated HTTP server returns is a JSON:API error document with 
 
 The generated store constructs `{Entity}NotFound`, `{Entity}IdRequired` and `{Entity}AlreadyExists` for every entity, and `{Child}ParentRequired` for an entity that is the child of a `has_many` whose foreign key is not `Option`, so your `AppError` declares each one the store uses (tasks-tracker declares the first three for `Task`, `Epic` and `Tag`). An error mapped from `AppError` carries no `source`, except `{entity}_already_exists` on a create that sent `data.id`. Only an op whose error type is your `AppError` is mapped; any other error type is `500 internal_error`.
 
-A variant whose snake_case name equals one of ontogen's own codes (for example an `InvalidDocument` or `RelationshipNotFound` variant) fails the build, so a code always means one thing. Two `enum AppError` declarations in the scanned directory also fail it. With no `AppError` in the directory, every `AppError`-typed site answers `500 internal_error`.
+When the build generates the HTTP server, a variant whose snake_case name equals one of ontogen's own codes (for example an `InvalidDocument` or `NoSuchRelationship` variant) fails the build, so a code always means one thing; no ontogen code ends in a store suffix such as `_not_found`, so an entity's store variants never clash. Two `enum AppError` declarations in the scanned directory also fail it. With no `AppError` in the directory, every `AppError`-typed site answers `500 internal_error`.
 
 **Ontogen's own codes.** Errors raised by the generated server itself, independent of your `AppError`:
 
@@ -353,8 +353,8 @@ A variant whose snake_case name equals one of ontogen's own codes (for example a
 | 403 | `relationship_required` | `null` for a non-`Option` to-one |
 | 403 | `relationship_update_unsupported` | a relationship write the relationship does not support: `POST` or `DELETE` on a to-one, `PATCH` on a junction op's relationship, `POST` without `add_Y` or `DELETE` without `remove_Y`, any write when the module has no `update`, or a junction op's relationship in a create or update body |
 | 403 | `relationship_batch_unsupported` | a relationship `POST` or `DELETE` with more than one identifier |
-| 404 | `related_resource_not_found` | a linked id that does not exist |
-| 404 | `relationship_not_found` | a `{rel}` that is not a relationship of the type |
+| 404 | `no_such_related_resource` | a linked id that does not exist |
+| 404 | `no_such_relationship` | a `{rel}` that is not a relationship of the type |
 | 405 | `method_not_allowed` | a method the route does not serve |
 | 406 | `not_acceptable` | `Accept` cannot be satisfied |
 | 409 | `type_mismatch` | a `type` that is not the endpoint's, or a linked identifier whose `type` is not the relationship's target |

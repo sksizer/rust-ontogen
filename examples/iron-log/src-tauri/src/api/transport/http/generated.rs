@@ -15,7 +15,7 @@ use axum::{
 use ontogen_jsonapi::{
     AnyResource, Document, ErrorCode, ErrorObject, Included, Linkage, Links, LookupKey, QueryParams, QuerySpec,
     Relationship, ResourceIdentifier, ResourceObject, ResultFrame, ResultMeta,
-    error::{method_not_allowed, relationship_not_found, relationship_update_unsupported},
+    error::{method_not_allowed, no_such_relationship, relationship_update_unsupported},
     extract::{AcceptGuard, Body, NoParams, Path, Query, RouteQuery},
     links::{CanonicalQuery, encode_path_segment},
     request::{self, Endpoint, LinkedId, ResourceData},
@@ -985,7 +985,7 @@ async fn ontogen_workout_relationship_get(
             );
             Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(relationship_not_found("workouts", &rel)),
+        _ => Err(no_such_relationship("workouts", &rel)),
     }
 }
 
@@ -1014,7 +1014,7 @@ async fn ontogen_workout_relationship_patch(
             .await?;
             Ok(response::no_content())
         }
-        _ => Err(relationship_not_found("workouts", &rel)),
+        _ => Err(no_such_relationship("workouts", &rel)),
     }
 }
 
@@ -1039,7 +1039,7 @@ async fn ontogen_workout_relationship_post(
             }
             Ok(response::no_content())
         }
-        _ => Err(relationship_not_found("workouts", &rel)),
+        _ => Err(no_such_relationship("workouts", &rel)),
     }
 }
 
@@ -1063,7 +1063,7 @@ async fn ontogen_workout_relationship_delete(
             }
             Ok(response::no_content())
         }
-        _ => Err(relationship_not_found("workouts", &rel)),
+        _ => Err(no_such_relationship("workouts", &rel)),
     }
 }
 
@@ -1084,7 +1084,7 @@ async fn ontogen_workout_related_get(
             let ontogen_self = format!("{ontogen_collection}/{}/tags", encode_path_segment(&ontogen_entity.id));
             Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
         }
-        _ => Err(relationship_not_found("workouts", &rel)),
+        _ => Err(no_such_relationship("workouts", &rel)),
     }
 }
 
@@ -1217,7 +1217,7 @@ async fn ontogen_workout_set_relationship_get(
                 Linkage::ToOne(Some(ResourceIdentifier::new("exercises", ontogen_entity.exercise_id.as_str())));
             Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))
         }
-        _ => Err(relationship_not_found("workout-sets", &rel)),
+        _ => Err(no_such_relationship("workout-sets", &rel)),
     }
 }
 
@@ -1263,7 +1263,7 @@ async fn ontogen_workout_set_relationship_patch(
             .await?;
             Ok(response::no_content())
         }
-        _ => Err(relationship_not_found("workout-sets", &rel)),
+        _ => Err(no_such_relationship("workout-sets", &rel)),
     }
 }
 
@@ -1283,7 +1283,7 @@ async fn ontogen_workout_set_relationship_post(
             ontogen_query?;
             Err(relationship_update_unsupported("workout-sets", "exercise", "POST"))
         }
-        _ => Err(relationship_not_found("workout-sets", &rel)),
+        _ => Err(no_such_relationship("workout-sets", &rel)),
     }
 }
 
@@ -1303,7 +1303,7 @@ async fn ontogen_workout_set_relationship_delete(
             ontogen_query?;
             Err(relationship_update_unsupported("workout-sets", "exercise", "DELETE"))
         }
-        _ => Err(relationship_not_found("workout-sets", &rel)),
+        _ => Err(no_such_relationship("workout-sets", &rel)),
     }
 }
 
@@ -1335,7 +1335,7 @@ async fn ontogen_workout_set_related_get(
             let ontogen_self = format!("{ontogen_collection}/{}/exercise", encode_path_segment(&ontogen_entity.id));
             Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))
         }
-        _ => Err(relationship_not_found("workout-sets", &rel)),
+        _ => Err(no_such_relationship("workout-sets", &rel)),
     }
 }
 
