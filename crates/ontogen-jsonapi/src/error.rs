@@ -43,6 +43,8 @@ pub enum ErrorCode {
     RelationshipUpdateUnsupported,
     /// `403 relationship_batch_unsupported`
     RelationshipBatchUnsupported,
+    /// `403 relationship_cycle`
+    RelationshipCycle,
     /// `404 related_resource_not_found`
     RelatedResourceNotFound,
     /// `404 relationship_not_found`
@@ -67,7 +69,7 @@ impl ErrorCode {
     /// Every code, in the order of §13.3's table. The generator checks
     /// `AppError` variant names against these so a code means one thing
     /// (§13.4).
-    pub const ALL: [ErrorCode; 22] = [
+    pub const ALL: [ErrorCode; 23] = [
         ErrorCode::InvalidQueryParameter,
         ErrorCode::InvalidSortField,
         ErrorCode::InvalidIncludePath,
@@ -81,6 +83,7 @@ impl ErrorCode {
         ErrorCode::RelationshipRequired,
         ErrorCode::RelationshipUpdateUnsupported,
         ErrorCode::RelationshipBatchUnsupported,
+        ErrorCode::RelationshipCycle,
         ErrorCode::RelatedResourceNotFound,
         ErrorCode::RelationshipNotFound,
         ErrorCode::MethodNotAllowed,
@@ -108,6 +111,7 @@ impl ErrorCode {
             ErrorCode::RelationshipRequired => "relationship_required",
             ErrorCode::RelationshipUpdateUnsupported => "relationship_update_unsupported",
             ErrorCode::RelationshipBatchUnsupported => "relationship_batch_unsupported",
+            ErrorCode::RelationshipCycle => "relationship_cycle",
             ErrorCode::RelatedResourceNotFound => "related_resource_not_found",
             ErrorCode::RelationshipNotFound => "relationship_not_found",
             ErrorCode::MethodNotAllowed => "method_not_allowed",
@@ -135,7 +139,8 @@ impl ErrorCode {
             | ErrorCode::MissingRelationship => StatusCode::BAD_REQUEST,
             ErrorCode::RelationshipRequired
             | ErrorCode::RelationshipUpdateUnsupported
-            | ErrorCode::RelationshipBatchUnsupported => StatusCode::FORBIDDEN,
+            | ErrorCode::RelationshipBatchUnsupported
+            | ErrorCode::RelationshipCycle => StatusCode::FORBIDDEN,
             ErrorCode::RelatedResourceNotFound | ErrorCode::RelationshipNotFound => StatusCode::NOT_FOUND,
             ErrorCode::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ErrorCode::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
@@ -476,6 +481,7 @@ mod tests {
             ("relationship_required", 403),
             ("relationship_update_unsupported", 403),
             ("relationship_batch_unsupported", 403),
+            ("relationship_cycle", 403),
             ("related_resource_not_found", 404),
             ("relationship_not_found", 404),
             ("method_not_allowed", 405),
@@ -530,6 +536,7 @@ mod tests {
             RelationshipRequired,
             RelationshipUpdateUnsupported,
             RelationshipBatchUnsupported,
+            RelationshipCycle,
             RelatedResourceNotFound,
             RelationshipNotFound,
             MethodNotAllowed,

@@ -1,13 +1,13 @@
-//! Serde over decoded query values: one value read as `axum::extract::Query`
-//! reads a field, a struct read from the members of one family, and the
-//! field names a struct declares.
+//! Serde over query values: one value read as `axum::extract::Query`
+//! reads a field, or as a sequence of comma-separated items, a struct read
+//! from the members of one family, and the field names a struct declares.
 
-use std::{cell::Cell, fmt};
+use std::{borrow::Cow, cell::Cell, fmt};
 
 use serde::{
     de::{
-        self, DeserializeOwned, DeserializeSeed, MapAccess, Visitor,
-        value::{BorrowedStrDeserializer, MapAccessDeserializer},
+        self, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor,
+        value::{BorrowedStrDeserializer, CowStrDeserializer, MapAccessDeserializer},
     },
     forward_to_deserialize_any,
 };
@@ -58,18 +58,37 @@ impl de::Error for Error {
     }
 }
 
-/// One decoded value, deserialized as `serde_urlencoded` deserializes a
-/// field's value (its private `Part`), which is what `axum::extract::Query`
-/// uses: anything reads as a string, `Option` is `Some` whenever the value
-/// is present, an enum is a unit variant named by the value, and numbers,
+/// One value, deserialized as `serde_urlencoded` deserializes a field's
+/// value (its private `Part`), which is what `axum::extract::Query` uses:
+/// anything reads as a string, `Option` is `Some` whenever the value is
+/// present, an enum is a unit variant named by the value, and numbers,
 /// `bool` and `char` are parsed with `FromStr`.
-pub(super) struct Value<'a>(pub(super) &'a str);
+///
+/// A sequence, which `serde_urlencoded` cannot read from one value, is the
+/// value as sent split at each literal `,`, each item percent-decoded and
+/// read as above: a comma inside an item arrives as `%2C`, which the split
+/// leaves alone. An empty value is the empty sequence. An item is never a
+/// sequence itself.
+pub(super) struct Value<'a> {
+    /// The value, percent-decoded.
+    text: Cow<'a, str>,
+    /// The value as sent, still percent-encoded, for a sequence to split;
+    /// `None` for an item of one.
+    raw: Option<&'a str>,
+}
+
+impl<'a> Value<'a> {
+    /// A value as `decoded` from its query-string form `raw`.
+    pub(super) fn new(decoded: &'a str, raw: &'a str) -> Self {
+        Value { text: Cow::Borrowed(decoded), raw: Some(raw) }
+    }
+}
 
 macro_rules! parse_value {
     ($($method:ident => $ty:ty, $visit:ident;)*) => {
         $(
             fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-                match self.0.parse::<$ty>() {
+                match self.text.parse::<$ty>() {
                     Ok(value) => visitor.$visit(value),
                     Err(err) => Err(de::Error::custom(err)),
                 }
@@ -82,7 +101,18 @@ impl<'de> de::Deserializer<'de> for Value<'de> {
     type Error = Error;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-        visitor.visit_borrowed_str(self.0)
+        match self.text {
+            Cow::Borrowed(text) => visitor.visit_borrowed_str(text),
+            Cow::Owned(text) => visitor.visit_string(text),
+        }
+    }
+
+    fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        match self.raw {
+            Some("") => visitor.visit_seq(Items { pieces: None, index: 0 }),
+            Some(raw) => visitor.visit_seq(Items { pieces: Some(raw.split(',')), index: 0 }),
+            None => self.deserialize_any(visitor),
+        }
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
@@ -95,7 +125,7 @@ impl<'de> de::Deserializer<'de> for Value<'de> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Error> {
-        visitor.visit_enum(UnitVariant(self.0))
+        visitor.visit_enum(UnitVariant(self.text))
     }
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(self, _name: &'static str, visitor: V) -> Result<V::Value, Error> {
@@ -120,19 +150,41 @@ impl<'de> de::Deserializer<'de> for Value<'de> {
     }
 
     forward_to_deserialize_any! {
-        str string bytes byte_buf unit unit_struct seq tuple tuple_struct map struct identifier ignored_any
+        str string bytes byte_buf unit unit_struct tuple tuple_struct map struct identifier ignored_any
+    }
+}
+
+/// The items of a sequence value: the pieces of the value as sent between
+/// literal commas, `None` for an empty value.
+struct Items<'a> {
+    pieces: Option<std::str::Split<'a, char>>,
+    /// The number of items read so far.
+    index: usize,
+}
+
+impl<'de> SeqAccess<'de> for Items<'de> {
+    type Error = Error;
+
+    fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>, Error> {
+        let Some(piece) = self.pieces.as_mut().and_then(Iterator::next) else { return Ok(None) };
+        let item = super::decode(piece);
+        self.index += 1;
+        let at = self.index;
+        seed.deserialize(Value { text: Cow::Owned(item.clone()), raw: None })
+            .map(Some)
+            .map_err(|err| de::Error::custom(format!("item {at} (`{item}`): {err}")))
     }
 }
 
 /// An enum named by a value: only a unit variant can be.
-struct UnitVariant<'a>(&'a str);
+struct UnitVariant<'a>(Cow<'a, str>);
 
 impl<'de> de::EnumAccess<'de> for UnitVariant<'de> {
     type Error = Error;
     type Variant = UnitOnly;
 
     fn variant_seed<S: DeserializeSeed<'de>>(self, seed: S) -> Result<(S::Value, UnitOnly), Error> {
-        let variant = seed.deserialize(BorrowedStrDeserializer::new(self.0))?;
+        let variant = seed.deserialize(CowStrDeserializer::new(self.0))?;
         Ok((variant, UnitOnly))
     }
 }
@@ -160,8 +212,8 @@ impl<'de> de::VariantAccess<'de> for UnitOnly {
 }
 
 /// One member of a family as the request gave it: its name, its first
-/// value, and whether it was repeated.
-pub(super) type Member<'a> = (&'a str, &'a str, bool);
+/// value decoded and as sent, and whether it was repeated.
+pub(super) type Member<'a> = (&'a str, &'a str, &'a str, bool);
 
 /// `T` read from `members`, visited in the order given. A repeated member
 /// fails when it is reached, so the first failing member in that order is
@@ -188,28 +240,29 @@ where
 struct Members<'a, 'r, I> {
     members: I,
     last: &'r Cell<Option<&'a str>>,
-    /// The member whose name was handed out and whose value is next.
-    pending: Option<(&'a str, &'a str)>,
+    /// The member whose name was handed out, with its value decoded and as
+    /// sent, which is next.
+    pending: Option<(&'a str, &'a str, &'a str)>,
 }
 
 impl<'a, I: Iterator<Item = Member<'a>>> MapAccess<'a> for Members<'a, '_, I> {
     type Error = Error;
 
     fn next_key_seed<K: DeserializeSeed<'a>>(&mut self, seed: K) -> Result<Option<K::Value>, Error> {
-        let Some((member, value, repeated)) = self.members.next() else { return Ok(None) };
+        let Some((member, value, raw, repeated)) = self.members.next() else { return Ok(None) };
         if repeated {
             return Err(Error::Repeated(member.to_owned()));
         }
-        self.pending = Some((member, value));
+        self.pending = Some((member, value, raw));
         self.last.set(Some(member));
         seed.deserialize(BorrowedStrDeserializer::new(member)).map(Some)
     }
 
     fn next_value_seed<V: DeserializeSeed<'a>>(&mut self, seed: V) -> Result<V::Value, Error> {
-        let Some((member, value)) = self.pending.take() else {
+        let Some((member, value, raw)) = self.pending.take() else {
             return Err(de::Error::custom("a value was read before its member"));
         };
-        seed.deserialize(Value(value))
+        seed.deserialize(Value::new(value, raw))
             .map_err(|err| Error::Member { member: member.to_owned(), message: err.to_string() })
     }
 }
@@ -309,7 +362,7 @@ mod tests {
     }
 
     fn ours<T: DeserializeOwned>(value: &str) -> Result<T, String> {
-        T::deserialize(Value(value)).map_err(|err| err.to_string())
+        T::deserialize(Value::new(value, value)).map_err(|err| err.to_string())
     }
 
     fn agree<T: DeserializeOwned + Debug>(value: &str) {

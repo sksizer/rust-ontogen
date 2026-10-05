@@ -249,6 +249,15 @@ serde_json = "1"
 
 `ontogen-jsonapi` is part of the release set with `ontogen`, so use the version released alongside the `ontogen` you build with. A server with no resource module (`gen_servers` called with an empty schema) does not use these.
 
+### Code that calls `ontogen-jsonapi` 0.1 directly
+
+Generated code needs no change for these; code that uses the crate's API itself does.
+
+- `ErrorCode::ALL` has 23 entries: `ErrorCode::RelationshipCycle` (`403 relationship_cycle`) is new, so the array's type is `[ErrorCode; 23]`. Code that names `[ErrorCode; 22]`, or matches `ErrorCode` exhaustively (it is `#[non_exhaustive]`, so a match outside the crate already needs a wildcard arm), changes with it.
+- `QueryParams::filter` reads a struct field that is a sequence (`Vec<T>`, `Option<Vec<T>>`) from one value split at its literal commas, each piece percent-decoded; before, any value was refused for it. `filter[x]=` is the empty sequence.
+- `QueryParams::link_query` writes a filter value item by item: the decoded pieces between its literal commas, each re-encoded, so a comma the request sent as `%2C` stays `%2C` in the link. Before, the whole decoded value was written with every comma literal.
+- New: `CanonicalQuery::set_filter_items`, `request::wide_integer_attribute` and `request::refuse_cycle`.
+
 ### Mount the router at the root
 
 Links and `Location` headers are built from the route templates ontogen generated (`/api/...`), not from the request URI. Mount the generated router at the root of your Axum app. If you nest it under another prefix, the links it emits lack that prefix.
@@ -383,7 +392,7 @@ The status is still `201 Created`; the response now has `Location: /api/tasks/re
 
 ### Request bodies are checked member by member
 
-A body is a single JSON object with a `data` resource object. A `type` that is not the route's is `409 type_mismatch`, as is a linked identifier of the wrong `type`. A required attribute that is absent from a create is `400 missing_attribute`, a required to-one relationship `400 missing_relationship`, an unknown relationship `400 unknown_relationship`, and a body that is not a valid document `400 invalid_document` with a `pointer`. A client-supplied id that is already taken is `409` with `source.pointer: "/data/id"`. A body over the server's size limit is `413 content_too_large`.
+A body is a single JSON object with a `data` resource object. A `type` that is not the route's is `409 type_mismatch`, as is a linked identifier of the wrong `type`. A required attribute that is absent from a create is `400 missing_attribute`, a required to-one relationship `400 missing_relationship`, an unknown relationship `400 unknown_relationship`, and a body that is not a valid document `400 invalid_document` with a `pointer`. A client-supplied id that is already taken is `409` with `source.pointer: "/data/id"`. A body over the server's size limit is `413 content_too_large`. An integer attribute whose type reaches past `i64` (`u64`, `usize`, `u128`, …) is `400 invalid_attribute` for a value outside `i64`, which no store holds, rather than the store's `500`. A `has_many` that names the resource itself, which would become its own parent, is `403 relationship_cycle`.
 
 ### Update is `PATCH`
 
@@ -572,7 +581,7 @@ An unpaginated list with no entity behind it answers the bare array as `meta.res
 }
 ```
 
-A struct whose fields serde does not report, for example one with `#[serde(flatten)]`, accepts no members. When several things are wrong the first error wins, in a fixed order: names the route does not accept, in request order, then the struct's members in byte order, then its first missing required field, then the bare filters in byte order of name, then the page.
+A struct field that is a `Vec<T>` takes one value listing its items: `filter[tags]=a,b%2Cc` is `["a", "b,c"]`, split at each literal comma with each piece decoded, and `filter[tags]=` is the empty list. A struct whose fields serde does not report, for example one with `#[serde(flatten)]`, accepts no members. When several things are wrong the first error wins, in a fixed order: names the route does not accept, in request order, then the struct's members in byte order, then its first missing required field, then the bare filters in byte order of name, then the page.
 
 **Links carry the filter.** Every pagination link repeats the request's `filter[…]` members in canonical order (sorted by member name, percent-encoded), so following `next` keeps the filter.
 
@@ -630,7 +639,7 @@ curl http://127.0.0.1:3002/api/tasks/ship-the-emitter/tags -H 'Accept: applicati
 
 - `GET …/relationships/{rel}` answers the linkage: an identifier or `null` for a to-one, an array for a to-many, with `links.self` and `links.related`.
 - `PATCH` sets or clears a to-one (`{"data": null}`) and replaces a to-many (`{"data": []}` clears it), with the same rules as a resource `PATCH` of that one field, `has_many` included.
-- `POST` and `DELETE` add and remove one member of a to-many. The body holds exactly one identifier; more is `403 relationship_batch_unsupported`, and `{"data": []}` changes nothing. Adding a member already present, or removing one that is absent, is `204` and writes nothing. On a to-one both are `403 relationship_update_unsupported`.
+- `POST` and `DELETE` add and remove one member of a to-many. The body holds exactly one identifier; more is `403 relationship_batch_unsupported`, and `{"data": []}` changes nothing. A `PATCH` or `POST` naming the parent in its own `has_many` is `403 relationship_cycle`. Adding a member already present, or removing one that is absent, is `204` and writes nothing. On a to-one both are `403 relationship_update_unsupported`.
 - A relation field is read through the module's `get_by_id` and written through its `update`, so its hooks run. A module with no `update` answers every write `403 relationship_update_unsupported`.
 - The related route loads each resource with the target module's `get_by_id`. A dangling id is skipped, and a to-one whose target is missing is `"data": null`.
 - An unknown `{rel}` is `404 relationship_not_found`, a missing parent `404 {entity}_not_found`, and a missing linked resource on `PATCH` or `POST` `404 related_resource_not_found`. Another method is `405`, with `Allow: GET, HEAD, PATCH, POST, DELETE` or `Allow: GET, HEAD`.
@@ -1008,7 +1017,7 @@ taskList(query?: ListTasksQuery, limit?: number, offset?: number, options?: List
 await transport.taskList(undefined, 20, 0, { sort: ['-created', 'title'] });
 ```
 
-`TaskSortKey` (`'id' | '-id' | 'title' | '-title' | …`) and `ListOptions<K>` are exported from each generated client file, beside `PaginatedResult`. Positional callers do not change. The HTTP transport sends `sort=-created,title`, and the IPC transport passes `sort` in the invoke arguments. `toQueryString` now writes an array value as one comma-joined parameter and skips an empty array. Regenerate the TypeScript.
+`TaskSortKey` (`'id' | '-id' | 'title' | '-title' | …`) and `ListOptions<K>` are exported from each generated client file, beside `PaginatedResult`. Positional callers do not change. The HTTP transport sends `sort=-created,title`, and the IPC transport passes `sort` in the invoke arguments. `toQueryString` now writes an array value as one comma-joined parameter, each item encoded, and skips an empty array at the top level; inside a family, such as a filter's `Vec` member, an empty array is sent with an empty value. Regenerate the TypeScript.
 
 ### The clients stage refuses colliding parameter names
 

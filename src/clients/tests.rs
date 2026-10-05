@@ -1165,7 +1165,12 @@ fn a_paginated_resource_list_pages_with_the_page_family_and_rebuilds_paginated_r
     );
     // The family form brackets percent-encoded member names.
     let qs = ts_function(&clients.transport, "toQueryString");
-    assert!(qs.contains("push(`${encodeURIComponent(key)}%5B${encodeURIComponent(member)}%5D`, v);"), "{qs}");
+    assert!(qs.contains("push(`${encodeURIComponent(key)}%5B${encodeURIComponent(member)}%5D`, v, true);"), "{qs}");
+    // An empty array is skipped at the top level (`sort`) and sent empty as a
+    // family member (a filter's sequence), items joined by a literal comma.
+    assert!(qs.contains("if (values.length > 0 || member) parts.push("), "{qs}");
+    assert!(qs.contains(".map((v) => encodeURIComponent(String(v))).join(',')"), "{qs}");
+    assert!(qs.contains("push(encodeURIComponent(key), value, false);"), "{qs}");
     // `HttpTs` pages the same way.
     assert_eq!(
         ts_method(&clients.http, "taskList"),
@@ -3089,7 +3094,7 @@ fn each_sorted_entity_gets_a_sort_key_union_and_list_options_once() {
 /// Over HTTP a sorted list sends `options.sort` as `sort`, between its
 /// `filter` and `page` families as the server's links order them, and
 /// `toQueryString` writes an array as one parameter, its items joined by
-/// `,`, or nothing when it is empty or absent.
+/// `,`, or nothing when it is empty or absent at the top level.
 #[test]
 fn a_sorted_list_sends_sort_between_its_filter_and_its_page() {
     for paginated in [false, true] {
@@ -3114,7 +3119,7 @@ fn a_sorted_list_sends_sort_between_its_filter_and_its_page() {
             assert!(
                 to_query_string.contains(
                     "    if (value == null) return;\n    const values = Array.isArray(value) ? value : [value];\n    if \
-                     (values.length > 0) parts.push(`${key}=${values.map((v) => \
+                     (values.length > 0 || member) parts.push(`${key}=${values.map((v) => \
                      encodeURIComponent(String(v))).join(',')}`);\n"
                 ),
                 "{to_query_string}"
