@@ -139,7 +139,7 @@ priority: u32::try_from(model.priority).map_err(|_| {
 priority: Set(i64::from(self.priority)),
 ```
 
-The markdown store refuses the same values: a create or update that sets a `u64`, `usize`, `isize`, `u128` or `i128` field to a value outside `i64` fails before anything is written, with your markdown catch-all error (`AppError::from(markdown_store::Error::Serialize { .. })`) and the same message. So a `u64` holds at most `i64::MAX` on both backends.
+The generated stores refuse such a value before the conversion runs: a create or update that sets a `u64`, `usize`, `isize`, `u128` or `i128` field to a value outside `i64` fails before anything is written and before an id is derived, with the same message and your catch-all error, `AppError::DbError` on SeaORM and on markdown `AppError::from(markdown_store::Error::Serialize { .. })`. So a `u64` holds at most `i64::MAX` on both backends, and a create that also has an empty-slug title fails on the integer on both. Over HTTP the body check refuses the value first, as `400 invalid_attribute`; over IPC and MCP it reaches the store's check.
 
 For non-primitive `Other` types, it's stored as `String` in the database and cloned:
 

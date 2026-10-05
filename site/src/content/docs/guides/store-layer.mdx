@@ -216,6 +216,17 @@ The core of the generated module is an `impl Store` block with five methods:
 
         let tags = workout.tags.clone();  // extract before converting
 
+        // Every listed many_to_many id must name a record
+        for target_id in &workout.tags {
+            if !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
+            }
+        }
+
+        // Every write below goes through one transaction
+        let txn = self.db().begin().await
+            .map_err(|e| AppError::DbError(e.to_string()))?;
+
         // Id resolution (see "Creating records"); with IdStrategy::Provided:
         let id = if workout.id.trim().is_empty() {
             return Err(AppError::WorkoutIdRequired(
@@ -224,17 +235,19 @@ The core of the generated module is an `impl Store` block with five methods:
         } else {
             ontogen_core::id::validate_id(&workout.id)
                 .map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_workout(&workout).await? {
+            if !self.try_insert_workout(&txn, &workout).await? {
                 return Err(AppError::WorkoutAlreadyExists(workout.id));
             }
             workout.id.clone()
         };
 
-        // Sync junction table
+        // Sync junction table, on the same transaction
         self.sync_junction(
-            "workout_tags", "workout_id", "tag_id",
+            &txn, "workout_tags", "workout_id", "tag_id",
             &id, &tags
         ).await?;
+        txn.commit().await
+            .map_err(|e| AppError::DbError(e.to_string()))?;
 
         let created = self.get_workout(&id).await?;
         self.emit_change(ChangeOp::Created, EntityKind::Workout, id);
@@ -244,7 +257,7 @@ The core of the generated module is an `impl Store` block with five methods:
     }
     ```
 
-    The create flow: hook -> extract relation fields -> resolve the id and insert -> sync junctions -> re-fetch -> emit event -> hook -> return.
+    The create flow: hook -> extract relation fields -> check the listed ids and values -> open a transaction -> resolve the id and insert -> sync junctions -> commit -> re-fetch -> emit event -> hook -> return. A failure anywhere between the transaction's start and its commit writes nothing (see [Writes are all or nothing](#writes-are-all-or-nothing)).
   </TabItem>
   <TabItem label="update">
     ```rust
@@ -263,18 +276,27 @@ The core of the generated module is an `impl Store` block with five methods:
 
         let tags_changed = updates.tags.is_some();
 
+        for target_id in updates.tags.iter().flatten() {
+            if !self.tag_exists(target_id).await? {
+                return Err(AppError::TagNotFound(target_id.clone()));
+            }
+        }
+
         updates.apply(&mut current);
-
         let active = current.to_active_model()?;
-        active.update(self.db()).await
-            .map_err(|e| AppError::DbError(e.to_string()))?;
 
+        let txn = self.db().begin().await
+            .map_err(|e| AppError::DbError(e.to_string()))?;
+        active.update(&txn).await
+            .map_err(|e| AppError::DbError(e.to_string()))?;
         if tags_changed {
             self.sync_junction(
-                "workout_tags", "workout_id", "tag_id",
+                &txn, "workout_tags", "workout_id", "tag_id",
                 id, &current.tags
             ).await?;
         }
+        txn.commit().await
+            .map_err(|e| AppError::DbError(e.to_string()))?;
 
         let result = self.get_workout(id).await?;
         self.emit_change(
@@ -396,15 +418,48 @@ When creating or updating an entity, `many_to_many` fields are synced via `sync_
 
 ```rust
 // In create
-self.sync_junction("workout_tags", "workout_id", "tag_id", &id, &tags).await?;
+self.sync_junction(&txn, "workout_tags", "workout_id", "tag_id", &id, &tags).await?;
 
 // In update (conditional)
 if tags_changed {
-    self.sync_junction("workout_tags", "workout_id", "tag_id", id, &current.tags).await?;
+    self.sync_junction(&txn, "workout_tags", "workout_id", "tag_id", id, &current.tags).await?;
 }
 ```
 
 The `sync_junction` and `load_junction_ids` methods are provided by your `Store` implementation. Ontogen generates the calls with the correct table and column names.
+
+`sync_junction` takes the connection to write on as its first argument: the create's or update's transaction (see [Writes are all or nothing](#writes-are-all-or-nothing)). Run every statement on it, never on `self.db()`, so a failure undoes the whole write. On a pool with one connection, as an in-memory SQLite database needs, a statement on `self.db()` would also wait forever for the connection the transaction holds:
+
+```rust
+pub async fn sync_junction<C: sea_orm::ConnectionTrait>(
+    &self,
+    conn: &C,
+    table: &str,
+    source_col: &str,
+    target_col: &str,
+    source_id: &str,
+    target_ids: &[String],
+) -> Result<(), AppError> {
+    use sea_orm::Statement;
+    // sqlite-only: raw SQL with `?` placeholders; list order lives in rowid.
+    let sqlite = |sql: &str, values: Vec<sea_orm::Value>| {
+        Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite, sql, values)
+    };
+    let delete = format!("DELETE FROM {table} WHERE {source_col} = ?");
+    conn.execute(sqlite(&delete, vec![source_id.into()]))
+        .await
+        .map_err(|e| AppError::DbError(e.to_string()))?;
+    let insert = format!("INSERT INTO {table} ({source_col}, {target_col}) VALUES (?, ?)");
+    for target_id in target_ids {
+        conn.execute(sqlite(&insert, vec![source_id.into(), target_id.as_str().into()]))
+            .await
+            .map_err(|e| AppError::DbError(e.to_string()))?;
+    }
+    Ok(())
+}
+```
+
+`load_junction_ids` is called outside any transaction and keeps reading through `self.db()`.
 
 The order of a `many_to_many` list is the order it was written, on both backends. The markdown backend keeps it in frontmatter. On SeaORM that order lives in your two helpers, so they have to honor it: `sync_junction` inserts the rows in the order of `target_ids`, and `load_junction_ids` selects them back with `ORDER BY rowid`:
 
@@ -419,7 +474,7 @@ Without the `ORDER BY`, SQLite is free to return the rows in any order and a lis
 
 ## Creating records
 
-`create_*` runs `before_create`, then checks that every child a `has_many` list names exists (a missing one is `{Child}NotFound`, see [has_many writes](#has_many-writes)), then settles the id:
+`create_*` runs `before_create`, then runs the checks on what the create lists and stores (see [Check order](#check-order)), then settles the id:
 
 - An id that is empty or whitespace-only counts as absent. Any other id, whether it came from the client or from `before_create`, is used as given under every strategy.
 - A given id must satisfy the id rule: only lowercase ASCII letters, digits, `.`, `_`, `~` and `-`; 1 to 200 bytes; no leading or trailing `.`; not `index` or `log` (those two are reserved for the vault's own files); and not a Windows device name (`con`, `prn`, `aux`, `nul`, `com0` to `com9`, `lpt0` to `lpt9`), in any case, whole or before its first `.` (`con`, `nul.x`). Such an id is a filename on Linux, macOS and Windows and needs no escaping in a URL. An invalid id fails with the backend's error (`DbError` on SeaORM, `Md` on markdown), whose message names the clause it broke and then states the whole rule. The rule applies only to creates: a lookup of any id is answered, so a record stored under an id the rule now refuses (`Draft`, `café`) stays readable, updatable and deletable.
@@ -460,7 +515,35 @@ A `has_many` list lives on the children, as their foreign keys. An update that s
 
 A listed child that does not exist fails the create or update with `AppError::{Child}NotFound(child_id)`, the first missing id in list order, before anything is written. It is checked before `{Child}ParentRequired`.
 
+A list that names the record itself fails with `AppError::{Child}ParentCycle(id)`, `id` being the record's own, before anything is written: a record cannot be its own child. On create this applies to an id the caller gave. Declare `{Child}ParentCycle(String)` for the child of every `has_many`, which is the declaring entity itself. A root that is its own parent (a plain `String` foreign key has to point somewhere) says so through its `belongs_to` field, which may name its own id, never through its own children list.
+
+Longer cycles are not refused: with `b` a child of `a`, an update that lists `a` among `b`'s children, or sets `a`'s parent to `b`, succeeds. Refusing one needs an ancestor walk that the markdown backend, which has no transactions, cannot make safe against a concurrent write, so the two backends would disagree. If your tree must stay acyclic, walk the ancestors in a `before_create` or `before_update` hook and return an error when the new parent, or a listed child, is the record or one of its ancestors.
+
 Only the self-referential shape is supported: the `has_many` target must be the declaring entity, as in a tree of nodes. A `has_many` whose target is another entity fails the build with a `CodegenError`. To list another entity's records that point at this one, declare the `belongs_to` on that entity and query its records by the foreign key in a hand-written API function (see [Custom API endpoints](/cookbook/custom-api-endpoints/)).
+
+## many_to_many targets
+
+Every id a `many_to_many` list names must be a record of the target entity. A create or update that lists a missing one fails with `AppError::{Target}NotFound(id)`, the first missing id in list order, before anything is written, on both backends: SQLite's junction foreign key would refuse it only once the record's row was written, and a markdown vault has no foreign key. Only the lists a write sets are checked, so a record already holding an id with no record behind it (a hand-edited vault file, say) still updates as long as the update leaves that list alone. A self-referential `many_to_many` may list the record's own id on create when the caller gave that id.
+
+The check calls the target's `{target}_exists` helper, which every entity that some `many_to_many` targets gets, relations of its own or not. `{Target}NotFound` is one of the variants your `AppError` already declares for every entity.
+
+## Check order
+
+`create_*` and `update_*` check, after their `before_*` hook and before anything is written, in this order. The first failure is the error:
+
+1. a `has_many` list that names the record itself: `{Child}ParentCycle`;
+2. every listed id of a `has_many` or `many_to_many`, relations in field declaration order and ids in list order: the first missing one is `{Target}NotFound`;
+3. on update, a dropped child whose foreign key is a plain `String`: `{Child}ParentRequired`;
+4. a value the backend cannot store: an integer outside `i64` (a `u64`, `usize`, `u128`, `isize` or `i128` field), then a float `NaN`, each your catch-all (`DbError` on SeaORM, `Md` on markdown);
+5. on create, the id (see [Creating records](#creating-records)).
+
+The same order holds on both backends, so a write with more than one thing wrong gets the same error on either.
+
+## Writes are all or nothing
+
+On SeaORM, `create_*` and `update_*` make every write in one transaction: the record's row, each `sync_junction`, and each child's foreign key for a `has_many`. It commits before the read-back, the change event and the `after_*` hook; `before_*` runs before it opens. A write that fails part-way, a junction row a foreign key refuses for example, leaves nothing written, and a derived-id create that failed leaves no row behind for its retry to probe past (`title-2`).
+
+The markdown backend has no transactions. A `has_many` write rewrites one file per child, so an I/O failure or a concurrent delete part-way can leave some children changed. Every check above runs before the first write, so a refused write never does.
 
 ## Simple vs Complex Entities
 
@@ -469,7 +552,7 @@ The generator produces different code depending on whether an entity has relatio
 **Simple entities** (no `has_many` or `many_to_many`):
 - No `populate_relations` method
 - List and get return directly from `from_model`
-- Create and update have no junction sync
+- Create and update have no junction sync (their insert or update still runs in a transaction on SeaORM)
 - Simpler, faster code
 
 **Complex entities** (any `has_many` or `many_to_many`):

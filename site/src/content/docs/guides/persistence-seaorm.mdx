@@ -17,6 +17,7 @@ On Postgres or MySQL, today's code would break in these places:
 - `load_junction_ids` reads `many_to_many` ids back `ORDER BY rowid`, a column only SQLite has, so a list would not keep its written order.
 - Lists and `has_many` child ids are ordered by id and must come back in byte order, as on markdown. The same holds for every string key of a list's `order`, which `order_{plural}_query` sorts in SQL. SQLite's default `BINARY` collation does that; a Postgres locale collation or MySQL's case-insensitive default does not.
 - A list with an offset and no limit sends `LIMIT i64::MAX`, because SQLite rejects `OFFSET` alone.
+- `create_*` runs in a transaction, and `try_insert_{entity}` answers a duplicate id by looking it up again on that transaction. A failed `INSERT` leaves an SQLite transaction usable; Postgres aborts the whole transaction, so the lookup would fail.
 - Integer primitives moved from `i32` to `i64` columns. SQLite reads an existing column as `i64` in place; other engines need the column widened (see [Upgrading](/reference/upgrading/#integer-columns-are-i64)).
 
 Each such place carries a `sqlite-only` comment that says why, in the generator, in the generated store, and in the in-tree helpers, so a search for `sqlite-only` finds them.
@@ -255,6 +256,8 @@ The junction entity always has:
 - `belongs_to` relations to both side entities
 - `Related` impls for both side entities
 
+The generated store writes its rows through your `sync_junction`, which takes the create's or update's transaction as its first argument and runs every statement on it, so a junction row the foreign key refuses rolls the whole write back. The store also checks every listed id against the target entity before it writes, so a missing one is `{Target}NotFound` rather than a foreign-key `DbError`. See [Junction Sync](/guides/store-layer/#junction-sync) and [Writes are all or nothing](/guides/store-layer/#writes-are-all-or-nothing).
+
 ### Table Name Derivation
 
 | Source | Field | Junction Table Name |
@@ -313,7 +316,7 @@ For each entity, the conversion generator produces `from_model()` and `to_active
 </Tabs>
 
 Key behaviors:
-- Both functions return `Result<_, AppError>`. Integer primitives such as `u32` are stored as `i64` and converted with `From`/`TryFrom`; a value that does not fit fails with `AppError::DbError` instead of wrapping. Hand-written callers use `?`.
+- Both functions return `Result<_, AppError>`. Integer primitives such as `u32` are stored as `i64` and converted with `From`/`TryFrom`; a value that does not fit fails with `AppError::DbError` instead of wrapping. Hand-written callers use `?`. The generated `create_*` and `update_*` refuse such a value themselves, earlier (before an id is derived, as the markdown store does), so this conversion check is what guards a hand-written caller of `to_active_model()`.
 - `has_many` and `many_to_many` fields are initialized as `Vec::new()` in `from_model()`. The store layer populates them later.
 - Those same fields are absent from `to_active_model()`. Junction table management is handled by the store.
 - `VecString` plain fields use `decode_json_vec()` in `from_model()` and `serde_json::to_string()` in `to_active_model()`.

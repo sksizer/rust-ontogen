@@ -64,8 +64,10 @@ It also specifies the store-layer behaviour the wire depends on:
 
 - the `order` argument and sort parsing (ADR 0006);
 - `has_many` writes that clear dropped children (decision 9);
-- the typed store errors `{Entity}AlreadyExists`, `{Entity}IdRequired` and
-  `{Child}ParentRequired` (§13.4);
+- the typed store errors `{Entity}AlreadyExists`, `{Entity}IdRequired`,
+  `{Child}ParentRequired` and `{Child}ParentCycle` (§13.4);
+- the store's checks on the ids a write lists, and the atomicity of a
+  write (§5.4);
 - the schema reaching the servers and clients stages (§5.1).
 
 Tauri IPC and MCP payloads stay flat. Beyond the store fixes above, their
@@ -385,7 +387,16 @@ relationship (§9.1), which is changed only through its own endpoint.
 
 - **to-one:** set, or cleared to `null` when the field is `Option`.
 - **`many_to_many`:** full replacement through `PATCH`; add and remove
-  through the relationship endpoint (§9).
+  through the relationship endpoint (§9). A listed id that does not exist
+  fails a create or update with `{Target}NotFound` before anything is
+  written: the first missing id, in list order. Over HTTP the step-8
+  check catches it first, as `404 related_resource_not_found`; the
+  store's check covers IPC, MCP and direct store callers. On SeaORM the
+  junction's foreign key would refuse the id too, but only once the
+  record's row is written; the markdown store has no foreign key. The
+  store checks it on both, so both answer alike. A self-referential
+  `many_to_many` may list the record's own id on create when the caller
+  gave that id.
 - **`has_many`** (decision 9):
   - writes go through the children's foreign keys;
   - a listed child gets its foreign key set to this resource, and moves
@@ -395,17 +406,57 @@ relationship (§9.1), which is changed only through its own endpoint.
     dropped. The write fails with `403 {child}_parent_required` (§13.4)
     before anything is written. The spec requires `403` when a server
     refuses a relationship removal or a full replacement;
+  - a list that names the record itself fails with
+    `403 {child}_parent_cycle` (§13.4) before anything is written: a
+    record cannot be its own child. On create this applies to an id the
+    caller gave; a derived id cannot be listed, since the checks run
+    before it is derived. A record that is its own parent (a root over a
+    non-`Option` foreign key) says so through its `belongs_to`, which may
+    name the record's own id;
   - a listed child that does not exist fails a create or update with
     `{Child}NotFound` before anything is written: the first missing id, in
     list order. Over HTTP the step-8 check (§8.2, §8.3) catches it first,
     as `404 related_resource_not_found`. The store's check covers IPC and
-    MCP. When a list both names a missing child and drops a required one,
-    the missing child is reported.
+    MCP;
+  - longer cycles are not refused. An update that makes `a` a child of
+    `b` while `b` is a child of `a` succeeds. Refusing it would need an
+    ancestor walk on every `belongs_to` and `has_many` write, and on the
+    markdown backend, which has no transactions, a concurrent write could
+    still close a cycle the walk did not see, so the backends would
+    disagree under concurrency. A consumer that needs acyclic trees walks
+    the ancestors in a `before_create` or `before_update` hook (backlog
+    B-HMCY).
+
+**Store check order.** A create or update checks, after its `before_*`
+hook and before it writes anything, in this order; the first failure is
+the error:
+
+1. a `has_many` list that names the record itself: `{Child}ParentCycle`;
+2. the listed ids of every `has_many` and `many_to_many`, relations in
+   field declaration order and ids in list order: the first missing one
+   is `{Target}NotFound` (`{Child}NotFound` for a `has_many`);
+3. on update, a dropped child whose foreign key is not `Option`:
+   `{Child}ParentRequired`;
+4. a value the backend cannot store: an integer outside `i64`, then a
+   float `NaN`, each the backend's catch-all error (`500` over HTTP);
+5. on create, the id: `{Entity}IdRequired`, an invalid id (the
+   catch-all), then `{Entity}AlreadyExists`.
+
+So a list that names a missing child and drops a required one reports the
+missing child, and a create with an empty-slug title and an out-of-range
+integer reports the integer on both backends.
+
+**Atomicity.** On SeaORM a create or update makes all its writes (the
+record's row, the junction rows, each child's foreign key) in one
+transaction, committed before the read-back, the change event and the
+`after_*` hook. A write that fails part-way, a junction row refused by a
+foreign key say, leaves nothing written, and a derived-id create that
+failed leaves no row for its retry to probe past.
 
 On the markdown backend a `has_many` write rewrites one file per affected
 child. Multi-record writes are best-effort there (ADR 0001 contract
 item 2). Only an I/O failure or a concurrent delete part-way can leave
-some children changed, because both checks run before the first write.
+some children changed, because every check runs before the first write.
 
 **Duplicate identifiers** in a to-many `data` array are collapsed to their
 first occurrence before anything else uses the array. This holds for
@@ -2156,16 +2207,18 @@ The scan maps variants by name suffix:
 
 | `AppError` variant | Constructed by | Status |
 |---|---|---|
-| `{Entity}NotFound(id)` | store `get`, `update`, `delete` | 404 |
+| `{Entity}NotFound(id)` | store `get`, `update`, `delete`; a `create` or `update` that lists a missing related id (§5.4) | 404 |
 | `{Entity}IdRequired(reason)` | store `create`, when no id exists after `before_create` and the `IdStrategy` | 400 |
 | `{Entity}AlreadyExists(id)` | store `create`, on a duplicate id | 409 |
 | `{Child}ParentRequired(child_id)` | a parent's `has_many` write that would drop a child whose foreign key is not `Option` (§5.4) | 403 |
+| `{Child}ParentCycle(id)` | a `has_many` write whose list names the record itself; `id` is the record's own id (§5.4) | 403 |
 | any other variant (`Md`, `DbError`) | — | 500 |
 
 - **`code` is the variant name**, converted to snake_case at generation
   time: `task_not_found`, `task_id_required`, `task_already_exists`,
-  `task_parent_required` (the child of `Task.subtasks` is a `Task`), `md`,
-  `db_error`. One rule covers every variant, mapped or not.
+  `task_parent_required` and `task_parent_cycle` (the child of
+  `Task.subtasks` is a `Task`), `md`, `db_error`. One rule covers every
+  variant, mapped or not.
 - **Declaring the variants.** The store generator constructs every
   variant in the table, so a consumer `AppError` must declare each one the
   generated store uses:
@@ -2173,6 +2226,14 @@ The scan maps variants by name suffix:
     tasks-tracker declares all three for `Task`, `Epic` and `Tag`.
   - `ParentRequired` only for an entity that is the child of a `has_many`
     whose foreign key is not `Option`. tasks-tracker needs none.
+  - `ParentCycle` for an entity that is the child of a `has_many`, which is
+    always the declaring entity (only the self-referential `has_many` is
+    supported). tasks-tracker declares `TaskParentCycle`.
+
+  A variant the generated store uses but the `AppError` lacks fails the
+  consumer's build with rustc's `E0599` ("no variant or associated item
+  named …") in the generated store module. The scan reads only what the
+  enum declares, so the build is where a missing variant shows.
 - **Code clashes.** A variant whose snake_case name equals a §13.3 code
   (an `InvalidDocument` variant, say) is a `CodegenError`, so a code always
   means one thing.
@@ -2489,11 +2550,13 @@ sixth bears on a payload's shape:
    as `sort` cannot be set over MCP.
 2. **`has_many` writes clear dropped children** (decision 9). An update
    that drops a child clears the child's foreign key in the store, so IPC
-   and MCP behave as HTTP does. A listed child that does not exist is
-   `{Child}NotFound`, and nothing is written (§5.4).
-3. **Typed store errors.** `{Entity}AlreadyExists`, `{Entity}IdRequired`
-   and `{Child}ParentRequired` name these failures. On these transports
-   they are strings.
+   and MCP behave as HTTP does. A listed child or `many_to_many` target
+   that does not exist is `{Target}NotFound`, a `has_many` list that names
+   the record itself is `{Child}ParentCycle`, and nothing is written
+   (§5.4).
+3. **Typed store errors.** `{Entity}AlreadyExists`, `{Entity}IdRequired`,
+   `{Child}ParentRequired` and `{Child}ParentCycle` name these failures.
+   On these transports they are strings.
 4. **No `xCount()` for a paginated module.** The servers stage takes a
    paginated module's `count` off its module list, since the list's page
    reports `total`, so no IPC command or MCP tool serves it. The TS IPC

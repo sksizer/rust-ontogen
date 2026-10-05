@@ -129,9 +129,9 @@ We'll add an `Exercise` entity to a fitness tracking app -- something with a cou
    }
    ```
 
-   The generated store code references `AppError::ExerciseNotFound`, `AppError::ExerciseIdRequired` and `AppError::ExerciseAlreadyExists`, so these must match. If the entity is the child of a `has_many` whose foreign key is a plain `String`, also add `ExerciseParentRequired(String)`.
+   The generated store code references `AppError::ExerciseNotFound`, `AppError::ExerciseIdRequired` and `AppError::ExerciseAlreadyExists`, so these must match. If the entity is the child of a `has_many` (a self-referential one: the entity lists its own children), also add `ExerciseParentCycle(String)`, and if that `has_many`'s foreign key is a plain `String`, `ExerciseParentRequired(String)` too.
 
-   The HTTP server reads the variant names for its error documents: `ExerciseNotFound` is `404 exercise_not_found`, `ExerciseIdRequired` `400 exercise_id_required`, `ExerciseAlreadyExists` `409 exercise_already_exists`, and `ExerciseParentRequired` `403 exercise_parent_required`. See [Errors](/guides/server-transports/#errors).
+   The HTTP server reads the variant names for its error documents: `ExerciseNotFound` is `404 exercise_not_found`, `ExerciseIdRequired` `400 exercise_id_required`, `ExerciseAlreadyExists` `409 exercise_already_exists`, `ExerciseParentRequired` `403 exercise_parent_required`, and `ExerciseParentCycle` `403 exercise_parent_cycle`. See [Errors](/guides/server-transports/#errors).
 
 6. ### Add hook logic (optional)
 

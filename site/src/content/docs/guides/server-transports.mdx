@@ -331,9 +331,10 @@ Every error the generated HTTP server returns is a JSON:API error document with 
 | `{Entity}IdRequired` | 400 | `task_id_required` |
 | `{Entity}AlreadyExists` | 409 | `task_already_exists` |
 | `{Child}ParentRequired` | 403 | `task_parent_required` |
+| `{Child}ParentCycle` | 403 | `task_parent_cycle` |
 | any other variant | 500 | `db_error` |
 
-The generated store constructs `{Entity}NotFound`, `{Entity}IdRequired` and `{Entity}AlreadyExists` for every entity, and `{Child}ParentRequired` for an entity that is the child of a `has_many` whose foreign key is not `Option`, so your `AppError` declares each one the store uses (tasks-tracker declares the first three for `Task`, `Epic` and `Tag`). An error mapped from `AppError` carries no `source`, except `{entity}_already_exists` on a create that sent `data.id`. Only an op whose error type is your `AppError` is mapped; any other error type is `500 internal_error`.
+The generated store constructs `{Entity}NotFound`, `{Entity}IdRequired` and `{Entity}AlreadyExists` for every entity, `{Child}ParentRequired` for an entity that is the child of a `has_many` whose foreign key is not `Option`, and `{Child}ParentCycle` for an entity that is the child of a `has_many` (a list that names the record itself), so your `AppError` declares each one the store uses (tasks-tracker declares the first three for `Task`, `Epic` and `Tag`, and `TaskParentCycle`). A variant the store uses but your `AppError` lacks fails your build with rustc's `E0599` in the generated store module. An error mapped from `AppError` carries no `source`, except `{entity}_already_exists` on a create that sent `data.id`. Only an op whose error type is your `AppError` is mapped; any other error type is `500 internal_error`.
 
 A variant whose snake_case name equals one of ontogen's own codes (for example an `InvalidDocument` or `RelationshipNotFound` variant) fails the build, so a code always means one thing. Two `enum AppError` declarations in the scanned directory also fail it. With no `AppError` in the directory, every `AppError`-typed site answers `500 internal_error`.
 
