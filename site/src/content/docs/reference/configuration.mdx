@@ -172,7 +172,7 @@ store codegen error: the store stage needs a default id strategy: call Pipeline:
 
 An entity overrides the default in the schema with `#[ontology(entity, id = "provided" | "uuid" | "slug(<field>)")]` (see [Annotations](/reference/annotations/#id-strategy)). Each entity's create uses its override, else the default.
 
-`SlugFromField(f)` requires `f` to be a plain `String` field on every entity it applies to: every entity without an override for the default, the one entity for a `slug(f)` override. The generator fails otherwise, naming the entity. `Uuid` needs the `uuid` feature of `markdown-store` in a markdown consumer. [Creating records](/guides/store-layer/#creating-records) describes how a create uses the strategy, and the SeaORM dependency on `ontogen-core`.
+`SlugFromField(f)` requires `f` to be a plain `String` field on every entity it applies to: every entity without an override for the default, the one entity for a `slug(f)` override. The generator fails otherwise, naming the entity. `Uuid` needs the `uuid` feature of `markdown-store` in a markdown consumer (and of `ontogen-core` in a SeaORM one); without it the generated store does not compile. [Creating records](/guides/store-layer/#creating-records) describes how a create uses the strategy, and the SeaORM dependency on `ontogen-core`.
 
 Over HTTP, a create whose document has no `data.id` gets its id from the strategy, and a client-supplied `data.id` is used under every strategy. A create left with no id (`Provided` with no id from the client or a `before_create` hook, or a slug source that slugifies to nothing) is `400 {entity}_id_required`; a duplicate id is `409 {entity}_already_exists`. See [Server Transports](/guides/server-transports/#httpaxum-generation).
 

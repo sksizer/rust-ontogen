@@ -72,6 +72,10 @@ trait Backend: Sized {
     async fn get_fixed(&self, id: &str) -> R<Value>;
     async fn count_fixeds(&self) -> R<u64>;
 
+    async fn create_stamped(&self, stamped: Value) -> R<Value>;
+    async fn get_stamped(&self, id: &str) -> R<Value>;
+    async fn count_stampeds(&self) -> R<u64>;
+
     /// Rename a stored item the way an edit made outside the store would
     /// (an SQL `UPDATE`, a file rename), to reach ids no create can make.
     async fn rename_item(&self, from: &str, to: &str);
@@ -154,6 +158,16 @@ macro_rules! store_methods {
         async fn count_fixeds(&self) -> R<u64> {
             self.store.count_fixeds().await.map_err(err)
         }
+        async fn create_stamped(&self, stamped: Value) -> R<Value> {
+            let stamped = serde_json::from_value(stamped).expect("a Stamped");
+            self.store.create_stamped(stamped).await.map(to_json).map_err(err)
+        }
+        async fn get_stamped(&self, id: &str) -> R<Value> {
+            self.store.get_stamped(id).await.map(to_json).map_err(err)
+        }
+        async fn count_stampeds(&self) -> R<u64> {
+            self.store.count_stampeds().await.map_err(err)
+        }
     };
 }
 
@@ -175,6 +189,9 @@ macro_rules! error_mappers {
                 E::TagNotFound(id) => StoreError::NotFound("Tag", id),
                 E::TagIdRequired(r) => StoreError::IdRequired("Tag", r),
                 E::TagAlreadyExists(id) => StoreError::AlreadyExists("Tag", id),
+                E::StampedNotFound(id) => StoreError::NotFound("Stamped", id),
+                E::StampedIdRequired(r) => StoreError::IdRequired("Stamped", r),
+                E::StampedAlreadyExists(id) => StoreError::AlreadyExists("Stamped", id),
                 E::$other(msg) => StoreError::Backend(msg),
             }
         }
@@ -1000,6 +1017,60 @@ async fn create_ids<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 #[tokio::test]
 async fn create_fills_and_refuses_ids_the_same_way() {
     parity!(create_ids);
+}
+
+/// Whether `id` is a UUID v4 as both stores write it: lowercase hex in
+/// 8-4-4-4-12 groups, version 4, RFC 4122 variant.
+fn is_uuid_v4(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.iter().map(|g| g.len()).eq([8, 4, 4, 4, 12])
+        && groups.iter().all(|g| g.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        && groups[2].starts_with('4')
+        && groups[3].starts_with(['8', '9', 'a', 'b'])
+}
+
+/// `result` with a minted `id` replaced by `"<uuid>"`, since each backend
+/// mints its own.
+fn minted(result: R<Value>) -> R<Value> {
+    result.map(|mut record| {
+        let id = record["id"].as_str().expect("an id");
+        assert!(is_uuid_v4(id), "a minted id is a UUID v4: {id:?}");
+        record["id"] = json!("<uuid>");
+        record
+    })
+}
+
+async fn uuid_ids<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    let stamped = |id: &str, title: &str| json!({ "id": id, "title": title });
+    let minted_record = |title: &str| Ok(stamped("<uuid>", title));
+
+    // A create without an id, blank or empty, mints one; a get finds it.
+    let first = b.create_stamped(stamped("", "Same")).await;
+    let first_id = first.as_ref().map(|r| r["id"].as_str().unwrap().to_string()).expect("created");
+    t.expect("no id", minted(first), minted_record("Same"));
+    t.expect("get the minted id", minted(b.get_stamped(&first_id).await), minted_record("Same"));
+    let second = b.create_stamped(stamped(" \t", "Same")).await;
+    let second_id = second.as_ref().map(|r| r["id"].as_str().unwrap().to_string()).expect("created");
+    t.expect("blank id", minted(second), minted_record("Same"));
+    t.expect("two creates mint two ids", Ok(first_id != second_id), Ok(true));
+
+    // A provided id wins over the strategy, under the create rule.
+    t.expect("provided id", b.create_stamped(stamped("kept", "Own")).await, Ok(stamped("kept", "Own")));
+    t.expect(
+        "duplicate provided id",
+        b.create_stamped(stamped("kept", "Again")).await,
+        Err(StoreError::AlreadyExists("Stamped", "kept".into())),
+    );
+    let refused = b.create_stamped(stamped("Kept", "Upper")).await;
+    assert!(matches!(refused, Err(StoreError::Backend(_))), "[{}] create \"Kept\": {refused:?}", B::NAME);
+    t.record("invalid provided id", &refused).unwrap_err();
+    t.expect("three stored", b.count_stampeds().await, Ok(3));
+    t
+}
+
+#[tokio::test]
+async fn a_uuid_store_mints_a_uuid_v4_and_keeps_a_provided_id() {
+    parity!(uuid_ids);
 }
 
 /// The 200-byte limit, and slugs cut to fit it, on provided and derived ids.

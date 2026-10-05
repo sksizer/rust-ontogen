@@ -39,6 +39,7 @@ impl Store {
         create_table(&db, tables::tag::Entity).await?;
         create_table(&db, tables::item_tags::Entity).await?;
         create_table(&db, tables::section::Entity).await?;
+        create_table(&db, tables::stamped::Entity).await?;
         let (change_tx, _) = tokio::sync::broadcast::channel(256);
         Ok(Self { db, change_tx })
     }

@@ -26,7 +26,8 @@ fsops = ["dep:tempfile"]
 walk = ["dep:ignore"]
 # The vault store layer (VaultHandle). Implies fsops + walk.
 store = ["fsops", "walk"]
-# IdStrategy::Uuid support. Off by default to keep the dependency tree lean.
+# IdStrategy::Uuid, which does not exist without it. Off by default to keep
+# the dependency tree lean.
 uuid = ["dep:uuid"]
 
 [dependencies]

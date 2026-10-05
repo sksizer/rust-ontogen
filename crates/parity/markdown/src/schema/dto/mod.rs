@@ -6,5 +6,7 @@ pub mod item;
 pub use item::*;
 pub mod section;
 pub use section::*;
+pub mod stamped;
+pub use stamped::*;
 pub mod tag;
 pub use tag::*;

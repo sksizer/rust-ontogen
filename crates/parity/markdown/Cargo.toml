@@ -11,7 +11,7 @@ repository = "https://github.com/sksizer/rust-ontogen"
 publish = false
 
 [dependencies]
-markdown-store = { path = "../../markdown-store" }
+markdown-store = { path = "../../markdown-store", features = ["uuid"] }
 ontogen-core = { path = "../../ontogen-core" }
 ontogen-macros = { path = "../../ontogen-macros" }
 serde = { version = "1", features = ["derive"] }

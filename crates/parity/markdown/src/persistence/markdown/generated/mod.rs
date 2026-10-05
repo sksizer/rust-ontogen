@@ -3,6 +3,7 @@
 pub mod fixed;
 pub mod item;
 pub mod section;
+pub mod stamped;
 pub mod tag;
 
 /// Where the vault's records live, as configured at build time. A relative

@@ -293,6 +293,30 @@ async fn get_and_its_missing_case() {
     reply.error(StatusCode::NOT_FOUND, "note_not_found");
 }
 
+/// A vault file whose stem no lookup accepts is not a record: it is not
+/// listed, counted or anyone's child, so the server never emits a link it
+/// cannot serve (§8.2).
+#[tokio::test]
+async fn a_file_no_lookup_can_reach_is_not_a_record() {
+    let server = Server::new();
+    server.task("Alpha", "open").await;
+    let mut stems = vec!["trail.", "trail ", "   "];
+    if cfg!(not(windows)) {
+        stems.extend(["a:b", "back\\slash"]);
+    }
+    for stem in &stems {
+        write_task_file(&server, stem, "title: Stray\ntask_status: open\nparent_id: '[[alpha]]'\n");
+    }
+
+    let reply = server.get("/api/tasks").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.raw);
+    assert_eq!(ids(&reply.body), ["alpha"]);
+    assert_eq!(reply.body["meta"]["total"], 1);
+    let subtasks = server.get("/api/tasks/alpha/relationships/subtasks").await;
+    assert_eq!(subtasks.body["data"], json!([]), "{}", subtasks.raw);
+    server.get("/api/tasks/a:b").await.error(StatusCode::NOT_FOUND, "task_not_found");
+}
+
 #[tokio::test]
 async fn relationships_carry_linkage_in_declared_order() {
     let server = Server::new();

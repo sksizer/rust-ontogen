@@ -43,11 +43,14 @@ at a vault people also edit in Obsidian or a text editor.
 | `walk` | gitignore-aware record listing, **sorted** (the backend's stable order) |
 | `store` | `VaultHandle`: create / read / modify / remove / list / id-derivation, with a shared intra-process write lock; `EntityRecords` (`vault.entity(dir, type)`): the typed per-entity view that stamps each record's OKF `type` and filters flat vaults by it |
 
-\* `Uuid` needs the `uuid` cargo feature.
+\* `Uuid` exists only with the `uuid` cargo feature, so code that names it
+without the feature (a generated store with a `Uuid` entity, say) fails to
+compile.
 
 Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
 `fsops`, `walk`, and `store` (default) gate the I/O layers and their deps
-(`tempfile`, `ignore`).
+(`tempfile`, `ignore`); `uuid` (off by default) adds `IdStrategy::Uuid` and
+its `uuid` dependency.
 
 ## Guarantees and limits (read this before depending on it)
 
@@ -68,7 +71,9 @@ Feature flags: `frontmatter`/`wikilink`/`layout`/`id` are always on;
   macOS and Windows; slugs fold accented Latin letters to ASCII and
   are cut to 190 bytes. Lookups only check path safety
   (`layout::validate_lookup_id`), so a hand-named `Draft.md` stays
-  reachable. On Windows a lookup of a device name (`con`, `nul.x`) is
+  reachable. A file whose stem fails that check (`a:b.md`, `draft .md`)
+  is not a record: listings and counts skip it, so every listed id passes
+  a lookup. On Windows a lookup of a device name (`con`, `nul.x`) is
   `NotFound` without opening anything, since `con.md` opens the console.
 - **Lookups match the stored name exactly.** A record is found only under
   its file stem byte for byte, also on filesystems that resolve another

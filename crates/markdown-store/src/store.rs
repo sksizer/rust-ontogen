@@ -603,6 +603,8 @@ impl VaultHandle {
     // ── listing ─────────────────────────────────────────────────────────
 
     /// List record file paths for an entity, sorted lexicographically.
+    /// A file is a record only when its stem is an id a lookup accepts
+    /// (see [`walk::list_record_paths`]); other files are skipped.
     /// Exceeding the configured cap is [`Error::ListCapExceeded`].
     pub fn list_paths(&self, dir_segment: &str) -> Result<Vec<PathBuf>, Error> {
         let dir = self.entity_dir(dir_segment)?;
@@ -1293,6 +1295,35 @@ mod tests {
         fsops::write_atomic(&tasks.join("log.md"), "# Log\n\n## 2026-10-03\n* **Creation**: real\n").unwrap();
         assert_eq!(vault.list_ids("tasks").unwrap(), vec!["real"]);
         assert_eq!(vault.read_all("tasks").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn files_no_lookup_can_reach_are_not_records() {
+        let mut stems = vec!["trail.", "trail ", "   "];
+        if cfg!(not(windows)) {
+            stems.extend(["a:b", "back\\slash"]);
+        }
+        for layout in [VaultLayout::PerEntityDir, VaultLayout::Flat] {
+            let dir = tempfile::tempdir().unwrap();
+            let okf = OkfPolicy { index: true, ..OkfPolicy::default() };
+            let vault = VaultHandle::new(dir.path(), layout).with_okf(okf);
+            let tasks = vault.entity("tasks", "Task");
+            tasks.create(&IdStrategy::Provided, Some("ok"), None, doc("ok")).unwrap();
+            let entity_dir = vault.entity_dir("tasks").unwrap();
+            for stem in &stems {
+                assert!(vault.record_path("tasks", stem).is_err(), "{layout:?}: {stem:?} is no lookup id");
+                std::fs::write(entity_dir.join(format!("{stem}.md")), "---\ntype: Task\ntitle: stray\n---\n").unwrap();
+            }
+
+            assert_eq!(vault.list_ids("tasks").unwrap(), ["ok"], "{layout:?}");
+            assert_eq!(vault.list_paths("tasks").unwrap().len(), 1, "{layout:?}");
+            assert_eq!(vault.read_all("tasks").unwrap().len(), 1, "{layout:?}");
+            assert_eq!(tasks.read_all().unwrap().len(), 1, "{layout:?}");
+            assert_eq!(tasks.count().unwrap(), 1, "{layout:?}");
+            vault.rebuild_indexes().unwrap();
+            let index = std::fs::read_to_string(entity_dir.join(okf::INDEX_FILE)).unwrap();
+            assert_eq!(index.matches("* [").count(), 1, "{layout:?}: only `ok` is indexed:\n{index}");
+        }
     }
 
     #[test]
