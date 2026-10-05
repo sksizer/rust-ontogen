@@ -21,15 +21,15 @@ pub struct EpicUpdate {
 }
 
 impl EpicUpdate {
-    fn apply(&self, epic: &mut Epic) {
-        if let Some(title) = &self.title {
-            epic.title.clone_from(title);
+    fn apply(&self, record: &mut Epic) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(status) = &self.status {
-            epic.status.clone_from(status);
+        if let Some(value) = &self.status {
+            record.status.clone_from(value);
         }
-        if let Some(body) = &self.body {
-            epic.body.clone_from(body);
+        if let Some(value) = &self.body {
+            record.body.clone_from(value);
         }
     }
 }
@@ -75,13 +75,13 @@ pub fn sort_epics(items: &mut [Epic], order: &[OrderBy<EpicSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_epics(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_epics`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_epics(a: &Epic, b: &Epic, field: EpicSortField) -> std::cmp::Ordering {
+fn compare_epics(a: &Epic, b: &Epic, field: EpicSortField) -> ::std::cmp::Ordering {
     match field {
         EpicSortField::Id => a.id.cmp(&b.id),
         EpicSortField::Title => a.title.cmp(&b.title),
@@ -96,15 +96,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Epic>, AppError> {
-        let mut epics = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(EPICS_DIR, EPIC_TYPE).read_all().map_err(AppError::from)? {
             let fm: EpicFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            epics.push(fm.into_epic(id, doc.body().to_string()));
+            records.push(fm.into_epic(id, doc.body().to_string()));
         }
-        sort_epics(&mut epics, order);
+        sort_epics(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(epics.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_epics(&self) -> Result<u64, AppError> {
@@ -123,21 +123,21 @@ impl Store {
         Ok(fm.into_epic(id.to_string(), doc.body().to_string()))
     }
 
-    pub async fn create_epic(&self, mut epic: Epic) -> Result<Epic, AppError> {
-        hooks::before_create(self, &mut epic).await?;
+    pub async fn create_epic(&self, mut record: Epic) -> Result<Epic, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&EpicFrontmatter::from_epic(&epic), EPIC_FM_FIELDS).map_err(AppError::from)?;
-        doc.set_body(epic.body.clone());
+        doc.merge_serialize(&EpicFrontmatter::from_epic(&record), EPIC_FM_FIELDS).map_err(AppError::from)?;
+        doc.set_body(record.body.clone());
         let id = match self.vault().entity(EPICS_DIR, EPIC_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(epic.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(epic.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::EpicIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::EpicAlreadyExists(epic.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::EpicAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -155,10 +155,10 @@ impl Store {
             .entity(EPICS_DIR, EPIC_TYPE)
             .modify(id, |doc| {
                 let fm: EpicFrontmatter = doc.deserialize()?;
-                let mut epic = fm.into_epic(id.to_string(), doc.body().to_string());
-                updates.apply(&mut epic);
-                doc.merge_serialize(&EpicFrontmatter::from_epic(&epic), EPIC_FM_FIELDS)?;
-                doc.set_body(epic.body);
+                let mut record = fm.into_epic(id.to_string(), doc.body().to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&EpicFrontmatter::from_epic(&record), EPIC_FM_FIELDS)?;
+                doc.set_body(record.body);
                 Ok(())
             })
             .map_err(AppError::from)?;

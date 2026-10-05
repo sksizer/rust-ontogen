@@ -5,6 +5,7 @@
 pub(crate) mod gen_crud;
 
 use super::{StoreBackend, WikilinkPolicy};
+use crate::ident::rust_ident;
 use crate::ir::{IdStrategy, MarkdownIoOutput};
 use crate::schema::model::{EntityDef, EnumDef};
 use crate::store::helpers::to_snake_case;
@@ -20,7 +21,7 @@ impl StoreBackend for MarkdownBackend {
         let shout = snake.to_uppercase();
         let module = &self.md.module_path;
 
-        code.push_str(&format!("use {module}::{snake}::{{{shout}_FM_FIELDS, {name}Frontmatter}};\n"));
+        code.push_str(&format!("use {module}::{}::{{{shout}_FM_FIELDS, {name}Frontmatter}};\n", rust_ident(&snake)));
     }
 
     fn emit_declarations(&self, code: &mut String, entity: &EntityDef) {

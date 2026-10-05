@@ -577,6 +577,27 @@ fn servers_two_surfaces_ipc() {
     insta::assert_snapshot!(code);
 }
 
+/// IPC or MCP over modules named after what those files once imported
+/// (`Value`, `State`, `Arc`, `Future`, `Log`) and after a keyword (`Match`).
+fn generate_name_safety_file(generator: fn(std::path::PathBuf) -> crate::servers::ServerGenerator) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = crate::servers::tests::name_safety_config(tmp.path());
+    let output = tmp.path().join("out.rs");
+    config.generators = vec![generator(output.clone())];
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+    read_file(&output)
+}
+
+#[test]
+fn servers_name_safety_ipc() {
+    insta::assert_snapshot!(generate_name_safety_file(|output| crate::servers::ServerGenerator::TauriIpc { output }));
+}
+
+#[test]
+fn servers_name_safety_mcp() {
+    insta::assert_snapshot!(generate_name_safety_file(|output| crate::servers::ServerGenerator::Mcp { output }));
+}
+
 // ─── Docs: the data-model reference and JSON Schema ──────────────────────────
 
 /// Every file the docs stage wrote, read back from the tempdir.

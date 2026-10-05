@@ -335,8 +335,11 @@ every relation field removed. Concretely:
 
 The generator raises a `CodegenError` when:
 
-- an attribute name is not a legal JSON:API member name (for example, a
-  leading or trailing `_`), or is `type` or `id`;
+- an attribute name is not a legal JSON:API member name, or is `type` or
+  `id`. A legal member name has only ASCII letters and digits, non-ASCII
+  characters, `-`, `_` and spaces, and starts and ends with an ASCII
+  letter or digit or a non-ASCII character, so `_draft` and `draft_` are
+  refused;
 - an entity struct or field carries a serde attribute that changes its
   serialized shape: `rename`, `rename_all`, `alias`, `flatten`, `skip`,
   `skip_serializing`, `skip_serializing_if`, `serialize_with` or `with`.
@@ -373,12 +376,19 @@ declaration order of their `list_X`. A task's relationships are `epic`,
 
 **Collisions.** The generator raises a `CodegenError` when:
 
+- a relationship name is not a legal JSON:API member name (§5.3);
 - a relationship name equals an attribute name, `type`, `id` or
   `relationships`;
 - two relationships share a name.
 
 This applies to junction-op relationships (§9.1) as well. The spec gives
 fields one namespace, and `relationships` is a URL segment.
+
+The build-time rules of §5.2–§5.4 (the id type, legal and distinct member
+names, relation targets in the schema) apply to builds that generate an
+HTTP server or an HTTP TypeScript client. IPC-only and MCP-only builds,
+with or without the admin registry, are unaffected: their payloads are flat
+(§15).
 
 **Writes.** Every relationship is writable on the wire except a junction-op
 relationship (§9.1), which is changed only through its own endpoint.
@@ -2371,7 +2381,7 @@ function flattenTask(r: JsonApiResource): Task {
 Any non-2xx response throws a `JsonApiError`:
 
 ```ts
-export class JsonApiError extends Error {
+export class JsonApiError extends globalThis.Error {
   readonly name = 'JsonApiError';
   constructor(
     readonly status: number,
@@ -2417,12 +2427,14 @@ when either drifts from the generator.
 Payloads stay flat. JSON:API exists only at the HTTP boundary.
 
 A Tauri command names each parameter after the function's argument, since
-that name is the `invoke` key, and prefixes its own bindings with
-`ontogen_`. An argument named after a key the command itself uses is a
+Tauri reads the argument from the `invoke` payload under a key derived
+from that name (the name without its `r#`, lowerCamelCased with heck:
+`_kind` is `kind`), and prefixes its own bindings with `ontogen_`. An argument named after a key the command itself uses is a
 build error naming the argument: `query` beside a list's `*Query` struct,
 `limit` or `offset` on a paginated junction list's parent id, `channel` on
 an event op, `sort` on a list that takes an order, and, under a route
-prefix, the prefix parameter's name (`project_id`) on any op. The servers
+prefix, the prefix parameter's name (`project_id`) on any op. Names are
+compared by key, so `_sort` and `sort_` collide with `sort`. The servers
 stage refuses these when it generates IPC, and the clients stage when it
 emits the IPC transport (`HttpTauriIpcSplit`), even in a build that
 generates no IPC server, because that transport invokes the commands with
@@ -2436,7 +2448,7 @@ keys from that name. Over HTTP it is not, because it travels as
 `filter[sort]`.
 
 Every generated TS client names a list method's parameters after its bare
-filters (camelCased), then `query`, `limit`, `offset`, the route prefix
+filters (by their invoke keys, a reserved word taking a trailing `_`), then `query`, `limit`, `offset`, the route prefix
 parameter (on `Transport` methods only) and `options` (on a list that
 takes an order). A bare filter, or the route prefix parameter, that would
 take one of those names, or the name of an earlier bare filter, is a build

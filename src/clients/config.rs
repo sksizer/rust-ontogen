@@ -112,6 +112,14 @@ pub(crate) struct Config {
 }
 
 impl Config {
+    /// The TS type of the Rust type `ty` an API signature writes, an entity's
+    /// name read as that entity ([`schema_type_to_ts`]).
+    ///
+    /// [`schema_type_to_ts`]: crate::servers::types::schema_type_to_ts
+    pub(crate) fn ts_type(&self, ty: &str) -> String {
+        crate::servers::types::schema_type_to_ts(ty, &|name| self.entities.iter().any(|e| e.name == name))
+    }
+
     /// Every surface, primary first. Indexes match `ApiFn::surface`.
     pub(crate) fn surfaces(&self) -> Vec<ApiSurface> {
         let primary = ApiSurface {

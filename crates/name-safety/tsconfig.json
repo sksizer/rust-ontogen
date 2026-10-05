@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "es2022",
+    "lib": ["es2022", "dom"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "erasableSyntaxOnly": true,
+    "types": [],
+    "paths": {
+      "@tauri-apps/api/core": ["./ts-stubs/tauri/core.d.ts"],
+      "@tauri-apps/api/event": ["./ts-stubs/tauri/event.d.ts"],
+      "@ontogen/admin-types": ["../../packages/admin-types/index.ts"]
+    }
+  },
+  "include": ["generated-ts/*.ts", "ts-stubs/**/*.d.ts"]
+}

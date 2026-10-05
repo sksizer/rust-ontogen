@@ -103,8 +103,8 @@ mod tests {
         // Store delegation
         assert!(content.contains("store.list_tags(order, None, None)"));
         assert!(content.contains("store.get_tag(id)"));
-        assert!(content.contains("store.create_tag(tag)"));
-        assert!(content.contains("store.update_tag(id, updates)"));
+        assert!(content.contains("store.create_tag(Tag::from(input))"));
+        assert!(content.contains("store.update_tag(id, TagUpdate::from(input))"));
         assert!(content.contains("store.delete_tag(id)"));
     }
 
@@ -446,5 +446,48 @@ mod tests {
         let code = std::fs::read_to_string(generated.join("workout.rs")).unwrap();
         assert!(code.contains("fn list("), "{code}");
         assert!(matches!(fn_source(&output, "list"), ir::Source::Generated { .. }));
+    }
+
+    /// The transports reach each forwarder module through the glob
+    /// re-export of the output directory's module, so an entity named like
+    /// that directory is refused, naming the entity and the directory.
+    #[test]
+    fn an_entity_named_like_the_output_directory_is_refused() {
+        let src = "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Forwarders {\n    #[ontology(id)]\n    pub id: String,\n}\n";
+        let entities = crate::schema::parse::parse_schema_source(src, std::path::Path::new("x.rs")).expect("parses");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = base_config(tmp.path().join("forwarders"));
+        let err = api::generate(&entities, &config).err().expect("refused").to_string();
+        assert!(
+            err.contains("ontogen: entity `Forwarders` cannot have API forwarders: its module `forwarders` would be named like the API output directory"),
+            "{err}"
+        );
+        let config = ApiConfig { exclude: vec!["Forwarders".into()], ..base_config(tmp.path().join("forwarders")) };
+        api::generate(&entities, &config).expect("an excluded entity gets no module");
+    }
+
+    /// A forwarder over the store reaches the entity's store module as
+    /// `crate::store::{entity}`, so an entity named like one of the store's
+    /// own modules is refused; without a store the name is free.
+    #[test]
+    fn a_store_backed_entity_named_like_a_store_module_is_refused() {
+        for (name, module) in [("Hooks", "hooks"), ("Generated", "generated")] {
+            let src = format!(
+                "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {name} {{\n    #[ontology(id)]\n    pub id: String,\n}}\n"
+            );
+            let entities =
+                crate::schema::parse::parse_schema_source(&src, std::path::Path::new("x.rs")).expect("parses");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let err = api::generate(&entities, &base_config(tmp.path().join("v1"))).err().expect(name).to_string();
+            assert!(
+                err.contains(&format!(
+                    "ontogen: entity `{name}` cannot have API forwarders: they reach its store module as \
+                     `crate::store::{module}`, which is the store's own `{module}` module"
+                )),
+                "{err}"
+            );
+            let config = ApiConfig { store_type: None, ..base_config(tmp.path().join("v1")) };
+            api::generate(&entities, &config).unwrap_or_else(|e| panic!("{name} without a store: {e}"));
+        }
     }
 }

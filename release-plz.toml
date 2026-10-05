@@ -58,3 +58,9 @@ publish = false
 name = "parity-check"
 release = false
 publish = false
+
+# The codegen name-safety compile fixture. Never released, never published.
+[[package]]
+name = "name-safety"
+release = false
+publish = false

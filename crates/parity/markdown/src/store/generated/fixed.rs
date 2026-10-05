@@ -19,9 +19,9 @@ pub struct FixedUpdate {
 }
 
 impl FixedUpdate {
-    fn apply(&self, fixed: &mut Fixed) {
-        if let Some(title) = &self.title {
-            fixed.title.clone_from(title);
+    fn apply(&self, record: &mut Fixed) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -65,13 +65,13 @@ pub fn sort_fixeds(items: &mut [Fixed], order: &[OrderBy<FixedSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_fixeds(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_fixeds`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_fixeds(a: &Fixed, b: &Fixed, field: FixedSortField) -> std::cmp::Ordering {
+fn compare_fixeds(a: &Fixed, b: &Fixed, field: FixedSortField) -> ::std::cmp::Ordering {
     match field {
         FixedSortField::Id => a.id.cmp(&b.id),
         FixedSortField::Title => a.title.cmp(&b.title),
@@ -85,15 +85,15 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Fixed>, AppError> {
-        let mut fixeds = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(FIXEDS_DIR, FIXED_TYPE).read_all().map_err(AppError::from)? {
             let fm: FixedFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            fixeds.push(fm.into_fixed(id));
+            records.push(fm.into_fixed(id));
         }
-        sort_fixeds(&mut fixeds, order);
+        sort_fixeds(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        Ok(fixeds.into_iter().skip(offset).take(limit).collect())
+        Ok(records.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn count_fixeds(&self) -> Result<u64, AppError> {
@@ -112,20 +112,20 @@ impl Store {
         Ok(fm.into_fixed(id.to_string()))
     }
 
-    pub async fn create_fixed(&self, mut fixed: Fixed) -> Result<Fixed, AppError> {
-        hooks::before_create(self, &mut fixed).await?;
+    pub async fn create_fixed(&self, mut record: Fixed) -> Result<Fixed, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&FixedFrontmatter::from_fixed(&fixed), FIXED_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&FixedFrontmatter::from_fixed(&record), FIXED_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(FIXEDS_DIR, FIXED_TYPE).create(
             &markdown_store::IdStrategy::Provided,
-            Some(fixed.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
             None,
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::FixedIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::FixedAlreadyExists(fixed.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::FixedAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
@@ -143,9 +143,9 @@ impl Store {
             .entity(FIXEDS_DIR, FIXED_TYPE)
             .modify(id, |doc| {
                 let fm: FixedFrontmatter = doc.deserialize()?;
-                let mut fixed = fm.into_fixed(id.to_string());
-                updates.apply(&mut fixed);
-                doc.merge_serialize(&FixedFrontmatter::from_fixed(&fixed), FIXED_FM_FIELDS)?;
+                let mut record = fm.into_fixed(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&FixedFrontmatter::from_fixed(&record), FIXED_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;

@@ -2,8 +2,7 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::workout_set;
 use crate::schema::WorkoutSet;
@@ -25,27 +24,27 @@ pub struct WorkoutSetUpdate {
 }
 
 impl WorkoutSetUpdate {
-    fn apply(&self, workout_set: &mut WorkoutSet) {
-        if let Some(workout_id) = &self.workout_id {
-            workout_set.workout_id.clone_from(workout_id);
+    fn apply(&self, record: &mut WorkoutSet) {
+        if let Some(value) = &self.workout_id {
+            record.workout_id.clone_from(value);
         }
-        if let Some(exercise_id) = &self.exercise_id {
-            workout_set.exercise_id.clone_from(exercise_id);
+        if let Some(value) = &self.exercise_id {
+            record.exercise_id.clone_from(value);
         }
-        if let Some(set_number) = &self.set_number {
-            workout_set.set_number.clone_from(set_number);
+        if let Some(value) = &self.set_number {
+            record.set_number.clone_from(value);
         }
-        if let Some(weight_grams) = &self.weight_grams {
-            workout_set.weight_grams.clone_from(weight_grams);
+        if let Some(value) = &self.weight_grams {
+            record.weight_grams.clone_from(value);
         }
-        if let Some(reps) = &self.reps {
-            workout_set.reps.clone_from(reps);
+        if let Some(value) = &self.reps {
+            record.reps.clone_from(value);
         }
-        if let Some(rpe) = &self.rpe {
-            workout_set.rpe.clone_from(rpe);
+        if let Some(value) = &self.rpe {
+            record.rpe.clone_from(value);
         }
-        if let Some(notes) = &self.notes {
-            workout_set.notes.clone_from(notes);
+        if let Some(value) = &self.notes {
+            record.notes.clone_from(value);
         }
     }
 }
@@ -114,13 +113,13 @@ pub fn sort_workout_sets(items: &mut [WorkoutSet], order: &[OrderBy<WorkoutSetSo
         keys.iter()
             .map(|key| key.direction.apply(compare_workout_sets(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_workout_sets`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_workout_sets(a: &WorkoutSet, b: &WorkoutSet, field: WorkoutSetSortField) -> std::cmp::Ordering {
+fn compare_workout_sets(a: &WorkoutSet, b: &WorkoutSet, field: WorkoutSetSortField) -> ::std::cmp::Ordering {
     match field {
         WorkoutSetSortField::Id => a.id.cmp(&b.id),
         WorkoutSetSortField::SetNumber => a.set_number.cmp(&b.set_number),
@@ -167,17 +166,17 @@ impl Store {
         WorkoutSet::from_model(&model)
     }
 
-    pub async fn create_workout_set(&self, mut workout_set: WorkoutSet) -> Result<WorkoutSet, AppError> {
-        hooks::before_create(self, &mut workout_set).await?;
+    pub async fn create_workout_set(&self, mut record: WorkoutSet) -> Result<WorkoutSet, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let id = if workout_set.id.trim().is_empty() {
+        let id = if record.id.trim().is_empty() {
             return Err(AppError::WorkoutSetIdRequired("this store requires the caller to supply an id".to_string()));
         } else {
-            ontogen_core::id::validate_id(&workout_set.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_workout_set(&workout_set).await? {
-                return Err(AppError::WorkoutSetAlreadyExists(workout_set.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_workout_set(&record).await? {
+                return Err(AppError::WorkoutSetAlreadyExists(record.id));
             }
-            workout_set.id.clone()
+            record.id.clone()
         };
 
         let created = self.get_workout_set(&id).await?;
@@ -227,12 +226,12 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_workout_set(&self, workout_set: &WorkoutSet) -> Result<bool, AppError> {
-        let active = workout_set.to_active_model()?;
+    async fn try_insert_workout_set(&self, record: &WorkoutSet) -> Result<bool, AppError> {
+        let active = record.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
-                let taken = workout_set::Entity::find_by_id(workout_set.id.as_str())
+            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                let taken = workout_set::Entity::find_by_id(record.id.as_str())
                     .one(self.db())
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -247,9 +246,9 @@ impl Store {
 /// Applies `order` to `query` as `list_workout_sets` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
 pub fn order_workout_sets_query(
-    mut query: Select<workout_set::Entity>,
+    mut query: ::sea_orm::Select<workout_set::Entity>,
     order: &[OrderBy<WorkoutSetSortField>],
-) -> Select<workout_set::Entity> {
+) -> ::sea_orm::Select<workout_set::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             WorkoutSetSortField::Id => workout_set::Column::Id,
@@ -260,8 +259,12 @@ pub fn order_workout_sets_query(
             WorkoutSetSortField::Notes => workout_set::Column::Notes,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => {
+                (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)
+            }
+            ontogen_core::order::Direction::Desc => {
+                (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last)
+            }
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

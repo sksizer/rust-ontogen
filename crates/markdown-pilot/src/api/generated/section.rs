@@ -13,14 +13,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Section, AppError> {
 
 /// Create a new section
 pub async fn create(store: &Store, input: CreateSectionInput) -> Result<Section, AppError> {
-    let section: Section = input.into();
-    store.create_section(section).await
+    store.create_section(Section::from(input)).await
 }
 
 /// Update an existing section
 pub async fn update(store: &Store, id: &str, input: UpdateSectionInput) -> Result<Section, AppError> {
-    let updates: SectionUpdate = input.into();
-    store.update_section(id, updates).await
+    store.update_section(id, SectionUpdate::from(input)).await
 }
 
 /// Delete a section by ID

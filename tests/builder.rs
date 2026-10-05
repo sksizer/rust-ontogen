@@ -202,8 +202,8 @@ fn builder_slug_strategy_is_validated_on_the_seaorm_backend_too() {
     assert!(!tmp.path().join("store").exists(), "nothing is written");
 }
 
-/// A servers stage over `schema_dir`, scanning an empty API directory.
-fn servers_only(
+/// A servers stage over `schema_dir` and `api_dir` running `generators`.
+fn servers_with(
     schema_dir: &Path,
     api_dir: &Path,
     error_source_dir: Option<PathBuf>,
@@ -246,12 +246,12 @@ fn builder_scans_the_schema_dir_for_app_error_unless_told_otherwise() {
     // The clash is only reachable through the scan, so the error proves the
     // pipeline pointed it at the schema directory.
     let http = || vec![ontogen::servers::ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
-    let err = servers_only(&schema, &api, None, http()).expect_err("a variant reusing an ontogen code must fail");
+    let err = servers_with(&schema, &api, None, http()).expect_err("a variant reusing an ontogen code must fail");
     assert!(format!("{err}").contains("AppError::InvalidDocument"), "got: {err}");
 
     let elsewhere = tmp.path().join("errors");
     std::fs::create_dir_all(&elsewhere).unwrap();
-    servers_only(&schema, &api, Some(elsewhere), http()).expect("an explicit error_source_dir is kept");
+    servers_with(&schema, &api, Some(elsewhere), http()).expect("an explicit error_source_dir is kept");
 }
 
 /// A schema directory declaring one entity and an `AppError` with `variants`.
@@ -283,9 +283,9 @@ fn builder_checks_app_error_codes_only_for_an_http_server() {
     let mcp = ServerGenerator::Mcp { output: tmp.path().join("mcp.rs") };
     let http = ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") };
 
-    servers_only(&schema, &api, None, vec![]).expect("no transport, no clash");
-    servers_only(&schema, &api, None, vec![ipc.clone(), mcp.clone()]).expect("IPC and MCP have no ontogen codes");
-    let err = servers_only(&schema, &api, None, vec![ipc, mcp, http]).expect_err("the HTTP server's codes clash");
+    servers_with(&schema, &api, None, vec![]).expect("no transport, no clash");
+    servers_with(&schema, &api, None, vec![ipc.clone(), mcp.clone()]).expect("IPC and MCP have no ontogen codes");
+    let err = servers_with(&schema, &api, None, vec![ipc, mcp, http]).expect_err("the HTTP server's codes clash");
     assert!(format!("{err}").contains("AppError::InvalidDocument"), "got: {err}");
 }
 
@@ -297,28 +297,131 @@ fn builder_http_code_check_accepts_store_variants_of_relationship_named_entities
         let schema =
             schema_with_app_error(tmp.path(), entity, &variants.iter().map(String::as_str).collect::<Vec<_>>());
         let http = ontogen::servers::ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") };
-        servers_only(&schema, &tmp.path().join("api"), None, vec![http])
+        servers_with(&schema, &tmp.path().join("api"), None, vec![http])
             .unwrap_or_else(|e| panic!("`{entity}`'s store variants must not clash: {e}"));
     }
 }
 
-#[test]
-fn builder_servers_and_clients_refuse_an_entity_that_cannot_be_a_resource() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let schema = tmp.path().join("schema");
+/// A `Note` with `note_fields` beside a `Tag`, under `root/schema`, and a
+/// `note` API module serving `get_by_id`, under `root/api`.
+fn note_project(root: &Path, note_fields: &str) -> (PathBuf, PathBuf) {
+    let schema = root.join("schema");
+    let api = root.join("api");
     std::fs::create_dir_all(&schema).unwrap();
+    std::fs::create_dir_all(&api).unwrap();
     std::fs::write(
-        schema.join("note.rs"),
-        "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Note {\n    #[ontology(id)]\n    pub id: i64,\n}\n",
+        schema.join("mod.rs"),
+        format!(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Note {{\n{note_fields}\n}}\n\n\
+             #[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct Tag {{\n    #[ontology(id)]\n    pub id: String,\n}}\n"
+        ),
     )
     .unwrap();
-    let api = tmp.path().join("api");
+    std::fs::write(
+        api.join("note.rs"),
+        "use crate::schema::Note;\n\n\
+         pub async fn get_by_id(state: &AppState, id: &str) -> Result<Note, anyhow::Error> { todo!() }\n",
+    )
+    .unwrap();
+    (schema, api)
+}
 
-    let err = servers_only(&schema, &api, None, vec![]).expect_err("an i64 id cannot be a resource id");
+/// Relations JSON:API refuses, with the error an HTTP build reports.
+const REFUSED_RELATIONS: [(&str, &str); 2] = [
+    (
+        "    #[ontology(id)]\n    pub id: String,\n    #[ontology(relation(belongs_to, target = \"Tag\"))]\n    pub type_id: String,",
+        "ontogen: relation `Note.type_id` would be a relationship named `type`, which is reserved; rename the field",
+    ),
+    (
+        "    #[ontology(id)]\n    pub id: String,\n    #[ontology(relation(belongs_to, target = \"Tag\"))]\n    pub _tag_id: String,",
+        "ontogen: `Note._tag_id` would be the relationship `_tag`, which is not a legal JSON:API member name (a \
+         member name has only ASCII letters and digits, non-ASCII characters, `-`, `_` and spaces, and starts and \
+         ends with an ASCII letter or digit or a non-ASCII character); rename the field",
+    ),
+];
+
+#[test]
+fn builder_ipc_and_mcp_servers_take_a_relation_json_api_refuses() {
+    for (fields, refusal) in REFUSED_RELATIONS {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (schema, api) = note_project(tmp.path(), fields);
+        let errors = tmp.path().join("errors");
+        std::fs::create_dir_all(&errors).unwrap();
+        let ipc = tmp.path().join("ipc.rs");
+        let mcp = tmp.path().join("mcp.rs");
+
+        servers_with(
+            &schema,
+            &api,
+            Some(errors.clone()),
+            vec![
+                ontogen::servers::ServerGenerator::TauriIpc { output: ipc.clone() },
+                ontogen::servers::ServerGenerator::Mcp { output: mcp.clone() },
+            ],
+        )
+        .unwrap_or_else(|e| panic!("IPC and MCP payloads are not JSON:API: {e}"));
+        assert!(ipc.exists() && mcp.exists(), "both transports are written");
+
+        let http = vec![ontogen::servers::ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
+        let err = servers_with(&schema, &api, Some(errors), http).expect_err("the HTTP server serves JSON:API");
+        assert!(matches!(err, ontogen::CodegenError::Server(ref e) if e == refusal), "got: {err}");
+    }
+}
+
+#[test]
+fn builder_admin_registry_takes_a_relation_json_api_refuses() {
+    use ontogen::clients::ClientGenerator;
+
+    for (fields, refusal) in REFUSED_RELATIONS {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (schema, api) = note_project(tmp.path(), fields);
+        let clients = |generators: Vec<ClientGenerator>| {
+            Pipeline::new(&schema)
+                .clients(ontogen::ClientsConfig {
+                    generators,
+                    ..ontogen::ClientsConfig::new(&api, "AppState", "crate::api", "crate::schema", "crate::AppState")
+                })
+                .build()
+        };
+
+        let registry = tmp.path().join("admin-registry.ts");
+        clients(vec![ClientGenerator::AdminRegistry { output: registry.clone() }])
+            .unwrap_or_else(|e| panic!("the admin registry is not JSON:API: {e}"));
+        assert!(registry.exists(), "the registry is written");
+
+        let bindings_path = tmp.path().join("bindings.ts");
+        for http in [
+            ClientGenerator::HttpTs { output: tmp.path().join("http.ts"), bindings_path: bindings_path.clone() },
+            ClientGenerator::HttpTauriIpcSplit {
+                output: tmp.path().join("transport.ts"),
+                bindings_path: bindings_path.clone(),
+            },
+        ] {
+            let err = clients(vec![http]).expect_err("an HTTP client speaks JSON:API");
+            assert!(matches!(err, ontogen::CodegenError::Client(ref e) if e == refusal), "got: {err}");
+        }
+    }
+}
+
+#[test]
+fn builder_http_servers_and_clients_refuse_an_entity_that_cannot_be_a_resource() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (schema, api) = note_project(tmp.path(), "    #[ontology(id)]\n    pub id: i64,");
+    let errors = tmp.path().join("errors");
+    std::fs::create_dir_all(&errors).unwrap();
+
+    let http = vec![ontogen::servers::ServerGenerator::HttpAxum { output: tmp.path().join("http.rs") }];
+    let err = servers_with(&schema, &api, Some(errors), http).expect_err("an i64 id cannot be a resource id");
     assert!(matches!(err, ontogen::CodegenError::Server(ref e) if e.contains("Note.id")), "got: {err}");
 
     let err = Pipeline::new(&schema)
-        .clients(ontogen::ClientsConfig::new(&api, "AppState", "crate::api", "crate::schema", "crate::AppState"))
+        .clients(ontogen::ClientsConfig {
+            generators: vec![ontogen::clients::ClientGenerator::HttpTs {
+                output: tmp.path().join("http.ts"),
+                bindings_path: tmp.path().join("bindings.ts"),
+            }],
+            ..ontogen::ClientsConfig::new(&api, "AppState", "crate::api", "crate::schema", "crate::AppState")
+        })
         .build()
         .expect_err("an i64 id cannot be a resource id");
     assert!(matches!(err, ontogen::CodegenError::Client(ref e) if e.contains("Note.id")), "got: {err}");
@@ -381,7 +484,7 @@ fn override_schema(dir: &Path, task_id: &str) {
 fn builder_entity_id_override_beats_the_store_default() {
     for (task_id, task_needle) in [
         ("uuid", "ontogen_core::id::new_uuid()"),
-        ("slug(summary)", "ontogen_core::id::slugify(&task.summary)"),
+        ("slug(summary)", "ontogen_core::id::slugify(&record.summary)"),
         ("provided", "this store requires the caller to supply an id"),
     ] {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -398,8 +501,8 @@ fn builder_entity_id_override_beats_the_store_default() {
         let task = std::fs::read_to_string(tmp.path().join("store/task.rs")).unwrap();
         let note = std::fs::read_to_string(tmp.path().join("store/note.rs")).unwrap();
         assert!(task.contains(task_needle), "id = {task_id:?}: the override wins:\n{task}");
-        assert!(!task.contains("&task.title"), "id = {task_id:?}: not the default:\n{task}");
-        assert!(note.contains("ontogen_core::id::slugify(&note.title)"), "the default applies to Note:\n{note}");
+        assert!(!task.contains("&record.title"), "id = {task_id:?}: not the default:\n{task}");
+        assert!(note.contains("ontogen_core::id::slugify(&record.title)"), "the default applies to Note:\n{note}");
     }
 }
 
@@ -604,4 +707,154 @@ fn builder_a_missing_transport_api_dir_is_skipped_by_the_api_stage() {
     let msg = err.to_string();
     assert!(msg.contains("API directory does not exist"), "{msg}");
     assert!(generated.join("workout.rs").exists(), "the api stage ran");
+}
+
+/// A schema directory under `root` with one entity named `entity`.
+fn schema_with_entity(root: &Path, entity: &str) -> PathBuf {
+    let schema = root.join("schema");
+    std::fs::create_dir_all(&schema).unwrap();
+    std::fs::write(
+        schema.join("mod.rs"),
+        format!(
+            "#[derive(OntologyEntity)]\n#[ontology(entity)]\npub struct {entity} {{\n    #[ontology(id)]\n    pub id: \
+             String,\n}}\n"
+        ),
+    )
+    .unwrap();
+    schema
+}
+
+#[test]
+fn builder_refuses_an_entity_named_like_what_the_output_names_bare() {
+    // Refused at schema parse, whatever the pipeline generates.
+    for (entity, why) in [
+        ("Result", "the generated code names the prelude's `Result` bare"),
+        ("Option", "the generated code names the prelude's `Option` bare"),
+        ("OntogenListParams", "the `Ontogen` prefix is reserved"),
+        ("Std", "its module `std` would shadow the crate `std`"),
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let err = Pipeline::new(schema_with_entity(tmp.path(), entity))
+            .dtos(tmp.path().join("dto"))
+            .build()
+            .expect_err(entity);
+        assert!(matches!(err, ontogen::CodegenError::Schema(ref e) if e.contains(why)), "{entity}: {err}");
+        let rename = entity.strip_prefix("Ontogen").map_or(format!("{entity}Item"), str::to_string);
+        assert!(format!("{err}").contains(&format!("rename the entity (e.g. `{rename}`)")), "{err}");
+        assert!(!tmp.path().join("dto").exists(), "nothing is written");
+    }
+
+    // Refused when the store is generated, before any stage writes.
+    for (entity, why) in [
+        ("Store", "import the consumer contract's `Store` bare"),
+        ("OrderBy", "import the consumer contract's `OrderBy` bare"),
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let schema = schema_with_entity(tmp.path(), entity);
+        let err = Pipeline::new(&schema)
+            .markdown_io(tmp.path().join("md"), markdown_options())
+            .store(tmp.path().join("store"), None::<PathBuf>)
+            .store_id_strategy(IdStrategy::Provided)
+            .build()
+            .expect_err(entity);
+        assert!(matches!(err, ontogen::CodegenError::Store(ref e) if e.contains(why)), "{entity}: {err}");
+        assert!(!tmp.path().join("md").exists(), "{entity}: refused before the markdown stage writes");
+
+        // Without a store, the name is free.
+        Pipeline::new(&schema).markdown_io(tmp.path().join("md"), markdown_options()).build().expect(entity);
+    }
+
+    // The store's modules are the API forwarders' to refuse.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema = schema_with_entity(tmp.path(), "Hooks");
+    let err = Pipeline::new(&schema)
+        .markdown_io(tmp.path().join("md"), markdown_options())
+        .store(tmp.path().join("store"), None::<PathBuf>)
+        .store_id_strategy(IdStrategy::Provided)
+        .api(tmp.path().join("api"), "AppState")
+        .build()
+        .expect_err("Hooks");
+    assert!(
+        matches!(err, ontogen::CodegenError::Api(ref e) if e.contains("they reach its store module as `crate::store::hooks`")),
+        "{err}"
+    );
+    assert!(!tmp.path().join("md").exists(), "refused before the markdown stage writes");
+
+    // The configured state and store types are refused before any stage
+    // writes, so no hooks scaffold outlives the refusal.
+    for (entity, role, store_type) in [("AppState", "state", "Store"), ("Vault", "store", "Vault")] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let schema = schema_with_entity(tmp.path(), entity);
+        let api = tmp.path().join("api");
+        std::fs::create_dir_all(&api).unwrap();
+        let mcp = ontogen::servers::ServerGenerator::Mcp { output: tmp.path().join("mcp.rs") };
+        let err = Pipeline::new(&schema)
+            .markdown_io(tmp.path().join("md"), markdown_options())
+            .dtos(tmp.path().join("dto"))
+            .store(tmp.path().join("store"), Some(tmp.path().join("hooks")))
+            .store_id_strategy(IdStrategy::Provided)
+            .api(tmp.path().join("api_out"), "AppState")
+            .servers(ontogen::ServersConfig {
+                api_dir: api.clone(),
+                state_type: "crate::AppState".into(),
+                service_import_path: "crate::api".into(),
+                types_import_path: "crate::schema".into(),
+                state_import: "crate::AppState".into(),
+                naming: Default::default(),
+                generators: vec![mcp],
+                sse_route_overrides: Default::default(),
+                route_prefix: None,
+                store_type: Some(store_type.into()),
+                store_import: Some(format!("crate::store::{store_type}")),
+                pagination: None,
+                extra_surfaces: vec![],
+                error_source_dir: None,
+            })
+            .build()
+            .expect_err(entity);
+        let configured = format!("configured {role} type");
+        assert!(
+            matches!(err, ontogen::CodegenError::Schema(ref e) if e.contains(&configured) && e.contains(&format!("`{entity}Item`"))),
+            "{entity}: {err}"
+        );
+        for written in ["md", "dto", "store", "hooks", "api_out"] {
+            assert!(!tmp.path().join(written).exists(), "{entity}: nothing is written ({written})");
+        }
+    }
+}
+
+#[test]
+fn builder_refuses_an_api_argument_no_transport_can_name() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema = schema_with_entity(tmp.path(), "Note");
+    let api = tmp.path().join("api");
+    std::fs::create_dir_all(&api).unwrap();
+    std::fs::write(
+        api.join("note.rs"),
+        "pub async fn find(state: &AppState, ontogen_state: String) -> Result<Vec<Note>, anyhow::Error> { todo!() }\n",
+    )
+    .unwrap();
+    let mcp = ontogen::servers::ServerGenerator::Mcp { output: tmp.path().join("mcp.rs") };
+    let err = servers_with(&schema, &api, None, vec![mcp]).expect_err("refused");
+    assert!(
+        matches!(err, ontogen::CodegenError::Server(ref e) if e.contains("API fn `note::find` takes an argument named `ontogen_state`: the `ontogen_` prefix is reserved")),
+        "{err}"
+    );
+    assert!(!tmp.path().join("mcp.rs").exists(), "nothing is written");
+
+    // A TypeScript-only build scans with the same rules.
+    let err = Pipeline::new(&schema)
+        .clients(ontogen::ClientsConfig {
+            generators: vec![ontogen::clients::ClientGenerator::HttpTauriIpcSplit {
+                output: tmp.path().join("transport.ts"),
+                bindings_path: tmp.path().join("types.ts"),
+            }],
+            ..ontogen::ClientsConfig::new(&api, "AppState", "crate::api", "crate::schema", "crate::AppState")
+        })
+        .build()
+        .expect_err("refused");
+    assert!(
+        matches!(err, ontogen::CodegenError::Client(ref e) if e.contains("`note::find` takes an argument named `ontogen_state`")),
+        "{err}"
+    );
 }

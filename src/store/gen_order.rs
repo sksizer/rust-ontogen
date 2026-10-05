@@ -57,7 +57,7 @@ pub(crate) fn generate_order_block(code: &mut String, entity: &EntityDef, enums:
     code.push_str("        keys.iter()\n");
     code.push_str(&format!("            .map(|key| key.direction.apply(compare_{plural}(a, b, key.field)))\n"));
     code.push_str("            .find(|ord| ord.is_ne())\n");
-    code.push_str("            .unwrap_or(std::cmp::Ordering::Equal)\n");
+    code.push_str("            .unwrap_or(::std::cmp::Ordering::Equal)\n");
     code.push_str("    });\n");
     code.push_str("}\n\n");
 
@@ -66,7 +66,7 @@ pub(crate) fn generate_order_block(code: &mut String, entity: &EntityDef, enums:
     ));
     code.push_str("/// by the string they are stored as, which is what SQL compares.\n");
     code.push_str(&format!(
-        "fn compare_{plural}(a: &{name}, b: &{name}, field: {sort_field}) -> std::cmp::Ordering {{\n"
+        "fn compare_{plural}(a: &{name}, b: &{name}, field: {sort_field}) -> ::std::cmp::Ordering {{\n"
     ));
     code.push_str("    match field {\n");
     for spec in &specs {

@@ -2,8 +2,7 @@
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::tag;
 use crate::schema::Tag;
@@ -19,9 +18,9 @@ pub struct TagUpdate {
 }
 
 impl TagUpdate {
-    fn apply(&self, tag: &mut Tag) {
-        if let Some(title) = &self.title {
-            tag.title.clone_from(title);
+    fn apply(&self, record: &mut Tag) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
     }
 }
@@ -65,13 +64,13 @@ pub fn sort_tags(items: &mut [Tag], order: &[OrderBy<TagSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_tags(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_tags`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_tags(a: &Tag, b: &Tag, field: TagSortField) -> std::cmp::Ordering {
+fn compare_tags(a: &Tag, b: &Tag, field: TagSortField) -> ::std::cmp::Ordering {
     match field {
         TagSortField::Id => a.id.cmp(&b.id),
         TagSortField::Title => a.title.cmp(&b.title),
@@ -114,11 +113,11 @@ impl Store {
         Tag::from_model(&model)
     }
 
-    pub async fn create_tag(&self, mut tag: Tag) -> Result<Tag, AppError> {
-        hooks::before_create(self, &mut tag).await?;
+    pub async fn create_tag(&self, mut record: Tag) -> Result<Tag, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let id = if tag.id.trim().is_empty() {
-            let base = ontogen_core::id::slugify(&tag.title);
+        let id = if record.id.trim().is_empty() {
+            let base = ontogen_core::id::slugify(&record.title);
             if base.is_empty() {
                 return Err(AppError::TagIdRequired("field \"title\" produced an empty slug".to_string()));
             }
@@ -131,18 +130,18 @@ impl Store {
                 if taken {
                     continue;
                 }
-                tag.id = candidate;
-                if self.try_insert_tag(&tag).await? {
+                record.id = candidate;
+                if self.try_insert_tag(&record).await? {
                     break;
                 }
             }
-            tag.id.clone()
+            record.id.clone()
         } else {
-            ontogen_core::id::validate_id(&tag.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_tag(&tag).await? {
-                return Err(AppError::TagAlreadyExists(tag.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_tag(&record).await? {
+                return Err(AppError::TagAlreadyExists(record.id));
             }
-            tag.id.clone()
+            record.id.clone()
         };
 
         let created = self.get_tag(&id).await?;
@@ -192,12 +191,12 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_tag(&self, tag: &Tag) -> Result<bool, AppError> {
-        let active = tag.to_active_model()?;
+    async fn try_insert_tag(&self, record: &Tag) -> Result<bool, AppError> {
+        let active = record.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
-                let taken = tag::Entity::find_by_id(tag.id.as_str())
+            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                let taken = tag::Entity::find_by_id(record.id.as_str())
                     .one(self.db())
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -211,15 +210,22 @@ impl Store {
 
 /// Applies `order` to `query` as `list_tags` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
-pub fn order_tags_query(mut query: Select<tag::Entity>, order: &[OrderBy<TagSortField>]) -> Select<tag::Entity> {
+pub fn order_tags_query(
+    mut query: ::sea_orm::Select<tag::Entity>,
+    order: &[OrderBy<TagSortField>],
+) -> ::sea_orm::Select<tag::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             TagSortField::Id => tag::Column::Id,
             TagSortField::Title => tag::Column::Title,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => {
+                (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)
+            }
+            ontogen_core::order::Direction::Desc => {
+                (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last)
+            }
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

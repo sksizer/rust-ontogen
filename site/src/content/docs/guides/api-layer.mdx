@@ -34,14 +34,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Task, AppError> {
 
 /// Create a new task
 pub async fn create(store: &Store, input: CreateTaskInput) -> Result<Task, AppError> {
-    let task: Task = input.into();
-    store.create_task(task).await
+    store.create_task(Task::from(input)).await
 }
 
 /// Update an existing task
 pub async fn update(store: &Store, id: &str, input: UpdateTaskInput) -> Result<Task, AppError> {
-    let updates: TaskUpdate = input.into();
-    store.update_task(id, updates).await
+    store.update_task(id, TaskUpdate::from(input)).await
 }
 
 /// Delete a task by ID
@@ -322,17 +320,19 @@ The mapping is deliberate: any `&T` you can write is paired with the matching si
 | `text: &str`                       | `text: String`          | `&text`                 |
 | `id: &MyId`                        | `id: MyId`              | `&id`                   |
 | `payload: &[u8]`                   | `payload: Vec<u8>`      | `&payload`              |
-| `p: &Path`                         | `p: PathBuf`            | `&p`                    |
-| `s: &CStr`                         | `s: CString`            | `&s`                    |
-| `s: &OsStr`                        | `s: OsString`           | `&s`                    |
+| `p: &Path`                         | `p: ::std::path::PathBuf` | `&p`                  |
+| `s: &CStr`                         | `s: ::std::ffi::CString`  | `&s`                  |
+| `s: &OsStr`                        | `s: ::std::ffi::OsString` | `&s`                  |
 | `rating: Option<u8>`               | `rating: Option<u8>`    | `rating`                |
 | `name: Option<String>`             | `name: Option<String>`  | `name`                  |
 | `name: Option<&str>`               | `name: Option<String>`  | `name.as_deref()`       |
 | `bytes: Option<&[u8]>`             | `bytes: Option<Vec<u8>>`| `bytes.as_deref()`      |
-| `p: Option<&Path>`                 | `p: Option<PathBuf>`    | `p.as_deref()`          |
-| `s: Option<&CStr>`                 | `s: Option<CString>`    | `s.as_deref()`          |
-| `s: Option<&OsStr>`                | `s: Option<OsString>`   | `s.as_deref()`          |
+| `p: Option<&Path>`                 | `p: Option<::std::path::PathBuf>` | `p.as_deref()` |
+| `s: Option<&CStr>`                 | `s: Option<::std::ffi::CString>`  | `s.as_deref()` |
+| `s: Option<&OsStr>`                | `s: Option<::std::ffi::OsString>` | `s.as_deref()` |
 | `profile: Option<&MyStruct>`       | `profile: Option<MyStruct>` | `profile.as_ref()`  |
+
+The generated files import nothing from `std`, so they name these companions by path. A bare type name your signature writes, `PathBuf` or `Path` included, is imported from your types module like your own types: a function taking a `PathBuf` by value needs `pub use std::path::PathBuf;` there, and an entity named `Path` is that entity, in the TypeScript clients too. Behind a reference, `&Path` is always `std::path::Path`.
 
 `Vec<&str>` and other container types holding refs are passed through as-written. If you need an owned variant inside a container, write it explicitly (`Vec<String>` rather than `Vec<&str>`).
 

@@ -6,13 +6,12 @@ expression: code
 
 use ontogen_core::order::OrderBy;
 
-use sea_orm::sea_query::{NullOrdering, Order};
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect, Select};
+use ::sea_orm::{ActiveModelTrait as _, EntityTrait as _, PaginatorTrait as _, QueryOrder as _, QuerySelect as _};
 
 use crate::persistence::db::entities::node;
 use crate::schema::Node;
 use crate::schema::{AppError, ChangeOp, EntityKind};
-use sea_orm::{ColumnTrait, QueryFilter};
+use ::sea_orm::{ColumnTrait as _, QueryFilter as _};
 
 use crate::store::Store;
 use crate::store::hooks::node as hooks;
@@ -27,18 +26,18 @@ pub struct NodeUpdate {
 }
 
 impl NodeUpdate {
-    fn apply(&self, node: &mut Node) {
-        if let Some(label) = &self.label {
-            node.label.clone_from(label);
+    fn apply(&self, record: &mut Node) {
+        if let Some(value) = &self.label {
+            record.label.clone_from(value);
         }
-        if let Some(parent_id) = &self.parent_id {
-            node.parent_id.clone_from(parent_id);
+        if let Some(value) = &self.parent_id {
+            record.parent_id.clone_from(value);
         }
-        if let Some(contains) = &self.contains {
-            node.contains.clone_from(contains);
+        if let Some(value) = &self.contains {
+            record.contains.clone_from(value);
         }
-        if let Some(body) = &self.body {
-            node.body.clone_from(body);
+        if let Some(value) = &self.body {
+            record.body.clone_from(value);
         }
     }
 }
@@ -88,13 +87,13 @@ pub fn sort_nodes(items: &mut [Node], order: &[OrderBy<NodeSortField>]) {
         keys.iter()
             .map(|key| key.direction.apply(compare_nodes(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_nodes`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_nodes(a: &Node, b: &Node, field: NodeSortField) -> std::cmp::Ordering {
+fn compare_nodes(a: &Node, b: &Node, field: NodeSortField) -> ::std::cmp::Ordering {
     match field {
         NodeSortField::Id => a.id.cmp(&b.id),
         NodeSortField::Label => a.label.cmp(&b.label),
@@ -120,11 +119,11 @@ impl Store {
         }
         let models = query.all(self.db()).await.map_err(|e| AppError::DbError(e.to_string()))?;
 
-        let mut entities: Vec<Node> = models.iter().map(Node::from_model).collect::<Result<_, _>>()?;
-        for entity in &mut entities {
-            self.populate_node_relations(entity).await?;
+        let mut records: Vec<Node> = models.iter().map(Node::from_model).collect::<Result<_, _>>()?;
+        for record in &mut records {
+            self.populate_node_relations(record).await?;
         }
-        Ok(entities)
+        Ok(records)
     }
 
     pub async fn count_nodes(&self) -> Result<u64, AppError> {
@@ -138,24 +137,22 @@ impl Store {
             .map_err(|e| AppError::DbError(e.to_string()))?
             .ok_or_else(|| AppError::NodeNotFound(id.to_string()))?;
 
-        let mut entity = Node::from_model(&model)?;
-        self.populate_node_relations(&mut entity).await?;
-        Ok(entity)
+        let mut record = Node::from_model(&model)?;
+        self.populate_node_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_node(&self, mut node: Node) -> Result<Node, AppError> {
-        hooks::before_create(self, &mut node).await?;
+    pub async fn create_node(&self, mut record: Node) -> Result<Node, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let contains = node.contains.clone();
-
-        for child_id in &contains {
+        for child_id in &record.contains {
             if !self.node_exists(child_id).await? {
                 return Err(AppError::NodeNotFound(child_id.clone()));
             }
         }
 
-        let id = if node.id.trim().is_empty() {
-            let base = ontogen_core::id::slugify(&node.label);
+        let id = if record.id.trim().is_empty() {
+            let base = ontogen_core::id::slugify(&record.label);
             if base.is_empty() {
                 return Err(AppError::NodeIdRequired("field \"label\" produced an empty slug".to_string()));
             }
@@ -168,21 +165,21 @@ impl Store {
                 if taken {
                     continue;
                 }
-                node.id = candidate;
-                if self.try_insert_node(&node).await? {
+                record.id = candidate;
+                if self.try_insert_node(&record).await? {
                     break;
                 }
             }
-            node.id.clone()
+            record.id.clone()
         } else {
-            ontogen_core::id::validate_id(&node.id).map_err(|e| AppError::DbError(e.to_string()))?;
-            if !self.try_insert_node(&node).await? {
-                return Err(AppError::NodeAlreadyExists(node.id));
+            ontogen_core::id::validate_id(&record.id).map_err(|e| AppError::DbError(e.to_string()))?;
+            if !self.try_insert_node(&record).await? {
+                return Err(AppError::NodeAlreadyExists(record.id));
             }
-            node.id.clone()
+            record.id.clone()
         };
 
-        for child_id in &contains {
+        for child_id in &record.contains {
             self.set_node_parent(child_id, Some(&id)).await?;
         }
 
@@ -259,14 +256,14 @@ impl Store {
 
     pub(crate) async fn populate_node_relations(
         &self,
-        node: &mut crate::schema::Node,
+        record: &mut crate::schema::Node,
     ) -> Result<(), crate::schema::AppError> {
-        node.contains = {
+        record.contains = {
             use crate::persistence::db::entities::node;
             // sqlite-only: child ids sort in byte order under SQLite's default BINARY collation.
             let children = node::Entity::find()
-                .filter(node::Column::ParentId.eq(&node.id))
-                .filter(node::Column::Id.ne(&node.id))
+                .filter(node::Column::ParentId.eq(&record.id))
+                .filter(node::Column::Id.ne(&record.id))
                 .order_by_asc(node::Column::Id)
                 .all(self.db())
                 .await
@@ -276,12 +273,12 @@ impl Store {
         Ok(())
     }
 
-    async fn try_insert_node(&self, node: &Node) -> Result<bool, AppError> {
-        let active = node.to_active_model()?;
+    async fn try_insert_node(&self, record: &Node) -> Result<bool, AppError> {
+        let active = record.to_active_model()?;
         match active.insert(self.db()).await {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
-                let taken = node::Entity::find_by_id(node.id.as_str())
+            Err(e) if matches!(e.sql_err(), Some(::sea_orm::SqlErr::UniqueConstraintViolation(_))) => {
+                let taken = node::Entity::find_by_id(record.id.as_str())
                     .one(self.db())
                     .await
                     .map_err(|e| AppError::DbError(e.to_string()))?
@@ -293,16 +290,13 @@ impl Store {
     }
 
     async fn set_node_parent(&self, child_id: &str, parent_id: Option<&str>) -> Result<(), AppError> {
-        use sea_orm::{ConnectionTrait, Value};
-        // sqlite-only: raw SQL built for DatabaseBackend::Sqlite, with `?` placeholders.
-        let stmt = sea_orm::Statement::from_sql_and_values(
-            sea_orm::DatabaseBackend::Sqlite,
-            "UPDATE nodes SET parent_id = ? WHERE id = ?",
-            [
-                parent_id.map(|p| Value::from(p.to_string())).unwrap_or(Value::String(None)),
-                Value::from(child_id.to_string()),
-            ],
-        );
+        use ::sea_orm::ConnectionTrait as _;
+        let update = ::sea_orm::sea_query::Query::update()
+            .table(::sea_orm::sea_query::Alias::new("nodes"))
+            .value(::sea_orm::sea_query::Alias::new("parent_id"), parent_id.map(str::to_string))
+            .and_where(::sea_orm::sea_query::Expr::col(::sea_orm::sea_query::Alias::new("id")).eq(child_id))
+            .to_owned();
+        let stmt = self.db().get_database_backend().build(&update);
         self.db().execute(stmt).await.map_err(|e| AppError::DbError(e.to_string()))?;
         Ok(())
     }
@@ -314,15 +308,22 @@ impl Store {
 
 /// Applies `order` to `query` as `list_nodes` does: each key with nulls first ascending and last
 /// descending, then the id. A hand-written list that filters in SQL orders through this.
-pub fn order_nodes_query(mut query: Select<node::Entity>, order: &[OrderBy<NodeSortField>]) -> Select<node::Entity> {
+pub fn order_nodes_query(
+    mut query: ::sea_orm::Select<node::Entity>,
+    order: &[OrderBy<NodeSortField>],
+) -> ::sea_orm::Select<node::Entity> {
     for key in ontogen_core::order::effective(order) {
         let column = match key.field {
             NodeSortField::Id => node::Column::Id,
             NodeSortField::Label => node::Column::Label,
         };
         let (direction, nulls) = match key.direction {
-            ontogen_core::order::Direction::Asc => (Order::Asc, NullOrdering::First),
-            ontogen_core::order::Direction::Desc => (Order::Desc, NullOrdering::Last),
+            ontogen_core::order::Direction::Asc => {
+                (::sea_orm::sea_query::Order::Asc, ::sea_orm::sea_query::NullOrdering::First)
+            }
+            ontogen_core::order::Direction::Desc => {
+                (::sea_orm::sea_query::Order::Desc, ::sea_orm::sea_query::NullOrdering::Last)
+            }
         };
         // sqlite-only: string keys sort in byte order under SQLite's default BINARY collation.
         query = query.order_by_with_nulls(column, direction, nulls);

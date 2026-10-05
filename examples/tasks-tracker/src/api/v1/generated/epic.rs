@@ -30,14 +30,12 @@ pub async fn get_by_id(store: &Store, id: &str) -> Result<Epic, AppError> {
 
 /// Create a new epic
 pub async fn create(store: &Store, input: CreateEpicInput) -> Result<Epic, AppError> {
-    let epic: Epic = input.into();
-    store.create_epic(epic).await
+    store.create_epic(Epic::from(input)).await
 }
 
 /// Update an existing epic
 pub async fn update(store: &Store, id: &str, input: UpdateEpicInput) -> Result<Epic, AppError> {
-    let updates: EpicUpdate = input.into();
-    store.update_epic(id, updates).await
+    store.update_epic(id, EpicUpdate::from(input)).await
 }
 
 /// Delete a epic by ID

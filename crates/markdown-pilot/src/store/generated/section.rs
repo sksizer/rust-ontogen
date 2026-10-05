@@ -21,15 +21,15 @@ pub struct SectionUpdate {
 }
 
 impl SectionUpdate {
-    fn apply(&self, section: &mut Section) {
-        if let Some(title) = &self.title {
-            section.title.clone_from(title);
+    fn apply(&self, record: &mut Section) {
+        if let Some(value) = &self.title {
+            record.title.clone_from(value);
         }
-        if let Some(parent_id) = &self.parent_id {
-            section.parent_id.clone_from(parent_id);
+        if let Some(value) = &self.parent_id {
+            record.parent_id.clone_from(value);
         }
-        if let Some(children) = &self.children {
-            section.children.clone_from(children);
+        if let Some(value) = &self.children {
+            record.children.clone_from(value);
         }
     }
 }
@@ -82,13 +82,13 @@ pub fn sort_sections(items: &mut [Section], order: &[OrderBy<SectionSortField>])
         keys.iter()
             .map(|key| key.direction.apply(compare_sections(a, b, key.field)))
             .find(|ord| ord.is_ne())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(::std::cmp::Ordering::Equal)
     });
 }
 
 /// One ascending key of [`sort_sections`]: `None` first, floats with `-0.0` equal to `0.0`, enums
 /// by the string they are stored as, which is what SQL compares.
-fn compare_sections(a: &Section, b: &Section, field: SectionSortField) -> std::cmp::Ordering {
+fn compare_sections(a: &Section, b: &Section, field: SectionSortField) -> ::std::cmp::Ordering {
     match field {
         SectionSortField::Id => a.id.cmp(&b.id),
         SectionSortField::Title => a.title.cmp(&b.title),
@@ -102,19 +102,19 @@ impl Store {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<Section>, AppError> {
-        let mut sections = Vec::new();
+        let mut records = Vec::new();
         for (id, doc) in self.vault().entity(SECTIONS_DIR, SECTION_TYPE).read_all().map_err(AppError::from)? {
             let fm: SectionFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            sections.push(fm.into_section(id));
+            records.push(fm.into_section(id));
         }
-        sort_sections(&mut sections, order);
+        sort_sections(&mut records, order);
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-        let mut sections: Vec<Section> = sections.into_iter().skip(offset).take(limit).collect();
-        for entity in &mut sections {
-            self.populate_section_relations(entity).await?;
+        let mut records: Vec<Section> = records.into_iter().skip(offset).take(limit).collect();
+        for record in &mut records {
+            self.populate_section_relations(record).await?;
         }
-        Ok(sections)
+        Ok(records)
     }
 
     pub async fn count_sections(&self) -> Result<u64, AppError> {
@@ -130,37 +130,35 @@ impl Store {
             Err(e) => return Err(AppError::from(e)),
         };
         let fm: SectionFrontmatter = doc.deserialize().map_err(AppError::from)?;
-        let mut section = fm.into_section(id.to_string());
-        self.populate_section_relations(&mut section).await?;
-        Ok(section)
+        let mut record = fm.into_section(id.to_string());
+        self.populate_section_relations(&mut record).await?;
+        Ok(record)
     }
 
-    pub async fn create_section(&self, mut section: Section) -> Result<Section, AppError> {
-        hooks::before_create(self, &mut section).await?;
+    pub async fn create_section(&self, mut record: Section) -> Result<Section, AppError> {
+        hooks::before_create(self, &mut record).await?;
 
-        let children = section.children.clone();
-
-        for child_id in &children {
+        for child_id in &record.children {
             if !self.section_exists(child_id).await? {
                 return Err(AppError::SectionNotFound(child_id.clone()));
             }
         }
 
         let mut doc = markdown_store::Document::new();
-        doc.merge_serialize(&SectionFrontmatter::from_section(&section), SECTION_FM_FIELDS).map_err(AppError::from)?;
+        doc.merge_serialize(&SectionFrontmatter::from_section(&record), SECTION_FM_FIELDS).map_err(AppError::from)?;
         let id = match self.vault().entity(SECTIONS_DIR, SECTION_TYPE).create(
             &markdown_store::IdStrategy::SlugFromField("title".into()),
-            Some(section.id.as_str()).filter(|s| !s.trim().is_empty()),
-            Some(section.title.as_str()),
+            Some(record.id.as_str()).filter(|s| !s.trim().is_empty()),
+            Some(record.title.as_str()),
             doc,
         ) {
             Ok(id) => id,
             Err(markdown_store::Error::IdRequired { reason }) => return Err(AppError::SectionIdRequired(reason)),
-            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::SectionAlreadyExists(section.id)),
+            Err(markdown_store::Error::AlreadyExists { .. }) => return Err(AppError::SectionAlreadyExists(record.id)),
             Err(e) => return Err(AppError::from(e)),
         };
 
-        for child_id in &children {
+        for child_id in &record.children {
             self.set_section_parent(child_id, &id).await?;
         }
 
@@ -194,9 +192,9 @@ impl Store {
             .entity(SECTIONS_DIR, SECTION_TYPE)
             .modify(id, |doc| {
                 let fm: SectionFrontmatter = doc.deserialize()?;
-                let mut section = fm.into_section(id.to_string());
-                updates.apply(&mut section);
-                doc.merge_serialize(&SectionFrontmatter::from_section(&section), SECTION_FM_FIELDS)?;
+                let mut record = fm.into_section(id.to_string());
+                updates.apply(&mut record);
+                doc.merge_serialize(&SectionFrontmatter::from_section(&record), SECTION_FM_FIELDS)?;
                 Ok(())
             })
             .map_err(AppError::from)?;
@@ -231,19 +229,19 @@ impl Store {
 
     pub(crate) async fn populate_section_relations(
         &self,
-        section: &mut crate::schema::Section,
+        record: &mut crate::schema::Section,
     ) -> Result<(), crate::schema::AppError> {
-        let mut children = Vec::new();
+        let mut ids = Vec::new();
         for (child_id, doc) in self.vault().entity(SECTIONS_DIR, SECTION_TYPE).read_all().map_err(AppError::from)? {
-            if child_id == section.id {
+            if child_id == record.id {
                 continue;
             }
             let child: SectionFrontmatter = doc.deserialize().map_err(AppError::from)?;
-            if markdown_store::wikilink::strip(&child.parent_id) == section.id {
-                children.push(child_id);
+            if markdown_store::wikilink::strip(&child.parent_id) == record.id {
+                ids.push(child_id);
             }
         }
-        section.children = children;
+        record.children = ids;
         Ok(())
     }
 

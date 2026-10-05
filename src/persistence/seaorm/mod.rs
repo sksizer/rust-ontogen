@@ -3,6 +3,7 @@
 pub mod gen_conversion;
 pub mod gen_entity;
 
+use crate::ident::rust_ident;
 use crate::ir::SeaOrmOutput;
 use crate::schema::EntityDef;
 use crate::{CodegenError, SeaOrmConfig};
@@ -22,7 +23,7 @@ pub fn generate(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOrmO
             crate::ir::EntityTableMeta {
                 entity_name: e.name.clone(),
                 table_name: e.table.clone(),
-                module_path: format!("crate::persistence::db::entities::generated::{snake}"),
+                module_path: format!("crate::persistence::db::entities::generated::{}", rust_ident(&snake)),
                 columns,
             }
         })
@@ -33,7 +34,10 @@ pub fn generate(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOrmO
         .flat_map(|e| {
             e.junction_relations().map(move |(field, info)| {
                 let source_snake = gen_entity::to_snake_case(&e.name);
-                let junction_name = info.junction.clone().unwrap_or_else(|| format!("{source_snake}_{}", field.name));
+                let junction_name = info
+                    .junction
+                    .clone()
+                    .unwrap_or_else(|| format!("{source_snake}_{}", crate::resource::member_name(&field.name)));
                 crate::ir::JunctionMeta {
                     table_name: junction_name,
                     source_entity: e.name.clone(),
@@ -52,7 +56,7 @@ pub fn generate(entities: &[EntityDef], config: &SeaOrmConfig) -> Result<SeaOrmO
             let snake = gen_entity::to_snake_case(&e.name);
             crate::ir::ConversionMeta {
                 entity_name: e.name.clone(),
-                module_path: format!("crate::persistence::db::conversions::generated::{snake}"),
+                module_path: format!("crate::persistence::db::conversions::generated::{}", rust_ident(&snake)),
             }
         })
         .collect();

@@ -190,8 +190,8 @@ fn emit_helper(out: &mut String, kind: Helper, m: &ApiModule, f: &ApiFn, config:
     match kind {
         Helper::Read => out.push_str(&format!(
             "/// The `{type_name}` resource `id` names, read as its `GET` reads it: the\n/// parent of a \
-             relationship route.\nasync fn {name}(state: &{state_type}, {scope_param}id: &LookupKey) -> \
-             Result<{entity_ty}, ErrorObject> {{\n{open}    {svc}::{}({arg}, {}(id)?){aw}{map_err}\n}}\n\n",
+             relationship route.\nasync fn {name}(state: &{state_type}, {scope_param}id: &OntogenLookupKey) -> \
+             Result<{entity_ty}, OntogenErrorObject> {{\n{open}    {svc}::{}({arg}, {}(id)?){aw}{map_err}\n}}\n\n",
             f.name,
             resource_names(&m.name).key,
         )),
@@ -199,8 +199,8 @@ fn emit_helper(out: &mut String, kind: Helper, m: &ApiModule, f: &ApiFn, config:
             "/// Sets the relation field `field` of the `{type_name}` resource `id` to\n/// `value` through \
              `{svc}::{}`, as a resource `PATCH` naming only that\n/// relationship does.\nasync fn \
              {name}(\n    state: &{state_type},\n    {scope_param}id: &str,\n    field: &str,\n    value: \
-             serde_json::Value,\n) -> Result<(), ErrorObject> {{\n    let input: {} = \
-             from_fields(serde_json::Map::from_iter([(field.to_owned(), value)]))?;\n{open}    {svc}::{}({arg}, \
+             ::serde_json::Value,\n) -> Result<(), OntogenErrorObject> {{\n    let input: {} = \
+             ontogen_from_fields(::serde_json::Map::from_iter([(field.to_owned(), value)]))?;\n{open}    {svc}::{}({arg}, \
              id, input){aw}{map_err}?;\n    Ok(())\n}}\n\n",
             f.name,
             extract_input_type(&f.params[1].ty),
@@ -218,7 +218,7 @@ fn emit_helper(out: &mut String, kind: Helper, m: &ApiModule, f: &ApiFn, config:
             };
             out.push_str(&format!(
                 "/// Checks, in order, that each of `ids` names a resource of type `{type_name}`.\nasync fn \
-                 {name}(state: &{state_type}, {scope_param}ids: &[LinkedId]) -> Result<(), ErrorObject> \
+                 {name}(state: &{state_type}, {scope_param}ids: &[OntogenLinkedId]) -> Result<(), OntogenErrorObject> \
                  {{\n{open}    for linked in ids {{\n{check}    }}\n    Ok(())\n}}\n\n"
             ));
         }
@@ -234,7 +234,7 @@ fn emit_helper(out: &mut String, kind: Helper, m: &ApiModule, f: &ApiFn, config:
             out.push_str(&format!(
                 "/// The `{type_name}` resources `ids` name, in order, without the ids that\n/// name none.\nasync \
                  fn {name}(state: &{state_type}, {scope_param}ids: &[String]) -> Result<Vec<{entity_ty}>, \
-                 ErrorObject> {{\n{open}    let mut found = Vec::with_capacity(ids.len());\n    for id in ids \
+                 OntogenErrorObject> {{\n{open}    let mut found = Vec::with_capacity(ids.len());\n    for id in ids \
                  {{\n{fetch}    }}\n    Ok(found)\n}}\n\n"
             ));
         }
@@ -314,10 +314,11 @@ fn handler_name(m: &ApiModule, kind: &str, scoped: bool) -> String {
 /// [`SCOPE`] when scoped, then `id` and `rel`.
 fn path_extract(served: &Served<'_>) -> (String, String) {
     match served.scope {
-        None => ("(id, rel)".to_string(), "(LookupKey, LookupKey)".to_string()),
-        Some(prefix) => {
-            (format!("({SCOPE}, id, rel)"), format!("({}, LookupKey, LookupKey)", prefix.params[0].rust_type))
-        }
+        None => ("(id, rel)".to_string(), "(OntogenLookupKey, OntogenLookupKey)".to_string()),
+        Some(prefix) => (
+            format!("({SCOPE}, id, rel)"),
+            format!("({}, OntogenLookupKey, OntogenLookupKey)", super::scope_type(prefix)),
+        ),
     }
 }
 
@@ -330,9 +331,9 @@ fn get_handler(served: &Served<'_>, rels: &[Rel<'_, '_>], name: &str, related: b
     let collection =
         collection_expr(&served.config.naming.url_for_module(served.m), served.scope.map(|p| (p, ScopeBinding::Owned)));
     let mut out = format!(
-        "async fn {name}(\n    State(ontogen_state): State<Arc<{state_type}>>,\n    _: AcceptGuard,\n    \
-         Path({pattern}): Path<{ty}>,\n    RawQuery(ontogen_raw_query): RawQuery,\n) -> Result<Response, \
-         ErrorObject> {{\n    let ontogen_collection = {collection};\n    match rel.as_str() {{\n"
+        "async fn {name}(\n    OntogenState(ontogen_state): OntogenState<::std::sync::Arc<{state_type}>>,\n    _: OntogenAcceptGuard,\n    \
+         OntogenPath({pattern}): OntogenPath<{ty}>,\n    OntogenRawQuery(ontogen_raw_query): OntogenRawQuery,\n) -> Result<OntogenResponse, \
+         OntogenErrorObject> {{\n    let ontogen_collection = {collection};\n    match rel.as_str() {{\n"
     );
     for rel in rels {
         let arm = match (rel, related) {
@@ -342,7 +343,9 @@ fn get_handler(served: &Served<'_>, rels: &[Rel<'_, '_>], name: &str, related: b
         };
         out.push_str(&format!("        Some(\"{}\") => {{\n{arm}        }}\n", rel.name()));
     }
-    out.push_str(&format!("        _ => Err(no_such_relationship(\"{type_name}\", &rel)),\n    }}\n}}\n\n"));
+    out.push_str(&format!(
+        "        _ => Err(::ontogen_jsonapi::error::no_such_relationship(\"{type_name}\", &rel)),\n    }}\n}}\n\n"
+    ));
     out
 }
 
@@ -350,11 +353,12 @@ fn get_handler(served: &Served<'_>, rels: &[Rel<'_, '_>], name: &str, related: b
 /// parent (step 8). A paginated junction reads its page.
 fn get_prelude(served: &Served<'_>, page: Option<(u32, u32)>) -> String {
     let query = match page {
-        None => "            QueryParams::parse(ontogen_raw_query.as_deref(), &QuerySpec::NONE)?;\n".to_string(),
+        None => "            OntogenQueryParams::parse(ontogen_raw_query.as_deref(), &OntogenQuerySpec::NONE)?;\n"
+            .to_string(),
         Some((default_limit, max_limit)) => format!(
-            "            let ontogen_query =\n                QueryParams::parse(ontogen_raw_query.as_deref(), \
-             &QuerySpec {{ page: true, ..QuerySpec::NONE }})?;\n            let (ontogen_offset, ontogen_limit) = \
-             page(&ontogen_query, {default_limit}, {max_limit})?;\n"
+            "            let ontogen_query =\n                OntogenQueryParams::parse(ontogen_raw_query.as_deref(), \
+             &OntogenQuerySpec {{ page: true, ..OntogenQuerySpec::NONE }})?;\n            let (ontogen_offset, ontogen_limit) = \
+             ontogen_page(&ontogen_query, {default_limit}, {max_limit})?;\n"
         ),
     };
     format!(
@@ -374,10 +378,10 @@ fn field_linkage(served: &Served<'_>, rel: &Relationship) -> String {
     let enc = encode_path_segment(&rel.name);
     format!(
         "{}            let ontogen_base = format!(\"{{ontogen_collection}}/{{}}\", \
-         encode_path_segment(&{}));\n            let ontogen_links = \
-         Links::new(format!(\"{{ontogen_base}}/relationships/{enc}\"))\n                \
+         ::ontogen_jsonapi::links::encode_path_segment(&{}));\n            let ontogen_links = \
+         OntogenLinks::new(format!(\"{{ontogen_base}}/relationships/{enc}\"))\n                \
          .with_related(format!(\"{{ontogen_base}}/{enc}\"));\n            let ontogen_data = {};\n            \
-         Ok(response::ok(&Document::new(ontogen_data, ontogen_links)))\n",
+         Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, ontogen_links)))\n",
         get_prelude(served, None),
         parent_id(served),
         linkage_expr(rel, "ontogen_entity", "ontogen_member"),
@@ -392,7 +396,7 @@ fn field_related(served: &Served<'_>, rel: &Relationship) -> String {
     let field = format!("ontogen_entity.{}", rel.field);
     let ids = match rel.arity {
         Arity::ToOne { nullable: true } => format!("{field}.as_slice()"),
-        Arity::ToOne { nullable: false } => format!("std::slice::from_ref(&{field})"),
+        Arity::ToOne { nullable: false } => format!("::std::slice::from_ref(&{field})"),
         Arity::ToMany => format!("&{field}"),
     };
     let as_resource = resource_names(&tm.name).resource;
@@ -410,8 +414,8 @@ fn field_related(served: &Served<'_>, rel: &Relationship) -> String {
     };
     format!(
         "{}            let ontogen_related = {}{ids}).await?;\n            {data}\n            let ontogen_self = \
-         format!(\"{{ontogen_collection}}/{{}}/{}\", encode_path_segment(&{}));\n            \
-         Ok(response::ok(&Document::new(ontogen_data, Links::new(ontogen_self))))\n",
+         format!(\"{{ontogen_collection}}/{{}}/{}\", ::ontogen_jsonapi::links::encode_path_segment(&{}));\n            \
+         Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::new(ontogen_data, OntogenLinks::new(ontogen_self))))\n",
         get_prelude(served, None),
         served.call(Helper::Fetch, &tm.name, tf),
         encode_path_segment(&rel.name),
@@ -522,8 +526,8 @@ fn junction_get(served: &Served<'_>, j: &JunctionRelationship<'_>, related: bool
             "ontogen_member.as_str()".to_string()
         };
         format!(
-            "            let ontogen_data = Linkage::ToMany(\n                {members}.map(|ontogen_member| \
-             ResourceIdentifier::new(\"{}\", {id})).collect(),\n            );\n",
+            "            let ontogen_data = OntogenLinkage::ToMany(\n                {members}.map(|ontogen_member| \
+             OntogenResourceIdentifier::new(\"{}\", {id})).collect(),\n            );\n",
             j.target_type
         )
     };
@@ -531,24 +535,24 @@ fn junction_get(served: &Served<'_>, j: &JunctionRelationship<'_>, related: bool
     let parent = parent_id(served);
     let links = match page {
         Some(_) => {
-            "pagination_links(&ontogen_self, &CanonicalQuery::new(), ontogen_offset, ontogen_limit, \
+            "::ontogen_jsonapi::links::pagination_links(&ontogen_self, &OntogenCanonicalQuery::new(), ontogen_offset, ontogen_limit, \
                     ontogen_total)"
         }
-        None => "Links::new(ontogen_self)",
+        None => "OntogenLinks::new(ontogen_self)",
     };
     // A relationship document carries the spec's `related` link beside
     // `self`, so a client holding the linkage reaches the resources it names.
     let (self_line, links) = if related {
         (
             format!(
-                "let ontogen_self = format!(\"{{ontogen_collection}}/{{}}/{enc}\", encode_path_segment(&{parent}));"
+                "let ontogen_self = format!(\"{{ontogen_collection}}/{{}}/{enc}\", ::ontogen_jsonapi::links::encode_path_segment(&{parent}));"
             ),
             links.to_string(),
         )
     } else {
         (
             format!(
-                "let ontogen_base = format!(\"{{ontogen_collection}}/{{}}\", encode_path_segment(&{parent}));\n            \
+                "let ontogen_base = format!(\"{{ontogen_collection}}/{{}}\", ::ontogen_jsonapi::links::encode_path_segment(&{parent}));\n            \
                  let ontogen_self = format!(\"{{ontogen_base}}/relationships/{enc}\");"
             ),
             format!("{links}.with_related(format!(\"{{ontogen_base}}/{enc}\"))"),
@@ -556,13 +560,13 @@ fn junction_get(served: &Served<'_>, j: &JunctionRelationship<'_>, related: bool
     };
     let document = match page {
         Some(_) => {
-            "Document::new(ontogen_data, ontogen_links)\n                .with_meta(PageMeta { total: \
+            "OntogenDocument::new(ontogen_data, ontogen_links)\n                .with_meta(OntogenPageMeta { total: \
                     ontogen_total, limit: ontogen_limit, offset: ontogen_offset })"
         }
-        None => "Document::new(ontogen_data, ontogen_links)",
+        None => "OntogenDocument::new(ontogen_data, ontogen_links)",
     };
     out.push_str(&format!(
-        "            {self_line}\n            let ontogen_links = {links};\n            Ok(response::ok(&{document}))\n"
+        "            {self_line}\n            let ontogen_links = {links};\n            Ok(::ontogen_jsonapi::response::ok(&{document}))\n"
     ));
     out
 }
@@ -623,26 +627,32 @@ fn write_handler(served: &Served<'_>, rels: &[Rel<'_, '_>], name: &str, method: 
     // body, but still extracts the body for its media type (§13.2 step 3).
     let writes = arms.iter().any(|(_, arm)| arm.is_some());
     let (state, body, pattern) = if writes {
-        (format!("    State(ontogen_state): State<Arc<{state_type}>>,\n"), "ontogen_body", pattern)
+        (
+            format!("    OntogenState(ontogen_state): OntogenState<::std::sync::Arc<{state_type}>>,\n"),
+            "ontogen_body",
+            pattern,
+        )
     } else {
         let unused = if served.scope.is_some() { "(_, _, rel)" } else { "(_, rel)" };
         (String::new(), "_", unused.to_string())
     };
     let mut out = format!(
-        "async fn {name}(\n{state}    _: AcceptGuard,\n    ontogen_path: Result<Path<{ty}>, ErrorObject>,\n    \
-         ontogen_query: Result<Query<NoParams>, ErrorObject>,\n    {body}: Body,\n) -> Result<Response, \
-         ErrorObject> {{\n    let Path({pattern}) = ontogen_path?;\n    match rel.as_str() {{\n"
+        "async fn {name}(\n{state}    _: OntogenAcceptGuard,\n    ontogen_path: Result<OntogenPath<{ty}>, OntogenErrorObject>,\n    \
+         ontogen_query: Result<OntogenQuery<OntogenNoParams>, OntogenErrorObject>,\n    {body}: OntogenBody,\n) -> Result<OntogenResponse, \
+         OntogenErrorObject> {{\n    let OntogenPath({pattern}) = ontogen_path?;\n    match rel.as_str() {{\n"
     );
     for (rel, arm) in arms {
         let arm = arm.unwrap_or_else(|| {
             format!(
-                "            Err(relationship_update_unsupported(\"{type_name}\", \"{rel}\", \"{}\"))\n",
+                "            Err(::ontogen_jsonapi::error::relationship_update_unsupported(\"{type_name}\", \"{rel}\", \"{}\"))\n",
                 method.http()
             )
         });
         out.push_str(&format!("        Some(\"{rel}\") => {{\n            ontogen_query?;\n{arm}        }}\n"));
     }
-    out.push_str(&format!("        _ => Err(no_such_relationship(\"{type_name}\", &rel)),\n    }}\n}}\n\n"));
+    out.push_str(&format!(
+        "        _ => Err(::ontogen_jsonapi::error::no_such_relationship(\"{type_name}\", &rel)),\n    }}\n}}\n\n"
+    ));
     out
 }
 
@@ -658,7 +668,9 @@ fn write_prelude(served: &Served<'_>, linkage: &str) -> String {
 
 /// The identifiers of a `POST` or `DELETE` body: at most one (§9).
 fn one_identifier(target_type: &str) -> String {
-    format!("request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, \"\", \"{target_type}\", Some(1))?")
+    format!(
+        "::ontogen_jsonapi::request::to_many_linked(&::ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"{target_type}\", Some(1))?"
+    )
 }
 
 /// A write arm of field relationship `rel`, or `None` when `method` is
@@ -680,8 +692,8 @@ fn field_write(served: &Served<'_>, rel: &Relationship, method: Method) -> Optio
             write_prelude(
                 served,
                 &format!(
-                    "request::to_one(&request::parse_relationship(&ontogen_bytes)?, \"\", \"{target}\", {nullable})?\n                \
-                     .map(|ontogen_member| LinkedId {{ id: ontogen_member, pointer: \"/data\".to_owned() }})"
+                    "::ontogen_jsonapi::request::to_one(&::ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"{target}\", {nullable})?\n                \
+                     .map(|ontogen_member| OntogenLinkedId {{ id: ontogen_member, pointer: \"/data\".to_owned() }})"
                 )
             ),
             write("ontogen_linked.map(|ontogen_member| ontogen_member.id).into()"),
@@ -691,7 +703,7 @@ fn field_write(served: &Served<'_>, rel: &Relationship, method: Method) -> Optio
             write_prelude(
                 served,
                 &format!(
-                    "request::to_many_linked(&request::parse_relationship(&ontogen_bytes)?, \"\", \"{target}\", None)?"
+                    "::ontogen_jsonapi::request::to_many_linked(&::ontogen_jsonapi::request::parse_relationship(&ontogen_bytes)?, \"\", \"{target}\", None)?"
                 )
             ),
             write("ontogen_linked.into_iter().map(|ontogen_member| ontogen_member.id).collect()"),
@@ -712,7 +724,7 @@ fn field_write(served: &Served<'_>, rel: &Relationship, method: Method) -> Optio
             write("ontogen_ids.into()"),
         ),
     };
-    Some(format!("{body}            Ok(response::no_content())\n"))
+    Some(format!("{body}            Ok(::ontogen_jsonapi::response::no_content())\n"))
 }
 
 /// A write arm of junction relationship `j`, or `None` when `method` is
@@ -748,7 +760,7 @@ fn junction_write(served: &Served<'_>, j: &JunctionRelationship<'_>, method: Met
     Some(format!(
         "{}{check}            if let Some(ontogen_child) = ontogen_linked.first() {{\n{opens}{indent}let ontogen_members \
          = {list};\n{indent}if {condition} {{\n{indent}    {write};\n{indent}}}\n            }}\n            \
-         Ok(response::no_content())\n",
+         Ok(::ontogen_jsonapi::response::no_content())\n",
         write_prelude(served, &one_identifier(&j.target_type)),
     ))
 }
