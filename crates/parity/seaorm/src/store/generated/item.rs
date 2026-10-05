@@ -534,12 +534,12 @@ impl Store {
         }
 
         for child_id in updates.children.iter().flatten() {
-            if !self.item_exists(child_id).await? {
+            if !current.children.contains(child_id) && !self.item_exists(child_id).await? {
                 return Err(AppError::ItemNotFound(child_id.clone()));
             }
         }
         for target_id in updates.tags.iter().flatten() {
-            if !self.tag_exists(target_id).await? {
+            if !current.tags.contains(target_id) && !self.tag_exists(target_id).await? {
                 return Err(AppError::TagNotFound(target_id.clone()));
             }
         }

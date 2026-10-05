@@ -409,9 +409,14 @@ relationship (§9.1), which is changed only through its own endpoint.
 - **`many_to_many`:** full replacement through `PATCH`; add and remove
   through the relationship endpoint (§9). A listed id that does not exist
   fails a create or update with `{Target}NotFound` before anything is
-  written: the first missing id, in list order. Over HTTP the step-8
-  check catches it first, as `404 no_such_related_resource`; the
-  store's check covers IPC, MCP and direct store callers. On SeaORM the
+  written: the first missing id, in list order. An update checks only the
+  ids it adds, those not already in the record's list, so a record that
+  holds an id whose target was deleted (§7.5) still gains and loses
+  members, and keeps that id until a write drops it. Over HTTP the step-8
+  check catches a missing id first, as `404 no_such_related_resource`,
+  for every id the request names: a relationship `POST` or `DELETE`
+  names one member, a `PATCH` the whole list. The store's check covers
+  IPC, MCP and direct store callers. On SeaORM the
   junction's foreign key would refuse the id too, but only once the
   record's row is written; the markdown store has no foreign key. The
   store checks it on both, so both answer alike. A self-referential
@@ -457,7 +462,10 @@ the error:
 1. a `has_many` list that names the record itself: `{Child}ParentCycle`;
 2. the listed ids of every `has_many` and `many_to_many`, relations in
    field declaration order and ids in list order: the first missing one
-   is `{Target}NotFound` (`{Child}NotFound` for a `has_many`);
+   is `{Target}NotFound` (`{Child}NotFound` for a `has_many`). On update
+   only the ids the write adds are checked; an id already in the
+   record's list is not (a stored `has_many` list names only children
+   that exist);
 3. on update, a dropped child whose foreign key is not `Option`:
    `{Child}ParentRequired`;
 4. a value the backend cannot store: an integer outside `i64`, then a
@@ -1567,6 +1575,10 @@ user code and pass through the same hooks and errors as a resource
   it removes it and writes through `update`. If it is absent, it writes
   nothing. For `has_many`, removing a child clears its foreign key, or
   fails with `403 {child}_parent_required` (§5.4).
+- A `POST` or `DELETE` that writes sends every id the record holds, an
+  id whose target was deleted (§7.5) included. The store checks only the
+  ids an update adds (§5.4), so such an id does not block the write. A
+  `PATCH` names every id, and step 8 checks each.
 - `"data": []` on `POST` or `DELETE` writes nothing. The parent is still
   read, so a missing parent is still `404`.
 - On a `has_many` of the type's own type, a `PATCH` or `POST` naming the

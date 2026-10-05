@@ -20,7 +20,7 @@ Regenerate the list with:
 rg -n 'sqlite-only:' -g '!docs/**' -g '!**/generated/**' -g '!*.snap' .
 ```
 
-That prints the 13 locations below. The generator emits four of its markers into the code it writes, so every generated SeaORM store module (`**/store/generated/*.rs`) and the store snapshots in `src/snapshots/` carry copies of them; dropping the globs shows those too.
+That prints the 14 locations below. The generator emits four of its markers into the code it writes, so every generated SeaORM store module (`**/store/generated/*.rs`) and the store snapshots in `src/snapshots/` carry copies of them; dropping the globs shows those too.
 
 ## Generator, emitted into the generated store
 
@@ -42,10 +42,11 @@ That prints the 13 locations below. The generator emits four of its markers into
 10. **`examples/iron-log/src-tauri/src/store/mod.rs`, `Store::sync_junction`.** Raw `DELETE`/`INSERT` built with `DatabaseBackend::Sqlite` and `?` placeholders, and list order kept only through `rowid` insertion order. Replacement: items 7 and 9.
 11. **`examples/iron-log/src-tauri/src/store/mod.rs`, `Store::load_junction_ids`.** `ORDER BY rowid` under `DatabaseBackend::Sqlite`. Replacement: items 8 and 9.
 12. **`crates/parity/check/tests/runtime_parity.rs`, `refuse_junction_inserts`.** The SeaORM-only rollback test makes junction inserts fail with an SQLite trigger (`RAISE(ABORT, ...)`). Replacement: an engine's own trigger syntax, or another way to fail the junction write after the row (a check constraint the test adds, for instance).
+13. **`crates/parity/check/tests/runtime_parity.rs`, `Sqlite::delete_tag_leaving_links`.** To give an item a `many_to_many` id whose tag is gone, as a markdown delete leaves one, the harness switches SQLite's foreign keys off with `PRAGMA foreign_keys = OFF` and deletes the tag. Replacement: per engine, `SET session_replication_role = replica` on Postgres or `SET FOREIGN_KEY_CHECKS = 0` on MySQL, or create the junction table without its foreign key for that scenario.
 
 ## Docs
 
-13. **`site/src/content/docs/guides/store-layer.mdx`, "Junction Sync".** The `load_junction_ids` snippet the guide tells consumers to copy uses `ORDER BY rowid`. Replacement: the snippet follows items 7 and 8 (and the `load_junction_ids` order note in the upgrade guide changes with it).
+14. **`site/src/content/docs/guides/store-layer.mdx`, "Junction Sync".** The `load_junction_ids` snippet the guide tells consumers to copy uses `ORDER BY rowid`. Replacement: the snippet follows items 7 and 8 (and the `load_junction_ids` order note in the upgrade guide changes with it).
 
 ## Checked and already portable
 

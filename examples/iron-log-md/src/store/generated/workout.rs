@@ -200,7 +200,7 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         for target_id in updates.tags.iter().flatten() {
-            if !self.tag_exists(target_id).await? {
+            if !current.tags.contains(target_id) && !self.tag_exists(target_id).await? {
                 return Err(AppError::TagNotFound(target_id.clone()));
             }
         }

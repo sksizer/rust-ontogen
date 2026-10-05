@@ -202,7 +202,7 @@ impl Store {
         }
 
         for child_id in updates.children.iter().flatten() {
-            if !self.section_exists(child_id).await? {
+            if !current.children.contains(child_id) && !self.section_exists(child_id).await? {
                 return Err(AppError::SectionNotFound(child_id.clone()));
             }
         }

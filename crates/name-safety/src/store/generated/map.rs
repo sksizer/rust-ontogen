@@ -183,7 +183,7 @@ impl Store {
         }
 
         for child_id in updates.children.iter().flatten() {
-            if !self.map_exists(child_id).await? {
+            if !current.children.contains(child_id) && !self.map_exists(child_id).await? {
                 return Err(AppError::MapNotFound(child_id.clone()));
             }
         }

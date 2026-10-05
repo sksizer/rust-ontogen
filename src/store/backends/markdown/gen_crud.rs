@@ -537,7 +537,9 @@ mod tests {
             assert!(check < create.find(".create(\n").unwrap(), "before the record write: {create}");
 
             let update = method(&code, "update_node");
-            let check = update.find("if !self.node_exists(child_id).await? {").expect("update checks");
+            let check = update
+                .find("if !current.contains.contains(child_id) && !self.node_exists(child_id).await? {")
+                .expect("an update checks the children it adds");
             assert!(update.contains("for child_id in updates.contains.iter().flatten() {"), "{update}");
             assert!(check > update.find("hooks::before_update").unwrap(), "after the hook: {update}");
             assert!(check < update.find("let contains_dropped").unwrap(), "before the drop check: {update}");
@@ -582,8 +584,8 @@ mod tests {
             let body = method(&code, op);
             let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{op}: missing `{needle}`:\n{body}"));
             let cycle = at("return Err(AppError::NodeParentCycle(");
-            let child = at("if !self.node_exists(child_id).await? {");
-            let target = at("if !self.tag_exists(target_id).await? {");
+            let child = at("!self.node_exists(child_id).await? {");
+            let target = at("!self.tag_exists(target_id).await? {");
             assert!(cycle < child && child < target && target < at(write), "{op}: {body}");
             assert!(body.contains("return Err(AppError::TagNotFound(target_id.clone()));"), "{body}");
         }

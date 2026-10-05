@@ -8,13 +8,22 @@
 //! 2. every listed id must name a record, relations in field declaration
 //!    order and ids in list order: the first missing one is
 //!    `{Target}NotFound(id)`, `has_many` children and `many_to_many` targets
-//!    alike;
+//!    alike. On update only the ids the write adds are checked, those not
+//!    already in the record's list;
 //! 3. on update, `has_many::emit_dropped_children`'s `{Child}ParentRequired`.
 //!
 //! SQLite's junction foreign key refuses a missing `many_to_many` target
 //! only once the record's own row is written, and a markdown vault has no
 //! foreign key at all. Checking every target up front gives both backends
 //! the same answer and keeps a refused write from writing anything.
+//!
+//! A record may already hold a `many_to_many` id with no record behind it:
+//! a markdown delete leaves the links to the deleted record (ADR 0001
+//! amendment 5), and a vault file can be edited by hand. A relationship
+//! `POST` or `DELETE` writes the whole list back, so re-checking the ids a
+//! record holds would stop it gaining or losing any link. A stored
+//! `has_many` list is read from the children's foreign keys and names only
+//! records that exist, so the same rule changes nothing there.
 
 use crate::schema::model::{EntityDef, FieldRole, RelationKind};
 use crate::store::has_many::has_many_writes;
@@ -27,7 +36,9 @@ pub(crate) enum Listed<'a> {
     /// the checks run before it is derived.
     Create(&'a str),
     /// The lists an `{Entity}Update` named `updates` sets, for the record
-    /// whose id is bound to `id: &str`. An unset list checks nothing.
+    /// whose id is bound to `id: &str` and whose stored relations are
+    /// bound to `current`. An unset list checks nothing, and an id already
+    /// in `current`'s list is not checked again.
     Update,
 }
 
@@ -37,6 +48,15 @@ impl Listed<'_> {
         match self {
             Listed::Create(var) => format!("&{var}.{field}"),
             Listed::Update => format!("updates.{field}.iter().flatten()"),
+        }
+    }
+
+    /// The condition, ending in `&& `, under which `var` from the new
+    /// `field` list is checked at all.
+    fn added(&self, field: &str, var: &str) -> String {
+        match self {
+            Listed::Create(_) => String::new(),
+            Listed::Update => format!("!current.{field}.contains({var}) && "),
         }
     }
 }
@@ -83,9 +103,9 @@ pub(crate) fn emit_self_listing_check(code: &mut String, entity: &EntityDef, lis
 }
 
 /// Emit check 2: every id a `has_many` write or a `many_to_many` lists names
-/// a record. A `many_to_many` whose target is not an entity of the schema
-/// has no store to ask, so it is not checked. An id listed twice is checked
-/// twice, which is harmless.
+/// a record; on update, every id it adds. A `many_to_many` whose target is
+/// not an entity of the schema has no store to ask, so it is not checked.
+/// An id listed twice is checked twice, which is harmless.
 ///
 /// A self-referential `many_to_many` may list the record's own id on create
 /// when the caller gave it: the record exists by the time its links are
@@ -105,7 +125,8 @@ pub(crate) fn emit_listed_ids_check(
         match info.kind {
             RelationKind::HasMany if info.foreign_key.is_some() => {
                 code.push_str(&format!("        for child_id in {} {{\n", listed.ids(f)));
-                code.push_str(&format!("            if !self.{exists}(child_id).await? {{\n"));
+                let added = listed.added(f, "child_id");
+                code.push_str(&format!("            if {added}!self.{exists}(child_id).await? {{\n"));
                 code.push_str(&format!("                return Err(AppError::{target}NotFound(child_id.clone()));\n"));
             }
             RelationKind::ManyToMany if entities.iter().any(|e| &e.name == target) => {
@@ -114,7 +135,10 @@ pub(crate) fn emit_listed_ids_check(
                     Listed::Create(var) if *target == entity.name => code.push_str(&format!(
                         "            if ({var}.id.trim().is_empty() || *target_id != {var}.id) && !self.{exists}(target_id).await? {{\n"
                     )),
-                    _ => code.push_str(&format!("            if !self.{exists}(target_id).await? {{\n")),
+                    _ => code.push_str(&format!(
+                        "            if {}!self.{exists}(target_id).await? {{\n",
+                        listed.added(f, "target_id")
+                    )),
                 }
                 code.push_str(&format!("                return Err(AppError::{target}NotFound(target_id.clone()));\n"));
             }
@@ -198,11 +222,11 @@ mod tests {
         assert!(cycle < tags && tags < children && children < links, "{code}");
         for expected in [
             "return Err(AppError::NodeParentCycle(id.to_string()));",
-            "if !self.tag_exists(target_id).await? {",
+            "if !current.tags.contains(target_id) && !self.tag_exists(target_id).await? {",
             "return Err(AppError::TagNotFound(target_id.clone()));",
-            "if !self.node_exists(child_id).await? {",
+            "if !current.children.contains(child_id) && !self.node_exists(child_id).await? {",
             "return Err(AppError::NodeNotFound(child_id.clone()));",
-            "if !self.node_exists(target_id).await? {",
+            "if !current.links.contains(target_id) && !self.node_exists(target_id).await? {",
         ] {
             assert!(code.contains(expected), "missing `{expected}`:\n{code}");
         }
@@ -223,6 +247,8 @@ mod tests {
             assert!(code.contains(expected), "missing `{expected}`:\n{code}");
         }
         assert!(code.contains("for target_id in &node.links {"), "{code}");
+        assert!(code.contains("if !self.tag_exists(target_id).await? {"), "a create checks every id: {code}");
+        assert!(!code.contains("current"), "a create has no stored record: {code}");
     }
 
     #[test]
@@ -247,7 +273,10 @@ mod tests {
     fn the_snippets_parse_inside_create_and_update_bodies() {
         for (listed, signature) in [
             (Listed::Create("node"), "async fn create(&self, node: Node) -> Result<(), AppError> {\n"),
-            (Listed::Update, "async fn update(&self, id: &str, updates: NodeUpdate) -> Result<(), AppError> {\n"),
+            (
+                Listed::Update,
+                "async fn update(&self, id: &str, updates: NodeUpdate) -> Result<(), AppError> {\n    let current = self.get_node(id).await?;\n",
+            ),
         ] {
             let mut code = String::from(signature);
             code.push_str(&checks(listed));

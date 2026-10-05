@@ -187,7 +187,7 @@ impl Store {
         let loop_changed = updates.r#loop.is_some();
 
         for target_id in updates.r#loop.iter().flatten() {
-            if !self.match_exists(target_id).await? {
+            if !current.r#loop.contains(target_id) && !self.match_exists(target_id).await? {
                 return Err(AppError::MatchNotFound(target_id.clone()));
             }
         }

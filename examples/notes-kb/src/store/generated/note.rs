@@ -166,7 +166,7 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         for target_id in updates.links.iter().flatten() {
-            if !self.note_exists(target_id).await? {
+            if !current.links.contains(target_id) && !self.note_exists(target_id).await? {
                 return Err(AppError::NoteNotFound(target_id.clone()));
             }
         }

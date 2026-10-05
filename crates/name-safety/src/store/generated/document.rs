@@ -201,7 +201,7 @@ impl Store {
         hooks::before_update(self, &current, &updates).await?;
 
         for target_id in updates.r#loop.iter().flatten() {
-            if !self.response_exists(target_id).await? {
+            if !current.r#loop.contains(target_id) && !self.response_exists(target_id).await? {
                 return Err(AppError::ResponseNotFound(target_id.clone()));
             }
         }

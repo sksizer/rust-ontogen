@@ -90,6 +90,10 @@ trait Backend: Sized {
     /// Rename a stored item the way an edit made outside the store would
     /// (an SQL `UPDATE`, a file rename), to reach ids no create can make.
     async fn rename_item(&self, from: &str, to: &str);
+
+    /// Delete a tag and leave every item that lists it listing it. The
+    /// markdown store's delete does that by design (ADR 0001 amendment 5).
+    async fn delete_tag_leaving_links(&self, id: &str);
 }
 
 /// The generated method calls are spelled identically in both crates, so
@@ -279,6 +283,16 @@ mod sqlite {
             let renamed = self.store.db().execute_unprepared(&sql).await.expect("rename");
             assert_eq!(renamed.rows_affected(), 1, "rename {from:?}");
         }
+
+        /// The junction's foreign key forbids a dangling row, so foreign
+        /// keys are switched off for the rest of the store's life, as on a
+        /// database whose tables were created without them.
+        async fn delete_tag_leaving_links(&self, id: &str) {
+            use sea_orm::ConnectionTrait;
+            // sqlite-only: `PRAGMA foreign_keys` is how SQLite stops enforcing foreign keys.
+            self.store.db().execute_unprepared("PRAGMA foreign_keys = OFF").await.expect("foreign keys off");
+            self.store.delete_tag(id).await.expect("delete tag");
+        }
     }
 
     error_mappers!(parity_seaorm, DbError);
@@ -307,6 +321,10 @@ mod vault {
         async fn rename_item(&self, from: &str, to: &str) {
             let dir = self.store.vault().root().join("items");
             std::fs::rename(dir.join(format!("{from}.md")), dir.join(format!("{to}.md"))).expect("rename");
+        }
+
+        async fn delete_tag_leaving_links(&self, id: &str) {
+            self.store.delete_tag(id).await.expect("delete tag");
         }
     }
 
@@ -1596,6 +1614,53 @@ async fn missing_tags<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
 #[tokio::test]
 async fn a_missing_many_to_many_target_is_not_found_and_writes_nothing() {
     parity!(missing_tags);
+}
+
+/// A record may hold a many_to_many id whose target was deleted (ADR 0001
+/// amendment 5; JSON:API wire contract §7.5). An update checks only the ids
+/// it adds, so such a record can still gain and lose links, keep the
+/// dangling id or drop it, while an id it adds must still name a record.
+async fn held_missing_tags<B: Backend>(b: &B, mut t: Transcript) -> Transcript {
+    for id in ["t1", "t2", "t3"] {
+        t.record(format!("create tag {id}"), &b.create_tag(json!({ "id": id, "title": id })).await).unwrap();
+    }
+    t.record("create i", &b.create_item(item("i", json!({ "tags": ["t1", "t2"] }))).await).unwrap();
+    b.delete_tag_leaving_links("t2").await;
+    let tags = |r: R<Value>| r.map(|i| i["tags"].clone());
+    t.expect("i still lists the deleted t2", tags(b.get_item("i").await), Ok(json!(["t1", "t2"])));
+
+    let set = |list: Value| json!({ "tags": list });
+    t.expect(
+        "add a tag",
+        tags(b.update_item("i", set(json!(["t1", "t2", "t3"]))).await),
+        Ok(json!(["t1", "t2", "t3"])),
+    );
+    t.expect("remove a tag", tags(b.update_item("i", set(json!(["t2", "t3"]))).await), Ok(json!(["t2", "t3"])));
+    t.expect(
+        "set the list unchanged, with a title",
+        tags(b.update_item("i", json!({ "title": "Renamed", "tags": ["t2", "t3"] })).await),
+        Ok(json!(["t2", "t3"])),
+    );
+    let before = b.get_item("i").await;
+    t.expect(
+        "add a missing tag",
+        b.update_item("i", set(json!(["t2", "t3", "ghost"]))).await,
+        Err(StoreError::NotFound("Tag", "ghost".into())),
+    );
+    t.expect("the refused update wrote nothing", b.get_item("i").await, before);
+    t.expect("remove the deleted tag", tags(b.update_item("i", set(json!(["t3"]))).await), Ok(json!(["t3"])));
+    t.expect(
+        "the deleted tag cannot be added back",
+        b.update_item("i", set(json!(["t3", "t2"]))).await,
+        Err(StoreError::NotFound("Tag", "t2".into())),
+    );
+    t.expect("i lists t3", tags(b.get_item("i").await), Ok(json!(["t3"])));
+    t
+}
+
+#[tokio::test]
+async fn an_update_checks_only_the_many_to_many_ids_it_adds() {
+    parity!(held_missing_tags);
 }
 
 // ─── SeaORM: one transaction per write ──────────────────────────────────────

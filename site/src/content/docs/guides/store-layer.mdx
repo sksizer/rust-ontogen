@@ -274,8 +274,9 @@ The core of the generated module is an `impl Store` block with five methods:
 
         let tags_changed = updates.tags.is_some();
 
+        // Only the ids the update adds
         for target_id in updates.tags.iter().flatten() {
-            if !self.tag_exists(target_id).await? {
+            if !current.tags.contains(target_id) && !self.tag_exists(target_id).await? {
                 return Err(AppError::TagNotFound(target_id.clone()));
             }
         }
@@ -511,7 +512,7 @@ A `has_many` list lives on the children, as their foreign keys. An update that s
 - If the child's foreign-key field is an `Option<String>`, the dropped children are set to `NULL` after the record is written.
 - If it is a plain `String`, a child cannot be left without a parent, so the update fails with `AppError::{Child}ParentRequired(child_id)` before anything is written. `{Child}` is the `has_many` target entity. Declare the variant in your `AppError` for such an entity; it is constructed only for a non-`Option` foreign key.
 
-A listed child that does not exist fails the create or update with `AppError::{Child}NotFound(child_id)`, the first missing id in list order, before anything is written. It is checked before `{Child}ParentRequired`.
+A listed child that does not exist fails the create or update with `AppError::{Child}NotFound(child_id)`, the first missing id in list order, before anything is written. It is checked before `{Child}ParentRequired`. An update checks only the children it adds; the stored list is read from the children's foreign keys, so every child already in it exists.
 
 A list that names the record itself fails with `AppError::{Child}ParentCycle(id)`, `id` being the record's own, before anything is written: a record cannot be its own child. On create this applies to an id the caller gave. Declare `{Child}ParentCycle(String)` for the child of every `has_many`, which is the declaring entity itself. A root that is its own parent (a plain `String` foreign key has to point somewhere) says so through its `belongs_to` field, which may name its own id, never through its own children list.
 
@@ -521,7 +522,7 @@ Only the self-referential shape is supported: the `has_many` target must be the 
 
 ## many_to_many targets
 
-Every id a `many_to_many` list names must be a record of the target entity. A create or update that lists a missing one fails with `AppError::{Target}NotFound(id)`, the first missing id in list order, before anything is written, on both backends: SQLite's junction foreign key would refuse it only once the record's row was written, and a markdown vault has no foreign key. Only the lists a write sets are checked, so a record already holding an id with no record behind it (a hand-edited vault file, say) still updates as long as the update leaves that list alone. A self-referential `many_to_many` may list the record's own id on create when the caller gave that id.
+Every id a `many_to_many` list names must be a record of the target entity. A create or update that lists a missing one fails with `AppError::{Target}NotFound(id)`, the first missing id in list order, before anything is written, on both backends: SQLite's junction foreign key would refuse it only once the record's row was written, and a markdown vault has no foreign key. An update checks only the ids it adds, those not already in the record's list. A record can hold an id with no record behind it: a markdown delete leaves the links to the deleted record, and a vault file can be edited by hand. Such a record still gains and loses links, and keeps the dangling id until an update drops it; once dropped, the id cannot be added back while its record is missing. An update that leaves the list unset checks nothing. A self-referential `many_to_many` may list the record's own id on create when the caller gave that id.
 
 The check calls the target's `{target}_exists` helper, which every entity that some `many_to_many` targets gets, relations of its own or not. `{Target}NotFound` is one of the variants your `AppError` already declares for every entity.
 
@@ -530,7 +531,7 @@ The check calls the target's `{target}_exists` helper, which every entity that s
 `create_*` and `update_*` check, after their `before_*` hook and before anything is written, in this order. The first failure is the error:
 
 1. a `has_many` list that names the record itself: `{Child}ParentCycle`;
-2. every listed id of a `has_many` or `many_to_many`, relations in field declaration order and ids in list order: the first missing one is `{Target}NotFound`;
+2. every listed id of a `has_many` or `many_to_many`, relations in field declaration order and ids in list order: the first missing one is `{Target}NotFound`. On update only the ids the update adds are checked (see [many_to_many targets](#many_to_many-targets)); a stored `has_many` list names only children that exist, so this changes nothing there;
 3. on update, a dropped child whose foreign key is a plain `String`: `{Child}ParentRequired`;
 4. a value the backend cannot store: an integer outside `i64` (a `u64`, `usize`, `u128`, `isize` or `i128` field), then a float `NaN`, each your catch-all (`DbError` on SeaORM, `Md` on markdown);
 5. on create, the id (see [Creating records](#creating-records)).
