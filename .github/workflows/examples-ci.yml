@@ -65,3 +65,26 @@ jobs:
             librsvg2-dev \
             patchelf
       - run: "cargo check --manifest-path examples/iron-log/src-tauri/Cargo.toml"
+
+  # The IPC transport generated into a shell crate that depends on a separate
+  # API crate: compiling it proves the `use ipc_shell_api::…` paths resolve, and
+  # the diff check fails a PR whose committed generator output is stale.
+  ipc-shell:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v4"
+      - uses: "actions-rust-lang/setup-rust-toolchain@v1"
+        with:
+          toolchain: "stable"
+      - name: "Install Tauri system dependencies"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libsoup-3.0-dev \
+            librsvg2-dev \
+            patchelf
+      - run: "cargo check --manifest-path examples/ipc-shell/Cargo.toml"
+      - run: "git diff --exit-code -- examples/ipc-shell"

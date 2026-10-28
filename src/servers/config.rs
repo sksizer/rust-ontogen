@@ -93,6 +93,24 @@ impl Config {
         }
     }
 
+    /// This config with `imports` laid over the shared import paths.
+    pub(crate) fn with_imports(&self, imports: &ImportPaths) -> Config {
+        let mut config = self.clone();
+        if let Some(path) = &imports.service_import_path {
+            config.service_import_path.clone_from(path);
+        }
+        if let Some(path) = &imports.types_import_path {
+            config.types_import_path.clone_from(path);
+        }
+        if let Some(path) = &imports.state_import {
+            config.state_import.clone_from(path);
+        }
+        if imports.store_import.is_some() {
+            config.store_import.clone_from(&imports.store_import);
+        }
+        config
+    }
+
     /// Every surface, primary first. Indexes match `ApiFn::surface`.
     pub(crate) fn surfaces(&self) -> Vec<ApiSurface> {
         std::iter::once(self.primary_surface()).chain(self.extra_surfaces.iter().cloned()).collect()
@@ -258,9 +276,41 @@ pub enum ServerGenerator {
         /// Output file path (e.g., `src/api/transport/ipc/generated.rs`).
         output: PathBuf,
     },
+    /// Generate Tauri IPC command handlers whose `use` paths differ from the
+    /// shared [`Config`] ones.
+    ///
+    /// For a shell crate that depends on the crate owning the API handlers and
+    /// app state: its `build.rs` points `api_dir` at the API crate's sources
+    /// and names that crate in [`ImportPaths`], so the generated file imports
+    /// `my_api::api::v1::…` instead of `crate::api::v1::…`. Any path left
+    /// `None` falls back to the shared config; with every path `None` the
+    /// output is byte-identical to [`ServerGenerator::TauriIpc`].
+    TauriIpcWithImports {
+        /// Output file path (e.g., `src/ipc/generated.rs`).
+        output: PathBuf,
+        /// The import paths this generator overrides.
+        imports: ImportPaths,
+    },
     /// Generate MCP (Model Context Protocol) tool registry.
     Mcp {
         /// Output file path (e.g., `src/api/transport/mcp/generated.rs`).
         output: PathBuf,
     },
+}
+
+/// Import paths one generator overrides; each `None` keeps the shared
+/// [`Config`] value.
+///
+/// Overrides apply to the primary surface only. An [`ApiSurface`] in
+/// `extra_surfaces` carries its own paths and keeps them.
+#[derive(Debug, Clone, Default)]
+pub struct ImportPaths {
+    /// Replaces [`Config::service_import_path`].
+    pub service_import_path: Option<String>,
+    /// Replaces [`Config::types_import_path`].
+    pub types_import_path: Option<String>,
+    /// Replaces [`Config::state_import`].
+    pub state_import: Option<String>,
+    /// Replaces [`Config::store_import`].
+    pub store_import: Option<String>,
 }

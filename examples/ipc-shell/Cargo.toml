@@ -1,0 +1,7 @@
+# A Tauri IPC transport generated into a shell crate, apart from the crate that
+# owns the API handlers and app state: `shell` depends on `api` and its build.rs
+# runs an IPC-only servers pass that imports from `api::…` rather than `crate::…`.
+# Own workspace (outside root CI); examples-ci.yml checks it on PRs touching examples.
+[workspace]
+members = ["api", "shell"]
+resolver = "3"

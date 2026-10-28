@@ -14,7 +14,8 @@ pub(crate) mod types;
 
 // Re-export key types at the servers module level
 pub use config::{
-    ApiSurface, Config, DEFAULT_STORE_ACCESSOR, PaginationConfig, PrefixParam, RoutePrefix, ServerGenerator,
+    ApiSurface, Config, DEFAULT_STORE_ACCESSOR, ImportPaths, PaginationConfig, PrefixParam, RoutePrefix,
+    ServerGenerator,
 };
 pub use parse::{ApiFn, ApiModule, EventFn, Param};
 pub use types::NamingConfig;
@@ -249,6 +250,9 @@ pub fn generate_transport(config: &config::Config) -> Result<Vec<parse::ApiModul
             }
             config::ServerGenerator::TauriIpc { output } => {
                 generators::ipc::generate(output, &modules, config);
+            }
+            config::ServerGenerator::TauriIpcWithImports { output, imports } => {
+                generators::ipc::generate(output, &modules, &config.with_imports(imports));
             }
         }
     }

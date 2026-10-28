@@ -5276,3 +5276,74 @@ fn test_ts_transport_event_subscriptions() {
     assert!(content.contains("subscribeIpc('vault_note_changes_subscribe', 'vault_note_changes_unsubscribe'"));
     assert!(!content.contains("import { listen }"), "no legacy op, no global listener");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Per-generator import paths - an IPC transport emitted into a shell crate
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Run `generator` over the shared fixture and return its output file.
+fn generate_ipc_with(generator: impl FnOnce(PathBuf) -> ServerGenerator) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let api = tmp.path().join("api");
+    write_synthetic_api(&api, "athlete.rs", &crud_module_source("athlete", "Store"));
+    let output = tmp.path().join("ipc.rs");
+    let mut config = test_config(api);
+    config.generators = vec![generator(output.clone())];
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+    std::fs::read_to_string(&output).unwrap()
+}
+
+#[test]
+fn test_ipc_without_override_is_unchanged() {
+    let plain = generate_ipc_with(|output| ServerGenerator::TauriIpc { output });
+    let empty = generate_ipc_with(|output| ServerGenerator::TauriIpcWithImports {
+        output,
+        imports: crate::servers::ImportPaths::default(),
+    });
+    assert_eq!(plain, empty, "an empty override set must not change a byte");
+    assert!(plain.contains("use crate::api::v1::athlete;"), "shared service path:\n{plain}");
+    assert!(plain.contains("use crate::AppState;"), "shared state path:\n{plain}");
+}
+
+#[test]
+fn test_ipc_override_replaces_only_the_named_paths() {
+    let code = generate_ipc_with(|output| ServerGenerator::TauriIpcWithImports {
+        output,
+        imports: crate::servers::ImportPaths {
+            service_import_path: Some("shell_api::api::v1".to_string()),
+            state_import: Some("shell_api::AppState".to_string()),
+            store_import: Some("shell_api::store::Store".to_string()),
+            types_import_path: None,
+        },
+    });
+    assert!(code.contains("use shell_api::api::v1::athlete;"), "service path overridden:\n{code}");
+    assert!(code.contains("use shell_api::AppState;"), "state path overridden:\n{code}");
+    assert!(code.contains("use shell_api::store::Store;"), "store path overridden:\n{code}");
+    assert!(code.contains("use crate::schema::{Athlete"), "types path falls back to the shared config:\n{code}");
+    assert!(!code.contains("crate::api::v1"), "no shared service path left behind:\n{code}");
+}
+
+#[test]
+fn test_import_override_does_not_reach_other_generators() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api = tmp.path().join("api");
+    write_synthetic_api(&api, "athlete.rs", &crud_module_source("athlete", "Store"));
+    let (http_out, ipc_out) = (tmp.path().join("http.rs"), tmp.path().join("ipc.rs"));
+    let mut config = test_config(api);
+    config.generators = vec![
+        ServerGenerator::HttpAxum { output: http_out.clone() },
+        ServerGenerator::TauriIpcWithImports {
+            output: ipc_out.clone(),
+            imports: crate::servers::ImportPaths {
+                service_import_path: Some("shell_api::api::v1".to_string()),
+                ..Default::default()
+            },
+        },
+    ];
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+
+    let http = std::fs::read_to_string(&http_out).unwrap();
+    assert!(http.contains("use crate::api::v1::athlete;"), "HTTP keeps the shared path:\n{http}");
+    let ipc = std::fs::read_to_string(&ipc_out).unwrap();
+    assert!(ipc.contains("use shell_api::api::v1::athlete;"), "IPC takes the override:\n{ipc}");
+}

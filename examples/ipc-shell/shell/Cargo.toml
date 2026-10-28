@@ -1,0 +1,13 @@
+[package]
+name = "ipc-shell"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ipc-shell-api = { path = "../api" }
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+ontogen = { path = "../../../" }
