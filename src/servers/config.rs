@@ -160,13 +160,14 @@ fn reroot(path: &mut String, api_crate: &str) {
 }
 
 /// Refuses an `api_crate` that is not the name of a crate as `use` paths write
-/// it: a Rust identifier, with `-` already turned into `_`, and not a path
-/// keyword.
+/// it: a Rust identifier, with `-` already turned into `_`, and neither a
+/// keyword nor a lone `_`.
 fn check_crate_name(name: &str) -> Result<(), String> {
     let mut chars = name.chars();
     let ident = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if !ident || matches!(name, "crate" | "self" | "super") {
+    // `Ident` parsing refuses keywords and a lone `_`, which no path can start with.
+    if !ident || matches!(name, "crate" | "self" | "super") || syn::parse_str::<syn::Ident>(name).is_err() {
         return Err(format!(
             "ontogen: `TauriIpcInCrate::api_crate` is `{name}`, which is not a crate name. Write the API crate as a \
              `use` path does: a Rust identifier, with `-` as `_` (`my_api` for the package `my-api`)."

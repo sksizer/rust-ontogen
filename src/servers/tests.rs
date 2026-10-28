@@ -10741,10 +10741,16 @@ fn test_ipc_in_crate_event_forwarding_through_extra_surface() {
 
 #[test]
 fn test_ipc_in_crate_refuses_a_bad_crate_name() {
-    for bad in ["", "my-api", "crate", "self", "super", "9api", "a::b"] {
+    for bad in ["", "my-api", "crate", "self", "super", "9api", "a::b", "type", "async", "fn", "_"] {
         let tmp = tempfile::tempdir().unwrap();
         let err = generate_ipc_for(config_with_events(tmp.path()), in_crate(bad)).unwrap_err();
-        assert!(err.contains("not a crate name"), "`{bad}`: {err}");
+        assert_eq!(
+            err,
+            format!(
+                "ontogen: `TauriIpcInCrate::api_crate` is `{bad}`, which is not a crate name. Write the API crate as a \
+                 `use` path does: a Rust identifier, with `-` as `_` (`my_api` for the package `my-api`)."
+            )
+        );
     }
 }
 
@@ -10780,4 +10786,24 @@ fn test_ipc_in_crate_reroots_crate_paths_in_signatures() {
     assert!(code.contains("shell_api::schema::Filter"), "{code}");
     assert!(code.contains("Vec<shell_api::schema::Row>"), "{code}");
     assert!(!code.contains("crate::"), "{code}");
+}
+
+#[test]
+fn test_ipc_in_crate_reroots_crate_paths_in_event_ops() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api = tmp.path().join("api");
+    write_synthetic_api(
+        &api,
+        "feed.rs",
+        "pub async fn note_changes(state: &AppState, scope: crate::schema::Scope) -> Result<tokio::sync::broadcast::Receiver<crate::schema::Change>, anyhow::Error> { todo!() }\n",
+    );
+    let code = generate_ipc_for(test_config(api), in_crate("shell_api")).unwrap();
+    assert!(!code.contains("crate::"), "{code}");
+    let line = |needle: &str| code.lines().find(|l| l.contains(needle)).unwrap_or_default().trim().to_string();
+    assert_eq!(line("scope:"), "scope: shell_api::schema::Scope,", "{code}");
+    assert_eq!(
+        line("EventFrame<"),
+        "channel: ::tauri::ipc::Channel<::ontogen_core::events::EventFrame<shell_api::schema::Change>>,",
+        "{code}"
+    );
 }
