@@ -110,6 +110,7 @@ regen-examples:
     cargo build --manifest-path examples/tasks-tracker/Cargo.toml
     cargo build --manifest-path examples/notes-kb/Cargo.toml
     cargo check --manifest-path examples/iron-log/src-tauri/Cargo.toml
+    cargo check --manifest-path examples/ipc-shell/Cargo.toml
 alias rex := regen-examples
 
 # Builds the example, serves a temp copy of its vault on PORT (default 39302)

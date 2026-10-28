@@ -10577,3 +10577,207 @@ fn a_hand_written_keyword_module_generates() {
         assert!(code.contains("loop_find_loops"), "named bare: {}:\n{code}", path.display());
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TauriIpcInCrate - the IPC transport emitted into a shell crate
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Run the servers pass over `config` with one IPC `generator` and return the
+/// generated file (or the pass's error).
+fn generate_ipc_for(mut config: Config, generator: impl FnOnce(PathBuf) -> ServerGenerator) -> Result<String, String> {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("ipc.rs");
+    config.generators = vec![generator(output.clone())];
+    crate::servers::generate_transport(&config)?;
+    Ok(std::fs::read_to_string(&output).unwrap())
+}
+
+fn in_crate(api_crate: &str) -> impl FnOnce(PathBuf) -> ServerGenerator + '_ {
+    move |output| ServerGenerator::TauriIpcInCrate { output, api_crate: api_crate.to_string() }
+}
+
+/// Every `use` line of `code` that names the current crate.
+fn crate_rooted_imports(code: &str) -> Vec<&str> {
+    code.lines().filter(|l| l.trim_start().starts_with("use crate::") || l.trim_start() == "use crate;").collect()
+}
+
+/// A config with the shared fixture API and a legacy event module.
+fn config_with_events(tmp: &std::path::Path) -> Config {
+    let api = tmp.join("api");
+    write_synthetic_api(&api, "athlete.rs", &crud_module_source("athlete", "Store"));
+    write_synthetic_api(
+        &api,
+        "feed.rs",
+        "pub fn athlete_changed(state: &AppState) -> tokio::sync::broadcast::Receiver<Athlete> { todo!() }\n",
+    );
+    test_config(api)
+}
+
+#[test]
+fn test_ipc_in_crate_rewrites_every_crate_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = test_config(tmp.path().join("api"));
+    write_synthetic_api(&config.api_dir, "athlete.rs", &crud_module_source("athlete", "Store"));
+    config.store_import = Some("crate::store::Store".to_string());
+    let code = generate_ipc_for(config, in_crate("shell_api")).unwrap();
+    for line in [
+        "use shell_api::api::v1::athlete;",
+        "use shell_api::AppState;",
+        "use shell_api::store::Store;",
+        "use shell_api::schema::{Athlete",
+    ] {
+        assert!(code.contains(line), "expected `{line}`:\n{code}");
+    }
+    assert!(crate_rooted_imports(&code).is_empty(), "no `crate::` import survives:\n{code}");
+}
+
+#[test]
+fn test_ipc_in_crate_cannot_keep_a_shared_store_import() {
+    // The case a per-path override got wrong: the shared config names a store
+    // and the shell has no `crate::store`. The store import follows the crate.
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(tmp.path().join("api"));
+    write_synthetic_api(&config.api_dir, "athlete.rs", &crud_module_source("athlete", "Store"));
+    assert_eq!(config.store_import.as_deref(), Some("crate::store::Store"));
+    let code = generate_ipc_for(config, in_crate("shell_api")).unwrap();
+    assert!(!code.contains("use crate::store::Store;"), "{code}");
+    assert!(code.contains("use shell_api::store::Store;"), "{code}");
+}
+
+#[test]
+fn test_ipc_in_crate_without_crate_roots_is_unchanged() {
+    // A config that already names its crates has nothing to rewrite, so the
+    // generator emits what `TauriIpc` does.
+    let build = |generator: fn(PathBuf) -> ServerGenerator| {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = test_config(tmp.path().join("api"));
+        write_synthetic_api(&config.api_dir, "athlete.rs", &crud_module_source("athlete", "Store"));
+        config.service_import_path = "my_api::api::v1".to_string();
+        config.types_import_path = "my_api::schema".to_string();
+        config.state_import = "my_api::AppState".to_string();
+        config.store_import = Some("my_api::store::Store".to_string());
+        generate_ipc_for(config, generator).unwrap()
+    };
+    let plain = build(|output| ServerGenerator::TauriIpc { output });
+    let in_crate = build(|output| ServerGenerator::TauriIpcInCrate { output, api_crate: "other".to_string() });
+    assert_eq!(plain, in_crate, "paths that name a crate are kept byte for byte");
+}
+
+#[test]
+fn test_ipc_without_override_is_unchanged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let code = generate_ipc_for(config_with_events(tmp.path()), |output| ServerGenerator::TauriIpc { output }).unwrap();
+    assert!(code.contains("use crate::api::v1::{athlete, feed};"), "shared service path:\n{code}");
+    assert!(code.contains("use crate::AppState;"), "shared state path:\n{code}");
+    assert!(code.contains("use crate::store::Store;"), "shared store path:\n{code}");
+}
+
+#[test]
+fn test_ipc_in_crate_reaches_extra_surfaces() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut surfaces = two_surface_fixture(tmp.path());
+    // The second surface is written relative to the API crate, as `crate::`
+    // paths are; the first keeps naming its own crate.
+    surfaces[1].service_import_path = "crate::fitness::api".to_string();
+    surfaces[1].types_import_path = "crate::fitness::schema".to_string();
+    let mut config = two_surface_config(surfaces);
+    config.store_import = Some("crate::store::Store".to_string());
+    let code = generate_ipc_for(config, in_crate("shell_api")).unwrap();
+    assert!(
+        code.contains("use shell_api::fitness::api::{exercise, workout as workout_1};"),
+        "extra surface service:\n{code}"
+    );
+    assert!(code.contains("use shell_api::fitness::schema::"), "extra surface types:\n{code}");
+    assert!(code.contains("use shell_api::api::v1::{athlete, workout};"), "primary service:\n{code}");
+    assert!(crate_rooted_imports(&code).is_empty(), "no `crate::` import survives:\n{code}");
+    assert!(!code.contains("crate::fitness"), "no `crate::` path survives anywhere:\n{code}");
+}
+
+#[test]
+fn test_ipc_in_crate_keeps_surfaces_that_name_their_crate() {
+    let tmp = tempfile::tempdir().unwrap();
+    // `two_surface_fixture`'s second surface is `fitness::api`.
+    let config = two_surface_config(two_surface_fixture(tmp.path()));
+    let code = generate_ipc_for(config, in_crate("shell_api")).unwrap();
+    assert!(
+        code.contains("use fitness::api::{exercise, workout as workout_1};"),
+        "a path naming its crate is kept:\n{code}"
+    );
+    assert!(code.contains("use shell_api::api::v1::{athlete, workout};"), "{code}");
+}
+
+#[test]
+fn test_ipc_in_crate_event_forwarding_names_the_api_crate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let code = generate_ipc_for(config_with_events(tmp.path()), in_crate("shell_api")).unwrap();
+    assert!(
+        code.contains("pub fn start_event_forwarding(app_handle: ::tauri::AppHandle, state: &AppState)"),
+        "the forwarder takes the state the file imports:\n{code}"
+    );
+    assert!(code.contains("use shell_api::AppState;"), "{code}");
+    assert!(
+        code.contains("shell_api::api::v1::feed::athlete_changed(state)"),
+        "event fn called via the crate:\n{code}"
+    );
+    assert!(!code.contains("crate::api"), "{code}");
+    assert!(crate_rooted_imports(&code).is_empty(), "{code}");
+    syn::parse_file(&code).expect("generated IPC parses");
+}
+
+#[test]
+fn test_ipc_in_crate_event_forwarding_through_extra_surface() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut surfaces = two_surface_fixture(tmp.path());
+    surfaces[1].service_import_path = "crate::fitness::api".to_string();
+    write_synthetic_api(
+        &surfaces[1].api_dir,
+        "feed.rs",
+        "pub fn workout_changed(state: &AppState) -> tokio::sync::broadcast::Receiver<Workout> { todo!() }\n",
+    );
+    let code = generate_ipc_for(two_surface_config(surfaces), in_crate("shell_api")).unwrap();
+    assert!(code.contains("shell_api::fitness::api::feed::workout_changed(state)"), "legacy event path:\n{code}");
+    assert!(!code.contains("crate::fitness"), "{code}");
+}
+
+#[test]
+fn test_ipc_in_crate_refuses_a_bad_crate_name() {
+    for bad in ["", "my-api", "crate", "self", "super", "9api", "a::b"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = generate_ipc_for(config_with_events(tmp.path()), in_crate(bad)).unwrap_err();
+        assert!(err.contains("not a crate name"), "`{bad}`: {err}");
+    }
+}
+
+#[test]
+fn test_ipc_in_crate_does_not_reach_other_generators() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api = tmp.path().join("api");
+    write_synthetic_api(&api, "athlete.rs", &crud_module_source("athlete", "Store"));
+    let (http_out, ipc_out) = (tmp.path().join("http.rs"), tmp.path().join("ipc.rs"));
+    let mut config = test_config(api);
+    config.generators = vec![
+        ServerGenerator::HttpAxum { output: http_out.clone() },
+        ServerGenerator::TauriIpcInCrate { output: ipc_out.clone(), api_crate: "shell_api".to_string() },
+    ];
+    crate::servers::generate_transport(&config).expect("generate_transport failed");
+
+    let http = std::fs::read_to_string(&http_out).unwrap();
+    assert!(http.contains("use crate::api::v1::athlete;"), "HTTP keeps the shared path:\n{http}");
+    let ipc = std::fs::read_to_string(&ipc_out).unwrap();
+    assert!(ipc.contains("use shell_api::api::v1::athlete;"), "IPC takes the API crate:\n{ipc}");
+}
+
+#[test]
+fn test_ipc_in_crate_reroots_crate_paths_in_signatures() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api = tmp.path().join("api");
+    write_synthetic_api(
+        &api,
+        "report.rs",
+        "pub async fn summary(state: &AppState, filter: crate::schema::Filter) -> Result<Vec<crate::schema::Row>, anyhow::Error> { todo!() }\n",
+    );
+    let code = generate_ipc_for(test_config(api), in_crate("shell_api")).unwrap();
+    assert!(code.contains("shell_api::schema::Filter"), "{code}");
+    assert!(code.contains("Vec<shell_api::schema::Row>"), "{code}");
+    assert!(!code.contains("crate::"), "{code}");
+}

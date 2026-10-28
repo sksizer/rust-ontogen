@@ -97,6 +97,29 @@ pub(crate) struct Config {
 }
 
 impl Config {
+    /// This config as seen from the crate named `api_crate`, for a generator
+    /// whose output lives in a crate other than the one that owns the API.
+    ///
+    /// Every import path the IPC generator emits (the primary surface's
+    /// service, types, state and store paths, and each extra surface's
+    /// service and types paths) has a leading `crate` segment replaced by
+    /// `api_crate`. A path that already names a crate is left alone.
+    pub(crate) fn in_api_crate(&self, api_crate: &str) -> Result<Config, String> {
+        check_crate_name(api_crate)?;
+        let mut config = self.clone();
+        for path in [&mut config.service_import_path, &mut config.types_import_path, &mut config.state_import] {
+            reroot(path, api_crate);
+        }
+        if let Some(path) = &mut config.store_import {
+            reroot(path, api_crate);
+        }
+        for surface in &mut config.extra_surfaces {
+            reroot(&mut surface.service_import_path, api_crate);
+            reroot(&mut surface.types_import_path, api_crate);
+        }
+        Ok(config)
+    }
+
     /// The primary surface, assembled from the top-level fields.
     pub(crate) fn primary_surface(&self) -> ApiSurface {
         ApiSurface {
@@ -125,6 +148,31 @@ impl Config {
     pub(crate) fn any_pagination(&self) -> bool {
         self.pagination.is_some() || self.extra_surfaces.iter().any(|s| s.pagination.is_some())
     }
+}
+
+/// Replaces a leading `crate` segment of `path` with `api_crate`.
+fn reroot(path: &mut String, api_crate: &str) {
+    if path == "crate" {
+        *path = api_crate.to_string();
+    } else if let Some(rest) = path.strip_prefix("crate::") {
+        *path = format!("{api_crate}::{rest}");
+    }
+}
+
+/// Refuses an `api_crate` that is not the name of a crate as `use` paths write
+/// it: a Rust identifier, with `-` already turned into `_`, and not a path
+/// keyword.
+fn check_crate_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let ident = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !ident || matches!(name, "crate" | "self" | "super") {
+        return Err(format!(
+            "ontogen: `TauriIpcInCrate::api_crate` is `{name}`, which is not a crate name. Write the API crate as a \
+             `use` path does: a Rust identifier, with `-` as `_` (`my_api` for the package `my-api`)."
+        ));
+    }
+    Ok(())
 }
 
 /// Shared by the server and client configs: index 0 is the primary surface,
@@ -271,7 +319,10 @@ pub struct PrefixParam {
 }
 
 /// Server-side code generators (Rust).
+///
+/// Non-exhaustive: a new generator is a new variant, not a breaking change.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ServerGenerator {
     /// Generate Axum HTTP route handlers.
     HttpAxum {
@@ -282,6 +333,36 @@ pub enum ServerGenerator {
     TauriIpc {
         /// Output file path (e.g., `src/api/transport/ipc/generated.rs`).
         output: PathBuf,
+    },
+    /// Generate Tauri IPC command handlers into a crate other than the one
+    /// that owns the API handlers and app state.
+    ///
+    /// For a shell crate that depends on the API crate: its `build.rs` points
+    /// `api_dir` at the API crate's sources and describes the API crate from
+    /// inside it, as the shared [`Config`] always does (`crate::api::v1`,
+    /// `crate::AppState`, `crate::store::Store`). This generator then
+    /// replaces the leading `crate` of every import path it emits with
+    /// `api_crate`, so the file imports `my_api::api::v1::…` and
+    /// `my_api::AppState`, and a `crate::` import can never reach the output.
+    ///
+    /// The rewrite covers the primary surface's service, types, state and
+    /// store paths and, for the same reason, the service and types paths of
+    /// every entry in [`Config::extra_surfaces`]: they too are written
+    /// relative to the crate that owns the sources, so a `crate::` there means
+    /// the API crate. A path that already starts with another crate name
+    /// (`my_other_api::api`) is kept. State and store type names are
+    /// unchanged, so the state the file imports and the one
+    /// `start_event_forwarding` takes always agree. A surface that lives in the
+    /// shell crate itself is not supported by this generator.
+    ///
+    /// `api_crate` must be a Rust identifier (`my_api` for the package
+    /// `my-api`); anything else is an error when the servers pass runs.
+    /// Other generators in the same pass keep the shared paths.
+    TauriIpcInCrate {
+        /// Output file path (e.g., `src/ipc/generated.rs`).
+        output: PathBuf,
+        /// The API crate, as `use` paths name it (e.g., `my_api`).
+        api_crate: String,
     },
     /// Generate MCP (Model Context Protocol) tool registry.
     Mcp {

@@ -15,7 +15,7 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 | **Tauri IPC** | Inter-process communication | Tauri `#[command]` handlers + `ipc_handler()` | Desktop apps with Tauri |
 | **MCP** | Model Context Protocol | Tool definitions + `handle_tool_call()` | AI assistant integrations |
 
-You enable each transport independently through `ServerGeneratorConfig` variants. Most projects use one or two; having all three is for applications that serve web clients, desktop clients, and AI tools from the same codebase.
+You enable each transport independently through `ServerGeneratorConfig` variants. The IPC transport has a second variant, `TauriIpcInCrate`, for generating it into a [separate shell crate](#ipc-transport-in-a-separate-shell-crate). Most projects use one or two; having all three is for applications that serve web clients, desktop clients, and AI tools from the same codebase.
 
 ## ServersConfig
 
@@ -566,6 +566,55 @@ ontogen-core = { version = "…", features = ["events"] }
 ```
 
 For the parameterless sync shape (`fn f(state: &AppState) -> broadcast::Receiver<T>`), the IPC generator also emits `start_event_forwarding`, which emits every such stream to all windows as a Tauri event. Prefer the subscribe commands: they report lag to the subscriber and end with it.
+
+### IPC transport in a separate shell crate
+
+`ServerGenerator::TauriIpc` writes `use crate::…` imports, so its file compiles only in the crate that owns the API modules and the app state. To keep the Tauri dependency in a thin shell crate that depends on the API crate, use `ServerGenerator::TauriIpcInCrate { output, api_crate }` from the shell's `build.rs`. Scan the API crate's sources, describe them as the API crate's own build would (`crate::api::v1`, `crate::AppState`, `crate::store::Store`), and name the crate:
+
+```rust
+// shell/build.rs
+use ontogen::servers::{NamingConfig, ServerGenerator};
+use ontogen::{SchemaOutput, ServersConfig, gen_servers};
+
+fn main() {
+    let api_dir = "../api/src/api/v1";
+    println!("cargo:rerun-if-changed=build.rs");
+    ontogen::emit_rerun_directives_excluding(&std::path::PathBuf::from(api_dir), &["generated"]);
+
+    let config = ServersConfig {
+        api_dir: api_dir.into(),
+        state_type: "AppState".into(),
+        service_import_path: "crate::api::v1".into(),
+        types_import_path: "crate::schema".into(),
+        state_import: "crate::AppState".into(),
+        naming: NamingConfig::default(),
+        generators: vec![ServerGenerator::TauriIpcInCrate {
+            output: "src/ipc/generated.rs".into(),
+            api_crate: "my_api".into(),
+        }],
+        sse_route_overrides: Default::default(),
+        route_prefix: None,
+        store_type: Some("Store".into()),
+        store_import: Some("crate::store::Store".into()),
+        pagination: None,
+        extra_surfaces: vec![],
+        error_source_dir: None,
+    };
+
+    // An IPC-only pass: no schema, no store, DTO or client stages.
+    gen_servers(&SchemaOutput::default(), None, &[], &config).expect("ontogen servers pass failed");
+}
+```
+
+The generated file imports `my_api::api::v1::…`, `my_api::AppState` and `my_api::store::Store`.
+
+- **One rule, no per-path overrides.** Every leading `crate` in a path the file emits becomes `api_crate`: the service, types, state and store paths, the paths of every entry in `extra_surfaces`, and any `crate::`-rooted type that appears in an API function's signature. A `crate::` import therefore never reaches the shell. A path that already names a crate (`my_other_api::api`) is kept.
+- **Extra surfaces are covered.** Their `crate::` paths are taken to mean the API crate too, as they are written relative to the crate that owns the sources. A surface that lives in the shell crate itself is not supported.
+- **`api_crate` is a crate name as `use` writes it**: an identifier with `-` as `_` (`my_api` for the package `my-api`). Anything else is an error when the pass runs.
+- **Other generators are unaffected.** An `HttpAxum` or `Mcp` generator in the same pass keeps the shared paths.
+- **The shell needs the runtime crates the file names:** `tauri`, `tokio`, `log`, and `ontogen-core` with its `events` feature if the API has event ops.
+
+[`examples/ipc-shell`](https://github.com/sksizer/rust-ontogen/tree/main/examples/ipc-shell) is a compiling two-crate example, checked in CI.
 
 ## MCP generation
 
