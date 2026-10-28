@@ -230,6 +230,37 @@ my-app/
 
 </Steps>
 
+## IPC transport in a separate shell crate
+
+The recipe above generates the IPC file into the crate that owns the API. To keep Tauri in a thin shell crate that depends on the API crate, give the shell its own `build.rs` that runs an IPC-only servers pass with `ServerGenerator::TauriIpcInCrate`:
+
+```rust
+// shell/build.rs
+let config = ServersConfig {
+    api_dir: "../api/src/api/v1".into(),
+    state_type: "AppState".into(),
+    // The API crate as its own build sees it; `TauriIpcInCrate` re-roots each `crate::`.
+    service_import_path: "crate::api::v1".into(),
+    types_import_path: "crate::schema".into(),
+    state_import: "crate::AppState".into(),
+    naming: NamingConfig::default(),
+    generators: vec![ServerGenerator::TauriIpcInCrate {
+        output: "src/ipc/generated.rs".into(),
+        api_crate: "my_api".into(),
+    }],
+    sse_route_overrides: Default::default(),
+    route_prefix: None,
+    store_type: Some("Store".into()),
+    store_import: Some("crate::store::Store".into()),
+    pagination: None,
+    extra_surfaces: vec![],
+    error_source_dir: None,
+};
+gen_servers(&SchemaOutput::default(), None, &[], &config)?;
+```
+
+The generated commands import `my_api::api::v1::…` and `my_api::AppState`, so they compile in the shell. No schema, store, DTO or client stage runs. See [IPC transport in a separate shell crate](/guides/server-transports/#ipc-transport-in-a-separate-shell-crate) for the rules and `examples/ipc-shell` for a working pair of crates.
+
 ## What the generated IPC code looks like
 
 Each entity's CRUD operations become Tauri commands. Here's what the generator produces for an `Exercise` entity:

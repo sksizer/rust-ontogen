@@ -1387,6 +1387,55 @@ pub fn qualify_shared_types(modules: &mut [ApiModule], surfaces: &[ApiSurface]) 
     }
 }
 
+/// Re-root every `crate::` path in the signatures of `modules` at `api_crate`.
+///
+/// For a generator whose output lives outside the crate the signatures were
+/// written in: the fully qualified type of a second surface
+/// ([`qualify_shared_types`]), or any `crate::`-rooted type an API function
+/// names, would not resolve there. Each type is re-parsed after the rewrite
+/// and its string form recomputed.
+pub fn reroot_modules(modules: &mut [ApiModule], api_crate: &str) {
+    for m in modules {
+        for f in &mut m.functions {
+            reroot_type(&mut f.return_type_ast, api_crate);
+            f.return_type = norm_type(&f.return_type_ast);
+            for p in &mut f.params {
+                reroot_type(&mut p.ty_ast, api_crate);
+                p.ty = norm_type(&p.ty_ast);
+            }
+        }
+        for ev in &mut m.events {
+            reroot_type(&mut ev.item_type_ast, api_crate);
+            ev.item_type = norm_type(&ev.item_type_ast);
+            for p in &mut ev.params {
+                reroot_type(&mut p.ty_ast, api_crate);
+                p.ty = norm_type(&p.ty_ast);
+            }
+        }
+    }
+}
+
+/// Replace each path-root `crate` in `ty` with `api_crate`.
+fn reroot_type(ty: &mut Type, api_crate: &str) {
+    let text = norm_type(ty);
+    if !text.contains("crate") {
+        return;
+    }
+    let mut out = String::with_capacity(text.len() + api_crate.len());
+    let mut rest = text.as_str();
+    while let Some(i) = rest.find("crate::") {
+        let before = rest[..i].chars().next_back();
+        // A path root follows a delimiter, not part of a longer ident or path.
+        let is_root = before.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == ':'));
+        out.push_str(&rest[..i]);
+        out.push_str(if is_root { api_crate } else { "crate" });
+        out.push_str("::");
+        rest = &rest[i + "crate::".len()..];
+    }
+    out.push_str(rest);
+    *ty = syn::parse_str(&out).expect("a type with its crate root renamed parses");
+}
+
 /// Bare type names a function's signature imports.
 fn fn_type_imports(f: &ApiFn) -> Vec<String> {
     let mut names = Vec::new();

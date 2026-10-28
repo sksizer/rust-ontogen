@@ -239,7 +239,9 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
         }
     }
 
-    if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::TauriIpc { .. })) {
+    if config.generators.iter().any(|g| {
+        matches!(g, config::ServerGenerator::TauriIpc { .. } | config::ServerGenerator::TauriIpcInCrate { .. })
+    }) {
         generators::ipc::check_wire_keys(&modules, &generators::ipc::WireKeyScope::of(config))?;
     }
     if config.generators.iter().any(|g| matches!(g, config::ServerGenerator::Mcp { .. })) {
@@ -257,6 +259,13 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
             }
             config::ServerGenerator::TauriIpc { output } => {
                 generators::ipc::generate(output, &modules, config);
+            }
+            config::ServerGenerator::TauriIpcInCrate { output, api_crate } => {
+                // Validates `api_crate` before it is written into any type.
+                let config = config.in_api_crate(api_crate)?;
+                let mut modules = modules.clone();
+                parse::reroot_modules(&mut modules, api_crate);
+                generators::ipc::generate(output, &modules, &config);
             }
         }
     }
@@ -280,7 +289,8 @@ fn check_names(modules: &[parse::ApiModule], config: &config::Config) -> Result<
 
     let has = |pred: fn(&ServerGenerator) -> bool| config.generators.iter().any(pred);
     let mcp = has(|g| matches!(g, ServerGenerator::Mcp { .. }));
-    let ipc_pages = has(|g| matches!(g, ServerGenerator::TauriIpc { .. })) && config.any_pagination();
+    let ipc_pages = has(|g| matches!(g, ServerGenerator::TauriIpc { .. } | ServerGenerator::TauriIpcInCrate { .. }))
+        && config.any_pagination();
     let last_segment = |ty: &str| ty.rsplit("::").next().unwrap_or(ty).trim().to_string();
     let state = last_segment(&config.state_type);
     let stores: Vec<String> =

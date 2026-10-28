@@ -122,6 +122,10 @@ ServersConfig {
 
 The servers stage never read it; delete the line.
 
+### `ServerGenerator` is `#[non_exhaustive]` and has `TauriIpcInCrate`
+
+`ServerGenerator` has a new variant, `TauriIpcInCrate { output, api_crate }`, which generates the IPC transport into a shell crate that depends on the API crate (see [IPC transport in a separate shell crate](/guides/server-transports/#ipc-transport-in-a-separate-shell-crate)), and the enum is now `#[non_exhaustive]`, so a later generator is not a breaking change. Constructing a variant is unchanged. Code that matches a `ServerGenerator` exhaustively needs a wildcard arm.
+
 ### `ServersConfig` has `error_source_dir`
 
 `ServersConfig` has a new field, `error_source_dir: Option<PathBuf>`: the directory scanned for your `enum AppError`. Add it to every `ServersConfig` literal.

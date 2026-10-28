@@ -40,7 +40,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One matrix rather than four near-identical jobs, so adding an example means
+  # One matrix rather than near-identical jobs, so adding an example means
   # editing one list here. `just regen-examples` keeps its own list for local
   # use; see the note in the justfile.
   build:
@@ -68,6 +68,14 @@ jobs:
           - name: "iron-log"
             dir: "examples/iron-log"
             manifest: "examples/iron-log/src-tauri/Cargo.toml"
+            cmd: "check"
+            tauri: true
+          # The IPC transport generated into a shell crate that depends on a
+          # separate API crate: compiling it proves the `use ipc_shell_api::…`
+          # paths resolve.
+          - name: "ipc-shell"
+            dir: "examples/ipc-shell"
+            manifest: "examples/ipc-shell/Cargo.toml"
             cmd: "check"
             tauri: true
     steps:
