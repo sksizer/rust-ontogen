@@ -1,6 +1,6 @@
 [package]
 name = "ontogen-jsonapi"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Runtime for ontogen's generated JSON:API HTTP server: documents, links, error documents, media-type negotiation and Axum extractors"
@@ -26,7 +26,7 @@ axum = ["dep:axum"]
 axum = { version = "0.8", default-features = false, features = ["matched-path", "original-uri"], optional = true }
 http = "1"
 # `SortField` and `parse_sort`: `sort` reads with the parser IPC and MCP use.
-ontogen-core = { path = "../ontogen-core", version = "=0.6.1" }
+ontogen-core = { path = "../ontogen-core", version = "=0.7.0" }
 serde = { version = "1", features = ["derive"] }
 # `raw_value` lets an included resource keep its attributes' member order
 # without a type parameter per resource type.
