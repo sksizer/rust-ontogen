@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main"]
   # Publishes the npm packages at the version on main, skipping any already on
-  # npm. For a release that the publish job missed, or a first publish.
+  # npm. For a release that the publish job missed.
   workflow_dispatch:
 
 permissions:
@@ -70,8 +70,10 @@ jobs:
     runs-on: "ubuntu-latest"
     permissions:
       contents: "read"
-      # npm trusted publishing: npm exchanges the workflow's OIDC token for a
-      # short-lived publish credential, and records provenance.
+      # npm trusted publishing, the only npm auth: npm exchanges the
+      # workflow's OIDC token for a short-lived publish credential, and
+      # records provenance. No npm token is stored. Each package's trusted
+      # publisher on npmjs.com names this file, so it keeps its name.
       id-token: "write"
     steps:
       - uses: "actions/checkout@v4"
@@ -81,10 +83,24 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
+      # Trusted publishing needs npm 11.5.1 or later; pin the version rather
+      # than take whatever node 24 bundles.
+      - name: "Install npm 11.19.1"
+        run: "npm install -g npm@11.19.1"
       - run: "pnpm install --frozen-lockfile"
+      # Trusted publishing cannot create a package. A new one is staged once
+      # by hand with `just stage-admin`, which publishes a 0.0.1-stage
+      # placeholder and adds its trusted publisher.
+      - name: "Refuse a package that is not on npm yet"
+        run: | # shell
+          for name in @osdlc/ontogen-admin-types @osdlc/ontogen-admin-layer; do
+            if ! err="$(npm view "$name" name 2>&1 >/dev/null)"; then
+              if grep -q E404 <<<"$err"; then
+                echo "::error::$name is not on npm yet. Run \`just stage-admin\` once, logged in as an owner of @osdlc."
+              else
+                echo "::error::npm view $name failed: $err"
+              fi
+              exit 1
+            fi
+          done
       - run: "just publish-admin --provenance"
-        env:
-          # Only needed until trusted publishing is configured on npmjs.com
-          # (npm offers it only for a package that already exists). Leave the
-          # secret unset afterwards and npm uses the OIDC token.
-          NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}"
