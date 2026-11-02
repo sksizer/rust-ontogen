@@ -51,6 +51,7 @@ lint:
     cargo clippy -p ontogen-jsonapi --no-default-features --all-targets -- --deny warnings
     RUSTDOCFLAGS="-D warnings" cargo doc -p markdown-store --no-deps --document-private-items
     RUSTDOCFLAGS="-D warnings" cargo doc -p ontogen-jsonapi --no-deps --document-private-items
+    node scripts/sync-npm-versions.mjs --check
 
 # Run all code checks (matches CI: format-check + lint + tests)
 full-check: format-check lint test
@@ -76,7 +77,7 @@ test: && test-admin-layer test-ts-clients
 # packages/nuxt_admin_layer/vitest.config.ts).
 test-admin-layer:
     pnpm install --frozen-lockfile
-    pnpm --filter @ontogen/admin-layer test
+    pnpm --filter @osdlc/ontogen-admin-layer test
 
 # Type-check the TypeScript the name-safety fixture generates (its build
 # script rewrites crates/name-safety/generated-ts when the crate builds, as
@@ -258,9 +259,46 @@ alias caa := cousin-apply-all
 #                                ADMIN PACKAGES                                #
 # ---------------------------------------------------------------------------- #
 
-# Pack @ontogen/admin-types and @ontogen/admin-layer into dist/ (pnpm; a consumer that cannot git-install a subdirectory takes the tgz with `file:`)
+# The npm packages are versioned in lockstep with the ontogen crate: the
+# crate's version in Cargo.toml is the source of truth, and `lint` fails when
+# a package is out of step. release-plz bumps the crate; its workflow then
+# runs `npm-versions` on the release PR, and publishes both packages when the
+# release is cut (.github/workflows/release-plz.yml).
+
+# Write the ontogen crate's version into the npm packages
+npm-versions:
+    node scripts/sync-npm-versions.mjs
+
+# Pack @osdlc/ontogen-admin-types and @osdlc/ontogen-admin-layer into dist/ and check the tarballs are publishable
 pack-admin:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    node scripts/sync-npm-versions.mjs --check
     mkdir -p dist
-    cd packages/admin-types && pnpm pack --pack-destination "$(pwd)/../../dist"
-    cd packages/nuxt_admin_layer && pnpm pack --pack-destination "$(pwd)/../../dist"
-    ls -1 dist/ontogen-admin-*.tgz
+    rm -f dist/osdlc-ontogen-admin-*.tgz
+    (cd packages/admin-types && pnpm pack --pack-destination "$(pwd)/../../dist")
+    (cd packages/nuxt_admin_layer && pnpm pack --pack-destination "$(pwd)/../../dist")
+    # pnpm rewrites `workspace:` ranges when it packs; a survivor would make the
+    # published package uninstallable.
+    for tgz in dist/osdlc-ontogen-admin-*.tgz; do
+      if tar -xOzf "$tgz" package/package.json | grep -q '"workspace:'; then
+        echo "$tgz: package.json still has a workspace: range" >&2
+        exit 1
+      fi
+    done
+    ls -1 dist/osdlc-ontogen-admin-*.tgz
+
+# Publish both packages to npm, skipping a version already there. CI runs this
+# on release; by hand it is only needed for the very first publish
+publish-admin *flags: pack-admin
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(node scripts/sync-npm-versions.mjs --print)
+    # Types first: the layer's peer range points at them.
+    for name in ontogen-admin-types ontogen-admin-layer; do
+      if npm view "@osdlc/$name@$version" version >/dev/null 2>&1; then
+        echo "@osdlc/$name@$version is already on npm; skipping"
+        continue
+      fi
+      npm publish "dist/osdlc-$name-$version.tgz" --access public {{flags}}
+    done

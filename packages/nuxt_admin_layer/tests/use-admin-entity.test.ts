@@ -1,7 +1,7 @@
 // useAdminEntity's fetchList: the paginated-listing call shape, request
 // sequencing, and page-clamping rules, pinned directly against the composable
 // (no .vue mount needed — the defect lives entirely in fetchList's own logic).
-import type { AdminEntityConfig } from '@ontogen/admin-types'
+import type { AdminEntityConfig } from '@osdlc/ontogen-admin-types'
 import { beforeEach, describe, expect, test } from 'vitest'
 
 import { useAdminEntity } from '../app/composables/useAdminEntity'

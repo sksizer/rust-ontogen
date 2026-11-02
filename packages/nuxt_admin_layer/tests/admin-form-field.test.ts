@@ -1,7 +1,7 @@
 // AdminFormField's per-FieldType branch selection, mounted for real: the
 // defect (a missing 'boolean' branch) lives in the template's v-if chain,
 // so this is exercised through the component rather than a pure function.
-import type { AdminFieldDef } from '@ontogen/admin-types'
+import type { AdminFieldDef } from '@osdlc/ontogen-admin-types'
 import { mount } from '@vue/test-utils'
 import { describe, expect, test } from 'vitest'
 

@@ -1,4 +1,4 @@
-import type { AdminEntityConfig } from '@ontogen/admin-types'
+import type { AdminEntityConfig } from '@osdlc/ontogen-admin-types'
 
 /**
  * The arguments that ask a paginated list method for one page. The

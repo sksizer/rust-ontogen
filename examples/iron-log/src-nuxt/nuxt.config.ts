@@ -1,7 +1,7 @@
 export default defineNuxtConfig({
   telemetry: false,
   compatibilityDate: '2024-11-01',
-  extends: ['@ontogen/admin-layer'],
+  extends: ['@osdlc/ontogen-admin-layer'],
   css: [
     '~/assets/css/no-bounce.css',
     '~/assets/css/main.css',

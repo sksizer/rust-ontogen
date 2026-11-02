@@ -1,5 +1,5 @@
 import { ref, computed, watch, isRef, type Ref } from 'vue'
-import type { AdminFieldDef, AdminEntityConfig } from '@ontogen/admin-types'
+import type { AdminFieldDef, AdminEntityConfig } from '@osdlc/ontogen-admin-types'
 
 type EntityRecord = Record<string, unknown>
 

@@ -1,7 +1,7 @@
 // The paginated-envelope rules AdminRelationTables.vue and admin/index.vue
 // delegate to, pinned on their own; admin-relation-tables.test.ts and
 // admin-dashboard.test.ts cover the component wiring.
-import type { AdminEntityConfig } from '@ontogen/admin-types'
+import type { AdminEntityConfig } from '@osdlc/ontogen-admin-types'
 import { describe, expect, test } from 'vitest'
 
 import { countFromListResult, fetchAllItems } from '../app/utils/adminListAll'

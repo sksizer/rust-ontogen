@@ -460,12 +460,12 @@ A utility function (not a generator) that patches a Nuxt `nuxt.config.ts` to inc
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `config` | `&AdminLayerConfig` | Path to `nuxt.config.ts` and the relative path to the admin layer package. |
+| `config` | `&AdminLayerConfig` | Path to `nuxt.config.ts`, and the layer as `extends` names it (the npm package, or a relative path). |
 
 ```rust
 install_admin_layer(&AdminLayerConfig {
     nuxt_config: "../src-nuxt/nuxt.config.ts".into(),
-    layer_path: "../crates/ontogen/packages/nuxt_admin_layer".to_string(),
+    layer_path: "@osdlc/ontogen-admin-layer".to_string(),
 })?;
 ```
 

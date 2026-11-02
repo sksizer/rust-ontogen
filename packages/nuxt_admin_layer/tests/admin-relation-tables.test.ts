@@ -4,7 +4,7 @@
  * if it were the array) lives in onMounted's data-fetching, not in a
  * reducible pure function, so this is exercised through the component.
  */
-import type { AdminEntityConfig, AdminFieldDef } from '@ontogen/admin-types'
+import type { AdminEntityConfig, AdminFieldDef } from '@osdlc/ontogen-admin-types'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, test } from 'vitest'
 import { defineComponent, h } from 'vue'

@@ -2878,7 +2878,7 @@ fn test_admin_registry_generator() {
     crate::clients::generators::admin::generate(&output, &modules, &config, &config.entities, &config.schema_enums);
     let content = std::fs::read_to_string(&output).unwrap();
 
-    // Type import (definitions moved to @ontogen/admin-types)
+    // Type import (definitions moved to @osdlc/ontogen-admin-types)
     assert!(content.contains("import type { AdminFieldDef, AdminEntityConfig }"));
 
     // Registry array

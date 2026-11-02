@@ -3,6 +3,9 @@ name: "release-plz"
 on:
   push:
     branches: ["main"]
+  # Publishes the npm packages at the version on main, skipping any already on
+  # npm. For a release that the publish job missed, or a first publish.
+  workflow_dispatch:
 
 permissions:
   pull-requests: write
@@ -10,10 +13,13 @@ permissions:
 
 jobs:
   release-plz:
+    if: "github.event_name == 'push'"
     runs-on: "ubuntu-latest"
     concurrency:
       group: "release-plz-${{ github.ref }}"
       cancel-in-progress: false
+    outputs:
+      releases_created: "${{ steps.release-plz.outputs.releases_created }}"
     steps:
       - uses: "actions/checkout@v4"
         with:
@@ -21,7 +27,64 @@ jobs:
       - uses: "actions-rust-lang/setup-rust-toolchain@v1"
         with:
           toolchain: "stable"
-      - uses: "MarcoIeni/release-plz-action@v0.5"
+      - id: "release-plz"
+        uses: "MarcoIeni/release-plz-action@v0.5"
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+      # release-plz bumps only the root workspace. Bring the rest in step on
+      # the release PR it just opened or updated:
+      # - the npm packages, versioned in lockstep with the ontogen crate
+      #   (scripts/sync-npm-versions.mjs), or `lint` fails;
+      # - each example's own Cargo.lock, which records the path-dependency
+      #   versions of the ontogen crates, or examples-ci's `--locked` builds
+      #   fail. `cargo metadata` rewrites only what the bump changed.
+      - name: "Sync npm versions and example lockfiles on the release PR"
+        if: "steps.release-plz.outputs.pr != '' && steps.release-plz.outputs.pr != '{}'"
+        env:
+          PR_BRANCH: "${{ fromJSON(steps.release-plz.outputs.pr).head_branch }}"
+        run: | # shell
+          git fetch origin "$PR_BRANCH"
+          git switch -C "$PR_BRANCH" FETCH_HEAD
+          node scripts/sync-npm-versions.mjs
+          git ls-files 'examples/**/Cargo.lock' | while read -r lock; do
+            cargo metadata --format-version 1 --manifest-path "$(dirname "$lock")/Cargo.toml" >/dev/null
+          done
+          if ! git diff --quiet; then
+            git -c user.name="github-actions[bot]" \
+                -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                commit -am "chore: sync npm versions and example lockfiles with the release"
+            git push origin "HEAD:$PR_BRANCH"
+          fi
+
+  publish-npm:
+    needs: "release-plz"
+    # Runs once the crate release is cut, so npm never gets a version
+    # crates.io does not have. `always()` lets a manual run proceed although
+    # the release-plz job is skipped then.
+    if: >-
+      always() && (
+        github.event_name == 'workflow_dispatch' ||
+        (needs.release-plz.result == 'success' && needs.release-plz.outputs.releases_created == 'true')
+      )
+    runs-on: "ubuntu-latest"
+    permissions:
+      contents: "read"
+      # npm trusted publishing: npm exchanges the workflow's OIDC token for a
+      # short-lived publish credential, and records provenance.
+      id-token: "write"
+    steps:
+      - uses: "actions/checkout@v4"
+      - uses: "extractions/setup-just@v3"
+      - uses: "pnpm/action-setup@v4"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - run: "pnpm install --frozen-lockfile"
+      - run: "just publish-admin --provenance"
+        env:
+          # Only needed until trusted publishing is configured on npmjs.com
+          # (npm offers it only for a package that already exists). Leave the
+          # secret unset afterwards and npm uses the OIDC token.
+          NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}"

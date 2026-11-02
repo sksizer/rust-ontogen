@@ -23,8 +23,9 @@ use crate::utils;
 pub struct AdminLayerConfig {
     /// Path to the Nuxt app's `nuxt.config.ts`.
     pub nuxt_config: PathBuf,
-    /// Relative path from the `nuxt.config.ts` to the admin layer package
-    /// (e.g., `"../crates/ontogen/packages/nuxt_admin_layer"`).
+    /// The layer as `extends` names it: the npm package
+    /// `"@osdlc/ontogen-admin-layer"` (installed at the same version as this
+    /// crate), or a path relative to the `nuxt.config.ts` for a local checkout.
     pub layer_path: String,
 }
 

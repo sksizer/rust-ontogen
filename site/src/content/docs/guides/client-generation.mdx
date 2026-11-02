@@ -284,7 +284,7 @@ The `AdminRegistry` generator produces a TypeScript file with per-entity metadat
 ```typescript
 // Auto-generated admin registry. DO NOT EDIT.
 
-import type { AdminFieldDef, AdminEntityConfig } from '@ontogen/admin-types'
+import type { AdminFieldDef, AdminEntityConfig } from '@osdlc/ontogen-admin-types'
 
 export const adminEntities: AdminEntityConfig[] = [
   {
@@ -347,6 +347,29 @@ When `pagination` is configured, each entity config includes pagination details:
 ```
 
 Admin UIs can use this to render pagination controls with sensible defaults. The list method takes `limit?` and `offset?` and returns `PaginatedResult<T>`; the HTTP transport sends them as `page[offset]` and `page[limit]`. When the list takes a `*Query` filter struct, the entry also has `listHasQuery: true`, and the list method takes `query?` before the page.
+
+### The Nuxt admin layer
+
+The registry's types and a ready-made Nuxt admin UI that reads it are published to npm:
+
+- `@osdlc/ontogen-admin-types` — the `AdminFieldDef` / `AdminEntityConfig` types the generated registry imports.
+- `@osdlc/ontogen-admin-layer` — a Nuxt layer with list, detail, create and edit pages for every entity in the registry.
+
+Both are released with the `ontogen` crate and share its version, starting at 0.10. Install the version that matches your `ontogen` dependency; for `ontogen = "0.10"`:
+
+```bash
+pnpm add @osdlc/ontogen-admin-layer@0.10 @osdlc/ontogen-admin-types@0.10
+```
+
+Then name the layer in `nuxt.config.ts`, by hand or from `build.rs` with [`install_admin_layer`](/reference/public-api/#install_admin_layer):
+
+```typescript
+export default defineNuxtConfig({
+  extends: ['@osdlc/ontogen-admin-layer'],
+})
+```
+
+The layer reads the generated registry from `app/admin/generated/admin-registry.ts` (or the path set in `ontogenAdmin.registry`), and calls your app's `useTransport()` composable for data.
 
 ## ts_skip_commands
 
