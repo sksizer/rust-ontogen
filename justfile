@@ -302,3 +302,48 @@ publish-admin *flags: pack-admin
       fi
       npm publish "dist/osdlc-$name-$version.tgz" --access public {{flags}}
     done
+
+# Stage the admin packages on npm, once, before their first CI release. npm
+# can only add a trusted publisher to a package that exists, so this publishes
+# a real build as a `0.0.1-stage` placeholder under the `stage` tag, then adds
+# the GitHub Actions trusted publisher (release-plz.yml) that CI publishes
+# through. package.json is restored after packing. Skips a package already on
+# npm. Needs `npm login` as an owner of @osdlc, two-factor auth, and npm 11.15
+# or later. `just stage-admin --dry-run` publishes and changes nothing.
+stage-admin *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    stage=0.0.1-stage
+    out="$(mktemp -d)"
+    backup="$(mktemp -d)"
+    cp packages/admin-types/package.json "$backup/types.json"
+    cp packages/nuxt_admin_layer/package.json "$backup/layer.json"
+    restore() {
+      cp "$backup/types.json" packages/admin-types/package.json
+      cp "$backup/layer.json" packages/nuxt_admin_layer/package.json
+    }
+    trap restore EXIT
+    for dir in packages/admin-types packages/nuxt_admin_layer; do
+      node -e '
+        const fs = require("fs"); const [path, v] = process.argv.slice(1)
+        const p = JSON.parse(fs.readFileSync(path, "utf8")); p.version = v
+        if (p.peerDependencies?.["@osdlc/ontogen-admin-types"]) p.peerDependencies["@osdlc/ontogen-admin-types"] = v
+        fs.writeFileSync(path, JSON.stringify(p, null, 2) + "\n")
+      ' "$dir/package.json" "$stage"
+      (cd "$dir" && pnpm pack --pack-destination "$out" >/dev/null)
+    done
+    restore
+    trap - EXIT
+    echo "npm user: $(npm whoami 2>/dev/null || echo '(not logged in)')"
+    # Types first: the layer's peer range points at them.
+    for name in ontogen-admin-types ontogen-admin-layer; do
+      pkg="@osdlc/$name"
+      echo; echo "$pkg"
+      if npm view "$pkg" name >/dev/null 2>&1; then
+        echo "  already on npm; not publishing a placeholder"
+      else
+        npm publish "$out/osdlc-$name-$stage.tgz" --access public --tag stage {{flags}}
+      fi
+      npm trust github "$pkg" --file release-plz.yml --repository sksizer/rust-ontogen --allow-publish --yes {{flags}}
+    done
+    rm -rf "$out" "$backup"
