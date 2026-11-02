@@ -441,14 +441,23 @@ pub(crate) fn emit_struct_named(
 ) -> Result<String, EmitError> {
     let raw_name = item.ident.to_string();
     let name = name_override.map(str::to_string).unwrap_or_else(|| raw_name.clone());
-    let referenced_by = TypePath::new(vec![raw_name]).expect("single segment is non-empty");
+    let referenced_by = TypePath::new(vec![raw_name.clone()]).expect("single segment is non-empty");
 
     let container = extract_container_attrs(&item.attrs, &referenced_by)?;
     let effective_rename_all = container.rename_all.or(config.case_default);
+    // `content` and `untagged` pick an enum representation; serde refuses
+    // both on a struct.
+    if container.content.is_some() || container.untagged {
+        let name = if container.untagged { "untagged" } else { "content" };
+        return Err(EmitError::UnsupportedSerdeAttr {
+            type_path: referenced_by,
+            attr: format!("serde({name}) is an enum attribute — serde does not accept it on a struct"),
+        });
+    }
 
     match &item.fields {
         Fields::Named(fields) => {
-            let collected = collect_named_fields(
+            let mut collected = collect_named_fields(
                 fields,
                 config,
                 &referenced_by,
@@ -456,6 +465,16 @@ pub(crate) fn emit_struct_named(
                 container.default,
                 deserialize_only,
             )?;
+            // `#[serde(tag = "t")]` on a struct serializes a leading
+            // `"t": "StructName"` entry (the struct's serde `rename`, if
+            // any). Serde ignores the entry on deserialize — absent or
+            // wrong, either is accepted — so a deserialize-only struct
+            // renders it optional.
+            if let Some(tag) = &container.tag {
+                let value = container.rename.as_deref().unwrap_or(&raw_name);
+                let opt = if deserialize_only { "?" } else { "" };
+                collected.properties.insert(0, (format_ts_key(tag), opt, quote(config, value)));
+            }
             // `struct Foo {}` — or all fields skipped/flattened. `None` here
             // means "no property object at all": with flattened members it
             // drops out of the intersection, without them it renders `{}`
@@ -785,18 +804,23 @@ fn is_valid_ts_ident(s: &str) -> bool {
 
 /// The wire names of a C-style enum's variants in declaration order, as
 /// `(rust_name, serde_name)` pairs with `#[serde(skip)]` variants left out.
-/// `None` when a variant carries a payload: such an enum is not a closed set
-/// of strings.
+/// `None` when a variant carries a payload, or the enum is tagged or
+/// untagged: such an enum is not a closed set of strings.
 pub fn unit_variant_wire_names(item: &ItemEnum) -> Result<Option<Vec<(String, String)>>, EmitError> {
     let referenced_by = TypePath::new(vec![item.ident.to_string()]).expect("single segment is non-empty");
     let container = extract_container_attrs(&item.attrs, &referenced_by)?;
+    // Under `tag` a unit variant is `{"t": "V"}`, and under `untagged` it is
+    // `null` — neither is a string.
+    if container.tag.is_some() || container.untagged {
+        return Ok(None);
+    }
     let mut names = Vec::with_capacity(item.variants.len());
     for variant in &item.variants {
         let attrs = extract_variant_attrs(&variant.attrs, &referenced_by)?;
         if attrs.skip {
             continue;
         }
-        if !matches!(variant.fields, Fields::Unit) {
+        if attrs.untagged || !matches!(variant.fields, Fields::Unit) {
             return Ok(None);
         }
         let raw = variant.ident.to_string();
@@ -820,10 +844,23 @@ pub fn unit_variant_wire_names(item: &ItemEnum) -> Result<Option<Vec<(String, St
 ///
 /// Externally-tagged is the right default because `serde_json` emits
 /// `{"VariantName": payload}` for variant-with-payload values when no
-/// `#[serde(tag = "...")]` is set. Internally / adjacently / untagged enum
-/// representations are phase-2 work (gated behind `#[serde(tag)]` /
-/// `#[serde(untagged)]` — PR 2 rejects these attrs, full support is OF-015
-/// phase 2).
+/// `#[serde(tag = "...")]` is set. The other serde representations follow
+/// the container's attrs (`t`/`c` stand for the configured key names):
+///
+/// | representation                    | unit `V`     | newtype `V(T)`       | struct `V { x }`          |
+/// |-----------------------------------|--------------|----------------------|---------------------------|
+/// | `#[serde(tag = "t")]`             | `{ t: 'V' }` | `{ t: 'V' } & T`     | `{ t: 'V'; x: X }`        |
+/// | `#[serde(tag = "t", content = "c")]` | `{ t: 'V' }` | `{ t: 'V'; c: T }` | `{ t: 'V'; c: { x: X } }` |
+/// | `#[serde(untagged)]`              | `null`       | `T`                  | `{ x: X }`                |
+///
+/// A variant marked `#[serde(untagged)]` renders as in the last row whatever
+/// the enum's representation. Under `tag` alone, a newtype variant must hold
+/// an object: a scalar, array, or `Option` payload is rejected, as are tuple
+/// variants, because serde cannot serialize them. `content` without `tag`,
+/// and `untagged` with `tag`, are rejected as serde rejects them.
+///
+/// A zero-field tuple variant `V()` serializes as an empty array: `{ V: [] }`
+/// externally, `[]` untagged.
 ///
 /// Empty enums (`enum Foo {}`) emit as `never` since they have no
 /// inhabitants — matches `serde_json::to_string`'s effective behavior
@@ -860,6 +897,8 @@ pub(crate) fn emit_enum_named(
         return Ok(format!("export type {name} = never;"));
     }
 
+    let repr = enum_repr(&container, &referenced_by)?;
+
     let mut variant_lines: Vec<String> = Vec::with_capacity(item.variants.len());
     for variant in &item.variants {
         let variant_attrs = extract_variant_attrs(&variant.attrs, &referenced_by)?;
@@ -868,68 +907,50 @@ pub(crate) fn emit_enum_named(
         }
         let raw_ident = variant.ident.to_string();
         let wire_name = variant_wire_name(&raw_ident, &variant_attrs, effective_rename_all);
-        match &variant.fields {
-            Fields::Unit => {
-                // C-style — string-literal variant. Quote style follows
-                // `config.quote_style` (single by default; consumers flip
-                // to double via `EmitConfig::quote_style`). Bare-ident wire
-                // names need no escaping; non-ident ones still fit inside
-                // the chosen delimiter (TS string literal syntax accepts
-                // them).
-                variant_lines.push(quote(config, &wire_name));
-            }
-            Fields::Unnamed(fields) => {
-                // Tuple-style variant. Serde's default external-tag emission
-                // wraps a single payload as `{"V": payload}` and a multi-arg
-                // tuple as `{"V": [a, b, c]}`. Phase-1 supports the
-                // single-payload case; multi-arg tuple variants are rejected
-                // as unsupported shape (users can refactor into a struct
-                // variant for clarity).
-                let key = format_ts_key(&wire_name);
-                match fields.unnamed.len() {
-                    0 => variant_lines.push(quote(config, &wire_name)),
-                    1 => {
-                        let payload_ts = emit_type(&fields.unnamed[0].ty, config, &referenced_by)?;
-                        variant_lines.push(format!("{{ {key}: {payload_ts} }}"));
-                    }
-                    _ => {
-                        return Err(EmitError::UnsupportedShape {
-                            type_path: referenced_by,
-                            reason: format!(
-                                "enum variant `{raw_ident}` has {} tuple fields; phase-1 supports unit, single-tuple, \
-                                 or struct variants (refactor into a struct variant for multi-field payloads)",
-                                fields.unnamed.len()
-                            ),
-                        });
-                    }
+        let body = match &variant.fields {
+            Fields::Unit => VariantBody::Unit,
+            // Tuple-style variant. Phase-1 supports the single-payload case
+            // and the zero-field `V()`; multi-arg tuple variants are
+            // rejected as unsupported shape (users can refactor into a
+            // struct variant for clarity).
+            Fields::Unnamed(fields) => match fields.unnamed.len() {
+                0 => VariantBody::EmptyTuple,
+                1 => {
+                    let ty = &fields.unnamed[0].ty;
+                    VariantBody::Newtype { ts: emit_type(ty, config, &referenced_by)?, is_option: is_option(ty) }
                 }
-            }
+                _ => {
+                    return Err(EmitError::UnsupportedShape {
+                        type_path: referenced_by,
+                        reason: format!(
+                            "enum variant `{raw_ident}` has {} tuple fields; phase-1 supports unit, single-tuple, \
+                             or struct variants (refactor into a struct variant for multi-field payloads)",
+                            fields.unnamed.len()
+                        ),
+                    });
+                }
+            },
+            // The variant's FIELD names are a separate axis that the enum's
+            // `rename_all` does not touch — see `variant_field_rename_all`.
+            // No container-default to inherit: serde rejects
+            // `#[serde(default)]` on an enum outright, so a variant body is
+            // only optional field-by-field.
             Fields::Named(fields) => {
-                // Struct-style variant: serde emits `{"V": {field1: ..., field2: ...}}`.
-                //
-                // The variant KEY is renamed by the enum's `rename_all`
-                // (already applied above, in `wire_name`). The variant's
-                // FIELD names are a separate axis that the enum's
-                // `rename_all` does not touch — see `variant_field_rename_all`.
-                let key = format_ts_key(&wire_name);
                 let field_rename_all = variant_field_rename_all(&container, &variant_attrs);
-                // No container-default to inherit: serde rejects
-                // `#[serde(default)]` on an enum outright, so a variant body
-                // is only optional field-by-field.
-                let collected = collect_named_fields(fields, config, &referenced_by, field_rename_all, false, false)?;
-                let object = (!collected.properties.is_empty()).then(|| {
-                    let body = collected
-                        .properties
-                        .iter()
-                        .map(|(field_key, opt, ty_ts)| format!("{field_key}{opt}: {ty_ts}"))
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    format!("{{ {body} }}")
-                });
-                let payload = intersect(&collected.intersections, object);
-                variant_lines.push(format!("{{ {key}: {payload} }}"));
+                VariantBody::Struct(collect_named_fields(
+                    fields,
+                    config,
+                    &referenced_by,
+                    field_rename_all,
+                    false,
+                    false,
+                )?)
             }
-        }
+        };
+        // A variant-level `#[serde(untagged)]` overrides the enum's
+        // representation for that one variant.
+        let variant_repr = if variant_attrs.untagged { EnumRepr::Untagged } else { repr };
+        variant_lines.push(render_variant(variant_repr, &wire_name, body, config, &referenced_by, &raw_ident)?);
     }
 
     // If every variant was `#[serde(skip)]`, fall back to `never`.
@@ -939,6 +960,134 @@ pub(crate) fn emit_enum_named(
 
     let body = variant_lines.join(" | ");
     Ok(format!("export type {name} = {body};"))
+}
+
+/// How serde lays out an enum on the wire, chosen by the container's
+/// `tag` / `content` / `untagged` attrs.
+#[derive(Clone, Copy)]
+enum EnumRepr<'a> {
+    /// The default: `{"V": payload}`, or `"V"` for a unit variant.
+    External,
+    /// `#[serde(tag = "t")]`: `{"t": "V", ...payload}`.
+    Internal { tag: &'a str },
+    /// `#[serde(tag = "t", content = "c")]`: `{"t": "V", "c": payload}`.
+    Adjacent { tag: &'a str, content: &'a str },
+    /// `#[serde(untagged)]`: the bare payload.
+    Untagged,
+}
+
+/// Pick the enum's representation, refusing the combinations serde itself
+/// refuses to compile.
+fn enum_repr<'a>(container: &'a ContainerAttrs, referenced_by: &TypePath) -> Result<EnumRepr<'a>, EmitError> {
+    let refuse =
+        |attr: &str| EmitError::UnsupportedSerdeAttr { type_path: referenced_by.clone(), attr: attr.to_string() };
+    match (container.tag.as_deref(), container.content.as_deref(), container.untagged) {
+        (None, None, false) => Ok(EnumRepr::External),
+        (Some(tag), None, false) => Ok(EnumRepr::Internal { tag }),
+        (Some(tag), Some(content), false) => Ok(EnumRepr::Adjacent { tag, content }),
+        (None, None, true) => Ok(EnumRepr::Untagged),
+        (None, Some(_), _) => Err(refuse("serde(content) needs serde(tag) alongside it — serde rejects it alone")),
+        (Some(_), _, true) => Err(refuse("serde(untagged) cannot be combined with serde(tag) — serde rejects both")),
+    }
+}
+
+/// A variant's payload, rendered before the representation decides where
+/// it goes.
+enum VariantBody {
+    /// `V`.
+    Unit,
+    /// `V()` — serializes as an empty array.
+    EmptyTuple,
+    /// `V(T)`. `is_option` marks a `T` of `Option<_>`, which serde cannot
+    /// serialize inside an internally tagged variant.
+    Newtype { ts: String, is_option: bool },
+    /// `V { .. }`.
+    Struct(NamedFields),
+}
+
+/// Render one variant as a member of the enum's TS union.
+fn render_variant(
+    repr: EnumRepr<'_>,
+    wire_name: &str,
+    body: VariantBody,
+    config: &EmitConfig,
+    referenced_by: &TypePath,
+    raw_ident: &str,
+) -> Result<String, EmitError> {
+    let tag_prop = |tag: &str| format!("{}: {}", format_ts_key(tag), quote(config, wire_name));
+    Ok(match repr {
+        EnumRepr::External => {
+            let key = format_ts_key(wire_name);
+            match body {
+                VariantBody::Unit => quote(config, wire_name),
+                VariantBody::EmptyTuple => format!("{{ {key}: [] }}"),
+                VariantBody::Newtype { ts, .. } => format!("{{ {key}: {ts} }}"),
+                VariantBody::Struct(fields) => format!("{{ {key}: {} }}", inline_object(fields, &[])),
+            }
+        }
+        EnumRepr::Untagged => match body {
+            VariantBody::Unit => "null".to_string(),
+            VariantBody::EmptyTuple => "[]".to_string(),
+            VariantBody::Newtype { ts, .. } => ts,
+            VariantBody::Struct(fields) => inline_object(fields, &[]),
+        },
+        EnumRepr::Adjacent { tag, content } => {
+            let content_key = format_ts_key(content);
+            match body {
+                VariantBody::Unit => format!("{{ {} }}", tag_prop(tag)),
+                VariantBody::EmptyTuple => format!("{{ {}; {content_key}: [] }}", tag_prop(tag)),
+                VariantBody::Newtype { ts, .. } => format!("{{ {}; {content_key}: {ts} }}", tag_prop(tag)),
+                VariantBody::Struct(fields) => {
+                    format!("{{ {}; {content_key}: {} }}", tag_prop(tag), inline_object(fields, &[]))
+                }
+            }
+        }
+        EnumRepr::Internal { tag } => {
+            let refuse = |what: &str| EmitError::UnsupportedShape {
+                type_path: referenced_by.clone(),
+                reason: format!(
+                    "enum variant `{raw_ident}` {what}, which serde cannot represent under #[serde(tag = \"{tag}\")] \
+                     (use a struct variant, or #[serde(tag = \"...\", content = \"...\")])"
+                ),
+            };
+            match body {
+                VariantBody::Unit => format!("{{ {} }}", tag_prop(tag)),
+                VariantBody::EmptyTuple => return Err(refuse("is a tuple variant")),
+                VariantBody::Newtype { is_option: true, .. } => return Err(refuse("holds an `Option`")),
+                // Serde splices the payload's keys next to the tag, so the
+                // payload must be object-shaped: a scalar or a sequence
+                // fails at serialization time.
+                VariantBody::Newtype { ts, .. } if is_non_object_ts(&ts) => {
+                    return Err(refuse(&format!("holds `{ts}`, which is not an object")));
+                }
+                VariantBody::Newtype { ts, .. } => {
+                    let ts = if ts.contains(" | ") { format!("({ts})") } else { ts };
+                    format!("{{ {} }} & {ts}", tag_prop(tag))
+                }
+                VariantBody::Struct(fields) => inline_object(fields, &[tag_prop(tag)]),
+            }
+        }
+    })
+}
+
+/// Render a struct-variant body on one line, with `leading` properties
+/// (already `key: type` strings, such as an internal tag) placed first.
+/// `#[serde(flatten)]` members become intersection members, as in
+/// [`emit_struct_named`].
+fn inline_object(fields: NamedFields, leading: &[String]) -> String {
+    let props: Vec<String> = leading
+        .iter()
+        .cloned()
+        .chain(fields.properties.iter().map(|(key, opt, ty_ts)| format!("{key}{opt}: {ty_ts}")))
+        .collect();
+    let object = (!props.is_empty()).then(|| format!("{{ {} }}", props.join("; ")));
+    intersect(&fields.intersections, object)
+}
+
+/// True when rendered TS is plainly not an object: a scalar keyword or an
+/// array. Best-effort — a named type is assumed object-shaped.
+fn is_non_object_ts(ts: &str) -> bool {
+    matches!(ts, "string" | "number" | "bigint" | "boolean" | "null" | "unknown") || ts.ends_with("[]")
 }
 
 /// Wrapper types that are silently peeled before re-classification.
@@ -1641,24 +1790,16 @@ mod tests {
     }
 
     #[test]
-    fn enum_tuple_zero_arg_variant_respects_quote_style() {
-        // The `Fields::Unnamed` 0-arg arm goes through the same `quote()`
-        // helper as the `Fields::Unit` arm — assert both delimiter branches
-        // there too. `Foo()` (tuple with no inner types) is unusual but
-        // syntactically valid and the emitter renders it as a string
-        // literal of the variant name.
-        let single = EmitConfig::default();
+    fn enum_tuple_zero_arg_variant_is_an_empty_array() {
+        // `Foo()` serializes as `{"Foo":[]}` — a tuple variant with no
+        // elements — not as the string `"Foo"`, which serde would refuse to
+        // read back as this variant.
         let item = enum_item(
             "pub enum E {
                 Foo(),
             }",
         );
-        let ts = emit_enum(&item, &single).expect("emit ok");
-        assert_eq!(ts, "export type E = 'Foo';");
-
-        let double = EmitConfig { quote_style: QuoteStyle::Double, ..EmitConfig::default() };
-        let ts = emit_enum(&item, &double).expect("emit ok");
-        assert_eq!(ts, "export type E = \"Foo\";");
+        assert_eq!(emit_enum(&item, &EmitConfig::default()).unwrap(), "export type E = { Foo: [] };");
     }
 
     #[test]
@@ -2182,24 +2323,201 @@ mod tests {
         }
     }
 
+    /// Emit `src` as an enum with the default config.
+    fn enum_ts(src: &str) -> Result<String, EmitError> {
+        emit_enum(&enum_item(src), &EmitConfig::default())
+    }
+
     #[test]
-    fn enum_rejects_tag_attr_on_container() {
-        let config = EmitConfig::default();
-        let item = enum_item(
+    fn internally_tagged_enum_puts_the_tag_beside_the_payload() {
+        let ts = enum_ts(
             r#"
-            #[serde(tag = "type")]
+            #[serde(tag = "type", rename_all = "snake_case")]
             pub enum Msg {
-                Click,
-                Hover,
+                Ping,
+                Click(Point),
+                Move { dx: i32, dy: i32 },
+                Empty {},
             }
             "#,
+        )
+        .unwrap();
+        assert_eq!(
+            ts,
+            "export type Msg = { type: 'ping' } | { type: 'click' } & Point | { type: 'move'; dx: number; dy: \
+             number } | { type: 'empty' };"
         );
-        let err = emit_enum(&item, &config).expect_err("tag-attr should fail");
-        match err {
-            EmitError::UnsupportedSerdeAttr { attr, .. } => {
-                assert!(attr.contains("tag"), "attr was: {attr}");
+    }
+
+    #[test]
+    fn internally_tagged_struct_variant_keeps_flatten_as_an_intersection() {
+        let ts = enum_ts(
+            r#"
+            #[serde(tag = "kind")]
+            pub enum Shape {
+                Circle { #[serde(flatten)] base: Base, r: f64 },
             }
-            other => panic!("expected UnsupportedSerdeAttr, got {other:?}"),
+            "#,
+        )
+        .unwrap();
+        assert_eq!(ts, "export type Shape = Base & { kind: 'Circle'; r: number };");
+    }
+
+    #[test]
+    fn internally_tagged_enum_quotes_a_non_ident_tag_key() {
+        let ts = enum_ts(
+            r#"
+            #[serde(tag = "@type")]
+            pub enum E { A }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(ts, "export type E = { \"@type\": 'A' };");
+    }
+
+    #[test]
+    fn internally_tagged_enum_refuses_payloads_serde_cannot_serialize() {
+        for (variant, needle) in [
+            ("A(String)", "not an object"),
+            ("A(Vec<Point>)", "not an object"),
+            ("A(Option<Point>)", "`Option`"),
+            ("A()", "tuple variant"),
+        ] {
+            let err = enum_ts(&format!("#[serde(tag = \"t\")] pub enum E {{ {variant} }}")).unwrap_err();
+            match err {
+                EmitError::UnsupportedShape { reason, .. } => {
+                    assert!(reason.contains(needle), "`{variant}` — reason was: {reason}");
+                }
+                other => panic!("`{variant}`: expected UnsupportedShape, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn adjacently_tagged_enum_nests_the_payload_under_content() {
+        let ts = enum_ts(
+            r#"
+            #[serde(tag = "t", content = "c")]
+            pub enum Msg {
+                Ping,
+                Count(u32),
+                Move { dx: i32 },
+                Nothing(),
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            ts,
+            "export type Msg = { t: 'Ping' } | { t: 'Count'; c: number } | { t: 'Move'; c: { dx: number } } | { t: \
+             'Nothing'; c: [] };"
+        );
+    }
+
+    #[test]
+    fn untagged_enum_renders_bare_payloads() {
+        let ts = enum_ts(
+            r#"
+            #[serde(untagged)]
+            pub enum Value {
+                Nothing,
+                Num(f64),
+                Text(Option<String>),
+                Pair { a: u8 },
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(ts, "export type Value = null | number | string | null | { a: number };");
+    }
+
+    #[test]
+    fn variant_level_untagged_overrides_the_enum_representation() {
+        let ts = enum_ts(
+            r#"
+            #[serde(tag = "t")]
+            pub enum E {
+                A { x: u8 },
+                #[serde(untagged)]
+                Other(String),
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(ts, "export type E = { t: 'A'; x: number } | string;");
+
+        let ts = enum_ts(
+            r#"
+            pub enum E {
+                A(u8),
+                #[serde(untagged)]
+                Other(String),
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(ts, "export type E = { A: number } | string;");
+    }
+
+    #[test]
+    fn enum_refuses_representations_serde_refuses() {
+        for (attrs, needle) in
+            [(r#"content = "c""#, "needs serde(tag)"), (r#"tag = "t", untagged"#, "cannot be combined")]
+        {
+            let err = enum_ts(&format!("#[serde({attrs})] pub enum E {{ A }}")).unwrap_err();
+            match err {
+                EmitError::UnsupportedSerdeAttr { attr, .. } => {
+                    assert!(attr.contains(needle), "`{attrs}` — attr was: {attr}");
+                }
+                other => panic!("`{attrs}`: expected UnsupportedSerdeAttr, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn tagged_or_untagged_enums_are_not_string_sets() {
+        for src in [
+            r#"#[serde(tag = "t")] enum E { A, B }"#,
+            r#"#[serde(tag = "t", content = "c")] enum E { A, B }"#,
+            r#"#[serde(untagged)] enum E { A, B }"#,
+            r#"enum E { A, #[serde(untagged)] B }"#,
+        ] {
+            assert_eq!(unit_variant_wire_names(&enum_item(src)).unwrap(), None, "src: {src}");
+        }
+        assert!(unit_variant_wire_names(&enum_item("enum E { A, B }")).unwrap().is_some());
+    }
+
+    #[test]
+    fn struct_tag_adds_the_struct_name_as_a_leading_property() {
+        let item = struct_item(
+            r#"
+            #[serde(tag = "type")]
+            pub struct Ping { pub at: u64 }
+            "#,
+        );
+        let ts = emit_struct(&item, &EmitConfig::default()).unwrap();
+        assert_eq!(ts, "export type Ping = {\n  type: 'Ping';\n  at: number;\n};");
+
+        // The struct's serde `rename` names the tag value; serde ignores the
+        // tag on deserialize, so a deserialize-only struct makes it optional.
+        let item = struct_item(
+            r#"
+            #[serde(tag = "type", rename = "ping")]
+            pub struct Ping { pub at: u64 }
+            "#,
+        );
+        let ts = emit_struct_named(&item, &EmitConfig::default(), None, true).unwrap();
+        assert!(ts.contains("  type?: 'ping';"), "ts was: {ts}");
+    }
+
+    #[test]
+    fn struct_refuses_enum_only_representation_attrs() {
+        for attrs in [r#"content = "c""#, "untagged"] {
+            let item = struct_item(&format!("#[serde({attrs})] pub struct S {{ pub a: u8 }}"));
+            assert!(
+                matches!(emit_struct(&item, &EmitConfig::default()), Err(EmitError::UnsupportedSerdeAttr { .. })),
+                "`{attrs}` should be refused"
+            );
         }
     }
 

@@ -232,9 +232,10 @@ pub enum EmitError {
         reason: String,
     },
     /// A `#[serde(...)]` attribute isn't supported in phase 1 (e.g.
-    /// `rename(serialize = "...", deserialize = "...")`, or `tag`/`content`/
-    /// `untagged` — see OF-015 phase 2), or appears at a level where serde
-    /// itself wouldn't accept it (`flatten` on a container or variant).
+    /// `rename(serialize = "...", deserialize = "...")`), appears at a level
+    /// where serde itself wouldn't accept it (`flatten` on a container or
+    /// variant, `tag` on a field), or combines into a representation serde
+    /// refuses (`content` without `tag`, `untagged` on a struct).
     UnsupportedSerdeAttr {
         /// Path of the type carrying the attribute.
         type_path: TypePath,

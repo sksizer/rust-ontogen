@@ -122,10 +122,41 @@ export type Step = StepMeta & { id: string };
 
 The flattened field's own name never reaches the wire, so it never appears in the TS. If every field is flattened, the empty property object is dropped and the type is the bare intersection.
 
+### Enum representations — `tag`, `content`, `untagged`
+
+An enum renders in whichever of serde's four representations its attributes select:
+
+| Representation | Rust | Unit `V` | Newtype `V(T)` | Struct `V { x: u8 }` |
+|---|---|---|---|---|
+| External (default) | — | `'V'` | `{ V: T }` | `{ V: { x: number } }` |
+| Internal | `#[serde(tag = "t")]` | `{ t: 'V' }` | `{ t: 'V' } & T` | `{ t: 'V'; x: number }` |
+| Adjacent | `#[serde(tag = "t", content = "c")]` | `{ t: 'V' }` | `{ t: 'V'; c: T }` | `{ t: 'V'; c: { x: number } }` |
+| Untagged | `#[serde(untagged)]` | `null` | `T` | `{ x: number }` |
+
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Event {
+    Ping,
+    Moved { dx: i32, dy: i32 },
+    #[serde(untagged)]
+    Other(String),
+}
+```
+
+```typescript
+export type Event = { type: 'ping' } | { type: 'moved'; dx: number; dy: number } | string;
+```
+
+A variant marked `#[serde(untagged)]` renders as its bare payload whatever the enum's representation. A zero-field tuple variant `V()` is an empty array: `{ V: [] }` externally, `[]` untagged.
+
+Ontogen refuses what serde cannot serialize. Under `tag` alone, a newtype variant must hold an object, so a variant holding a scalar, an array or an `Option`, and any tuple variant, is a hard error. `content` without `tag`, or `untagged` together with `tag`, is a hard error too, as it is in serde.
+
+On a named-field struct, `#[serde(tag = "t")]` adds a leading `t: 'StructName'` property, using the struct's serde `rename` if it has one. Serde ignores that entry on deserialize, so a struct the client only sends marks it optional (`t?:`).
+
 ### Not supported
 
 - Split rename (`rename(serialize = "...", deserialize = "...")`) — hard error. Workaround: two fields plus a `From` impl.
-- The remaining shape-changing enum attrs: `tag`, `content`, `untagged` — hard error.
 
 ## BigInt rendering
 
