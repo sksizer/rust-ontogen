@@ -1,4 +1,4 @@
-import type { AdminEntityConfig } from '@ontogen/admin-types'
+import type { AdminEntityConfig } from '@osdlc/ontogen-admin-types'
 
 export interface PaginatedListResult<T> {
   items: T[]

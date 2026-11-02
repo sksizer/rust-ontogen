@@ -1,4 +1,4 @@
-import type { AdminFieldDef } from '@ontogen/admin-types'
+import type { AdminFieldDef } from '@osdlc/ontogen-admin-types'
 
 type EntityRecord = Record<string, unknown>
 

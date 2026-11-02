@@ -1,4 +1,4 @@
-// @ontogen/admin-types - Framework-agnostic type definitions for the ontogen admin registry.
+// @osdlc/ontogen-admin-types - Framework-agnostic type definitions for the ontogen admin registry.
 // These types are shared between the admin generator (Rust), UI layers (Nuxt, React, etc.),
 // and consuming applications.
 

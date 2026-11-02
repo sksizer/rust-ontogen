@@ -32,6 +32,9 @@ jobs:
       # full-check already includes `test` (format-check + lint + test);
       # the previous standalone `just test` step ran the whole suite twice.
       - run: "just full-check"
+      # The npm packages pack and carry no `workspace:` ranges, so a release
+      # can publish them.
+      - run: "just pack-admin"
       - run: | # shell
           echo "## CI result" >> $GITHUB_STEP_SUMMARY
           echo "✅ Passed" >> $GITHUB_STEP_SUMMARY

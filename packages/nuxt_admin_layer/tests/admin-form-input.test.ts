@@ -1,6 +1,6 @@
 // The form-state rules the create and edit pages delegate to, pinned on
 // their own; admin-edit-page.test.ts covers the edit page's wiring to them.
-import type { AdminFieldDef } from '@ontogen/admin-types'
+import type { AdminFieldDef } from '@osdlc/ontogen-admin-types'
 import { describe, expect, test } from 'vitest'
 
 import { coerceNumberInput } from '../app/components/admin-form-field-number'

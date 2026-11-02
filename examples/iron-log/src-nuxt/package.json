@@ -19,7 +19,7 @@
     "storybook:build": "storybook build -o storybook-static"
   },
   "dependencies": {
-    "@ontogen/admin-layer": "workspace:*",
+    "@osdlc/ontogen-admin-layer": "workspace:*",
     "@nuxt/eslint": "^1.15.2",
     "@nuxt/fonts": "^0.14.0",
     "@nuxt/icon": "^2.2.1",

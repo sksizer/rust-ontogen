@@ -562,11 +562,11 @@ Used by [`install_admin_layer()`](/reference/public-api/#install_admin_layer).
 | Field | Type | Description |
 |-------|------|-------------|
 | `nuxt_config` | `PathBuf` | Path to the Nuxt app's `nuxt.config.ts`. |
-| `layer_path` | `String` | Relative path from the nuxt config to the admin layer package. |
+| `layer_path` | `String` | The layer as `extends` names it: the npm package `@osdlc/ontogen-admin-layer`, or a path relative to the nuxt config for a local checkout. |
 
 ```rust
 AdminLayerConfig {
     nuxt_config: "../src-nuxt/nuxt.config.ts".into(),
-    layer_path: "../crates/ontogen/packages/nuxt_admin_layer".to_string(),
+    layer_path: "@osdlc/ontogen-admin-layer".to_string(),
 }
 ```

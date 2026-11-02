@@ -4,7 +4,7 @@
  * navigateToEdit's setup wiring, so this is exercised through the component
  * rather than a pure function.
  */
-import type { AdminEntityConfig } from '@ontogen/admin-types'
+import type { AdminEntityConfig } from '@osdlc/ontogen-admin-types'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, test } from 'vitest'
 import { defineComponent, h } from 'vue'

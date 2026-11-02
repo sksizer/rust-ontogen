@@ -6,7 +6,7 @@
  * stand-in for it. `NuxtLink` is stubbed (a Nuxt built-in, unavailable
  * standalone); `AdminFormField` is the real component.
  */
-import type { AdminEntityConfig } from '@ontogen/admin-types'
+import type { AdminEntityConfig } from '@osdlc/ontogen-admin-types'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, test } from 'vitest'
 import { defineComponent, h } from 'vue'

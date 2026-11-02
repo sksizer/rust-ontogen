@@ -9,7 +9,7 @@ import {
 
 /**
  * Provides admin entity registry and field definitions for iron-log.
- * Overrides the default empty useAdminRegistry from @ontogen/admin-layer.
+ * Overrides the default empty useAdminRegistry from @osdlc/ontogen-admin-layer.
  */
 export function useAdminRegistry(): {
   adminEntities: AdminEntityConfig[]
