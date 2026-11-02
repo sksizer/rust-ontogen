@@ -32,11 +32,14 @@ jobs:
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}"
-      # release-plz bumps only the crates. The npm packages are versioned in
-      # lockstep with the ontogen crate (scripts/sync-npm-versions.mjs), so
-      # bring them in step on the release PR it just opened or updated, or
-      # `lint` fails there.
-      - name: "Sync the npm package versions on the release PR"
+      # release-plz bumps only the root workspace. Bring the rest in step on
+      # the release PR it just opened or updated:
+      # - the npm packages, versioned in lockstep with the ontogen crate
+      #   (scripts/sync-npm-versions.mjs), or `lint` fails;
+      # - each example's own Cargo.lock, which records the path-dependency
+      #   versions of the ontogen crates, or examples-ci's `--locked` builds
+      #   fail. `cargo metadata` rewrites only what the bump changed.
+      - name: "Sync npm versions and example lockfiles on the release PR"
         if: "steps.release-plz.outputs.pr != '' && steps.release-plz.outputs.pr != '{}'"
         env:
           PR_BRANCH: "${{ fromJSON(steps.release-plz.outputs.pr).head_branch }}"
@@ -44,10 +47,13 @@ jobs:
           git fetch origin "$PR_BRANCH"
           git switch -C "$PR_BRANCH" FETCH_HEAD
           node scripts/sync-npm-versions.mjs
+          git ls-files 'examples/**/Cargo.lock' | while read -r lock; do
+            cargo metadata --format-version 1 --manifest-path "$(dirname "$lock")/Cargo.toml" >/dev/null
+          done
           if ! git diff --quiet; then
             git -c user.name="github-actions[bot]" \
                 -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-                commit -am "chore: sync npm package versions with the ontogen crate"
+                commit -am "chore: sync npm versions and example lockfiles with the release"
             git push origin "HEAD:$PR_BRANCH"
           fi
 
