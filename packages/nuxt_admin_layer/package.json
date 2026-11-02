@@ -14,11 +14,11 @@
   "files": [
     "app/**",
     "modules/**",
-    "generated/**",
     "nuxt.config.ts",
     "admin-fields.ts"
   ],
   "dependencies": {
+    "@nuxt/kit": "^4.0.0",
     "pathe": "^2.0.0"
   },
   "peerDependencies": {

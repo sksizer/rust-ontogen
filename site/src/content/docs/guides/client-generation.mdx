@@ -355,10 +355,10 @@ The registry's types and a ready-made Nuxt admin UI that reads it are published 
 - `@osdlc/ontogen-admin-types` — the `AdminFieldDef` / `AdminEntityConfig` types the generated registry imports.
 - `@osdlc/ontogen-admin-layer` — a Nuxt layer with list, detail, create and edit pages for every entity in the registry.
 
-Both are released with the `ontogen` crate and share its version, so install the version that matches your `ontogen` dependency:
+Both are released with the `ontogen` crate and share its version, starting at 0.10. Install the version that matches your `ontogen` dependency; for `ontogen = "0.10"`:
 
 ```bash
-pnpm add @osdlc/ontogen-admin-layer@0.9 @osdlc/ontogen-admin-types@0.9
+pnpm add @osdlc/ontogen-admin-layer@0.10 @osdlc/ontogen-admin-types@0.10
 ```
 
 Then name the layer in `nuxt.config.ts`, by hand or from `build.rs` with [`install_admin_layer`](/reference/public-api/#install_admin_layer):
