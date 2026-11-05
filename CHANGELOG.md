@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-11-02
+
+### ⚠ BREAKING CHANGES
+
+- publish the admin packages to npm as @osdlc/ontogen-admin-* (#214)
+
+### Added
+
+- publish the admin packages to npm as @osdlc/ontogen-admin-* (#214) **(breaking)**
+
+
+
 ## [0.9.0] - 2026-11-02
 
 ### ⚠ BREAKING CHANGES
