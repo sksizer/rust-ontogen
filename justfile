@@ -300,7 +300,9 @@ publish-admin *flags: pack-admin
         echo "@osdlc/$name@$version is already on npm; skipping"
         continue
       fi
-      npm publish "dist/osdlc-$name-$version.tgz" --access public {{flags}}
+      # The ./ matters: npm reads `dist/<name>.tgz` as the GitHub repo
+      # shorthand `<user>/<repo>` and tries to git-clone it.
+      npm publish "./dist/osdlc-$name-$version.tgz" --access public {{flags}}
     done
 
 # Stage the admin packages on npm, once, before their first CI release. npm
