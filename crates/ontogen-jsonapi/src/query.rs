@@ -358,6 +358,14 @@ impl QueryParams {
         member_value(self.op_args.get(name), &format!("opArg[{name}]"))
     }
 
+    /// As [`op_arg`](Self::op_arg), for a required argument a custom `GET`
+    /// reads from the query (`#[ontogen(query)]`): absent is
+    /// `400 invalid_query_parameter` too.
+    pub fn required_op_arg<T: DeserializeOwned>(&self, name: &str) -> Result<T, ErrorObject> {
+        let parameter = format!("opArg[{name}]");
+        member_value(self.op_args.get(name), &parameter)?.ok_or_else(|| required(&parameter))
+    }
+
     /// `opArg[{name}]` read as a page value, or `None` when absent: the
     /// digits `page[offset]` takes (§7.2), `0` included. A paginated list
     /// that is not served as a resource takes its page as `opArg[limit]` and
@@ -816,6 +824,16 @@ mod tests {
         assert_eq!(q.op_arg::<String>("empty").unwrap(), Some(String::new()));
         // Absent is `None`; the name was accepted by the route.
         assert_eq!(QueryParams::parse(Some(""), &SPEC).unwrap().op_arg::<bool>("verbose").unwrap(), None);
+    }
+
+    #[test]
+    fn a_required_op_arg_is_read_or_named_when_absent() {
+        const SPEC: QuerySpec = QuerySpec { op_args: &["path"], ..QuerySpec::NONE };
+        let q = QueryParams::parse(Some("opArg%5Bpath%5D=plugins%2Fp%2Fx.md"), &SPEC).unwrap();
+        assert_eq!(q.required_op_arg::<String>("path").unwrap(), "plugins/p/x.md");
+        let err = QueryParams::parse(None, &SPEC).unwrap().required_op_arg::<String>("path").unwrap_err();
+        assert_eq!((err.status(), err.code()), (StatusCode::BAD_REQUEST, "invalid_query_parameter"));
+        assert!(matches!(err.source(), Some(crate::ErrorSource::Parameter(p)) if p == "opArg[path]"));
     }
 
     #[test]

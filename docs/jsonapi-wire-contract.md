@@ -1891,7 +1891,8 @@ HTTP/1.1 200 OK
 ### 10.2 Requests
 
 Routes are `/api/{url_for_module}/{action}`, plus one path segment per
-required non-`Input` parameter on `GET`.
+required non-`Input` parameter on `GET` that is not marked
+`#[ontogen(query)]`.
 
 **`POST` bodies are meta-only documents.** Every argument that is not
 state, store or a path parameter is a member of `meta.args`, keyed by its
@@ -1946,6 +1947,20 @@ An `*Input` parameter on an op served without a body (a custom `GET`,
   define, such as a bare `?verbose=true`. An implementation-specific family
   must contain a non-`a-z` character, and the spec recommends a capital
   letter. `opArg` is that family.
+
+**A required `GET` argument marked `#[ontogen(query)]` is an `opArg` too.**
+A value that holds `/` would otherwise be sent in the path as `%2F`, which
+proxies and path guards refuse. The marker (or an entry in
+`NamingConfig::query_args`) moves the argument to `opArg[{name}]`. For
+illustration, `get_publish_status(store, #[ontogen(query)] entry: &str)` is
+served as `GET /api/vaults/publish-status?opArg[entry]=plugins%2Fp%2Fx.md`.
+
+- It is read as an `Option` argument is, and must be one value of the same
+  kinds.
+- When absent it is `400 invalid_query_parameter` with `source.parameter`
+  `opArg[{name}]`.
+- Only a custom `GET` takes the marker. On any other op it is a
+  `CodegenError` in a build that generates an HTTP server or client.
 
 ### 10.3 Singletons
 
@@ -2449,7 +2464,7 @@ no source change.
 | `xListX(parentId, limit?, offset?)` (the same, paginated module) | as above, plus `page[offset]`, `page[limit]` when defined | `PaginatedResult` from `data` and `meta`, as for `xList` |
 | `xAddY(parentId, childId)` (the same) | `POST …/relationships/{rel}`, body `{data:[{type, id: childId}]}` | `null` (204) |
 | `xRemoveY(parentId, childId)` (the same) | `DELETE …/relationships/{rel}`, same body | `null` (204) |
-| custom `GET` | `GET /api/{m}/{action}/{path…}`, `Option` args as `opArg[name]` | `meta.result`, or `null` on 204 |
+| custom `GET` | `GET /api/{m}/{action}/{path…}`, `Option` args and those marked `#[ontogen(query)]` as `opArg[name]` | `meta.result`, or `null` on 204 |
 | custom `POST` | body `{meta:{args:{<rust_param_name>: value, …}}}` | `meta.result`, or `null` on 204 |
 | op served as custom (§10.4), junction ops outside a resource module included | its §10.4 route | `meta.result`, or `null` on 204 |
 | lone `xListX(param)` (§9.1) | the custom `GET` `/api/{type}/{action}/{param}` | `meta.result`, its plain array |

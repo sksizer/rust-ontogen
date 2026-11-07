@@ -859,6 +859,7 @@ mod tests {
                     name: (*name).to_string(),
                     ty: (*ty).to_string(),
                     ty_ast: syn::parse_str(ty).unwrap(),
+                    in_query: false,
                 })
                 .collect(),
             return_type: "Vec<Epic>".to_string(),

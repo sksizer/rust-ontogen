@@ -228,6 +228,13 @@ pub struct OntogenTaskGetSummaryInput {
     pub limit: Option<u32>,
 }
 
+/// The arguments of the `get_attachment` tool.
+#[derive(::schemars::JsonSchema)]
+pub struct OntogenTaskGetAttachmentInput {
+    pub id: String,
+    pub path: String,
+}
+
 /// The arguments of the `capture` tool.
 #[derive(::schemars::JsonSchema)]
 pub struct OntogenTaskCaptureInput {
@@ -933,6 +940,22 @@ pub fn generated_tool_registry() -> Vec<McpToolDef> {
                     let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
                     let ontogen_result =
                         task::get_summary(&ontogen_store, status, verbose, limit).await.map_err(|e| e.to_string())?;
+                    ::serde_json::to_value(ontogen_result).map_err(|e| format!("Serialize error: {e}"))
+                })
+            },
+        },
+        McpToolDef {
+            name: "task_get_attachment",
+            description: "The file `path` of the task `id`, as `{id}:{path}`. A path holds `/`, so it is read from `opArg[path]` instead of a path segment.",
+            schema_fn: schema_for::<OntogenTaskGetAttachmentInput>,
+            handler: |ontogen_state, ontogen_args| {
+                Box::pin(async move {
+                    refuse_unknown_args(ontogen_args, schema_for::<OntogenTaskGetAttachmentInput>())?;
+                    let id = required_str(ontogen_args, "id")?;
+                    let path = required_str(ontogen_args, "path")?;
+                    let ontogen_store = ontogen_state.store().await.map_err(|e| e.to_string())?;
+                    let ontogen_result =
+                        task::get_attachment(&ontogen_store, id, path).await.map_err(|e| e.to_string())?;
                     ::serde_json::to_value(ontogen_result).map_err(|e| format!("Serialize error: {e}"))
                 })
             },

@@ -1,9 +1,9 @@
 //! No-op proc-macros that make ontogen attributes legal Rust.
 //!
 //! All actual interpretation of these attributes happens in `build.rs` via `syn`.
-//! This crate never contains logic - it just passes the annotated item through
-//! unchanged (modulo stripping the ontogen-specific attribute itself, where
-//! the macro is the attribute).
+//! This crate never contains logic - it passes the annotated item through
+//! unchanged, except that a fn-level macro removes the `#[ontogen(...)]`
+//! markers on the fn's arguments, which Rust would otherwise reject.
 
 #![forbid(unsafe_code)]
 
@@ -34,8 +34,8 @@ pub fn derive_ontology_entity(_input: TokenStream) -> TokenStream {
 /// Attribute macro that marks a `pub fn` in an API module as stateless, i.e.
 /// not threading the configured state/store type as its first parameter.
 ///
-/// The attribute itself expands to a no-op pass-through of the annotated
-/// item; the ontogen parser (`servers::parse`) reads the attribute via `syn`
+/// The attribute passes the annotated item through, minus any
+/// `#[ontogen(...)]` argument markers (see [`ontogen`]); the ontogen parser (`servers::parse`) reads the attribute via `syn`
 /// during build-time scanning and emits a handler shape that omits the
 /// state/store extractor.
 ///
@@ -52,7 +52,7 @@ pub fn derive_ontology_entity(_input: TokenStream) -> TokenStream {
 /// (with a `cargo:warning=` per skip).
 #[proc_macro_attribute]
 pub fn stateless(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+    strip_arg_markers(item)
 }
 
 /// Attribute macro that forces an annotated `pub fn` to classify as
@@ -64,8 +64,8 @@ pub fn stateless(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// separate HTTP-method-shape attributes from routing-shape-agnostic
 /// markers (`stateless`, `rename`, `skip`).
 ///
-/// The attribute itself expands to a no-op pass-through of the annotated
-/// item; the ontogen parser (`servers::parse`) reads the attribute via `syn`
+/// The attribute passes the annotated item through, minus any
+/// `#[ontogen(...)]` argument markers (see [`ontogen`]); the ontogen parser (`servers::parse`) reads the attribute via `syn`
 /// during build-time scanning and stamps
 /// `ApiFn::force_method = Some(ForcedMethod::Post)`. The classifier
 /// consults that field before running its heuristic and returns
@@ -108,14 +108,14 @@ pub fn stateless(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `get_*` with a body-carrying first param routes as `CustomPost`, etc.).
 #[proc_macro_attribute]
 pub fn post(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+    strip_arg_markers(item)
 }
 
 /// Attribute macro that forces an annotated `pub fn` to classify as
 /// `OpKind::CustomGet`, overriding the auto-classifier.
 ///
 /// The counterpart to [`post`], and canonical path `#[ontogen::http::get]`.
-/// Like `post`, it expands to a no-op pass-through; the ontogen parser
+/// Like `post`, it passes the item through minus its argument markers; the ontogen parser
 /// (`servers::parse`) reads it via `syn` during build-time scanning and
 /// stamps `ApiFn::force_method = Some(ForcedMethod::Get)`.
 ///
@@ -161,20 +161,33 @@ pub fn post(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// to the same `ForcedMethod::Get` classification.
 #[proc_macro_attribute]
 pub fn get(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+    strip_arg_markers(item)
 }
 
 /// Pass-through attribute macro for per-function ontogen directives.
 ///
-/// The macro itself is a no-op - the annotated item is returned unchanged so the
-/// source remains legal Rust and rust-analyzer / rustdoc still see the original
-/// signature. The build script (which calls into `ontogen`) parses the
-/// attribute via `syn` and feeds the directives into the codegen pipeline.
+/// The macro returns the annotated fn unchanged, minus the `#[ontogen(...)]`
+/// markers on its arguments, so the source remains legal Rust and
+/// rust-analyzer / rustdoc still see the original signature. The build
+/// script (which calls into `ontogen`) parses the attributes via `syn` and
+/// feeds the directives into the codegen pipeline.
 ///
-/// Today only the `rename` directive is interpreted: it overrides the emitted
-/// IPC command / TS method name for a single function. The HTTP route path,
-/// the underlying Rust function name, and the generated query/body struct
-/// names are unchanged.
+/// Two directives are interpreted:
+///
+/// - `#[ontogen(rename = "...")]` on the fn overrides the emitted IPC
+///   command / TS method name for that function. The HTTP route path, the
+///   underlying Rust function name, and the generated query/body struct
+///   names are unchanged.
+/// - `#[ontogen(query)]` on a required argument of a custom `GET` sends it
+///   as the query parameter `opArg[name]` instead of a path segment. Use it
+///   for a value that can contain `/`, such as a file path.
+///
+/// Rust accepts no attribute macro on an argument, so a fn whose arguments
+/// carry `#[ontogen(query)]` needs a fn-level ontogen macro to remove them:
+/// this one (bare `#[ontogen]` when there is nothing to rename),
+/// `#[ontogen::stateless]`, `#[ontogen::http::get]` or `#[ontogen::http::post]`.
+/// Use the version of this crate that your `ontogen` pins: an older one
+/// leaves the markers in place, and rustc rejects them.
 ///
 /// Usage:
 /// ```ignore
@@ -184,13 +197,40 @@ pub fn get(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// pub fn get_tag_history(store: &Store, tag: &str) -> Result<Vec<HistoryEntry>, Error> {
 ///     // ... unchanged
 /// }
-/// ```
 ///
-/// Future per-function directives can slot into the same `#[ontogen(...)]`
-/// umbrella.
+/// #[ontogen]
+/// pub fn get_publish_status(store: &Store, #[ontogen(query)] entry: &str) -> Result<Status, Error> {
+///     // ... unchanged
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn ontogen(_args: TokenStream, input: TokenStream) -> TokenStream {
-    input
+    strip_arg_markers(input)
+}
+
+/// This crate's version as a string literal, so that `ontogen` can tell a
+/// consumer which `ontogen-macros` its argument markers need.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __version(_input: TokenStream) -> TokenStream {
+    format!("{:?}", env!("CARGO_PKG_VERSION")).parse().expect("a string literal")
+}
+
+/// Remove the `#[ontogen(...)]` markers from a fn's arguments, such as
+/// `#[ontogen(query)]`. Rust accepts no attribute macro on an argument, so
+/// the fn-level macro removes them before the compiler sees them. An item
+/// with no such marker, or one that is not a fn, passes through untouched.
+fn strip_arg_markers(item: TokenStream) -> TokenStream {
+    let Ok(mut func) = syn::parse::<syn::ItemFn>(item.clone()) else { return item };
+    let mut stripped = false;
+    for input in &mut func.sig.inputs {
+        if let syn::FnArg::Typed(arg) = input {
+            let before = arg.attrs.len();
+            arg.attrs.retain(|attr| !attr.path().is_ident("ontogen"));
+            stripped |= arg.attrs.len() != before;
+        }
+    }
+    if stripped { quote::ToTokens::into_token_stream(func).into() } else { item }
 }
 
 /// Mark a type as opaque from ontogen-ts's perspective. The walker treats

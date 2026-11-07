@@ -246,7 +246,7 @@ After this change:
 - The TypeScript client method is `tagGetHistory()` (was `journalGetTagHistory()`).
 - The HTTP route path, the underlying Rust function `journal::get_tag_history`, and any generated query/body struct names are **unchanged**. The override is a naming fix for IPC and TypeScript surfaces only.
 
-The macro is a no-op at compile time -- it just makes the attribute legal Rust so rust-analyzer and rustdoc see the original signature. The build script reads it via `syn`.
+The macro does nothing at compile time beyond making the attribute legal Rust (and removing any `#[ontogen(query)]` argument markers), so rust-analyzer and rustdoc see the original signature. The build script reads it via `syn`.
 
 <Aside type="caution">
   If you write `#[ontogen(rename = ...)]` with a non-string literal value (e.g., a number), the build script drops the function from generated transports and prints a `cargo:warning`. Fix the value or remove the attribute.
@@ -273,6 +273,30 @@ let config = ServersConfig {
 ```
 
 Keys are `"module::fn_name"`. **Source wins:** if a function carries both a `#[ontogen(rename = "...")]` attribute and a matching config entry, the attribute is preserved and the config entry is silently ignored. The attribute is co-located with the function, so a reader looking at the source has the full naming story; the config map is an escape hatch.
+
+## Sending an argument in the query: `#[ontogen(query)]`
+
+Over HTTP a custom `GET` puts each required argument in the URL path, one segment each, encoded with `encodeURIComponent`. A value that holds `/` is then sent as `%2F`, which many proxies and path guards refuse. Mark the argument `#[ontogen(query)]` to send it as the query parameter `opArg[{name}]` instead:
+
+```rust
+use ontogen::ontogen;
+
+#[ontogen]
+pub async fn get_publish_status(store: &Store, #[ontogen(query)] entry: &str, root: &str) -> Result<Status, Error> {
+    // ... unchanged
+}
+```
+
+This is served as `GET /api/vaults/publish-status/{root}?opArg[entry]=…`, and the TypeScript method is still `vaultGetPublishStatus(entry, root)`. Use it for an argument whose value can contain `/`, such as a file path.
+
+- The argument stays required: a request without it is `400 invalid_query_parameter`, with `source.parameter` set to `opArg[entry]`.
+- Rust accepts no attribute macro on an argument, so the function needs a fn-level ontogen attribute to remove the marker: bare `#[ontogen]`, `#[ontogen(rename = "...")]`, `#[ontogen::stateless]`, `#[ontogen::http::get]` or `#[ontogen::http::post]`. Without one, the build script drops the function with a `cargo:warning` that says what to add.
+- The marker needs the `ontogen-macros` released with your `ontogen`. With an older one rustc fails with `expected non-macro attribute, found attribute macro`, and the build script warns which version to set. Move a separate `ontogen-macros` pin together with `ontogen`.
+- Only a custom `GET` takes it over HTTP; anywhere else the build fails. IPC and MCP read arguments by name and ignore it.
+- Anything but a bare `query` in an argument's `#[ontogen(...)]` -- a malformed marker (`#[ontogen(query = ...)]`, `#[ontogen(query(...))]`) or an unknown directive (`#[ontogen(qurey)]`) -- drops the function from generated transports with a `cargo:warning`.
+- From the build script, list the argument in [`NamingConfig::query_args`](/reference/configuration/#namingconfig) as `"module::fn_name::arg"`. An argument marked on either side is sent in the query.
+
+See [Required arguments in the query](/cookbook/custom-api-endpoints/#required-arguments-in-the-query-ontogenquery) for a before-and-after example, how it compares with path and `Option` arguments, and the wire details.
 
 ## Event streams
 
@@ -386,7 +410,7 @@ pub fn now() -> Result<i64, AppError> {
 }
 ```
 
-The attribute itself is a no-op proc-macro: the function body and signature pass through unchanged at expansion time. The ontogen parser reads it at build time and emits handler shapes that:
+The attribute itself does nothing at expansion time: the function body and signature pass through unchanged, minus any `#[ontogen(query)]` argument markers. The ontogen parser reads it at build time and emits handler shapes that:
 
 - Omit the `State<...>` extractor (HTTP) / `tauri::State` argument (IPC).
 - Skip Store construction and prefix validation.

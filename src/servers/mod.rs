@@ -8,6 +8,7 @@ pub(crate) mod classify;
 pub(crate) mod config;
 pub(crate) mod error_map;
 pub(crate) mod generators;
+pub(crate) mod macros_version;
 pub(crate) mod parse;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -115,8 +116,11 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
     for m in modules {
         for f in &m.functions {
             let command_name = generators::ipc::command_name(&m.name, f, config);
-            let params: Vec<ParamMeta> =
-                f.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
+            let params: Vec<ParamMeta> = f
+                .params
+                .iter()
+                .map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone(), in_query: p.in_query })
+                .collect();
 
             if !generators::http::is_relationship_op(m, f, config) {
                 let (method, path) = generators::http::route_of(m, f, config);
@@ -168,11 +172,15 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
                 });
             }
 
-            let mut subscribe_params: Vec<ParamMeta> =
-                ev.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
+            let mut subscribe_params: Vec<ParamMeta> = ev
+                .params
+                .iter()
+                .map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone(), in_query: p.in_query })
+                .collect();
             subscribe_params.push(ParamMeta {
                 name: "channel".to_string(),
                 param_type: format!("tauri::ipc::Channel<ontogen_core::events::EventFrame<{}>>", ev.item_type),
+                in_query: false,
             });
             ipc_commands.push(IpcCommandMeta {
                 command_name: format!("{}_subscribe", ev.name),
@@ -181,7 +189,7 @@ fn extract_server_metadata(modules: &[parse::ApiModule], config: &config::Config
             });
             ipc_commands.push(IpcCommandMeta {
                 command_name: format!("{}_unsubscribe", ev.name),
-                params: vec![ParamMeta { name: "id".to_string(), param_type: "u64".to_string() }],
+                params: vec![ParamMeta { name: "id".to_string(), param_type: "u64".to_string(), in_query: false }],
                 return_type: "bool".to_string(),
             });
         }
@@ -221,10 +229,12 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     }
 
     let mut modules = scanned.modules;
+    macros_version::warn_if_stale(&modules);
     parse::qualify_shared_types(&mut modules, &surfaces);
     check_names(&modules, config)?;
     parse::apply_singleton_overlay(&mut modules, &config.naming);
     parse::apply_command_overrides(&mut modules, &config.naming);
+    parse::apply_query_args(&mut modules, &config.naming);
     parse::check_paginated_lists(&mut modules, &config.pagination, &config.extra_surfaces)?;
     if modules.is_empty() {
         return Ok(modules);

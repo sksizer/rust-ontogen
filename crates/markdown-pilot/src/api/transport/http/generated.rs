@@ -1887,6 +1887,24 @@ async fn task_get_summary(
     Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))
 }
 
+struct OntogenTaskGetAttachmentOpArgs;
+
+impl OntogenRouteQuery for OntogenTaskGetAttachmentOpArgs {
+    const SPEC: OntogenQuerySpec = OntogenQuerySpec { op_args: &["path"], ..OntogenQuerySpec::NONE };
+}
+
+async fn task_get_attachment(
+    OntogenState(ontogen_state): OntogenState<::std::sync::Arc<AppState>>,
+    _: OntogenAcceptGuard,
+    OntogenPath(id): OntogenPath<String>,
+    ontogen_query: OntogenQuery<OntogenTaskGetAttachmentOpArgs>,
+) -> Result<OntogenResponse, OntogenErrorObject> {
+    let path = ontogen_query.required_op_arg::<String>("path")?;
+    let ontogen_store = ontogen_state.store().await.map_err(ontogen_internal_error)?;
+    let ontogen_result = task::get_attachment(&ontogen_store, &id, &path).await.map_err(ontogen_app_error)?;
+    Ok(::ontogen_jsonapi::response::ok(&OntogenDocument::meta_only(OntogenResultMeta { result: ontogen_result })))
+}
+
 async fn task_capture(
     OntogenState(ontogen_state): OntogenState<::std::sync::Arc<AppState>>,
     _: OntogenAcceptGuard,
@@ -2546,6 +2564,10 @@ pub fn entity_routes() -> ::axum::Router<::std::sync::Arc<AppState>> {
         .route(
             "/api/tasks/summary/{status}",
             ::axum::routing::get(task_get_summary).fallback(ontogen_allow([OntogenMethod::GET])),
+        )
+        .route(
+            "/api/tasks/attachment/{id}",
+            ::axum::routing::get(task_get_attachment).fallback(ontogen_allow([OntogenMethod::GET])),
         )
         .route("/api/tasks/capture", ::axum::routing::post(task_capture).fallback(ontogen_allow([OntogenMethod::POST])))
         .route(
