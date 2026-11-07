@@ -170,7 +170,7 @@ Accept: application/vnd.api+json
 ```
 
 - Any other query parameter -- a bare `?verbose=true`, an `opArg[…]` the function does not declare -- or a value serde rejects is `400 invalid_query_parameter`, with `source.parameter` naming it.
-- An `Option` argument read from `opArg` must have a plain inner type (`Option<bool>`, `Option<String>`, `Option<u32>`). One with generic arguments (`Option<Vec<String>>`), a tuple, or a schema entity fails the build, and so does an `*Input` argument on a `GET`: there is no body to carry it.
+- An `Option` argument read from `opArg` must have a plain inner type: a path with no generic arguments that names no schema entity (`Option<bool>`, `Option<String>`, `Option<u32>`, `Option<Uuid>`, a unit enum). One with generic arguments (`Option<Vec<String>>`), a tuple, or a schema entity fails the build, and so does an `*Input` argument on a `GET`: there is no body to carry it.
 
 #### Required arguments in the query: `#[ontogen(query)]`
 
@@ -194,9 +194,10 @@ Accept: application/vnd.api+json
 
 - Use it for an argument whose value can contain `/`, such as a file path or a vault note path. A plain id or slug can stay in the path.
 - The argument is still required: a request without it is `400 invalid_query_parameter`, with `source.parameter` naming it (`opArg[entry]`).
-- The function needs a fn-level ontogen attribute to remove the markers: `#[ontogen]` (or `#[ontogen(rename = "...")]`), `#[ontogen::stateless]` or `#[ontogen::http::get]`.
-- Only a custom `GET` takes the marker over HTTP. On a `POST`, a CRUD or junction op, or an event op it fails the build. Its type must be one value: a string, number, bool or unit enum. IPC and MCP read every argument by name, so the marker changes nothing there.
-- A malformed marker (`#[ontogen(query = true)]`, `#[ontogen(query(x))]`) drops the function with a `cargo:warning`, as a malformed `rename` does.
+- The function needs a fn-level ontogen attribute to remove the markers: `#[ontogen]` (or `#[ontogen(rename = "...")]`), `#[ontogen::stateless]`, `#[ontogen::http::get]` or `#[ontogen::http::post]`. Without one, the build script drops the function with a `cargo:warning` that says what to add, and rustc fails with `expected non-macro attribute, found attribute macro`.
+- The marker needs the `ontogen-macros` version your `ontogen` was released with. An older one leaves the marker in place, and rustc fails with the same `expected non-macro attribute, found attribute macro` error. If you pin `ontogen-macros` separately, move it with `ontogen`; the build script warns, naming the version to set, when `Cargo.lock` resolves an older one. The generated server also needs the matching `ontogen-jsonapi`, which adds `QueryParams::required_op_arg`.
+- Only a custom `GET` takes the marker over HTTP. On a `POST`, a CRUD or junction op, or an event op it fails the build. Its type must be one that a single query value carries: a plain path type with no generic arguments that names no schema entity, under any `&` and one `Option`. Strings, numbers, `bool`, `Uuid` and unit enums qualify; `Vec<T>`, maps, tuples and entities do not. That is the same rule as for an `Option` argument. IPC and MCP read every argument by name, so the marker changes nothing there.
+- Anything else in an argument's `#[ontogen(...)]` -- a malformed marker (`#[ontogen(query = true)]`, `#[ontogen(query(x))]`, a bare `#[ontogen]`) or an unknown directive such as a typo (`#[ontogen(qurey)]`) -- drops the function with a `cargo:warning`. Unlike on a function, an unknown directive is not ignored: the macro strips it either way, so a typo would otherwise leave the argument in the path.
 - The TypeScript method keeps the Rust argument order. Only where each value travels changes.
 - When the source cannot carry the attribute, name the argument in [`NamingConfig::query_args`](/reference/configuration/#namingconfig) as `"module::fn_name::arg"`.
 

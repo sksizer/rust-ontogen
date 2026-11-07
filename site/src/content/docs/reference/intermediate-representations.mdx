@@ -167,7 +167,7 @@ Returned by `gen_api()`. The unified view of all API endpoints -- both generated
 |-------|------|-------------|
 | `name` | `String` | Parameter name. |
 | `param_type` | `String` | Parameter type as a string (e.g., `"&str"`, `"Option<u32>"`). |
-| `in_query` | `bool` | `true` when the argument was annotated `#[ontogen(query)]` or is named in `NamingConfig::query_args`. A custom `GET` then reads it from the query parameter `opArg[name]` instead of a path segment, even when it is required. IPC and MCP ignore it. Generated CRUD and store parameters always set this to `false`. See [Sending an argument in the query](/guides/api-layer/#sending-an-argument-in-the-query-ontogenquery). |
+| `in_query` | `bool` | `true` when a custom `GET` reads the argument from the query parameter `opArg[name]` instead of a path segment, even when it is required. In `ApiOutput` it reflects only the source-side `#[ontogen(query)]` marker, since the api stage takes no `NamingConfig`; in `ServersOutput` (`IpcCommandMeta` and `McpToolMeta` params) it also reflects `NamingConfig::query_args`. IPC and MCP ignore it. Generated CRUD and store parameters always set this to `false`. See [Sending an argument in the query](/guides/api-layer/#sending-an-argument-in-the-query-ontogenquery). |
 
 `ParamMeta` derives `Default`, so code outside ontogen can build one as `ParamMeta { name, param_type, ..Default::default() }` and keep compiling when a field is added.
 
