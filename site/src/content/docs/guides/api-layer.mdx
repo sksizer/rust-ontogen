@@ -296,7 +296,7 @@ This is served as `GET /api/vaults/publish-status/{root}?opArg[entry]=…`, and 
 - Anything but a bare `query` in an argument's `#[ontogen(...)]` -- a malformed marker (`#[ontogen(query = ...)]`, `#[ontogen(query(...))]`) or an unknown directive (`#[ontogen(qurey)]`) -- drops the function from generated transports with a `cargo:warning`.
 - From the build script, list the argument in [`NamingConfig::query_args`](/reference/configuration/#namingconfig) as `"module::fn_name::arg"`. An argument marked on either side is sent in the query.
 
-See [Required arguments in the query](/cookbook/custom-api-endpoints/#required-arguments-in-the-query-ontogenquery) for the wire details.
+See [Required arguments in the query](/cookbook/custom-api-endpoints/#required-arguments-in-the-query-ontogenquery) for a before-and-after example, how it compares with path and `Option` arguments, and the wire details.
 
 ## Event streams
 

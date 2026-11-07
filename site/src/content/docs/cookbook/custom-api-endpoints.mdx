@@ -174,7 +174,35 @@ Accept: application/vnd.api+json
 
 #### Required arguments in the query: `#[ontogen(query)]`
 
-The TypeScript client encodes a path segment with `encodeURIComponent`, so a value that holds `/` reaches the server as `%2F`: `plugins/p/x.md` becomes `/api/vaults/publish-status/plugins%2Fp%2Fx.md`. Many proxies and path guards refuse an encoded slash in a URL path, because it can carry a `../` past their checks. Mark such an argument `#[ontogen(query)]` and it travels as `opArg[{name}]` instead, like an `Option` argument:
+The TypeScript client encodes a path segment with `encodeURIComponent`, so a value that holds `/` reaches the server as `%2F`: `plugins/p/x.md` becomes `/api/vaults/publish-status/plugins%2Fp%2Fx.md`. Many proxies and path guards refuse an encoded slash in a URL path, because it can carry a `../` past their checks. A guard checks only the path, not the query string. So the fix is to move the value out of the path:
+
+```text
+entry = "plugins/p/x.md"
+
+Unmarked:  GET /api/vaults/publish-status/plugins%2Fp%2Fx.md        refused by a path guard
+Marked:    GET /api/vaults/publish-status?opArg[entry]=plugins/p/x.md  the path is just /publish-status
+```
+
+(In a real request the query is percent-encoded too, as below. That is normal for a query string.)
+
+A custom `GET` argument is one of three kinds:
+
+| In Rust | Where it goes in the URL | When the request leaves it out |
+|---|---|---|
+| `id: &str` | a path segment: `/…/{id}` | the URL does not match the route |
+| `verbose: Option<bool>` | the query: `?opArg[verbose]=true` | the function gets `None` |
+| `#[ontogen(query)] entry: &str` | the query: `?opArg[entry]=…` | `400 invalid_query_parameter`, naming `opArg[entry]` |
+
+A marked argument is not optional. It is still required, and only where it travels changes. It uses the `opArg[…]` form that `Option` arguments already use, so anything in the query is `opArg[{name}]`.
+
+What happens to a marked argument:
+
+1. The build script reads the marker and records the argument as a query argument.
+2. The generated TypeScript method keeps its name and argument order, and puts the value in `opArg[entry]` instead of the path.
+3. The generated Axum route has no segment for the argument. Its handler reads `opArg[entry]`, and answers `400` when it is missing.
+4. Your function is called with the decoded value, `"plugins/p/x.md"`, as before.
+
+Mark the argument `#[ontogen(query)]`:
 
 ```rust
 use ontogen::ontogen;
