@@ -545,11 +545,22 @@ pub enum SkipReason {
     /// visible at build time rather than silently falling back to the default
     /// `{entity}_{fn}` command name.
     InvalidRenameValue,
-    /// An argument carried a malformed `#[ontogen(query)]`, such as
-    /// `#[ontogen(query = true)]` or `#[ontogen(query(x))]`. Dropping the
-    /// function makes the mistake visible at build time rather than silently
-    /// routing the argument as a path segment.
+    /// An argument carried an `#[ontogen(...)]` marker other than a bare
+    /// `#[ontogen(query)]`: a malformed one (`query = true`, `query(x)`) or
+    /// an unknown directive (`qurey`). The fn-level macro strips every such
+    /// marker, so a typo would otherwise compile and silently route the
+    /// argument as a path segment. Dropping the function makes it visible at
+    /// build time.
     InvalidQueryMarker {
+        /// The argument's name.
+        param: String,
+    },
+    /// An argument carried `#[ontogen(...)]`, but the fn has no fn-level
+    /// ontogen attribute (`#[ontogen]`, `#[ontogen::stateless]`,
+    /// `#[ontogen::http::get]` or `#[ontogen::http::post]`) to remove it.
+    /// rustc would reject the fn with `expected non-macro attribute, found
+    /// attribute macro`, which does not say what to add; this record does.
+    ArgMarkerWithoutFnAttribute {
         /// The argument's name.
         param: String,
     },
@@ -588,7 +599,13 @@ impl std::fmt::Display for SkipRecord {
             SkipReason::InvalidQueryMarker { param } => {
                 write!(
                     f,
-                    "ontogen: skipped fn `{name}` in `{file}` - argument `{param}` has a malformed `#[ontogen(query)]`; write it bare, with no value or list"
+                    "ontogen: skipped fn `{name}` in `{file}` - argument `{param}` has a malformed or unknown `#[ontogen(...)]` marker; the only argument marker is a bare `#[ontogen(query)]`"
+                )
+            }
+            SkipReason::ArgMarkerWithoutFnAttribute { param } => {
+                write!(
+                    f,
+                    "ontogen: skipped fn `{name}` in `{file}` - argument `{param}` carries `#[ontogen(...)]`, but the fn has no fn-level ontogen attribute to remove it, so rustc will reject it (`expected non-macro attribute, found attribute macro`); add `#[ontogen]` above the fn (or `#[ontogen::stateless]`, `#[ontogen::http::get]`, `#[ontogen::http::post]`)"
                 )
             }
         }
@@ -850,6 +867,15 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
             // to drop.
             let skip_first = if is_stateless { 0 } else { 1 };
 
+            if let Some(param) = arg_marker_without_fn_attribute(func) {
+                result.skips.push(SkipRecord {
+                    file: path.to_path_buf(),
+                    fn_name: func.sig.ident.to_string(),
+                    reason: SkipReason::ArgMarkerWithoutFnAttribute { param },
+                });
+                continue;
+            }
+
             let params = match parse_params(func, skip_first) {
                 Ok(params) => params,
                 Err(param) => {
@@ -1020,27 +1046,50 @@ fn parse_params(func: &syn::ItemFn, skip_first: usize) -> Result<Vec<Param>, Str
 }
 
 /// Whether an argument's attributes carry `#[ontogen(query)]`, or `None`
-/// when the marker is malformed (`query = …`, `query(…)`, or a list that
-/// does not parse). Other directives are ignored, as
-/// [`parse_ontogen_rename`] ignores them on a fn.
+/// when an `#[ontogen(...)]` marker on it is anything else: malformed
+/// (`query = …`, `query(…)`, bare `#[ontogen]`, a list that does not parse)
+/// or an unknown directive (`qurey`). Unlike [`parse_ontogen_rename`] on a
+/// fn, nothing unknown is ignored: the fn-level macro strips every argument
+/// marker, so a typo would compile and leave the argument in the path.
 fn parse_query_marker(attrs: &[syn::Attribute]) -> Option<bool> {
     use syn::Meta;
 
     let mut in_query = false;
     for attr in attrs.iter().filter(|a| a.path().is_ident("ontogen")) {
-        let Meta::List(list) = &attr.meta else { continue };
+        let Meta::List(list) = &attr.meta else { return None };
         let nested =
             list.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated).ok()?;
         for meta in nested {
             match meta {
                 Meta::Path(path) if path.is_ident("query") => in_query = true,
-                Meta::NameValue(nv) if nv.path.is_ident("query") => return None,
-                Meta::List(l) if l.path.is_ident("query") => return None,
-                _ => {}
+                _ => return None,
             }
         }
     }
     Some(in_query)
+}
+
+/// The first argument of `func` that carries an `#[ontogen(...)]` marker
+/// when `func` has no fn-level ontogen attribute to remove it: an
+/// attribute whose last path segment is `ontogen`, `stateless`, `get` or
+/// `post` (the macros that strip argument markers).
+fn arg_marker_without_fn_attribute(func: &syn::ItemFn) -> Option<String> {
+    let strips = func.attrs.iter().any(|attr| {
+        attr.path()
+            .segments
+            .last()
+            .is_some_and(|seg| ["ontogen", "stateless", "get", "post"].contains(&&*seg.ident.to_string()))
+    });
+    if strips {
+        return None;
+    }
+    func.sig.inputs.iter().find_map(|arg| match arg {
+        FnArg::Typed(pat) if pat.attrs.iter().any(|a| a.path().is_ident("ontogen")) => Some(match pat.pat.as_ref() {
+            syn::Pat::Ident(ident) => ident.ident.to_string(),
+            _ => String::new(),
+        }),
+        _ => None,
+    })
 }
 
 /// An event fn's return type: `Receiver<T>` or `Result<Receiver<T>, E>`.

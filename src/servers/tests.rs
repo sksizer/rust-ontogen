@@ -5078,7 +5078,7 @@ pub fn get_publish_status(
     store: &Store,
     #[ontogen(query)] entry: &str,
     project: &str,
-    #[ontogen(other)] root: &str,
+    root: &str,
 ) -> Result<String, anyhow::Error> {
     todo!()
 }
@@ -5089,13 +5089,22 @@ pub fn get_publish_status(
     assert!(scan.skips.is_empty(), "{:?}", scan.skips);
     let f = &scan.modules[0].functions[0];
     let marked: Vec<(&str, bool)> = f.params.iter().map(|p| (p.name.as_str(), p.in_query)).collect();
-    // An unknown directive is ignored, as on a fn.
     assert_eq!(marked, [("entry", true), ("project", false), ("root", false)]);
 }
 
 #[test]
 fn test_parse_malformed_query_marker_drops_fn() {
-    for marker in ["#[ontogen(query = true)]", "#[ontogen(query(entry))]", "#[ontogen(query,,)]"] {
+    // Malformed, then unknown directives: the macro strips any argument
+    // marker, so a typo such as `qurey` must not compile into a path segment.
+    for marker in [
+        "#[ontogen(query = true)]",
+        "#[ontogen(query(entry))]",
+        "#[ontogen(query,,)]",
+        "#[ontogen]",
+        "#[ontogen = \"query\"]",
+        "#[ontogen(qurey)]",
+        "#[ontogen(query, other)]",
+    ] {
         let tmp = tempfile::tempdir().unwrap();
         let api_dir = tmp.path().join("api");
         write_synthetic_api(
@@ -5120,8 +5129,45 @@ fn test_parse_malformed_query_marker_drops_fn() {
             "{marker}: {:?}",
             rec.reason
         );
-        assert!(rec.to_string().contains("argument `entry` has a malformed `#[ontogen(query)]`"), "{rec}");
+        assert!(
+            rec.to_string().contains("argument `entry` has a malformed or unknown `#[ontogen(...)]` marker"),
+            "{rec}"
+        );
     }
+}
+
+/// A marked argument needs a fn-level ontogen attribute to strip it before
+/// rustc sees it. Without one the fn is dropped with a warning that says
+/// what to add, ahead of rustc's `expected non-macro attribute` error.
+#[test]
+fn test_arg_marker_without_fn_attribute_is_reported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "vault.rs",
+        "use crate::store::Store;\n\
+         pub fn get_forgot(store: &Store, id: &str, #[ontogen(query)] path: &str) -> Result<String, anyhow::Error> { todo!() }\n\
+         #[ontogen::http::get]\n\
+         pub fn find(store: &Store, #[ontogen(query)] path: &str) -> Result<String, anyhow::Error> { todo!() }\n\
+         #[ontogen_macros::stateless]\n\
+         pub fn get_version(#[ontogen(query)] path: &str) -> Result<String, anyhow::Error> { todo!() }\n",
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    let names: Vec<&str> = scan.modules[0].functions.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["find", "get_version"]);
+    assert_eq!(scan.skips.len(), 1, "{:?}", scan.skips);
+    let rec = &scan.skips[0];
+    assert_eq!(rec.fn_name, "get_forgot");
+    assert!(
+        matches!(&rec.reason, crate::servers::parse::SkipReason::ArgMarkerWithoutFnAttribute { param } if param == "path"),
+        "{:?}",
+        rec.reason
+    );
+    let text = rec.to_string();
+    assert!(text.contains("add `#[ontogen]` above the fn"), "{text}");
+    assert!(text.contains("expected non-macro attribute, found attribute macro"), "{text}");
 }
 
 #[test]
