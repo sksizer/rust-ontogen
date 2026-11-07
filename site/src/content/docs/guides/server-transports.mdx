@@ -399,7 +399,7 @@ Content-Type: application/vnd.api+json
 - An unknown `meta.args` member is `400 invalid_document` at `/meta/args/{name}`. A missing required argument is `400 invalid_document` at `/meta/args`. A value serde rejects is `400 invalid_document` at its member. An absent or `null` `Option` argument is `None`.
 - A custom `POST` accepts no query parameters.
 
-**`GET` arguments.** Required arguments are path segments after the action, as in `GET /api/workouts/summary/{id}`. `Option` arguments are `opArg[name]` query parameters: `GET /api/workouts/summary/w1?opArg[verbose]=true`. Values deserialize as serde does from a string. A bare name, an unknown `opArg[…]` or a malformed value is `400 invalid_query_parameter`.
+**`GET` arguments.** Required arguments are path segments after the action, as in `GET /api/workouts/summary/{id}`. `Option` arguments, and required ones marked `#[ontogen(query)]`, are `opArg[name]` query parameters: `GET /api/workouts/summary/w1?opArg[verbose]=true`. A marked argument that is missing is `400 invalid_query_parameter`. Values deserialize as serde does from a string. A bare name, an unknown `opArg[…]` or a malformed value is `400 invalid_query_parameter`.
 
 An `*Input` parameter on an op served without a body is a build error (`CodegenError`): an `#[ontogen::http::get]` op, `get_by_id`, `delete`, `list_X` and `remove_Y`.
 

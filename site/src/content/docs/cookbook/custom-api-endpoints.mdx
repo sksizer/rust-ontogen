@@ -170,11 +170,68 @@ Accept: application/vnd.api+json
 ```
 
 - Any other query parameter -- a bare `?verbose=true`, an `opArg[…]` the function does not declare -- or a value serde rejects is `400 invalid_query_parameter`, with `source.parameter` naming it.
-- An `Option` argument read from `opArg` must have a plain inner type (`Option<bool>`, `Option<String>`, `Option<u32>`). One with generic arguments (`Option<Vec<String>>`), a tuple, or a schema entity fails the build, and so does an `*Input` argument on a `GET`: there is no body to carry it.
+- An `Option` argument read from `opArg` must have a plain inner type: a path with no generic arguments that names no schema entity (`Option<bool>`, `Option<String>`, `Option<u32>`, `Option<Uuid>`, a unit enum). One with generic arguments (`Option<Vec<String>>`), a tuple, or a schema entity fails the build, and so does an `*Input` argument on a `GET`: there is no body to carry it.
+
+#### Required arguments in the query: `#[ontogen(query)]`
+
+The TypeScript client encodes a path segment with `encodeURIComponent`, so a value that holds `/` reaches the server as `%2F`: `plugins/p/x.md` becomes `/api/vaults/publish-status/plugins%2Fp%2Fx.md`. Many proxies and path guards refuse an encoded slash in a URL path, because it can carry a `../` past their checks. A guard checks only the path, not the query string. So the fix is to move the value out of the path:
+
+```text
+entry = "plugins/p/x.md"
+
+Unmarked:  GET /api/vaults/publish-status/plugins%2Fp%2Fx.md        refused by a path guard
+Marked:    GET /api/vaults/publish-status?opArg[entry]=plugins/p/x.md  the path is just /publish-status
+```
+
+(In a real request the query is percent-encoded too, as below. That is normal for a query string.)
+
+A custom `GET` argument is one of three kinds:
+
+| In Rust | Where it goes in the URL | When the request leaves it out |
+|---|---|---|
+| `id: &str` | a path segment: `/…/{id}` | the URL does not match the route |
+| `verbose: Option<bool>` | the query: `?opArg[verbose]=true` | the function gets `None` |
+| `#[ontogen(query)] entry: &str` | the query: `?opArg[entry]=…` | `400 invalid_query_parameter`, naming `opArg[entry]` |
+
+A marked argument is not optional. It is still required, and only where it travels changes. It uses the `opArg[…]` form that `Option` arguments already use, so anything in the query is `opArg[{name}]`.
+
+What happens to a marked argument:
+
+1. The build script reads the marker and records the argument as a query argument.
+2. The generated TypeScript method keeps its name and argument order, and puts the value in `opArg[entry]` instead of the path.
+3. The generated Axum route has no segment for the argument. Its handler reads `opArg[entry]`, and answers `400` when it is missing.
+4. Your function is called with the decoded value, `"plugins/p/x.md"`, as before.
+
+Mark the argument `#[ontogen(query)]`:
+
+```rust
+use ontogen::ontogen;
+
+#[ontogen] // removes the argument markers, which Rust would otherwise reject
+pub async fn get_publish_status(
+    store: &Store,
+    #[ontogen(query)] entry: &str,
+    #[ontogen(query)] root: &str,
+) -> Result<PublishStatus, AppError> { /* ... */ }
+```
+
+```http
+GET /api/vaults/publish-status?opArg[entry]=plugins%2Fp%2Fx.md&opArg[root]=%2Fhome%2Fme HTTP/1.1
+Accept: application/vnd.api+json
+```
+
+- Use it for an argument whose value can contain `/`, such as a file path or a vault note path. A plain id or slug can stay in the path.
+- The argument is still required: a request without it is `400 invalid_query_parameter`, with `source.parameter` naming it (`opArg[entry]`).
+- The function needs a fn-level ontogen attribute to remove the markers: `#[ontogen]` (or `#[ontogen(rename = "...")]`), `#[ontogen::stateless]`, `#[ontogen::http::get]` or `#[ontogen::http::post]`. Without one, the build script drops the function with a `cargo:warning` that says what to add, and rustc fails with `expected non-macro attribute, found attribute macro`.
+- The marker needs the `ontogen-macros` version your `ontogen` was released with. An older one leaves the marker in place, and rustc fails with the same `expected non-macro attribute, found attribute macro` error. If you pin `ontogen-macros` separately, move it with `ontogen` and take both from the same source. The build script warns, naming the version to set, when the crate's own `ontogen-macros` in the workspace `Cargo.lock` is older, or is a crates.io release that predates the marker. The generated server also needs the matching `ontogen-jsonapi`, which adds `QueryParams::required_op_arg`.
+- Only a custom `GET` takes the marker over HTTP. On a `POST`, a CRUD or junction op, or an event op it fails the build. Its type must be one that a single query value carries: a plain path type with no generic arguments that names no schema entity, under any `&` and one `Option`. Strings, numbers, `bool`, `Uuid` and unit enums qualify; `Vec<T>`, maps, tuples and entities do not. That is the same rule as for an `Option` argument. IPC and MCP read every argument by name, so the marker changes nothing there.
+- Anything else in an argument's `#[ontogen(...)]` -- a malformed marker (`#[ontogen(query = true)]`, `#[ontogen(query(x))]`, a bare `#[ontogen]`) or an unknown directive such as a typo (`#[ontogen(qurey)]`) -- drops the function with a `cargo:warning`. Unlike on a function, an unknown directive is not ignored: the macro strips it either way, so a typo would otherwise leave the argument in the path.
+- The TypeScript method keeps the Rust argument order. Only where each value travels changes.
+- When the source cannot carry the attribute, name the argument in [`NamingConfig::query_args`](/reference/configuration/#namingconfig) as `"module::fn_name::arg"`.
 
 ### Paths
 
-A custom op is served at `/api/{module}/{action}`, plus one segment per required argument on a `GET`:
+A custom op is served at `/api/{module}/{action}`, plus one segment per required argument on a `GET` that is not marked `#[ontogen(query)]`:
 
 - `{module}` is the kebab-cased plural of the module name (`task` is `tasks`, `workout_set` is `workout-sets`), or for a [singleton module](/guides/api-layer/#singleton-modules--ontogensingleton) the kebab-cased name itself (`auto_start` is `auto-start`). `NamingConfig::plural_overrides` applies.
 - `{action}` is the function name without a leading `get_`, and without the module name as a `{module}_` prefix or a `_{module}` / `_{plural}` suffix, kebab-cased: `get_summary` is `summary`, `purge_done` is `purge-done`.
@@ -188,6 +245,8 @@ Each custom op becomes a `Transport` method named in camelCase after its IPC com
 ```ts
 // taskGetSummary(status, verbose?, limit?): required args in the path, Option args as opArg[…]
 return callOp<TaskSummary>('GET', `/tasks/summary/${encodeURIComponent(status)}${toQueryString({ opArg: { verbose, limit } })}`);
+// vaultGetPublishStatus(entry, root): args marked #[ontogen(query)] as opArg[…] too
+return callOp<PublishStatus>('GET', `/vaults/publish-status${toQueryString({ opArg: { entry, root } })}`);
 // taskCapture(input, status?): every arg in meta.args, keyed by its Rust name
 return callOp<Task>('POST', '/tasks/capture', { input, status });
 ```
@@ -227,6 +286,7 @@ For names that don't match a vocabulary entry, the classifier looks at the funct
 | Zero user-facing parameters, any other name | `CustomPost` | `POST` | (no extraction) |
 | `get_{name}(state, id: &str)` (or `String`, integer, `Uuid`, …) | `CustomGet` | `GET` | First param → URL path segment (`/api/.../{id}`) |
 | `get_{name}(state, q: Option<…>)` | `CustomGet` | `GET` | `Option<…>` params → `opArg[q]` query parameters |
+| `get_{name}(state, #[ontogen(query)] path: &str)` | `CustomGet` | `GET` | Marked params → `opArg[path]` query parameters, still required |
 | `get_{name}(state, body: &CustomStruct)` | `CustomPost` | `POST` | Body-carrying first param → `meta.args.body` |
 | Any other shape | `CustomPost` | `POST` | Every param after the state, `*Input` and `Option<…>` included → `meta.args` in the body |
 | Returns `tokio::sync::broadcast::Receiver<T>` (or `Result<Receiver<T>, E>`) | `EventStream` | `GET` (SSE) | `/api/events/{event-name}`; required params → path segments, `Option<…>` → query, `resume` ← `Last-Event-ID` |
@@ -500,7 +560,7 @@ Both overrides **win outright**. Forcing GET is you asserting the param shape su
 <Aside type="note">
 These attributes live under the `http::*` namespace because the override is specifically HTTP-method-shape; routing-shape-agnostic attributes (`stateless`, `rename`, `skip`) stay at the top of the `ontogen::` namespace.
 
-The parser matches on the **final path segment**, so `#[ontogen::http::get]`, a bare `#[get]` after a `use ontogen::http::get;`, and any other path ending in `::get` all work. The macros themselves are no-ops; the ontogen parser reads them via `syn` during build-time scanning and stamps `ApiFn::force_method`, which `classify_op` short-circuits on.
+The parser matches on the **final path segment**, so `#[ontogen::http::get]`, a bare `#[get]` after a `use ontogen::http::get;`, and any other path ending in `::get` all work. The macros themselves pass the fn through, removing only any `#[ontogen(query)]` argument markers; the ontogen parser reads them via `syn` during build-time scanning and stamps `ApiFn::force_method`, which `classify_op` short-circuits on.
 </Aside>
 
 Combine freely with `#[ontogen::stateless]` and `#[ontogen(rename = "…")]` — order doesn't matter, the parser inspects each attribute independently.

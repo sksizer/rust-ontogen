@@ -844,7 +844,7 @@ fn op_route<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config) -> OpRoute<'a> {
         }
         _ => {
             for p in rest {
-                if p.is_option() {
+                if p.reads_from_query() {
                     op_args.push((member_name(&p.name), value(p)));
                 } else {
                     path.push_str(&segment(p));

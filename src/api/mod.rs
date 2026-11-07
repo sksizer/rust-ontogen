@@ -251,8 +251,11 @@ fn check_replacements_are_served(
 /// Convert a scanned `parse::ApiFn` into an IR `ApiFnMeta`.
 fn convert_scanned_fn(func: &parse::ApiFn, scan_dir: &Path, module: &parse::ApiModule) -> ApiFnMeta {
     let module_name = &module.name;
-    let params: Vec<ParamMeta> =
-        func.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect();
+    let params: Vec<ParamMeta> = func
+        .params
+        .iter()
+        .map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone(), in_query: p.in_query })
+        .collect();
 
     let classified_op = classify_op(module, func);
 
@@ -279,7 +282,11 @@ fn convert_scanned_event(event: &parse::EventFn, scan_dir: &Path, module_name: &
     ApiFnMeta {
         name: event.name.clone(),
         doc: event.doc.clone(),
-        params: event.params.iter().map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone() }).collect(),
+        params: event
+            .params
+            .iter()
+            .map(|p| ParamMeta { name: p.name.clone(), param_type: p.ty.clone(), in_query: p.in_query })
+            .collect(),
         return_type: event.item_type.clone(),
         source: Source::Scanned {
             module_path: format!("crate::api::v1::{module_name}"),
@@ -358,7 +365,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
         ApiFnMeta {
             name: "get_by_id".to_string(),
             doc: format!("Get a single {} by ID", snake),
-            params: vec![ParamMeta { name: "id".to_string(), param_type: "&str".to_string() }],
+            params: vec![ParamMeta { name: "id".to_string(), param_type: "&str".to_string(), in_query: false }],
             return_type: entity.name.clone(),
             source: source.clone(),
             classified_op: OpKind::GetById,
@@ -368,7 +375,11 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
         ApiFnMeta {
             name: "create".to_string(),
             doc: format!("Create a new {}", snake),
-            params: vec![ParamMeta { name: "input".to_string(), param_type: format!("Create{}Input", entity.name) }],
+            params: vec![ParamMeta {
+                name: "input".to_string(),
+                param_type: format!("Create{}Input", entity.name),
+                in_query: false,
+            }],
             return_type: entity.name.clone(),
             source: source.clone(),
             classified_op: OpKind::Create,
@@ -379,8 +390,12 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
             name: "update".to_string(),
             doc: format!("Update an existing {}", snake),
             params: vec![
-                ParamMeta { name: "id".to_string(), param_type: "&str".to_string() },
-                ParamMeta { name: "input".to_string(), param_type: format!("Update{}Input", entity.name) },
+                ParamMeta { name: "id".to_string(), param_type: "&str".to_string(), in_query: false },
+                ParamMeta {
+                    name: "input".to_string(),
+                    param_type: format!("Update{}Input", entity.name),
+                    in_query: false,
+                },
             ],
             return_type: entity.name.clone(),
             source: source.clone(),
@@ -391,7 +406,7 @@ fn collect_generated_module_meta(entity: &EntityDef) -> ApiModule {
         ApiFnMeta {
             name: "delete".to_string(),
             doc: format!("Delete a {} by ID", snake),
-            params: vec![ParamMeta { name: "id".to_string(), param_type: "&str".to_string() }],
+            params: vec![ParamMeta { name: "id".to_string(), param_type: "&str".to_string(), in_query: false }],
             return_type: "()".to_string(),
             source,
             classified_op: OpKind::Delete,

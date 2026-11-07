@@ -1,6 +1,7 @@
 //! Hand-written task ops beside the generated CRUD, which this module
 //! re-exports so the servers stage reaches both through one module path.
 
+use ontogen_macros::ontogen;
 use tokio::sync::broadcast;
 
 pub use super::generated::task::*;
@@ -24,6 +25,14 @@ pub async fn get_summary(
         matching.iter().take(cap).map(|t| t.title.clone()).collect()
     });
     Ok(TaskSummary { status: status.to_string(), count: matching.len() as u64, titles })
+}
+
+/// The file `path` of the task `id`, as `{id}:{path}`. A path holds `/`, so
+/// it is read from `opArg[path]` instead of a path segment.
+#[ontogen]
+pub async fn get_attachment(store: &Store, id: &str, #[ontogen(query)] path: &str) -> Result<String, AppError> {
+    let task = store.get_task(id).await?;
+    Ok(format!("{}:{path}", task.id))
 }
 
 /// Create a task, filed under `status` when given instead of the input's own.

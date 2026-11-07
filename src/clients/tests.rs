@@ -236,7 +236,7 @@ use crate::servers::types::NamingConfig;
 /// because that module's `#[cfg(test)] mod tests` is private to `servers`.
 fn admin_test_param(name: &str, ty: &str) -> Param {
     let ty_ast: syn::Type = syn::parse_str(ty).expect("test param type must parse as syn::Type");
-    Param { name: name.to_string(), ty: ty.to_string(), ty_ast }
+    Param { name: name.to_string(), ty: ty.to_string(), ty_ast, in_query: false }
 }
 
 fn admin_test_ty_ast(ty: &str) -> syn::Type {
@@ -2199,6 +2199,89 @@ pub async fn get_health(state: &AppState) -> Result<String, anyhow::Error> { tod
 #[ontogen::stateless]
 pub fn get_version() -> Result<String, anyhow::Error> { todo!() }
 ";
+
+/// `vault`: a custom GET whose required `entry` and `root` are marked
+/// `#[ontogen(query)]`, between a path argument and an optional one.
+const VAULT_MODULE: &str = "\
+use crate::store::Store;
+
+#[ontogen]
+pub async fn get_publish_status(
+    store: &Store,
+    #[ontogen(query)] entry: &str,
+    project: &str,
+    #[ontogen(query)] root: String,
+    verbose: Option<bool>,
+) -> Result<String, anyhow::Error> { todo!() }
+";
+
+#[test]
+fn a_query_marked_argument_is_sent_in_op_arg_in_declaration_order() {
+    let (server, clients) = jsonapi_stack(false, &[("vault.rs", VAULT_MODULE)], |_| {});
+    for ts in [&clients.transport, &clients.http] {
+        let method = ts_method(ts, "vaultGetPublishStatus");
+        // Marking an argument moves no parameter.
+        assert!(
+            method.contains(
+                "vaultGetPublishStatus(entry: string, project: string, root: string, verbose: boolean | null): \
+                 Promise<string>"
+            ),
+            "{method}"
+        );
+        assert!(
+            method.contains(
+                "return callOp<string>('GET', `/vaults/publish-status/${encodeURIComponent(project)}${toQueryString({ \
+                 opArg: { entry, root, verbose } })}`);"
+            ),
+            "{method}"
+        );
+    }
+    let calls = assert_calls_are_served(&server, &clients, false, &|_| true);
+    let route = Some(("GET".to_string(), "/api/vaults/publish-status/{}".to_string()));
+    assert_eq!(calls["vaultGetPublishStatus"].1, route);
+    let (declared, _) = server_args(&server, "vault_get_publish_status");
+    assert_eq!(declared.op_args, ["entry", "root", "verbose"].map(String::from).into());
+    let start = server.find("async fn vault_get_publish_status(").expect("the handler");
+    let handler = &server[start..start + server[start..].find("\n}\n").unwrap()];
+    for read in [
+        "let entry = ontogen_query.required_op_arg::<String>(\"entry\")?;",
+        "let root = ontogen_query.required_op_arg::<String>(\"root\")?;",
+        "let verbose = ontogen_query.op_arg::<bool>(\"verbose\")?;",
+    ] {
+        assert!(handler.contains(read), "{handler}");
+    }
+
+    // The same fn unmarked takes `entry` and `root` as path segments.
+    let unmarked = VAULT_MODULE.replace("#[ontogen(query)] ", "");
+    let (_, clients) = jsonapi_stack(false, &[("vault.rs", &unmarked)], |_| {});
+    assert!(
+        ts_method(&clients.http, "vaultGetPublishStatus").contains(
+            "/vaults/publish-status/${encodeURIComponent(entry)}/${encodeURIComponent(project)}/${encodeURIComponent(root)}\
+             ${toQueryString({ opArg: { verbose } })}"
+        ),
+        "{}",
+        clients.http
+    );
+}
+
+/// `NamingConfig::query_args` marks an argument as `#[ontogen(query)]` does.
+#[test]
+fn a_config_query_arg_is_sent_in_op_arg() {
+    let unmarked = VAULT_MODULE.replace("#[ontogen(query)] ", "");
+    let (server, clients) = jsonapi_stack(false, &[("vault.rs", &unmarked)], |c| {
+        c.naming
+            .query_args
+            .extend(["vault::get_publish_status::entry".into(), "vault::get_publish_status::root".into()]);
+    });
+    assert!(
+        ts_method(&clients.http, "vaultGetPublishStatus").contains(
+            "/vaults/publish-status/${encodeURIComponent(project)}${toQueryString({ opArg: { entry, root, verbose } })}"
+        ),
+        "{}",
+        clients.http
+    );
+    assert_calls_are_served(&server, &clients, false, &|_| true);
+}
 
 /// Both clients, scoped and not, against the server generated beside them:
 /// resource CRUD, CRUD with no entity, junction ops, custom GETs and POSTs,

@@ -269,7 +269,7 @@ fn collect_method_meta(entity: &EntityDef) -> Vec<StoreMethodMeta> {
     let snake = helpers::to_snake_case(&entity.name);
     let plural = helpers::pluralize(&snake);
     let source = Source::Generated { module_path: format!("crate::store::generated::{}", rust_ident(&snake)) };
-    let id_param = || ParamMeta { name: "id".to_string(), param_type: "&str".to_string() };
+    let id_param = || ParamMeta { name: "id".to_string(), param_type: "&str".to_string(), in_query: false };
 
     vec![
         StoreMethodMeta {
@@ -280,9 +280,10 @@ fn collect_method_meta(entity: &EntityDef) -> Vec<StoreMethodMeta> {
                 ParamMeta {
                     name: "order".to_string(),
                     param_type: format!("&[OrderBy<{}>]", gen_order::sort_field_type(entity)),
+                    in_query: false,
                 },
-                ParamMeta { name: "limit".to_string(), param_type: "Option<u64>".to_string() },
-                ParamMeta { name: "offset".to_string(), param_type: "Option<u64>".to_string() },
+                ParamMeta { name: "limit".to_string(), param_type: "Option<u64>".to_string(), in_query: false },
+                ParamMeta { name: "offset".to_string(), param_type: "Option<u64>".to_string(), in_query: false },
             ],
             return_type: format!("Vec<{}>", entity.name),
             source: source.clone(),
@@ -307,7 +308,7 @@ fn collect_method_meta(entity: &EntityDef) -> Vec<StoreMethodMeta> {
             entity_name: entity.name.clone(),
             name: format!("create_{snake}"),
             kind: StoreMethodKind::Crud(CrudOp::Create),
-            params: vec![ParamMeta { name: "record".to_string(), param_type: entity.name.clone() }],
+            params: vec![ParamMeta { name: "record".to_string(), param_type: entity.name.clone(), in_query: false }],
             return_type: entity.name.clone(),
             source: source.clone(),
         },
@@ -317,7 +318,11 @@ fn collect_method_meta(entity: &EntityDef) -> Vec<StoreMethodMeta> {
             kind: StoreMethodKind::Crud(CrudOp::Update),
             params: vec![
                 id_param(),
-                ParamMeta { name: "updates".to_string(), param_type: format!("{}Update", entity.name) },
+                ParamMeta {
+                    name: "updates".to_string(),
+                    param_type: format!("{}Update", entity.name),
+                    in_query: false,
+                },
             ],
             return_type: entity.name.clone(),
             source: source.clone(),

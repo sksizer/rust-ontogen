@@ -677,6 +677,31 @@ async fn a_custom_get_takes_its_path_and_op_args() {
 }
 
 #[tokio::test]
+async fn a_custom_get_reads_a_query_marked_argument_from_op_arg() {
+    let server = Server::new();
+    let task = server.task("Alpha", "open").await;
+
+    // The URL the HTTP TS client builds: `id` a path segment, `path` the
+    // query's `opArg[path]`, each encoded with `encodeURIComponent`. The
+    // path holds no `%2F`, which a proxy or path guard may refuse.
+    let uri = format!("/api/tasks/attachment/{}?opArg%5Bpath%5D=plugins%2Fp%2Fskills%2Fx%2Fx.md", task.id);
+    assert!(!uri.split('?').next().unwrap().contains("%2F"), "{uri}");
+    server.get(&uri).await.ok_result(&format!(r#""{}:plugins/p/skills/x/x.md""#, task.id));
+    // A literal `/` in the query reads the same.
+    server
+        .get(&format!("/api/tasks/attachment/{}?opArg[path]=a/b.md", task.id))
+        .await
+        .ok_result(&format!(r#""{}:a/b.md""#, task.id));
+
+    // Still required: absent is `400 invalid_query_parameter`, naming it.
+    let missing = server.get(&format!("/api/tasks/attachment/{}", task.id)).await;
+    assert_eq!(missing.parameter("invalid_query_parameter"), "opArg[path]");
+    // And it has no path segment of its own.
+    let as_segment = server.get(&format!("/api/tasks/attachment/{}/a.md", task.id)).await;
+    assert_eq!(as_segment.status, StatusCode::NOT_FOUND, "{}", as_segment.raw);
+}
+
+#[tokio::test]
 async fn custom_get_query_parameters_are_checked() {
     let server = Server::new();
 

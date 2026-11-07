@@ -825,6 +825,14 @@ pub struct NamingConfig {
     /// entry is silently ignored. HTTP route paths, the underlying Rust
     /// function name, and generated query/body struct names are unaffected.
     pub command_overrides: HashMap<String, String>,
+    /// Required arguments a custom `GET` reads from the query parameter
+    /// `opArg[name]` instead of a path segment, as if each carried
+    /// `#[ontogen(query)]` in the source.
+    ///
+    /// Entries are `"module::fn_name::arg"` (e.g.,
+    /// `"vault::get_publish_status::entry"`). Use it for an argument whose
+    /// value can contain `/`. An entry naming no argument is ignored.
+    pub query_args: HashSet<String>,
 }
 
 impl NamingConfig {

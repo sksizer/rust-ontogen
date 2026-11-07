@@ -48,20 +48,19 @@ pub use ontogen_core::utils;
 // Re-export the proc-macros so users only need `ontogen` in their Cargo.toml.
 // The `ontogen` attribute is the umbrella for per-function directives
 // (mirrors the `serde::Serialize` re-export precedent: `use ontogen::ontogen;`
-// and then `#[ontogen(rename = "...")]` on a function).
+// and then `#[ontogen(rename = "...")]` on a function, or `#[ontogen(query)]`
+// on an argument).
 //
 // Routing-shape-agnostic attributes (`OntologyEntity`, `ontogen`, `stateless`)
 // stay at the top level — they apply regardless of output target. HTTP-method-
-// shape overrides (today: `post`; future: `get`, `put`, `delete`, `patch`)
-// live under `http::*` because their scope is specifically HTTP-method
-// classification.
+// shape overrides (`get`, `post`) live under `http::*` because their scope is
+// specifically HTTP-method classification.
 pub use ontogen_macros::{OntologyEntity, ontogen, stateless};
 
 /// HTTP-method-shape attributes for forcing an `ApiFn`'s classification.
 ///
-/// Today this is just `#[ontogen::http::post]`; future overrides
-/// (`get`, `put`, `delete`, `patch`) will land here as their consumers
-/// surface. The namespace is explicit so non-HTTP output targets
+/// `#[ontogen::http::get]` and `#[ontogen::http::post]`; further overrides
+/// (`put`, `delete`, `patch`) would land here. The namespace is explicit so non-HTTP output targets
 /// (a hypothetical gRPC or CLI surface) wouldn't need to retro-namespace
 /// these markers.
 pub mod http {
