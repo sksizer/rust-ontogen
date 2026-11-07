@@ -109,6 +109,7 @@ fn generate_clients(config: &config::Config) -> Result<Vec<ApiModule>, String> {
     }
 
     let mut modules = scanned.modules;
+    crate::servers::macros_version::warn_if_stale(&modules);
     parse::apply_singleton_overlay(&mut modules, &config.naming);
     parse::apply_command_overrides(&mut modules, &config.naming);
     parse::apply_query_args(&mut modules, &config.naming);

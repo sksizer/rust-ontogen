@@ -8,6 +8,7 @@ pub(crate) mod classify;
 pub(crate) mod config;
 pub(crate) mod error_map;
 pub(crate) mod generators;
+pub(crate) mod macros_version;
 pub(crate) mod parse;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -228,6 +229,7 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
     }
 
     let mut modules = scanned.modules;
+    macros_version::warn_if_stale(&modules);
     parse::qualify_shared_types(&mut modules, &surfaces);
     check_names(&modules, config)?;
     parse::apply_singleton_overlay(&mut modules, &config.naming);

@@ -185,7 +185,9 @@ pub fn get(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Rust accepts no attribute macro on an argument, so a fn whose arguments
 /// carry `#[ontogen(query)]` needs a fn-level ontogen macro to remove them:
 /// this one (bare `#[ontogen]` when there is nothing to rename),
-/// `#[ontogen::stateless]`, or `#[ontogen::http::get]`.
+/// `#[ontogen::stateless]`, `#[ontogen::http::get]` or `#[ontogen::http::post]`.
+/// Use the version of this crate that your `ontogen` pins: an older one
+/// leaves the markers in place, and rustc rejects them.
 ///
 /// Usage:
 /// ```ignore
@@ -204,6 +206,14 @@ pub fn get(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn ontogen(_args: TokenStream, input: TokenStream) -> TokenStream {
     strip_arg_markers(input)
+}
+
+/// This crate's version as a string literal, so that `ontogen` can tell a
+/// consumer which `ontogen-macros` its argument markers need.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __version(_input: TokenStream) -> TokenStream {
+    format!("{:?}", env!("CARGO_PKG_VERSION")).parse().expect("a string literal")
 }
 
 /// Remove the `#[ontogen(...)]` markers from a fn's arguments, such as
