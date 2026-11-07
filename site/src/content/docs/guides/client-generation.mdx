@@ -160,7 +160,7 @@ export class JsonApiError extends globalThis.Error {
 
 ### Custom ops and junction methods
 
-Custom endpoints discovered through API scanning get client functions too. They follow the custom op wire: a `POST` sends its arguments as `{ meta: { args: { … } } }` (no body when there are none), a `GET` sends `Option` arguments as `opArg[name]`, and every call resolves to the response's `meta.result` (`null` on `204`). The same holds for the junction and CRUD methods of a module with no entity behind it, and for a lone `list_X` (one with no `add_Y` or `remove_Y` beside it), which is a custom `GET` and returns its plain array. Entity-less lists and the junction lists of such a module page with `opArg[limit]` and `opArg[offset]` and return `PaginatedResult<T>`, which the server sends as `meta.result`.
+Custom endpoints discovered through API scanning get client functions too. They follow the custom op wire: a `POST` sends its arguments as `{ meta: { args: { … } } }` (no body when there are none), a `GET` sends `Option` arguments, and required ones marked `#[ontogen(query)]`, as `opArg[name]`, and every call resolves to the response's `meta.result` (`null` on `204`). The same holds for the junction and CRUD methods of a module with no entity behind it, and for a lone `list_X` (one with no `add_Y` or `remove_Y` beside it), which is a custom `GET` and returns its plain array. Entity-less lists and the junction lists of such a module page with `opArg[limit]` and `opArg[offset]` and return `PaginatedResult<T>`, which the server sends as `meta.result`.
 
 ```typescript
 async taskGetOverdue(): Promise<Task[]> {

@@ -110,7 +110,7 @@ fn client_test_config_with_prefix(api_dir: PathBuf) -> ClientsInternalConfig {
 /// parse as a `syn::Type`.
 fn param(name: &str, ty: &str) -> Param {
     let ty_ast: syn::Type = syn::parse_str(ty).expect("test param type must parse as syn::Type");
-    Param { name: name.to_string(), ty: ty.to_string(), ty_ast }
+    Param { name: name.to_string(), ty: ty.to_string(), ty_ast, in_query: false }
 }
 
 /// Parse a type string into a `syn::Type` for `ApiFn::return_type_ast` in tests.
@@ -243,6 +243,7 @@ fn make_param_event_module() -> ApiModule {
         name: name.to_string(),
         ty: crate::servers::types::norm_type(&ty),
         ty_ast: ty,
+        in_query: false,
     };
     ApiModule {
         name: "vault_notes".to_string(),
@@ -5063,6 +5064,67 @@ pub fn get_tag_history(store: &Store, tag: &str) -> Result<Vec<HistoryEntry>, an
 }
 
 #[test]
+fn test_parse_query_marker_on_an_argument() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api_dir = tmp.path().join("api");
+    write_synthetic_api(
+        &api_dir,
+        "vault.rs",
+        r#"
+use crate::store::Store;
+
+#[ontogen]
+pub fn get_publish_status(
+    store: &Store,
+    #[ontogen(query)] entry: &str,
+    project: &str,
+    #[ontogen(other)] root: &str,
+) -> Result<String, anyhow::Error> {
+    todo!()
+}
+"#,
+    );
+
+    let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+    assert!(scan.skips.is_empty(), "{:?}", scan.skips);
+    let f = &scan.modules[0].functions[0];
+    let marked: Vec<(&str, bool)> = f.params.iter().map(|p| (p.name.as_str(), p.in_query)).collect();
+    // An unknown directive is ignored, as on a fn.
+    assert_eq!(marked, [("entry", true), ("project", false), ("root", false)]);
+}
+
+#[test]
+fn test_parse_malformed_query_marker_drops_fn() {
+    for marker in ["#[ontogen(query = true)]", "#[ontogen(query(entry))]", "#[ontogen(query,,)]"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let api_dir = tmp.path().join("api");
+        write_synthetic_api(
+            &api_dir,
+            "vault.rs",
+            &format!(
+                "use crate::store::Store;\n\
+                 pub fn list(store: &Store) -> Result<Vec<String>, anyhow::Error> {{ todo!() }}\n\
+                 #[ontogen]\n\
+                 pub fn get_status(store: &Store, {marker} entry: &str) -> Result<String, anyhow::Error> {{ todo!() }}\n"
+            ),
+        );
+
+        let scan = crate::servers::parse::scan_api_dir(&api_dir, "AppState", Some("Store"));
+        let names: Vec<&str> = scan.modules[0].functions.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["list"], "{marker}");
+        assert_eq!(scan.skips.len(), 1, "{marker}");
+        let rec = &scan.skips[0];
+        assert_eq!(rec.fn_name, "get_status");
+        assert!(
+            matches!(&rec.reason, crate::servers::parse::SkipReason::InvalidQueryMarker { param } if param == "entry"),
+            "{marker}: {:?}",
+            rec.reason
+        );
+        assert!(rec.to_string().contains("argument `entry` has a malformed `#[ontogen(query)]`"), "{rec}");
+    }
+}
+
+#[test]
 fn test_apply_command_overrides_populates_field() {
     let mut modules = vec![make_renamed_module(None)];
     let mut naming = NamingConfig::default();
@@ -8876,6 +8938,51 @@ fn an_op_arg_that_one_value_cannot_carry_is_a_codegen_error() {
     let source = "pub fn get_report(state: &AppState, mode: Option<InputMode>, label: Option<&str>, n: Option<u32>) \
                   -> Result<String, anyhow::Error> { todo!() }\n";
     let (server, _) = pipelines(tmp.path(), source, "stats", true);
+    assert_eq!(server, Ok(()));
+}
+
+/// `#[ontogen(query)]` moves a required argument of a custom `GET` into
+/// `opArg[…]`, so it takes a type one value can carry, and only a custom
+/// `GET` takes it: a POST reads its arguments from `meta.args`, and a CRUD,
+/// junction or event op reads its own from the path.
+#[test]
+fn a_query_marker_where_no_op_arg_reads_it_is_a_codegen_error() {
+    for (source, wants) in [
+        (
+            "#[ontogen::http::get]\npub fn get_report(state: &AppState, #[ontogen(query)] tags: Vec<String>) -> Result<String, anyhow::Error> { todo!() }\n",
+            &["`stats::get_report`", "`tags: Vec<String>`", "opArg[tags]"][..],
+        ),
+        (
+            "#[ontogen::http::post]\npub fn rebuild(state: &AppState, #[ontogen(query)] path: String) -> Result<String, anyhow::Error> { todo!() }\n",
+            &["`stats::rebuild` marks `path` `#[ontogen(query)]`", "served as a custom POST"],
+        ),
+        (
+            "#[ontogen]\npub fn get_by_id(state: &AppState, #[ontogen(query)] id: &str) -> Result<String, anyhow::Error> { todo!() }\n",
+            &["`stats::get_by_id` marks `id` `#[ontogen(query)]`", "served as a CRUD or junction op"],
+        ),
+        (
+            "#[ontogen]\npub fn changes(state: &AppState, #[ontogen(query)] path: String) -> tokio::sync::broadcast::Receiver<String> { todo!() }\n",
+            &["`stats::changes` marks `path` `#[ontogen(query)]`", "an event op"],
+        ),
+    ] {
+        let (server, client) = both_pipelines(source, "stats");
+        for err in [&server, &client] {
+            for want in wants {
+                assert!(err.contains(want), "{want}\n{err}");
+            }
+        }
+    }
+    // Strings, numbers, bools and unit enums, owned or borrowed, and an
+    // `Option` marked too.
+    let tmp = tempfile::tempdir().unwrap();
+    let source = "#[ontogen]\npub fn get_report(state: &AppState, #[ontogen(query)] path: &str, #[ontogen(query)] n: u32, \
+                  #[ontogen(query)] mode: Mode, #[ontogen(query)] label: Option<String>) -> Result<String, anyhow::Error> { todo!() }\n";
+    let (server, _) = pipelines(tmp.path(), source, "stats", true);
+    assert_eq!(server, Ok(()));
+    // IPC and MCP read every argument by name, so they take the marker anywhere.
+    let tmp = tempfile::tempdir().unwrap();
+    let source = "#[ontogen::http::post]\npub fn rebuild(state: &AppState, #[ontogen(query)] path: String) -> Result<String, anyhow::Error> { todo!() }\n";
+    let (server, _) = pipelines(tmp.path(), source, "stats", false);
     assert_eq!(server, Ok(()));
 }
 

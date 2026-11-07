@@ -422,8 +422,14 @@ pub struct McpToolMeta {
 // ── Shared types ────────────────────────────────────────────────────
 
 /// A function/method parameter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ParamMeta {
     pub name: String,
     pub param_type: String,
+    /// `true` when the argument carries `#[ontogen(query)]` (or is named in
+    /// `NamingConfig::query_args`): a custom `GET` reads it from the query
+    /// parameter `opArg[name]` instead of a path segment, required or not.
+    /// IPC and MCP ignore it. Generated CRUD and store parameters always set
+    /// this to `false`.
+    pub in_query: bool,
 }

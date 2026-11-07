@@ -1661,7 +1661,8 @@ struct OpShape<'a> {
     path: String,
     /// Arguments read from the path, in path order.
     path_args: Vec<&'a Param>,
-    /// `Option` arguments read from `opArg[…]`, on a route with no body.
+    /// Arguments read from `opArg[…]`, on a route with no body: `Option`
+    /// ones and those marked [`Param::in_query`].
     query_args: Vec<&'a Param>,
     /// Arguments read from `meta.args`, in declaration order, on a route
     /// that reads a body.
@@ -1690,9 +1691,9 @@ enum Paging {
 /// op at its §10.4 route, the same under a route prefix as without one.
 ///
 /// Past the arguments a route names, a route that reads a body reads every
-/// other argument from `meta.args`; one that does not reads an `Option`
-/// from `opArg[…]` and anything else from one more path segment, as a
-/// `CustomGet` does.
+/// other argument from `meta.args`; one that does not reads an `Option` or
+/// an argument marked `#[ontogen(query)]` from `opArg[…]` and anything else
+/// from one more path segment, as a `CustomGet` does.
 fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config) -> OpShape<'a> {
     let op = classify_op(m, f);
     let paging = config.pagination_for(&m.name, f.surface).filter(|_| f.return_type.starts_with("Vec<"));
@@ -1738,7 +1739,7 @@ fn op_shape<'a>(m: &ApiModule, f: &'a ApiFn, config: &Config) -> OpShape<'a> {
         _ if matches!(method, "post" | "patch") => shape.body_args = Some(rest.iter().collect()),
         _ => {
             for p in rest {
-                if p.is_option() {
+                if p.reads_from_query() {
                     shape.query_args.push(p);
                 } else {
                     path.push_str(&format!("/{{{}}}", member_name(&p.name)));
@@ -1871,9 +1872,12 @@ fn op_handler(
             }
             for p in by_name(shape.query_args.clone()) {
                 let owned = param_to_owned_type(&p.ty_ast);
-                let inner = owned.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')).unwrap_or(&owned);
+                let (read, ty) = match owned.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')) {
+                    Some(inner) => ("op_arg", inner),
+                    None => ("required_op_arg", owned.as_str()),
+                };
                 steps.push_str(&format!(
-                    "    let {name} = ontogen_query.op_arg::<{inner}>(\"{wire}\")?;\n",
+                    "    let {name} = ontogen_query.{read}::<{ty}>(\"{wire}\")?;\n",
                     name = p.name,
                     wire = member_name(&p.name),
                 ));

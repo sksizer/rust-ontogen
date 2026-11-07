@@ -145,6 +145,13 @@ pub struct Param {
     /// Used by `collect_type_import` to walk into generic arguments
     /// instead of relying on substring checks against `ty`.
     pub ty_ast: syn::Type,
+    /// Whether the argument carries `#[ontogen(query)]`, or is named in
+    /// [`NamingConfig::query_args`](crate::servers::types::NamingConfig::query_args).
+    ///
+    /// On HTTP, a custom `GET` then reads a required argument from the query
+    /// parameter `opArg[name]` instead of a path segment, as it reads an
+    /// `Option` one. IPC and MCP ignore it.
+    pub in_query: bool,
 }
 
 impl Default for ApiFn {
@@ -178,6 +185,7 @@ impl Default for Param {
             // See `ApiFn`'s Default impl for why we hand-write this instead
             // of deriving — `syn::Type` does not impl `Default`.
             ty_ast: syn::parse_quote!(()),
+            in_query: false,
         }
     }
 }
@@ -186,6 +194,12 @@ impl Param {
     /// True for an `Option<…>` argument, which a caller may leave out.
     pub fn is_option(&self) -> bool {
         self.ty.starts_with("Option<")
+    }
+
+    /// True when a custom `GET` reads the argument from `opArg[name]`: an
+    /// `Option` argument, or one marked [`in_query`](Self::in_query).
+    pub fn reads_from_query(&self) -> bool {
+        self.is_option() || self.in_query
     }
 
     /// True for an `*Input` argument: the type it names, under any `&` and
@@ -531,6 +545,14 @@ pub enum SkipReason {
     /// visible at build time rather than silently falling back to the default
     /// `{entity}_{fn}` command name.
     InvalidRenameValue,
+    /// An argument carried a malformed `#[ontogen(query)]`, such as
+    /// `#[ontogen(query = true)]` or `#[ontogen(query(x))]`. Dropping the
+    /// function makes the mistake visible at build time rather than silently
+    /// routing the argument as a path segment.
+    InvalidQueryMarker {
+        /// The argument's name.
+        param: String,
+    },
 }
 
 impl std::fmt::Display for SkipRecord {
@@ -561,6 +583,12 @@ impl std::fmt::Display for SkipRecord {
                 write!(
                     f,
                     "ontogen: skipped fn `{name}` in `{file}` - `#[ontogen(rename = ...)]` value must be a string literal"
+                )
+            }
+            SkipReason::InvalidQueryMarker { param } => {
+                write!(
+                    f,
+                    "ontogen: skipped fn `{name}` in `{file}` - argument `{param}` has a malformed `#[ontogen(query)]`; write it bare, with no value or list"
                 )
             }
         }
@@ -822,12 +850,24 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
             // to drop.
             let skip_first = if is_stateless { 0 } else { 1 };
 
+            let params = match parse_params(func, skip_first) {
+                Ok(params) => params,
+                Err(param) => {
+                    result.skips.push(SkipRecord {
+                        file: path.to_path_buf(),
+                        fn_name: func.sig.ident.to_string(),
+                        reason: SkipReason::InvalidQueryMarker { param },
+                    });
+                    continue;
+                }
+            };
+
             if let Some(receiver) = receiver_item_type(&func.sig.output) {
                 events.push(EventFn {
                     name: func.sig.ident.to_string(),
                     doc,
                     is_async: func.sig.asyncness.is_some(),
-                    params: parse_params(func, skip_first),
+                    params,
                     item_type: norm_type(&receiver.item),
                     item_type_ast: receiver.item,
                     returns_result: receiver.is_result,
@@ -855,8 +895,6 @@ pub fn parse_api_module(path: &Path, state_type: &str, store_type: Option<&str>)
                     continue;
                 }
             };
-
-            let params = parse_params(func, skip_first);
 
             let (return_type, return_type_ast, error_type) = extract_result_types(&func.sig.output);
             let error_type = error_type.map(|e| resolve_through_uses(&e, &uses));
@@ -934,8 +972,30 @@ pub fn apply_command_overrides(modules: &mut [ApiModule], naming: &crate::server
     }
 }
 
-/// A fn's typed parameters after the first `skip_first`.
-fn parse_params(func: &syn::ItemFn, skip_first: usize) -> Vec<Param> {
+/// Mark the arguments named in
+/// [`NamingConfig::query_args`](crate::servers::types::NamingConfig::query_args)
+/// as [`Param::in_query`], on the parsed [`ApiModule`]s' fns and event fns.
+/// An argument that carries `#[ontogen(query)]` stays marked either way.
+pub fn apply_query_args(modules: &mut [ApiModule], naming: &crate::servers::types::NamingConfig) {
+    if naming.query_args.is_empty() {
+        return;
+    }
+    for m in modules.iter_mut() {
+        let fns = m.functions.iter_mut().map(|f| (&f.name, &mut f.params));
+        let events = m.events.iter_mut().map(|e| (&e.name, &mut e.params));
+        for (fn_name, params) in fns.chain(events) {
+            for p in params {
+                if naming.query_args.contains(&format!("{}::{}::{}", m.name, fn_name, p.name)) {
+                    p.in_query = true;
+                }
+            }
+        }
+    }
+}
+
+/// A fn's typed parameters after the first `skip_first`, or the name of the
+/// first one whose `#[ontogen(query)]` is malformed.
+fn parse_params(func: &syn::ItemFn, skip_first: usize) -> Result<Vec<Param>, String> {
     func.sig
         .inputs
         .iter()
@@ -948,12 +1008,39 @@ fn parse_params(func: &syn::ItemFn, skip_first: usize) -> Vec<Param> {
                     syn::Pat::Ident(ident) => ident.ident.to_string(),
                     _ => String::new(),
                 };
-                Some(Param { name, ty, ty_ast })
+                Some(match parse_query_marker(&pat.attrs) {
+                    Some(in_query) => Ok(Param { name, ty, ty_ast, in_query }),
+                    None => Err(name),
+                })
             } else {
                 None
             }
         })
         .collect()
+}
+
+/// Whether an argument's attributes carry `#[ontogen(query)]`, or `None`
+/// when the marker is malformed (`query = …`, `query(…)`, or a list that
+/// does not parse). Other directives are ignored, as
+/// [`parse_ontogen_rename`] ignores them on a fn.
+fn parse_query_marker(attrs: &[syn::Attribute]) -> Option<bool> {
+    use syn::Meta;
+
+    let mut in_query = false;
+    for attr in attrs.iter().filter(|a| a.path().is_ident("ontogen")) {
+        let Meta::List(list) = &attr.meta else { continue };
+        let nested =
+            list.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated).ok()?;
+        for meta in nested {
+            match meta {
+                Meta::Path(path) if path.is_ident("query") => in_query = true,
+                Meta::NameValue(nv) if nv.path.is_ident("query") => return None,
+                Meta::List(l) if l.path.is_ident("query") => return None,
+                _ => {}
+            }
+        }
+    }
+    Some(in_query)
 }
 
 /// An event fn's return type: `Receiver<T>` or `Result<Receiver<T>, E>`.
@@ -1832,7 +1919,7 @@ mod order_param_tests {
     /// reads them.
     fn list(sig: &str) -> ApiFn {
         let func: syn::ItemFn = syn::parse_str(&format!("pub async fn list({sig}) {{ todo!() }}")).unwrap();
-        ApiFn { name: "list".into(), params: parse_params(&func, 1), ..Default::default() }
+        ApiFn { name: "list".into(), params: parse_params(&func, 1).unwrap(), ..Default::default() }
     }
 
     fn names(params: &[&Param]) -> Vec<String> {

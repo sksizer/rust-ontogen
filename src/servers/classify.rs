@@ -230,8 +230,25 @@ pub(crate) fn check_http_ops(
     route_prefix: Option<&RoutePrefix>,
 ) -> Result<(), String> {
     for m in modules {
+        if let Some((ev, p)) = m.events.iter().find_map(|ev| ev.params.iter().find(|p| p.in_query).map(|p| (ev, p))) {
+            return Err(format!(
+                "ontogen: `{}::{}` marks `{}` `#[ontogen(query)]`, which only a custom `GET` takes; an event op \
+                 reads its required arguments from the path",
+                m.name, ev.name, p.name
+            ));
+        }
         for f in &m.functions {
             let op = classify_op(m, f);
+            if op != OpKind::CustomGet
+                && let Some(p) = f.params.iter().find(|p| p.in_query)
+            {
+                let served = if op == OpKind::CustomPost { "a custom POST" } else { "a CRUD or junction op" };
+                return Err(format!(
+                    "ontogen: `{}::{}` marks `{}` `#[ontogen(query)]`, which only a custom `GET` takes, and it is \
+                     served as {served}; remove the marker, or serve it as a custom GET (`#[ontogen::http::get]`)",
+                    m.name, f.name, p.name
+                ));
+            }
             let crud_or_junction = matches!(
                 op,
                 OpKind::List
@@ -282,8 +299,15 @@ pub(crate) fn check_http_ops(
             if op == OpKind::List {
                 check_list_filter(m, f, resources)?;
             }
+            let one_value = |p: &Param| {
+                if p.is_option() {
+                    reads_from_one_value(p, resources)
+                } else {
+                    filter_reads_from_one_value(p, resources)
+                }
+            };
             if op == OpKind::CustomGet
-                && let Some(p) = f.params.iter().find(|p| p.is_option() && !reads_from_one_value(p, resources))
+                && let Some(p) = f.params.iter().find(|p| p.reads_from_query() && !one_value(p))
             {
                 return Err(format!(
                     "ontogen: `{}::{}` reads `{}: {}` from the query parameter `opArg[{}]`, which carries one \
