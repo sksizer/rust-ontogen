@@ -700,3 +700,65 @@ fn docs_markdown_prints_enum_values_and_flattens_docs() {
     // A pipe inside a doc would end the cell, so it is escaped.
     assert!(files.markdown.contains(r"Reserved: rpe \| tempo."), "{}", files.markdown);
 }
+
+// ─── Servers: UniFFI (experimental) ──────────────────────────────────────────
+
+#[test]
+fn servers_jsonapi_ops_uniffi() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut config = crate::servers::tests::ops_fixture(tmp.path(), false);
+    config.generators = vec![];
+    let modules = crate::servers::generate_transport(&config).expect("generate_transport failed");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("schema")).expect("src dir");
+    std::fs::write(src.join("lib.rs"), "pub mod schema;\n").expect("lib.rs");
+    // The types the fixture's signatures reach. `Task` reaches `TaskStatus`
+    // through a private module's re-export, `Activity` is an enum with
+    // data, and `Agent` already derives `uniffi::Record`, so it is imported
+    // but not mirrored.
+    std::fs::write(src.join("schema/mod.rs"), UNIFFI_SCHEMA).expect("schema");
+    std::fs::write(src.join("schema/status.rs"), "/// Where a task stands.\npub enum TaskStatus { Open, Done }\n")
+        .expect("status");
+    let output = tmp.path().join("uniffi.rs");
+    crate::servers::generators::uniffi::generate(&output, &src, &modules, &config).expect("uniffi generate");
+    insta::assert_snapshot!(read_file(&output));
+}
+
+const UNIFFI_SCHEMA: &str = "\
+mod status;
+pub use status::TaskStatus;
+
+/// A unit of work.
+pub struct Task {
+    #[ontology(id)]
+    pub id: String,
+    /// Shown in lists.
+    #[serde(default)]
+    pub title: String,
+    pub status: TaskStatus,
+    pub tags: Vec<String>,
+}
+pub struct CreateTaskInput { pub id: String, pub title: String }
+pub struct UpdateTaskInput { pub title: Option<String>, pub note: Option<Option<String>> }
+pub struct Epic { pub id: String, pub title: String }
+pub struct CreateEpicInput { pub id: String }
+pub struct UpdateEpicInput { pub title: Option<String> }
+pub struct ListEpicsQuery { pub done: Option<bool> }
+pub struct Tag { pub id: String }
+pub struct CreateTagInput { pub id: String }
+pub struct UpdateTagInput { pub name: Option<String> }
+pub struct Report { pub id: String }
+pub struct CreateReportInput { pub id: String }
+pub struct UpdateReportInput { pub body: Option<String> }
+#[derive(uniffi::Record)]
+pub struct Agent { pub id: String }
+pub struct AgentQuery { pub skill: Option<String> }
+pub struct WorkoutSummary { pub sets: u32, pub kinds: std::collections::HashMap<String, u32> }
+pub struct StartWorkoutInput { pub at: String }
+/// One entry on an activity feed.
+pub enum Activity {
+    Created { id: String },
+    Renamed(String, String),
+    Cleared,
+}
+";

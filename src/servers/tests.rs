@@ -9528,3 +9528,90 @@ fn an_mcp_sorted_list_refuses_a_filter_named_sort() {
     let mcp = generate_one(tmp.path(), config, mcp_gen);
     assert!(mcp.contains("let sort: Option<String> = ontogen_args"), "{mcp}");
 }
+
+// ── UniFFI (experimental) ───────────────────────────────────────────────────
+
+/// Parse the ops fixture and run the UniFFI generator over it, with `schema`
+/// as the crate's `src/schema/mod.rs`.
+fn generate_uniffi(scoped: bool, schema: &str) -> Result<String, String> {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = ops_fixture(tmp.path(), scoped);
+    config.generators = vec![];
+    let modules = crate::servers::generate_transport(&config).unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("schema")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod schema;\n").unwrap();
+    std::fs::write(src.join("schema/mod.rs"), schema).unwrap();
+    let output = tmp.path().join("uniffi.rs");
+    crate::servers::generators::uniffi::generate(&output, &src, &modules, &config)?;
+    Ok(std::fs::read_to_string(output).unwrap())
+}
+
+#[test]
+fn uniffi_refuses_a_route_prefix() {
+    let err = generate_uniffi(true, "").unwrap_err();
+    assert!(err.contains("does not support `route_prefix`"), "{err}");
+}
+
+#[test]
+fn uniffi_names_every_type_it_cannot_mirror() {
+    // `Task` is a tuple struct, `Tag` is generic, and the rest are missing:
+    // one error lists them all, so a consumer fixes them in one pass.
+    let err = generate_uniffi(false, "pub struct Task(String);\npub struct Tag<T> { pub id: T }\n").unwrap_err();
+    assert!(err.contains("`Epic` is not defined in this crate"), "{err}");
+    assert!(err.contains("`WorkoutSummary` is not defined in this crate"), "{err}");
+    let err = generate_uniffi(false, &format!("{}pub struct Task(String);\n", uniffi_complete_schema_except("Task")))
+        .unwrap_err();
+    assert!(err.contains("cannot mirror `Task`: UniFFI records need named fields"), "{err}");
+}
+
+#[test]
+fn uniffi_does_not_read_its_own_output_as_definitions() {
+    // The types are defined outside the schema module and re-exported through
+    // it, so nothing prefers them over the mirrors the first run wrote to `src/`.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = ops_fixture(tmp.path(), false);
+    config.generators = vec![];
+    let modules = crate::servers::generate_transport(&config).unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("schema")).unwrap();
+    std::fs::create_dir_all(src.join("native")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod native;\npub mod schema;\npub mod views;\n").unwrap();
+    std::fs::write(src.join("native/mod.rs"), "pub mod generated;\n").unwrap();
+    std::fs::write(src.join("schema/mod.rs"), "pub use crate::views::*;\n").unwrap();
+    std::fs::write(src.join("views.rs"), uniffi_complete_schema_except("")).unwrap();
+
+    let output = src.join("native/generated.rs");
+    crate::servers::generators::uniffi::generate(&output, &src, &modules, &config).unwrap();
+    let first = std::fs::read_to_string(&output).unwrap();
+    crate::servers::generators::uniffi::generate(&output, &src, &modules, &config).unwrap();
+    assert_eq!(first, std::fs::read_to_string(&output).unwrap());
+}
+
+/// A definition for every type the ops fixture reaches, except `skip`.
+fn uniffi_complete_schema_except(skip: &str) -> String {
+    [
+        "Task",
+        "CreateTaskInput",
+        "UpdateTaskInput",
+        "Epic",
+        "CreateEpicInput",
+        "UpdateEpicInput",
+        "ListEpicsQuery",
+        "Tag",
+        "CreateTagInput",
+        "UpdateTagInput",
+        "Report",
+        "CreateReportInput",
+        "UpdateReportInput",
+        "Agent",
+        "AgentQuery",
+        "WorkoutSummary",
+        "StartWorkoutInput",
+        "Activity",
+    ]
+    .iter()
+    .filter(|name| **name != skip)
+    .map(|name| format!("pub struct {name} {{ pub id: String }}\n"))
+    .collect()
+}

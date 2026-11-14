@@ -1,0 +1,22 @@
+# One training log on two store backends, exported to a native macOS app
+# through generated UniFFI bindings. EXPERIMENTAL: the `Uniffi` server
+# generator is a draft. Like the other examples this is its OWN workspace,
+# outside the repo's root workspace.
+#
+# sqlite/ and markdown/ differ only in their store; shared/ holds the schema,
+# hooks, custom ops and domain they both compile, through symlinks.
+[workspace]
+members = ["sqlite", "markdown", "bindgen"]
+resolver = "3"
+
+[workspace.dependencies]
+ontogen-core = { path = "../../crates/ontogen-core", features = ["events"] }
+ontogen-macros = { path = "../../crates/ontogen-macros" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+specta = { version = "=2.0.0-rc.23", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
+uniffi = "0.32"
+uuid = { version = "1", features = ["v4"] }
+ontogen = { path = "../.." }

@@ -288,4 +288,13 @@ pub enum ServerGenerator {
         /// Output file path (e.g., `src/api/transport/mcp/generated.rs`).
         output: PathBuf,
     },
+    /// Generate a UniFFI export of the API, for native apps calling it
+    /// in-process from Swift, Kotlin and the other UniFFI languages.
+    ///
+    /// EXPERIMENTAL: the output's shape may change in any release. See
+    /// `examples/iron-log-mac` for the consumer side.
+    Uniffi {
+        /// Output file path (e.g., `src/native/generated.rs`).
+        output: PathBuf,
+    },
 }

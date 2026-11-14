@@ -1,4 +1,4 @@
-//! Server transport generators - HTTP (Axum), IPC (Tauri), MCP.
+//! Server transport generators - HTTP (Axum), IPC (Tauri), MCP, and UniFFI (experimental).
 
 // All submodules are crate-internal; their public types are re-exported below
 // where intended for downstream consumption. External code reaches them via
@@ -253,6 +253,12 @@ pub(crate) fn generate_transport(config: &config::Config) -> Result<Vec<parse::A
             }
             config::ServerGenerator::TauriIpc { output } => {
                 generators::ipc::generate(output, &modules, config);
+            }
+            config::ServerGenerator::Uniffi { output } => {
+                let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+                    .map_err(|_| "CARGO_MANIFEST_DIR not set; the Uniffi generator only runs from a build script")?;
+                let src_dir = std::path::Path::new(&manifest_dir).join("src");
+                generators::uniffi::generate(output, &src_dir, &modules, config)?;
             }
         }
     }

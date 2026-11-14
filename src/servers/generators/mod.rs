@@ -6,6 +6,7 @@
 pub mod http;
 pub mod ipc;
 pub mod mcp;
+pub mod uniffi;
 
 use std::collections::{BTreeMap, BTreeSet};
 

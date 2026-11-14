@@ -114,7 +114,8 @@ and transport handlers. Add a new entity to your schema and rebuild -- everythin
 - **Lifecycle hooks** scaffolded once per entity, never overwritten -- you own the hook files
 - **API layer** that merges generated CRUD with hand-written custom endpoints
 - **Server transports** for Axum HTTP (a [JSON:API 1.1](https://jsonapi.org/format/1.1/) server), Tauri IPC, and MCP
-  (Model Context Protocol)
+  (Model Context Protocol), plus an experimental [UniFFI](https://mozilla.github.io/uniffi-rs/) export for native
+  Swift and Kotlin apps
 - **Client generation** for TypeScript and admin registries, with a build-time AST walker that emits the full
   reachable type closure -- no side-car binary, no extra compilation
 - **Docs generation** -- a `data-model.md` reference and JSON Schema (draft 2020-12) per entity, so the schema ships
@@ -137,7 +138,7 @@ requests and responses: [iron-log](site/src/content/docs/examples/iron-log-wire.
 
 ## Example Projects
 
-Four runnable examples live under [`examples/`](examples/):
+Five runnable examples live under [`examples/`](examples/):
 
 | Example | Backend | What it shows |
 |---|---|---|
@@ -145,6 +146,7 @@ Four runnable examples live under [`examples/`](examples/):
 | [`iron-log-md`](examples/iron-log-md/) | Markdown | iron-log's exact schema on the markdown backend -- `diff -r` the generated `api/v1` trees to watch the byte-identical invariant hold |
 | [`tasks-tracker`](examples/tasks-tracker/) | Markdown | A planning vault over HTTP **and** the generated MCP tool registry |
 | [`notes-kb`](examples/notes-kb/) | Markdown | Wikilinked notes served as a graph |
+| [`iron-log-mac`](examples/iron-log-mac/) | SQLite and Markdown | **Experimental:** a 17-entity training log in a native SwiftUI macOS app, calling the Rust core in-process through the generated UniFFI export, with [a report of the gaps it found](examples/iron-log-mac/GAPS.md) |
 
 ```bash
 cd examples/iron-log/src-tauri

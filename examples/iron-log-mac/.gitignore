@@ -1,0 +1,4 @@
+target/
+app/.build/
+app/IronLogFFI.xcframework/
+app/Sources/IronLogCore/Generated/

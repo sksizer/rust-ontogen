@@ -1,0 +1,27 @@
+[package]
+name = "iron-log-sqlite"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "iron_log_sqlite"
+crate-type = ["lib", "staticlib"]
+
+[dependencies]
+sea-orm = { version = "1", default-features = false, features = ["macros", "sqlx-sqlite", "runtime-tokio-rustls"] }
+ontogen-core = { workspace = true }
+ontogen-macros = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+specta = { workspace = true }
+tokio = { workspace = true }
+uniffi = { workspace = true }
+uuid = { workspace = true }
+
+[build-dependencies]
+ontogen = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

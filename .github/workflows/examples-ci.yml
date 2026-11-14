@@ -65,6 +65,13 @@ jobs:
             manifest: "examples/notes-kb/Cargo.toml"
             cmd: "build"
             tauri: false
+          # The Rust half only (the generated UniFFI export); the Swift app
+          # needs a macOS runner and is built by hand for now.
+          - name: "iron-log-mac"
+            dir: "examples/iron-log-mac"
+            manifest: "examples/iron-log-mac/Cargo.toml"
+            cmd: "test"
+            tauri: false
           - name: "iron-log"
             dir: "examples/iron-log"
             manifest: "examples/iron-log/src-tauri/Cargo.toml"

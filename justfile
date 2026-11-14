@@ -96,6 +96,7 @@ regen-examples:
     cargo build --manifest-path examples/iron-log-md/Cargo.toml
     cargo build --manifest-path examples/tasks-tracker/Cargo.toml
     cargo build --manifest-path examples/notes-kb/Cargo.toml
+    cargo build --manifest-path examples/iron-log-mac/Cargo.toml
     cargo check --manifest-path examples/iron-log/src-tauri/Cargo.toml
 alias rex := regen-examples
 
